@@ -1,0 +1,61 @@
+name: Publish packages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/publish.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run pack:check
+      - name: Publish new package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          published=0
+
+          for manifest in packages/*/package.json; do
+            name="$(node -p "require('./$manifest').name")"
+            if [ "$(node -p "Boolean(require('./$manifest').private)")" = true ]; then
+              continue
+            fi
+
+            local_version="$(node -p "require('./$manifest').version")"
+            remote_version="$(npm view "$name" version 2>/dev/null || true)"
+            if [ "$local_version" = "$remote_version" ]; then
+              continue
+            fi
+
+            echo "Publishing $name@$local_version"
+            npm publish --workspace "$name"
+            published=1
+          done
+
+          if [ "$published" = 0 ]; then
+            echo 'No new package versions.'
+          fi
