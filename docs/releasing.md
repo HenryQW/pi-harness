@@ -1,32 +1,19 @@
 # Release packages
 
-Run from repository root.
+Agents release packages by bumping workspace versions and pushing `main`.
 
-1. Update package version:
+```bash
+npm version patch --workspace packages/<package> --no-git-tag-version
+git commit -am "chore: release <package>"
+git push origin main
+```
 
-   ```bash
-   npm version patch --workspace packages/pi-auto-compact
-   ```
+`.github/workflows/publish.yml` runs checks, compares every public workspace version with npm, and publishes only new versions. No tags needed. Private workspaces are skipped.
 
-2. Run checks:
+One-time setup per package:
 
-   ```bash
-   npm test
-   npm run typecheck
-   npm run pack:check
-   npm run test:live
-   ```
+1. Bootstrap first version with authenticated local npm publish.
+2. npm package settings → Trusted Publisher → GitHub Actions.
+3. Configure `HenryQW/pi-packages` and workflow filename `publish.yml`.
 
-3. Publish package:
-
-   ```bash
-   npm publish --workspace @henryqw/pi-auto-compact --access public
-   ```
-
-4. Push commit and tag created by `npm version`:
-
-   ```bash
-   git push --follow-tags origin main
-   ```
-
-Do not publish without a version change. Keep package scope `@henryqw` for every future Pi package.
+Trusted publishing needs npm CLI 11.5.1+ and GitHub OIDC. Keep package scope `@henryqw` for future Pi packages.
