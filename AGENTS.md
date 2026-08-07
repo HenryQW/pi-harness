@@ -1,0 +1,21 @@
+# Agent instructions
+
+## Package release policy
+
+This repository is npm workspace monorepo. Each public package under `packages/*` releases independently.
+
+- Bump package version when change affects published files, runtime behavior, public API, package metadata, or runtime dependencies.
+- Bump every affected package when one change touches multiple packages.
+- Do not bump version for root-only CI, Dependabot, development dependency, test-only, or repository documentation changes.
+- Use patch for fixes, minor for backward-compatible features, and major for breaking changes.
+- Bump with npm; do not edit versions by hand:
+
+  ```bash
+  npm version patch --workspace packages/<package> --no-git-tag-version
+  ```
+
+- Commit version and `package-lock.json` changes with feature or fix. Do not create release tags.
+- Push `main`; `.github/workflows/publish.yml` publishes each public workspace whose version is newer than npm.
+- Root package `@henryqw/pi-packages` is private and never releases.
+- PR CI enforces version bumps for published package changes; test-only package changes are excluded.
+- Before finishing, state which packages release and why. If no package version changed, state that CI will not publish.
