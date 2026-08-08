@@ -1,4 +1,5 @@
 node_modules/
+.context/
 coverage/
 .npm/
 *.tgz
