@@ -17,6 +17,10 @@ After A1 is authenticated, `/login openai-codex-account-2` adds the next
 numbered account. The extension exposes one next empty slot for each successful
 login and rejects duplicate Codex account identities before Pi persists them.
 
+Authenticated accounts refresh their allowance snapshots in the background.
+`codex-accounts.json` contains only account identity, normalized allowance
+windows, and fetch time; it never stores credentials or authorization headers.
+
 ## Development
 
 ```bash
