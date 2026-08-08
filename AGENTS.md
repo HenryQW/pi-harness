@@ -19,3 +19,17 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 - Root package `@henryqw/pi-packages` is private and never releases.
 - PR CI enforces version bumps for published package changes; test-only package changes are excluded.
 - Before finishing, state which packages release and why. If no package version changed, state that CI will not publish.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `HenryQW/pi-packages`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses default canonical labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context layout uses root `CONTEXT-MAP.md` and per-package `CONTEXT.md` files. See `docs/agents/domain.md`.
