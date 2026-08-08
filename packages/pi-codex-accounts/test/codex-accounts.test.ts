@@ -95,6 +95,10 @@ function fakeNativeProvider(
 }
 
 type RecordedHandler = (event: unknown, ctx: ExtensionContext) => void | Promise<void>;
+type RoutingEntry = { type: "custom"; customType: string; data?: unknown };
+type RoutingCommand = (args: string, ctx: ExtensionContext) => Promise<void>;
+const noOpUi = { setStatus: () => {}, notify: () => {} };
+const emptySession = { getBranch: () => [] };
 
 function fakePi(
 	providers: Provider<"openai-codex-responses">[],
@@ -109,7 +113,119 @@ function fakePi(
 			providers.push(provider);
 			onRegister?.(provider);
 		},
+		registerCommand() {},
 	} as unknown as ExtensionAPI;
+}
+
+function routingControls(
+	initialModel: Model<"openai-codex-responses"> | null = MODEL,
+	initialEntries: readonly RoutingEntry[] = [],
+) {
+	let model: Model<"openai-codex-responses"> | undefined = initialModel ?? undefined;
+	let thinkingLevel = "high";
+	let modelSetAllowed = true;
+	const handlers = new Map<string, RecordedHandler>();
+	const commands = new Map<string, RoutingCommand>();
+	const entries = [...initialEntries];
+	const statuses: { key: string; text: string | undefined }[] = [];
+	const notifications: { message: string; type: string | undefined }[] = [];
+	const modelSetCalls: Model<"openai-codex-responses">[] = [];
+	const context = {
+		get model() {
+			return model;
+		},
+		get thinkingLevel() {
+			return thinkingLevel;
+		},
+		sessionManager: { getBranch: () => entries },
+		modelRegistry: {},
+		ui: {
+			setStatus(key: string, text: string | undefined) {
+				statuses.push({ key, text });
+			},
+			notify(message: string, type?: string) {
+				notifications.push({ message, type });
+			},
+		},
+	} as unknown as ExtensionContext;
+	const emit = async (event: string, payload: unknown): Promise<void> => {
+		await handlers.get(event)?.(payload, context);
+	};
+	const selectModel = async (
+		nextModel: Model<"openai-codex-responses">,
+		source: "set" | "cycle" | "restore",
+	): Promise<void> => {
+		const previousModel = model;
+		model = nextModel;
+		await emit("model_select", { type: "model_select", model, previousModel, source });
+	};
+	const pi = {
+		on(event: string, handler: RecordedHandler) {
+			handlers.set(event, handler);
+		},
+		registerProvider() {},
+		registerCommand(name: string, options: { handler: RoutingCommand }) {
+			commands.set(name, options.handler);
+		},
+		appendEntry(customType: string, data?: unknown) {
+			entries.push({ type: "custom", customType, data });
+		},
+		getThinkingLevel() {
+			return thinkingLevel;
+		},
+		setThinkingLevel(level: string) {
+			thinkingLevel = level;
+		},
+		async setModel(nextModel: Model<"openai-codex-responses">) {
+			if (!modelSetAllowed) return false;
+			modelSetCalls.push(nextModel);
+			thinkingLevel = "low";
+			await selectModel(nextModel, "set");
+			return true;
+		},
+	} as unknown as ExtensionAPI;
+
+	return {
+		pi,
+		context,
+		handlers,
+		commands,
+		entries,
+		statuses,
+		notifications,
+		modelSetCalls,
+		get model() {
+			return model;
+		},
+		get thinkingLevel() {
+			return thinkingLevel;
+		},
+		setModelAllowed(value: boolean) {
+			modelSetAllowed = value;
+		},
+		emit,
+		selectModel,
+	};
+}
+
+const ROUTING_NOW = 1_800_000_000_000;
+
+function cachedAllowance(accountId: string, allowance: number) {
+	return {
+		accountId,
+		allowance,
+		windows: [{ remainingPercent: allowance, resetAt: ROUTING_NOW + 60_000 }],
+		fetchedAt: ROUTING_NOW,
+	};
+}
+
+function registerRouting(controls: ReturnType<typeof routingControls>): void {
+	registerCodexAccounts(controls.pi, fakeNativeProvider(() => credential("account-4")), {
+		now: () => ROUTING_NOW,
+		setInterval: (() => 1) as unknown as typeof setInterval,
+		clearInterval: (() => undefined) as typeof clearInterval,
+		setTimeout: (() => 1) as unknown as typeof setTimeout,
+	});
 }
 
 async function registerRuntime(
@@ -360,6 +476,8 @@ test("refreshes credential-free allowance snapshots concurrently and retains sta
 			cleared = timer;
 		}) as typeof clearInterval;
 		const context = {
+			sessionManager: emptySession,
+			ui: noOpUi,
 			modelRegistry: {
 				async getProviderAuth(providerId: string) {
 					return { auth: { apiKey: `current-${providerId}` } };
@@ -485,6 +603,8 @@ test("skips a refresh when an account changes while Pi resolves auth", async () 
 			return 1;
 		}) as typeof setTimeout;
 		const context = {
+			sessionManager: emptySession,
+			ui: noOpUi,
 			modelRegistry: {
 				async getProviderAuth() {
 					authRequested = true;
@@ -556,4 +676,173 @@ test("ranks measured allowances ahead of unknown accounts and excludes zero allo
 			NATIVE_PROVIDER_ID,
 		],
 	);
+});
+
+test("routes only at agent boundaries and warns once per managed run", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({
+			[NATIVE_PROVIDER_ID]: credential("account-1"),
+			[ALIAS_PROVIDER_ID]: credential("account-2"),
+			"openai-codex-account-3": credential("account-3"),
+		}));
+		await writeFile(join(dirname(authPath), "codex-accounts.json"), JSON.stringify({
+			accounts: {
+				[NATIVE_PROVIDER_ID]: cachedAllowance("account-1", 10),
+				[ALIAS_PROVIDER_ID]: cachedAllowance("account-2", 80),
+				"openai-codex-account-3": cachedAllowance("account-3", 80),
+			},
+		}));
+
+		const controls = routingControls();
+		registerRouting(controls);
+		await controls.emit("session_start", { type: "session_start", reason: "startup" });
+		assert.equal(controls.statuses.at(-1)?.text, "Codex A1 · 10% · auto");
+
+		await controls.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(controls.model?.provider, ALIAS_PROVIDER_ID);
+		assert.equal(controls.model?.id, MODEL.id);
+		assert.equal(controls.thinkingLevel, "high");
+		assert.equal(controls.modelSetCalls.length, 1);
+		assert.equal(controls.entries.length, 0);
+
+		await controls.emit("after_provider_response", { type: "after_provider_response", status: 200 });
+		await controls.emit("after_provider_response", { type: "after_provider_response", status: 429 });
+		await controls.emit("after_provider_response", { type: "after_provider_response", status: 429 });
+		assert.equal(controls.modelSetCalls.length, 1);
+		assert.deepEqual(controls.notifications, [{
+			message: "Codex account reached usage limit. Run /codex-accounts next to switch accounts.",
+			type: "warning",
+		}]);
+
+		await controls.emit("agent_settled", { type: "agent_settled" });
+		await controls.emit("after_provider_response", { type: "after_provider_response", status: 429 });
+		await controls.emit("before_agent_start", { type: "before_agent_start" });
+		await controls.emit("after_provider_response", { type: "after_provider_response", status: 429 });
+		assert.equal(controls.modelSetCalls.length, 1);
+		assert.equal(controls.notifications.length, 2);
+		assert.equal(controls.notifications[1]?.message, controls.notifications[0]?.message);
+
+		const unmanaged = routingControls({ ...MODEL, provider: "other-provider" });
+		registerRouting(unmanaged);
+		await unmanaged.emit("session_start", { type: "session_start", reason: "startup" });
+		await unmanaged.emit("before_agent_start", { type: "before_agent_start" });
+		await unmanaged.emit("after_provider_response", { type: "after_provider_response", status: 429 });
+		assert.equal(unmanaged.notifications.length, 0);
+	});
+});
+
+test("routes ties deterministically and leaves the model alone without an alternative", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({
+			[NATIVE_PROVIDER_ID]: credential("account-1"),
+			[ALIAS_PROVIDER_ID]: credential("account-2"),
+			"openai-codex-account-3": credential("account-3"),
+		}));
+		await writeFile(join(dirname(authPath), "codex-accounts.json"), JSON.stringify({
+			accounts: {
+				[NATIVE_PROVIDER_ID]: cachedAllowance("account-1", 80),
+				[ALIAS_PROVIDER_ID]: cachedAllowance("account-2", 80),
+				"openai-codex-account-3": cachedAllowance("account-3", 0),
+			},
+		}));
+
+		const tied = routingControls({ ...MODEL, provider: "openai-codex-account-3" });
+		registerRouting(tied);
+		await tied.emit("session_start", { type: "session_start", reason: "startup" });
+		await tied.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(tied.model?.provider, NATIVE_PROVIDER_ID);
+
+		await writeFile(authPath, JSON.stringify({ [NATIVE_PROVIDER_ID]: credential("account-1") }));
+		await writeFile(join(dirname(authPath), "codex-accounts.json"), JSON.stringify({
+			accounts: { [NATIVE_PROVIDER_ID]: cachedAllowance("account-1", 80) },
+		}));
+		const onlyAccount = routingControls();
+		registerRouting(onlyAccount);
+		await onlyAccount.emit("session_start", { type: "session_start", reason: "startup" });
+		await onlyAccount.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(onlyAccount.modelSetCalls.length, 0);
+		const command = onlyAccount.commands.get("codex-accounts");
+		assert.ok(command);
+		await command("next", onlyAccount.context);
+		assert.equal(onlyAccount.modelSetCalls.length, 0);
+		assert.equal(onlyAccount.entries.length, 0);
+		assert.equal(onlyAccount.notifications.length, 0);
+	});
+});
+
+test("persists manual controls, honors model sources, and reports unknown allowance", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({
+			[NATIVE_PROVIDER_ID]: credential("account-1"),
+			[ALIAS_PROVIDER_ID]: credential("account-2"),
+		}));
+		const cachePath = join(dirname(authPath), "codex-accounts.json");
+		await writeFile(cachePath, JSON.stringify({
+			accounts: {
+				[NATIVE_PROVIDER_ID]: cachedAllowance("account-1", 20),
+				[ALIAS_PROVIDER_ID]: cachedAllowance("account-2", 80),
+			},
+		}));
+
+		const controls = routingControls(null);
+		registerRouting(controls);
+		await controls.emit("session_start", { type: "session_start", reason: "startup" });
+		await controls.selectModel(MODEL, "set");
+		assert.equal(controls.entries.length, 0);
+		const command = controls.commands.get("codex-accounts");
+		assert.ok(command);
+		controls.setModelAllowed(false);
+		await command("next", controls.context);
+		assert.equal(controls.entries.length, 0);
+		assert.equal(controls.notifications.length, 0);
+
+		controls.setModelAllowed(true);
+		await command("next", controls.context);
+		assert.equal(controls.model?.provider, ALIAS_PROVIDER_ID);
+		assert.equal(controls.thinkingLevel, "high");
+		assert.deepEqual(controls.entries.map((entry) => entry.data), [{ mode: "manual" }]);
+		assert.equal(controls.statuses.at(-1)?.text, "Codex A2 · 80% · manual");
+		assert.deepEqual(controls.notifications, [{ message: "Switched to Codex account A2.", type: "info" }]);
+
+		await command("auto", controls.context);
+		assert.deepEqual(controls.entries.map((entry) => entry.data), [{ mode: "manual" }, { mode: "auto" }]);
+		assert.equal(controls.statuses.at(-1)?.text, "Codex A2 · 80% · auto");
+		await controls.selectModel({ ...MODEL, provider: NATIVE_PROVIDER_ID }, "restore");
+		assert.equal(controls.entries.at(-1)?.data && (controls.entries.at(-1)?.data as { mode: string }).mode, "auto");
+		await controls.selectModel({ ...MODEL, provider: ALIAS_PROVIDER_ID }, "set");
+		assert.equal((controls.entries.at(-1)?.data as { mode: string }).mode, "manual");
+		await command("auto", controls.context);
+		await controls.selectModel({ ...MODEL, provider: NATIVE_PROVIDER_ID }, "cycle");
+		assert.equal((controls.entries.at(-1)?.data as { mode: string }).mode, "manual");
+
+		const manualEntry: RoutingEntry = { type: "custom", customType: "codex-accounts-mode", data: { mode: "manual" } };
+		const autoEntry: RoutingEntry = { type: "custom", customType: "codex-accounts-mode", data: { mode: "auto" } };
+		for (const [reason, entries, expectedMode] of [
+			["reload", [manualEntry], "manual"],
+			["resume", [manualEntry], "manual"],
+			["reload", [manualEntry, autoEntry], "auto"],
+			["resume", [manualEntry, autoEntry], "auto"],
+			["new", [], "auto"],
+		] as const) {
+			const restored = routingControls(MODEL, entries);
+			registerRouting(restored);
+			await restored.emit("session_start", { type: "session_start", reason });
+			assert.equal(restored.statuses.at(-1)?.text, `Codex A1 · 20% · ${expectedMode}`);
+		}
+		const forked = routingControls(MODEL, [manualEntry]);
+		registerRouting(forked);
+		await forked.emit("session_start", { type: "session_start", reason: "fork" });
+		assert.equal(forked.statuses.at(-1)?.text, "Codex A1 · 20% · auto");
+		assert.equal((forked.entries.at(-1)?.data as { mode: string }).mode, "auto");
+		const reloadedFork = routingControls(MODEL, forked.entries);
+		registerRouting(reloadedFork);
+		await reloadedFork.emit("session_start", { type: "session_start", reason: "reload" });
+		assert.equal(reloadedFork.statuses.at(-1)?.text, "Codex A1 · 20% · auto");
+
+		await writeFile(cachePath, JSON.stringify({ accounts: {} }));
+		const unknown = routingControls();
+		registerRouting(unknown);
+		await unknown.emit("session_start", { type: "session_start", reason: "startup" });
+		assert.equal(unknown.statuses.at(-1)?.text, "Codex A1 · ? · auto");
+	});
 });
