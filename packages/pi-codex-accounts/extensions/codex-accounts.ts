@@ -432,9 +432,14 @@ export function registerCodexAccounts(
 
 			const updates = await Promise.all([...accounts.keys()].map(async (providerId) => {
 				try {
+					const accountId = accounts.get(providerId);
+					if (!accountId) return undefined;
 					const auth = await ctx.modelRegistry.getProviderAuth(providerId);
-					const accountId = readStoredCodexAccounts()?.get(providerId);
-					if (!accountId || typeof auth?.auth.apiKey !== "string" || auth.auth.apiKey.length === 0) {
+					if (
+						readStoredCodexAccounts()?.get(providerId) !== accountId ||
+						typeof auth?.auth.apiKey !== "string" ||
+						auth.auth.apiKey.length === 0
+					) {
 						return undefined;
 					}
 					const usage = await fetchCodexUsage(auth.auth.apiKey, accountId, fetcher, now(), controller.signal);

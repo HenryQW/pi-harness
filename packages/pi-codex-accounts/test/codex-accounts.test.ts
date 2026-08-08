@@ -462,6 +462,53 @@ test("refreshes credential-free allowance snapshots concurrently and retains sta
 	});
 });
 
+test("skips a refresh when an account changes while Pi resolves auth", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({ [NATIVE_PROVIDER_ID]: credential("account-1") }));
+
+		const providers: Provider<"openai-codex-responses">[] = [];
+		const handlers = new Map<string, RecordedHandler>();
+		let releaseAuth!: () => void;
+		const authGate = new Promise<void>((resolve) => {
+			releaseAuth = resolve;
+		});
+		let authRequested = false;
+		let requests = 0;
+		const schedule = ((_: () => void, delay: number) => {
+			assert.equal(delay, 5 * 60 * 1000);
+			return 1;
+		}) as typeof setInterval;
+		const context = {
+			modelRegistry: {
+				async getProviderAuth() {
+					authRequested = true;
+					await authGate;
+					return { auth: { apiKey: "access-account-1" } };
+				},
+			},
+		} as unknown as ExtensionContext;
+
+		registerCodexAccounts(fakePi(providers, undefined, handlers), fakeNativeProvider(() => credential("account-3")), {
+			fetch: (async () => {
+				requests++;
+				return new Response("{}", { status: 200 });
+			}) as typeof fetch,
+			setInterval: schedule,
+			clearInterval: (() => undefined) as typeof clearInterval,
+		});
+		const start = handlers.get("session_start");
+		assert.ok(start);
+		start({ type: "session_start", reason: "startup" }, context);
+		await waitFor(() => authRequested);
+
+		await writeFile(authPath, JSON.stringify({ [NATIVE_PROVIDER_ID]: credential("account-2") }));
+		releaseAuth();
+		await settleAuthJson();
+		await settleAuthJson();
+		assert.equal(requests, 0);
+	});
+});
+
 test("ranks measured allowances ahead of unknown accounts and excludes zero allowance", () => {
 	const accounts = new Map([
 		[NATIVE_PROVIDER_ID, "account-1"],
