@@ -1,4 +1,8 @@
-import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import {
+	estimateTokens,
+	getAgentDir,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -20,6 +24,10 @@ const COMPACT_THRESHOLD_PERCENT = 50;
 // Emergency context guard keeps recent messages while default compaction runs.
 const KEEP_RECENT_PERCENT = 15;
 const RESUME_MESSAGE = "Auto-compact ran. Continue the current task.";
+const COMPACTION_ABORT_ERROR = "This operation was aborted";
+const ACTIVATION_ERROR =
+	"pi-auto-compact failed to activate: Pi built-in auto-compaction is enabled. " +
+	"Set compaction.enabled to false in Pi settings, then restart Pi.";
 
 /** Estimate current request size using same estimator Pi uses. */
 function estimateTotalTokens(messages: AgentMessage[]): number {
@@ -75,13 +83,17 @@ function hasToolCall(message: AgentMessage): boolean {
 }
 
 export default function (pi: ExtensionAPI) {
+	let active = false;
 	// Prevent turn_start, turn_end, and context from starting duplicate summaries.
 	let compactionPending = false;
+	let compactionAbortExpected = false;
 
 	const runCompaction = (ctx: ExtensionContext) => {
+		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
 		ctx.compact({
 			onComplete: () => {
 				compactionPending = false;
+				compactionAbortExpected = false;
 				// Pi may flush queued input during compaction_end. Wait one macrotask
 				// before checking idle, otherwise follow-up can race that flush.
 				setImmediate(() => {
@@ -90,12 +102,13 @@ export default function (pi: ExtensionAPI) {
 			},
 			onError: () => {
 				compactionPending = false;
+				compactionAbortExpected = false;
 			},
 		});
 	};
 
 	const compactIfNeeded = (ctx: ExtensionContext) => {
-		if (compactionPending) return;
+		if (!active || compactionPending) return;
 
 		const usage = ctx.getContextUsage();
 		if (usage?.percent == null || usage.percent <= COMPACT_THRESHOLD_PERCENT) return;
@@ -103,6 +116,25 @@ export default function (pi: ExtensionAPI) {
 		compactionPending = true;
 		runCompaction(ctx);
 	};
+
+	// Hide only empty abort produced when ctx.compact() cancels active run.
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message;
+		if (
+			!compactionPending ||
+			!compactionAbortExpected ||
+			!ctx.signal?.aborted ||
+			message.role !== "assistant" ||
+			message.stopReason !== "error" ||
+			message.errorMessage !== COMPACTION_ABORT_ERROR ||
+			message.content.some((part) => part.type !== "text" || part.text !== "")
+		) return;
+
+		compactionAbortExpected = false;
+		return {
+			message: { ...message, stopReason: "stop", errorMessage: undefined },
+		};
+	});
 
 	// Do not use agent_settled here: long tool loops may cross threshold before
 	// the full run settles. These hooks inspect every provider-turn boundary.
@@ -118,7 +150,7 @@ export default function (pi: ExtensionAPI) {
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
 	pi.on("context", (event, ctx) => {
-		if (compactionPending) return;
+		if (!active || compactionPending) return;
 
 		const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 		const estimatedTokens = estimateTotalTokens(event.messages);
@@ -137,10 +169,15 @@ export default function (pi: ExtensionAPI) {
 		return { messages: truncated };
 	});
 
-	// Resume/fork can load an already-large session before first turn.
+	// Pi's built-in automatic compaction competes with this extension. Refuse
+	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
-		if (event.reason === "resume" || event.reason === "fork") {
-			compactIfNeeded(ctx);
-		}
+		active = !SettingsManager.create(ctx.cwd, getAgentDir(), {
+			projectTrusted: ctx.isProjectTrusted(),
+		}).getCompactionEnabled();
+		if (!active) throw new Error(ACTIVATION_ERROR);
+
+		// Resume/fork can load an already-large session before first turn.
+		if (event.reason === "resume" || event.reason === "fork") compactIfNeeded(ctx);
 	});
 }
