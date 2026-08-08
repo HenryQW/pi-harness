@@ -597,7 +597,7 @@ export function registerCodexAccounts(
 	});
 	pi.on("model_select", (event, ctx) => {
 		if (extensionModelChanges > 0) return;
-		if (sessionStarted && event.previousModel && event.source !== "restore") setMode("manual", ctx);
+		if (sessionStarted && event.source !== "restore") setMode("manual", ctx);
 		else updateStatus(ctx);
 	});
 	pi.on("after_provider_response", (event, ctx) => {

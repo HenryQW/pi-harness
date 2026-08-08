@@ -786,9 +786,9 @@ test("persists manual controls, honors model sources, and reports unknown allowa
 
 		const controls = routingControls(null);
 		registerRouting(controls);
-		await controls.emit("session_start", { type: "session_start", reason: "startup" });
 		await controls.selectModel(MODEL, "set");
 		assert.equal(controls.entries.length, 0);
+		await controls.emit("session_start", { type: "session_start", reason: "startup" });
 		const command = controls.commands.get("codex-accounts");
 		assert.ok(command);
 		controls.setModelAllowed(false);
@@ -814,6 +814,14 @@ test("persists manual controls, honors model sources, and reports unknown allowa
 		await command("auto", controls.context);
 		await controls.selectModel({ ...MODEL, provider: NATIVE_PROVIDER_ID }, "cycle");
 		assert.equal((controls.entries.at(-1)?.data as { mode: string }).mode, "manual");
+
+		const firstManual = routingControls(null);
+		registerRouting(firstManual);
+		await firstManual.emit("session_start", { type: "session_start", reason: "startup" });
+		await firstManual.selectModel(MODEL, "set");
+		assert.deepEqual(firstManual.entries.map((entry) => entry.data), [{ mode: "manual" }]);
+		await firstManual.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(firstManual.modelSetCalls.length, 0);
 
 		const manualEntry: RoutingEntry = { type: "custom", customType: "codex-accounts-mode", data: { mode: "manual" } };
 		const autoEntry: RoutingEntry = { type: "custom", customType: "codex-accounts-mode", data: { mode: "auto" } };
