@@ -137,6 +137,7 @@ function routingControls(
 	const statuses: { key: string; text: string | undefined }[] = [];
 	const notifications: { message: string; type: string | undefined }[] = [];
 	const modelSetCalls: Model<"openai-codex-responses">[] = [];
+	let abortCalls = 0;
 	const context = {
 		get model() {
 			return model;
@@ -153,6 +154,9 @@ function routingControls(
 			notify(message: string, type?: string) {
 				notifications.push({ message, type });
 			},
+		},
+		abort() {
+			abortCalls++;
 		},
 	} as unknown as ExtensionContext;
 	const emit = async (event: string, payload: unknown): Promise<void> => {
@@ -206,6 +210,9 @@ function routingControls(
 		},
 		get thinkingLevel() {
 			return thinkingLevel;
+		},
+		get abortCalls() {
+			return abortCalls;
 		},
 		setModelAllowed(value: boolean) {
 			modelSetAllowed = value;
@@ -729,6 +736,7 @@ test("routes only at agent boundaries and warns once per managed run", async () 
 			message: "Codex account reached usage limit. Run /codex-accounts next to switch accounts.",
 			type: "warning",
 		}]);
+		assert.equal(controls.abortCalls, 1);
 
 		await controls.emit("agent_settled", { type: "agent_settled" });
 		await controls.emit("after_provider_response", { type: "after_provider_response", status: 429 });
@@ -737,6 +745,7 @@ test("routes only at agent boundaries and warns once per managed run", async () 
 		assert.equal(controls.modelSetCalls.length, 1);
 		assert.equal(controls.notifications.length, 2);
 		assert.equal(controls.notifications[1]?.message, controls.notifications[0]?.message);
+		assert.equal(controls.abortCalls, 2);
 
 		const unmanaged = routingControls({ ...MODEL, provider: "other-provider" });
 		registerRouting(unmanaged);
@@ -744,6 +753,7 @@ test("routes only at agent boundaries and warns once per managed run", async () 
 		await unmanaged.emit("before_agent_start", { type: "before_agent_start" });
 		await unmanaged.emit("after_provider_response", { type: "after_provider_response", status: 429 });
 		assert.equal(unmanaged.notifications.length, 0);
+		assert.equal(unmanaged.abortCalls, 0);
 	});
 });
 

@@ -617,6 +617,7 @@ export function registerCodexAccounts(
 		) {
 			rateLimitWarned = true;
 			ctx.ui.notify(RATE_LIMIT_MESSAGE, "warning");
+			ctx.abort();
 		}
 	});
 	pi.registerCommand("codex-accounts", {
