@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import {
 	createAssistantMessageEventStream,
@@ -14,10 +15,35 @@ import {
 	type Provider,
 } from "@earendil-works/pi-ai";
 
+import { fetchCodexUsage, type CodexAllowanceWindow } from "./codex-usage.ts";
+
 const NATIVE_PROVIDER_ID = "openai-codex";
 const ALIAS_PREFIX = `${NATIVE_PROVIDER_ID}-account-`;
 const FIRST_ALIAS_SLOT = 2;
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const SNAPSHOT_FILE = "codex-accounts.json";
 type CodexProvider = Provider<"openai-codex-responses">;
+
+export interface CodexAccountSnapshot {
+	accountId: string;
+	allowance: number;
+	windows: CodexAllowanceWindow[];
+	fetchedAt: number;
+}
+
+export interface CodexAccountState {
+	providerId: string;
+	accountId: string;
+	allowance: number | undefined;
+	available: boolean;
+}
+
+export interface CodexAccountsOptions {
+	fetch?: typeof fetch;
+	now?: () => number;
+	setInterval?: typeof setInterval;
+	clearInterval?: typeof clearInterval;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -40,6 +66,32 @@ function aliasSlot(providerId: string): number | undefined {
 	return Number.isInteger(slot) && slot >= FIRST_ALIAS_SLOT ? slot : undefined;
 }
 
+function validPercent(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
+function validResetAt(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function snapshotOf(value: unknown): CodexAccountSnapshot | undefined {
+	if (!isRecord(value)) return undefined;
+	const accountId = accountIdOf(value);
+	if (!accountId || !validPercent(value.allowance) || !validResetAt(value.fetchedAt)) {
+		return undefined;
+	}
+	if (!Array.isArray(value.windows)) return undefined;
+
+	const windows: CodexAllowanceWindow[] = [];
+	for (const window of value.windows) {
+		if (!isRecord(window) || !validPercent(window.remainingPercent) || !validResetAt(window.resetAt)) {
+			return undefined;
+		}
+		windows.push({ remainingPercent: window.remainingPercent, resetAt: window.resetAt });
+	}
+	return { accountId, allowance: value.allowance, windows, fetchedAt: value.fetchedAt };
+}
+
 function readStoredCodexAccounts(): Map<string, string> {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(join(getAgentDir(), "auth.json"), "utf8"));
@@ -54,6 +106,67 @@ function readStoredCodexAccounts(): Map<string, string> {
 	} catch {
 		return new Map();
 	}
+}
+
+function readUsageSnapshots(): Record<string, CodexAccountSnapshot> {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(getAgentDir(), SNAPSHOT_FILE), "utf8"));
+		if (!isRecord(parsed) || !isRecord(parsed.accounts)) return {};
+
+		const snapshots: Record<string, CodexAccountSnapshot> = {};
+		for (const [providerId, value] of Object.entries(parsed.accounts)) {
+			const snapshot = isManagedProvider(providerId) ? snapshotOf(value) : undefined;
+			if (snapshot) snapshots[providerId] = snapshot;
+		}
+		return snapshots;
+	} catch {
+		return {};
+	}
+}
+
+function writeUsageSnapshots(snapshots: Record<string, CodexAccountSnapshot>): Promise<void> {
+	return writeFile(join(getAgentDir(), SNAPSHOT_FILE), JSON.stringify({ accounts: snapshots }, null, 2), {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+}
+
+function compareProviderIds(left: string, right: string): number {
+	const leftSlot = left === NATIVE_PROVIDER_ID ? 1 : aliasSlot(left) ?? Number.MAX_SAFE_INTEGER;
+	const rightSlot = right === NATIVE_PROVIDER_ID ? 1 : aliasSlot(right) ?? Number.MAX_SAFE_INTEGER;
+	return leftSlot - rightSlot || left.localeCompare(right);
+}
+
+export function rankCodexAccounts(
+	accounts: ReadonlyMap<string, string>,
+	snapshots: Readonly<Record<string, CodexAccountSnapshot>>,
+	currentProviderId?: string,
+	now = Date.now(),
+): CodexAccountState[] {
+	return [...accounts]
+		.filter(([providerId]) => isManagedProvider(providerId))
+		.map(([providerId, accountId]) => {
+			const snapshot = snapshots[providerId];
+			const windows = snapshot?.accountId === accountId
+				? snapshot.windows.filter((window) => window.resetAt > now)
+				: [];
+			const allowance = windows.length > 0
+				? Math.min(...windows.map((window) => window.remainingPercent))
+				: undefined;
+			return { providerId, accountId, allowance, available: allowance === undefined || allowance > 0 };
+		})
+		.sort((left, right) => {
+			if (left.available !== right.available) return left.available ? -1 : 1;
+			const leftMeasured = left.allowance !== undefined;
+			const rightMeasured = right.allowance !== undefined;
+			if (leftMeasured !== rightMeasured) return leftMeasured ? -1 : 1;
+			if (leftMeasured && rightMeasured && left.allowance !== right.allowance) {
+				return right.allowance! - left.allowance!;
+			}
+			if (leftMeasured && rightMeasured && left.providerId === currentProviderId) return -1;
+			if (leftMeasured && rightMeasured && right.providerId === currentProviderId) return 1;
+			return compareProviderIds(left.providerId, right.providerId);
+		});
 }
 
 function rebindModel(model: Model<"openai-codex-responses">, provider: string): Model<"openai-codex-responses"> {
@@ -259,10 +372,18 @@ function wrapProvider(
 export function registerCodexAccounts(
 	pi: ExtensionAPI,
 	nativeProvider: CodexProvider = openaiCodexProvider(),
+	options: CodexAccountsOptions = {},
 ): void {
 	const storedAccounts = readStoredCodexAccounts();
 	const inFlightAccounts = new Map<string, string>();
 	const registeredSlots = new Set<number>();
+	const now = options.now ?? Date.now;
+	const fetcher = options.fetch ?? fetch;
+	const schedule = options.setInterval ?? setInterval;
+	const cancelSchedule = options.clearInterval ?? clearInterval;
+	let snapshots = readUsageSnapshots();
+	let refreshing = false;
+	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
 	const registerAlias = (slot: number) => {
 		if (registeredSlots.has(slot)) return;
@@ -282,6 +403,59 @@ export function registerCodexAccounts(
 		if (slot !== undefined) registeredSlots.add(slot);
 		registerNextEmptySlot();
 	}
+
+	const refresh = async (ctx: ExtensionContext): Promise<void> => {
+		if (refreshing) return;
+		refreshing = true;
+		try {
+			const accounts = readStoredCodexAccounts();
+			let changed = false;
+			for (const [providerId, snapshot] of Object.entries(snapshots)) {
+				if (accounts.get(providerId) !== snapshot.accountId) {
+					delete snapshots[providerId];
+					changed = true;
+				}
+			}
+
+			const updates = await Promise.all([...accounts.keys()].map(async (providerId) => {
+				try {
+					const auth = await ctx.modelRegistry.getProviderAuth(providerId);
+					const accountId = readStoredCodexAccounts().get(providerId);
+					if (!accountId || typeof auth?.auth.apiKey !== "string" || auth.auth.apiKey.length === 0) {
+						return undefined;
+					}
+					const usage = await fetchCodexUsage(auth.auth.apiKey, accountId, fetcher, now());
+					if (!usage) return undefined;
+					return [providerId, { accountId, ...usage, fetchedAt: now() }] as const;
+				} catch {
+					return undefined;
+				}
+			}));
+
+			for (const update of updates) {
+				if (!update) continue;
+				snapshots[update[0]] = update[1];
+				changed = true;
+			}
+			if (changed) await writeUsageSnapshots(snapshots);
+		} catch {
+			// Background telemetry must never interrupt Pi.
+		} finally {
+			refreshing = false;
+		}
+	};
+
+	pi.on("session_start", (_event, ctx) => {
+		void refresh(ctx);
+		if (refreshTimer === undefined) {
+			refreshTimer = schedule(() => void refresh(ctx), REFRESH_INTERVAL_MS);
+		}
+	});
+	pi.on("session_shutdown", () => {
+		if (refreshTimer === undefined) return;
+		cancelSchedule(refreshTimer);
+		refreshTimer = undefined;
+	});
 
 	pi.registerProvider(wrapProvider(nativeProvider, NATIVE_PROVIDER_ID, onLogin, inFlightAccounts));
 

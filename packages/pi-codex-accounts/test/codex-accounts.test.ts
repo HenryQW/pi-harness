@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { ModelRuntime, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createAssistantMessageEventStream,
 	type AssistantMessage,
@@ -14,7 +14,7 @@ import {
 	type Provider,
 } from "@earendil-works/pi-ai";
 
-import { registerCodexAccounts } from "../extensions/codex-accounts.ts";
+import { rankCodexAccounts, registerCodexAccounts } from "../extensions/codex-accounts.ts";
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const ALIAS_PROVIDER_ID = "openai-codex-account-2";
@@ -94,11 +94,17 @@ function fakeNativeProvider(
 	};
 }
 
+type RecordedHandler = (event: unknown, ctx: ExtensionContext) => void | Promise<void>;
+
 function fakePi(
 	providers: Provider<"openai-codex-responses">[],
 	onRegister?: (provider: Provider<"openai-codex-responses">) => void,
+	handlers?: Map<string, RecordedHandler>,
 ): ExtensionAPI {
 	return {
+		on(event: string, handler: RecordedHandler) {
+			handlers?.set(event, handler);
+		},
 		registerProvider(provider: Provider<"openai-codex-responses">) {
 			providers.push(provider);
 			onRegister?.(provider);
@@ -129,6 +135,14 @@ function loginInteraction() {
 
 async function settleAuthJson(): Promise<void> {
 	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
+	for (let attempt = 0; attempt < 50; attempt++) {
+		if (await predicate()) return;
+		await settleAuthJson();
+	}
+	throw new Error("Timed out waiting for background work");
 }
 
 async function withAuthDir<T>(callback: (authPath: string) => Promise<T>): Promise<T> {
@@ -304,4 +318,160 @@ test("rebinding preserves Codex tool-call item IDs across A2 to A3 and A1 turns"
 			);
 		}
 	});
+});
+
+test("refreshes credential-free allowance snapshots concurrently and retains stale data", async () => {
+	await withAuthDir(async (authPath) => {
+		const now = 1_800_000_000_000;
+		const future = (now + 60_000) / 1000;
+		const expired = (now - 60_000) / 1000;
+		await writeFile(authPath, JSON.stringify({
+			"openai-codex": credential("account-1"),
+			"openai-codex-account-2": credential("account-2"),
+			"openai-codex-account-3": credential("account-3"),
+		}));
+
+		const providers: Provider<"openai-codex-responses">[] = [];
+		const handlers = new Map<string, RecordedHandler>();
+		const requests: { input: string; headers: Headers; accountId: string; resolve: (response: Response) => void }[] = [];
+		const usageFetch: typeof fetch = async (input, init) => {
+			const headers = new Headers(init?.headers);
+			const accountId = headers.get("chatgpt-account-id");
+			if (!accountId) throw new Error("missing account header");
+			return new Promise<Response>((resolve) => {
+				requests.push({ input: input.toString(), headers, accountId, resolve });
+			});
+		};
+		let refresh: (() => void) | undefined;
+		let cleared: unknown;
+		const schedule = ((callback: () => void, delay: number) => {
+			assert.equal(delay, 5 * 60 * 1000);
+			refresh = callback;
+			return 1;
+		}) as typeof setInterval;
+		const cancelSchedule = ((timer: unknown) => {
+			cleared = timer;
+		}) as typeof clearInterval;
+		const context = {
+			modelRegistry: {
+				async getProviderAuth(providerId: string) {
+					return { auth: { apiKey: `current-${providerId}` } };
+				},
+			},
+		} as unknown as ExtensionContext;
+
+		registerCodexAccounts(fakePi(providers, undefined, handlers), fakeNativeProvider(() => credential("account-4")), {
+			fetch: usageFetch,
+			now: () => now,
+			setInterval: schedule,
+			clearInterval: cancelSchedule,
+		});
+		const start = handlers.get("session_start");
+		assert.ok(start);
+		assert.equal(start({ type: "session_start", reason: "startup" }, context), undefined);
+		await waitFor(() => requests.length === 3);
+
+		assert.equal(refresh !== undefined, true);
+		for (const request of requests) {
+			assert.equal(request.input, "https://chatgpt.com/backend-api/wham/usage");
+			assert.equal(request.headers.get("authorization"), `Bearer current-openai-codex${request.accountId === "account-1" ? "" : `-account-${request.accountId.slice(-1)}`}`);
+			assert.equal(request.headers.get("chatgpt-account-id"), request.accountId);
+		}
+
+		requests.find((request) => request.accountId === "account-1")?.resolve(new Response(JSON.stringify({
+			rate_limit: {
+				primary_window: { used_percent: 20, reset_at: future },
+				expired_window: { remaining_percent: 0, reset_at: expired },
+			},
+		}), { status: 200 }));
+		requests.find((request) => request.accountId === "account-2")?.resolve(new Response(JSON.stringify({
+			rate_limit: { any_window: { remaining_percent: 45, reset_at: future } },
+		}), { status: 200 }));
+		requests.find((request) => request.accountId === "account-3")?.resolve(new Response(JSON.stringify({
+			rate_limit: { malformed_window: { used_percent: "bad", reset_at: future } },
+		}), { status: 200 }));
+
+		const cachePath = join(dirname(authPath), "codex-accounts.json");
+		await waitFor(async () => {
+			try {
+				const cache = JSON.parse(await readFile(cachePath, "utf8"));
+				return cache.accounts?.[NATIVE_PROVIDER_ID]?.allowance === 80 &&
+					cache.accounts?.[ALIAS_PROVIDER_ID]?.allowance === 45;
+			} catch {
+				return false;
+			}
+		});
+		const firstCache = await readFile(cachePath, "utf8");
+		assert.ok(!firstCache.includes("current-openai-codex"));
+		assert.ok(!firstCache.includes("access-account-1"));
+		assert.ok(!firstCache.includes("refresh-account-1"));
+		assert.equal(JSON.parse(firstCache).accounts["openai-codex-account-3"], undefined);
+
+		refresh?.();
+		await waitFor(() => requests.length === 6);
+		for (const request of requests.slice(3)) {
+			if (request.accountId === "account-1") request.resolve(new Response("", { status: 500 }));
+			else if (request.accountId === "account-2") request.resolve(new Response(JSON.stringify({
+				rate_limit: { any_window: { used_percent: 10, reset_at: future } },
+			}), { status: 200 }));
+			else request.resolve(new Response(JSON.stringify({
+				rate_limit: { malformed_window: { remaining_percent: 101, reset_at: future } },
+			}), { status: 200 }));
+		}
+		await waitFor(async () => {
+			try {
+				const cache = JSON.parse(await readFile(cachePath, "utf8"));
+				return cache.accounts?.[ALIAS_PROVIDER_ID]?.allowance === 90;
+			} catch {
+				return false;
+			}
+		});
+		const secondCache = JSON.parse(await readFile(cachePath, "utf8"));
+		assert.equal(secondCache.accounts[NATIVE_PROVIDER_ID].allowance, 80);
+		assert.equal(secondCache.accounts[ALIAS_PROVIDER_ID].allowance, 90);
+
+		const shutdown = handlers.get("session_shutdown");
+		assert.ok(shutdown);
+		shutdown({ type: "session_shutdown", reason: "quit" }, context);
+		assert.equal(cleared, 1);
+	});
+});
+
+test("ranks measured allowances ahead of unknown accounts and excludes zero allowance", () => {
+	const accounts = new Map([
+		[NATIVE_PROVIDER_ID, "account-1"],
+		["openai-codex-account-2", "account-2"],
+		["openai-codex-account-3", "account-3"],
+		["openai-codex-account-4", "account-4"],
+		["openai-codex-account-5", "account-5"],
+	]);
+	const snapshots = {
+		[NATIVE_PROVIDER_ID]: { accountId: "account-1", allowance: 0, windows: [{ remainingPercent: 0, resetAt: 2 }], fetchedAt: 1 },
+		"openai-codex-account-2": { accountId: "account-2", allowance: 60, windows: [{ remainingPercent: 60, resetAt: 2 }], fetchedAt: 1 },
+		"openai-codex-account-3": { accountId: "account-3", allowance: 60, windows: [{ remainingPercent: 60, resetAt: 2 }], fetchedAt: 1 },
+		"openai-codex-account-4": { accountId: "account-4", allowance: 0, windows: [{ remainingPercent: 0, resetAt: 1 }], fetchedAt: 1 },
+		"openai-codex-account-5": { accountId: "account-5", allowance: 30, windows: [{ remainingPercent: 30, resetAt: 2 }], fetchedAt: 1 },
+	};
+
+	assert.deepEqual(
+		rankCodexAccounts(accounts, snapshots, "openai-codex-account-3", 1)
+			.map(({ providerId, allowance, available }) => [providerId, allowance, available]),
+		[
+			["openai-codex-account-3", 60, true],
+			["openai-codex-account-2", 60, true],
+			["openai-codex-account-5", 30, true],
+			["openai-codex-account-4", undefined, true],
+			[NATIVE_PROVIDER_ID, 0, false],
+		],
+	);
+	assert.deepEqual(
+		rankCodexAccounts(accounts, snapshots, undefined, 1).map(({ providerId }) => providerId),
+		[
+			"openai-codex-account-2",
+			"openai-codex-account-3",
+			"openai-codex-account-5",
+			"openai-codex-account-4",
+			NATIVE_PROVIDER_ID,
+		],
+	);
 });
