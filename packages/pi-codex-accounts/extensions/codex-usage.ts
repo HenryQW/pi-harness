@@ -61,12 +61,14 @@ export async function fetchCodexUsage(
 	accountId: string,
 	fetcher: typeof fetch = fetch,
 	now = Date.now(),
+	signal?: AbortSignal,
 ): Promise<CodexUsage | undefined> {
 	const response = await fetcher(USAGE_URL, {
 		headers: {
 			Authorization: `Bearer ${accessToken}`,
 			"ChatGPT-Account-Id": accountId,
 		},
+		signal,
 	});
 	if (!response.ok) throw new Error(`Codex usage request failed (${response.status})`);
 	return normalizeCodexUsage(await response.json(), now);

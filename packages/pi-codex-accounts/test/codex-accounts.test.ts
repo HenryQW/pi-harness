@@ -325,21 +325,28 @@ test("refreshes credential-free allowance snapshots concurrently and retains sta
 		const now = 1_800_000_000_000;
 		const future = (now + 60_000) / 1000;
 		const expired = (now - 60_000) / 1000;
-		await writeFile(authPath, JSON.stringify({
+		const storedAuth = {
 			"openai-codex": credential("account-1"),
 			"openai-codex-account-2": credential("account-2"),
 			"openai-codex-account-3": credential("account-3"),
-		}));
+		};
+		await writeFile(authPath, JSON.stringify(storedAuth));
 
 		const providers: Provider<"openai-codex-responses">[] = [];
 		const handlers = new Map<string, RecordedHandler>();
-		const requests: { input: string; headers: Headers; accountId: string; resolve: (response: Response) => void }[] = [];
+		const requests: {
+			input: string;
+			headers: Headers;
+			accountId: string;
+			signal: AbortSignal | null | undefined;
+			resolve: (response: Response) => void;
+		}[] = [];
 		const usageFetch: typeof fetch = async (input, init) => {
 			const headers = new Headers(init?.headers);
 			const accountId = headers.get("chatgpt-account-id");
 			if (!accountId) throw new Error("missing account header");
 			return new Promise<Response>((resolve) => {
-				requests.push({ input: input.toString(), headers, accountId, resolve });
+				requests.push({ input: input.toString(), headers, accountId, signal: init?.signal, resolve });
 			});
 		};
 		let refresh: (() => void) | undefined;
@@ -430,10 +437,28 @@ test("refreshes credential-free allowance snapshots concurrently and retains sta
 		assert.equal(secondCache.accounts[NATIVE_PROVIDER_ID].allowance, 80);
 		assert.equal(secondCache.accounts[ALIAS_PROVIDER_ID].allowance, 90);
 
+		await writeFile(authPath, "{");
+		refresh?.();
+		await settleAuthJson();
+		assert.equal(requests.length, 6);
+		assert.deepEqual(JSON.parse(await readFile(cachePath, "utf8")), secondCache);
+		await writeFile(authPath, JSON.stringify(storedAuth));
+
+		refresh?.();
+		await waitFor(() => requests.length === 9);
 		const shutdown = handlers.get("session_shutdown");
 		assert.ok(shutdown);
 		shutdown({ type: "session_shutdown", reason: "quit" }, context);
 		assert.equal(cleared, 1);
+		assert.ok(requests.slice(6).every((request) => request.signal?.aborted));
+		for (const request of requests.slice(6)) {
+			request.resolve(new Response(JSON.stringify({
+				rate_limit: { any_window: { remaining_percent: 1, reset_at: future } },
+			}), { status: 200 }));
+		}
+		await settleAuthJson();
+		await settleAuthJson();
+		assert.deepEqual(JSON.parse(await readFile(cachePath, "utf8")), secondCache);
 	});
 });
 

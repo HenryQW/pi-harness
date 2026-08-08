@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -92,7 +93,7 @@ function snapshotOf(value: unknown): CodexAccountSnapshot | undefined {
 	return { accountId, allowance: value.allowance, windows, fetchedAt: value.fetchedAt };
 }
 
-function readStoredCodexAccounts(): Map<string, string> {
+function readStoredCodexAccounts(): Map<string, string> | undefined {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(join(getAgentDir(), "auth.json"), "utf8"));
 		if (!isRecord(parsed)) return new Map();
@@ -104,7 +105,7 @@ function readStoredCodexAccounts(): Map<string, string> {
 		}
 		return accounts;
 	} catch {
-		return new Map();
+		return undefined;
 	}
 }
 
@@ -124,11 +125,21 @@ function readUsageSnapshots(): Record<string, CodexAccountSnapshot> {
 	}
 }
 
-function writeUsageSnapshots(snapshots: Record<string, CodexAccountSnapshot>): Promise<void> {
-	return writeFile(join(getAgentDir(), SNAPSHOT_FILE), JSON.stringify({ accounts: snapshots }, null, 2), {
+async function writeUsageSnapshots(
+	snapshots: Record<string, CodexAccountSnapshot>,
+	signal: AbortSignal,
+): Promise<void> {
+	const path = join(getAgentDir(), SNAPSHOT_FILE);
+	const temporaryPath = `${path}.${randomUUID()}.tmp`;
+	await writeFile(temporaryPath, JSON.stringify({ accounts: snapshots }, null, 2), {
 		encoding: "utf8",
 		mode: 0o600,
 	});
+	if (signal.aborted) {
+		await rm(temporaryPath, { force: true });
+		return;
+	}
+	await rename(temporaryPath, path);
 }
 
 function compareProviderIds(left: string, right: string): number {
@@ -257,7 +268,7 @@ function reserveLoginUntilPersisted(
 		reconciled = true;
 		signal.removeEventListener("abort", scheduleReconcile);
 		inFlightAccounts.delete(providerId);
-		if (readStoredCodexAccounts().get(providerId) === accountId) onLogin(providerId);
+		if (readStoredCodexAccounts()?.get(providerId) === accountId) onLogin(providerId);
 	};
 	const scheduleReconcile = () => setTimeout(reconcile, 0);
 	signal.addEventListener("abort", scheduleReconcile, { once: true });
@@ -290,7 +301,7 @@ function wrapProvider(
 			if (!accountId) throw new Error("OpenAI Codex login returned no account identity");
 
 			for (const [existingProvider, existingAccountId] of [
-				...readStoredCodexAccounts(),
+				...(readStoredCodexAccounts() ?? new Map()),
 				...inFlightAccounts,
 			]) {
 				if (existingProvider !== providerId && existingAccountId === accountId) {
@@ -374,7 +385,7 @@ export function registerCodexAccounts(
 	nativeProvider: CodexProvider = openaiCodexProvider(),
 	options: CodexAccountsOptions = {},
 ): void {
-	const storedAccounts = readStoredCodexAccounts();
+	const storedAccounts = readStoredCodexAccounts() ?? new Map();
 	const inFlightAccounts = new Map<string, string>();
 	const registeredSlots = new Set<number>();
 	const now = options.now ?? Date.now;
@@ -382,7 +393,7 @@ export function registerCodexAccounts(
 	const schedule = options.setInterval ?? setInterval;
 	const cancelSchedule = options.clearInterval ?? clearInterval;
 	let snapshots = readUsageSnapshots();
-	let refreshing = false;
+	let activeRefresh: AbortController | undefined;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
 	const registerAlias = (slot: number) => {
@@ -405,10 +416,12 @@ export function registerCodexAccounts(
 	}
 
 	const refresh = async (ctx: ExtensionContext): Promise<void> => {
-		if (refreshing) return;
-		refreshing = true;
+		if (activeRefresh) return;
+		const controller = new AbortController();
+		activeRefresh = controller;
 		try {
 			const accounts = readStoredCodexAccounts();
+			if (!accounts) return;
 			let changed = false;
 			for (const [providerId, snapshot] of Object.entries(snapshots)) {
 				if (accounts.get(providerId) !== snapshot.accountId) {
@@ -420,28 +433,29 @@ export function registerCodexAccounts(
 			const updates = await Promise.all([...accounts.keys()].map(async (providerId) => {
 				try {
 					const auth = await ctx.modelRegistry.getProviderAuth(providerId);
-					const accountId = readStoredCodexAccounts().get(providerId);
+					const accountId = readStoredCodexAccounts()?.get(providerId);
 					if (!accountId || typeof auth?.auth.apiKey !== "string" || auth.auth.apiKey.length === 0) {
 						return undefined;
 					}
-					const usage = await fetchCodexUsage(auth.auth.apiKey, accountId, fetcher, now());
+					const usage = await fetchCodexUsage(auth.auth.apiKey, accountId, fetcher, now(), controller.signal);
 					if (!usage) return undefined;
 					return [providerId, { accountId, ...usage, fetchedAt: now() }] as const;
 				} catch {
 					return undefined;
 				}
 			}));
+			if (activeRefresh !== controller || controller.signal.aborted) return;
 
 			for (const update of updates) {
 				if (!update) continue;
 				snapshots[update[0]] = update[1];
 				changed = true;
 			}
-			if (changed) await writeUsageSnapshots(snapshots);
+			if (changed) await writeUsageSnapshots(snapshots, controller.signal);
 		} catch {
 			// Background telemetry must never interrupt Pi.
 		} finally {
-			refreshing = false;
+			if (activeRefresh === controller) activeRefresh = undefined;
 		}
 	};
 
@@ -452,9 +466,12 @@ export function registerCodexAccounts(
 		}
 	});
 	pi.on("session_shutdown", () => {
-		if (refreshTimer === undefined) return;
-		cancelSchedule(refreshTimer);
-		refreshTimer = undefined;
+		if (refreshTimer !== undefined) {
+			cancelSchedule(refreshTimer);
+			refreshTimer = undefined;
+		}
+		activeRefresh?.abort();
+		activeRefresh = undefined;
 	});
 
 	pi.registerProvider(wrapProvider(nativeProvider, NATIVE_PROVIDER_ID, onLogin, inFlightAccounts));
