@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, renameSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { readFileSync, renameSync, statSync } from "node:fs";
+import { open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -16,16 +16,19 @@ import {
 	type Provider,
 } from "@earendil-works/pi-ai";
 
-import { fetchCodexUsage, type CodexAllowanceWindow } from "./codex-usage.ts";
+import { fetchCodexUsage, type CodexAllowanceWindow, type CodexUsage } from "./codex-usage.ts";
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const ALIAS_PREFIX = `${NATIVE_PROVIDER_ID}-account-`;
 const FIRST_ALIAS_SLOT = 2;
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const USAGE_REQUEST_TIMEOUT_MS = 30 * 1000;
+const SNAPSHOT_LOCK_STALE_MS = 60 * 1000;
 const SNAPSHOT_FILE = "codex-accounts.json";
 const ROUTING_MODE_ENTRY = "codex-accounts-mode";
 const STATUS_KEY = "codex-accounts";
 const RATE_LIMIT_MESSAGE = "Codex account reached usage limit. Run /codex-accounts next to switch accounts.";
+const ALL_ACCOUNTS_EXHAUSTED_MESSAGE = "All Codex accounts are exhausted. Wait for a quota reset before trying again.";
 type CodexProvider = Provider<"openai-codex-responses">;
 type RoutingMode = "auto" | "manual";
 
@@ -49,6 +52,7 @@ export interface CodexAccountsOptions {
 	setInterval?: typeof setInterval;
 	clearInterval?: typeof clearInterval;
 	setTimeout?: typeof setTimeout;
+	clearTimeout?: typeof clearTimeout;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -134,23 +138,122 @@ function readUsageSnapshots(): Record<string, CodexAccountSnapshot> {
 	}
 }
 
+async function acquireSnapshotLock(path: string): Promise<{ release: () => Promise<void> } | undefined> {
+	const lockPath = `${path}.lock`;
+	const token = randomUUID();
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	try {
+		handle = await open(lockPath, "wx");
+		await handle.writeFile(token, "utf8");
+	} catch (error) {
+		await handle?.close();
+		if (handle) await rm(lockPath, { force: true });
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		try {
+			if (Date.now() - statSync(lockPath).mtimeMs > SNAPSHOT_LOCK_STALE_MS) {
+				await rm(lockPath, { force: true });
+			}
+		} catch {
+			// The other writer may have released the lock between stat and cleanup.
+		}
+		// ponytail: skip contended writes; the next refresh retries instead of waiting cross-process.
+		return undefined;
+	}
+
+	const lockHandle = handle;
+	return {
+		release: async () => {
+			await lockHandle.close();
+			try {
+				if (readFileSync(lockPath, "utf8") === token) await rm(lockPath, { force: true });
+			} catch {
+				// The lock was already reclaimed or removed.
+			}
+		},
+	};
+}
+
 async function writeUsageSnapshots(
-	snapshots: Record<string, CodexAccountSnapshot>,
+	accounts: ReadonlyMap<string, string>,
+	updates: readonly (readonly [string, CodexAccountSnapshot])[],
 	signal: AbortSignal,
 	canCommit: () => boolean,
-): Promise<boolean> {
+): Promise<Record<string, CodexAccountSnapshot> | undefined> {
 	const path = join(getAgentDir(), SNAPSHOT_FILE);
+	if (signal.aborted || !canCommit()) return undefined;
+	const lock = await acquireSnapshotLock(path);
+	if (!lock) return undefined;
+
 	const temporaryPath = `${path}.${randomUUID()}.tmp`;
-	await writeFile(temporaryPath, JSON.stringify({ accounts: snapshots }, null, 2), {
-		encoding: "utf8",
-		mode: 0o600,
-	});
-	if (signal.aborted || !canCommit()) {
+	try {
+		if (signal.aborted || !canCommit()) return undefined;
+		const snapshots = readUsageSnapshots();
+		let changed = false;
+		for (const [providerId, snapshot] of Object.entries(snapshots)) {
+			if (accounts.get(providerId) !== snapshot.accountId) {
+				delete snapshots[providerId];
+				changed = true;
+			}
+		}
+		for (const [providerId, snapshot] of updates) {
+			const previous = snapshots[providerId];
+			if (!previous || snapshot.fetchedAt >= previous.fetchedAt) {
+				snapshots[providerId] = snapshot;
+				changed = true;
+			}
+		}
+		if (!changed) return snapshots;
+
+		await writeFile(temporaryPath, JSON.stringify({ accounts: snapshots }, null, 2), {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		if (signal.aborted || !canCommit()) {
+			await rm(temporaryPath, { force: true });
+			return undefined;
+		}
+		renameSync(temporaryPath, path);
+		return snapshots;
+	} finally {
 		await rm(temporaryPath, { force: true });
-		return false;
+		await lock.release();
 	}
-	renameSync(temporaryPath, path);
-	return true;
+}
+
+async function fetchUsageWithTimeout(
+	accessToken: string,
+	accountId: string,
+	fetcher: typeof fetch,
+	now: () => number,
+	parentSignal: AbortSignal,
+	schedule: typeof setTimeout,
+	cancelSchedule: typeof clearTimeout,
+): Promise<CodexUsage | undefined> {
+	if (parentSignal.aborted) return undefined;
+	const requestController = new AbortController();
+	let resolveResult!: (usage: CodexUsage | undefined) => void;
+	let settled = false;
+	const result = new Promise<CodexUsage | undefined>((resolve) => {
+		resolveResult = resolve;
+	});
+	const finish = (usage: CodexUsage | undefined): void => {
+		if (settled) return;
+		settled = true;
+		resolveResult(usage);
+	};
+	const abort = (): void => {
+		requestController.abort();
+		finish(undefined);
+	};
+	parentSignal.addEventListener("abort", abort, { once: true });
+	const timeout = schedule(abort, USAGE_REQUEST_TIMEOUT_MS);
+	void fetchCodexUsage(accessToken, accountId, fetcher, now(), requestController.signal).then(finish, () => finish(undefined));
+	try {
+		return await result;
+	} finally {
+		cancelSchedule(timeout);
+		parentSignal.removeEventListener("abort", abort);
+	}
 }
 
 function compareProviderIds(left: string, right: string): number {
@@ -419,11 +522,13 @@ export function registerCodexAccounts(
 	const storedAccounts = readStoredCodexAccounts() ?? new Map();
 	const inFlightAccounts = new Map<string, string>();
 	const registeredSlots = new Set<number>();
+	let emptyAliasSlot: number | undefined;
 	const now = options.now ?? Date.now;
 	const fetcher = options.fetch ?? fetch;
 	const schedule = options.setInterval ?? setInterval;
 	const cancelSchedule = options.clearInterval ?? clearInterval;
 	const defer = options.setTimeout ?? setTimeout;
+	const cancelDefer = options.clearTimeout ?? clearTimeout;
 	let snapshots = readUsageSnapshots();
 	let activeRefresh: AbortController | undefined;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -459,10 +564,6 @@ export function registerCodexAccounts(
 		updateStatus(ctx);
 	};
 
-	const bestAvailable = (currentProviderId?: string): CodexAccountState | undefined =>
-		rankCodexAccounts(readStoredCodexAccounts() ?? new Map(), snapshots, currentProviderId, now())
-			.find((account) => account.available);
-
 	const switchProvider = async (ctx: ExtensionContext, providerId: string): Promise<boolean> => {
 		const model = ctx.model;
 		if (!model || !isManagedProvider(model.provider) || model.provider === providerId) return false;
@@ -485,15 +586,18 @@ export function registerCodexAccounts(
 	};
 
 	function registerNextEmptySlot(): void {
+		if (emptyAliasSlot !== undefined) return;
 		let slot = FIRST_ALIAS_SLOT;
 		while (registeredSlots.has(slot)) slot++;
 		registerAlias(slot);
+		emptyAliasSlot = slot;
 	}
 
 	function onLogin(providerId: string): void {
-		const slot = aliasSlot(providerId);
-		if (slot !== undefined) registeredSlots.add(slot);
-		registerNextEmptySlot();
+		if (aliasSlot(providerId) === emptyAliasSlot) {
+			emptyAliasSlot = undefined;
+			registerNextEmptySlot();
+		}
 	}
 
 	const refresh = async (ctx: ExtensionContext, generation: number): Promise<void> => {
@@ -508,14 +612,6 @@ export function registerCodexAccounts(
 		try {
 			const accounts = readStoredCodexAccounts();
 			if (!accounts || !isCurrent()) return;
-			const nextSnapshots = { ...snapshots };
-			let changed = false;
-			for (const [providerId, snapshot] of Object.entries(nextSnapshots)) {
-				if (accounts.get(providerId) !== snapshot.accountId) {
-					delete nextSnapshots[providerId];
-					changed = true;
-				}
-			}
 
 			const updates = await Promise.all([...accounts.keys()].map(async (providerId) => {
 				try {
@@ -530,7 +626,15 @@ export function registerCodexAccounts(
 					) {
 						return undefined;
 					}
-					const usage = await fetchCodexUsage(auth.auth.apiKey, accountId, fetcher, now(), controller.signal);
+					const usage = await fetchUsageWithTimeout(
+						auth.auth.apiKey,
+						accountId,
+						fetcher,
+						now,
+						controller.signal,
+						defer,
+						cancelDefer,
+					);
 					if (!usage) return undefined;
 					return [providerId, { accountId, ...usage, fetchedAt: now() }] as const;
 				} catch {
@@ -538,13 +642,13 @@ export function registerCodexAccounts(
 				}
 			}));
 			if (!isCurrent()) return;
-
-			for (const update of updates) {
-				if (!update) continue;
-				nextSnapshots[update[0]] = update[1];
-				changed = true;
-			}
-			if (changed && await writeUsageSnapshots(nextSnapshots, controller.signal, isCurrent)) {
+			const nextSnapshots = await writeUsageSnapshots(
+				accounts,
+				updates.filter((update): update is readonly [string, CodexAccountSnapshot] => update !== undefined),
+				controller.signal,
+				isCurrent,
+			);
+			if (nextSnapshots && isCurrent()) {
 				snapshots = nextSnapshots;
 				updateStatus(ctx);
 			}
@@ -594,9 +698,22 @@ export function registerCodexAccounts(
 	pi.on("before_agent_start", async (_event, ctx) => {
 		runActive = true;
 		rateLimitWarned = false;
-		if (mode === "auto") {
-			const target = bestAvailable(ctx.model?.provider);
-			if (target) await switchProvider(ctx, target.providerId);
+		if (mode === "auto" && isManagedProvider(ctx.model?.provider ?? "")) {
+			const ranked = rankCodexAccounts(
+				readStoredCodexAccounts() ?? new Map(),
+				snapshots,
+				ctx.model?.provider,
+				now(),
+			);
+			const target = ranked.find((account) => account.available);
+			if (target) {
+				await switchProvider(ctx, target.providerId);
+			} else if (ranked.length > 0 && ranked.every((account) => account.allowance !== undefined && !account.available)) {
+				runActive = false;
+				ctx.ui.notify(ALL_ACCOUNTS_EXHAUSTED_MESSAGE, "warning");
+				ctx.abort();
+				return;
+			}
 		}
 		updateStatus(ctx);
 	});

@@ -366,6 +366,21 @@ test("successful numbered login exposes the following empty slot after Pi saves 
 	});
 });
 
+test("keeps one empty alias after the native account is authenticated", async () => {
+	await withAuthDir(async (authPath) => {
+		const providers: Provider<"openai-codex-responses">[] = [];
+		const runtime = await registerRuntime(authPath, providers, fakeNativeProvider(() => credential("account-1")));
+
+		await runtime.login(NATIVE_PROVIDER_ID, "oauth", loginInteraction());
+		await settleAuthJson();
+
+		assert.deepEqual(providers.map((provider) => provider.id), [
+			NATIVE_PROVIDER_ID,
+			ALIAS_PROVIDER_ID,
+		]);
+	});
+});
+
 test("keeps duplicate accounts reserved until Pi saves auth.json", async () => {
 	await withAuthDir(async (authPath) => {
 		await writeFile(authPath, JSON.stringify({ [ALIAS_PROVIDER_ID]: credential("account-old") }));
@@ -404,7 +419,8 @@ test("failed Pi auth.json save releases the reservation without publishing a slo
 
 		await runtime.login(ALIAS_PROVIDER_ID, "oauth", loginInteraction());
 		await settleAuthJson();
-		assert.ok(providers.some((provider) => provider.id === "openai-codex-account-4"));
+		assert.ok(providers.some((provider) => provider.id === "openai-codex-account-3"));
+		assert.ok(!providers.some((provider) => provider.id === "openai-codex-account-4"));
 	});
 });
 
@@ -594,6 +610,153 @@ test("refreshes credential-free allowance snapshots concurrently and retains sta
 		await settleAuthJson();
 		await settleAuthJson();
 		assert.deepEqual(JSON.parse(await readFile(cachePath, "utf8")), secondCache);
+	});
+});
+
+test("times out one usage request without blocking healthy accounts", async () => {
+	await withAuthDir(async (authPath) => {
+		const now = 1_800_000_000_000;
+		const future = (now + 60_000) / 1000;
+		await writeFile(authPath, JSON.stringify({
+			[NATIVE_PROVIDER_ID]: credential("account-1"),
+			[ALIAS_PROVIDER_ID]: credential("account-2"),
+		}));
+
+		const handlers = new Map<string, RecordedHandler>();
+		const deferred: (() => void)[] = [];
+		const timeoutCallbacks: (() => void)[] = [];
+		const requests: string[] = [];
+		const usageFetch: typeof fetch = async (_input, init) => {
+			const accountId = new Headers(init?.headers).get("chatgpt-account-id");
+			assert.ok(accountId);
+			requests.push(accountId);
+			if (accountId === "account-1") return new Promise<Response>(() => {});
+			return new Response(JSON.stringify({
+				rate_limit: { any_window: { remaining_percent: 70, reset_at: future } },
+			}), { status: 200 });
+		};
+		const setTimeoutMock = ((callback: () => void, delay: number) => {
+			if (delay === 0) deferred.push(callback);
+			else timeoutCallbacks.push(callback);
+			return 1;
+		}) as typeof setTimeout;
+		const context = {
+			sessionManager: emptySession,
+			ui: noOpUi,
+			modelRegistry: {
+				async getProviderAuth(providerId: string) {
+					return { auth: { apiKey: `current-${providerId}` } };
+				},
+			},
+		} as unknown as ExtensionContext;
+
+		registerCodexAccounts(fakePi([], undefined, handlers), fakeNativeProvider(() => credential("account-3")), {
+			fetch: usageFetch,
+			now: () => now,
+			setInterval: (() => 1) as unknown as typeof setInterval,
+			clearInterval: (() => undefined) as typeof clearInterval,
+			setTimeout: setTimeoutMock,
+			clearTimeout: (() => undefined) as typeof clearTimeout,
+		});
+		const start = handlers.get("session_start");
+		assert.ok(start);
+		start({ type: "session_start", reason: "startup" }, context);
+		assert.equal(deferred.length, 1);
+		deferred.shift()?.();
+		await waitFor(() => requests.length === 2 && timeoutCallbacks.length === 2);
+
+		timeoutCallbacks[0]?.();
+		const cachePath = join(dirname(authPath), "codex-accounts.json");
+		await waitFor(async () => {
+			try {
+				return JSON.parse(await readFile(cachePath, "utf8")).accounts?.[ALIAS_PROVIDER_ID]?.allowance === 70;
+			} catch {
+				return false;
+			}
+		});
+		assert.equal(JSON.parse(await readFile(cachePath, "utf8")).accounts[NATIVE_PROVIDER_ID], undefined);
+	});
+});
+
+test("merges shared snapshot writes without restoring stale account data", async () => {
+	await withAuthDir(async (authPath) => {
+		const now = 1_800_000_000_000;
+		const future = (now + 60_000) / 1000;
+		await writeFile(authPath, JSON.stringify({
+			[NATIVE_PROVIDER_ID]: credential("account-1"),
+			[ALIAS_PROVIDER_ID]: credential("account-2"),
+		}));
+		const cachePath = join(dirname(authPath), "codex-accounts.json");
+		await writeFile(cachePath, JSON.stringify({
+			accounts: {
+				[NATIVE_PROVIDER_ID]: { ...cachedAllowance("account-1", 10), fetchedAt: now },
+				[ALIAS_PROVIDER_ID]: { ...cachedAllowance("account-2", 20), fetchedAt: now },
+			},
+		}));
+
+		const createRefresh = (updatedAccount: string, allowance: number, fetchedAt: number) => {
+			const handlers = new Map<string, RecordedHandler>();
+			const deferred: (() => void)[] = [];
+			const usageFetch: typeof fetch = async (_input, init) => {
+				const accountId = new Headers(init?.headers).get("chatgpt-account-id");
+				if (accountId !== updatedAccount) return new Response("", { status: 500 });
+				return new Response(JSON.stringify({
+					rate_limit: { any_window: { remaining_percent: allowance, reset_at: future } },
+				}), { status: 200 });
+			};
+			const setTimeoutMock = ((callback: () => void, delay: number) => {
+				if (delay === 0) deferred.push(callback);
+				return 1;
+			}) as typeof setTimeout;
+			const context = {
+				sessionManager: emptySession,
+				ui: noOpUi,
+				modelRegistry: {
+					async getProviderAuth(providerId: string) {
+						return { auth: { apiKey: `current-${providerId}` } };
+					},
+				},
+			} as unknown as ExtensionContext;
+			registerCodexAccounts(fakePi([], undefined, handlers), fakeNativeProvider(() => credential("account-3")), {
+				fetch: usageFetch,
+				now: () => fetchedAt,
+				setInterval: (() => 1) as unknown as typeof setInterval,
+				clearInterval: (() => undefined) as typeof clearInterval,
+				setTimeout: setTimeoutMock,
+				clearTimeout: (() => undefined) as typeof clearTimeout,
+			});
+			return { context, handlers, deferred };
+		};
+
+		const first = createRefresh("account-1", 30, now + 100);
+		const second = createRefresh("account-2", 40, now + 200);
+		const firstStart = first.handlers.get("session_start");
+		const secondStart = second.handlers.get("session_start");
+		assert.ok(firstStart);
+		assert.ok(secondStart);
+		firstStart({ type: "session_start", reason: "startup" }, first.context);
+		secondStart({ type: "session_start", reason: "startup" }, second.context);
+		first.deferred.shift()?.();
+		await waitFor(async () => {
+			try {
+				return JSON.parse(await readFile(cachePath, "utf8")).accounts?.[NATIVE_PROVIDER_ID]?.allowance === 30;
+			} catch {
+				return false;
+			}
+		});
+		second.deferred.shift()?.();
+		await waitFor(async () => {
+			try {
+				const cache = JSON.parse(await readFile(cachePath, "utf8"));
+				return cache.accounts?.[ALIAS_PROVIDER_ID]?.allowance === 40;
+			} catch {
+				return false;
+			}
+		});
+
+		const cache = JSON.parse(await readFile(cachePath, "utf8"));
+		assert.equal(cache.accounts[NATIVE_PROVIDER_ID].allowance, 30);
+		assert.equal(cache.accounts[ALIAS_PROVIDER_ID].allowance, 40);
 	});
 });
 
@@ -793,6 +956,20 @@ test("routes ties deterministically and leaves the model alone without an altern
 		assert.equal(onlyAccount.modelSetCalls.length, 0);
 		assert.equal(onlyAccount.entries.length, 0);
 		assert.equal(onlyAccount.notifications.length, 0);
+
+		await writeFile(join(dirname(authPath), "codex-accounts.json"), JSON.stringify({
+			accounts: { [NATIVE_PROVIDER_ID]: cachedAllowance("account-1", 0) },
+		}));
+		const exhausted = routingControls();
+		registerRouting(exhausted);
+		await exhausted.emit("session_start", { type: "session_start", reason: "startup" });
+		await exhausted.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(exhausted.modelSetCalls.length, 0);
+		assert.deepEqual(exhausted.notifications, [{
+			message: "All Codex accounts are exhausted. Wait for a quota reset before trying again.",
+			type: "warning",
+		}]);
+		assert.equal(exhausted.abortCalls, 1);
 	});
 });
 
