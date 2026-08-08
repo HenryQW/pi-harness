@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-compact",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Proactively compact Pi context at 50% and resume the current task.",
   "keywords": [
     "pi-package",
@@ -21,7 +21,7 @@
   "scripts": {
     "test": "node --test test/*.test.ts",
     "test:live": "PI_AUTO_COMPACT_LIVE=1 node --test test/live.test.ts",
-    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/auto-compact.ts test/live.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/auto-compact.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
