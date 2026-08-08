@@ -44,6 +44,7 @@ export interface CodexAccountsOptions {
 	now?: () => number;
 	setInterval?: typeof setInterval;
 	clearInterval?: typeof clearInterval;
+	setTimeout?: typeof setTimeout;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -394,6 +395,7 @@ export function registerCodexAccounts(
 	const fetcher = options.fetch ?? fetch;
 	const schedule = options.setInterval ?? setInterval;
 	const cancelSchedule = options.clearInterval ?? clearInterval;
+	const defer = options.setTimeout ?? setTimeout;
 	let snapshots = readUsageSnapshots();
 	let activeRefresh: AbortController | undefined;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -483,11 +485,11 @@ export function registerCodexAccounts(
 			lifecycleGeneration++;
 		}
 		const generation = lifecycleGeneration;
-		queueMicrotask(() => void refresh(ctx, generation));
+		defer(() => void refresh(ctx, generation), 0);
 		if (refreshTimer === undefined) {
 			refreshTimer = schedule(() => {
 				const timerGeneration = lifecycleGeneration;
-				queueMicrotask(() => void refresh(ctx, timerGeneration));
+				defer(() => void refresh(ctx, timerGeneration), 0);
 			}, REFRESH_INTERVAL_MS);
 		}
 	});

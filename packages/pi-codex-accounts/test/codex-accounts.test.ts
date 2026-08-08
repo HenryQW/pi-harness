@@ -478,6 +478,12 @@ test("skips a refresh when an account changes while Pi resolves auth", async () 
 			assert.equal(delay, 5 * 60 * 1000);
 			return 1;
 		}) as typeof setInterval;
+		let deferredRefresh: (() => void) | undefined;
+		const defer = ((callback: () => void, delay: number) => {
+			assert.equal(delay, 0);
+			deferredRefresh = callback;
+			return 1;
+		}) as typeof setTimeout;
 		const context = {
 			modelRegistry: {
 				async getProviderAuth() {
@@ -495,11 +501,14 @@ test("skips a refresh when an account changes while Pi resolves auth", async () 
 			}) as typeof fetch,
 			setInterval: schedule,
 			clearInterval: (() => undefined) as typeof clearInterval,
+			setTimeout: defer,
 		});
 		const start = handlers.get("session_start");
 		assert.ok(start);
-		start({ type: "session_start", reason: "startup" }, context);
+		await start({ type: "session_start", reason: "startup" }, context);
 		assert.equal(authRequested, false);
+		assert.ok(deferredRefresh);
+		deferredRefresh();
 		await waitFor(() => authRequested);
 
 		await writeFile(authPath, JSON.stringify({ [NATIVE_PROVIDER_ID]: credential("account-2") }));
