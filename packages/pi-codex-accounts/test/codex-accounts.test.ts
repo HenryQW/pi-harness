@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	createAssistantMessageEventStream,
 	type AssistantMessage,
@@ -41,7 +41,9 @@ function credential(accountId: string): OAuthCredential {
 	};
 }
 
-function fakeNativeProvider(login: (accountId: string) => OAuthCredential): Provider<"openai-codex-responses"> {
+function fakeNativeProvider(
+	login: (accountId: string) => OAuthCredential | Promise<OAuthCredential>,
+): Provider<"openai-codex-responses"> {
 	const oauth = {
 		name: "OpenAI Codex",
 		async login() {
@@ -92,12 +94,41 @@ function fakeNativeProvider(login: (accountId: string) => OAuthCredential): Prov
 	};
 }
 
-function fakePi(providers: Provider<"openai-codex-responses">[]): ExtensionAPI {
+function fakePi(
+	providers: Provider<"openai-codex-responses">[],
+	onRegister?: (provider: Provider<"openai-codex-responses">) => void,
+): ExtensionAPI {
 	return {
 		registerProvider(provider: Provider<"openai-codex-responses">) {
 			providers.push(provider);
+			onRegister?.(provider);
 		},
 	} as unknown as ExtensionAPI;
+}
+
+async function registerRuntime(
+	authPath: string,
+	providers: Provider<"openai-codex-responses">[],
+	native: Provider<"openai-codex-responses">,
+): Promise<ModelRuntime> {
+	const runtime = await ModelRuntime.create({ authPath, modelsPath: null, refreshOnCreate: false });
+	registerCodexAccounts(
+		fakePi(providers, (provider) => runtime.registerNativeProvider(provider)),
+		native,
+	);
+	return runtime;
+}
+
+function loginInteraction() {
+	return {
+		signal: new AbortController().signal,
+		prompt: async () => "",
+		notify: () => {},
+	};
+}
+
+async function settleAuthJson(): Promise<void> {
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 async function withAuthDir<T>(callback: (authPath: string) => Promise<T>): Promise<T> {
@@ -157,33 +188,29 @@ test("allows a logged-out account to enroll under another alias", async () => {
 	await withAuthDir(async (authPath) => {
 		await writeFile(authPath, JSON.stringify({ [ALIAS_PROVIDER_ID]: credential("account-2") }));
 		const providers: Provider<"openai-codex-responses">[] = [];
-		registerCodexAccounts(fakePi(providers), fakeNativeProvider(() => credential("account-2")));
+		const runtime = await registerRuntime(authPath, providers, fakeNativeProvider(() => credential("account-2")));
 
 		await writeFile(authPath, JSON.stringify({}));
 		const nextAlias = providers.find((provider) => provider.id === "openai-codex-account-3");
-		assert.ok(nextAlias?.auth.oauth);
-		await nextAlias.auth.oauth.login({
-			signal: new AbortController().signal,
-			prompt: async () => "",
-			notify: () => {},
-		});
+		assert.ok(nextAlias);
+		await runtime.login(nextAlias.id, "oauth", loginInteraction());
+		await settleAuthJson();
 
 		assert.ok(providers.some((provider) => provider.id === "openai-codex-account-4"));
 	});
 });
 
-test("successful numbered login exposes the following empty slot", async () => {
-	await withAuthDir(async () => {
+test("successful numbered login exposes the following empty slot after Pi saves auth.json", async () => {
+	await withAuthDir(async (authPath) => {
 		const providers: Provider<"openai-codex-responses">[] = [];
-		registerCodexAccounts(fakePi(providers), fakeNativeProvider(() => credential("account-2")));
+		const signedIn = credential("account-2");
+		const runtime = await registerRuntime(authPath, providers, fakeNativeProvider(() => signedIn));
 		const alias = providers.find((provider) => provider.id === ALIAS_PROVIDER_ID);
-		assert.ok(alias?.auth.oauth);
+		assert.ok(alias);
 
-		await alias.auth.oauth.login({
-			signal: new AbortController().signal,
-			prompt: async () => "",
-			notify: () => {},
-		});
+		await runtime.login(alias.id, "oauth", loginInteraction());
+		assert.equal(JSON.parse(await readFile(authPath, "utf8"))[ALIAS_PROVIDER_ID].accountId, "account-2");
+		await settleAuthJson();
 		assert.deepEqual(providers.map((provider) => provider.id), [
 			NATIVE_PROVIDER_ID,
 			ALIAS_PROVIDER_ID,
@@ -192,8 +219,51 @@ test("successful numbered login exposes the following empty slot", async () => {
 	});
 });
 
-test("rebinding preserves Codex tool-call item IDs across alias turns", async () => {
-	await withAuthDir(async () => {
+test("keeps duplicate accounts reserved until Pi saves auth.json", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({ [ALIAS_PROVIDER_ID]: credential("account-old") }));
+		const providers: Provider<"openai-codex-responses">[] = [];
+		const runtime = await registerRuntime(authPath, providers, fakeNativeProvider(() => credential("account-new")));
+
+		const first = runtime.login("openai-codex-account-3", "oauth", loginInteraction());
+		const duplicate = runtime.login(ALIAS_PROVIDER_ID, "oauth", loginInteraction());
+		await assert.rejects(duplicate, /account is already signed in as openai-codex-account-3/);
+		await first;
+		await settleAuthJson();
+
+		const persisted = JSON.parse(await readFile(authPath, "utf8"));
+		assert.equal(persisted["openai-codex-account-3"].accountId, "account-new");
+		assert.equal(persisted[ALIAS_PROVIDER_ID].accountId, "account-old");
+	});
+});
+
+test("failed Pi auth.json save releases the reservation without publishing a slot", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({ [ALIAS_PROVIDER_ID]: credential("account-old") }));
+		const providers: Provider<"openai-codex-responses">[] = [];
+		const runtime = await registerRuntime(authPath, providers, fakeNativeProvider(() => credential("account-new")));
+
+		await chmod(authPath, 0o400);
+		try {
+			await assert.rejects(
+				runtime.login("openai-codex-account-3", "oauth", loginInteraction()),
+				/Credential store modify failed/,
+			);
+			await settleAuthJson();
+			assert.ok(!providers.some((provider) => provider.id === "openai-codex-account-4"));
+		} finally {
+			await chmod(authPath, 0o600);
+		}
+
+		await runtime.login(ALIAS_PROVIDER_ID, "oauth", loginInteraction());
+		await settleAuthJson();
+		assert.ok(providers.some((provider) => provider.id === "openai-codex-account-4"));
+	});
+});
+
+test("rebinding preserves Codex tool-call item IDs across A2 to A3 and A1 turns", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({ [ALIAS_PROVIDER_ID]: credential("account-2") }));
 		const providers: Provider<"openai-codex-responses">[] = [];
 		const native = fakeNativeProvider(() => credential("account-2"));
 		const nativeContexts: Context[] = [];
@@ -213,19 +283,25 @@ test("rebinding preserves Codex tool-call item IDs across alias turns", async ()
 				{ role: "toolResult", toolCallId: "call-1|item-1", toolName: "echo", content: [], isError: false, timestamp: Date.now() },
 			],
 		};
-		const second = await alias.stream({ ...MODEL, provider: ALIAS_PROVIDER_ID }, secondContext).result();
 
 		assert.equal(first.provider, ALIAS_PROVIDER_ID);
-		assert.equal(second.provider, ALIAS_PROVIDER_ID);
-		assert.equal(nativeContexts[1]?.messages[0]?.role, "assistant");
-		assert.equal(nativeContexts[1]?.messages[0]?.provider, NATIVE_PROVIDER_ID);
-		assert.equal(
-			nativeContexts[1]?.messages[0]?.role === "assistant"
-				? nativeContexts[1].messages[0].content[0]?.type === "toolCall"
-					? nativeContexts[1].messages[0].content[0].id
-					: undefined
-				: undefined,
-			"call-1|item-1",
-		);
+		for (const providerId of ["openai-codex-account-3", NATIVE_PROVIDER_ID]) {
+			const provider = providers.find((entry) => entry.id === providerId);
+			assert.ok(provider);
+			const second = await provider.stream({ ...MODEL, provider: providerId }, secondContext).result();
+
+			assert.equal(second.provider, providerId);
+			const nativeContext = nativeContexts.at(-1);
+			assert.equal(nativeContext?.messages[0]?.role, "assistant");
+			assert.equal(nativeContext?.messages[0]?.provider, NATIVE_PROVIDER_ID);
+			assert.equal(
+				nativeContext?.messages[0]?.role === "assistant"
+					? nativeContext.messages[0].content[0]?.type === "toolCall"
+						? nativeContext.messages[0].content[0].id
+						: undefined
+					: undefined,
+				"call-1|item-1",
+			);
+		}
 	});
 });

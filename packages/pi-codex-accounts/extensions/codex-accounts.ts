@@ -60,13 +60,12 @@ function rebindModel(model: Model<"openai-codex-responses">, provider: string): 
 	return model.provider === provider ? model : { ...model, provider };
 }
 
-function rebindContext(context: Context, fromProvider: string, toProvider: string): Context {
-	if (fromProvider === toProvider) return context;
+function rebindContext(context: Context): Context {
 	return {
 		...context,
 		messages: context.messages.map((message) =>
-			message.role === "assistant" && message.provider === fromProvider
-				? { ...message, provider: toProvider }
+			message.role === "assistant" && isManagedProvider(message.provider)
+				? { ...message, provider: NATIVE_PROVIDER_ID }
 				: message,
 		),
 	};
@@ -130,6 +129,37 @@ function duplicateError(providerId: string): Error {
 	);
 }
 
+function reserveLoginUntilPersisted(
+	credential: OAuthCredential,
+	providerId: string,
+	accountId: string,
+	onLogin: (providerId: string) => void,
+	inFlightAccounts: Map<string, string>,
+	signal: AbortSignal,
+): OAuthCredential {
+	inFlightAccounts.set(providerId, accountId);
+	let reconciled = false;
+	const reconcile = () => {
+		if (reconciled) return;
+		reconciled = true;
+		signal.removeEventListener("abort", scheduleReconcile);
+		inFlightAccounts.delete(providerId);
+		if (readStoredCodexAccounts().get(providerId) === accountId) onLogin(providerId);
+	};
+	const scheduleReconcile = () => setTimeout(reconcile, 0);
+	signal.addEventListener("abort", scheduleReconcile, { once: true });
+
+	const reservedCredential = { ...credential };
+	Object.defineProperty(reservedCredential, "toJSON", {
+		value: () => {
+			// Models.login serializes this value immediately before its synchronous auth.json write.
+			scheduleReconcile();
+			return credential;
+		},
+	});
+	return reservedCredential;
+}
+
 function wrapProvider(
 	native: CodexProvider,
 	providerId: string,
@@ -155,13 +185,14 @@ function wrapProvider(
 				}
 			}
 
-			inFlightAccounts.set(providerId, accountId);
-			try {
-				onLogin(providerId);
-				return credential;
-			} finally {
-				inFlightAccounts.delete(providerId);
-			}
+			return reserveLoginUntilPersisted(
+				credential,
+				providerId,
+				accountId,
+				onLogin,
+				inFlightAccounts,
+				interaction.signal,
+			);
 		},
 	};
 
@@ -186,7 +217,7 @@ function wrapProvider(
 		stream: (model, context, options) => aliasStream(
 			native.stream(
 				rebindModel(model, NATIVE_PROVIDER_ID),
-				rebindContext(context, providerId, NATIVE_PROVIDER_ID),
+				rebindContext(context),
 				options,
 			),
 			providerId,
@@ -195,7 +226,7 @@ function wrapProvider(
 		streamSimple: (model, context, options) => aliasStream(
 			native.streamSimple(
 				rebindModel(model, NATIVE_PROVIDER_ID),
-				rebindContext(context, providerId, NATIVE_PROVIDER_ID),
+				rebindContext(context),
 				options,
 			),
 			providerId,
