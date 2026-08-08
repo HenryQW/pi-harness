@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
 	createAssistantMessageEventStream,
 	type AssistantMessage,
@@ -16,7 +16,7 @@ import {
 	type Provider,
 } from "@earendil-works/pi-ai";
 
-import { fetchCodexUsage, type CodexAllowanceWindow, type CodexUsage } from "./codex-usage.ts";
+import { fetchCodexUsage, type CodexAllowanceWindow, type CodexUsage } from "./lib/codex-usage.ts";
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const ALIAS_PREFIX = `${NATIVE_PROVIDER_ID}-account-`;
@@ -31,6 +31,12 @@ const RATE_LIMIT_MESSAGE = "Codex account reached usage limit. Run /codex-accoun
 const ALL_ACCOUNTS_EXHAUSTED_MESSAGE = "All Codex accounts are exhausted. Wait for a quota reset before trying again.";
 type CodexProvider = Provider<"openai-codex-responses">;
 type RoutingMode = "auto" | "manual";
+
+function nativeCodexProvider(): CodexProvider {
+	const provider = builtinProviders().find(({ id }) => id === NATIVE_PROVIDER_ID);
+	if (!provider) throw new Error(`Native provider ${NATIVE_PROVIDER_ID} is unavailable`);
+	return provider as CodexProvider;
+}
 
 export interface CodexAccountSnapshot {
 	accountId: string;
@@ -516,7 +522,7 @@ function wrapProvider(
 
 export function registerCodexAccounts(
 	pi: ExtensionAPI,
-	nativeProvider: CodexProvider = openaiCodexProvider(),
+	nativeProvider: CodexProvider = nativeCodexProvider(),
 	options: CodexAccountsOptions = {},
 ): void {
 	const storedAccounts = readStoredCodexAccounts() ?? new Map();
