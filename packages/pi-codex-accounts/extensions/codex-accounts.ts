@@ -23,7 +23,11 @@ const ALIAS_PREFIX = `${NATIVE_PROVIDER_ID}-account-`;
 const FIRST_ALIAS_SLOT = 2;
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const SNAPSHOT_FILE = "codex-accounts.json";
+const ROUTING_MODE_ENTRY = "codex-accounts-mode";
+const STATUS_KEY = "codex-accounts";
+const RATE_LIMIT_MESSAGE = "Codex account reached usage limit. Run /codex-accounts next to switch accounts.";
 type CodexProvider = Provider<"openai-codex-responses">;
+type RoutingMode = "auto" | "manual";
 
 export interface CodexAccountSnapshot {
 	accountId: string;
@@ -60,6 +64,10 @@ function accountIdOf(value: unknown): string | undefined {
 
 function isManagedProvider(providerId: string): boolean {
 	return providerId === NATIVE_PROVIDER_ID || /^openai-codex-account-\d+$/.test(providerId);
+}
+
+function isInitialUnknownModel(model: Model<any> | undefined): boolean {
+	return model?.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
 
 function aliasSlot(providerId: string): number | undefined {
@@ -181,6 +189,26 @@ export function rankCodexAccounts(
 			if (leftMeasured && rightMeasured && right.providerId === currentProviderId) return 1;
 			return compareProviderIds(left.providerId, right.providerId);
 		});
+}
+
+function restoredRoutingMode(ctx: ExtensionContext): RoutingMode {
+	const entries = ctx.sessionManager.getBranch();
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (
+			entry.type === "custom" &&
+			entry.customType === ROUTING_MODE_ENTRY &&
+			isRecord(entry.data) &&
+			(entry.data.mode === "auto" || entry.data.mode === "manual")
+		) {
+			return entry.data.mode;
+		}
+	}
+	return "auto";
+}
+
+function accountLabel(providerId: string): string {
+	return providerId === NATIVE_PROVIDER_ID ? "A1" : `A${aliasSlot(providerId) ?? "?"}`;
 }
 
 function rebindModel(model: Model<"openai-codex-responses">, provider: string): Model<"openai-codex-responses"> {
@@ -401,6 +429,53 @@ export function registerCodexAccounts(
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let sessionActive = false;
 	let lifecycleGeneration = 0;
+	let mode: RoutingMode = "auto";
+	let sessionStarted = false;
+	let runActive = false;
+	let rateLimitWarned = false;
+	let extensionModelChanges = 0;
+
+	const updateStatus = (ctx: ExtensionContext): void => {
+		const model = ctx.model;
+		if (!model || !isManagedProvider(model.provider)) {
+			ctx.ui.setStatus(STATUS_KEY, undefined);
+			return;
+		}
+		const account = rankCodexAccounts(
+			readStoredCodexAccounts() ?? new Map(),
+			snapshots,
+			model.provider,
+			now(),
+		).find((state) => state.providerId === model.provider);
+		const allowance = account?.allowance === undefined ? "?" : `${account.allowance}%`;
+		ctx.ui.setStatus(STATUS_KEY, `Codex ${accountLabel(model.provider)} · ${allowance} · ${mode}`);
+	};
+
+	const setMode = (nextMode: RoutingMode, ctx: ExtensionContext): void => {
+		if (mode !== nextMode) {
+			mode = nextMode;
+			pi.appendEntry(ROUTING_MODE_ENTRY, { mode });
+		}
+		updateStatus(ctx);
+	};
+
+	const bestAvailable = (currentProviderId?: string): CodexAccountState | undefined =>
+		rankCodexAccounts(readStoredCodexAccounts() ?? new Map(), snapshots, currentProviderId, now())
+			.find((account) => account.available);
+
+	const switchProvider = async (ctx: ExtensionContext, providerId: string): Promise<boolean> => {
+		const model = ctx.model;
+		if (!model || !isManagedProvider(model.provider) || model.provider === providerId) return false;
+		const thinkingLevel = pi.getThinkingLevel();
+		extensionModelChanges++;
+		try {
+			if (!await pi.setModel({ ...model, provider: providerId })) return false;
+			pi.setThinkingLevel(thinkingLevel);
+			return true;
+		} finally {
+			extensionModelChanges--;
+		}
+	};
 
 	const registerAlias = (slot: number) => {
 		if (registeredSlots.has(slot)) return;
@@ -471,6 +546,7 @@ export function registerCodexAccounts(
 			}
 			if (changed && await writeUsageSnapshots(nextSnapshots, controller.signal, isCurrent)) {
 				snapshots = nextSnapshots;
+				updateStatus(ctx);
 			}
 		} catch {
 			// Background telemetry must never interrupt Pi.
@@ -479,7 +555,14 @@ export function registerCodexAccounts(
 		}
 	};
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
+		sessionStarted = true;
+		const restoredMode = restoredRoutingMode(ctx);
+		mode = event.reason === "new" || event.reason === "fork" ? "auto" : restoredMode;
+		if (event.reason === "fork" && restoredMode !== mode) {
+			pi.appendEntry(ROUTING_MODE_ENTRY, { mode });
+		}
+		updateStatus(ctx);
 		if (!sessionActive) {
 			sessionActive = true;
 			lifecycleGeneration++;
@@ -493,8 +576,13 @@ export function registerCodexAccounts(
 			}, REFRESH_INTERVAL_MS);
 		}
 	});
+	pi.on("session_tree", (_event, ctx) => {
+		mode = restoredRoutingMode(ctx);
+		updateStatus(ctx);
+	});
 	pi.on("session_shutdown", () => {
 		sessionActive = false;
+		runActive = false;
 		lifecycleGeneration++;
 		if (refreshTimer !== undefined) {
 			cancelSchedule(refreshTimer);
@@ -502,6 +590,57 @@ export function registerCodexAccounts(
 		}
 		activeRefresh?.abort();
 		activeRefresh = undefined;
+	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		runActive = true;
+		rateLimitWarned = false;
+		if (mode === "auto") {
+			const target = bestAvailable(ctx.model?.provider);
+			if (target) await switchProvider(ctx, target.providerId);
+		}
+		updateStatus(ctx);
+	});
+	pi.on("agent_settled", () => {
+		runActive = false;
+	});
+	pi.on("model_select", (event, ctx) => {
+		if (extensionModelChanges > 0) return;
+		if (sessionStarted && event.source !== "restore" && !isInitialUnknownModel(event.previousModel)) setMode("manual", ctx);
+		else updateStatus(ctx);
+	});
+	pi.on("after_provider_response", (event, ctx) => {
+		if (
+			runActive &&
+			event.status === 429 &&
+			!rateLimitWarned &&
+			isManagedProvider(ctx.model?.provider ?? "")
+		) {
+			rateLimitWarned = true;
+			ctx.ui.notify(RATE_LIMIT_MESSAGE, "warning");
+			ctx.abort();
+		}
+	});
+	pi.registerCommand("codex-accounts", {
+		description: "Switch to the next available Codex account or restore automatic routing.",
+		handler: async (args, ctx) => {
+			if (args.trim() === "auto") {
+				setMode("auto", ctx);
+				return;
+			}
+			if (args.trim() !== "next") {
+				ctx.ui.notify("Usage: /codex-accounts <next|auto>", "error");
+				return;
+			}
+			if (runActive) return;
+			const currentProviderId = ctx.model?.provider;
+			const target = isManagedProvider(currentProviderId ?? "")
+				? rankCodexAccounts(readStoredCodexAccounts() ?? new Map(), snapshots, currentProviderId, now())
+					.find((account) => account.available && account.providerId !== currentProviderId)
+				: undefined;
+			if (!target || !await switchProvider(ctx, target.providerId)) return;
+			setMode("manual", ctx);
+			ctx.ui.notify(`Switched to Codex account ${accountLabel(target.providerId)}.`, "info");
+		},
 	});
 
 	pi.registerProvider(wrapProvider(nativeProvider, NATIVE_PROVIDER_ID, onLogin, inFlightAccounts));
