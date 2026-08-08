@@ -7,7 +7,6 @@ Public Pi packages under `@henryqw` scope.
 | Package | Install | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | `pi install npm:@henryqw/pi-auto-compact` | Compact context at 50% and resume current task. |
-| [`@henryqw/pi-codex-accounts`](./packages/pi-codex-accounts) | `pi install npm:@henryqw/pi-codex-accounts` | Enroll additional Codex accounts through Pi's native `/login` flow. |
 
 ## Development
 
@@ -36,5 +35,4 @@ See [`docs/releasing.md`](./docs/releasing.md). Each package publishes independe
 
 ```bash
 pi install npm:@henryqw/pi-auto-compact
-pi install npm:@henryqw/pi-codex-accounts
 ```
