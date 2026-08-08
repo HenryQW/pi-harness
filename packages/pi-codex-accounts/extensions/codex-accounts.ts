@@ -133,8 +133,8 @@ function duplicateError(providerId: string): Error {
 function wrapProvider(
 	native: CodexProvider,
 	providerId: string,
-	onLogin: (providerId: string, accountId: string) => void,
-	knownAccounts: Map<string, string>,
+	onLogin: (providerId: string) => void,
+	inFlightAccounts: Map<string, string>,
 ): CodexProvider {
 	const nativeOAuth = native.auth.oauth;
 	if (!nativeOAuth) throw new Error("Native openai-codex provider has no OAuth flow");
@@ -148,16 +148,20 @@ function wrapProvider(
 
 			for (const [existingProvider, existingAccountId] of [
 				...readStoredCodexAccounts(),
-				...knownAccounts,
+				...inFlightAccounts,
 			]) {
 				if (existingProvider !== providerId && existingAccountId === accountId) {
 					throw duplicateError(existingProvider);
 				}
 			}
 
-			knownAccounts.set(providerId, accountId);
-			onLogin(providerId, accountId);
-			return credential;
+			inFlightAccounts.set(providerId, accountId);
+			try {
+				onLogin(providerId);
+				return credential;
+			} finally {
+				inFlightAccounts.delete(providerId);
+			}
 		},
 	};
 
@@ -225,14 +229,15 @@ export function registerCodexAccounts(
 	pi: ExtensionAPI,
 	nativeProvider: CodexProvider = openaiCodexProvider(),
 ): void {
-	const knownAccounts = readStoredCodexAccounts();
+	const storedAccounts = readStoredCodexAccounts();
+	const inFlightAccounts = new Map<string, string>();
 	const registeredSlots = new Set<number>();
 
 	const registerAlias = (slot: number) => {
 		if (registeredSlots.has(slot)) return;
 		registeredSlots.add(slot);
 		const providerId = `${ALIAS_PREFIX}${slot}`;
-		pi.registerProvider(wrapProvider(nativeProvider, providerId, onLogin, knownAccounts));
+		pi.registerProvider(wrapProvider(nativeProvider, providerId, onLogin, inFlightAccounts));
 	};
 
 	function registerNextEmptySlot(): void {
@@ -241,16 +246,15 @@ export function registerCodexAccounts(
 		registerAlias(slot);
 	}
 
-	function onLogin(providerId: string, accountId: string): void {
+	function onLogin(providerId: string): void {
 		const slot = aliasSlot(providerId);
 		if (slot !== undefined) registeredSlots.add(slot);
-		knownAccounts.set(providerId, accountId);
 		registerNextEmptySlot();
 	}
 
-	pi.registerProvider(wrapProvider(nativeProvider, NATIVE_PROVIDER_ID, onLogin, knownAccounts));
+	pi.registerProvider(wrapProvider(nativeProvider, NATIVE_PROVIDER_ID, onLogin, inFlightAccounts));
 
-	const storedAliasSlots = [...knownAccounts.keys()]
+	const storedAliasSlots = [...storedAccounts.keys()]
 		.map(aliasSlot)
 		.filter((slot): slot is number => slot !== undefined)
 		.sort((a, b) => a - b);

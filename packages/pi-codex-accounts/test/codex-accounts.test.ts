@@ -153,6 +153,25 @@ test("rejects duplicate account IDs before Pi can persist a login", async () => 
 	});
 });
 
+test("allows a logged-out account to enroll under another alias", async () => {
+	await withAuthDir(async (authPath) => {
+		await writeFile(authPath, JSON.stringify({ [ALIAS_PROVIDER_ID]: credential("account-2") }));
+		const providers: Provider<"openai-codex-responses">[] = [];
+		registerCodexAccounts(fakePi(providers), fakeNativeProvider(() => credential("account-2")));
+
+		await writeFile(authPath, JSON.stringify({}));
+		const nextAlias = providers.find((provider) => provider.id === "openai-codex-account-3");
+		assert.ok(nextAlias?.auth.oauth);
+		await nextAlias.auth.oauth.login({
+			signal: new AbortController().signal,
+			prompt: async () => "",
+			notify: () => {},
+		});
+
+		assert.ok(providers.some((provider) => provider.id === "openai-codex-account-4"));
+	});
+});
+
 test("successful numbered login exposes the following empty slot", async () => {
 	await withAuthDir(async () => {
 		const providers: Provider<"openai-codex-responses">[] = [];

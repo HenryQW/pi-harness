@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-codex-accounts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Enroll multiple OpenAI Codex accounts through Pi's native login flow.",
   "keywords": [
     "pi-package",
