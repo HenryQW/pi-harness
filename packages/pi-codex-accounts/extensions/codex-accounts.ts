@@ -572,6 +572,10 @@ export function registerCodexAccounts(
 			}, REFRESH_INTERVAL_MS);
 		}
 	});
+	pi.on("session_tree", (_event, ctx) => {
+		mode = restoredRoutingMode(ctx);
+		updateStatus(ctx);
+	});
 	pi.on("session_shutdown", () => {
 		sessionActive = false;
 		runActive = false;
@@ -622,6 +626,7 @@ export function registerCodexAccounts(
 				ctx.ui.notify("Usage: /codex-accounts <next|auto>", "error");
 				return;
 			}
+			if (runActive) return;
 			const currentProviderId = ctx.model?.provider;
 			const target = isManagedProvider(currentProviderId ?? "")
 				? rankCodexAccounts(readStoredCodexAccounts() ?? new Map(), snapshots, currentProviderId, now())

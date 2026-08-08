@@ -203,6 +203,9 @@ function routingControls(
 		setModelAllowed(value: boolean) {
 			modelSetAllowed = value;
 		},
+		setEntries(nextEntries: readonly RoutingEntry[]) {
+			entries.splice(0, entries.length, ...nextEntries);
+		},
 		emit,
 		selectModel,
 	};
@@ -704,6 +707,12 @@ test("routes only at agent boundaries and warns once per managed run", async () 
 		assert.equal(controls.thinkingLevel, "high");
 		assert.equal(controls.modelSetCalls.length, 1);
 		assert.equal(controls.entries.length, 0);
+		const command = controls.commands.get("codex-accounts");
+		assert.ok(command);
+		await command("next", controls.context);
+		assert.equal(controls.modelSetCalls.length, 1);
+		assert.equal(controls.entries.length, 0);
+		assert.equal(controls.notifications.length, 0);
 
 		await controls.emit("after_provider_response", { type: "after_provider_response", status: 200 });
 		await controls.emit("after_provider_response", { type: "after_provider_response", status: 429 });
@@ -846,6 +855,23 @@ test("persists manual controls, honors model sources, and reports unknown allowa
 		registerRouting(reloadedFork);
 		await reloadedFork.emit("session_start", { type: "session_start", reason: "reload" });
 		assert.equal(reloadedFork.statuses.at(-1)?.text, "Codex A1 · 20% · auto");
+
+		const navigated = routingControls(MODEL, [manualEntry]);
+		registerRouting(navigated);
+		await navigated.emit("session_start", { type: "session_start", reason: "startup" });
+		await navigated.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(navigated.modelSetCalls.length, 0);
+		navigated.setEntries([]);
+		await navigated.emit("session_tree", { type: "session_tree" });
+		assert.equal(navigated.statuses.at(-1)?.text, "Codex A1 · 20% · auto");
+		await navigated.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(navigated.modelSetCalls.length, 1);
+		await navigated.emit("agent_settled", { type: "agent_settled" });
+		navigated.setEntries([manualEntry]);
+		await navigated.emit("session_tree", { type: "session_tree" });
+		assert.equal(navigated.statuses.at(-1)?.text, "Codex A2 · 80% · manual");
+		await navigated.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(navigated.modelSetCalls.length, 1);
 
 		await writeFile(cachePath, JSON.stringify({ accounts: {} }));
 		const unknown = routingControls();
