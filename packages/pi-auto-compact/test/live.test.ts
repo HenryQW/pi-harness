@@ -96,7 +96,7 @@ test("real Pi compacts and resumes the task", { skip: !live }, async () => {
 			defaultThinkingLevel: "off",
 			defaultProjectTrust: "never",
 			quietStartup: true,
-			compaction: { enabled: true, reserveTokens: 2_000, keepRecentTokens: 2_000 },
+			compaction: { enabled: false, reserveTokens: 2_000, keepRecentTokens: 2_000 },
 			packages: [packageRoot],
 		}, null, 2));
 		await writeFile(join(tempRoot, "models.json"), JSON.stringify({
