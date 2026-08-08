@@ -15,7 +15,8 @@
   ],
   "pi": {
     "extensions": [
-      "./packages/pi-auto-compact/extensions"
+      "./packages/pi-auto-compact/extensions",
+      "./packages/pi-codex-accounts/extensions"
     ]
   },
   "scripts": {
