@@ -499,6 +499,7 @@ test("skips a refresh when an account changes while Pi resolves auth", async () 
 		const start = handlers.get("session_start");
 		assert.ok(start);
 		start({ type: "session_start", reason: "startup" }, context);
+		assert.equal(authRequested, false);
 		await waitFor(() => authRequested);
 
 		await writeFile(authPath, JSON.stringify({ [NATIVE_PROVIDER_ID]: credential("account-2") }));

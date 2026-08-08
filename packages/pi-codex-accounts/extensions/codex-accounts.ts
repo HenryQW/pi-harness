@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { rename, rm, writeFile } from "node:fs/promises";
+import { readFileSync, renameSync } from "node:fs";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -128,18 +128,20 @@ function readUsageSnapshots(): Record<string, CodexAccountSnapshot> {
 async function writeUsageSnapshots(
 	snapshots: Record<string, CodexAccountSnapshot>,
 	signal: AbortSignal,
-): Promise<void> {
+	canCommit: () => boolean,
+): Promise<boolean> {
 	const path = join(getAgentDir(), SNAPSHOT_FILE);
 	const temporaryPath = `${path}.${randomUUID()}.tmp`;
 	await writeFile(temporaryPath, JSON.stringify({ accounts: snapshots }, null, 2), {
 		encoding: "utf8",
 		mode: 0o600,
 	});
-	if (signal.aborted) {
+	if (signal.aborted || !canCommit()) {
 		await rm(temporaryPath, { force: true });
-		return;
+		return false;
 	}
-	await rename(temporaryPath, path);
+	renameSync(temporaryPath, path);
+	return true;
 }
 
 function compareProviderIds(left: string, right: string): number {
@@ -395,6 +397,8 @@ export function registerCodexAccounts(
 	let snapshots = readUsageSnapshots();
 	let activeRefresh: AbortController | undefined;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
+	let sessionActive = false;
+	let lifecycleGeneration = 0;
 
 	const registerAlias = (slot: number) => {
 		if (registeredSlots.has(slot)) return;
@@ -415,17 +419,23 @@ export function registerCodexAccounts(
 		registerNextEmptySlot();
 	}
 
-	const refresh = async (ctx: ExtensionContext): Promise<void> => {
-		if (activeRefresh) return;
+	const refresh = async (ctx: ExtensionContext, generation: number): Promise<void> => {
+		if (!sessionActive || generation !== lifecycleGeneration || activeRefresh) return;
 		const controller = new AbortController();
 		activeRefresh = controller;
+		const isCurrent = () =>
+			sessionActive &&
+			generation === lifecycleGeneration &&
+			activeRefresh === controller &&
+			!controller.signal.aborted;
 		try {
 			const accounts = readStoredCodexAccounts();
-			if (!accounts) return;
+			if (!accounts || !isCurrent()) return;
+			const nextSnapshots = { ...snapshots };
 			let changed = false;
-			for (const [providerId, snapshot] of Object.entries(snapshots)) {
+			for (const [providerId, snapshot] of Object.entries(nextSnapshots)) {
 				if (accounts.get(providerId) !== snapshot.accountId) {
-					delete snapshots[providerId];
+					delete nextSnapshots[providerId];
 					changed = true;
 				}
 			}
@@ -436,6 +446,7 @@ export function registerCodexAccounts(
 					if (!accountId) return undefined;
 					const auth = await ctx.modelRegistry.getProviderAuth(providerId);
 					if (
+						!isCurrent() ||
 						readStoredCodexAccounts()?.get(providerId) !== accountId ||
 						typeof auth?.auth.apiKey !== "string" ||
 						auth.auth.apiKey.length === 0
@@ -449,14 +460,16 @@ export function registerCodexAccounts(
 					return undefined;
 				}
 			}));
-			if (activeRefresh !== controller || controller.signal.aborted) return;
+			if (!isCurrent()) return;
 
 			for (const update of updates) {
 				if (!update) continue;
-				snapshots[update[0]] = update[1];
+				nextSnapshots[update[0]] = update[1];
 				changed = true;
 			}
-			if (changed) await writeUsageSnapshots(snapshots, controller.signal);
+			if (changed && await writeUsageSnapshots(nextSnapshots, controller.signal, isCurrent)) {
+				snapshots = nextSnapshots;
+			}
 		} catch {
 			// Background telemetry must never interrupt Pi.
 		} finally {
@@ -465,12 +478,22 @@ export function registerCodexAccounts(
 	};
 
 	pi.on("session_start", (_event, ctx) => {
-		void refresh(ctx);
+		if (!sessionActive) {
+			sessionActive = true;
+			lifecycleGeneration++;
+		}
+		const generation = lifecycleGeneration;
+		queueMicrotask(() => void refresh(ctx, generation));
 		if (refreshTimer === undefined) {
-			refreshTimer = schedule(() => void refresh(ctx), REFRESH_INTERVAL_MS);
+			refreshTimer = schedule(() => {
+				const timerGeneration = lifecycleGeneration;
+				queueMicrotask(() => void refresh(ctx, timerGeneration));
+			}, REFRESH_INTERVAL_MS);
 		}
 	});
 	pi.on("session_shutdown", () => {
+		sessionActive = false;
+		lifecycleGeneration++;
 		if (refreshTimer !== undefined) {
 			cancelSchedule(refreshTimer);
 			refreshTimer = undefined;
