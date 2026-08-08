@@ -30,6 +30,13 @@ const MODEL: Model<"openai-codex-responses"> = {
 	contextWindow: 128_000,
 	maxTokens: 16_384,
 };
+const UNKNOWN_MODEL = {
+	...MODEL,
+	id: "unknown",
+	name: "Unknown",
+	api: "unknown",
+	provider: "unknown",
+} as unknown as Model<"openai-codex-responses">;
 
 function credential(accountId: string): OAuthCredential {
 	return {
@@ -831,6 +838,15 @@ test("persists manual controls, honors model sources, and reports unknown allowa
 		assert.deepEqual(firstManual.entries.map((entry) => entry.data), [{ mode: "manual" }]);
 		await firstManual.emit("before_agent_start", { type: "before_agent_start" });
 		assert.equal(firstManual.modelSetCalls.length, 0);
+
+		const initialSelection = routingControls(UNKNOWN_MODEL);
+		registerRouting(initialSelection);
+		await initialSelection.emit("session_start", { type: "session_start", reason: "startup" });
+		await initialSelection.selectModel(MODEL, "set");
+		assert.equal(initialSelection.entries.length, 0);
+		assert.equal(initialSelection.statuses.at(-1)?.text, "Codex A1 · 20% · auto");
+		await initialSelection.emit("before_agent_start", { type: "before_agent_start" });
+		assert.equal(initialSelection.modelSetCalls.length, 1);
 
 		const manualEntry: RoutingEntry = { type: "custom", customType: "codex-accounts-mode", data: { mode: "manual" } };
 		const autoEntry: RoutingEntry = { type: "custom", customType: "codex-accounts-mode", data: { mode: "auto" } };

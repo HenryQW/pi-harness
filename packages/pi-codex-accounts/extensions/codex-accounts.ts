@@ -66,6 +66,10 @@ function isManagedProvider(providerId: string): boolean {
 	return providerId === NATIVE_PROVIDER_ID || /^openai-codex-account-\d+$/.test(providerId);
 }
 
+function isInitialUnknownModel(model: Model<any> | undefined): boolean {
+	return model?.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
+}
+
 function aliasSlot(providerId: string): number | undefined {
 	if (!providerId.startsWith(ALIAS_PREFIX)) return undefined;
 	const slot = Number(providerId.slice(ALIAS_PREFIX.length));
@@ -601,7 +605,7 @@ export function registerCodexAccounts(
 	});
 	pi.on("model_select", (event, ctx) => {
 		if (extensionModelChanges > 0) return;
-		if (sessionStarted && event.source !== "restore") setMode("manual", ctx);
+		if (sessionStarted && event.source !== "restore" && !isInitialUnknownModel(event.previousModel)) setMode("manual", ctx);
 		else updateStatus(ctx);
 	});
 	pi.on("after_provider_response", (event, ctx) => {
