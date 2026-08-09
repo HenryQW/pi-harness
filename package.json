@@ -16,6 +16,7 @@
   "pi": {
     "extensions": [
       "./packages/pi-auto-compact/extensions",
+      "./packages/pi-auto-dag/extensions/auto-dag.ts",
       "./packages/pi-model-thinking/extensions",
       "./packages/pi-open-in/extensions",
       "./packages/pi-herdr-rename/extensions"
