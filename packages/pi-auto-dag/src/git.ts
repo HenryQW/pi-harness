@@ -85,6 +85,21 @@ export async function assertAttachedBranch(
 	if (actual !== expectedBranch) throw new Error(`${label} branch changed from ${expectedBranch} to ${actual}`);
 }
 
+export async function findAppliedCherryPick(
+	runner: CommandRunner,
+	mainWorktree: string,
+	integrationBranch: string,
+	previousHead: string,
+	commit: string,
+	label: string,
+): Promise<string | undefined> {
+	await assertAttachedBranch(runner, mainWorktree, integrationBranch, label);
+	const head = await commandOutput(runner, "git", ["rev-parse", "HEAD"], mainWorktree);
+	const message = await commandOutput(runner, "git", ["log", "-1", "--format=%B", head], mainWorktree);
+	if (!message.includes(`(cherry picked from commit ${commit})`)) return undefined;
+	return (await commandOutput(runner, "git", ["rev-parse", `${head}^`], mainWorktree)) === previousHead ? head : undefined;
+}
+
 export async function ensureChildWorktree(
 	runner: CommandRunner,
 	mainWorktree: string,

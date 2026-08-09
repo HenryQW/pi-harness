@@ -83,10 +83,18 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	await assert.rejects(lifecycle.resolve(project.root, "final-check", "Fix it."), /must be resolved against/);
 
 	state = await lifecycle.resolve(project.root, "alpha", "Repair alpha for the final check.");
+	const workerPrompts = () => herdr.calls
+		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt")
+		.map((call) => JSON.parse(call.args[3]));
+	const repairPrompt = workerPrompts().find((value) => value.type === "auto_dag_final_repair");
+	assert.deepEqual(Object.keys(repairPrompt.owner_issue).sort(), ["acceptance", "id", "purpose", "testing", "title"]);
 	const repairWorktree = state.tasks["final-check"].worktree!;
 	assert.match(repairWorktree, /final-repair-alpha-1$/);
 	const repair = await commit(repairWorktree, "repair.txt", "fixed\n", "repair alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "final-check", repair));
+	const repairReviewPrompt = workerPrompts().find((value) => value.type === "auto_dag_final_repair_review");
+	assert.deepEqual(Object.keys(repairReviewPrompt.owner_issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	assert.equal(repairReviewPrompt.command, "npm test -- final-check");
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(await git(project.root, "show", "HEAD:repair.txt"), "fixed");
@@ -97,6 +105,8 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	const fullPrompt = prompts().find((value) => value.type === "auto_dag_final_check");
 	assert.equal(fullPrompt.attempt, state.tasks["final-check"].attempts);
 	assert.equal(fullPrompt.review_round, state.tasks["final-check"].review_rounds);
+	assert.equal(fullPrompt.command, "npm test -- final-check");
+	assert.deepEqual(Object.keys(fullPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	state = await lifecycle.resume(project.root);
 	const compactPrompt = prompts().at(-1);
 	assert.equal(compactPrompt.type, "auto_dag_resend");

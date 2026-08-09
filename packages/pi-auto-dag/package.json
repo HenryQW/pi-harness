@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-dag",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Run approved local Delivery Graphs through Pi and Herdr.",
   "keywords": [
     "pi-package",

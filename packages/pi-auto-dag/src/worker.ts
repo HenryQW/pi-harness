@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { expandProfilePath } from "./config.ts";
 import { commandFailure, commandOutput, runCommand, type CommandRunner } from "./command.ts";
-import type { WorkerEnvelope } from "./model.ts";
+import type { LocalIssue, WorkerEnvelope } from "./model.ts";
 import { array, nonEmptyString, object, oneOf } from "./validate.ts";
 
 export type WorkerRole = "implementer" | "reviewer";
@@ -30,6 +30,7 @@ const ROLE_BUILTINS: Record<WorkerRole, string[]> = {
 
 export interface WorkerLaunchInput {
 	role: WorkerRole;
+	events?: WorkerEvent[];
 	profile_path: string;
 	main_worktree: string;
 	run_id: string;
@@ -45,6 +46,7 @@ export interface WorkerLaunch {
 /** Pi owns profile resources; workers merely narrow skills and available tools. */
 export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 	const role = parseWorkerRole(input.role);
+	const events = parseWorkerEvents(input.events ?? WORKER_ROLE_EVENTS[role], role);
 	const profilePath = expandProfilePath(nonEmptyString(input.profile_path, "worker profile_path"));
 	const skills = [...new Set([
 		join(profilePath, ".agents", "skills"),
@@ -54,6 +56,7 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 		env: {
 			PI_CODING_AGENT_DIR: profilePath,
 			PI_AUTO_DAG_WORKER_ROLE: role,
+			PI_AUTO_DAG_WORKER_EVENTS: events.join(","),
 			PI_AUTO_DAG_RUN_ID: nonEmptyString(input.run_id, "worker run_id"),
 			PI_AUTO_DAG_ISSUE_ID: nonEmptyString(input.issue_id, "worker issue_id"),
 			PI_AUTO_DAG_MAIN_PANE: nonEmptyString(input.main_pane, "worker main_pane"),
@@ -63,21 +66,24 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 			"--no-skills",
 			...skills.flatMap((path) => ["--skill", path]),
 			"--tools",
-			[...ROLE_BUILTINS[role], ...WORKER_ROLE_EVENTS[role].map((event) => WORKER_TOOLS[event])].join(","),
+			[...ROLE_BUILTINS[role], ...events.map((event) => WORKER_TOOLS[event])].join(","),
 		],
 	};
 }
 
 interface WorkerEnvironment {
 	role: WorkerRole;
+	events: WorkerEvent[];
 	run_id: string;
 	issue_id: string;
 	main_pane: string;
 }
 
 export function workerEnvironment(environment: NodeJS.ProcessEnv): WorkerEnvironment {
+	const role = parseWorkerRole(environment.PI_AUTO_DAG_WORKER_ROLE);
 	return {
-		role: parseWorkerRole(environment.PI_AUTO_DAG_WORKER_ROLE),
+		role,
+		events: parseWorkerEvents(environment.PI_AUTO_DAG_WORKER_EVENTS?.split(",") ?? WORKER_ROLE_EVENTS[role], role),
 		run_id: nonEmptyString(environment.PI_AUTO_DAG_RUN_ID, "PI_AUTO_DAG_RUN_ID"),
 		issue_id: nonEmptyString(environment.PI_AUTO_DAG_ISSUE_ID, "PI_AUTO_DAG_ISSUE_ID"),
 		main_pane: nonEmptyString(environment.PI_AUTO_DAG_MAIN_PANE, "PI_AUTO_DAG_MAIN_PANE"),
@@ -91,7 +97,7 @@ export async function sendWorkerEnvelope(
 	runner: CommandRunner = runCommand,
 	cwd = process.cwd(),
 ): Promise<WorkerEnvelope> {
-	if (!WORKER_ROLE_EVENTS[worker.role].includes(type)) {
+	if (!worker.events.includes(type)) {
 		throw new Error(`${worker.role} worker cannot send ${type}`);
 	}
 	const envelope: WorkerEnvelope = {
@@ -124,7 +130,7 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 		const worker = workerEnvironment(environment);
 		const runner = options.runner ?? runCommand;
 		const cwd = options.cwd ?? process.cwd();
-		for (const type of WORKER_ROLE_EVENTS[worker.role]) registerWorkerTool(pi, worker, type, runner, cwd);
+		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd);
 	};
 }
 
@@ -143,7 +149,7 @@ function registerWorkerTool(
 		parameters: definition.parameters,
 		async execute(_toolCallId, params) {
 			const envelope = await sendWorkerEnvelope(worker, type, definition.payload(params as Record<string, unknown>), runner, cwd);
-			return { content: [{ type: "text", text: `Sent ${type} for ${worker.issue_id}.` }], details: envelope };
+			return { content: [{ type: "text", text: `Sent ${type} for ${worker.issue_id}.` }], details: envelope, terminate: true };
 		},
 	}));
 }
@@ -164,6 +170,25 @@ function eventDefinition(type: WorkerEvent): {
 		case "block_task":
 			return { label: "Block task", description: "Report a blocker for the prompted task attempt and review round.", parameters: Type.Object({ reason: Type.String(), attempt: Type.Integer({ minimum: 1 }), review_round: Type.Integer({ minimum: 1 }) }), payload: (params) => params };
 	}
+}
+
+export function workerIssueContext(issue: LocalIssue, includeTesting: boolean): Record<string, unknown> {
+	return {
+		id: issue.id,
+		title: issue.title,
+		purpose: issue.purpose,
+		acceptance: issue.acceptance,
+		...(includeTesting ? { testing: issue.testing } : {}),
+	};
+}
+
+function parseWorkerEvents(value: unknown, role: WorkerRole): WorkerEvent[] {
+	if (!Array.isArray(value) || !value.length) throw new Error("worker events must be a non-empty array");
+	const events = [...new Set(value.map((event) => oneOf(event, Object.keys(WORKER_TOOLS) as WorkerEvent[], "worker event")))];
+	for (const event of events) {
+		if (!WORKER_ROLE_EVENTS[role].includes(event)) throw new Error(`${role} worker cannot send ${event}`);
+	}
+	return events;
 }
 
 function parseWorkerRole(value: unknown): WorkerRole {

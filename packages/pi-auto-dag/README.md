@@ -58,7 +58,7 @@ Add this package setting to `settings.json` in every worker profile directory:
 When a worker starts, Auto DAG sets `PI_CODING_AGENT_DIR` to the selected profile directory. Pi loads that directory's settings and registers role-specific tools from `worker.ts`:
 
 - Implementers get tools to request review or report a blocker.
-- Reviewers get tools to submit reviews, report PR health, or report a blocker.
+- Reviewers get only phase-valid tools: ordinary and final-gate reviewers submit reviews or blockers; PR-health reviewers can also report health.
 
 Without `worker.ts`, workers cannot send results back to the main run.
 

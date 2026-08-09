@@ -28,6 +28,8 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(state.tasks["final-check"].status, "pending");
 	assert.equal(state.tasks.alpha.worktree, childWorktreePath(project.root, RUN_ID, "alpha"));
 	await assert.rejects(readFile(join(state.tasks.alpha.worktree!, ".context")), /ENOENT/);
+	const implementerPrompt = JSON.parse(implementerPrompts(herdr).at(-1)!);
+	assert.deepEqual(Object.keys(implementerPrompt.issue).sort(), ["acceptance", "id", "purpose", "testing", "title"]);
 
 	const alpha = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	const tabReads = herdr.count("tab list");
@@ -37,7 +39,10 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(herdr.count("pane list"), paneReads + 1);
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.activity_started_at, "2026-08-09T00:00:00.000Z");
-	assert.match(reviewPrompts(herdr).at(-1)!, /npm test -- alpha/);
+	const reviewPrompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.equal(reviewPrompt.command, "npm test -- alpha");
+	assert.deepEqual(Object.keys(reviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	assert.equal("testing" in reviewPrompt, false);
 	assert.equal(herdr.count("pane split"), 1);
 
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));

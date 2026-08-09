@@ -12,7 +12,7 @@ import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
 import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
-import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerAgentName, workerEnvironment, WORKER_TOOLS } from "../src/worker.ts";
+import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerAgentName, workerEnvironment, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
@@ -278,6 +278,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
 		environment: {
 			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
+			PI_AUTO_DAG_WORKER_EVENTS: "submit_review,block_task",
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
@@ -285,18 +286,19 @@ test("extensions separate public lifecycle tools and show active workers", async
 	})({ registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); } } as never);
 	assert.deepEqual(workerTools.map((tool) => tool.name), [
 		WORKER_TOOLS.submit_review,
-		WORKER_TOOLS.submit_health,
 		WORKER_TOOLS.block_task,
 	]);
-	const workerResult = await workerTools[0].execute("call", { commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown };
+	const workerResult = await workerTools[0].execute("call", { commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown; terminate: boolean };
 	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
 	assert.equal((workerResult.details as { type: string }).type, "submit_review");
+	assert.equal(workerResult.terminate, true);
 	const inertWorkerTools: Array<{ name: string }> = [];
 	createWorkerExtension({ environment: {} })({ registerTool(tool: { name: string }) { inertWorkerTools.push(tool); } } as never);
 	assert.deepEqual(inertWorkerTools, []);
 
 	const launch = createWorkerLaunch({
 		role: "implementer",
+		events: WORKER_ROLE_EVENTS.implementer,
 		profile_path: "/tmp/coder",
 		main_worktree: "/tmp/project",
 		run_id: RUN_ID,
@@ -309,18 +311,30 @@ test("extensions separate public lifecycle tools and show active workers", async
 	]);
 	const reviewerLaunch = createWorkerLaunch({
 		role: "reviewer",
+		events: ["submit_review", "block_task"],
 		profile_path: "/tmp/reviewer",
 		main_worktree: "/tmp/project",
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
 	});
-	assert.match(reviewerLaunch.args.at(-1)!, /^read,bash,grep,find,ls,/);
+	assert.equal(reviewerLaunch.args.at(-1), "read,bash,grep,find,ls,auto_dag_submit_review,auto_dag_block_task");
+	const healthReviewerLaunch = createWorkerLaunch({
+		role: "reviewer",
+		events: WORKER_ROLE_EVENTS.reviewer,
+		profile_path: "/tmp/reviewer",
+		main_worktree: "/tmp/project",
+		run_id: RUN_ID,
+		issue_id: "core",
+		main_pane: "main-pane",
+	});
+	assert.match(healthReviewerLaunch.args.at(-1)!, /auto_dag_submit_health/);
 
 	const calls: unknown[][] = [];
 	const envelope = await sendWorkerEnvelope(
 		workerEnvironment({
 			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
+			PI_AUTO_DAG_WORKER_EVENTS: "submit_review,block_task",
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
