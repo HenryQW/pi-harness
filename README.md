@@ -8,6 +8,7 @@ Public Pi packages under `@henryqw` scope.
 | --- | --- | --- |
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | `pi install npm:@henryqw/pi-auto-compact` | Compact context at 50% and resume current task. |
 | [`@henryqw/pi-model-thinking`](./packages/pi-model-thinking) | `pi install npm:@henryqw/pi-model-thinking` | Remember chosen thinking level per model. |
+| [`@henryqw/pi-open-in`](./packages/pi-open-in) | `pi install npm:@henryqw/pi-open-in` | Open current working directory with configurable command. |
 
 ## Development
 
@@ -37,4 +38,5 @@ See [`docs/releasing.md`](./docs/releasing.md). Each package publishes independe
 ```bash
 pi install npm:@henryqw/pi-auto-compact
 pi install npm:@henryqw/pi-model-thinking
+pi install npm:@henryqw/pi-open-in
 ```

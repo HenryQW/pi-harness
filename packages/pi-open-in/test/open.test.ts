@@ -1,0 +1,85 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import openInExtension from "../extensions/open.ts";
+
+type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+
+type Registration = {
+	name: string;
+	description?: string;
+	handler: Command;
+};
+
+function loadCommands(calls: Array<{ command: string; args: string[] }>): Map<string, Registration> {
+	const commands = new Map<string, Registration>();
+	openInExtension({
+		registerCommand(name: string, options: { description?: string; handler: Command }) {
+			commands.set(name, { name, ...options });
+		},
+		exec: async (command: string, args: string[]) => {
+			calls.push({ command, args });
+			return { stdout: "", stderr: "", code: 0, killed: false };
+		},
+	} as unknown as ExtensionAPI);
+	return commands;
+}
+
+async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-open-in-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+
+	try {
+		await run(agentDir);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+}
+
+test("/set-open-in saves command used by /open", async () => {
+	await withAgentDir(async (agentDir) => {
+		const calls: Array<{ command: string; args: string[] }> = [];
+		const commands = loadCommands(calls);
+		const ctx = { cwd: "/tmp/project" } as ExtensionCommandContext;
+
+		assert.deepEqual([...commands.keys()], ["open", "set-open-in"]);
+		assert.equal(
+			commands.get("open")?.description,
+			"Open the current path with `code <current-path>`",
+		);
+
+		await commands.get("set-open-in")?.handler("codex", ctx);
+		assert.deepEqual(
+			JSON.parse(await readFile(join(agentDir, "config", "pi-open-in.json"), "utf8")),
+			{ command: "codex" },
+		);
+
+		await commands.get("open")?.handler("", ctx);
+		assert.deepEqual(calls, [{ command: "codex", args: ["/tmp/project"] }]);
+	});
+});
+
+test("/open description uses configured command", async () => {
+	await withAgentDir(async (agentDir) => {
+		await mkdir(join(agentDir, "config"), { recursive: true });
+		await writeFile(
+			join(agentDir, "config", "pi-open-in.json"),
+			JSON.stringify({ command: "codex" }),
+		);
+
+		const commands = loadCommands([]);
+		assert.equal(
+			commands.get("open")?.description,
+			"Open the current path with `codex <current-path>`",
+		);
+	});
+});
