@@ -32,10 +32,13 @@ function writeConfig(config: Record<string, ThinkingLevel>): void {
 }
 
 export default function modelThinkingExtension(pi: ExtensionAPI): void {
-	const setThinkingLevel = (provider: string, id: string) => {
+	const setThinkingLevel = (provider: string, id: string): ThinkingLevel | undefined => {
 		try {
 			const level = readConfig()[`${provider}/${id}`];
-			if (level && level !== pi.getThinkingLevel()) pi.setThinkingLevel(level);
+			if (level) {
+				pi.setThinkingLevel(level);
+				return pi.getThinkingLevel();
+			}
 		} catch {
 			// Broken config must not block session startup or model selection.
 		}
@@ -77,7 +80,7 @@ export default function modelThinkingExtension(pi: ExtensionAPI): void {
 			}
 
 			if (level) pi.setThinkingLevel(level);
-			ctx.ui.notify(level ? `${key}: remembering ${level}` : `${key}: config cleared`, "info");
+			ctx.ui.notify(level ? `${key}: will auto set thinking to ${level}` : `${key}: config cleared`, "info");
 		},
 	});
 
@@ -85,5 +88,9 @@ export default function modelThinkingExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.model) setThinkingLevel(ctx.model.provider, ctx.model.id);
 	});
-	pi.on("model_select", (event) => setThinkingLevel(event.model.provider, event.model.id));
+	pi.on("model_select", (event, ctx) => {
+		const level = setThinkingLevel(event.model.provider, event.model.id);
+		// Pi writes its model status after handlers finish; defer so this message remains visible.
+		if (level) setTimeout(() => ctx.ui.notify(`Model Thinking auto set thinking to ${level}.`, "info"), 0);
+	});
 }

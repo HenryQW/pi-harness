@@ -20,6 +20,7 @@ test("persists and applies model thinking levels", async () => {
 		let command: Command | undefined;
 		let commandName: string | undefined;
 		const levels: string[] = [];
+		let status = "";
 		modelThinkingExtension({
 			on(event: string, handler: Handler) {
 				handlers.set(event, handler);
@@ -38,7 +39,9 @@ test("persists and applies model thinking levels", async () => {
 			model,
 			ui: {
 				select: async () => selected,
-				notify() {},
+				notify(message: string) {
+					status = message;
+				},
 			},
 		} as unknown as ExtensionContext;
 
@@ -52,8 +55,18 @@ test("persists and applies model thinking levels", async () => {
 		assert.deepEqual(levels, ["high"]);
 
 		levels.length = 0;
-		handlers.get("model_select")?.({ model }, ctx);
+		status = "";
+		await handlers.get("model_select")?.({ model }, ctx);
+		status = `Model: ${model.id}`; // Pi writes its own status after model_select handlers finish.
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		assert.deepEqual(levels, ["high"]);
+		assert.equal(status, "Model Thinking auto set thinking to high.");
+
+		status = "";
+		await handlers.get("model_select")?.({ model, previousModel: { provider: "other", id: "model" } }, ctx);
+		status = `Model: ${model.id}`;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(status, "Model Thinking auto set thinking to high.");
 
 		selected = "unknown";
 		await command?.("", ctx);
