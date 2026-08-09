@@ -36,7 +36,7 @@ Run `/auto-compact`, then enter threshold percentage. Config lives in `~/.pi/age
 }
 ```
 
-Threshold must be above 0 and below 100. Missing config defaults to 50%. Restart or `/reload` after manual edits; command changes apply immediately.
+Threshold must be at least 25% and below 100%; lower values are not meaningful. Missing config defaults to 50%. Restart or `/reload` after manual edits; command changes apply immediately.
 
 ## Behavior
 

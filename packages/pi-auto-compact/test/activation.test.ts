@@ -100,6 +100,7 @@ test("reads and writes autoCompactThreshold", async () => {
 		const commands = new Map<string, Command>();
 		const handlers = loadExtension(commands);
 		let compactions = 0;
+		let input = "40";
 		const notices: string[] = [];
 		const ctx = {
 			cwd: tempRoot,
@@ -107,7 +108,7 @@ test("reads and writes autoCompactThreshold", async () => {
 			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
 			compact: () => { compactions++; },
 			ui: {
-				input: async () => "40",
+				input: async () => input,
 				notify: (message: string) => notices.push(message),
 			},
 		} as unknown as ExtensionContext;
@@ -124,6 +125,11 @@ test("reads and writes autoCompactThreshold", async () => {
 		handlers.get("turn_start")?.({} as never, ctx);
 		assert.equal(compactions, 1);
 		assert.deepEqual(notices, ["Auto-compact threshold set to 40%."]);
+
+		input = "20";
+		await commands.get("auto-compact")?.("", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 40 });
+		assert.equal(notices.at(-1), "Auto-compact threshold below 25% is not meaningful.");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

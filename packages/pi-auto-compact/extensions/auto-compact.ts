@@ -22,10 +22,11 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
  * callback sends follow-up user message, which resumes task after summary.
  */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
+const MIN_COMPACT_THRESHOLD_PERCENT = 25;
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
 function isValidThreshold(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 100;
+	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
 }
 
 function readConfig(): { autoCompactThreshold: number } {
@@ -42,7 +43,9 @@ function readConfig(): { autoCompactThreshold: number } {
 		throw new Error("Config must be an object.");
 	}
 	const threshold = (value as Record<string, unknown>).autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	if (!isValidThreshold(threshold)) throw new Error("autoCompactThreshold must be above 0 and below 100.");
+	if (!isValidThreshold(threshold)) {
+		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
+	}
 	return { autoCompactThreshold: threshold };
 }
 
@@ -219,8 +222,12 @@ export default function (pi: ExtensionAPI) {
 			if (input === undefined) return;
 
 			const threshold = Number(input.trim());
+			if (Number.isFinite(threshold) && threshold < MIN_COMPACT_THRESHOLD_PERCENT) {
+				ctx.ui.notify("Auto-compact threshold below 25% is not meaningful.", "error");
+				return;
+			}
 			if (!isValidThreshold(threshold)) {
-				ctx.ui.notify("Threshold must be a number above 0 and below 100.", "error");
+				ctx.ui.notify("Threshold must be at least 25% and below 100%.", "error");
 				return;
 			}
 
