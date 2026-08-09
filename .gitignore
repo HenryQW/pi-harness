@@ -8,3 +8,9 @@ npm-debug.log*
 .env.*
 .DS_Store
 .context/
+
+# Agent local context
+.context/progress.md
+.context/decisions.jsonl
+.context/memory-context.md
+.context/memory-distill-preview.json

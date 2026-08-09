@@ -1,5 +1,7 @@
 # Agent instructions
 
+OBSIDIAN_PROJECT=`${OBSIDIAN_ROOT}/projects/Pi/Packages`
+
 ## Package release policy
 
 This repository is npm workspace monorepo. Each public package under `packages/*` releases independently.
@@ -33,3 +35,7 @@ Triage uses default canonical labels. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Multi-context layout uses root `CONTEXT-MAP.md` and per-package `CONTEXT.md` files. See `docs/agents/domain.md`.
+
+### Project memory
+
+Repository-wide memory lives under `${OBSIDIAN_PROJECT}/Agent/Memory/index.md`. Each package `AGENTS.md` declares its package-specific Obsidian project.
