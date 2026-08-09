@@ -181,7 +181,7 @@ for (const rejectedOperation of ["status", "add", "commit", "post-commit status"
 	});
 }
 
-test("plan-delivery resolves the Git top-level and refuses its active execution", async (t) => {
+test("dag-plan resolves the Git top-level and refuses its active execution", async (t) => {
 	const project = await setup(t);
 	await writeDeliveryGraph(project.root, draft);
 	const subdirectory = join(project.root, "packages", "app");
@@ -196,12 +196,17 @@ test("plan-delivery resolves the Git top-level and refuses its active execution"
 	});
 
 	let command: ((args: string, ctx: any) => Promise<void>) | undefined;
+	let commandName: string | undefined;
 	const messages: string[] = [];
 	registerPlanning({
-		registerCommand(_name: string, options: { handler: typeof command }) { command = options.handler; },
+		registerCommand(name: string, options: { handler: typeof command }) {
+			commandName = name;
+			command = options.handler;
+		},
 		registerTool() {},
 		sendUserMessage(message: string) { messages.push(message); },
 	} as never);
+	assert.equal(commandName, "dag-plan");
 	assert.ok(command);
 	const notifications: string[] = [];
 	const ctx = {

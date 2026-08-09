@@ -225,46 +225,68 @@ test("extensions separate public lifecycle tools and show active workers", async
 		activity_started_at: "2099-01-01T00:00:00.000Z",
 	};
 	const publicTools: Array<{ name: string }> = [];
+	const publicCommands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
 	let activeTools = ["read", ...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)];
+	let herdrUnavailable = false;
+	let herdrAgents = [
+		{ pane_id: "pane-core", agent_status: "working", workspace_id: "main-workspace" },
+		{ pane_id: "pane-release", agent_status: "idle", workspace_id: "main-workspace" },
+		{ pane_id: "pane-health", agent_status: "working", workspace_id: "other-workspace" },
+	];
+	let nextHerdrProbe: Promise<{ code: number; stdout: string; stderr: string }> | undefined;
 	let refreshAfterTool: ((_event: unknown, ctx: unknown) => Promise<void>) | undefined;
+	let handleInput: ((event: { text: string }, ctx: any) => Promise<unknown>) | undefined;
 	createOrchestratorExtension({
-		runner: async () => ({
-			code: 0,
-			stdout: JSON.stringify({ result: { agents: [
-				{ pane_id: "pane-core", agent_status: "working", workspace_id: "main-workspace" },
-				{ pane_id: "pane-release", agent_status: "idle", workspace_id: "main-workspace" },
-				{ pane_id: "pane-health", agent_status: "working", workspace_id: "other-workspace" },
-			] } }),
-			stderr: "",
-		}),
+		runner: async () => {
+			if (nextHerdrProbe) {
+				const probe = nextHerdrProbe;
+				nextHerdrProbe = undefined;
+				return await probe;
+			}
+			return herdrUnavailable ? {
+				code: 1,
+				stdout: "",
+				stderr: "Herdr daemon unavailable",
+			} : {
+				code: 0,
+				stdout: JSON.stringify({ result: { agents: herdrAgents } }),
+				stderr: "",
+			};
+		},
 		lifecycle: {
 			start: async () => { throw new Error("not called"); },
 			status: async () => runningState,
-			resume: async () => { throw new Error("not called"); },
+			resume: async () => runningState,
 			resolve: async () => { throw new Error("not called"); },
 			abort: async () => { throw new Error("not called"); },
 			health: async () => { throw new Error("not called"); },
 		},
 	})({
-		on(event: string, handler: (_event: unknown, ctx: unknown) => Promise<void>) { if (event === "tool_execution_end") refreshAfterTool = handler; },
-		registerCommand() {},
+		on(event: string, handler: any) {
+			if (event === "tool_execution_end") refreshAfterTool = handler;
+			if (event === "input") handleInput = handler;
+		},
+		registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { publicCommands.set(name, command); },
 		registerTool(tool: { name: string }) { publicTools.push(tool); },
 		sendUserMessage() {},
 		getActiveTools() { return activeTools; },
 		setActiveTools(names: string[]) { activeTools = names; },
 	} as never);
 	assert.deepEqual(publicTools.map((tool) => tool.name), [...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)]);
+	assert.deepEqual([...publicCommands.keys()], ["dag-plan", "dag-widget"]);
 	const widgets: unknown[][] = [];
-	assert.ok(refreshAfterTool);
-	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.start }, {
+	const notifications: string[] = [];
+	const widgetCtx = {
 		cwd: "/tmp",
 		mode: "tui",
 		ui: {
 			theme: { fg: (_color: string, text: string) => text },
 			setWidget: (...args: unknown[]) => { widgets.push(args); },
-			notify() {},
+			notify(message: string) { notifications.push(message); },
 		},
-	});
+	};
+	assert.ok(refreshAfterTool);
+	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.start }, widgetCtx);
 	assert.deepEqual(widgets.at(-1), ["auto-dag-workers", [
 		"Auto DAG workers",
 		"● core · coding · working · 0s",
@@ -281,6 +303,80 @@ test("extensions separate public lifecycle tools and show active workers", async
 		ORCHESTRATOR_TOOLS.resolve,
 		ORCHESTRATOR_TOOLS.health,
 	]);
+
+	const widgetCommand = publicCommands.get("dag-widget")!;
+	await widgetCommand.handler("hide", widgetCtx);
+	assert.deepEqual(widgets.at(-1), ["auto-dag-workers", undefined]);
+	await widgetCommand.handler("show", widgetCtx);
+	assert.equal((widgets.at(-1)?.[1] as string[]).at(-1), "! PR health · triaging · missing · 0s");
+	await widgetCommand.handler("fix", widgetCtx);
+	assert.equal(notifications.at(-1), "Removed 1 stuck Auto DAG widget entry.");
+	assert.deepEqual(widgets.at(-1), ["auto-dag-workers", [
+		"Auto DAG workers",
+		"● core · coding · working · 0s",
+		"○ release · reviewing · idle · 0s",
+		"! final-check · blocked · 0s · needs input",
+	]]);
+	runningState.health.activity_started_at = "2099-01-01T00:00:01.000Z";
+	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.status }, widgetCtx);
+	assert.equal((widgets.at(-1)?.[1] as string[]).at(-1), "! PR health · triaging · missing · 0s");
+
+	herdrUnavailable = true;
+	await widgetCommand.handler("fix", widgetCtx);
+	assert.equal(notifications.at(-1), "Auto DAG widget fix could not read Herdr worker status: herdr agent list failed: Herdr daemon unavailable. No entries removed.");
+	assert.equal((widgets.at(-1)?.[1] as string[]).length, 5);
+
+	herdrUnavailable = false;
+	let releaseStaleProbe!: (result: { code: number; stdout: string; stderr: string }) => void;
+	nextHerdrProbe = new Promise((resolve) => { releaseStaleProbe = resolve; });
+	const staleRefresh = refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.status }, widgetCtx);
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+	runningState.health.reviewer_pane = "pane-health-new";
+	runningState.health.activity_started_at = "2099-01-01T00:00:02.000Z";
+	herdrAgents = [
+		{ pane_id: "pane-core", agent_status: "working", workspace_id: "main-workspace" },
+		{ pane_id: "pane-release", agent_status: "idle", workspace_id: "main-workspace" },
+		{ pane_id: "pane-health-new", agent_status: "working", workspace_id: "main-workspace" },
+	];
+	assert.ok(handleInput);
+	let inputCompleted = false;
+	const input = handleInput({ text: JSON.stringify({
+		version: 1,
+		type: "request_review",
+		run_id: RUN_ID,
+		issue_id: "core",
+		role: "implementer",
+		payload: { commit: "head", attempt: 1, review_round: 1 },
+	}) }, widgetCtx).then(() => { inputCompleted = true; });
+	const fixed = widgetCommand.handler("fix", widgetCtx);
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+	const inputCompletedBeforeProbe = inputCompleted;
+	releaseStaleProbe({
+		code: 0,
+		stdout: JSON.stringify({ result: { agents: herdrAgents.slice(0, 2) } }),
+		stderr: "",
+	});
+	await Promise.all([staleRefresh, input, fixed]);
+	assert.equal(inputCompletedBeforeProbe, true);
+	assert.equal(notifications.at(-1), "Removed 0 stuck Auto DAG widget entries.");
+	assert.ok((widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
+
+	const staleLiveAgents = [...herdrAgents];
+	let releaseStaleLiveProbe!: (result: { code: number; stdout: string; stderr: string }) => void;
+	nextHerdrProbe = new Promise((resolve) => { releaseStaleLiveProbe = resolve; });
+	const staleLiveRefresh = refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.status }, widgetCtx);
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+	herdrAgents = herdrAgents.slice(0, 2);
+	await widgetCommand.handler("fix", widgetCtx);
+	assert.equal(notifications.at(-1), "Removed 1 stuck Auto DAG widget entry.");
+	assert.ok(!(widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
+	releaseStaleLiveProbe({
+		code: 0,
+		stdout: JSON.stringify({ result: { agents: staleLiveAgents } }),
+		stderr: "",
+	});
+	await staleLiveRefresh;
+	assert.ok(!(widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
 
 	const workerTools: Array<{ name: string; execute: Function }> = [];
 	createWorkerExtension({

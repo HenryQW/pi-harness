@@ -16,11 +16,11 @@ export const PLANNING_TOOLS = {
 } as const;
 
 export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCommand): void {
-	pi.registerCommand("plan-delivery", {
+	pi.registerCommand("dag-plan", {
 		description: "Plan and approve a local Delivery Graph without starting execution",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
-				ctx.ui.notify("/plan-delivery requires interactive TUI mode.", "error");
+				ctx.ui.notify("/dag-plan requires interactive TUI mode.", "error");
 				return;
 			}
 			if (!ctx.isIdle()) {
@@ -28,7 +28,7 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 				return;
 			}
 			if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) {
-				ctx.ui.notify("/plan-delivery requires current Pi session inside Herdr.", "error");
+				ctx.ui.notify("/dag-plan requires current Pi session inside Herdr.", "error");
 				return;
 			}
 			let root: string;
@@ -61,7 +61,7 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 			const existing = await inspectExistingGraph(root);
 			const mode = await planningMode(existing, ctx);
 			if (!mode) return;
-			const instructions = await readFile(new URL("../prompts/plan-delivery.md", import.meta.url), "utf8");
+			const instructions = await readFile(new URL("../prompts/dag-plan.md", import.meta.url), "utf8");
 			pi.sendUserMessage([
 				instructions.trim(),
 				"",
