@@ -21,18 +21,21 @@ export async function inspectIntegrationBranch(
 	return inspectIntegrationBranchAtRoot(await integrationRoot(mainWorktree, runner), runner);
 }
 
-export async function inspectIntegrationWorktree(
+export async function inspectIntegrationCandidate(
 	mainWorktree: string,
 	runner: CommandRunner = runCommand,
 ) {
 	const root = await integrationRoot(mainWorktree, runner);
-	const dirty = await commandOutput(runner, "git", ["status", "--porcelain=v1", "--untracked-files=all"], root);
-	if (dirty) throw new Error("Main integration worktree is dirty");
-	const branch = await inspectIntegrationBranchAtRoot(root, runner);
-	return {
-		...branch,
-		source_commit: await commandOutput(runner, "git", ["rev-parse", "HEAD"], root),
-	};
+	const current = await inspectActiveIntegrationWorktreeAtRoot(root, runner);
+	const candidate = await inspectIntegrationBranchAtRoot(root, runner, current.branch);
+	return { ...current, default_branch: candidate.default_branch };
+}
+
+export async function inspectActiveIntegrationWorktree(
+	mainWorktree: string,
+	runner: CommandRunner = runCommand,
+) {
+	return inspectActiveIntegrationWorktreeAtRoot(await integrationRoot(mainWorktree, runner), runner);
 }
 
 async function integrationRoot(mainWorktree: string, runner: CommandRunner): Promise<string> {
@@ -43,19 +46,21 @@ async function integrationRoot(mainWorktree: string, runner: CommandRunner): Pro
 	return root;
 }
 
-async function inspectIntegrationBranchAtRoot(root: string, runner: CommandRunner) {
-	const integrationBranch = await readCurrentBranch(runner, root);
+async function inspectActiveIntegrationWorktreeAtRoot(root: string, runner: CommandRunner) {
+	const dirty = await commandOutput(runner, "git", ["status", "--porcelain=v1", "--untracked-files=all"], root);
+	if (dirty) throw new Error("Main integration worktree is dirty");
+	const branch = await readCurrentBranch(runner, root);
+	if (branch === undefined) throw new Error("Main integration worktree is detached");
+	return { branch, head: await commandOutput(runner, "git", ["rev-parse", "HEAD"], root) };
+}
+
+async function inspectIntegrationBranchAtRoot(root: string, runner: CommandRunner, currentBranch?: string) {
+	const integrationBranch = currentBranch ?? await readCurrentBranch(runner, root);
 	if (integrationBranch === undefined) throw new Error("Main integration worktree is detached");
-	const { name: defaultBranch, ref: defaultRef } = await resolveDefaultBranch(root, runner);
+	const { name: defaultBranch } = await resolveDefaultBranch(root, runner);
 	if (integrationBranch === defaultBranch) {
 		throw new Error(`Main integration worktree must not use the default branch: ${defaultBranch}`);
 	}
-	const baseArgs = ["merge-base", "--is-ancestor", defaultRef, "HEAD"];
-	const base = await runner("git", baseArgs, { cwd: root });
-	if (base.code === 1) {
-		throw new Error(`Integration branch ${integrationBranch} has an unsuitable base; it must contain ${defaultRef}`);
-	}
-	if (base.code !== 0) throw new Error(commandFailure("git", baseArgs, base));
 	return { integration_branch: integrationBranch, default_branch: defaultBranch };
 }
 
