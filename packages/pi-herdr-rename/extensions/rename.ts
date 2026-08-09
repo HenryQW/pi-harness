@@ -1,29 +1,28 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
+	BorderedLoader,
 	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-const DEFAULT_MODEL = "openai-codex/gpt-5.6-luna";
+const WIDGET_KEY = "pi-herdr-rename";
+const WIDGET_RESULT_MS = 2_000;
 const MAX_MESSAGE_CHARS = 1_000;
 const MAX_CONTEXT_CHARS = 4_000;
 const TITLE_PROMPT =
 	"Return only a short chat title for the current conversation topic, prioritizing the most recent user intent: lowercase, at most five words, and at most 60 characters.";
 const configPath = () => join(getAgentDir(), "config", "pi-herdr-rename.json");
 
-async function configuredModel(): Promise<string> {
+async function configuredModel(): Promise<string | undefined> {
 	try {
 		const config: unknown = JSON.parse(await readFile(configPath(), "utf8"));
 		if (config && typeof config === "object" && !Array.isArray(config)) {
 			const model = (config as { model?: unknown }).model;
 			if (typeof model === "string" && /^[^\s/]+\/\S+$/.test(model)) return model;
 		}
-	} catch {
-		// Missing or malformed config uses the default model.
-	}
-	return DEFAULT_MODEL;
+	} catch {}
 }
 
 async function saveModel(model: string): Promise<void> {
@@ -87,6 +86,7 @@ function recentConversation(ctx: ExtensionContext, fallback?: string): string | 
 
 async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<string> {
 	const key = await configuredModel();
+	if (!key) throw new Error("Rename model is not configured. Run /rename-model.");
 	const separator = key.indexOf("/");
 	const provider = key.slice(0, separator);
 	const id = key.slice(separator + 1);
@@ -131,6 +131,8 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 	let automaticStarted = false;
 	let sequence = 0;
 	let active: AbortController | undefined;
+	let widgetSequence = 0;
+	let widgetTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const isCurrent = (request: number, controller: AbortController) =>
 		request === sequence && active === controller && !controller.signal.aborted;
@@ -169,27 +171,40 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (isCurrent(request, controller)) active = undefined;
 	};
 
-	const rename = async (text: string, ctx: ExtensionContext, manual: boolean): Promise<void> => {
+	const rename = async (text: string, ctx: ExtensionContext, manual: boolean): Promise<string | undefined> => {
 		const { request, controller } = begin();
 		try {
 			const title = await generateTitle(text, ctx, controller.signal);
 			if (!isCurrent(request, controller)) return;
 			pi.setSessionName(title);
 			await applyHerdr(title, request, controller);
+			return title;
 		} catch (error) {
 			if (manual && isCurrent(request, controller)) {
 				ctx.ui.notify(error instanceof Error ? error.message : "Rename failed.", "warning");
 			}
+			return undefined;
 		} finally {
 			finish(request, controller);
 		}
 	};
 
-	pi.on("session_start", (_event, ctx) => {
+	const clearWidget = (ctx: ExtensionContext) => {
+		widgetSequence++;
+		if (widgetTimer) clearTimeout(widgetTimer);
+		widgetTimer = undefined;
+		ctx.ui.setWidget(WIDGET_KEY, undefined);
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		clearWidget(ctx);
 		active?.abort();
 		active = undefined;
 		sequence++;
 		latestUserText = latestSessionUserText(ctx);
+		if (!(await configuredModel())) {
+			ctx.ui.notify("Run /rename-model to configure chat title generation.", "warning");
+		}
 		const title = pi.getSessionName();
 		automaticStarted = Boolean(title || latestUserText);
 		if (!title) return;
@@ -210,7 +225,8 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		return { action: "continue" };
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
+		clearWidget(ctx);
 		active?.abort();
 		active = undefined;
 		sequence++;
@@ -224,7 +240,26 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("No user text is available to rename this chat.", "warning");
 				return;
 			}
-			await rename(context, ctx, true);
+			if (widgetTimer) clearTimeout(widgetTimer);
+			widgetTimer = undefined;
+			const widgetRequest = ++widgetSequence;
+			ctx.ui.setWidget(
+				WIDGET_KEY,
+				(tui, theme) => new BorderedLoader(tui, theme, "renaming...", { cancellable: false }),
+			);
+			const title = await rename(context, ctx, true);
+			if (widgetRequest !== widgetSequence) return;
+			if (!title) {
+				ctx.ui.setWidget(WIDGET_KEY, undefined);
+				return;
+			}
+			ctx.ui.setWidget(WIDGET_KEY, [`renamed to ${title}`]);
+			widgetTimer = setTimeout(() => {
+				if (widgetRequest !== widgetSequence) return;
+				ctx.ui.setWidget(WIDGET_KEY, undefined);
+				widgetTimer = undefined;
+			}, WIDGET_RESULT_MS);
+			widgetTimer.unref?.();
 		},
 	});
 

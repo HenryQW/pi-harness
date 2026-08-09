@@ -23,11 +23,11 @@ pi remove npm:@henryqw/pi-herdr-rename
 
 ## Manual rename
 
-Run `/rename` to generate a title from up to the three most recent user/assistant rounds. It uses text only, caps each message at 1,000 characters and the complete context at 4,000 characters, and applies the same Pi and Herdr rules. The command warns without changing anything when no user text exists or generation fails. If requests overlap, the latest rename request wins.
+Run `/rename` to generate a title from up to the three most recent user/assistant rounds. It uses text only, caps each message at 1,000 characters and the complete context at 4,000 characters, and applies the same Pi and Herdr rules. An animated widget shows `renaming...`, briefly changes to `renamed to <title>`, then disappears. The command warns without changing anything when no user text exists or generation fails. If requests overlap, the latest rename request wins.
 
 ## Rename model
 
-Run `/rename-model` to choose an available authenticated text model with Pi's native selector. The default is `openai-codex/gpt-5.6-luna`.
+Run `/rename-model` to choose the model from Pi's available authenticated text models. Until a valid selection is saved, every session start prompts you to run the command and title generation remains disabled.
 
 The selection is saved in:
 
@@ -39,7 +39,7 @@ The selection is saved in:
 }
 ```
 
-Missing or malformed configuration uses the default. An unavailable configured model is not silently replaced; run `/rename-model` to choose another model.
+Missing, malformed, or unavailable configuration never falls back to another model.
 
 ## Development
 

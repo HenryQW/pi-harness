@@ -21,6 +21,7 @@ const success = (stdout = "") => ({ stdout, stderr: "", code: 0, killed: false }
 function harness(options: {
 	sessionName?: string;
 	models?: Model[];
+	currentModel?: Model;
 	branch?: any[];
 	complete?: (call: CompletionCall) => Promise<any>;
 	exec?: (args: string[], signal?: AbortSignal) => Promise<ReturnType<typeof success>>;
@@ -32,6 +33,7 @@ function harness(options: {
 	const notifications: string[] = [];
 	const completionCalls: CompletionCall[] = [];
 	const execCalls: string[][] = [];
+	const widgets: unknown[] = [];
 	const models = options.models ?? [defaultModel];
 
 	const api = {
@@ -59,6 +61,7 @@ function harness(options: {
 	} as unknown as ExtensionAPI;
 
 	const ctx = {
+		model: options.currentModel ?? defaultModel,
 		modelRegistry: {
 			getAvailable: () => models,
 			complete: async (model: Model, context: any, completionOptions: any) => {
@@ -71,11 +74,12 @@ function harness(options: {
 		ui: {
 			notify: (message: string) => notifications.push(message),
 			select: async () => options.select,
+			setWidget: (_key: string, content: unknown) => widgets.push(content),
 		},
 	} as unknown as ExtensionContext;
 
 	herdrRenameExtension(api);
-	return { handlers, commands, ctx, names, notifications, completionCalls, execCalls };
+	return { handlers, commands, ctx, names, notifications, completionCalls, execCalls, widgets };
 }
 
 async function eventually(check: () => boolean): Promise<void> {
@@ -93,6 +97,11 @@ async function withAgentDir(run: (dir: string) => Promise<void>): Promise<void> 
 	process.env.PI_CODING_AGENT_DIR = dir;
 	delete process.env.HERDR_PANE_ID;
 	try {
+		await mkdir(join(dir, "config"), { recursive: true });
+		await writeFile(
+			join(dir, "config", "pi-herdr-rename.json"),
+			JSON.stringify({ model: `${defaultModel.provider}/${defaultModel.id}` }),
+		);
 		await run(dir);
 	} finally {
 		if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -110,7 +119,7 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 			resolveCompletion = resolve;
 		});
 		const app = harness({ complete: async () => pending });
-		app.handlers.get("session_start")?.({}, app.ctx);
+		await app.handlers.get("session_start")?.({}, app.ctx);
 
 		app.handlers.get("input")?.({ source: "extension", text: "injected" }, app.ctx);
 		app.handlers.get("input")?.({ source: "interactive", text: "   ", images: [{}] }, app.ctx);
@@ -149,7 +158,7 @@ test("saved names skip the model and Herdr tabs rename only when they have one p
 					return success("{}");
 				},
 			});
-			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.handlers.get("session_start")?.({}, app.ctx);
 			await eventually(() => app.execCalls.some((args) => args[1] === "get" && args[0] === "tab"));
 			assert.equal(app.completionCalls.length, 0);
 			assert.equal(app.names.length, 0);
@@ -162,7 +171,7 @@ test("saved names skip the model and Herdr tabs rename only when they have one p
 test("manual rename warns without text and the latest overlapping request wins", async () => {
 	await withAgentDir(async () => {
 		const empty = harness({ sessionName: "saved" });
-		empty.handlers.get("session_start")?.({}, empty.ctx);
+		await empty.handlers.get("session_start")?.({}, empty.ctx);
 		await empty.commands.get("rename")?.("", empty.ctx);
 		assert.match(empty.notifications[0], /No user text/);
 
@@ -175,7 +184,7 @@ test("manual rename warns without text and the latest overlapping request wins",
 				return new Promise((resolve) => resolvers.push(resolve));
 			},
 		});
-		app.handlers.get("session_start")?.({}, app.ctx);
+		await app.handlers.get("session_start")?.({}, app.ctx);
 		app.handlers.get("input")?.({ source: "interactive", text: "first prompt" }, app.ctx);
 		const first = app.commands.get("rename")!("", app.ctx);
 		await eventually(() => resolvers.length === 1);
@@ -215,7 +224,7 @@ test("manual rename uses the latest three text rounds within a 4,000 character b
 			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "latest answer" }] } },
 		];
 		const app = harness({ sessionName: "saved", branch });
-		app.handlers.get("session_start")?.({}, app.ctx);
+		await app.handlers.get("session_start")?.({}, app.ctx);
 		await app.commands.get("rename")?.("", app.ctx);
 
 		const context = app.completionCalls[0].context.messages[0].content as string;
@@ -226,6 +235,23 @@ test("manual rename uses the latest three text rounds within a 4,000 character b
 		assert.match(context, /user: latest included request/);
 		assert.equal(context.match(/A/g)?.length, 1_000);
 		assert.ok(context.indexOf("first included") < context.indexOf("latest included"));
+	});
+});
+
+test("manual rename widget shows progress, result, then disappears", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	await withAgentDir(async () => {
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "rename this conversation" } }],
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		await app.commands.get("rename")?.("", app.ctx);
+
+		assert.equal(typeof app.widgets.at(-2), "function");
+		assert.deepEqual(app.widgets.at(-1), ["renamed to generated title"]);
+		t.mock.timers.tick(2_000);
+		assert.equal(app.widgets.at(-1), undefined);
 	});
 });
 
@@ -241,7 +267,7 @@ test("shutdown aborts automatic generation and invalid titles make no change", a
 				});
 			},
 		});
-		app.handlers.get("session_start")?.({}, app.ctx);
+		await app.handlers.get("session_start")?.({}, app.ctx);
 		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
 		await eventually(() => Boolean(signal));
 		app.handlers.get("session_shutdown")?.({}, app.ctx);
@@ -251,7 +277,7 @@ test("shutdown aborts automatic generation and invalid titles make no change", a
 		assert.deepEqual(app.names, []);
 
 		const invalid = harness({ complete: async () => response("one two three four five six") });
-		invalid.handlers.get("session_start")?.({}, invalid.ctx);
+		await invalid.handlers.get("session_start")?.({}, invalid.ctx);
 		invalid.handlers.get("input")?.({ source: "interactive", text: "prompt" }, invalid.ctx);
 		await eventually(() => invalid.completionCalls.length === 1);
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -259,25 +285,35 @@ test("shutdown aborts automatic generation and invalid titles make no change", a
 	});
 });
 
-test("rename model config defaults safely, persists selection, and never substitutes an unavailable model", async () => {
+test("rename model config is required, persists selection, and never substitutes another model", async () => {
 	await withAgentDir(async (dir) => {
 		const config = join(dir, "config", "pi-herdr-rename.json");
-		await mkdir(join(dir, "config"), { recursive: true });
-		await writeFile(config, "{broken");
+		await rm(config);
 
 		const other: Model = { provider: "other", id: "small", input: ["text"] };
-		const app = harness({ sessionName: "saved", models: [defaultModel, other], select: "other/small" });
-		app.handlers.get("session_start")?.({}, app.ctx);
+		const app = harness({
+			sessionName: "saved",
+			models: [defaultModel, other],
+			currentModel: other,
+			select: "other/small",
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.match(app.notifications.at(-1) ?? "", /Run \/rename-model/);
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.equal(app.notifications.filter((message) => message.includes("/rename-model")).length, 2);
 		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
 		await app.commands.get("rename")?.("", app.ctx);
-		assert.equal(app.completionCalls[0].model.id, defaultModel.id);
+		assert.equal(app.completionCalls.length, 0);
+		assert.match(app.notifications.at(-1) ?? "", /not configured/);
 
 		await app.commands.get("rename-model")?.("", app.ctx);
 		assert.deepEqual(JSON.parse(await readFile(config, "utf8")), { model: "other/small" });
+		await app.commands.get("rename")?.("", app.ctx);
+		assert.equal(app.completionCalls[0].model.id, other.id);
 
 		await writeFile(config, JSON.stringify({ model: "missing/model" }));
 		const unavailable = harness({ sessionName: "saved", models: [defaultModel] });
-		unavailable.handlers.get("session_start")?.({}, unavailable.ctx);
+		await unavailable.handlers.get("session_start")?.({}, unavailable.ctx);
 		unavailable.handlers.get("input")?.({ source: "interactive", text: "prompt" }, unavailable.ctx);
 		await unavailable.commands.get("rename")?.("", unavailable.ctx);
 		assert.equal(unavailable.completionCalls.length, 0);
@@ -295,12 +331,13 @@ test("later Herdr failure preserves the Pi name and pane rename", async () => {
 					? { stdout: "", stderr: "gone", code: 7, killed: false }
 					: success("{}"),
 		});
-		app.handlers.get("session_start")?.({}, app.ctx);
+		await app.handlers.get("session_start")?.({}, app.ctx);
 		await eventually(() => app.execCalls.some((args) => args[0] === "pane" && args[1] === "get"));
 		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
 		await app.commands.get("rename")?.("", app.ctx);
 		assert.deepEqual(app.names, ["generated title"]);
 		assert.ok(app.execCalls.some((args) => args[0] === "pane" && args[1] === "rename" && args.at(-1) === "generated title"));
 		assert.match(app.notifications.at(-1) ?? "", /Herdr pane failed/);
+		assert.equal(app.widgets.at(-1), undefined);
 	});
 });
