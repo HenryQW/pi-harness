@@ -12,7 +12,10 @@ import autoCompact from "../extensions/auto-compact.ts";
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 type Command = (args: string, ctx: ExtensionContext) => Promise<void>;
 
-function loadExtension(commands = new Map<string, Command>()): Map<string, Handler> {
+function loadExtension(
+	commands = new Map<string, Command>(),
+	sendUserMessage: (content: string) => void = () => {},
+): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
 	autoCompact({
 		on(event: string, handler: Handler) {
@@ -21,7 +24,7 @@ function loadExtension(commands = new Map<string, Command>()): Map<string, Handl
 		registerCommand(name: string, options: { handler: Command }) {
 			commands.set(name, options.handler);
 		},
-		sendUserMessage() {},
+		sendUserMessage,
 	} as unknown as ExtensionAPI);
 	return handlers;
 }
@@ -137,6 +140,40 @@ test("reads and writes autoCompactThreshold", async () => {
 	}
 });
 
+test("agent_end compacts without resuming completed work", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-agent-end-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+
+	try {
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		let onComplete: (() => void) | undefined;
+		let resumes = 0;
+		const handlers = loadExtension(new Map(), () => { resumes++; });
+		const ctx = {
+			cwd: tempRoot,
+			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+			compact: (options: { onComplete: () => void }) => { onComplete = options.onComplete; },
+			isIdle: () => true,
+		} as unknown as ExtensionContext;
+
+		handlers.get("session_start")?.(
+			{ type: "session_start", reason: "startup" } as never,
+			ctx,
+		);
+		handlers.get("agent_end")?.({ type: "agent_end", messages: [] } as never, ctx);
+		assert.ok(onComplete, "agent_end must trigger compaction");
+		onComplete();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(resumes, 0);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
 test("activates only when Pi built-in auto-compaction is disabled", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-activation-"));
 	const projectDir = join(tempRoot, "project");
@@ -181,7 +218,7 @@ test("activates only when Pi built-in auto-compaction is disabled", async () => 
 			} else {
 				assert.doesNotThrow(start, scenario.name);
 			}
-			handlers.get("turn_start")?.({} as never, ctx);
+			handlers.get("agent_end")?.({ type: "agent_end", messages: [] } as never, ctx);
 			assert.equal(compactions, scenario.rejects ? 0 : 1, scenario.name);
 		}
 	} finally {

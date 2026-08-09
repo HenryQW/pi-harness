@@ -13,13 +13,14 @@ import type {
 type AgentMessage = Parameters<typeof estimateTokens>[0];
 
 /**
- * Proactive compaction runs at three points:
+ * Proactive compaction runs at four points:
  * - turn_start: catch sessions already over threshold before next request.
  * - turn_end: catch growth caused by tool results before next LLM turn.
+ * - agent_end: catch growth from the final provider turn.
  * - context: last-resort guard with a temporary keep-recent context.
  *
- * Pi's ctx.compact() aborts active low-level run internally. Its completion
- * callback sends follow-up user message, which resumes task after summary.
+ * Pi's ctx.compact() aborts active low-level run internally. Mid-task
+ * compaction sends a follow-up user message to resume work after summary.
  */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
@@ -119,16 +120,17 @@ function hasToolCall(message: AgentMessage): boolean {
 export default function (pi: ExtensionAPI) {
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	// Prevent turn_start, turn_end, and context from starting duplicate summaries.
+	// Prevent lifecycle hooks from starting duplicate summaries.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
 
-	const runCompaction = (ctx: ExtensionContext) => {
+	const runCompaction = (ctx: ExtensionContext, resumeTask = true) => {
 		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
 		ctx.compact({
 			onComplete: () => {
 				compactionPending = false;
 				compactionAbortExpected = false;
+				if (!resumeTask) return;
 				// Pi may flush queued input during compaction_end. Wait one macrotask
 				// before checking idle, otherwise follow-up can race that flush.
 				setImmediate(() => {
@@ -142,14 +144,14 @@ export default function (pi: ExtensionAPI) {
 		});
 	};
 
-	const compactIfNeeded = (ctx: ExtensionContext) => {
+	const compactIfNeeded = (ctx: ExtensionContext, resumeTask = true) => {
 		if (!active || compactionPending) return;
 
 		const usage = ctx.getContextUsage();
 		if (usage?.percent == null || usage.percent <= autoCompactThreshold) return;
 
 		compactionPending = true;
-		runCompaction(ctx);
+		runCompaction(ctx, resumeTask);
 	};
 
 	// Hide only empty abort produced when ctx.compact() cancels active run.
@@ -176,11 +178,13 @@ export default function (pi: ExtensionAPI) {
 	// Pre-turn catches resumed/queued work before provider request starts.
 	pi.on("turn_start", (_event, ctx) => compactIfNeeded(ctx));
 
-	// Only tool-call turns need mid-run compaction. Final answers should not
-	// receive an unsolicited continuation message.
+	// Only tool-call turns need mid-run compaction.
 	pi.on("turn_end", (event, ctx) => {
 		if (hasToolCall(event.message)) compactIfNeeded(ctx);
 	});
+
+	// Catch threshold crossings caused by the final provider turn.
+	pi.on("agent_end", (_event, ctx) => compactIfNeeded(ctx, false));
 
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
