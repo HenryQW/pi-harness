@@ -6,17 +6,16 @@ import { createInitialRunState } from "../../src/state.ts";
 const state = createInitialRunState({
 	run_id: "00000000-0000-4000-8000-000000000001",
 	graph: parseDeliveryGraph({
-		version: 1,
 		status: "approved",
 		id: "worker-ui-demo",
-		title: "Worker UI demo",
 		goal: "Preview active workers.",
 		constraints: [],
+		non_goals: [],
 		issues: [
-			{ id: "api", title: "API", role: "implementation", profile: "backend", purpose: "Build API.", acceptance: ["API works."], testing: "npm test", blocked_by: [] },
-			{ id: "web", title: "Web", role: "implementation", profile: "frontend", purpose: "Build UI.", acceptance: ["UI works."], testing: "npm test", blocked_by: [] },
-			{ id: "final-check", title: "Final check", role: "final_check", profile: null, purpose: "Verify delivery.", acceptance: ["Checks pass."], testing: "npm test", blocked_by: ["api", "web"] },
+			{ id: "api", title: "API", profile: "backend", objective: "Build API.", acceptance: ["API works."], testing: "npm test", depends_on: [] },
+			{ id: "web", title: "Web", profile: "frontend", objective: "Build UI.", acceptance: ["UI works."], testing: "npm test", depends_on: [] },
 		],
+		final_check: { acceptance: ["Checks pass."], testing: "npm test" },
 	}),
 	source_commit: "demo",
 	main_worktree: process.cwd(),

@@ -1,8 +1,8 @@
 # `@henryqw/pi-auto-dag`
 
-Pi extension for running an approved Delivery Graph with Pi and Herdr.
+Pi extension for planning and running a Delivery Graph with Pi and Herdr.
 
-It runs dependent tasks in parallel, reviews every commit, integrates approved work, runs a final check, and opens one PR.
+`/plan-delivery` turns current conversation and repository context into an independently reviewed, user-approved graph. Auto DAG then runs dependent tasks in parallel, reviews every commit, integrates approved work, runs a final check, and opens one PR.
 
 ## Key terms
 
@@ -21,7 +21,7 @@ Auto DAG has two extension entry points:
 | --- | --- | --- |
 | Main integration profile | `extensions/auto-dag.ts` | Owns the run, UI, Git integration, and PR |
 | `coder`, `backend`, `frontend` | `extensions/worker.ts` | Implements Delivery Graph tasks |
-| `reviewer` | `extensions/worker.ts` | Reviews commits, final checks, and PR health |
+| `reviewer` | `extensions/worker.ts` | Reviews plans, commits, final checks, and PR health |
 
 Do not load `auto-dag.ts` in worker profiles or `worker.ts` in the main profile.
 
@@ -58,7 +58,8 @@ Add this package setting to `settings.json` in every worker profile directory:
 When a worker starts, Auto DAG sets `PI_CODING_AGENT_DIR` to the selected profile directory. Pi loads that directory's settings and registers role-specific tools from `worker.ts`:
 
 - Implementers get tools to request review or report a blocker.
-- Reviewers get tools to submit reviews, report PR health, or report a blocker.
+- Planning reviewers get only read tools plus `auto_dag_submit_plan_review`, which records `PASS` for exact current graph hash.
+- Run reviewers get only phase-valid tools: ordinary and final-gate reviewers submit reviews or blockers; PR-health reviewers can also report health.
 
 Without `worker.ts`, workers cannot send results back to the main run.
 
@@ -105,48 +106,39 @@ Put the graph at `.context/issues/graph.json` in the main worktree. This path ca
 Graph rules:
 
 - File must be ignored and untracked.
-- `status` must be `"approved"` before a run can start.
-- Top-level fields: `version`, `status`, `id`, `title`, `goal`, `constraints`, `issues`.
-- Local Issue fields: `id`, `title`, `role`, `profile`, `purpose`, `acceptance`, `testing`, `blocked_by`.
-- IDs use lowercase hyphenated names.
-- Implementation profiles are `coder`, `backend`, or `frontend`.
-- Graph must contain exactly one `final_check` with `profile: null`.
-- `final_check` must depend on every implementation task.
-- Dependencies use `blocked_by`; `blocks` is not supported.
-- No task may depend on `final_check`.
+- `status` is `"draft"` while planning and must be `"approved"` before execution.
+- Top-level fields are exactly `status`, `id`, `goal`, `constraints`, `non_goals`, `issues`, and `final_check`.
+- Implementation issue fields are exactly `id`, `title`, `profile`, `objective`, `acceptance`, `testing`, and `depends_on`.
+- `final_check` has only `acceptance` and `testing`; Auto DAG derives its execution task after all implementation issues.
+- IDs use lowercase hyphenated names; `final-check` is reserved.
+- Profiles are `coder`, `backend`, or `frontend`.
+- Dependencies must reference implementation IDs and form an acyclic graph.
+- Required strings and acceptance arrays cannot be empty.
 
 Minimal example:
 
 ```json
 {
-  "version": 1,
   "status": "approved",
   "id": "example-delivery",
-  "title": "Example delivery",
   "goal": "Deliver one checked change.",
   "constraints": [],
+  "non_goals": [],
   "issues": [
     {
       "id": "implement-change",
       "title": "Implement change",
-      "role": "implementation",
       "profile": "backend",
-      "purpose": "Make the requested change.",
-      "acceptance": ["Change works."],
+      "objective": "Make requested behavior observable end to end.",
+      "acceptance": ["Caller observes requested behavior."],
       "testing": "npm test",
-      "blocked_by": []
-    },
-    {
-      "id": "final-check",
-      "title": "Final check",
-      "role": "final_check",
-      "profile": null,
-      "purpose": "Verify the integrated delivery.",
-      "acceptance": ["Verification passes."],
-      "testing": "npm test",
-      "blocked_by": ["implement-change"]
+      "depends_on": []
     }
-  ]
+  ],
+  "final_check": {
+    "acceptance": ["Integrated verification passes."],
+    "testing": "npm test"
+  }
 }
 ```
 
@@ -154,7 +146,10 @@ Minimal example:
 
 ```mermaid
 flowchart TD
-    A["Approved graph"] --> B["Start and validate"]
+    P["/plan-delivery in current agent"] --> R["Validate and review draft"]
+    R -->|blockers| P
+    R -->|PASS| A["User approves exact graph hash"]
+    A --> B["Start and validate"]
     B --> C["Freeze ready wave at current HEAD"]
     C --> D["Run implementers in child worktrees"]
     D --> E["Review each exact commit and run its test"]
@@ -173,9 +168,17 @@ flowchart TD
     L -->|action needed| M["Repair, review, and push same PR"]
 ```
 
-### 1. Start
+### 1. Plan and approve
 
-Run `auto_dag_start` from the main Herdr pane.
+Run `/plan-delivery` in an interactive Pi TUI inside Herdr. Current main agent remains planner. It uses conversation context, inspects repository facts, asks only unresolved product decisions, and writes draft graph.
+
+Workflow validates structure with `auto_dag_validate`, then starts configured read-only reviewer in pane split inside current Herdr tab. Reviewer checks acceptance traceability, vertical slicing, dependencies, interference, and test quality. Reviewer records `PASS` directly through `auto_dag_submit_plan_review`, producing temporary evidence bound to approved-form graph SHA-256. Planner then shows full summary and calls `auto_dag_approve`. Approval rejects missing or stale evidence, rechecks it after native confirmation, removes it, and atomically writes approved graph.
+
+Planning never calls `auto_dag_start`. Existing draft can resume or be replaced. Existing approved idle graph can only be replaced or left unchanged. Active run blocks planning and approval.
+
+### 2. Start
+
+Run `auto_dag_start` from main Herdr pane.
 
 Auto DAG checks:
 
@@ -187,7 +190,7 @@ Auto DAG checks:
 
 It then saves Run State and locks the checkout.
 
-### 2. Implement and review
+### 3. Implement and review
 
 Auto DAG groups ready tasks into a wave. Every task in that wave starts from the same commit.
 
@@ -201,7 +204,7 @@ For each task:
 
 Approval requires exit code `0`. Requested changes return to the same implementer for a new commit SHA.
 
-### 3. Integrate
+### 4. Integrate
 
 Auto DAG waits for every task in the wave to pass review.
 
@@ -214,7 +217,7 @@ It then:
 
 A cherry-pick conflict returns that task to its existing workers. They produce one replacement commit from the new integration base.
 
-### 4. Final check and PR
+### 5. Final check and PR
 
 After all implementation tasks finish, a temporary read-only reviewer runs `final_check.testing` on the integration `HEAD`.
 
@@ -225,8 +228,12 @@ To repair a failed final check, call `auto_dag_resolve` with the completed imple
 
 ## Lifecycle tools
 
-| Tool | Use |
+| Tool or command | Use |
 | --- | --- |
+| `/plan-delivery` | Draft, review, and approve graph without execution |
+| `auto_dag_validate` | Validate exact graph contract and derive waves |
+| `auto_dag_submit_plan_review` | Reviewer-only: record `PASS` for exact current candidate hash |
+| `auto_dag_approve` | Require matching reviewer `PASS`, confirm exact candidate hash, and atomically approve draft |
 | `auto_dag_start` | Start approved graph |
 | `auto_dag_status` | Read active or retained run |
 | `auto_dag_resume` | Recover workers, pending events, or cleanup |
@@ -236,7 +243,7 @@ To repair a failed final check, call `auto_dag_resolve` with the completed imple
 
 `resume`, `resolve`, and `abort` use the only active run. `health` requires a retained `run_id`; `status` accepts one when reading run history.
 
-Worker messages go straight to the lifecycle. They do not need a model turn in the main pane.
+Run-worker messages go straight to lifecycle. Planning-review `PASS` goes straight to temporary `.context/issues/review.json`. Neither needs model turn in main pane. Initial run-worker prompts include graph `goal`, `constraints`, and `non_goals` alongside task context.
 
 ## Blocks, recovery, and aborts
 
@@ -302,6 +309,7 @@ Run history remains after completion until removed manually.
 npm run dev:ui --workspace @henryqw/pi-auto-dag
 npm test --workspace @henryqw/pi-auto-dag -- core
 npm test --workspace @henryqw/pi-auto-dag -- orchestration
+npm test --workspace @henryqw/pi-auto-dag -- planning
 npm test --workspace @henryqw/pi-auto-dag -- pr-lifecycle
 npm run typecheck --workspace @henryqw/pi-auto-dag
 npm run pack:check --workspace @henryqw/pi-auto-dag

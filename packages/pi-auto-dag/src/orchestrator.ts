@@ -4,6 +4,7 @@ import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import type { RunState, WorkerEnvelope } from "./model.ts";
 import { parseWorkerEnvelope } from "./orchestration.ts";
+import { registerPlanning } from "./planning.ts";
 import { listWorkerAgents } from "./worker.ts";
 
 export const ORCHESTRATOR_TOOLS = {
@@ -28,6 +29,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 	const lifecycle = options.lifecycle ?? createCoreLifecycle({ mainPane: () => process.env.HERDR_PANE_ID });
 	const runner = options.runner ?? runCommand;
 	return (pi: ExtensionAPI) => {
+		registerPlanning(pi);
 		let state: RunState | undefined;
 		let liveAgents: Map<string, string> | undefined;
 		let renderingTimer: ReturnType<typeof setInterval> | undefined;

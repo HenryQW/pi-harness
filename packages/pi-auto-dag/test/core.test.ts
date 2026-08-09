@@ -11,51 +11,40 @@ import { deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "..
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
 import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
+import { PLANNING_TOOLS } from "../src/planning.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
-import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerAgentName, workerEnvironment, WORKER_TOOLS } from "../src/worker.ts";
+import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerAgentName, workerEnvironment, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 
 const graph = {
-	version: 1,
 	status: "approved",
 	id: "local-dag",
-	title: "Local DAG",
 	goal: "Test local intake.",
 	constraints: ["local only"],
+	non_goals: ["remote execution"],
 	issues: [
 		{
 			id: "core",
 			title: "Core",
-			role: "implementation",
 			profile: "backend",
-			purpose: "Build the core.",
+			objective: "Build the core.",
 			acceptance: ["works"],
 			testing: "npm test -- core",
-			blocked_by: [],
+			depends_on: [],
 		},
 		{
 			id: "release",
 			title: "Release",
-			role: "implementation",
 			profile: "coder",
-			purpose: "Release the result.",
+			objective: "Release the result.",
 			acceptance: ["released"],
 			testing: "npm test -- release",
-			blocked_by: ["core"],
-		},
-		{
-			id: "final-check",
-			title: "Final check",
-			role: "final_check",
-			profile: null,
-			purpose: "Verify everything.",
-			acceptance: ["verified"],
-			testing: "npm test",
-			blocked_by: ["core", "release"],
+			depends_on: ["core"],
 		},
 	],
+	final_check: { acceptance: ["verified"], testing: "npm test" },
 };
 
 test("command runner bounds combined process output", async () => {
@@ -78,16 +67,16 @@ test("strict config and local graph validation derive deterministic dependencies
 	assert.throws(() => parseProjectConfig({ ...config, unknown: true }), /Unknown auto-dag configuration setting/);
 
 	const parsed = parseDeliveryGraph(graph);
-	assert.deepEqual(deriveDependencyWaves(parsed), [["core"], ["release"], ["final-check"]]);
+	assert.deepEqual(deriveDependencyWaves(parsed), [["core"], ["release"]]);
 	assert.throws(() => parseDeliveryGraph({ ...graph, unknown: true }), /Unknown Delivery Graph setting/);
 	assert.throws(() => parseDeliveryGraph({ ...graph, issues: [{ ...graph.issues[0], id: "../escape" }, ...graph.issues.slice(1)] }), /path-safe lowercase-hyphen ID/);
-	assert.throws(() => parseDeliveryGraph({ ...graph, issues: graph.issues.map((issue) => issue.id === "final-check" ? { ...issue, blocked_by: ["core"] } : issue) }), /final_check must be blocked/);
-	assert.throws(() => parseDeliveryGraph({ ...graph, issues: graph.issues.map((issue) => issue.id === "core" ? { ...issue, blocked_by: ["release"] } : issue) }), /dependency cycle/);
+	assert.throws(() => parseDeliveryGraph({ ...graph, issues: graph.issues.map((issue) => issue.id === "core" ? { ...issue, depends_on: ["release"] } : issue) }), /dependency cycle/);
+	assert.throws(() => parseDeliveryGraph({ ...graph, final_check: { ...graph.final_check, acceptance: [] } }), /must contain at least one criterion/);
 });
 
 test("initial run state canonicalizes direct graph input before persistence", () => {
 	const canonical = parseDeliveryGraph(graph);
-	const unsorted = { ...canonical, issues: [canonical.issues[1], canonical.issues[0], canonical.issues[2]] };
+	const unsorted = { ...canonical, issues: [canonical.issues[1], canonical.issues[0]] };
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: unsorted,
@@ -100,7 +89,8 @@ test("initial run state canonicalizes direct graph input before persistence", ()
 		workspace_id: "main-workspace",
 	});
 
-	assert.deepEqual(state.graph.issues.map((issue) => issue.id), ["core", "final-check", "release"]);
+	assert.deepEqual(state.graph.issues.map((issue) => issue.id), ["core", "release"]);
+	assert.deepEqual(Object.keys(state.tasks), ["core", "release", "final-check"]);
 	assert.equal(parseRunState(JSON.parse(JSON.stringify(state))).graph_hash, state.graph_hash);
 	assert.match(workerAgentName(state.workspace_id, state.run_id, "core", "implementer"), /^dag-main-workspace-[0-9a-f]{20}-i$/);
 	assert.notEqual(workerAgentName(state.workspace_id, state.run_id, "core", "implementer"), workerAgentName("other-workspace", state.run_id, "core", "implementer"));
@@ -162,7 +152,7 @@ test("local intake and boundaries use agent config without repository config", a
 	}));
 	assert.equal((await assertRunBoundary(state)).max_parallel_tasks, 2);
 
-	const changedGraph = { ...graph, title: "Changed local DAG" };
+	const changedGraph = { ...graph, goal: "Changed local DAG" };
 	await writeFile(join(project.root, ".context", "issues", "graph.json"), JSON.stringify(changedGraph));
 	await assert.rejects(assertRunBoundary(state), /Delivery Graph changed during the run/);
 });
@@ -219,7 +209,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		activity_started_at: "2099-01-01T00:00:00.000Z",
 	};
 	const publicTools: Array<{ name: string }> = [];
-	let activeTools = ["read", ...Object.values(ORCHESTRATOR_TOOLS)];
+	let activeTools = ["read", ...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)];
 	let refreshAfterTool: ((_event: unknown, ctx: unknown) => Promise<void>) | undefined;
 	createOrchestratorExtension({
 		runner: async () => ({
@@ -241,11 +231,13 @@ test("extensions separate public lifecycle tools and show active workers", async
 		},
 	})({
 		on(event: string, handler: (_event: unknown, ctx: unknown) => Promise<void>) { if (event === "tool_execution_end") refreshAfterTool = handler; },
+		registerCommand() {},
 		registerTool(tool: { name: string }) { publicTools.push(tool); },
+		sendUserMessage() {},
 		getActiveTools() { return activeTools; },
 		setActiveTools(names: string[]) { activeTools = names; },
 	} as never);
-	assert.deepEqual(publicTools.map((tool) => tool.name), Object.values(ORCHESTRATOR_TOOLS));
+	assert.deepEqual(publicTools.map((tool) => tool.name), [...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)]);
 	const widgets: unknown[][] = [];
 	assert.ok(refreshAfterTool);
 	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.start }, {
@@ -260,12 +252,13 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.deepEqual(widgets.at(-1), ["auto-dag-workers", [
 		"Auto DAG workers",
 		"● core · coding · working · 0s",
-		"! final-check · blocked · 0s · needs input",
 		"○ release · reviewing · idle · 0s",
+		"! final-check · blocked · 0s · needs input",
 		"! PR health · triaging · missing · 0s",
 	]]);
 	assert.deepEqual(activeTools, [
 		"read",
+		...Object.values(PLANNING_TOOLS),
 		ORCHESTRATOR_TOOLS.status,
 		ORCHESTRATOR_TOOLS.resume,
 		ORCHESTRATOR_TOOLS.abort,
@@ -278,6 +271,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
 		environment: {
 			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
+			PI_AUTO_DAG_WORKER_EVENTS: "submit_review,block_task",
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
@@ -285,18 +279,19 @@ test("extensions separate public lifecycle tools and show active workers", async
 	})({ registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); } } as never);
 	assert.deepEqual(workerTools.map((tool) => tool.name), [
 		WORKER_TOOLS.submit_review,
-		WORKER_TOOLS.submit_health,
 		WORKER_TOOLS.block_task,
 	]);
-	const workerResult = await workerTools[0].execute("call", { commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown };
+	const workerResult = await workerTools[0].execute("call", { commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown; terminate: boolean };
 	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
 	assert.equal((workerResult.details as { type: string }).type, "submit_review");
+	assert.equal(workerResult.terminate, true);
 	const inertWorkerTools: Array<{ name: string }> = [];
 	createWorkerExtension({ environment: {} })({ registerTool(tool: { name: string }) { inertWorkerTools.push(tool); } } as never);
 	assert.deepEqual(inertWorkerTools, []);
 
 	const launch = createWorkerLaunch({
 		role: "implementer",
+		events: WORKER_ROLE_EVENTS.implementer,
 		profile_path: "/tmp/coder",
 		main_worktree: "/tmp/project",
 		run_id: RUN_ID,
@@ -309,18 +304,30 @@ test("extensions separate public lifecycle tools and show active workers", async
 	]);
 	const reviewerLaunch = createWorkerLaunch({
 		role: "reviewer",
+		events: ["submit_review", "block_task"],
 		profile_path: "/tmp/reviewer",
 		main_worktree: "/tmp/project",
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
 	});
-	assert.match(reviewerLaunch.args.at(-1)!, /^read,bash,grep,find,ls,/);
+	assert.equal(reviewerLaunch.args.at(-1), "read,bash,grep,find,ls,auto_dag_submit_review,auto_dag_block_task");
+	const healthReviewerLaunch = createWorkerLaunch({
+		role: "reviewer",
+		events: WORKER_ROLE_EVENTS.reviewer,
+		profile_path: "/tmp/reviewer",
+		main_worktree: "/tmp/project",
+		run_id: RUN_ID,
+		issue_id: "core",
+		main_pane: "main-pane",
+	});
+	assert.match(healthReviewerLaunch.args.at(-1)!, /auto_dag_submit_health/);
 
 	const calls: unknown[][] = [];
 	const envelope = await sendWorkerEnvelope(
 		workerEnvironment({
 			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
+			PI_AUTO_DAG_WORKER_EVENTS: "submit_review,block_task",
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
@@ -352,7 +359,7 @@ test("orchestrator routes worker envelopes without an LLM turn and keeps tool te
 	let received: unknown;
 	let inputHandler: ((event: { text: string }, ctx: unknown) => Promise<{ action: string }>) | undefined;
 	const tools: Array<{ name: string; execute: Function }> = [];
-	let activeTools = ["read", ...Object.values(ORCHESTRATOR_TOOLS)];
+	let activeTools = ["read", ...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)];
 	createOrchestratorExtension({
 		lifecycle: {
 			start: async () => runningState,
@@ -364,7 +371,9 @@ test("orchestrator routes worker envelopes without an LLM turn and keeps tool te
 		},
 	})({
 		on(event: string, handler: unknown) { if (event === "input") inputHandler = handler as typeof inputHandler; },
+		registerCommand() {},
 		registerTool(tool: { name: string; execute: Function }) { tools.push(tool); },
+		sendUserMessage() {},
 		getActiveTools() { return activeTools; },
 		setActiveTools(names: string[]) { activeTools = names; },
 	} as never);

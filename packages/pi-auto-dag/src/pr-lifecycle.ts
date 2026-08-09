@@ -1,11 +1,12 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
-import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, retireChildWorktree, verifySingleCommit } from "./git.ts";
+import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
+import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
-import { createWorkerLaunch, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerTabExists, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { createWorkerLaunch, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, workerIssueContext, workerTabExists, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 type PrLifecycleOptions = {
@@ -278,7 +279,8 @@ async function ensureFinalReviewer(
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_final_check",
 		run_id: state.run_id,
-		issue,
+		delivery: workerDeliveryContext(state.graph),
+		issue: workerIssueContext(issue, false),
 		integration_head: state.integration_head,
 		command: issue.testing,
 		attempt: current.attempts,
@@ -428,7 +430,8 @@ async function ensureFinalRepairCoder(
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_final_repair",
 		run_id: state.run_id,
-		owner_issue: owner,
+		delivery: workerDeliveryContext(state.graph),
+		owner_issue: workerIssueContext(owner, true),
 		resolution: state.resolutions[owner.id],
 		worktree: current.worktree,
 		wave_base: current.repair_base,
@@ -489,7 +492,8 @@ async function ensureFinalRepairReviewer(
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_final_repair_review",
 		run_id: state.run_id,
-		owner_issue: owner,
+		delivery: workerDeliveryContext(state.graph),
+		owner_issue: workerIssueContext(owner, false),
 		worktree: current.worktree,
 		wave_base: current.repair_base,
 		commit: current.commit,
@@ -690,13 +694,7 @@ function clearLifecycleCleanupBlock(state: RunState, issueId: string, operation:
 }
 
 async function appliedLifecyclePick(state: RunState, commit: string, options: PrLifecycleOptions): Promise<string | undefined> {
-	await assertRecordedIntegrationBranch(state, options);
-	const head = await commandOutput(options.runner, "git", ["rev-parse", "HEAD"], state.main_worktree);
-	const message = await commandOutput(options.runner, "git", ["log", "-1", "--format=%B", head], state.main_worktree);
-	if (!message.includes(`(cherry picked from commit ${commit})`)) return undefined;
-	return (await commandOutput(options.runner, "git", ["rev-parse", `${head}^`], state.main_worktree)) === state.integration_head
-		? head
-		: undefined;
+	return await findAppliedCherryPick(options.runner, state.main_worktree, state.integration_branch, state.integration_head, commit, "Main integration");
 }
 
 async function assertRecordedIntegrationBranch(state: RunState, options: PrLifecycleOptions): Promise<void> {
@@ -794,7 +792,7 @@ async function matchingOpenPr(state: RunState, options: PrLifecycleOptions): Pro
 }
 
 function prBody(state: RunState): string {
-	const completed = state.graph.issues
+	const completed = executionIssues(state.graph)
 		.filter((issue) => issue.role === "implementation" && task(state, issue.id).status === "completed")
 		.map((issue) => issue.id)
 		.sort();
@@ -833,13 +831,11 @@ function repairOwner(state: RunState, current: RunTaskState): LocalIssue {
 }
 
 function allImplementationsCompleted(state: RunState): boolean {
-	return state.graph.issues.filter((issue) => issue.role === "implementation").every((issue) => task(state, issue.id).status === "completed");
+	return executionIssues(state.graph).filter((issue) => issue.role === "implementation").every((issue) => task(state, issue.id).status === "completed");
 }
 
 function finalCheck(state: RunState): LocalIssue {
-	const issue = state.graph.issues.find((candidate) => candidate.role === "final_check");
-	if (!issue) throw new Error("Run state has no final_check Local Issue");
-	return issue;
+	return executionIssues(state.graph).at(-1)!;
 }
 
 function workerLaunch(
@@ -851,6 +847,7 @@ function workerLaunch(
 	const profile = role === "reviewer" ? config.profiles.reviewer : config.profiles[issue.profile!];
 	return createWorkerLaunch({
 		role,
+		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
 		profile_path: profile,
 		main_worktree: state.main_worktree,
 		run_id: state.run_id,

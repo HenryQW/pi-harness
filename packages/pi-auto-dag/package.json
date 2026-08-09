@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-auto-dag",
-  "version": "0.1.1",
-  "description": "Run approved local Delivery Graphs through Pi and Herdr.",
+  "version": "1.0.0",
+  "description": "Plan and run local Delivery Graphs through Pi and Herdr.",
   "keywords": [
     "pi-package",
     "pi",
@@ -15,6 +15,7 @@
   "license": "MIT",
   "files": [
     "extensions",
+    "prompts",
     "src",
     "README.md",
     "LICENSE"

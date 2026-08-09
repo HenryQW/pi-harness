@@ -1,16 +1,13 @@
 export const CONFIG_VERSION = 1;
-export const GRAPH_VERSION = 1;
 export const RUN_STATE_VERSION = 1;
 export const DEFAULT_MAX_PARALLEL_TASKS = 5;
 export const DEFAULT_MAX_REVIEW_ROUNDS = 5;
 
 export const IMPLEMENTATION_PROFILES = ["coder", "backend", "frontend"] as const;
 export const PROFILE_NAMES = [...IMPLEMENTATION_PROFILES, "reviewer"] as const;
-export const ISSUE_ROLES = ["implementation", "final_check"] as const;
-
 export type ImplementationProfile = (typeof IMPLEMENTATION_PROFILES)[number];
 export type ProfileName = (typeof PROFILE_NAMES)[number];
-export type IssueRole = (typeof ISSUE_ROLES)[number];
+export type IssueRole = "implementation" | "final_check";
 
 export interface ProjectConfig {
 	version: typeof CONFIG_VERSION;
@@ -30,14 +27,30 @@ export interface LocalIssue {
 	blocked_by: string[];
 }
 
-export interface DeliveryGraph {
-	version: typeof GRAPH_VERSION;
-	status: "draft" | "approved";
+export interface DeliveryIssue {
 	id: string;
 	title: string;
+	profile: ImplementationProfile;
+	objective: string;
+	acceptance: string[];
+	testing: string;
+	depends_on: string[];
+}
+
+export interface DeliveryFinalCheck {
+	acceptance: string[];
+	testing: string;
+}
+
+/** Exact user-authored Delivery Graph contract. Execution-only fields are derived. */
+export interface DeliveryGraph {
+	status: "draft" | "approved";
+	id: string;
 	goal: string;
 	constraints: string[];
-	issues: LocalIssue[];
+	non_goals: string[];
+	issues: DeliveryIssue[];
+	final_check: DeliveryFinalCheck;
 }
 
 export type RunPhase = "execution" | "blocked" | "aborted" | "completed";
