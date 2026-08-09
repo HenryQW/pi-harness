@@ -306,6 +306,28 @@ test("task blocks defer review dispatch and explicit recovery until resolved", a
 	assert.match(JSON.parse(reviewPrompts(herdr).at(-1)!).instruction, /Independently verify/);
 });
 
+test("review requests canonicalize abbreviated commits and reject wrong revisions", async (t) => {
+	const project = await makeProject(t, graph(["alpha", "beta"]), 2, 1);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const alpha = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	await commitTask(state, "beta", "beta.txt", "beta\n", "beta");
+
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", alpha.slice(0, 7)));
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(state.tasks.alpha.commit, alpha);
+
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "beta", alpha));
+	assert.equal(state.tasks.beta.status, "blocked");
+	assert.match(String(state.tasks.beta.block_reason), /requested commit is not worktree HEAD/);
+
+	state = await lifecycle.resolve(project.root, "beta", "Retry with the current worktree commit.");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "beta", "not-a-commit"));
+	assert.equal(state.tasks.beta.status, "blocked");
+	assert.match(String(state.tasks.beta.block_reason), /git rev-parse --verify not-a-commit\^\{commit\} failed:/);
+});
+
 test("review verdicts bind the commit, attempt, and review round", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 3);
 	const herdr = fakeHerdr();

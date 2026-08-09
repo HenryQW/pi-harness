@@ -301,6 +301,29 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
 	assert.equal((workerResult.details as { type: string }).type, "submit_review");
 	assert.equal(workerResult.terminate, true);
+
+	const fullCommit = "310a75c7289830d9d3973263488de1140438f6e9";
+	const requestCalls: string[][] = [];
+	const requestTools: Array<{ prepareArguments: Function; execute: Function }> = [];
+	createWorkerExtension({
+		runner: async (command, args) => {
+			requestCalls.push([command, ...args]);
+			return { code: 0, stdout: command === "git" ? `${fullCommit}\n` : "", stderr: "" };
+		},
+		environment: {
+			PI_AUTO_DAG_WORKER_ROLE: "implementer",
+			PI_AUTO_DAG_WORKER_EVENTS: "request_review",
+			PI_AUTO_DAG_RUN_ID: RUN_ID,
+			PI_AUTO_DAG_ISSUE_ID: "core",
+			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+		},
+	})({ registerTool(tool: { prepareArguments: Function; execute: Function }) { requestTools.push(tool); } } as never);
+	const prepared = requestTools[0].prepareArguments({ commit: "wrong", attempt: 1, review_round: 1 });
+	assert.deepEqual(prepared, { attempt: 1, review_round: 1 });
+	const requestResult = await requestTools[0].execute("call", prepared) as { details: { payload: { commit: string } } };
+	assert.equal(requestResult.details.payload.commit, fullCommit);
+	assert.deepEqual(requestCalls[0], ["git", "rev-parse", "HEAD"]);
+
 	const inertWorkerTools: Array<{ name: string }> = [];
 	createWorkerExtension({ environment: {} })({ registerTool(tool: { name: string }) { inertWorkerTools.push(tool); } } as never);
 	assert.deepEqual(inertWorkerTools, []);

@@ -226,21 +226,22 @@ async function requestReview(
 ): Promise<RunState> {
 	if (envelope.role !== "implementer") throw new Error("Only an implementer can request review");
 	const current = task(state, issue.id);
-	const commit = nonEmptyString(envelope.payload.commit, "request_review commit");
+	const requestedCommit = nonEmptyString(envelope.payload.commit, "request_review commit");
 	if (
 		envelope.payload.attempt !== current.attempts
 		|| envelope.payload.review_round !== (current.review_rounds ?? 0) + 1
 	) return state;
+	let commit: string;
+	try {
+		commit = await verifyReviewCommit(state, issue.id, requestedCommit, options);
+	} catch (error) {
+		return await blockTask(state, issue.id, errorMessage(error), options, "implementer");
+	}
 	if (hasReviewFindings(current) && current.commit === commit) return state;
 	if (current.status === "reviewing" && current.commit === commit) return state;
 	if (current.status !== "implementing") return await blockTask(state, issue.id, `Review requested while task is ${current.status}`, options, "implementer");
 	if ((current.review_rounds ?? 0) >= config.max_review_rounds) {
 		return await blockTask(state, issue.id, `Review rounds exceed configured maximum of ${config.max_review_rounds}`, options, "implementer");
-	}
-	try {
-		await verifyReviewCommit(state, issue.id, commit, options);
-	} catch (error) {
-		return await blockTask(state, issue.id, errorMessage(error), options, "implementer");
 	}
 
 	const dispatchBlocked = hasBlockedTask(state);
@@ -630,12 +631,12 @@ async function ensureReviewer(
 	return state;
 }
 
-async function verifyReviewCommit(state: RunState, issueId: string, commit: string, options: OrchestrationOptions): Promise<void> {
+async function verifyReviewCommit(state: RunState, issueId: string, commit: string, options: OrchestrationOptions): Promise<string> {
 	const current = task(state, issueId);
 	const worktree = nonEmptyString(current.worktree, `Run Task ${issueId} worktree`);
 	const base = nonEmptyString(current.wave_base, `Run Task ${issueId} wave_base`);
 	await assertTaskBranch(state, issueId, options);
-	await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, `Run Task ${issueId}`, "wave base");
+	return await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, `Run Task ${issueId}`, "wave base");
 }
 
 async function assertTaskBranch(state: RunState, issueId: string, options: OrchestrationOptions): Promise<void> {
