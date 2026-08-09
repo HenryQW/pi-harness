@@ -546,7 +546,30 @@ async function ensureReviewer(
 	let current = task(state, issue.id);
 	if (current.reviewer_pane) {
 		const tabId = nonEmptyString(current.tab_id, `Run Task ${issue.id} tab_id`);
-		if (!(await workerTabExists(state, tabId, options))) throw new Error(`Run Task ${issue.id} reviewer tab is missing: ${tabId}`);
+		if (!(await workerTabExists(state, tabId, options))) {
+			const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
+			current = {
+				...current,
+				tab_id: undefined,
+				implementer_pane: undefined,
+				reviewer_pane: undefined,
+				implementer_provisioning_id: provisioningId,
+			};
+			const created = await findWorkerTab(state, provisioningId, options)
+				?? await createWorkerTab(
+					state,
+					nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+					workerLaunch(state, issue, config, "implementer"),
+					provisioningId,
+					options,
+				);
+			state = await save(replaceTask(state, issue.id, {
+				...current,
+				tab_id: created.tab_id,
+				implementer_pane: created.pane_id,
+			}), options);
+			current = task(state, issue.id);
+		}
 	}
 	if (!current.reviewer_pane) {
 		const provisioningId = current.reviewer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "reviewer");

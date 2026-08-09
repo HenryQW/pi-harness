@@ -882,6 +882,31 @@ test("explicit resume while reviewing restarts only the reviewer", async (t) => 
 	assert.equal(herdr.count("agent start"), starts + 2);
 });
 
+test("resume rebuilds a missing reviewing task tab before restarting the reviewer", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 3);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	const previous = state.tasks.alpha;
+	await herdr.runner("herdr", ["tab", "close", previous.tab_id!], { cwd: project.root });
+
+	state = await lifecycle.resume(project.root);
+
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(state.tasks.alpha.commit, previous.commit);
+	assert.equal(state.tasks.alpha.attempts, previous.attempts);
+	assert.equal(state.tasks.alpha.review_rounds, previous.review_rounds);
+	assert.notEqual(state.tasks.alpha.tab_id, previous.tab_id);
+	assert.notEqual(state.tasks.alpha.reviewer_pane, previous.reviewer_pane);
+	assert.equal(herdr.live.has(state.tasks.alpha.reviewer_agent!), true);
+	const prompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.equal(prompt.type, "auto_dag_review");
+	assert.equal(prompt.commit, commit);
+});
+
 test("resume reuses a live agent on its recorded pane without incrementing attempts", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
