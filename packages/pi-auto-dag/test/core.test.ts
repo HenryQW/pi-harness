@@ -9,6 +9,7 @@ import { runCommand } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig } from "../src/config.ts";
 import { deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
+import { createCoreLifecycle } from "../src/lifecycle.ts";
 import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { PLANNING_TOOLS } from "../src/planning.ts";
@@ -136,12 +137,16 @@ test("agent config follows PI_CODING_AGENT_DIR and strictly loads JSON", async (
 	await assert.rejects(loadProjectConfig(), /Cannot read pi-auto-dag configuration/);
 });
 
-test("local intake and boundaries use agent config without repository config", async (t) => {
+test("local intake resolves the Git top-level and boundaries use agent config", async (t) => {
 	const project = await makeProject(t);
-	const state = await startLocalRun({ mainWorktree: project.root, mainPane: "main-pane", workspaceId: "main-workspace", uuid: () => RUN_ID, now: () => "2026-08-09T00:00:00.000Z" });
+	const subdirectory = join(project.root, "packages", "app");
+	await mkdir(subdirectory, { recursive: true });
+	const state = await startLocalRun({ mainWorktree: subdirectory, mainPane: "main-pane", workspaceId: "main-workspace", uuid: () => RUN_ID, now: () => "2026-08-09T00:00:00.000Z" });
 
+	assert.equal(state.main_worktree, project.root);
 	assert.equal(state.graph_hash, hashDeliveryGraph(parseDeliveryGraph(graph)));
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
+	assert.equal((await createCoreLifecycle().status(subdirectory))?.run_id, RUN_ID);
 	assert.equal((await readRunState(project.root, RUN_ID))?.source_commit, state.source_commit);
 	await assert.rejects(startLocalRun({ mainWorktree: project.root, mainPane: "main-pane", workspaceId: "main-workspace", uuid: () => "22222222-2222-4222-8222-222222222222" }), /active pi-auto-dag run/);
 

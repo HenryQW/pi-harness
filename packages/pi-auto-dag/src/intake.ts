@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
 import { assertProfileDirectories, loadProjectConfig } from "./config.ts";
 import { runCommand, type CommandRunner } from "./command.ts";
 import { hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
-import { inspectIntegrationWorktree } from "./git.ts";
+import { inspectIntegrationWorktree, resolveGitTopLevel } from "./git.ts";
 import type { ProjectConfig, RunState } from "./model.ts";
 import { createInitialRunState, createRun, type Uuid } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
@@ -22,8 +21,8 @@ export interface IntakeOptions {
 
 /** Validate local authority once, then persist the normalized graph and integration facts. */
 export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
-	const mainWorktree = resolve(options.mainWorktree);
 	const runner = options.runner ?? runCommand;
+	const mainWorktree = await resolveGitTopLevel(options.mainWorktree, runner);
 	const uuid = options.uuid ?? randomUUID;
 	const mainPane = nonEmptyString(options.mainPane, "main Herdr pane");
 	const source = await inspectIntegrationWorktree(mainWorktree, runner);
@@ -49,7 +48,7 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 }
 
 /** Local inputs and all generated run state must stay outside Git's dirty-worktree boundary. */
-async function assertIgnoredLocalContext(mainWorktree: string, runner: CommandRunner): Promise<void> {
+export async function assertIgnoredLocalContext(mainWorktree: string, runner: CommandRunner = runCommand): Promise<void> {
 	const graph = await runner("git", ["ls-files", "--error-unmatch", "--", LOCAL_GRAPH_PATH], { cwd: mainWorktree });
 	if (graph.code === 0) throw new Error(`${LOCAL_GRAPH_PATH} must be untracked and Git-ignored`);
 	if (graph.code !== 1) throw new Error(`git ls-files failed while checking ${LOCAL_GRAPH_PATH}`);

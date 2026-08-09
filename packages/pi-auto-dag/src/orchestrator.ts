@@ -29,7 +29,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 	const lifecycle = options.lifecycle ?? createCoreLifecycle({ mainPane: () => process.env.HERDR_PANE_ID });
 	const runner = options.runner ?? runCommand;
 	return (pi: ExtensionAPI) => {
-		registerPlanning(pi);
+		registerPlanning(pi, runner);
 		let state: RunState | undefined;
 		let liveAgents: Map<string, string> | undefined;
 		let renderingTimer: ReturnType<typeof setInterval> | undefined;

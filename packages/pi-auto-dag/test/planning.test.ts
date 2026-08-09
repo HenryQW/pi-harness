@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { promisify } from "node:util";
 import { hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "../src/graph.ts";
-import { planningReviewPath, PLANNING_REVIEW_TOOL } from "../src/planning-review.ts";
+import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "../src/planning-review.ts";
 import { PLANNING_TOOLS, registerPlanning } from "../src/planning.ts";
 import { createWorkerExtension } from "../src/worker.ts";
+
+const execFile = promisify(execFileCallback);
 
 const draft = {
 	status: "draft" as const,
@@ -91,9 +95,11 @@ test("planning tools validate and atomically approve exact draft without executi
 	await assert.rejects(approve.execute("approve", {}, undefined, undefined, { cwd: project.root, mode: "rpc", ui: {} }), /requires interactive TUI/);
 });
 
-test("plan-delivery resumes draft in current agent and refuses active execution", async (t) => {
+test("plan-delivery resolves the Git top-level and refuses its active execution", async (t) => {
 	const project = await setup(t);
 	await writeDeliveryGraph(project.root, draft);
+	const subdirectory = join(project.root, "packages", "app");
+	await mkdir(subdirectory, { recursive: true });
 	const previousHerdr = process.env.HERDR_ENV;
 	const previousPane = process.env.HERDR_PANE_ID;
 	process.env.HERDR_ENV = "1";
@@ -113,7 +119,7 @@ test("plan-delivery resumes draft in current agent and refuses active execution"
 	assert.ok(command);
 	const notifications: string[] = [];
 	const ctx = {
-		cwd: project.root,
+		cwd: subdirectory,
 		mode: "tui",
 		isIdle: () => true,
 		ui: {
@@ -124,6 +130,8 @@ test("plan-delivery resumes draft in current agent and refuses active execution"
 	await command("preserve CLI contract", ctx);
 	assert.equal(messages.length, 1);
 	assert.match(messages[0], /Planning mode: resume/);
+	assert.match(messages[0], new RegExp(`Repository root: ${escapeRegExp(project.root)}`));
+	assert.match(messages[0], new RegExp(`Delivery Graph: ${escapeRegExp(join(project.root, ".context", "issues", "graph.json"))}`));
 	assert.match(messages[0], /Reviewer profile:/);
 	assert.match(messages[0], /Additional user context: preserve CLI contract/);
 	assert.match(messages[0], /do not start Auto DAG/);
@@ -135,8 +143,38 @@ test("plan-delivery resumes draft in current agent and refuses active execution"
 	assert.match(notifications.at(-1)!, /Cannot plan while Auto DAG run is active/);
 });
 
+test("planning validation and approval require ignored untracked local context", async (t) => {
+	const project = await setup(t);
+	await writeDeliveryGraph(project.root, draft);
+	await writePlanningReviewPass(project.root);
+	const tools = new Map<string, { execute: Function }>();
+	registerPlanning({
+		registerCommand() {},
+		registerTool(tool: { name: string; execute: Function }) { tools.set(tool.name, tool); },
+	} as never);
+	const validate = tools.get(PLANNING_TOOLS.validate)!;
+	const approve = tools.get(PLANNING_TOOLS.approve)!;
+	const subdirectory = join(project.root, "packages", "app");
+	await mkdir(subdirectory, { recursive: true });
+	const ctx = { cwd: subdirectory, mode: "tui", ui: { confirm: async () => true } };
+
+	assert.match((await validate.execute("validate", {}, undefined, undefined, ctx)).content[0].text, /is valid \(draft\)/);
+	await writeFile(join(project.root, ".gitignore"), "");
+	await assert.rejects(validate.execute("validate", {}, undefined, undefined, ctx), /.context\/ must be Git-ignored/);
+	await assert.rejects(approve.execute("approve", {}, undefined, undefined, ctx), /.context\/ must be Git-ignored/);
+	assert.equal((await readDeliveryGraph(project.root)).status, "draft");
+
+	await writeFile(join(project.root, ".gitignore"), ".context/\n");
+	await git(project.root, "add", "-f", ".context/issues/graph.json");
+	await assert.rejects(validate.execute("validate", {}, undefined, undefined, ctx), /.context\/issues\/graph.json must be untracked and Git-ignored/);
+	await assert.rejects(approve.execute("approve", {}, undefined, undefined, ctx), /.context\/issues\/graph.json must be untracked and Git-ignored/);
+	assert.equal((await readDeliveryGraph(project.root)).status, "draft");
+});
+
 async function setup(t: TestContext): Promise<{ root: string }> {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-planning-"));
+	await git(root, "init", "-b", "main");
+	await writeFile(join(root, ".gitignore"), ".context/\n");
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-planning-agent-"));
 	const reviewer = join(agentDir, "profiles", "reviewer");
 	await mkdir(reviewer, { recursive: true });
@@ -156,4 +194,13 @@ async function setup(t: TestContext): Promise<{ root: string }> {
 function setEnvironment(name: string, value: string | undefined): void {
 	if (value === undefined) delete process.env[name];
 	else process.env[name] = value;
+}
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+	const result = await execFile("git", args, { cwd });
+	return result.stdout.trim();
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
