@@ -48,8 +48,12 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
 test("/set-open-in saves command used by /open", async () => {
 	await withAgentDir(async (agentDir) => {
 		const calls: Array<{ command: string; args: string[] }> = [];
+		const notifications: string[] = [];
 		const commands = loadCommands(calls);
-		const ctx = { cwd: "/tmp/project" } as ExtensionCommandContext;
+		const ctx = {
+			cwd: "/tmp/project",
+			ui: { notify: (message: string) => notifications.push(message) },
+		} as unknown as ExtensionCommandContext;
 
 		assert.deepEqual([...commands.keys()], ["open", "set-open-in"]);
 		assert.equal(
@@ -62,6 +66,7 @@ test("/set-open-in saves command used by /open", async () => {
 			JSON.parse(await readFile(join(agentDir, "config", "pi-open-in.json"), "utf8")),
 			{ command: "codex" },
 		);
+		assert.deepEqual(notifications, ["Saved open-in command: codex"]);
 
 		await commands.get("open")?.handler("", ctx);
 		assert.deepEqual(calls, [{ command: "codex", args: ["/tmp/project"] }]);

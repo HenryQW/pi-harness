@@ -40,10 +40,11 @@ export default function openInExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("set-open-in", {
 		description: "Set command used by /open",
-		handler: async (args) => {
+		handler: async (args, ctx) => {
 			const command = args.trim();
 			if (!command) throw new Error("Usage: /set-open-in <command>");
 			await saveCommand(command);
+			ctx.ui.notify(`Saved open-in command: ${command}`, "info");
 		},
 	});
 }

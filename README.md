@@ -32,11 +32,3 @@ Live tests use real model requests and can incur provider cost. They set a tempo
 ## Release
 
 See [`docs/releasing.md`](./docs/releasing.md). Each package publishes independently; package names use `@henryqw` scope.
-
-## Install a package
-
-```bash
-pi install npm:@henryqw/pi-auto-compact
-pi install npm:@henryqw/pi-model-thinking
-pi install npm:@henryqw/pi-open-in
-```
