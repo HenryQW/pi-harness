@@ -59,6 +59,7 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 			PI_AUTO_DAG_MAIN_PANE: nonEmptyString(input.main_pane, "worker main_pane"),
 		},
 		args: [
+			"--offline",
 			"--no-skills",
 			...skills.flatMap((path) => ["--skill", path]),
 			"--tools",
@@ -235,6 +236,25 @@ export async function createWorkerTab(
 		tab_id: nonEmptyString(object(result.tab, "Herdr tab").tab_id, "Herdr tab id"),
 		pane_id: nonEmptyString(object(result.root_pane, "Herdr root pane").pane_id, "Herdr root pane id"),
 	};
+}
+
+/** Reuse a recorded root tab, recover it by provisioning identity, or create it once. */
+export async function reconcileWorkerTab(
+	state: WorkerHostState,
+	input: {
+		tab_id?: string;
+		pane_id?: string;
+		cwd: string;
+		launch: WorkerLaunch;
+		label: string;
+	},
+	options: WorkerHostOptions,
+): Promise<{ tab_id: string; pane_id: string }> {
+	if (input.tab_id && input.pane_id && await workerTabExists(state, input.tab_id, options)) {
+		return { tab_id: input.tab_id, pane_id: input.pane_id };
+	}
+	return await findWorkerTab(state, input.label, options)
+		?? await createWorkerTab(state, input.cwd, input.launch, input.label, options);
 }
 
 export async function findWorkerTab(

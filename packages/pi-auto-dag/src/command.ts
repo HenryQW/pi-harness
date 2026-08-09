@@ -8,6 +8,7 @@ interface CommandResult {
 
 interface CommandOptions {
 	cwd: string;
+	maxOutputBytes?: number;
 }
 
 /** One small command seam covers installed Git, Herdr, and gh CLIs in tests. */
@@ -17,6 +18,8 @@ export type CommandRunner = (
 	options: CommandOptions,
 ) => Promise<CommandResult>;
 
+const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+
 export const runCommand: CommandRunner = async (command, arguments_, options) => await new Promise((resolve, reject) => {
 	const child = spawn(command, arguments_, {
 		cwd: options.cwd,
@@ -24,14 +27,31 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 	});
 	const stdout: Buffer[] = [];
 	const stderr: Buffer[] = [];
-	child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-	child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+	const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+	let outputBytes = 0;
+	let overflowed = false;
+	const collect = (chunks: Buffer[], chunk: Buffer): void => {
+		if (overflowed) return;
+		outputBytes += chunk.length;
+		if (outputBytes > maxOutputBytes) {
+			overflowed = true;
+			child.kill();
+			reject(new Error(`${command} output exceeded ${maxOutputBytes} bytes`));
+			return;
+		}
+		chunks.push(chunk);
+	};
+	child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
+	child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
 	child.on("error", reject);
-	child.on("close", (code) => resolve({
-		code: code ?? 1,
-		stdout: Buffer.concat(stdout).toString("utf8"),
-		stderr: Buffer.concat(stderr).toString("utf8"),
-	}));
+	child.on("close", (code) => {
+		if (overflowed) return;
+		resolve({
+			code: code ?? 1,
+			stdout: Buffer.concat(stdout).toString("utf8"),
+			stderr: Buffer.concat(stderr).toString("utf8"),
+		});
+	});
 });
 
 export async function commandOutput(
