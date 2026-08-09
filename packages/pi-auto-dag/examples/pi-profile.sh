@@ -18,6 +18,7 @@ shift
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 profile_dir="$root/profiles/$profile"
 coding_tools="read,bash,edit,write,grep,find,ls"
+# npm:pi-web-access registers these web tools and writer's source_check tool.
 web_tools="web_search,fetch_content,get_search_content"
 
 case "$profile" in
