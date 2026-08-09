@@ -36,8 +36,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		const dismissedWidgetEntries = new Set<string>();
 		let renderingTimer: ReturnType<typeof setInterval> | undefined;
 		let herdrTimer: ReturnType<typeof setInterval> | undefined;
-		let herdrRefresh: Promise<void> | undefined;
-		let herdrError: string | undefined;
+		let readingHerdr = false;
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume, ORCHESTRATOR_TOOLS.abort,
@@ -62,28 +61,20 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			renderWorkerWidget(ctx);
 		};
 		const refreshHerdr = async (ctx: ExtensionContext): Promise<void> => {
-			if (herdrRefresh) return await herdrRefresh;
-			herdrRefresh = (async () => {
-				if (!state || !workers(state).some((worker) => worker.activity !== "blocked")) {
-					liveAgents = new Map();
-					herdrError = undefined;
-					renderWorkerWidget(ctx);
-					return;
-				}
-				try {
-					liveAgents = await listWorkerAgents(state, { runner });
-					herdrError = undefined;
-				} catch (error) {
-					liveAgents = undefined;
-					herdrError = errorMessage(error);
-				} finally {
-					renderWorkerWidget(ctx);
-				}
-			})();
+			if (readingHerdr) return;
+			if (!state || !workers(state).some((worker) => worker.activity !== "blocked")) {
+				liveAgents = new Map();
+				renderWorkerWidget(ctx);
+				return;
+			}
+			readingHerdr = true;
 			try {
-				await herdrRefresh;
+				liveAgents = await listWorkerAgents(state, { runner });
+			} catch {
+				liveAgents = undefined;
 			} finally {
-				herdrRefresh = undefined;
+				readingHerdr = false;
+				renderWorkerWidget(ctx);
 			}
 		};
 
@@ -106,14 +97,25 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 						return;
 					case "fix": {
 						await refreshWorkerWidget(ctx);
-						await refreshHerdr(ctx);
-						if (!liveAgents) {
-							ctx.ui.notify(`Auto DAG widget fix could not read Herdr worker status: ${herdrError}. No entries removed.`, "warning");
+						const expected = state ? workers(state) : [];
+						let agents: Map<string, string>;
+						try {
+							agents = !state || !expected.some((worker) => worker.activity !== "blocked")
+								? new Map()
+								: await listWorkerAgents(state, { runner });
+						} catch (error) {
+							ctx.ui.notify(`Auto DAG widget fix could not read Herdr worker status: ${errorMessage(error)}. No entries removed.`, "warning");
 							return;
 						}
+						const current = new Set(state ? workers(state).map((worker) => worker.key) : []);
+						if (current.size !== expected.length || expected.some((worker) => !current.has(worker.key))) {
+							ctx.ui.notify("Auto DAG widget state changed during Herdr probe. No entries removed.", "warning");
+							return;
+						}
+						liveAgents = agents;
 						let removed = 0;
-						for (const worker of state ? workers(state) : []) {
-							if (worker.activity === "blocked" || liveAgents.has(worker.pane) || dismissedWidgetEntries.has(worker.key)) continue;
+						for (const worker of expected) {
+							if (worker.activity === "blocked" || agents.has(worker.pane) || dismissedWidgetEntries.has(worker.key)) continue;
 							dismissedWidgetEntries.add(worker.key);
 							removed += 1;
 						}
@@ -154,7 +156,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				state = runRemainsActive(result) ? result : undefined;
 				syncActiveTools();
 				renderWorkerWidget(ctx);
-				if (ctx.mode === "tui" && widgetVisible) await refreshHerdr(ctx);
+				if (ctx.mode === "tui" && widgetVisible) void refreshHerdr(ctx);
 				ctx.ui.notify(stateSummary(result), "info");
 			} catch (error) {
 				ctx.ui.notify(`Auto DAG worker event rejected: ${errorMessage(error)}`, "error");
