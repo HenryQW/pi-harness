@@ -237,15 +237,10 @@ export function workerEnvironmentArgs(launch: WorkerLaunch): string[] {
 	return Object.entries(launch.env).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
 }
 
-export function workerAgentPrefix(workspaceId: string): string {
-	const id = nonEmptyString(workspaceId, "Herdr workspace id");
-	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Herdr workspace id is not agent-name safe: ${id}`);
-	return `dag-${id}-`;
-}
-
 export function workerAgentName(workspaceId: string, runId: string, roleKey: string, role: WorkerRole): string {
-	const hash = createHash("sha256").update(`${runId}:${roleKey}:${role}`).digest("hex").slice(0, 20);
-	return `${workerAgentPrefix(workspaceId)}${hash}-${role === "implementer" ? "i" : "r"}`;
+	const id = nonEmptyString(workspaceId, "Herdr workspace id");
+	const hash = createHash("sha256").update(`${id}:${runId}:${roleKey}:${role}`).digest("hex").slice(0, 24);
+	return `dag-${hash}-${role === "implementer" ? "i" : "r"}`;
 }
 
 export async function workerWorkspaceId(mainWorktree: string, mainPane: string, options: WorkerHostOptions): Promise<string> {
@@ -385,7 +380,7 @@ export async function startWorkerAgent(
 	options: WorkerHostOptions,
 	hooks: { beforeStart?: () => Promise<void>; onStarted?: () => Promise<void> } = {},
 ): Promise<"existing" | "started"> {
-	assertWorkerAgentName(state.workspace_id, agent);
+	assertWorkerAgentName(agent);
 	const name = nonEmptyString(agent, "Herdr agent name");
 	const paneId = nonEmptyString(pane, "Herdr agent pane");
 	const existing = await getWorkerAgent(state, name, options);
@@ -421,7 +416,7 @@ export async function promptWorkerAgent(
 	payload: Record<string, unknown>,
 	options: WorkerHostOptions,
 ): Promise<void> {
-	assertWorkerAgentName(state.workspace_id, agent);
+	assertWorkerAgentName(agent);
 	await commandOutput(options.runner, "herdr", ["agent", "prompt", agent, JSON.stringify(payload)], state.main_worktree);
 }
 
@@ -435,10 +430,8 @@ export async function retireWorkerTab(state: WorkerHostState, tabId: string, opt
 	}
 }
 
-function assertWorkerAgentName(workspaceId: string, agent: string): void {
-	if (!agent.startsWith(workerAgentPrefix(workspaceId))) {
-		throw new Error(`Herdr agent ${agent} does not belong to workspace ${workspaceId}`);
-	}
+function assertWorkerAgentName(agent: string): void {
+	if (!/^[a-z][a-z0-9_-]{0,31}$/.test(agent)) throw new Error(`Invalid Herdr agent name: ${agent}`);
 }
 
 async function listWorkerTabs(mainWorktree: string, options: WorkerHostOptions): Promise<unknown[]> {
