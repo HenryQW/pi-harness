@@ -37,6 +37,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		let renderingTimer: ReturnType<typeof setInterval> | undefined;
 		let herdrTimer: ReturnType<typeof setInterval> | undefined;
 		let herdrRefresh: Promise<void> | undefined;
+		let herdrError: string | undefined;
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume, ORCHESTRATOR_TOOLS.abort,
@@ -65,13 +66,16 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			herdrRefresh = (async () => {
 				if (!state || !workers(state).some((worker) => worker.activity !== "blocked")) {
 					liveAgents = new Map();
+					herdrError = undefined;
 					renderWorkerWidget(ctx);
 					return;
 				}
 				try {
 					liveAgents = await listWorkerAgents(state, { runner });
-				} catch {
+					herdrError = undefined;
+				} catch (error) {
 					liveAgents = undefined;
+					herdrError = errorMessage(error);
 				} finally {
 					renderWorkerWidget(ctx);
 				}
@@ -104,7 +108,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 						await refreshWorkerWidget(ctx);
 						await refreshHerdr(ctx);
 						if (!liveAgents) {
-							ctx.ui.notify("Auto DAG widget fix could not read Herdr worker status.", "warning");
+							ctx.ui.notify(`Auto DAG widget fix could not read Herdr worker status: ${herdrError}. No entries removed.`, "warning");
 							return;
 						}
 						let removed = 0;

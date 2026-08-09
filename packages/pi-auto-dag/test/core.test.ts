@@ -227,9 +227,14 @@ test("extensions separate public lifecycle tools and show active workers", async
 	const publicTools: Array<{ name: string }> = [];
 	const publicCommands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
 	let activeTools = ["read", ...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)];
+	let herdrUnavailable = false;
 	let refreshAfterTool: ((_event: unknown, ctx: unknown) => Promise<void>) | undefined;
 	createOrchestratorExtension({
-		runner: async () => ({
+		runner: async () => herdrUnavailable ? {
+			code: 1,
+			stdout: "",
+			stderr: "Herdr daemon unavailable",
+		} : {
 			code: 0,
 			stdout: JSON.stringify({ result: { agents: [
 				{ pane_id: "pane-core", agent_status: "working", workspace_id: "main-workspace" },
@@ -237,7 +242,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 				{ pane_id: "pane-health", agent_status: "working", workspace_id: "other-workspace" },
 			] } }),
 			stderr: "",
-		}),
+		},
 		lifecycle: {
 			start: async () => { throw new Error("not called"); },
 			status: async () => runningState,
@@ -302,6 +307,11 @@ test("extensions separate public lifecycle tools and show active workers", async
 	runningState.health.activity_started_at = "2099-01-01T00:00:01.000Z";
 	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.status }, widgetCtx);
 	assert.equal((widgets.at(-1)?.[1] as string[]).at(-1), "! PR health · triaging · missing · 0s");
+
+	herdrUnavailable = true;
+	await widgetCommand.handler("fix", widgetCtx);
+	assert.equal(notifications.at(-1), "Auto DAG widget fix could not read Herdr worker status: herdr agent list failed: Herdr daemon unavailable. No entries removed.");
+	assert.equal((widgets.at(-1)?.[1] as string[]).length, 5);
 
 	const workerTools: Array<{ name: string; execute: Function }> = [];
 	createWorkerExtension({
