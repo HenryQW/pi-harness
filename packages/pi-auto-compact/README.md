@@ -26,6 +26,18 @@ Remove with:
 pi remove npm:@henryqw/pi-auto-compact
 ```
 
+## Configure
+
+Run `/auto-compact`, then enter threshold percentage. Config lives in `~/.pi/agent/config/pi-auto-compact.json`:
+
+```json
+{
+  "autoCompactThreshold": 50
+}
+```
+
+Threshold must be above 0 and below 100. Missing config defaults to 50%. Restart or `/reload` after manual edits; command changes apply immediately.
+
 ## Behavior
 
 - Refuses activation with an error when Pi's effective `compaction.enabled` setting is not `false`; competing automatic compactors can start duplicate summaries.
@@ -33,7 +45,7 @@ pi remove npm:@henryqw/pi-auto-compact
 - Uses Pi's default `ctx.compact()` summary and session persistence.
 - Keeps newest 15% as temporary emergency context while compaction runs.
 - Sends a follow-up message after compaction so task execution continues.
-- Uses fixed 50% threshold; no extension-specific configuration.
+- Compacts above configured `autoCompactThreshold` percentage (50% by default).
 
 `ctx.compact()` aborts current low-level run. Extension hides that empty internal abort message, then starts new run with current task resume message. Other aborts and provider errors remain visible.
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,12 +10,16 @@ import type {
 import autoCompact from "../extensions/auto-compact.ts";
 
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
+type Command = (args: string, ctx: ExtensionContext) => Promise<void>;
 
-function loadExtension(): Map<string, Handler> {
+function loadExtension(commands = new Map<string, Command>()): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
 	autoCompact({
 		on(event: string, handler: Handler) {
 			handlers.set(event, handler);
+		},
+		registerCommand(name: string, options: { handler: Command }) {
+			commands.set(name, options.handler);
 		},
 		sendUserMessage() {},
 	} as unknown as ExtensionAPI);
@@ -75,6 +79,51 @@ test("suppresses only empty abort caused by pending extension compaction", async
 				errorMessage: undefined,
 			},
 		});
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
+test("reads and writes autoCompactThreshold", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-"));
+	const configFile = join(tempRoot, "config", "pi-auto-compact.json");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+
+	try {
+		await mkdir(join(tempRoot, "config"), { recursive: true });
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		await writeFile(configFile, JSON.stringify({ autoCompactThreshold: 65 }));
+
+		const commands = new Map<string, Command>();
+		const handlers = loadExtension(commands);
+		let compactions = 0;
+		const notices: string[] = [];
+		const ctx = {
+			cwd: tempRoot,
+			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
+			compact: () => { compactions++; },
+			ui: {
+				input: async () => "40",
+				notify: (message: string) => notices.push(message),
+			},
+		} as unknown as ExtensionContext;
+
+		handlers.get("session_start")?.(
+			{ type: "session_start", reason: "startup" } as never,
+			ctx,
+		);
+		handlers.get("turn_start")?.({} as never, ctx);
+		assert.equal(compactions, 0);
+
+		await commands.get("auto-compact")?.("", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 40 });
+		handlers.get("turn_start")?.({} as never, ctx);
+		assert.equal(compactions, 1);
+		assert.deepEqual(notices, ["Auto-compact threshold set to 40%."]);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

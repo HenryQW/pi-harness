@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-auto-compact",
-  "version": "0.1.2",
-  "description": "Proactively compact Pi context at 50% and resume the current task.",
+  "version": "0.2.0",
+  "description": "Proactively compact Pi context at a configurable threshold and resume the current task.",
   "keywords": [
     "pi-package",
     "pi",
