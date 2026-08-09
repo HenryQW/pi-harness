@@ -20,7 +20,7 @@ Run `/model-thinking`, then choose level to remember for current model. Choose `
 
 Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
 
-Config lives in `~/.pi/agent/config/model-thinking.json`:
+Config lives in `~/.pi/agent/config/pi-model-thinking.json`:
 
 ```json
 {

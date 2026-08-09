@@ -5,7 +5,7 @@ import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
 const CLEAR = "Use current level";
-const configPath = () => join(getAgentDir(), "config", "model-thinking.json");
+const configPath = () => join(getAgentDir(), "config", "pi-model-thinking.json");
 
 function isValidThinkingLevel(value: unknown): value is ThinkingLevel {
 	return typeof value === "string" && LEVELS.includes(value as ThinkingLevel);

@@ -11,7 +11,7 @@ type Command = (args: string, ctx: ExtensionContext) => Promise<void>;
 
 test("persists and applies model thinking levels", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-model-thinking-"));
-	const configFile = join(agentDir, "config", "model-thinking.json");
+	const configFile = join(agentDir, "config", "pi-model-thinking.json");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 
