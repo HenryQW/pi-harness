@@ -35,6 +35,7 @@ const draft = {
 test("planning tools validate and atomically approve exact draft without execution", async (t) => {
 	const project = await setup(t);
 	await writeDeliveryGraph(project.root, draft);
+	await writeFile(join(project.root, "change.txt"), "planned change\n");
 	const tools = new Map<string, { execute: Function }>();
 	registerPlanning({
 		registerCommand() {},
@@ -90,7 +91,7 @@ test("planning tools validate and atomically approve exact draft without executi
 				if (title === "Approve Delivery Graph?") confirmation = message;
 				else {
 					assert.equal(title, "Commit current branch changes?");
-					assert.equal(message, "?? .gitignore");
+					assert.equal(message, "?? change.txt");
 				}
 				return true;
 			},
@@ -109,6 +110,41 @@ test("planning tools validate and atomically approve exact draft without executi
 	await assert.rejects(readFile(planningReviewPath(project.root), "utf8"), /ENOENT/);
 	await assert.rejects(approve.execute("approve", {}, undefined, undefined, { cwd: project.root, mode: "rpc", ui: {} }), /requires interactive TUI/);
 });
+
+for (const position of ["default branch", "detached HEAD"] as const) {
+	test(`approval does not offer commits or advertise start on ${position}`, async (t) => {
+		const project = await setup(t);
+		await git(project.root, "switch", position === "default branch" ? "main" : "--detach");
+		await writeDeliveryGraph(project.root, draft);
+		await writePlanningReviewPass(project.root);
+		await writeFile(join(project.root, "change.txt"), "uncommitted\n");
+		const head = await git(project.root, "rev-parse", "HEAD");
+		const tools = new Map<string, { execute: Function }>();
+		registerPlanning({
+			registerCommand() {},
+			registerTool(tool: { name: string; execute: Function }) { tools.set(tool.name, tool); },
+		} as never);
+		const notifications: string[] = [];
+		const result = await tools.get(PLANNING_TOOLS.approve)!.execute("approve", {}, undefined, undefined, {
+			cwd: project.root,
+			mode: "tui",
+			ui: {
+				confirm: async (title: string) => {
+					assert.equal(title, "Approve Delivery Graph?");
+					return true;
+				},
+				notify: (message: string) => { notifications.push(message); },
+			},
+		}) as { details: { graph: { status: string } } };
+
+		assert.equal(result.details.graph.status, "approved");
+		assert.equal(await git(project.root, "rev-parse", "HEAD"), head);
+		assert.equal(await git(project.root, "status", "--porcelain=v1", "--untracked-files=all"), "?? change.txt");
+		assert.deepEqual(notifications, [position === "default branch"
+			? "Auto DAG cannot start: Main integration worktree must not use the default branch: main"
+			: "Auto DAG cannot start: Main integration worktree is detached"]);
+	});
+}
 
 test("plan-delivery resolves the Git top-level and refuses its active execution", async (t) => {
 	const project = await setup(t);
@@ -192,6 +228,9 @@ async function setup(t: TestContext): Promise<{ root: string }> {
 	await git(root, "config", "user.name", "Planning Test");
 	await git(root, "config", "user.email", "planning@example.com");
 	await writeFile(join(root, ".gitignore"), ".context/\n");
+	await git(root, "add", ".gitignore");
+	await git(root, "commit", "-m", "initial");
+	await git(root, "switch", "-c", "integration");
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-planning-agent-"));
 	const reviewer = join(agentDir, "profiles", "reviewer");
 	await mkdir(reviewer, { recursive: true });

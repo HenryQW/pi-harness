@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { commandFailure, errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import { assertProfileDirectories, expandProfilePath, loadProjectConfig } from "./config.ts";
-import { resolveGitTopLevel } from "./git.ts";
+import { inspectIntegrationBranch, resolveGitTopLevel } from "./git.ts";
 import { deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
 import { assertIgnoredLocalContext } from "./intake.ts";
 import type { DeliveryGraph } from "./model.ts";
@@ -126,6 +126,12 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 				const persisted = await readDeliveryGraph(root);
 				if (persisted.status !== "approved" || hashDeliveryGraph(persisted) !== hash) {
 					throw new Error("Persisted Delivery Graph does not match approved candidate");
+				}
+				try {
+					await inspectIntegrationBranch(root, runner);
+				} catch (error) {
+					ctx.ui.notify(`Auto DAG cannot start: ${errorMessage(error)}`, "warning");
+					return graphResult(persisted);
 				}
 				const statusArgs = ["status", "--porcelain=v1", "--untracked-files=all"];
 				let changes = await runner("git", statusArgs, { cwd: root });
