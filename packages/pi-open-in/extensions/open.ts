@@ -34,7 +34,11 @@ export default function openInExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("open", {
 		description: `Open the current path with \`${command} <current-path>\``,
 		handler: async (_args, ctx) => {
-			await pi.exec(configuredCommand(), [ctx.cwd]);
+			const [executable, ...args] = configuredCommand().split(/\s+/);
+			const result = await pi.exec(executable, [...args, ctx.cwd]);
+			if (result.code !== 0) {
+				throw new Error(`Open command failed: ${result.stderr.trim() || `exit code ${result.code}`}`);
+			}
 		},
 	});
 
