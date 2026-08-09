@@ -15,19 +15,7 @@ Pi extension for planning and running a Delivery Graph with Pi and Herdr.
 
 ## Setup
 
-Auto DAG has two extension entry points:
-
-| Pi profile | Extension | Purpose |
-| --- | --- | --- |
-| Main integration profile | `extensions/auto-dag.ts` | Owns the run, UI, Git integration, and PR |
-| `coder`, `backend`, `frontend` | `extensions/worker.ts` | Implements Delivery Graph tasks |
-| `reviewer` | `extensions/worker.ts` | Reviews plans, commits, final checks, and PR health |
-
-Do not load `auto-dag.ts` in worker profiles or `worker.ts` in the main profile.
-
-### Main integration profile
-
-Load only the orchestrator extension from this package:
+Load orchestrator extension only in main integration profile:
 
 ```json
 {
@@ -39,38 +27,42 @@ Load only the orchestrator extension from this package:
 }
 ```
 
-### Worker profiles
+Worker profiles remain reusable Pi profiles and must not load Auto DAG. Auto DAG injects `extensions/worker.ts` when it launches a worker, adding only role-specific lifecycle tools:
 
-All four worker profiles—`coder`, `backend`, `frontend`, and `reviewer`—must load `extensions/worker.ts`.
+- Implementers request review or report blockers.
+- Planning reviewers record `PASS` for exact current graph hash.
+- Run reviewers submit review, health, or blocker events allowed by current phase.
 
-Add this package setting to `settings.json` in every worker profile directory:
+Herdr only hosts processes. Auto DAG passes resolved environment and Pi arguments when creating each process.
+
+## Profile resolver
+
+Profile definitions live outside Auto DAG. Configure one command which accepts profile ID as final argument and writes one JSON object to stdout:
 
 ```json
 {
-  "packages": [{
-    "source": "npm:@henryqw/pi-auto-dag",
-    "autoload": false,
-    "extensions": ["extensions/worker.ts"]
-  }]
+  "version": 1,
+  "id": "backend",
+  "description": "Backend implementation",
+  "agent_dir": "/absolute/path/to/profiles/backend",
+  "skills": [
+    "/absolute/path/to/profiles/backend/.agents/skills",
+    "/absolute/path/to/shared-skills/.agents/skills"
+  ],
+  "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"]
 }
 ```
 
-When a worker starts, Auto DAG sets `PI_CODING_AGENT_DIR` to the selected profile directory. Pi loads that directory's settings and registers role-specific tools from `worker.ts`:
+`id` must match requested ID. `agent_dir` and every skill path must be absolute existing directories. Profile directory settings own model, system prompt, packages, and other Pi behavior. Resolver owns baseline skills and tools. Auto DAG adds worker extension and lifecycle tools.
 
-- Implementers get tools to request review or report a blocker.
-- Planning reviewers get only read tools plus `auto_dag_submit_plan_review`, which records `PASS` for exact current graph hash.
-- Run reviewers get only phase-valid tools: ordinary and final-gate reviewers submit reviews or blockers; PR-health reviewers can also report health.
+Packaged [`examples/pi-profile.sh`](examples/pi-profile.sh) provides reusable launch and resolver modes. Copy it into Pi config, then customize profile IDs and tool lists:
 
-Without `worker.ts`, workers cannot send results back to the main run.
-
-Delivery Graph tasks select `coder`, `backend`, or `frontend`. Auto DAG selects `reviewer` when review starts.
-
-Worker launches also:
-
-- Disable default skills with `--no-skills`.
-- Load skills from the selected worker profile.
-- Load shared skills from the main worktree.
-- Limit built-in tools by worker role.
+```bash
+mkdir -p ~/.pi/scripts
+cp node_modules/@henryqw/pi-auto-dag/examples/pi-profile.sh ~/.pi/scripts/pi-profile.sh
+chmod +x ~/.pi/scripts/pi-profile.sh
+~/.pi/scripts/pi-profile.sh resolve backend
+```
 
 ## Configuration
 
@@ -78,17 +70,15 @@ Create `~/.pi/agent/config/pi-auto-dag.json`:
 
 ```json
 {
-  "version": 1,
-  "profiles": {
-    "coder": "/absolute/path/to/coder",
-    "backend": "/absolute/path/to/backend",
-    "frontend": "/absolute/path/to/frontend",
-    "reviewer": "/absolute/path/to/reviewer"
-  }
+  "version": 2,
+  "profile_resolver": ["~/.pi/scripts/pi-profile.sh", "resolve"],
+  "implementation_profiles": ["coder", "backend", "frontend"],
+  "reviewer_profile": "reviewer",
+  "repair_profile": "coder"
 }
 ```
 
-`PI_CODING_AGENT_DIR` changes the Pi agent directory.
+Auto DAG appends each configured profile ID to `profile_resolver`, resolves all profiles before use, and rejects malformed output or missing resources. `repair_profile` must be one of `implementation_profiles`.
 
 Optional settings:
 
@@ -111,7 +101,7 @@ Graph rules:
 - Implementation issue fields are exactly `id`, `title`, `profile`, `objective`, `acceptance`, `testing`, and `depends_on`.
 - `final_check` has only `acceptance` and `testing`; Auto DAG derives its execution task after all implementation issues.
 - IDs use lowercase hyphenated names; `final-check` is reserved.
-- Profiles are `coder`, `backend`, or `frontend`.
+- Profiles must be IDs listed in configured `implementation_profiles`.
 - Dependencies must reference implementation IDs and form an acyclic graph.
 - Required strings and acceptance arrays cannot be empty.
 
@@ -272,7 +262,7 @@ Auto DAG:
 1. Fast-forwards the local branch to the exact remote PR head.
 2. Uses one read-only reviewer to inspect unresolved threads and failing checks.
 3. Stops if nothing needs work.
-4. Otherwise creates one repair worktree and starts one coder.
+4. Otherwise creates one repair worktree and starts configured repair profile.
 5. Uses the same reviewer to approve the repair.
 6. Pushes once to the same PR and resolves only fixed, triaged threads.
 

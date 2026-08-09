@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
+import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
 import { type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
@@ -386,15 +387,11 @@ async function makeProject(t: TestContext): Promise<{ root: string; remote: stri
 	await git(root, "init", "-b", "main");
 	await git(root, "config", "user.email", "test@example.com");
 	await git(root, "config", "user.name", "Test User");
-	const profiles: Record<string, string> = {};
-	for (const name of ["coder", "backend", "frontend", "reviewer"]) {
-		profiles[name] = join(root, "profiles", name);
-		await mkdir(profiles[name], { recursive: true });
-	}
+	await createTestProfiles(root);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify({ version: 1, profiles, max_parallel_tasks: 1, max_review_rounds: 2 }));
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: 2 })));
 	useAgentDir(t, agentDir);
 	await writeFile(join(root, ".gitignore"), ".context/\n");
 	await writeFile(join(root, "conflict.txt"), "base\n");

@@ -306,7 +306,7 @@ async function ensureHealthCoder(
 	let health = requiredHealth(state);
 	await ensureHealthWorktree(state, options);
 	const issue = finalCheck(state);
-	const launch = workerLaunch(state, { ...issue, profile: "coder", role: "implementation" }, config, "implementer");
+	const launch = workerLaunch(state, { ...issue, profile: config.repair_profile, role: "implementation" }, config, "implementer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:coder`;
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: health.coder_tab_id,
@@ -738,12 +738,13 @@ function workerLaunch(
 	config: ProjectConfig,
 	role: WorkerRole,
 ): WorkerLaunch {
-	const profile = role === "reviewer" ? config.profiles.reviewer : config.profiles[issue.profile!];
+	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
+	const profile = config.profiles[profileId];
+	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
 	return createWorkerLaunch({
 		role,
 		events: WORKER_ROLE_EVENTS[role],
-		profile_path: profile,
-		main_worktree: state.main_worktree,
+		profile,
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),

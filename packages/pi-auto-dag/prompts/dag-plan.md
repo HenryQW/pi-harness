@@ -14,7 +14,7 @@ Before drafting, know:
 - constraints and non-goals
 - observable acceptance behavior
 - realistic testing seams and commands
-- implementation profiles (`coder`, `backend`, `frontend`)
+- supplied implementation profile IDs and descriptions
 - dependency boundaries
 
 Discover repository facts yourself. Use conversation context already available. Ask user only unresolved product decisions; if answers are needed, ask them and stop current turn. Never invoke another planning or grilling workflow.
@@ -34,7 +34,7 @@ Write exact JSON shape below. No extra or omitted keys:
     {
       "id": "task-id",
       "title": "Task title",
-      "profile": "backend",
+      "profile": "profile-id",
       "objective": "Outcome owned by this task",
       "acceptance": ["Observable criterion"],
       "testing": "npm test -- relevant",
@@ -58,17 +58,17 @@ Planning modes:
 
 ## Deterministic validation
 
-After each draft or revision, call `auto_dag_validate`. Fix every structural error before semantic review. Validator owns exact keys, statuses, IDs, non-empty required fields, profile values, references, uniqueness, self-dependencies, cycles, commands, and dependency waves.
+After each draft or revision, call `auto_dag_validate`. Fix every structural error before semantic review. Validator owns exact keys, statuses, IDs, non-empty required fields, supplied profile values, references, uniqueness, self-dependencies, cycles, commands, and dependency waves.
 
 ## Independent semantic review
 
-Manage one read-only Pi reviewer in new Herdr pane split inside current tab. Require `HERDR_ENV=1`. Use reviewer profile path supplied below this prompt. Reuse pane labeled `auto-dag:plan-reviewer` across review rounds and resumed planning. Never create second reviewer while labeled pane exists. Close pane after approval or planning cancellation.
+Manage one read-only Pi reviewer in new Herdr pane split inside current tab. Require `HERDR_ENV=1`. Use exact reviewer launch environment and Pi argument arrays supplied below this prompt. Reuse pane labeled `auto-dag:plan-reviewer` across review rounds and resumed planning. Never create second reviewer while labeled pane exists. Close pane after approval or planning cancellation.
 
 Use Herdr directly:
 
-1. Inspect current layout with `herdr pane layout --current`; split right or down from `$HERDR_PANE_ID` using `herdr pane split --current ... --cwd "<repository-root>" --env "PI_CODING_AGENT_DIR=<reviewer-profile>" --env "PI_AUTO_DAG_PLANNING_ROOT=<repository-root>" --no-focus`.
+1. Inspect current layout with `herdr pane layout --current`; split right or down from `$HERDR_PANE_ID` using `herdr pane split --current ... --cwd "<repository-root>"`, one `--env "KEY=VALUE"` per supplied environment entry, and `--no-focus`.
 2. Rename returned pane `auto-dag:plan-reviewer`.
-3. Start uniquely named Pi agent there with `herdr agent start <name> --kind pi --pane <pane-id> -- --offline --tools read,bash,grep,find,ls,auto_dag_submit_plan_review`.
+3. Start uniquely named Pi agent there with `herdr agent start <name> --kind pi --pane <pane-id> --`, followed by exact supplied Pi arguments in order.
 4. Prompt and read it with `herdr agent prompt <name> <prompt> --wait --timeout 600000` and `herdr agent read <name> --source recent-unwrapped --lines 200`.
 5. Close with `herdr pane close <pane-id>` when workflow ends.
 
