@@ -68,6 +68,7 @@ type ParsedUsage = { remaining: number; reset: number; tier?: string };
 const NATIVE_PROVIDER_ID = "openai-codex";
 const CODEX_ALIAS_PATTERN = /^openai-codex-([2-9]|[1-9]\d+)$/;
 const NO_ACCOUNTS_MESSAGE = "No Codex OAuth accounts found. Run /login and select OpenAI Codex.";
+const AGENT_STARTED_ENTRY = "pi-multi-codex:agent-started";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const REFRESH_MS = 5 * 60_000;
 const LOCK_STALE_MS = 45_000;
@@ -209,11 +210,23 @@ function parseState(value: unknown): UsageState {
 	return state;
 }
 
+function emptyState(): UsageState {
+	return { slots: new Map(), locks: new Map() };
+}
+
+function loadStateSync(): UsageState {
+	try {
+		return parseState(JSON.parse(readFileSync(cachePath(), "utf8")));
+	} catch {
+		return emptyState();
+	}
+}
+
 async function loadState(): Promise<UsageState> {
 	try {
 		return parseState(JSON.parse(await readFile(cachePath(), "utf8")));
 	} catch {
-		return { slots: new Map(), locks: new Map() };
+		return emptyState();
 	}
 }
 
@@ -407,9 +420,18 @@ class CodexQuotaStatus {
 	private readonly active = new Map<number, Promise<void>>();
 	private writes: Promise<void> = Promise.resolve();
 	private readonly native: CodexProvider;
+	private onChange: () => void = () => undefined;
 
 	constructor(native: CodexProvider) {
 		this.native = native;
+	}
+
+	setOnChange(onChange: () => void): void {
+		this.onChange = onChange;
+	}
+
+	snapshot(slot: number): UsageSnapshot | undefined {
+		return loadStateSync().slots.get(slot);
 	}
 
 	private async state(): Promise<UsageState> {
@@ -546,7 +568,7 @@ class CodexQuotaStatus {
 		session: AbortController,
 	): Promise<boolean> {
 		if (!this.alive(generation, session)) return false;
-		return this.change((state) => {
+		const finished = await this.change((state) => {
 			if (!this.alive(generation, session) || !this.identityStillCurrent(slot, identity.accountHash)) {
 				return { value: false, write: false };
 			}
@@ -572,6 +594,8 @@ class CodexQuotaStatus {
 			state.locks.delete(slot);
 			return { value: true, write: true };
 		}, session.signal);
+		if (finished) this.onChange();
+		return finished;
 	}
 
 	private async release(slot: number, owner: string, signal: AbortSignal): Promise<void> {
@@ -753,10 +777,29 @@ export function createCodexAliasProvider(native: CodexProvider, slot: number): C
 	return provider;
 }
 
+function providerForSlot(slot: number): string {
+	return slot === 1 ? NATIVE_PROVIDER_ID : `${NATIVE_PROVIDER_ID}-${slot}`;
+}
+
+function isManagedProvider(provider: string | undefined): boolean {
+	return provider !== undefined && slotForProvider(provider) !== undefined;
+}
+
+function sessionHasAgentWork(ctx: ExtensionContext): boolean {
+	return ctx.sessionManager?.getBranch?.().some((entry) =>
+		entry.type === "message" || (entry.type === "custom" && entry.customType === AGENT_STARTED_ENTRY),
+	) ?? false;
+}
+
 export default function multiCodex(pi: ExtensionAPI): void {
 	const native = openaiCodexProvider();
 	const quota = new CodexQuotaStatus(native);
 	const registered = new Map<number, CodexProvider>();
+	let sessionContext: ExtensionContext | undefined;
+	let automaticOpen = false;
+	let automaticCandidate: Model<any> | undefined;
+	let scopedModelRefs = new Set<string>();
+	let hasScopedModels = false;
 
 	const registerSlot = (slot: number): void => {
 		if (slot === 1 || registered.has(slot)) return;
@@ -771,15 +814,109 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		return slots;
 	};
 
+	const allowsModel = (model: Model<any>, slot: number): boolean =>
+		!hasScopedModels || scopedModelRefs.has(`${providerForSlot(slot)}/${model.id}`);
+
+	const freshSlots = (model: Model<any>): { slot: number; remaining: number }[] => {
+		const state = loadStateSync();
+		const now = Date.now();
+		return [...readCodexCredentials().entries()]
+			.flatMap(([slot, credential]) => {
+				if ((slot !== 1 && !registered.has(slot)) || !allowsModel(model, slot)) return [];
+				const identity = identityFor(credential);
+				const snapshot = state.slots.get(slot);
+				if (!identity || !isFresh(snapshot, identity, now) || typeof snapshot?.remaining !== "number") return [];
+				return [{ slot, remaining: snapshot.remaining }];
+			});
+	};
+
+	const selectFreshSlot = (model: Model<any>): number | undefined => {
+		const candidates = freshSlots(model);
+		if (candidates.length === 0) return undefined;
+		const currentSlot = slotForProvider(model.provider);
+		const remaining = Math.max(...candidates.map((candidate) => candidate.remaining));
+		const tied = candidates.filter((candidate) => candidate.remaining === remaining);
+		return tied.find((candidate) => candidate.slot === currentSlot)?.slot
+			?? Math.min(...tied.map((candidate) => candidate.slot));
+	};
+
+	const footerText = (ctx: ExtensionContext): string | undefined => {
+		const model = ctx.model;
+		const slot = slotForProvider(model?.provider ?? "");
+		if (!model || !slot) return undefined;
+		const identity = currentIdentity(slot);
+		const snapshot = quota.snapshot(slot);
+		const prefix = `Codex #${slot}`;
+		if (!identity || !snapshot || snapshot.accountHash !== identity.accountHash || !validTime(snapshot.fetchedAt) || typeof snapshot.remaining !== "number" || !validTime(snapshot.reset)) {
+			return `${prefix} · unavailable`;
+		}
+		if (!isFresh(snapshot, identity, Date.now())) return `${prefix} · stale`;
+		const text = `${prefix} · ${formatPercent(snapshot.remaining)}% · 7d ${formatDuration(snapshot.reset - Date.now())}`;
+		const color = snapshot.remaining >= 50 ? "success" : snapshot.remaining >= 25 ? "warning" : "error";
+		return ctx.ui.theme?.fg ? ctx.ui.theme.fg(color, text) : text;
+	};
+
+	const updateFooter = (ctx: ExtensionContext | undefined = sessionContext): void => {
+		if (ctx) ctx.ui.setStatus?.("pi-multi-codex", footerText(ctx));
+	};
+
+	const updatePendingCandidate = (ctx: ExtensionContext): void => {
+		if (!automaticOpen || !ctx.model || !isManagedProvider(ctx.model.provider)) return;
+		const slot = selectFreshSlot(ctx.model);
+		if (slot) automaticCandidate = { ...ctx.model, provider: providerForSlot(slot) };
+	};
+
+	quota.setOnChange(() => {
+		if (!sessionContext) return;
+		syncSlots();
+		updatePendingCandidate(sessionContext);
+		updateFooter();
+	});
+
 	syncSlots();
 
 	pi.on("session_start", (_event, ctx) => {
 		const slots = syncSlots();
+		sessionContext = ctx;
+		const scopedModels = ctx.scopedModels ?? [];
+		hasScopedModels = scopedModels.length > 0;
+		scopedModelRefs = new Set(scopedModels.map(({ model }) => `${model.provider}/${model.id}`));
+		automaticOpen = isManagedProvider(ctx.model?.provider) && !sessionHasAgentWork(ctx);
+		automaticCandidate = ctx.model;
+		// Cache-only ranking happens before background refresh starts.
+		updatePendingCandidate(ctx);
+		updateFooter(ctx);
 		quota.start();
 		if (slots.size === 0) ctx.ui.notify(NO_ACCOUNTS_MESSAGE, "warning");
 	});
 
-	pi.on("session_shutdown", () => quota.stop());
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (!automaticOpen) return;
+		// Close before await: no timer, refresh, queued turn, or provider event can route later.
+		automaticOpen = false;
+		const model = ctx.model;
+		const candidate = automaticCandidate;
+		if (!model || !candidate || !isManagedProvider(model.provider) || candidate.id !== model.id || candidate.provider === model.provider) return;
+		await pi.setModel(candidate);
+		updateFooter(ctx);
+	});
+
+	pi.on("agent_start", (_event, ctx) => {
+		automaticOpen = false;
+		if (!sessionHasAgentWork(ctx)) pi.appendEntry(AGENT_STARTED_ENTRY);
+	});
+	pi.on("session_shutdown", () => {
+		automaticOpen = false;
+		sessionContext = undefined;
+		quota.stop();
+	});
+	pi.on("model_select", (event, ctx) => {
+		if (automaticOpen) {
+			automaticCandidate = event.model;
+			updatePendingCandidate(ctx);
+		}
+		updateFooter(ctx);
+	});
 
 	pi.registerCommand("codex-add", {
 		description: "enroll another OpenAI Codex OAuth slot",
@@ -803,6 +940,40 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		handler: async (_args, ctx: ExtensionContext) => {
 			const lines = await quota.statusLines();
 			ctx.ui.notify(lines.length ? lines.join("\n") : "No Codex OAuth accounts found.", "info");
+		},
+	});
+
+	pi.registerCommand("codex-switch", {
+		description: "switch current Codex model to another authenticated slot",
+		handler: async (_args, ctx) => {
+			const model = ctx.model;
+			if (!model || !isManagedProvider(model.provider)) {
+				ctx.ui.notify("Select an OpenAI Codex model before switching slots.", "warning");
+				return;
+			}
+
+			const authenticated = [...syncSlots()]
+				.filter((slot) => slot === 1 || registered.has(slot))
+				.sort((left, right) => left - right);
+			const slots = authenticated.filter((slot) => allowsModel(model, slot));
+			const currentSlot = slotForProvider(model.provider);
+			if (slots.length === 0 || (hasScopedModels && authenticated.some((slot) => !allowsModel(model, slot)) && slots.every((slot) => slot === currentSlot))) {
+				ctx.ui.notify(
+					hasScopedModels
+						? "No authenticated Codex slot matches this session's model scope. Restart Pi or update scoped models."
+						: "No authenticated Codex slots found. Run /login and select OpenAI Codex.",
+					"warning",
+				);
+				return;
+			}
+
+			const choices = slots.map((slot) => `Codex #${slot}`);
+			const selected = await ctx.ui.select("Switch Codex slot", choices);
+			const index = selected ? choices.indexOf(selected) : -1;
+			if (index < 0) return;
+			const provider = providerForSlot(slots[index]);
+			if (provider !== model.provider) await pi.setModel({ ...model, provider });
+			updateFooter(ctx);
 		},
 	});
 }
