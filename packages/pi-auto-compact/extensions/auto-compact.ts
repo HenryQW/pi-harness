@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
 	estimateTokens,
 	getAgentDir,
@@ -19,7 +21,39 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
  * Pi's ctx.compact() aborts active low-level run internally. Its completion
  * callback sends follow-up user message, which resumes task after summary.
  */
-const COMPACT_THRESHOLD_PERCENT = 50;
+const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
+const MIN_COMPACT_THRESHOLD_PERCENT = 25;
+const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
+
+function isValidThreshold(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
+}
+
+function readConfig(): { autoCompactThreshold: number } {
+	let value: unknown;
+	try {
+		value = JSON.parse(readFileSync(configPath(), "utf8"));
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+			return { autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT };
+		}
+		throw error;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Config must be an object.");
+	}
+	const threshold = (value as Record<string, unknown>).autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
+	if (!isValidThreshold(threshold)) {
+		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
+	}
+	return { autoCompactThreshold: threshold };
+}
+
+function writeConfig(autoCompactThreshold: number): void {
+	const file = configPath();
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify({ autoCompactThreshold }, null, 2)}\n`);
+}
 
 // Emergency context guard keeps recent messages while default compaction runs.
 const KEEP_RECENT_PERCENT = 15;
@@ -84,6 +118,7 @@ function hasToolCall(message: AgentMessage): boolean {
 
 export default function (pi: ExtensionAPI) {
 	let active = false;
+	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	// Prevent turn_start, turn_end, and context from starting duplicate summaries.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
@@ -111,7 +146,7 @@ export default function (pi: ExtensionAPI) {
 		if (!active || compactionPending) return;
 
 		const usage = ctx.getContextUsage();
-		if (usage?.percent == null || usage.percent <= COMPACT_THRESHOLD_PERCENT) return;
+		if (usage?.percent == null || usage.percent <= autoCompactThreshold) return;
 
 		compactionPending = true;
 		runCompaction(ctx);
@@ -154,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 
 		const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 		const estimatedTokens = estimateTotalTokens(event.messages);
-		if (contextWindow <= 0 || estimatedTokens <= contextWindow * COMPACT_THRESHOLD_PERCENT / 100) return;
+		if (contextWindow <= 0 || estimatedTokens <= contextWindow * autoCompactThreshold / 100) return;
 
 		const truncated = keepRecent(
 			event.messages,
@@ -169,9 +204,54 @@ export default function (pi: ExtensionAPI) {
 		return { messages: truncated };
 	});
 
+	pi.registerCommand("auto-compact", {
+		description: "set automatic compaction threshold",
+		handler: async (_args, ctx) => {
+			let current: number;
+			try {
+				current = readConfig().autoCompactThreshold;
+			} catch {
+				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
+				return;
+			}
+
+			const input = await ctx.ui.input(
+				`Auto-compact threshold (%) · current: ${current}`,
+				"Enter a number above 0 and below 100",
+			);
+			if (input === undefined) return;
+
+			const threshold = Number(input.trim());
+			if (Number.isFinite(threshold) && threshold < MIN_COMPACT_THRESHOLD_PERCENT) {
+				ctx.ui.notify("Auto-compact threshold below 25% is not meaningful.", "error");
+				return;
+			}
+			if (!isValidThreshold(threshold)) {
+				ctx.ui.notify("Threshold must be at least 25% and below 100%.", "error");
+				return;
+			}
+
+			try {
+				writeConfig(threshold);
+			} catch {
+				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
+				return;
+			}
+			autoCompactThreshold = threshold;
+			ctx.ui.notify(`Auto-compact threshold set to ${threshold}%.`, "info");
+		},
+	});
+
 	// Pi's built-in automatic compaction competes with this extension. Refuse
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
+		try {
+			autoCompactThreshold = readConfig().autoCompactThreshold;
+		} catch {
+			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
+			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
+		}
+
 		active = !SettingsManager.create(ctx.cwd, getAgentDir(), {
 			projectTrusted: ctx.isProjectTrusted(),
 		}).getCompactionEnabled();
