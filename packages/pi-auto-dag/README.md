@@ -15,7 +15,19 @@ It runs dependent tasks in parallel, reviews every commit, integrates approved w
 
 ## Setup
 
-Load only the main extension in your integration profile:
+Auto DAG has two extension entry points:
+
+| Pi profile | Extension | Purpose |
+| --- | --- | --- |
+| Main integration profile | `extensions/auto-dag.ts` | Owns the run, UI, Git integration, and PR |
+| `coder`, `backend`, `frontend` | `extensions/worker.ts` | Implements Delivery Graph tasks |
+| `reviewer` | `extensions/worker.ts` | Reviews commits, final checks, and PR health |
+
+Do not load `auto-dag.ts` in worker profiles or `worker.ts` in the main profile.
+
+### Main integration profile
+
+Load only the orchestrator extension from this package:
 
 ```json
 {
@@ -27,14 +39,37 @@ Load only the main extension in your integration profile:
 }
 ```
 
-Worker profiles must load only `extensions/worker.ts` from the same package.
+### Worker profiles
 
-Worker launches:
+All four worker profiles—`coder`, `backend`, `frontend`, and `reviewer`—must load `extensions/worker.ts`.
+
+Add this package setting to `settings.json` in every worker profile directory:
+
+```json
+{
+  "packages": [{
+    "source": "npm:@henryqw/pi-auto-dag",
+    "autoload": false,
+    "extensions": ["extensions/worker.ts"]
+  }]
+}
+```
+
+When a worker starts, Auto DAG sets `PI_CODING_AGENT_DIR` to the selected profile directory. Pi loads that directory's settings and registers role-specific tools from `worker.ts`:
+
+- Implementers get tools to request review or report a blocker.
+- Reviewers get tools to submit reviews, report PR health, or report a blocker.
+
+Without `worker.ts`, workers cannot send results back to the main run.
+
+Delivery Graph tasks select `coder`, `backend`, or `frontend`. Auto DAG selects `reviewer` when review starts.
+
+Worker launches also:
 
 - Disable default skills with `--no-skills`.
-- Load skills from the worker profile.
+- Load skills from the selected worker profile.
 - Load shared skills from the main worktree.
-- Limit tools by worker role.
+- Limit built-in tools by worker role.
 
 ## Configuration
 
