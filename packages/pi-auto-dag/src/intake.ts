@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadProjectConfig } from "./config.ts";
 import { runCommand, type CommandRunner } from "./command.ts";
 import { assertDeliveryGraphProfiles, hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
-import { inspectIntegrationWorktree, resolveGitTopLevel } from "./git.ts";
+import { inspectActiveIntegrationWorktree, inspectIntegrationCandidate, resolveGitTopLevel } from "./git.ts";
 import type { ProjectConfig, RunState } from "./model.ts";
 import { createInitialRunState, createRun, type Uuid } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
@@ -25,7 +25,7 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const mainWorktree = await resolveGitTopLevel(options.mainWorktree, runner);
 	const uuid = options.uuid ?? randomUUID;
 	const mainPane = nonEmptyString(options.mainPane, "main Herdr pane");
-	const source = await inspectIntegrationWorktree(mainWorktree, runner);
+	const source = await inspectIntegrationCandidate(mainWorktree, runner);
 	await assertIgnoredLocalContext(mainWorktree, runner);
 	const config = await loadProjectConfig(runner, mainWorktree);
 	const graph = await readDeliveryGraph(mainWorktree);
@@ -35,9 +35,9 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const state = createInitialRunState({
 		run_id: uuid(),
 		graph,
-		source_commit: source.source_commit,
+		source_commit: source.head,
 		main_worktree: mainWorktree,
-		integration_branch: source.integration_branch,
+		integration_branch: source.branch,
 		default_branch: source.default_branch,
 		created_at: (options.now ?? (() => new Date().toISOString()))(),
 		main_pane: mainPane,
@@ -64,16 +64,16 @@ export async function assertRunBoundary(
 	state: RunState,
 	runner: CommandRunner = runCommand,
 ): Promise<ProjectConfig> {
-	const current = await inspectIntegrationWorktree(state.main_worktree, runner);
-	if (current.integration_branch !== state.integration_branch) {
-		throw new Error(`Main integration branch changed from ${state.integration_branch} to ${current.integration_branch}`);
+	const current = await inspectActiveIntegrationWorktree(state.main_worktree, runner);
+	if (current.branch !== state.integration_branch) {
+		throw new Error(`Main integration branch changed from ${state.integration_branch} to ${current.branch}`);
+	}
+	if (current.head !== state.integration_head) {
+		throw new Error(`Main integration HEAD changed from ${state.integration_head} to ${current.head}`);
 	}
 	const graph = await readDeliveryGraph(state.main_worktree);
 	if (hashDeliveryGraph(graph) !== state.graph_hash) {
 		throw new Error("Delivery Graph changed during the run; execution is blocked");
-	}
-	if (current.source_commit !== state.integration_head) {
-		throw new Error(`Main integration HEAD changed from ${state.integration_head} to ${current.source_commit}`);
 	}
 	const config = await loadProjectConfig(runner, state.main_worktree);
 	assertDeliveryGraphProfiles(graph, config.implementation_profiles);

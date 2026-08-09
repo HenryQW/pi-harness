@@ -113,6 +113,21 @@ test("wave completion rechecks local inputs before dispatching the next wave", a
 	assert.equal(herdr.count("agent start"), 4);
 });
 
+test("advancing the remote default branch does not block resume", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	await git(project.root, "update-ref", "refs/remotes/origin/main", "HEAD");
+	await git(project.root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	const state = await lifecycle.start(project.root, "main-pane");
+	const remote = await git(project.root, "commit-tree", `${state.integration_head}^{tree}`, "-p", state.integration_head, "-m", "remote advance");
+	await git(project.root, "update-ref", "refs/remotes/origin/main", remote);
+
+	const resumed = await lifecycle.resume(project.root);
+	assert.equal(resumed.phase, "execution");
+	assert.equal(resumed.integration_head, state.integration_head);
+});
+
 test("a clean integration-head drift blocks resume before worker dispatch", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
