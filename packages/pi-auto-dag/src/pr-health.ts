@@ -371,11 +371,14 @@ async function requestHealthRepairReview(
 	if (!(await activeHealthHeadMatches(state, health, options))) {
 		return await blockHealth(state, "PR head changed before health repair review", options);
 	}
-	const commit = nonEmptyString(envelope.payload.commit, "PR-health repair commit");
+	const commit = await verifyHealthRepairCommit(
+		state,
+		nonEmptyString(envelope.payload.commit, "PR-health repair commit"),
+		options,
+	);
 	if (Array.isArray(health.review_findings) && health.review_findings.length && health.commit === commit) {
 		return await blockHealth(state, "PR-health repair revision must use a new commit", options);
 	}
-	await verifyHealthRepairCommit(state, commit, options);
 	state = await save({ ...state, health: { ...health, status: "reviewing", activity_started_at: timestamp(options), commit, review_round: (health.review_round ?? 0) + 1, instruction_pending: true } }, options);
 	return await ensureHealthReviewer(state, config, options, "review");
 }
@@ -641,9 +644,9 @@ async function ensureLifecycleWorktree(
 	await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, base, label);
 }
 
-async function verifyHealthRepairCommit(state: RunState, commit: string, options: PrHealthOptions): Promise<void> {
+async function verifyHealthRepairCommit(state: RunState, commit: string, options: PrHealthOptions): Promise<string> {
 	const health = requiredHealth(state);
-	await verifyOneCommit(
+	return await verifyOneCommit(
 		state,
 		nonEmptyString(health.worktree, "PR-health repair worktree"),
 		nonEmptyString(health.branch, "PR-health repair branch"),
@@ -662,9 +665,9 @@ async function verifyOneCommit(
 	commit: string,
 	label: string,
 	options: PrHealthOptions,
-): Promise<void> {
+): Promise<string> {
 	await assertAttachedBranch(options.runner, worktree, branch, `${label} child worktree`);
-	await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, label);
+	return await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, label);
 }
 
 async function resolveThreads(state: RunState, ids: string[], options: PrHealthOptions): Promise<void> {

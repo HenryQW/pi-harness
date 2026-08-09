@@ -169,8 +169,15 @@ function registerWorkerTool(
 		label: definition.label,
 		description: definition.description,
 		parameters: definition.parameters,
+		prepareArguments(args) {
+			if (type !== "request_review" || !args || typeof args !== "object" || Array.isArray(args)) return args as Record<PropertyKey, unknown>;
+			const { commit: _commit, ...prepared } = args as Record<string, unknown>;
+			return prepared;
+		},
 		async execute(_toolCallId, params) {
-			const envelope = await sendWorkerEnvelope(worker, type, definition.payload(params as Record<string, unknown>), runner, cwd);
+			const payload = definition.payload(params as Record<string, unknown>);
+			if (type === "request_review") payload.commit = await commandOutput(runner, "git", ["rev-parse", "HEAD"], cwd);
+			const envelope = await sendWorkerEnvelope(worker, type, payload, runner, cwd);
 			return { content: [{ type: "text", text: `Sent ${type} for ${worker.issue_id}.` }], details: envelope, terminate: true };
 		},
 	}));
@@ -184,7 +191,7 @@ function eventDefinition(type: WorkerEvent): {
 } {
 	switch (type) {
 		case "request_review":
-			return { label: "Request review", description: "Request reviewer dispatch for this implementation commit at the prompted attempt and review round.", parameters: Type.Object({ commit: Type.String(), attempt: Type.Integer({ minimum: 1 }), review_round: Type.Integer({ minimum: 1 }), summary: Type.Optional(Type.String()) }), payload: (params) => params };
+			return { label: "Request review", description: "Request reviewer dispatch for current worktree HEAD at the prompted attempt and review round.", parameters: Type.Object({ attempt: Type.Integer({ minimum: 1 }), review_round: Type.Integer({ minimum: 1 }), summary: Type.Optional(Type.String()) }), payload: (params) => params };
 		case "submit_review":
 			return { label: "Submit review", description: "Submit the exact frozen command, exit code, and independent reviewer verdict; non-approvals need findings.", parameters: Type.Object({ commit: Type.String(), attempt: Type.Integer({ minimum: 1 }), review_round: Type.Integer({ minimum: 1 }), command: Type.String(), exit_code: Type.Integer({ minimum: 0 }), verdict: Type.Union([Type.Literal("approved"), Type.Literal("changes_requested"), Type.Literal("blocked")]), findings: Type.Array(Type.String()), fixed_thread_ids: Type.Optional(Type.Array(Type.String())) }), payload: (params) => params };
 		case "submit_health":

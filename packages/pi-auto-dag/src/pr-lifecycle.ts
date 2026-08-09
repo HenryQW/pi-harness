@@ -368,11 +368,15 @@ async function requestFinalRepairReview(
 	const current = task(state, issue.id);
 	if (envelope.payload.attempt !== current.attempts || envelope.payload.review_round !== (current.review_rounds ?? 0) + 1) return state;
 	const owner = repairOwner(state, current);
-	const commit = nonEmptyString(envelope.payload.commit, "final-gate repair commit");
+	const commit = await verifyRepairCommit(
+		state,
+		issue,
+		nonEmptyString(envelope.payload.commit, "final-gate repair commit"),
+		options,
+	);
 	if (Array.isArray(current.review_findings) && current.review_findings.length && current.commit === commit) {
 		return await failFinalGate(state, issue, "Final-gate repair revision must use a new commit", options);
 	}
-	await verifyRepairCommit(state, issue, commit, options);
 	state = await save(replaceTask(state, issue.id, {
 		...current,
 		status: "repair_reviewing",
@@ -724,9 +728,9 @@ async function ensureLifecycleWorktree(
 	await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, base, label);
 }
 
-async function verifyRepairCommit(state: RunState, issue: LocalIssue, commit: string, options: PrLifecycleOptions): Promise<void> {
+async function verifyRepairCommit(state: RunState, issue: LocalIssue, commit: string, options: PrLifecycleOptions): Promise<string> {
 	const current = task(state, issue.id);
-	await verifyOneCommit(
+	return await verifyOneCommit(
 		state,
 		nonEmptyString(current.worktree, "final-gate repair worktree"),
 		nonEmptyString(current.branch, "final-gate repair branch"),
@@ -745,9 +749,9 @@ async function verifyOneCommit(
 	commit: string,
 	label: string,
 	options: PrLifecycleOptions,
-): Promise<void> {
+): Promise<string> {
 	await assertAttachedBranch(options.runner, worktree, branch, `${label} child worktree`);
-	await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, label);
+	return await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, label);
 }
 
 async function closeFinalTab(state: RunState, issue: LocalIssue, options: PrLifecycleOptions): Promise<RunState> {

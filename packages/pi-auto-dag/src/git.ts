@@ -67,26 +67,28 @@ export async function verifySingleCommit(
 	commit: string,
 	label: string,
 	baseLabel = "recorded base",
-): Promise<void> {
+): Promise<string> {
 	if (await pathExists(join(worktree, ".context"))) throw new Error(`${label} child worktree must not contain .context`);
 	if (await commandOutput(runner, "git", ["status", "--porcelain=v1", "--untracked-files=all"], worktree)) {
 		throw new Error(`${label} worktree is not clean`);
 	}
-	if (await commandOutput(runner, "git", ["rev-parse", "HEAD"], worktree) !== commit) {
+	const canonical = await commandOutput(runner, "git", ["rev-parse", "--verify", `${commit}^{commit}`], worktree);
+	if (await commandOutput(runner, "git", ["rev-parse", "HEAD"], worktree) !== canonical) {
 		throw new Error(`${label} requested commit is not worktree HEAD`);
 	}
-	if ((await commandOutput(runner, "git", ["rev-list", "--parents", "-n", "1", commit], mainWorktree)).split(/\s+/).length > 2) {
+	if ((await commandOutput(runner, "git", ["rev-list", "--parents", "-n", "1", canonical], mainWorktree)).split(/\s+/).length > 2) {
 		throw new Error(`${label} commit must not be a merge commit`);
 	}
-	const ancestorArgs = ["merge-base", "--is-ancestor", base, commit];
+	const ancestorArgs = ["merge-base", "--is-ancestor", base, canonical];
 	const ancestor = await runner("git", ancestorArgs, { cwd: mainWorktree });
 	if (ancestor.code === 1) {
 		throw new Error(`${label} commit is not based on its ${baseLabel}`);
 	}
 	if (ancestor.code !== 0) throw new Error(commandFailure("git", ancestorArgs, ancestor));
-	if (await commandOutput(runner, "git", ["rev-list", "--count", `${base}..${commit}`], mainWorktree) !== "1") {
+	if (await commandOutput(runner, "git", ["rev-list", "--count", `${base}..${canonical}`], mainWorktree) !== "1") {
 		throw new Error(`${label} must contain exactly one commit over its ${baseLabel}`);
 	}
+	return canonical;
 }
 
 export async function readCurrentBranch(runner: CommandRunner, worktree: string): Promise<string | undefined> {
