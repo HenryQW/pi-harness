@@ -361,6 +361,23 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.equal(notifications.at(-1), "Removed 0 stuck Auto DAG widget entries.");
 	assert.ok((widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
 
+	const staleLiveAgents = [...herdrAgents];
+	let releaseStaleLiveProbe!: (result: { code: number; stdout: string; stderr: string }) => void;
+	nextHerdrProbe = new Promise((resolve) => { releaseStaleLiveProbe = resolve; });
+	const staleLiveRefresh = refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.status }, widgetCtx);
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+	herdrAgents = herdrAgents.slice(0, 2);
+	await widgetCommand.handler("fix", widgetCtx);
+	assert.equal(notifications.at(-1), "Removed 1 stuck Auto DAG widget entry.");
+	assert.ok(!(widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
+	releaseStaleLiveProbe({
+		code: 0,
+		stdout: JSON.stringify({ result: { agents: staleLiveAgents } }),
+		stderr: "",
+	});
+	await staleLiveRefresh;
+	assert.ok(!(widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
+
 	const workerTools: Array<{ name: string; execute: Function }> = [];
 	createWorkerExtension({
 		runner: async () => ({ code: 0, stdout: "", stderr: "" }),

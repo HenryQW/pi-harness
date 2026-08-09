@@ -37,6 +37,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		let renderingTimer: ReturnType<typeof setInterval> | undefined;
 		let herdrTimer: ReturnType<typeof setInterval> | undefined;
 		let readingHerdr = false;
+		let herdrGeneration = 0;
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume, ORCHESTRATOR_TOOLS.abort,
@@ -68,13 +69,15 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				return;
 			}
 			readingHerdr = true;
+			const generation = ++herdrGeneration;
 			try {
-				liveAgents = await listWorkerAgents(state, { runner });
+				const agents = await listWorkerAgents(state, { runner });
+				if (generation === herdrGeneration) liveAgents = agents;
 			} catch {
-				liveAgents = undefined;
+				if (generation === herdrGeneration) liveAgents = undefined;
 			} finally {
 				readingHerdr = false;
-				renderWorkerWidget(ctx);
+				if (generation === herdrGeneration) renderWorkerWidget(ctx);
 			}
 		};
 
@@ -112,6 +115,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 							ctx.ui.notify("Auto DAG widget state changed during Herdr probe. No entries removed.", "warning");
 							return;
 						}
+						herdrGeneration += 1;
 						liveAgents = agents;
 						let removed = 0;
 						for (const worker of expected) {
