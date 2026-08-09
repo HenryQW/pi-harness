@@ -225,6 +225,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		activity_started_at: "2099-01-01T00:00:00.000Z",
 	};
 	const publicTools: Array<{ name: string }> = [];
+	const publicCommands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
 	let activeTools = ["read", ...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)];
 	let refreshAfterTool: ((_event: unknown, ctx: unknown) => Promise<void>) | undefined;
 	createOrchestratorExtension({
@@ -247,24 +248,27 @@ test("extensions separate public lifecycle tools and show active workers", async
 		},
 	})({
 		on(event: string, handler: (_event: unknown, ctx: unknown) => Promise<void>) { if (event === "tool_execution_end") refreshAfterTool = handler; },
-		registerCommand() {},
+		registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { publicCommands.set(name, command); },
 		registerTool(tool: { name: string }) { publicTools.push(tool); },
 		sendUserMessage() {},
 		getActiveTools() { return activeTools; },
 		setActiveTools(names: string[]) { activeTools = names; },
 	} as never);
 	assert.deepEqual(publicTools.map((tool) => tool.name), [...Object.values(PLANNING_TOOLS), ...Object.values(ORCHESTRATOR_TOOLS)]);
+	assert.deepEqual([...publicCommands.keys()], ["dag-plan", "dag-widget"]);
 	const widgets: unknown[][] = [];
-	assert.ok(refreshAfterTool);
-	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.start }, {
+	const notifications: string[] = [];
+	const widgetCtx = {
 		cwd: "/tmp",
 		mode: "tui",
 		ui: {
 			theme: { fg: (_color: string, text: string) => text },
 			setWidget: (...args: unknown[]) => { widgets.push(args); },
-			notify() {},
+			notify(message: string) { notifications.push(message); },
 		},
-	});
+	};
+	assert.ok(refreshAfterTool);
+	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.start }, widgetCtx);
 	assert.deepEqual(widgets.at(-1), ["auto-dag-workers", [
 		"Auto DAG workers",
 		"● core · coding · working · 0s",
@@ -281,6 +285,23 @@ test("extensions separate public lifecycle tools and show active workers", async
 		ORCHESTRATOR_TOOLS.resolve,
 		ORCHESTRATOR_TOOLS.health,
 	]);
+
+	const widgetCommand = publicCommands.get("dag-widget")!;
+	await widgetCommand.handler("hide", widgetCtx);
+	assert.deepEqual(widgets.at(-1), ["auto-dag-workers", undefined]);
+	await widgetCommand.handler("show", widgetCtx);
+	assert.equal((widgets.at(-1)?.[1] as string[]).at(-1), "! PR health · triaging · missing · 0s");
+	await widgetCommand.handler("fix", widgetCtx);
+	assert.equal(notifications.at(-1), "Removed 1 stuck Auto DAG widget entry.");
+	assert.deepEqual(widgets.at(-1), ["auto-dag-workers", [
+		"Auto DAG workers",
+		"● core · coding · working · 0s",
+		"○ release · reviewing · idle · 0s",
+		"! final-check · blocked · 0s · needs input",
+	]]);
+	runningState.health.activity_started_at = "2099-01-01T00:00:01.000Z";
+	await refreshAfterTool({ toolName: ORCHESTRATOR_TOOLS.status }, widgetCtx);
+	assert.equal((widgets.at(-1)?.[1] as string[]).at(-1), "! PR health · triaging · missing · 0s");
 
 	const workerTools: Array<{ name: string; execute: Function }> = [];
 	createWorkerExtension({

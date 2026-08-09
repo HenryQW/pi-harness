@@ -2,7 +2,7 @@
 
 Pi extension for planning and running a Delivery Graph with Pi and Herdr.
 
-`/plan-delivery` turns current conversation and repository context into an independently reviewed, user-approved graph. Auto DAG then runs dependent tasks in parallel, reviews every commit, integrates approved work, runs a final check, and opens one PR.
+`/dag-plan` turns current conversation and repository context into an independently reviewed, user-approved graph. Auto DAG then runs dependent tasks in parallel, reviews every commit, integrates approved work, runs a final check, and opens one PR.
 
 ## Key terms
 
@@ -146,7 +146,7 @@ Minimal example:
 
 ```mermaid
 flowchart TD
-    P["/plan-delivery in current agent"] --> R["Validate and review draft"]
+    P["/dag-plan in current agent"] --> R["Validate and review draft"]
     R -->|blockers| P
     R -->|PASS| A["User approves exact graph hash"]
     A --> B["Start and validate"]
@@ -170,7 +170,7 @@ flowchart TD
 
 ### 1. Plan and approve
 
-Run `/plan-delivery` in an interactive Pi TUI inside Herdr. Invocation may start from any repository subdirectory; Pi resolves the Git top-level and uses it for every planning path and active-run check. Current main agent remains planner. It uses conversation context, inspects repository facts, asks only unresolved product decisions, and writes draft graph.
+Run `/dag-plan` in an interactive Pi TUI inside Herdr. Invocation may start from any repository subdirectory; Pi resolves the Git top-level and uses it for every planning path and active-run check. Current main agent remains planner. It uses conversation context, inspects repository facts, asks only unresolved product decisions, and writes draft graph.
 
 Workflow validates structure with `auto_dag_validate`, then starts configured read-only reviewer in pane split inside current Herdr tab. Reviewer checks acceptance traceability, vertical slicing, dependencies, interference, and test quality. Reviewer records `PASS` directly through `auto_dag_submit_plan_review`, producing temporary evidence bound to approved-form graph SHA-256. Planner then shows full summary and calls `auto_dag_approve`. Approval rejects missing or stale evidence, rechecks it after native confirmation, removes it, and atomically writes approved graph.
 
@@ -230,7 +230,8 @@ To repair a failed final check, call `auto_dag_resolve` with the completed imple
 
 | Tool or command | Use |
 | --- | --- |
-| `/plan-delivery` | Draft, review, and approve graph without execution |
+| `/dag-plan` | Draft, review, and approve graph without execution |
+| `/dag-widget show\|hide\|fix` | Show or hide worker widget; dismiss entries whose worker is confirmed missing |
 | `auto_dag_validate` | Validate exact graph contract and derive waves |
 | `auto_dag_submit_plan_review` | Reviewer-only: record `PASS` for exact current candidate hash |
 | `auto_dag_approve` | Require matching reviewer `PASS`, confirm exact candidate hash, and atomically approve draft |
@@ -300,6 +301,8 @@ Main Pi widget shows:
 - Live Herdr state.
 - Time in current activity.
 - Block reason.
+
+Widget entries derive from Run State and live Herdr status; widget never changes orchestration state. `/dag-widget fix` dismisses only non-blocked entries whose expected worker is absent. Dismissal lasts for current worker incarnation and clears when worker appears or lifecycle advances.
 
 Run history remains after completion until removed manually.
 

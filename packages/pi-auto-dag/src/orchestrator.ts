@@ -32,9 +32,11 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		registerPlanning(pi, runner);
 		let state: RunState | undefined;
 		let liveAgents: Map<string, string> | undefined;
+		let widgetVisible = true;
+		const dismissedWidgetEntries = new Set<string>();
 		let renderingTimer: ReturnType<typeof setInterval> | undefined;
 		let herdrTimer: ReturnType<typeof setInterval> | undefined;
-		let readingHerdr = false;
+		let herdrRefresh: Promise<void> | undefined;
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume, ORCHESTRATOR_TOOLS.abort,
@@ -45,6 +47,9 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			const next = [...active.filter((name) => !ORCHESTRATOR_TOOL_NAMES.has(name)), ...autoDagTools];
 			if (active.length !== next.length || active.some((name, index) => name !== next[index])) pi.setActiveTools(next);
 		};
+		const renderWorkerWidget = (ctx: ExtensionContext): void => {
+			updateWorkerWidget(ctx, widgetVisible ? state : undefined, liveAgents, dismissedWidgetEntries);
+		};
 		const refreshWorkerWidget = async (ctx: ExtensionContext): Promise<void> => {
 			try {
 				state = await lifecycle.status(ctx.cwd);
@@ -53,31 +58,76 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				if (errorMessage(error) !== "No active pi-auto-dag run") ctx.ui.notify(`Auto DAG status unavailable: ${errorMessage(error)}`, "warning");
 			}
 			syncActiveTools();
-			updateWorkerWidget(ctx, state, liveAgents);
+			renderWorkerWidget(ctx);
 		};
 		const refreshHerdr = async (ctx: ExtensionContext): Promise<void> => {
-			if (readingHerdr) return;
-			if (!state || !workers(state).some((worker) => worker.activity !== "blocked")) {
-				liveAgents = new Map();
-				updateWorkerWidget(ctx, state, liveAgents);
-				return;
-			}
-			readingHerdr = true;
+			if (herdrRefresh) return await herdrRefresh;
+			herdrRefresh = (async () => {
+				if (!state || !workers(state).some((worker) => worker.activity !== "blocked")) {
+					liveAgents = new Map();
+					renderWorkerWidget(ctx);
+					return;
+				}
+				try {
+					liveAgents = await listWorkerAgents(state, { runner });
+				} catch {
+					liveAgents = undefined;
+				} finally {
+					renderWorkerWidget(ctx);
+				}
+			})();
 			try {
-				liveAgents = await listWorkerAgents(state, { runner });
-			} catch {
-				liveAgents = undefined;
+				await herdrRefresh;
 			} finally {
-				readingHerdr = false;
-				updateWorkerWidget(ctx, state, liveAgents);
+				herdrRefresh = undefined;
 			}
 		};
+
+		pi.registerCommand("dag-widget", {
+			description: "Show, hide, or fix the Auto DAG worker widget",
+			getArgumentCompletions: (prefix) => {
+				const matches = ["show", "hide", "fix"].filter((action) => action.startsWith(prefix.trim()));
+				return matches.length ? matches.map((action) => ({ value: action, label: action })) : null;
+			},
+			handler: async (args, ctx) => {
+				switch (args.trim()) {
+					case "show":
+						widgetVisible = true;
+						await refreshWorkerWidget(ctx);
+						if (ctx.mode === "tui") await refreshHerdr(ctx);
+						return;
+					case "hide":
+						widgetVisible = false;
+						renderWorkerWidget(ctx);
+						return;
+					case "fix": {
+						await refreshWorkerWidget(ctx);
+						await refreshHerdr(ctx);
+						if (!liveAgents) {
+							ctx.ui.notify("Auto DAG widget fix could not read Herdr worker status.", "warning");
+							return;
+						}
+						let removed = 0;
+						for (const worker of state ? workers(state) : []) {
+							if (worker.activity === "blocked" || liveAgents.has(worker.pane) || dismissedWidgetEntries.has(worker.key)) continue;
+							dismissedWidgetEntries.add(worker.key);
+							removed += 1;
+						}
+						renderWorkerWidget(ctx);
+						ctx.ui.notify(`Removed ${removed} stuck Auto DAG widget ${removed === 1 ? "entry" : "entries"}.`, "info");
+						return;
+					}
+					default:
+						ctx.ui.notify("Usage: /dag-widget show|hide|fix", "warning");
+				}
+			},
+		});
 		pi.on("session_start", async (_event, ctx) => {
 			await refreshWorkerWidget(ctx);
 			if (ctx.mode === "tui") {
 				await refreshHerdr(ctx);
-				renderingTimer = setInterval(() => { updateWorkerWidget(ctx, state, liveAgents); }, 1000);
-				herdrTimer = setInterval(() => { void refreshHerdr(ctx); }, 5000);
+				renderingTimer = setInterval(() => { if (widgetVisible) renderWorkerWidget(ctx); }, 1000);
+				herdrTimer = setInterval(() => { if (widgetVisible) void refreshHerdr(ctx); }, 5000);
 			}
 		});
 		pi.on("session_shutdown", () => {
@@ -89,7 +139,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		pi.on("tool_execution_end", async (event, ctx) => {
 			if (!ORCHESTRATOR_TOOL_NAMES.has(event.toolName)) return;
 			await refreshWorkerWidget(ctx);
-			if (ctx.mode === "tui") await refreshHerdr(ctx);
+			if (ctx.mode === "tui" && widgetVisible) await refreshHerdr(ctx);
 		});
 		pi.on("input", async (event, ctx) => {
 			let envelope: WorkerEnvelope | undefined;
@@ -99,8 +149,8 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				const result = await lifecycle.resume(ctx.cwd, envelope);
 				state = runRemainsActive(result) ? result : undefined;
 				syncActiveTools();
-				updateWorkerWidget(ctx, state, liveAgents);
-				if (ctx.mode === "tui") await refreshHerdr(ctx);
+				renderWorkerWidget(ctx);
+				if (ctx.mode === "tui" && widgetVisible) await refreshHerdr(ctx);
 				ctx.ui.notify(stateSummary(result), "info");
 			} catch (error) {
 				ctx.ui.notify(`Auto DAG worker event rejected: ${errorMessage(error)}`, "error");
@@ -170,15 +220,33 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 	};
 }
 
-function updateWorkerWidget(ctx: ExtensionContext, state: RunState | undefined, liveAgents: Map<string, string> | undefined): void {
+interface WorkerWidgetEntry {
+	key: string;
+	issue: string;
+	activity: string;
+	pane: string;
+	startedAt: string;
+	reason?: string;
+}
+
+function updateWorkerWidget(
+	ctx: ExtensionContext,
+	state: RunState | undefined,
+	liveAgents: Map<string, string> | undefined,
+	dismissed: Set<string>,
+): void {
 	if (!state) {
 		ctx.ui.setWidget(WORKER_WIDGET, undefined);
 		return;
 	}
 	const active = workers(state);
-	ctx.ui.setWidget(WORKER_WIDGET, active.length ? [
+	const current = new Set(active.map((worker) => worker.key));
+	for (const key of dismissed) if (!current.has(key)) dismissed.delete(key);
+	if (liveAgents) for (const worker of active) if (liveAgents.has(worker.pane)) dismissed.delete(worker.key);
+	const visible = active.filter((worker) => !dismissed.has(worker.key));
+	ctx.ui.setWidget(WORKER_WIDGET, visible.length ? [
 		ctx.ui.theme.fg("accent", "Auto DAG workers"),
-		...active.map(({ issue, activity, pane, startedAt, reason }) => {
+		...visible.map(({ issue, activity, pane, startedAt, reason }) => {
 			if (activity === "blocked") return `${ctx.ui.theme.fg("error", "!")} ${issue} · blocked · ${elapsed(startedAt)}${reason ? ` · ${reason}` : ""}`;
 			const status = liveAgents ? liveAgents.get(pane) ?? "missing" : "unknown";
 			const marker = status === "working" ? ctx.ui.theme.fg("success", "●") : status === "idle" ? ctx.ui.theme.fg("warning", "○") : status === "missing" ? ctx.ui.theme.fg("error", "!") : ctx.ui.theme.fg("muted", "?");
@@ -187,21 +255,35 @@ function updateWorkerWidget(ctx: ExtensionContext, state: RunState | undefined, 
 	] : undefined);
 }
 
-function workers(state: RunState): Array<{ issue: string; activity: string; pane: string; startedAt: string; reason?: string }> {
-	const active: Array<{ issue: string; activity: string; pane: string; startedAt: string; reason?: string }> = [];
+function workers(state: RunState): WorkerWidgetEntry[] {
+	const active: WorkerWidgetEntry[] = [];
 	for (const [issue, task] of Object.entries(state.tasks)) {
 		if (task.tab_cleanup_done) continue;
 		const role = task.status === "blocked" ? task.blocked_role : ["starting", "implementing", "repairing"].includes(task.status) ? "implementer" : ["reviewing", "repair_reviewing"].includes(task.status) ? "reviewer" : undefined;
 		const pane = role === "implementer" ? task.implementer_pane : role === "reviewer" ? task.reviewer_pane : undefined;
 		const activity = task.status === "blocked" ? "blocked" : task.status === "starting" ? "starting" : task.status === "implementing" ? "coding" : task.status === "repairing" ? "repairing" : role === "reviewer" ? "reviewing" : undefined;
-		if (activity && pane && task.activity_started_at) active.push({ issue, activity, pane, startedAt: task.activity_started_at, reason: task.block_reason });
+		if (activity && pane && task.activity_started_at) active.push({
+			key: `${state.run_id}:${issue}:${activity}:${pane}:${task.activity_started_at}`,
+			issue,
+			activity,
+			pane,
+			startedAt: task.activity_started_at,
+			reason: task.block_reason,
+		});
 	}
 	const health = state.health;
 	if (health) {
 		const role = health.status === "blocked" ? health.blocked_role : health.status === "repairing" ? "implementer" : ["triaging", "reviewing"].includes(health.status) ? "reviewer" : undefined;
 		const pane = role === "implementer" ? health.coder_pane : role === "reviewer" ? health.reviewer_pane : undefined;
 		const activity = health.status === "blocked" ? "blocked" : health.status;
-		if (role && pane && health.activity_started_at) active.push({ issue: "PR health", activity, pane, startedAt: health.activity_started_at, reason: health.summary });
+		if (role && pane && health.activity_started_at) active.push({
+			key: `${state.run_id}:PR health:${activity}:${pane}:${health.activity_started_at}`,
+			issue: "PR health",
+			activity,
+			pane,
+			startedAt: health.activity_started_at,
+			reason: health.summary,
+		});
 	}
 	return active;
 }
