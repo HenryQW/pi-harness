@@ -181,7 +181,7 @@ test("activates only when Pi built-in auto-compaction is disabled", async () => 
 			} else {
 				assert.doesNotThrow(start, scenario.name);
 			}
-			handlers.get("turn_start")?.({} as never, ctx);
+			handlers.get("agent_end")?.({ type: "agent_end", messages: [] } as never, ctx);
 			assert.equal(compactions, scenario.rejects ? 0 : 1, scenario.name);
 		}
 	} finally {

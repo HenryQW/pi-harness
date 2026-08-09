@@ -13,9 +13,10 @@ import type {
 type AgentMessage = Parameters<typeof estimateTokens>[0];
 
 /**
- * Proactive compaction runs at three points:
+ * Proactive compaction runs at four points:
  * - turn_start: catch sessions already over threshold before next request.
  * - turn_end: catch growth caused by tool results before next LLM turn.
+ * - agent_end: catch growth from the final provider turn.
  * - context: last-resort guard with a temporary keep-recent context.
  *
  * Pi's ctx.compact() aborts active low-level run internally. Its completion
@@ -119,7 +120,7 @@ function hasToolCall(message: AgentMessage): boolean {
 export default function (pi: ExtensionAPI) {
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	// Prevent turn_start, turn_end, and context from starting duplicate summaries.
+	// Prevent lifecycle hooks from starting duplicate summaries.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
 
@@ -176,11 +177,13 @@ export default function (pi: ExtensionAPI) {
 	// Pre-turn catches resumed/queued work before provider request starts.
 	pi.on("turn_start", (_event, ctx) => compactIfNeeded(ctx));
 
-	// Only tool-call turns need mid-run compaction. Final answers should not
-	// receive an unsolicited continuation message.
+	// Only tool-call turns need mid-run compaction.
 	pi.on("turn_end", (event, ctx) => {
 		if (hasToolCall(event.message)) compactIfNeeded(ctx);
 	});
+
+	// Catch threshold crossings caused by the final provider turn.
+	pi.on("agent_end", (_event, ctx) => compactIfNeeded(ctx));
 
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
