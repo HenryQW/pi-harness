@@ -47,6 +47,7 @@ test("planning tools validate and atomically approve exact draft without executi
 	assert.equal(validation.details.hash, hashDeliveryGraph(await readDeliveryGraph(project.root)));
 
 	let confirmation = "";
+	const notifications: string[] = [];
 	const approve = tools.get(PLANNING_TOOLS.approve)!;
 	await assert.rejects(approve.execute("approve", {}, undefined, undefined, {
 		cwd: project.root,
@@ -84,9 +85,23 @@ test("planning tools validate and atomically approve exact draft without executi
 	const result = await approve.execute("approve", {}, undefined, undefined, {
 		cwd: project.root,
 		mode: "tui",
-		ui: { confirm: async (_title: string, message: string) => { confirmation = message; return true; } },
+		ui: {
+			confirm: async (title: string, message: string) => {
+				if (title === "Approve Delivery Graph?") confirmation = message;
+				else {
+					assert.equal(title, "Commit current branch changes?");
+					assert.equal(message, "?? .gitignore");
+				}
+				return true;
+			},
+			input: async () => "feat: ship behavior",
+			notify: (message: string) => { notifications.push(message); },
+		},
 	}) as { content: Array<{ text: string }>; details: { graph: { status: string }; hash: string } };
 	assert.equal(result.details.graph.status, "approved");
+	assert.equal(await git(project.root, "log", "-1", "--format=%s"), "feat: ship behavior");
+	assert.equal(await git(project.root, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.deepEqual(notifications, ["Next step: Start Auto DAG for approved graph."]);
 	assert.match(confirmation, new RegExp(result.details.hash));
 	assert.match(confirmation, /\[ship-behavior\] -> final-check/);
 	assert.equal((await readDeliveryGraph(project.root)).status, "approved");
@@ -174,6 +189,8 @@ test("planning validation and approval require ignored untracked local context",
 async function setup(t: TestContext): Promise<{ root: string }> {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-planning-"));
 	await git(root, "init", "-b", "main");
+	await git(root, "config", "user.name", "Planning Test");
+	await git(root, "config", "user.email", "planning@example.com");
 	await writeFile(join(root, ".gitignore"), ".context/\n");
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-planning-agent-"));
 	const reviewer = join(agentDir, "profiles", "reviewer");

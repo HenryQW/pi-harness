@@ -1,7 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
+import { commandFailure, errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import { assertProfileDirectories, expandProfilePath, loadProjectConfig } from "./config.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
@@ -127,6 +127,28 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 				if (persisted.status !== "approved" || hashDeliveryGraph(persisted) !== hash) {
 					throw new Error("Persisted Delivery Graph does not match approved candidate");
 				}
+				const statusArgs = ["status", "--porcelain=v1", "--untracked-files=all"];
+				let changes = await runner("git", statusArgs, { cwd: root });
+				if (changes.code !== 0) {
+					ctx.ui.notify(`Could not check current branch changes: ${commandFailure("git", statusArgs, changes)}`, "warning");
+				} else if (changes.stdout.trim() && await ctx.ui.confirm("Commit current branch changes?", changes.stdout.trim())) {
+					const message = (await ctx.ui.input("Commit message:", "Describe current branch changes"))?.trim();
+					if (message) {
+						const addArgs = ["add", "-A"];
+						const added = await runner("git", addArgs, { cwd: root });
+						if (added.code !== 0) {
+							ctx.ui.notify(commandFailure("git", addArgs, added), "error");
+						} else {
+							const commitArgs = ["commit", "-m", message];
+							const committed = await runner("git", commitArgs, { cwd: root });
+							if (committed.code !== 0) ctx.ui.notify(commandFailure("git", commitArgs, committed), "error");
+							else changes = await runner("git", statusArgs, { cwd: root });
+						}
+					}
+				}
+				ctx.ui.notify(changes.code === 0 && !changes.stdout.trim()
+					? "Next step: Start Auto DAG for approved graph."
+					: "Next steps:\n1. Commit changes in current branch.\n2. Start Auto DAG for approved graph.", "info");
 				return graphResult(persisted);
 			}));
 		},
