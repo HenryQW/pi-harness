@@ -17,9 +17,9 @@ pi remove npm:@henryqw/pi-herdr-rename
 ## Behavior
 
 - On the first real, non-empty text prompt in a new session, title generation starts in the background and does not delay the main Pi response. Extension-injected prompts, empty prompts, and image-only input are ignored.
-- Successful titles are lowercase, at most five words, and at most 60 characters. The first 1,000 characters of user text are sent to the rename model; prompt content is never logged.
+- Successful titles are lowercase and, by default, at most four words and 40 characters. The first 1,000 characters of user text are sent to the rename model; prompt content is never logged.
 - A successful title updates the Pi session name and current Herdr pane. The enclosing Herdr tab is updated only when the current tab has one pane. Outside Herdr, only the Pi session name changes.
-- Resuming a named session reapplies its saved title without another rename-model request. Automatic failures stay quiet and do not change labels; there is no local fallback or retry.
+- Resuming a named session reapplies its saved title without another rename-model request. Automatic rename-model errors show a warning; other automatic failures stay quiet. Failures do not change labels, fall back locally, or retry.
 
 ## Manual rename
 
@@ -35,11 +35,13 @@ The selection is saved in:
 
 ```json
 {
-  "model": "provider/model"
+  "model": "provider/model",
+  "maxWords": 4,
+  "maxChars": 40
 }
 ```
 
-Missing, malformed, or unavailable configuration never falls back to another model.
+`maxWords` and `maxChars` accept positive integers and default to 4 and 40. Invalid limits use their defaults. Missing, malformed, or unavailable model selection never falls back to another model.
 
 ## Development
 
