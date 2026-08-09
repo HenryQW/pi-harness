@@ -16,7 +16,8 @@
   "pi": {
     "extensions": [
       "./packages/pi-auto-compact/extensions",
-      "./packages/pi-model-thinking/extensions"
+      "./packages/pi-model-thinking/extensions",
+      "./packages/pi-open-in/extensions"
     ]
   },
   "scripts": {
