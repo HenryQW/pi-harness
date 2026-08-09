@@ -31,6 +31,7 @@ function harness(options: {
 	const commands = new Map<string, Command>();
 	const names: string[] = [];
 	const notifications: string[] = [];
+	const notificationTypes: Array<string | undefined> = [];
 	const completionCalls: CompletionCall[] = [];
 	const execCalls: string[][] = [];
 	const widgets: unknown[] = [];
@@ -72,14 +73,17 @@ function harness(options: {
 		},
 		sessionManager: { getBranch: () => options.branch ?? [] },
 		ui: {
-			notify: (message: string) => notifications.push(message),
+			notify: (message: string, type?: string) => {
+				notifications.push(message);
+				notificationTypes.push(type);
+			},
 			select: async () => options.select,
 			setWidget: (_key: string, content: unknown) => widgets.push(content),
 		},
 	} as unknown as ExtensionContext;
 
 	herdrRenameExtension(api);
-	return { handlers, commands, ctx, names, notifications, completionCalls, execCalls, widgets };
+	return { handlers, commands, ctx, names, notifications, notificationTypes, completionCalls, execCalls, widgets };
 }
 
 async function eventually(check: () => boolean): Promise<void> {
@@ -255,6 +259,21 @@ test("manual rename widget shows progress, result, then disappears", async (t) =
 	});
 });
 
+test("automatic rename warns when the rename model errors", async () => {
+	await withAgentDir(async () => {
+		const app = harness({
+			complete: async () => ({ ...response("", "error"), errorMessage: "Provider failed" }),
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
+		await eventually(() => app.notifications.length > 0);
+
+		assert.equal(app.notifications.at(-1), "Provider failed");
+		assert.equal(app.notificationTypes.at(-1), "warning");
+		assert.deepEqual(app.names, []);
+	});
+});
+
 test("shutdown aborts automatic generation and invalid titles make no change", async () => {
 	await withAgentDir(async () => {
 		let resolveCompletion!: (value: any) => void;
@@ -285,6 +304,27 @@ test("shutdown aborts automatic generation and invalid titles make no change", a
 	});
 });
 
+test("configured word and character limits control generation and validation", async () => {
+	await withAgentDir(async (dir) => {
+		await writeFile(
+			join(dir, "config", "pi-herdr-rename.json"),
+			JSON.stringify({ model: `${defaultModel.provider}/${defaultModel.id}`, maxWords: 2, maxChars: 12 }),
+		);
+		const titles = ["a b c", "abcdefghijklm", "tiny title"];
+		const app = harness({ sessionName: "saved", complete: async () => response(titles.shift() ?? "") });
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
+
+		await app.commands.get("rename")?.("", app.ctx);
+		await app.commands.get("rename")?.("", app.ctx);
+		await app.commands.get("rename")?.("", app.ctx);
+
+		assert.match(app.completionCalls[0].context.systemPrompt, /at most 2 words.*at most 12 characters/);
+		assert.equal(app.notifications.filter((message) => message.includes("invalid title")).length, 2);
+		assert.deepEqual(app.names, ["tiny title"]);
+	});
+});
+
 test("rename model config is required, persists selection, and never substitutes another model", async () => {
 	await withAgentDir(async (dir) => {
 		const config = join(dir, "config", "pi-herdr-rename.json");
@@ -307,7 +347,11 @@ test("rename model config is required, persists selection, and never substitutes
 		assert.match(app.notifications.at(-1) ?? "", /not configured/);
 
 		await app.commands.get("rename-model")?.("", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(config, "utf8")), { model: "other/small" });
+		assert.deepEqual(JSON.parse(await readFile(config, "utf8")), {
+			model: "other/small",
+			maxWords: 4,
+			maxChars: 40,
+		});
 		await app.commands.get("rename")?.("", app.ctx);
 		assert.equal(app.completionCalls[0].model.id, other.id);
 
