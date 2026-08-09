@@ -17,7 +17,10 @@ type Registration = {
 	handler: Command;
 };
 
-function loadCommands(calls: Array<{ command: string; args: string[] }>): Map<string, Registration> {
+function loadCommands(
+	calls: Array<{ command: string; args: string[] }>,
+	result = { stdout: "", stderr: "", code: 0, killed: false },
+): Map<string, Registration> {
 	const commands = new Map<string, Registration>();
 	openInExtension({
 		registerCommand(name: string, options: { description?: string; handler: Command }) {
@@ -25,7 +28,7 @@ function loadCommands(calls: Array<{ command: string; args: string[] }>): Map<st
 		},
 		exec: async (command: string, args: string[]) => {
 			calls.push({ command, args });
-			return { stdout: "", stderr: "", code: 0, killed: false };
+			return result;
 		},
 	} as unknown as ExtensionAPI);
 	return commands;
@@ -86,5 +89,37 @@ test("/open description uses configured command", async () => {
 			commands.get("open")?.description,
 			"Open the current path with `codex <current-path>`",
 		);
+	});
+});
+
+test("/open separates configured command arguments", async () => {
+	await withAgentDir(async (agentDir) => {
+		await mkdir(join(agentDir, "config"), { recursive: true });
+		await writeFile(
+			join(agentDir, "config", "pi-open-in.json"),
+			JSON.stringify({ command: "open -a Cursor" }),
+		);
+
+		const calls: Array<{ command: string; args: string[] }> = [];
+		const commands = loadCommands(calls);
+		const ctx = { cwd: "/tmp/project" } as ExtensionCommandContext;
+
+		await commands.get("open")!.handler("", ctx);
+		assert.deepEqual(calls, [
+			{ command: "open", args: ["-a", "Cursor", "/tmp/project"] },
+		]);
+	});
+});
+
+test("/open reports nonzero command results", async () => {
+	await withAgentDir(async () => {
+		const ctx = { cwd: "/tmp/project" } as ExtensionCommandContext;
+		for (const [stderr, expected] of [
+			["  Cursor failed\n", /Cursor failed/],
+			["", /exit code 9/],
+		] as Array<[string, RegExp]>) {
+			const commands = loadCommands([], { stdout: "", stderr, code: 9, killed: false });
+			await assert.rejects(commands.get("open")!.handler("", ctx), expected);
+		}
 	});
 });
