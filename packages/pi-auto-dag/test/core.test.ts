@@ -293,7 +293,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		main_pane: "main-pane",
 	});
 	assert.deepEqual(launch.args, [
-		"--no-skills", "--skill", "/tmp/coder/.agents/skills", "--skill", "/tmp/project/.pi/shared-skills/.agents/skills", "--tools",
+		"--offline", "--no-skills", "--skill", "/tmp/coder/.agents/skills", "--skill", "/tmp/project/.pi/shared-skills/.agents/skills", "--tools",
 		"read,bash,edit,write,grep,find,ls,auto_dag_request_review,auto_dag_block_task",
 	]);
 	const reviewerLaunch = createWorkerLaunch({

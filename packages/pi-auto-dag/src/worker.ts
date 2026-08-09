@@ -59,6 +59,7 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 			PI_AUTO_DAG_MAIN_PANE: nonEmptyString(input.main_pane, "worker main_pane"),
 		},
 		args: [
+			"--offline",
 			"--no-skills",
 			...skills.flatMap((path) => ["--skill", path]),
 			"--tools",
