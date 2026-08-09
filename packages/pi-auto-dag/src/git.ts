@@ -57,10 +57,16 @@ async function inspectActiveIntegrationWorktreeAtRoot(root: string, runner: Comm
 async function inspectIntegrationBranchAtRoot(root: string, runner: CommandRunner, currentBranch?: string) {
 	const integrationBranch = currentBranch ?? await readCurrentBranch(runner, root);
 	if (integrationBranch === undefined) throw new Error("Main integration worktree is detached");
-	const { name: defaultBranch } = await resolveDefaultBranch(root, runner);
+	const { name: defaultBranch, ref: defaultRef } = await resolveDefaultBranch(root, runner);
 	if (integrationBranch === defaultBranch) {
 		throw new Error(`Main integration worktree must not use the default branch: ${defaultBranch}`);
 	}
+	const baseArgs = ["merge-base", "--is-ancestor", defaultRef, "HEAD"];
+	const base = await runner("git", baseArgs, { cwd: root });
+	if (base.code === 1) {
+		throw new Error(`Integration branch ${integrationBranch} has an unsuitable base; it must contain ${defaultRef}`);
+	}
+	if (base.code !== 0) throw new Error(commandFailure("git", baseArgs, base));
 	return { integration_branch: integrationBranch, default_branch: defaultBranch };
 }
 
