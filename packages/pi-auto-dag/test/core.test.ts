@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
+import { runCommand } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig } from "../src/config.ts";
 import { deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
@@ -56,6 +57,16 @@ const graph = {
 		},
 	],
 };
+
+test("command runner bounds combined process output", async () => {
+	await assert.rejects(
+		runCommand(process.execPath, ["-e", "process.stdout.write('12345'); process.stderr.write('67890')"], {
+			cwd: process.cwd(),
+			maxOutputBytes: 9,
+		}),
+		/node output exceeded 9 bytes/,
+	);
+});
 
 test("strict config and local graph validation derive deterministic dependencies", () => {
 	const config = parseProjectConfig({

@@ -238,6 +238,25 @@ export async function createWorkerTab(
 	};
 }
 
+/** Reuse a recorded root tab, recover it by provisioning identity, or create it once. */
+export async function reconcileWorkerTab(
+	state: WorkerHostState,
+	input: {
+		tab_id?: string;
+		pane_id?: string;
+		cwd: string;
+		launch: WorkerLaunch;
+		label: string;
+	},
+	options: WorkerHostOptions,
+): Promise<{ tab_id: string; pane_id: string }> {
+	if (input.tab_id && input.pane_id && await workerTabExists(state, input.tab_id, options)) {
+		return { tab_id: input.tab_id, pane_id: input.pane_id };
+	}
+	return await findWorkerTab(state, input.label, options)
+		?? await createWorkerTab(state, input.cwd, input.launch, input.label, options);
+}
+
 export async function findWorkerTab(
 	state: WorkerHostState,
 	label: string,

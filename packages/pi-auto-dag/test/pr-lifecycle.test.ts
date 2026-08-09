@@ -174,21 +174,22 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	state = await lifecycle.health(project.root, RUN_ID);
 	const reviewer = state.health?.reviewer_agent;
 	state = await lifecycle.health(project.root, RUN_ID, healthEvent(state, {
-		summary: "One unresolved review thread and one failing check.",
+		summary: "Two unresolved review threads and one failing check.",
 		actionable: true,
-		thread_ids: ["THREAD-1"],
+		thread_ids: ["THREAD-1", "THREAD-2"],
 		checks: [{ name: "integration", link: "https://ci.example/integration", output: "fails: expected repair" }],
 	}));
 	assert.equal(state.health?.status, "repairing");
 	const repair = await commit(state.health!.worktree!, "health.txt", "healthy\n", "health repair");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
 	assert.equal(state.health?.reviewer_agent, reviewer);
-	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-1"]));
+	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-1", "THREAD-2"]));
 
 	assert.equal(state.health?.status, "completed");
-	assert.deepEqual(state.health?.resolved_thread_ids, ["THREAD-1"]);
+	assert.deepEqual(state.health?.resolved_thread_ids, ["THREAD-1", "THREAD-2"]);
 	assert.equal(gh.gitPushes, pushes + 1);
-	assert.deepEqual(gh.resolved, ["THREAD-1"]);
+	assert.equal(gh.count("api graphql"), 1);
+	assert.deepEqual(gh.resolved, ["THREAD-1", "THREAD-2"]);
 	assert.equal(herdr.tabs.size, 0);
 	assert.equal(await git(project.root, "show", "HEAD:health.txt"), "healthy");
 });
@@ -543,8 +544,13 @@ function fakeGh(root: string, input: { base?: string } = {}) {
 				return success({ ...pr, headRefOid: oid, state: "OPEN" });
 			}
 			if (args.slice(0, 2).join(" ") === "api graphql") {
-				resolved.push(args.find((arg) => arg.startsWith("threadId="))?.slice("threadId=".length) ?? "");
-				return success({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+				const ids = args
+					.filter((arg) => /^threadId\d+=/.test(arg))
+					.map((arg) => arg.slice(arg.indexOf("=") + 1));
+				resolved.push(...ids);
+				return success({
+					data: Object.fromEntries(ids.map((id, index) => [`thread${index}`, { thread: { id, isResolved: true } }])),
+				});
 			}
 			return { code: 1, stdout: "", stderr: `Unexpected gh command: ${args.join(" ")}` };
 		},

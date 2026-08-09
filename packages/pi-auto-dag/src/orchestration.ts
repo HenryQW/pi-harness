@@ -3,9 +3,10 @@ import { commandFailure, commandOutput, errorMessage, type CommandRunner } from 
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, readCurrentBranch, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
+import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle, cleanupPrLifecycle, resumePrLifecycle } from "./pr-lifecycle.ts";
 import { issueById, readRunState, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
-import { createWorkerLaunch, createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, retireWorkerTab, startWorkerAgent, workerAgentName, workerTabExists, WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { createWorkerLaunch, createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerTabExists, WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface OrchestrationOptions {
@@ -65,6 +66,7 @@ export async function resumeRun(
 ): Promise<RunState> {
 	if (state.phase === "aborted") return await abortRun(state, options);
 	state = await resumePrLifecycle(state, options);
+	if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
 	state = await recoverAppliedIntegration(state, options);
 	const config = await assertRunBoundary(state, options.runner);
@@ -92,6 +94,7 @@ export async function abortRun(state: RunState, options: OrchestrationOptions): 
 	if (await integrationBranchIsRecorded(state, options)) {
 		try {
 			state = await resumePrLifecycle(state, options);
+			if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 			await abortOwnedCherryPick(state, options);
 			state = await recoverAppliedIntegration(state, options);
 		} catch (error) {
@@ -104,6 +107,7 @@ export async function abortRun(state: RunState, options: OrchestrationOptions): 
 
 export async function cleanupRun(state: RunState, options: OrchestrationOptions): Promise<RunState> {
 	state = await cleanupPrLifecycle(state, options);
+	state = await cleanupPrHealth(state, options);
 	for (const issue of state.graph.issues) {
 		state = await cleanupTask(state, issue.id, options);
 	}
@@ -466,27 +470,24 @@ async function ensureImplementer(
 		state = await save(replaceTask(state, issue.id, { ...current, pending_action: action }), options);
 		current = task(state, issue.id);
 	}
-	if (current.tab_id && !(await workerTabExists(state, current.tab_id, options))) {
-		current = { ...current, tab_id: undefined, implementer_pane: undefined };
+	const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
+	if (current.implementer_provisioning_id !== provisioningId) {
+		state = await save(replaceTask(state, issue.id, { ...current, implementer_provisioning_id: provisioningId }), options);
+		current = task(state, issue.id);
 	}
-	if (!current.tab_id || !current.implementer_pane) {
-		const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
-		if (current.implementer_provisioning_id !== provisioningId) {
-			state = await save(replaceTask(state, issue.id, { ...current, implementer_provisioning_id: provisioningId }), options);
-			current = task(state, issue.id);
-		}
-		const created = await findWorkerTab(state, provisioningId, options)
-			?? await createWorkerTab(
-				state,
-				nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-				workerLaunch(state, issue, config, "implementer"),
-				provisioningId,
-				options,
-			);
+	const launch = workerLaunch(state, issue, config, "implementer");
+	const resource = await reconcileWorkerTab(state, {
+		tab_id: current.tab_id,
+		pane_id: current.implementer_pane,
+		cwd: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+		launch,
+		label: provisioningId,
+	}, options);
+	if (current.tab_id !== resource.tab_id || current.implementer_pane !== resource.pane_id) {
 		state = await save(replaceTask(state, issue.id, {
 			...current,
-			tab_id: created.tab_id,
-			implementer_pane: created.pane_id,
+			tab_id: resource.tab_id,
+			implementer_pane: resource.pane_id,
 			implementer_agent: current.implementer_agent ?? workerAgentName(state.workspace_id, state.run_id, issue.id, "implementer"),
 		}), options);
 		current = task(state, issue.id);
@@ -496,7 +497,7 @@ async function ensureImplementer(
 		state,
 		agent,
 		nonEmptyString(current.implementer_pane, `Run Task ${issue.id} implementer_pane`),
-		workerLaunch(state, issue, config, "implementer"),
+		launch,
 		options,
 		{
 			beforeStart: async () => {
