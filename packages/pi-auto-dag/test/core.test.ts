@@ -93,9 +93,20 @@ test("initial run state canonicalizes direct graph input before persistence", ()
 	assert.deepEqual(state.graph.issues.map((issue) => issue.id), ["core", "release"]);
 	assert.deepEqual(Object.keys(state.tasks), ["core", "release", "final-check"]);
 	assert.equal(parseRunState(JSON.parse(JSON.stringify(state))).graph_hash, state.graph_hash);
-	assert.match(workerAgentName(state.workspace_id, state.run_id, "core", "implementer"), /^dag-main-workspace-[0-9a-f]{20}-i$/);
-	assert.notEqual(workerAgentName(state.workspace_id, state.run_id, "core", "implementer"), workerAgentName("other-workspace", state.run_id, "core", "implementer"));
-	assert.throws(() => workerAgentName("unsafe/workspace", state.run_id, "core", "implementer"), /not agent-name safe/);
+});
+
+test("worker agent names hash opaque identities into the Herdr contract", () => {
+	const name = workerAgentName("w1V", RUN_ID, "account-slots", "implementer");
+	const longName = workerAgentName("Workspace".repeat(20), RUN_ID, "account-slots", "implementer");
+	for (const candidate of [name, longName]) {
+		assert.match(candidate, /^[a-z][a-z0-9_-]{0,31}$/);
+		assert.equal(candidate.length, 30);
+	}
+	assert.equal(name, workerAgentName("w1V", RUN_ID, "account-slots", "implementer"));
+	assert.notEqual(name, workerAgentName("w2V", RUN_ID, "account-slots", "implementer"));
+	assert.notEqual(name, workerAgentName("w1V", "22222222-2222-4222-8222-222222222222", "account-slots", "implementer"));
+	assert.notEqual(name, workerAgentName("w1V", RUN_ID, "other-task", "implementer"));
+	assert.notEqual(name, workerAgentName("w1V", RUN_ID, "account-slots", "reviewer"));
 });
 
 test("persisted state rejects obsolete and malformed durable values", () => {
