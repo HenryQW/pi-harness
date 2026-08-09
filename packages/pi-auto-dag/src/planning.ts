@@ -133,28 +133,32 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 					ctx.ui.notify(`Auto DAG cannot start: ${errorMessage(error)}`, "warning");
 					return graphResult(persisted);
 				}
-				const statusArgs = ["status", "--porcelain=v1", "--untracked-files=all"];
-				let changes = await runner("git", statusArgs, { cwd: root });
-				if (changes.code !== 0) {
-					ctx.ui.notify(`Could not check current branch changes: ${commandFailure("git", statusArgs, changes)}`, "warning");
-				} else if (changes.stdout.trim() && await ctx.ui.confirm("Commit current branch changes?", changes.stdout.trim())) {
-					const message = (await ctx.ui.input("Commit message:", "Describe current branch changes"))?.trim();
-					if (message) {
-						const addArgs = ["add", "-A"];
-						const added = await runner("git", addArgs, { cwd: root });
-						if (added.code !== 0) {
-							ctx.ui.notify(commandFailure("git", addArgs, added), "error");
-						} else {
-							const commitArgs = ["commit", "-m", message];
-							const committed = await runner("git", commitArgs, { cwd: root });
-							if (committed.code !== 0) ctx.ui.notify(commandFailure("git", commitArgs, committed), "error");
-							else changes = await runner("git", statusArgs, { cwd: root });
+				try {
+					const statusArgs = ["status", "--porcelain=v1", "--untracked-files=all"];
+					let changes = await runner("git", statusArgs, { cwd: root });
+					if (changes.code !== 0) {
+						ctx.ui.notify(`Could not check current branch changes: ${commandFailure("git", statusArgs, changes)}`, "warning");
+					} else if (changes.stdout.trim() && await ctx.ui.confirm("Commit current branch changes?", changes.stdout.trim())) {
+						const message = (await ctx.ui.input("Commit message:", "Describe current branch changes"))?.trim();
+						if (message) {
+							const addArgs = ["add", "-A"];
+							const added = await runner("git", addArgs, { cwd: root });
+							if (added.code !== 0) {
+								ctx.ui.notify(commandFailure("git", addArgs, added), "error");
+							} else {
+								const commitArgs = ["commit", "-m", message];
+								const committed = await runner("git", commitArgs, { cwd: root });
+								if (committed.code !== 0) ctx.ui.notify(commandFailure("git", commitArgs, committed), "error");
+								else changes = await runner("git", statusArgs, { cwd: root });
+							}
 						}
 					}
+					ctx.ui.notify(changes.code === 0 && !changes.stdout.trim()
+						? "Next step: Start Auto DAG for approved graph."
+						: "Next steps:\n1. Commit changes in current branch.\n2. Start Auto DAG for approved graph.", "info");
+				} catch (error) {
+					ctx.ui.notify(`Post-approval Git operation failed: ${errorMessage(error)}`, "warning");
 				}
-				ctx.ui.notify(changes.code === 0 && !changes.stdout.trim()
-					? "Next step: Start Auto DAG for approved graph."
-					: "Next steps:\n1. Commit changes in current branch.\n2. Start Auto DAG for approved graph.", "info");
 				return graphResult(persisted);
 			}));
 		},
