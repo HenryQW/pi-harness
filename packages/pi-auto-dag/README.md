@@ -1,10 +1,21 @@
 # `@henryqw/pi-auto-dag`
 
-Pi extension package for an approved local `.context/issues/graph.json` Delivery Graph.
+Pi extension for running an approved Delivery Graph with Pi and Herdr.
 
-## Install and scope resources
+It runs dependent tasks in parallel, reviews every commit, integrates approved work, runs a final check, and opens one PR.
 
-Configure the package as filtered resources. Main integration settings load only the orchestrator extension:
+## Key terms
+
+| Term | Meaning |
+| --- | --- |
+| Delivery Graph | Approved JSON plan for one delivery |
+| Local Issue | One task in that plan |
+| Wave | Tasks that are ready at the same time and share one Git base |
+| Run State | Saved progress for one run |
+
+## Setup
+
+Load only the main extension in your integration profile:
 
 ```json
 {
@@ -16,24 +27,18 @@ Configure the package as filtered resources. Main integration settings load only
 }
 ```
 
-Each worker profile uses the same package with only `extensions/worker.ts`. Pi then loads that profile natively; worker launches add `--no-skills`, `<profile>/.agents/skills`, `<main-worktree>/.pi/shared-skills/.agents/skills`, and a role-specific tool allowlist.
+Worker profiles must load only `extensions/worker.ts` from the same package.
 
-The main extension registers these lifecycle tools and activates only those valid for current run state:
+Worker launches:
 
-- `auto_dag_start`
-- `auto_dag_status`
-- `auto_dag_resume`
-- `auto_dag_resolve`
-- `auto_dag_abort`
-- `auto_dag_health`
+- Disable default skills with `--no-skills`.
+- Load skills from the worker profile.
+- Load shared skills from the main worktree.
+- Limit tools by worker role.
 
-The main Pi UI shows a compact widget for active and blocked workers. Each row shows its issue, human activity, live Herdr state, and time in the current activity; blocked rows include their reason. Activity times survive Pi reloads in durable run state and repaint locally every second. One batched Herdr agent read refreshes live states every five seconds and after lifecycle tool calls. Runs persist their initiating Herdr workspace, filter every agent listing to it, and prefix worker names with that workspace ID so another Auto DAG cannot reuse or close their agents.
+## Configuration
 
-`status` may read a historical `run_id`; `health` requires one. `resume`, `resolve`, and `abort` always use the sole active run. Strict worker-envelope JSON arriving in main pane routes directly into active lifecycle without a model turn. Manual envelope-less `resume` and explicit retained-run `health` remain available.
-
-## Local inputs and state
-
-The strict JSON configuration is loaded from `join(getAgentDir(), "config", "pi-auto-dag.json")`, typically `~/.pi/agent/config/pi-auto-dag.json`; `PI_CODING_AGENT_DIR` changes the agent directory. It is not committed to the repository:
+Create `~/.pi/agent/config/pi-auto-dag.json`:
 
 ```json
 {
@@ -47,17 +52,35 @@ The strict JSON configuration is loaded from `join(getAgentDir(), "config", "pi-
 }
 ```
 
-Optional positive `max_parallel_tasks` and `max_review_rounds` both default to `5`. Intake accepts only an approved graph at `.context/issues/graph.json` in the main integration worktree.
+`PI_CODING_AGENT_DIR` changes the Pi agent directory.
 
-Each run stores a normalized graph SHA-256, source commit, expected integration `HEAD`, recorded main pane, and facts in `.context/pi-auto-dag/runs/<UUID>/state.json`. `active.json` is an exclusive same-checkout lock. The state file is atomically replaced; lifecycle mutations are serialized in-process and the lock stays until cleanup succeeds.
+Optional settings:
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `max_parallel_tasks` | `5` | Most implementation tasks running at once |
+| `max_review_rounds` | `5` | Most review rounds per task |
+
+Both values must be positive integers.
 
 ## Delivery Graph
 
-The only graph location is the ignored, untracked `.context/issues/graph.json` in the main integration worktree; there is no path override. Its top-level object has exactly `version` (`1`), `status` (`"draft"` or `"approved"`), `id`, `title`, `goal`, `constraints`, and `issues`. Only `"approved"` may start a run.
+Put the graph at `.context/issues/graph.json` in the main worktree. This path cannot be changed.
 
-Every Local Issue has exactly `id`, `title`, `role`, `profile`, `purpose`, `acceptance`, `testing`, and `blocked_by`. IDs are lowercase hyphenated names; `constraints`, `acceptance`, and `blocked_by` are string arrays. An `implementation` uses `profile` `"coder"`, `"backend"`, or `"frontend"` (a profile name, never a path). There is exactly one `final_check`, with `profile: null`; it has the same shape and must be blocked by every implementation ID. Dependencies use `blocked_by` only: there is no `blocks` field, and no issue may depend on `final_check`.
+Graph rules:
 
-Minimal startable example:
+- File must be ignored and untracked.
+- `status` must be `"approved"` before a run can start.
+- Top-level fields: `version`, `status`, `id`, `title`, `goal`, `constraints`, `issues`.
+- Local Issue fields: `id`, `title`, `role`, `profile`, `purpose`, `acceptance`, `testing`, `blocked_by`.
+- IDs use lowercase hyphenated names.
+- Implementation profiles are `coder`, `backend`, or `frontend`.
+- Graph must contain exactly one `final_check` with `profile: null`.
+- `final_check` must depend on every implementation task.
+- Dependencies use `blocked_by`; `blocks` is not supported.
+- No task may depend on `final_check`.
+
+Minimal example:
 
 ```json
 {
@@ -92,23 +115,151 @@ Minimal startable example:
 }
 ```
 
-## Orchestration
+## Workflow
 
-Start from the main Herdr pane. The extension freezes each ready dependency wave at its integration commit, creates child worktrees beside the integration worktree under `.<repo>-auto-dag/<run-id>/<issue-id>`, and starts one implementer tab per active task in the workspace containing the recorded main pane. `.context` stays only in the main worktree.
+```mermaid
+flowchart TD
+    A["Approved graph"] --> B["Start and validate"]
+    B --> C["Freeze ready wave at current HEAD"]
+    C --> D["Run implementers in child worktrees"]
+    D --> E["Review each exact commit and run its test"]
+    E -->|changes requested| D
+    E -->|blocked| X["Resolve task or abort run"]
+    X --> D
+    E -->|wave approved| F["Cherry-pick commits in ID order"]
+    F --> G{"More implementation tasks?"}
+    G -->|yes| C
+    G -->|no| H["Run final check on integration HEAD"]
+    H -->|failed| I["Repair owning implementation task"]
+    I --> H
+    H -->|passed| J["Push branch and open one PR"]
+    J --> K["Clean workers and keep run history"]
+    K -. auto_dag_health .-> L["Check PR feedback and CI"]
+    L -->|action needed| M["Repair, review, and push same PR"]
+```
 
-Implementers send their compact worker-tool envelope to recorded main pane; main extension validates and routes that JSON without a model relay. A review request must name the clean child-worktree `HEAD` on its recorded branch, which must be exactly one commit over the frozen base, plus the prompted task attempt and next review round; after `changes_requested`, it must be a new amended or replacement SHA. Review verdicts and blocker reports bind the active role, task attempt, and review round; verdicts also carry the frozen testing command, exact commit, and exit code, and only exit code `0` may approve. The task-owned reviewer pane starts then, runs the issue's frozen testing command, and remains for bounded revision rounds. Approved commits integrate only after the full frozen wave is reviewed, in lexical Local Issue ID order. `final_check` is never dispatched as a worker.
+### 1. Start
 
-An envelope advances only that worker event and never broadly reconciles or nudges workers. While a task is blocked, new worker dispatch is deferred until every task block resolves, though an in-flight review may still submit its verdict. Every execution boundary requires the clean main integration worktree to remain at its recorded expected `HEAD`; successful or recovered cherry-picks advance that fact atomically. An explicit envelope-less `auto_dag_resume` rechecks the graph and agent configuration, asks live workers to resend their last event, restarts a missing role with its durable pending instruction, and retries blocked cleanup. A cherry-pick conflict aborts that pick and sends the same task back to its existing implementer and reviewer on the current integration `HEAD` for one replacement commit. Abort removes owned tabs/worktrees, retains unintegrated branches, and releases the active lock only after native cleanup completes.
+Run `auto_dag_start` from the main Herdr pane.
 
-## Final check, PR, and health
+Auto DAG checks:
 
-After every implementation Local Issue integrates, the frozen `final_check.testing` command is assigned to one temporary read-only reviewer at the exact integration `HEAD`. A failed gate blocks the run before any push or PR. Resolve it against the completed implementation Local Issue that owns the repair, not `final_check`; this starts a fresh child worktree and a fresh implementer, then an on-demand reviewer must approve its sole repair commit before it is cherry-picked and the final gate runs again.
+- Graph and profile configuration.
+- Main branch and current `HEAD`.
+- Clean integration worktree.
+- Herdr workspace and main pane.
+- No other active run in this checkout.
 
-On approval, Auto DAG pushes only the recorded integration branch to `origin` and opens one PR against the recorded default branch. Recovery reuses only an open PR with the exact recorded number, URL, head branch, base branch, and head commit. The PR body records the Delivery Graph ID/hash, source commit, and completed Local Issue IDs; it deliberately contains no issue-closing references. Lifecycle-owned repair picks persist their intent before Git runs, so crash recovery can finish an applied pick or safely abort a conflict.
+It then saves Run State and locks the checkout.
 
-`auto_dag_health` works only on a retained completed run. It rechecks the graph hash, clean recorded branch, agent configuration and coder profile, then fast-forwards locally to the exact remote PR head with `git merge --ff-only`; it never resets or switches branches. Its one read-only reviewer records only unresolved thread node IDs plus failing-check name/link/output evidence. If none is actionable, it records that evidence and stops without a coder or push. Otherwise one coder repairs the current PR head in a fresh child worktree, that same reviewer approves the exact repair commit, Auto DAG pushes once to the same PR, and resolves only the triaged thread IDs the reviewer marks fixed. Health events carry their prompted attempt and review round, so delayed events are ignored. A changed PR head blocks the active repair, and a successful push enters durable cleanup-only state so retries cannot review, pick, or push it again. Later feedback waits for another explicit health run.
+### 2. Implement and review
 
-Successful PR completion removes owned Herdr tabs, child worktrees, and integrated child branches, then releases the active lock. Abort never force-deletes uncommitted work or unintegrated branches. Run State and PR/health evidence remain under `.context/pi-auto-dag/` until manually removed.
+Auto DAG groups ready tasks into a wave. Every task in that wave starts from the same commit.
+
+For each task:
+
+1. Create a child worktree at `.<repo>-auto-dag/<run-id>/<issue-id>`.
+2. Start one implementer.
+3. Require one commit over the wave base.
+4. Start a task-owned reviewer.
+5. Run the task's exact `testing` command.
+
+Approval requires exit code `0`. Requested changes return to the same implementer for a new commit SHA.
+
+### 3. Integrate
+
+Auto DAG waits for every task in the wave to pass review.
+
+It then:
+
+- Cherry-picks commits by Local Issue ID.
+- Updates the saved integration `HEAD`.
+- Cleans integrated task resources.
+- Starts the next ready wave.
+
+A cherry-pick conflict returns that task to its existing workers. They produce one replacement commit from the new integration base.
+
+### 4. Final check and PR
+
+After all implementation tasks finish, a temporary read-only reviewer runs `final_check.testing` on the integration `HEAD`.
+
+- Pass: push the integration branch and open one PR.
+- Fail: block before push or PR creation.
+
+To repair a failed final check, call `auto_dag_resolve` with the completed implementation task that owns the bug. Auto DAG creates a fresh repair worktree, reviews its commit, cherry-picks it, and reruns the final check.
+
+## Lifecycle tools
+
+| Tool | Use |
+| --- | --- |
+| `auto_dag_start` | Start approved graph |
+| `auto_dag_status` | Read active or retained run |
+| `auto_dag_resume` | Recover workers, pending events, or cleanup |
+| `auto_dag_resolve` | Unblock one task with user guidance |
+| `auto_dag_abort` | Stop run and clean owned resources |
+| `auto_dag_health` | Check feedback and CI on completed PR |
+
+`resume`, `resolve`, and `abort` use the only active run. `health` requires a retained `run_id`; `status` accepts one when reading run history.
+
+Worker messages go straight to the lifecycle. They do not need a model turn in the main pane.
+
+## Blocks, recovery, and aborts
+
+When a task blocks:
+
+- New worker dispatch pauses.
+- In-flight reviewers may still report results.
+- `auto_dag_resolve` resumes the blocked role with user guidance.
+
+`auto_dag_resume` rechecks config and Git state. It also:
+
+- Asks live workers to resend their last event.
+- Restarts missing workers with saved instructions.
+- Recovers completed cherry-picks.
+- Retries cleanup.
+
+`auto_dag_abort` closes owned tabs and removes safe worktrees. It never force-deletes uncommitted work or unintegrated branches.
+
+## PR health
+
+Call `auto_dag_health` for a completed run when its PR has new feedback.
+
+Auto DAG:
+
+1. Fast-forwards the local branch to the exact remote PR head.
+2. Uses one read-only reviewer to inspect unresolved threads and failing checks.
+3. Stops if nothing needs work.
+4. Otherwise creates one repair worktree and starts one coder.
+5. Uses the same reviewer to approve the repair.
+6. Pushes once to the same PR and resolves only fixed, triaged threads.
+
+It never resets or switches branches. A changed remote PR head blocks an active repair.
+
+Run health again for later feedback.
+
+## State and UI
+
+Run files live under `.context/pi-auto-dag/`:
+
+```text
+.context/pi-auto-dag/
+├── active.json
+└── runs/<run-id>/state.json
+```
+
+`active.json` locks one checkout. Lock stays until cleanup succeeds.
+
+Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, and health evidence. Writes are atomic.
+
+Main Pi widget shows:
+
+- Active and blocked workers.
+- Current task and activity.
+- Live Herdr state.
+- Time in current activity.
+- Block reason.
+
+Run history remains after completion until removed manually.
 
 ## Development
 
@@ -121,4 +272,4 @@ npm run typecheck --workspace @henryqw/pi-auto-dag
 npm run pack:check --workspace @henryqw/pi-auto-dag
 ```
 
-`dev:ui` opens an isolated, offline Pi TUI with deterministic working and idle rows so the worker widget and live elapsed timers can be inspected directly.
+`dev:ui` opens an offline Pi TUI with fixed worker states for widget testing.
