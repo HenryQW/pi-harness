@@ -223,6 +223,18 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(await git(project.root, "show", "HEAD:repair.txt"), "fixed");
+	const finalReviewer = state.tasks["final-check"].reviewer_agent!;
+	const prompts = () => herdr.calls
+		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === finalReviewer)
+		.map((call) => JSON.parse(call.args[3]));
+	const fullPrompt = prompts().find((value) => value.type === "auto_dag_final_check");
+	assert.equal(fullPrompt.attempt, state.tasks["final-check"].attempts);
+	assert.equal(fullPrompt.review_round, state.tasks["final-check"].review_rounds);
+	state = await lifecycle.resume(project.root);
+	const compactPrompt = prompts().at(-1);
+	assert.equal(compactPrompt.type, "auto_dag_resend");
+	assert.equal(compactPrompt.attempt, state.tasks["final-check"].attempts);
+	assert.equal(compactPrompt.review_round, state.tasks["final-check"].review_rounds);
 
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.phase, "completed");

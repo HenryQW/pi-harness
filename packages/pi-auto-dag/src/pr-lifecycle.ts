@@ -379,6 +379,8 @@ async function ensureFinalReviewer(
 		issue,
 		integration_head: state.integration_head,
 		command: issue.testing,
+		attempt: current.attempts,
+		review_round: current.review_rounds,
 		instruction,
 	} : {
 		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_final_check_update",
@@ -386,6 +388,8 @@ async function ensureFinalReviewer(
 		issue_id: issue.id,
 		integration_head: state.integration_head,
 		command: issue.testing,
+		attempt: current.attempts,
+		review_round: current.review_rounds,
 		instruction,
 	}, options);
 	if (needsInstruction) {
