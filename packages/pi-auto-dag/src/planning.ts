@@ -1,9 +1,11 @@
 import { access, readFile } from "node:fs/promises";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { errorMessage } from "./command.ts";
+import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import { assertProfileDirectories, expandProfilePath, loadProjectConfig } from "./config.ts";
+import { resolveGitTopLevel } from "./git.ts";
 import { deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
+import { assertIgnoredLocalContext } from "./intake.ts";
 import type { DeliveryGraph } from "./model.ts";
 import { approvedGraphHash, clearPlanningReviewPass, planningReviewPath, requirePlanningReviewPass } from "./planning-review.ts";
 import { readActiveRunId } from "./state.ts";
@@ -13,7 +15,7 @@ export const PLANNING_TOOLS = {
 	approve: "auto_dag_approve",
 } as const;
 
-export function registerPlanning(pi: ExtensionAPI): void {
+export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCommand): void {
 	pi.registerCommand("plan-delivery", {
 		description: "Plan and approve a local Delivery Graph without starting execution",
 		handler: async (args, ctx) => {
@@ -29,9 +31,22 @@ export function registerPlanning(pi: ExtensionAPI): void {
 				ctx.ui.notify("/plan-delivery requires current Pi session inside Herdr.", "error");
 				return;
 			}
-			const activeRun = await readActiveRunId(ctx.cwd);
+			let root: string;
+			try {
+				root = await resolveGitTopLevel(ctx.cwd, runner);
+			} catch (error) {
+				ctx.ui.notify(`Planning repository unavailable: ${errorMessage(error)}`, "error");
+				return;
+			}
+			const activeRun = await readActiveRunId(root);
 			if (activeRun) {
 				ctx.ui.notify(`Cannot plan while Auto DAG run is active: ${activeRun}`, "error");
+				return;
+			}
+			try {
+				await assertIgnoredLocalContext(root, runner);
+			} catch (error) {
+				ctx.ui.notify(`Planning repository unavailable: ${errorMessage(error)}`, "error");
 				return;
 			}
 			let reviewerProfile: string;
@@ -43,7 +58,7 @@ export function registerPlanning(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Planning profiles unavailable: ${errorMessage(error)}`, "error");
 				return;
 			}
-			const existing = await inspectExistingGraph(ctx.cwd);
+			const existing = await inspectExistingGraph(root);
 			const mode = await planningMode(existing, ctx);
 			if (!mode) return;
 			const instructions = await readFile(new URL("../prompts/plan-delivery.md", import.meta.url), "utf8");
@@ -51,8 +66,8 @@ export function registerPlanning(pi: ExtensionAPI): void {
 				instructions.trim(),
 				"",
 				`Planning mode: ${mode}`,
-				`Repository root: ${ctx.cwd}`,
-				`Delivery Graph: ${deliveryGraphPath(ctx.cwd)}`,
+				`Repository root: ${root}`,
+				`Delivery Graph: ${deliveryGraphPath(root)}`,
 				`Reviewer profile: ${reviewerProfile}`,
 				args.trim() ? `Additional user context: ${args.trim()}` : "Additional user context: none",
 			].join("\n"));
@@ -65,7 +80,8 @@ export function registerPlanning(pi: ExtensionAPI): void {
 		description: "Deterministically validate authoritative Delivery Graph structure, profiles, references, cycles, commands, and derived waves. Does not approve or execute.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			return graphResult(await readDeliveryGraph(ctx.cwd));
+			const root = await planningRoot(ctx.cwd, runner);
+			return graphResult(await readDeliveryGraph(root));
 		},
 	}));
 
@@ -76,12 +92,13 @@ export function registerPlanning(pi: ExtensionAPI): void {
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			if (ctx.mode !== "tui") throw new Error("Delivery Graph approval requires interactive TUI mode");
-			return withFileMutationQueue(deliveryGraphPath(ctx.cwd), () => withFileMutationQueue(planningReviewPath(ctx.cwd), async () => {
-				const activeRun = await readActiveRunId(ctx.cwd);
+			const root = await planningRoot(ctx.cwd, runner);
+			return withFileMutationQueue(deliveryGraphPath(root), () => withFileMutationQueue(planningReviewPath(root), async () => {
+				const activeRun = await readActiveRunId(root);
 				if (activeRun) throw new Error(`Cannot approve while Auto DAG run is active: ${activeRun}`);
-				const draft = await readDeliveryGraph(ctx.cwd);
+				const draft = await readDeliveryGraph(root);
 				if (draft.status !== "draft") throw new Error("Delivery Graph must have draft status before approval");
-				await requirePlanningReviewPass(ctx.cwd, draft);
+				await requirePlanningReviewPass(root, draft);
 				const candidate = { ...draft, status: "approved" as const };
 				const hash = approvedGraphHash(draft);
 				const waves = deriveDependencyWaves(candidate);
@@ -92,20 +109,21 @@ export function registerPlanning(pi: ExtensionAPI): void {
 					"Approval will not start Auto DAG.",
 				].join("\n"));
 				if (!approved) return textResult("Delivery Graph approval cancelled.", { approved: false });
-				const activeAfterConfirmation = await readActiveRunId(ctx.cwd);
+				const activeAfterConfirmation = await readActiveRunId(root);
 				if (activeAfterConfirmation) throw new Error(`Cannot approve while Auto DAG run is active: ${activeAfterConfirmation}`);
-				const current = await readDeliveryGraph(ctx.cwd);
+				const current = await readDeliveryGraph(root);
 				if (current.status !== "draft" || hashDeliveryGraph(current) !== hashDeliveryGraph(draft)) {
 					throw new Error("Delivery Graph changed during approval; validate and review current draft again");
 				}
-				await requirePlanningReviewPass(ctx.cwd, current);
-				await clearPlanningReviewPass(ctx.cwd);
-				const finalCurrent = await readDeliveryGraph(ctx.cwd);
+				await requirePlanningReviewPass(root, current);
+				await assertIgnoredLocalContext(root, runner);
+				await clearPlanningReviewPass(root);
+				const finalCurrent = await readDeliveryGraph(root);
 				if (finalCurrent.status !== "draft" || hashDeliveryGraph(finalCurrent) !== hashDeliveryGraph(draft)) {
 					throw new Error("Delivery Graph changed during approval; validate and review current draft again");
 				}
-				await writeDeliveryGraph(ctx.cwd, candidate);
-				const persisted = await readDeliveryGraph(ctx.cwd);
+				await writeDeliveryGraph(root, candidate);
+				const persisted = await readDeliveryGraph(root);
 				if (persisted.status !== "approved" || hashDeliveryGraph(persisted) !== hash) {
 					throw new Error("Persisted Delivery Graph does not match approved candidate");
 				}
@@ -113,6 +131,12 @@ export function registerPlanning(pi: ExtensionAPI): void {
 			}));
 		},
 	}));
+}
+
+async function planningRoot(cwd: string, runner: CommandRunner): Promise<string> {
+	const root = await resolveGitTopLevel(cwd, runner);
+	await assertIgnoredLocalContext(root, runner);
+	return root;
 }
 
 type ExistingGraph = { graph?: DeliveryGraph; error?: string };

@@ -65,7 +65,7 @@ test("health refuses a retained historical run while another run is active witho
 	};
 
 	await assert.rejects(makeLifecycle(observed).health(project.root, historical.run_id), /while active run .* exists/);
-	assert.deepEqual(calls, []);
+	assert.deepEqual(calls, [["git", "rev-parse", "--show-toplevel"]]);
 	assert.equal(await git(project.root, "rev-parse", "HEAD"), head);
 	assert.equal(await readFile(historicalPath, "utf8"), historicalState);
 	assert.equal(await readFile(activePath, "utf8"), activeState);

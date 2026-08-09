@@ -1,14 +1,25 @@
 import { access, mkdir, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { commandFailure, commandOutput, runCommand, type CommandRunner } from "./command.ts";
+
+export async function resolveGitTopLevel(
+	cwd: string,
+	runner: CommandRunner = runCommand,
+): Promise<string> {
+	const start = resolve(cwd);
+	const reportedRoot = await commandOutput(runner, "git", ["rev-parse", "--show-toplevel"], start);
+	const canonicalStart = await realpath(start);
+	const canonicalRoot = await realpath(resolve(start, reportedRoot));
+	const root = resolve(start, relative(canonicalStart, canonicalRoot));
+	return await canonicalPath(root) === canonicalRoot ? root : canonicalRoot;
+}
 
 export async function inspectIntegrationWorktree(
 	mainWorktree: string,
 	runner: CommandRunner = runCommand,
 ) {
 	const root = resolve(mainWorktree);
-	const reportedRoot = await commandOutput(runner, "git", ["rev-parse", "--show-toplevel"], root);
-	if (await realpath(reportedRoot) !== await realpath(root)) {
+	if (await realpath(await resolveGitTopLevel(root, runner)) !== await realpath(root)) {
 		throw new Error(`Delivery Graph must be started from its main integration worktree: ${root}`);
 	}
 	const dirty = await commandOutput(runner, "git", ["status", "--porcelain=v1", "--untracked-files=all"], root);

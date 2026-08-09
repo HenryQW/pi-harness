@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
 import { runCommand, type CommandRunner } from "./command.ts";
+import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
 import type { ProjectConfig, RunState, RunTaskState } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
@@ -36,7 +36,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 	const orchestration: OrchestrationOptions = { runner, uuid, now: options.now, delay: options.delay };
 	return {
 		async start(mainWorktree, mainPane) {
-			return await withLifecycleMutation(mainWorktree, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const pane = nonEmptyString(mainPane ?? options.mainPane?.(), "main Herdr pane");
 				const workspaceId = await workerWorkspaceId(root, pane, { runner });
 				const state = await startLocalRun({ mainWorktree: root, runner, uuid, now: options.now, mainPane: pane, workspaceId });
@@ -45,11 +45,12 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		},
 
 		async status(mainWorktree, runId) {
-			return runId ? readRunState(resolve(mainWorktree), runId) : readActiveRun(resolve(mainWorktree));
+			const root = await resolveGitTopLevel(mainWorktree, runner);
+			return runId ? readRunState(root, runId) : readActiveRun(root);
 		},
 
 		async resume(mainWorktree, envelope) {
-			return await withLifecycleMutation(mainWorktree, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const state = await readActiveRun(root);
 				if (state.phase !== "aborted" && state.health) {
 					if (state.health.status === "completed") {
@@ -68,7 +69,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		},
 
 		async resolve(mainWorktree, issueId, resolution) {
-			return await withLifecycleMutation(mainWorktree, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const state = await readActiveRun(root);
 				if (state.phase === "aborted" || state.phase === "completed") {
 					throw new Error(`Cannot resolve a ${state.phase} run`);
@@ -118,7 +119,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		},
 
 		async abort(mainWorktree, reason) {
-			return await withLifecycleMutation(mainWorktree, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const state = await readActiveRun(root);
 				const next: RunState = {
 					...state,
@@ -134,7 +135,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		},
 
 		async health(mainWorktree, runId, envelope) {
-			return await withLifecycleMutation(mainWorktree, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const id = nonEmptyString(runId, "health run_id");
 				const active = await readActiveRunId(root);
 				if (active && active !== id) throw new Error(`Cannot run PR health for retained run ${id} while active run ${active} exists`);
@@ -158,8 +159,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 	};
 }
 
-async function withLifecycleMutation<T>(mainWorktree: string, action: (root: string) => Promise<T>): Promise<T> {
-	const root = resolve(mainWorktree);
+async function withLifecycleMutation<T>(mainWorktree: string, runner: CommandRunner, action: (root: string) => Promise<T>): Promise<T> {
+	const root = await resolveGitTopLevel(mainWorktree, runner);
 	const previous = lifecycleMutationTails.get(root) ?? Promise.resolve();
 	let release!: () => void;
 	const pending = new Promise<void>((done) => { release = done; });

@@ -4,7 +4,7 @@ You are planning agent. Plan in current conversation; do not delegate planning a
 
 ## Outcome
 
-Produce only `.context/issues/graph.json`, obtain independent reviewer `PASS`, then ask user for hash-bound approval through `auto_dag_approve`. Do not create GitHub issues, plan ledgers, specs, ADRs, glossaries, or other planning artifacts unless user separately asks.
+Produce only the Delivery Graph at the absolute path supplied below, obtain independent reviewer `PASS`, then ask user for hash-bound approval through `auto_dag_approve`. Do not create GitHub issues, plan ledgers, specs, ADRs, glossaries, or other planning artifacts unless user separately asks.
 
 ## Readiness
 
@@ -66,7 +66,7 @@ Manage one read-only Pi reviewer in new Herdr pane split inside current tab. Req
 
 Use Herdr directly:
 
-1. Inspect current layout with `herdr pane layout --current`; split right or down from `$HERDR_PANE_ID` using `herdr pane split --current ... --cwd "$PWD" --env "PI_CODING_AGENT_DIR=<reviewer-profile>" --env "PI_AUTO_DAG_PLANNING_ROOT=<repository-root>" --no-focus`.
+1. Inspect current layout with `herdr pane layout --current`; split right or down from `$HERDR_PANE_ID` using `herdr pane split --current ... --cwd "<repository-root>" --env "PI_CODING_AGENT_DIR=<reviewer-profile>" --env "PI_AUTO_DAG_PLANNING_ROOT=<repository-root>" --no-focus`.
 2. Rename returned pane `auto-dag:plan-reviewer`.
 3. Start uniquely named Pi agent there with `herdr agent start <name> --kind pi --pane <pane-id> -- --offline --tools read,bash,grep,find,ls,auto_dag_submit_plan_review`.
 4. Prompt and read it with `herdr agent prompt <name> <prompt> --wait --timeout 600000` and `herdr agent read <name> --source recent-unwrapped --lines 200`.

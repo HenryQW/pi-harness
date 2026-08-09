@@ -105,7 +105,7 @@ Put the graph at `.context/issues/graph.json` in the main worktree. This path ca
 
 Graph rules:
 
-- File must be ignored and untracked.
+- File must be ignored and untracked; planning, validation, approval, and intake enforce this boundary.
 - `status` is `"draft"` while planning and must be `"approved"` before execution.
 - Top-level fields are exactly `status`, `id`, `goal`, `constraints`, `non_goals`, `issues`, and `final_check`.
 - Implementation issue fields are exactly `id`, `title`, `profile`, `objective`, `acceptance`, `testing`, and `depends_on`.
@@ -170,7 +170,7 @@ flowchart TD
 
 ### 1. Plan and approve
 
-Run `/plan-delivery` in an interactive Pi TUI inside Herdr. Current main agent remains planner. It uses conversation context, inspects repository facts, asks only unresolved product decisions, and writes draft graph.
+Run `/plan-delivery` in an interactive Pi TUI inside Herdr. Invocation may start from any repository subdirectory; Pi resolves the Git top-level and uses it for every planning path and active-run check. Current main agent remains planner. It uses conversation context, inspects repository facts, asks only unresolved product decisions, and writes draft graph.
 
 Workflow validates structure with `auto_dag_validate`, then starts configured read-only reviewer in pane split inside current Herdr tab. Reviewer checks acceptance traceability, vertical slicing, dependencies, interference, and test quality. Reviewer records `PASS` directly through `auto_dag_submit_plan_review`, producing temporary evidence bound to approved-form graph SHA-256. Planner then shows full summary and calls `auto_dag_approve`. Approval rejects missing or stale evidence, rechecks it after native confirmation, removes it, and atomically writes approved graph.
 
@@ -178,7 +178,7 @@ Planning never calls `auto_dag_start`. Existing draft can resume or be replaced.
 
 ### 2. Start
 
-Run `auto_dag_start` from main Herdr pane.
+Run `auto_dag_start` from main Herdr pane. Lifecycle tools resolve the same Git top-level when Pi started in a repository subdirectory.
 
 Auto DAG checks:
 
