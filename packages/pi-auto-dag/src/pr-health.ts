@@ -54,7 +54,7 @@ export async function resumePrHealth(state: RunState, options: PrHealthOptions):
 	state = await recoverHealthFastForward(state, options);
 	const health = state.health;
 	if (health?.status === "applying" && health.integration_intent) {
-		const integrationHead = await appliedLifecyclePick(state, health.integration_intent, options);
+		const integrationHead = await findAppliedCherryPick(options.runner, state.main_worktree, state.integration_branch, state.integration_head, health.integration_intent, "Main integration");
 		if (integrationHead) {
 			return await save({
 				...state,
@@ -79,7 +79,7 @@ export async function cleanupPrHealth(state: RunState, options: PrHealthOptions)
 				state = await save(clearLifecycleCleanupBlock(state, issue.id, "tab"), options);
 				continue;
 			}
-			await closeLifecycleTab(state, tabId, options);
+			await retireWorkerTab(state, tabId, options);
 			health = { ...health, [key]: undefined };
 			state = await save(clearLifecycleCleanupBlock({ ...state, health }, issue.id, "tab"), options);
 		} catch (error) {
@@ -88,7 +88,7 @@ export async function cleanupPrHealth(state: RunState, options: PrHealthOptions)
 	}
 	if (health.worktree) {
 		try {
-			await removeLifecycleWorktree(state, health.worktree, health.branch ?? healthBranch(state, positiveInteger(health.attempt, "PR-health attempt")), "PR-health repair", options);
+			await retireChildWorktree(options.runner, state.main_worktree, health.worktree, health.branch ?? healthBranch(state, positiveInteger(health.attempt, "PR-health attempt")), "PR-health repair");
 		} catch (error) {
 			return await recordLifecycleCleanupBlock(state, issue.id, "worktree", errorMessage(error), options);
 		}
@@ -101,7 +101,7 @@ export async function cleanupPrHealth(state: RunState, options: PrHealthOptions)
 }
 
 async function abortPrHealthCherryPick(state: RunState, options: PrHealthOptions): Promise<RunState> {
-	await assertRecordedIntegrationBranch(state, options);
+	await assertAttachedBranch(options.runner, state.main_worktree, state.integration_branch, "Main integration");
 	const result = await options.runner("git", ["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], { cwd: state.main_worktree });
 	if (result.code === 1) return state;
 	if (result.code !== 0) throw new Error(commandFailure("git", ["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], result));
@@ -268,7 +268,7 @@ async function submitHealthTriage(
 async function completeHealthyTriage(state: RunState, options: PrHealthOptions): Promise<RunState> {
 	let health = requiredHealth(state);
 	if (health.reviewer_tab_id) {
-		await closeLifecycleTab(state, health.reviewer_tab_id, options);
+		await retireWorkerTab(state, health.reviewer_tab_id, options);
 		health = { ...health, reviewer_tab_id: undefined, reviewer_pane: undefined };
 		state = await save({ ...state, health }, options);
 	}
@@ -481,46 +481,22 @@ async function completeHealthRepair(state: RunState, options: PrHealthOptions): 
 	let health = requiredHealth(state);
 	for (const key of ["coder_tab_id", "reviewer_tab_id"] as const) {
 		if (!health[key]) continue;
-		await closeLifecycleTab(state, health[key]!, options);
+		await retireWorkerTab(state, health[key]!, options);
 		health = { ...health, [key]: undefined };
 		state = await save({ ...state, health }, options);
 	}
 	if (health.worktree) {
-		await removeLifecycleWorktree(state, health.worktree, nonEmptyString(health.branch, "PR-health repair branch"), "PR-health repair", options);
+		await retireChildWorktree(options.runner, state.main_worktree, health.worktree, nonEmptyString(health.branch, "PR-health repair branch"), "PR-health repair");
 		health = { ...health, worktree: undefined };
 		state = await save({ ...state, health }, options);
 	}
 	if (health.branch) {
 		const commit = nonEmptyString(health.commit, "PR-health repair commit");
-		await deleteLifecycleBranch(state, health.branch, commit, "PR-health repair", options);
+		await deleteExpectedBranch(options.runner, state.main_worktree, health.branch, commit, "PR-health repair");
 		health = { ...health, branch: undefined };
 		state = await save({ ...state, health }, options);
 	}
 	return await save({ ...state, health: { ...health, status: "completed" } }, options);
-}
-
-async function closeLifecycleTab(state: RunState, tabId: string, options: PrHealthOptions): Promise<void> {
-	await retireWorkerTab(state, tabId, options);
-}
-
-async function removeLifecycleWorktree(
-	state: RunState,
-	worktree: string,
-	branch: string,
-	label: string,
-	options: PrHealthOptions,
-): Promise<void> {
-	await retireChildWorktree(options.runner, state.main_worktree, worktree, branch, label);
-}
-
-async function deleteLifecycleBranch(
-	state: RunState,
-	branch: string,
-	commit: string,
-	label: string,
-	options: PrHealthOptions,
-): Promise<void> {
-	await deleteExpectedBranch(options.runner, state.main_worktree, branch, commit, label);
 }
 
 async function recordLifecycleCleanupBlock(
@@ -578,7 +554,7 @@ async function recoverHealthFastForward(state: RunState, options: PrHealthOption
 		const intent = healthFastForwardIntent(state);
 		if (intent.expected_head !== state.integration_head) throw new Error("PR-health fast-forward intent does not match the recorded integration HEAD");
 		if (intent.pr.head_oid !== intent.remote_head) throw new Error("PR-health fast-forward intent does not match its PR head");
-		await assertRecordedIntegrationBranch(state, options);
+		await assertAttachedBranch(options.runner, state.main_worktree, state.integration_branch, "Main integration");
 		const head = await commandOutput(options.runner, "git", ["rev-parse", "HEAD"], state.main_worktree);
 		if (head !== intent.expected_head && head !== intent.remote_head) {
 			throw new Error("PR-health fast-forward did not leave the exact intended integration HEAD");
@@ -613,35 +589,16 @@ async function activeHealthHeadMatches(state: RunState, health: PrHealthState, o
 	return current.head_oid === health.head;
 }
 
-async function appliedLifecyclePick(state: RunState, commit: string, options: PrHealthOptions): Promise<string | undefined> {
-	return await findAppliedCherryPick(options.runner, state.main_worktree, state.integration_branch, state.integration_head, commit, "Main integration");
-}
-
-async function assertRecordedIntegrationBranch(state: RunState, options: PrHealthOptions): Promise<void> {
-	await assertAttachedBranch(options.runner, state.main_worktree, state.integration_branch, "Main integration");
-}
-
 async function ensureHealthWorktree(state: RunState, options: PrHealthOptions): Promise<void> {
 	const health = requiredHealth(state);
-	await ensureLifecycleWorktree(
-		state,
+	await ensureChildWorktree(
+		options.runner,
+		state.main_worktree,
 		nonEmptyString(health.worktree, "PR-health repair worktree"),
 		nonEmptyString(health.branch, "PR-health repair branch"),
 		nonEmptyString(health.base, "PR-health repair base"),
 		"PR-health repair",
-		options,
 	);
-}
-
-async function ensureLifecycleWorktree(
-	state: RunState,
-	worktree: string,
-	branch: string,
-	base: string,
-	label: string,
-	options: PrHealthOptions,
-): Promise<void> {
-	await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, base, label);
 }
 
 async function verifyHealthRepairCommit(state: RunState, commit: string, options: PrHealthOptions): Promise<string> {

@@ -149,7 +149,7 @@ async function cleanupAbortedFinalRepair(state: RunState, issue: LocalIssue, opt
 			state = await save(clearLifecycleCleanupBlock(replaceTask(state, issue.id, { ...current, tab_cleanup_done: true }), issue.id, "tab"), options);
 			current = task(state, issue.id);
 		} else {
-			await closeLifecycleTab(state, tabId, options);
+			await retireWorkerTab(state, tabId, options);
 			state = await save(clearLifecycleCleanupBlock(replaceTask(state, issue.id, {
 				...current,
 				tab_id: undefined,
@@ -166,7 +166,7 @@ async function cleanupAbortedFinalRepair(state: RunState, issue: LocalIssue, opt
 		return await save(clearLifecycleCleanupBlock(replaceTask(state, issue.id, { ...current, worktree_cleanup_done: true }), issue.id, "worktree"), options);
 	}
 	try {
-		await removeLifecycleWorktree(state, current.worktree, finalRepairBranch(state, current), "Final-gate repair", options);
+		await retireChildWorktree(options.runner, state.main_worktree, current.worktree, finalRepairBranch(state, current), "Final-gate repair");
 	} catch (error) {
 		return await recordLifecycleCleanupBlock(state, issue.id, "worktree", errorMessage(error), options);
 	}
@@ -182,7 +182,7 @@ async function recoverPrLifecycleIntegration(state: RunState, options: PrLifecyc
 	const issue = finalCheck(state);
 	const current = task(state, issue.id);
 	if (current.status !== "repair_applying" || !current.integration_intent) return state;
-	const integrationHead = await appliedLifecyclePick(state, current.integration_intent, options);
+	const integrationHead = await findAppliedCherryPick(options.runner, state.main_worktree, state.integration_branch, state.integration_head, current.integration_intent, "Main integration");
 	return integrationHead
 		? await save(replaceTask({ ...state, integration_head: integrationHead }, issue.id, {
 			...current,
@@ -194,7 +194,7 @@ async function recoverPrLifecycleIntegration(state: RunState, options: PrLifecyc
 
 /** Abort only a final-repair cherry-pick whose durable intent belongs to this run. */
 async function abortPrLifecycleCherryPick(state: RunState, options: PrLifecycleOptions): Promise<RunState> {
-	await assertRecordedIntegrationBranch(state, options);
+	await assertAttachedBranch(options.runner, state.main_worktree, state.integration_branch, "Main integration");
 	const result = await options.runner("git", ["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], { cwd: state.main_worktree });
 	if (result.code === 1) return state;
 	if (result.code !== 0) throw new Error(commandFailure("git", ["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], result));
@@ -589,17 +589,17 @@ async function finishFinalRepair(state: RunState, issue: LocalIssue, config: Pro
 	const current = task(state, issue.id);
 	const commit = nonEmptyString(current.repair_commit ?? current.commit, "integrated final-gate repair commit");
 	if (current.tab_id) {
-		await closeLifecycleTab(state, current.tab_id, options);
+		await retireWorkerTab(state, current.tab_id, options);
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), tab_id: undefined, implementer_pane: undefined, reviewer_pane: undefined }), options);
 	}
 	const worktree = task(state, issue.id).worktree;
 	if (worktree) {
-		await removeLifecycleWorktree(state, worktree, nonEmptyString(task(state, issue.id).branch, "final-gate repair branch"), "Final-gate repair", options);
+		await retireChildWorktree(options.runner, state.main_worktree, worktree, nonEmptyString(task(state, issue.id).branch, "final-gate repair branch"), "Final-gate repair");
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), worktree: undefined }), options);
 	}
 	const branch = task(state, issue.id).branch;
 	if (branch) {
-		await deleteLifecycleBranch(state, branch, commit, "Final-gate repair", options);
+		await deleteExpectedBranch(options.runner, state.main_worktree, branch, commit, "Final-gate repair");
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), branch: undefined }), options);
 	}
 	const next = task(state, issue.id);
@@ -657,30 +657,6 @@ async function completePr(state: RunState, issue: LocalIssue, options: PrLifecyc
 	}, options);
 }
 
-async function closeLifecycleTab(state: RunState, tabId: string, options: PrLifecycleOptions): Promise<void> {
-	await retireWorkerTab(state, tabId, options);
-}
-
-async function removeLifecycleWorktree(
-	state: RunState,
-	worktree: string,
-	branch: string,
-	label: string,
-	options: PrLifecycleOptions,
-): Promise<void> {
-	await retireChildWorktree(options.runner, state.main_worktree, worktree, branch, label);
-}
-
-async function deleteLifecycleBranch(
-	state: RunState,
-	branch: string,
-	commit: string,
-	label: string,
-	options: PrLifecycleOptions,
-): Promise<void> {
-	await deleteExpectedBranch(options.runner, state.main_worktree, branch, commit, label);
-}
-
 async function recordLifecycleCleanupBlock(
 	state: RunState,
 	issueId: string,
@@ -697,35 +673,16 @@ function clearLifecycleCleanupBlock(state: RunState, issueId: string, operation:
 	return { ...state, ...(cleanupBlocks.length ? { cleanup_blocks: cleanupBlocks } : { cleanup_blocks: undefined }) };
 }
 
-async function appliedLifecyclePick(state: RunState, commit: string, options: PrLifecycleOptions): Promise<string | undefined> {
-	return await findAppliedCherryPick(options.runner, state.main_worktree, state.integration_branch, state.integration_head, commit, "Main integration");
-}
-
-async function assertRecordedIntegrationBranch(state: RunState, options: PrLifecycleOptions): Promise<void> {
-	await assertAttachedBranch(options.runner, state.main_worktree, state.integration_branch, "Main integration");
-}
-
 async function ensureRepairWorktree(state: RunState, issue: LocalIssue, options: PrLifecycleOptions): Promise<void> {
 	const current = task(state, issue.id);
-	await ensureLifecycleWorktree(
-		state,
+	await ensureChildWorktree(
+		options.runner,
+		state.main_worktree,
 		nonEmptyString(current.worktree, "final-gate repair worktree"),
 		nonEmptyString(current.branch, "final-gate repair branch"),
 		nonEmptyString(current.repair_base, "final-gate repair base"),
 		"Final-gate repair",
-		options,
 	);
-}
-
-async function ensureLifecycleWorktree(
-	state: RunState,
-	worktree: string,
-	branch: string,
-	base: string,
-	label: string,
-	options: PrLifecycleOptions,
-): Promise<void> {
-	await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, base, label);
 }
 
 async function verifyRepairCommit(state: RunState, issue: LocalIssue, commit: string, options: PrLifecycleOptions): Promise<string> {
@@ -757,7 +714,7 @@ async function verifyOneCommit(
 async function closeFinalTab(state: RunState, issue: LocalIssue, options: PrLifecycleOptions): Promise<RunState> {
 	const current = task(state, issue.id);
 	if (!current.tab_id) return state;
-	await closeLifecycleTab(state, current.tab_id, options);
+	await retireWorkerTab(state, current.tab_id, options);
 	return await save(replaceTask(state, issue.id, {
 		...current,
 		tab_id: undefined,
@@ -773,7 +730,7 @@ async function retireFinalRepair(state: RunState, issue: LocalIssue, options: Pr
 	const current = task(state, issue.id);
 	if (!current.worktree) return state;
 	try {
-		await removeLifecycleWorktree(state, current.worktree, finalRepairBranch(state, current), "Final-gate repair", options);
+		await retireChildWorktree(options.runner, state.main_worktree, current.worktree, finalRepairBranch(state, current), "Final-gate repair");
 	} catch (error) {
 		return await failFinalGate(state, issue, `Final-gate repair cannot be retired: ${errorMessage(error)}`, options, current.final_gate_findings ?? []);
 	}
