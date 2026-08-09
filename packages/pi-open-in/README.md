@@ -8,7 +8,7 @@ Pi extension that adds `/open` and `/set-open-in <command>` for opening current 
 pi install npm:@henryqw/pi-open-in
 ```
 
-Run `/set-open-in XYZ` to configure `/open`. Then `/open` runs `XYZ <current-working-directory>`.
+Run `/set-open-in XYZ` to configure `/open`. Then `/open` runs `XYZ <current-working-directory>`. You can invoke `/open` anytime, even while the agent is working.
 
 Command saves to `~/.pi/agent/config/pi-open-in.json`:
 
