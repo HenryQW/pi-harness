@@ -11,24 +11,37 @@ const WIDGET_KEY = "pi-herdr-rename";
 const WIDGET_RESULT_MS = 2_000;
 const MAX_MESSAGE_CHARS = 1_000;
 const MAX_CONTEXT_CHARS = 4_000;
-const TITLE_PROMPT =
-	"Return only a short chat title for the current conversation topic, prioritizing the most recent user intent: lowercase, at most five words, and at most 60 characters.";
+const DEFAULT_MAX_WORDS = 4;
+const DEFAULT_MAX_CHARS = 40;
 const configPath = () => join(getAgentDir(), "config", "pi-herdr-rename.json");
 
-async function configuredModel(): Promise<string | undefined> {
+type RenameConfig = { model?: string; maxWords: number; maxChars: number };
+
+class RenameModelError extends Error {}
+
+const positiveInteger = (value: unknown, fallback: number) =>
+	typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+
+async function configured(): Promise<RenameConfig> {
 	try {
 		const config: unknown = JSON.parse(await readFile(configPath(), "utf8"));
 		if (config && typeof config === "object" && !Array.isArray(config)) {
-			const model = (config as { model?: unknown }).model;
-			if (typeof model === "string" && /^[^\s/]+\/\S+$/.test(model)) return model;
+			const values = config as { model?: unknown; maxWords?: unknown; maxChars?: unknown };
+			return {
+				model: typeof values.model === "string" && /^[^\s/]+\/\S+$/.test(values.model) ? values.model : undefined,
+				maxWords: positiveInteger(values.maxWords, DEFAULT_MAX_WORDS),
+				maxChars: positiveInteger(values.maxChars, DEFAULT_MAX_CHARS),
+			};
 		}
 	} catch {}
+	return { maxWords: DEFAULT_MAX_WORDS, maxChars: DEFAULT_MAX_CHARS };
 }
 
 async function saveModel(model: string): Promise<void> {
 	const path = configPath();
+	const { maxWords, maxChars } = await configured();
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify({ model }, null, 2)}\n`, "utf8");
+	await writeFile(path, `${JSON.stringify({ model, maxWords, maxChars }, null, 2)}\n`, "utf8");
 }
 
 function messageText(content: unknown): string {
@@ -85,7 +98,7 @@ function recentConversation(ctx: ExtensionContext, fallback?: string): string | 
 }
 
 async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<string> {
-	const key = await configuredModel();
+	const { model: key, maxWords, maxChars } = await configured();
 	if (!key) throw new Error("Rename model is not configured. Run /rename-model.");
 	const separator = key.indexOf("/");
 	const provider = key.slice(0, separator);
@@ -98,11 +111,14 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 	const response = await ctx.modelRegistry.complete(
 		model,
 		{
-			systemPrompt: TITLE_PROMPT,
+			systemPrompt: `Return only a short chat title for the current conversation topic, prioritizing the most recent user intent: lowercase, at most ${maxWords} words, and at most ${maxChars} characters.`,
 			messages: [{ role: "user", content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
 		},
 		{ signal, maxRetries: 0, maxTokens: 64 },
 	);
+	if (response.stopReason === "error") {
+		throw new RenameModelError(response.errorMessage || "Rename model failed.");
+	}
 	if (response.stopReason !== "stop") throw new Error("Rename model did not return a complete title.");
 
 	const title = response.content
@@ -112,7 +128,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 		.trim()
 		.toLowerCase()
 		.replace(/\s+/g, " ");
-	if (!title || title.length > 60 || title.split(" ").length > 5) {
+	if (!title || title.length > maxChars || title.split(" ").length > maxWords) {
 		throw new Error("Rename model returned an invalid title.");
 	}
 	return title;
@@ -180,7 +196,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 			await applyHerdr(title, request, controller);
 			return title;
 		} catch (error) {
-			if (manual && isCurrent(request, controller)) {
+			if (isCurrent(request, controller) && (manual || error instanceof RenameModelError)) {
 				ctx.ui.notify(error instanceof Error ? error.message : "Rename failed.", "warning");
 			}
 			return undefined;
@@ -202,7 +218,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		active = undefined;
 		sequence++;
 		latestUserText = latestSessionUserText(ctx);
-		if (!(await configuredModel())) {
+		if (!(await configured()).model) {
 			ctx.ui.notify("Run /rename-model to configure chat title generation.", "warning");
 		}
 		const title = pi.getSessionName();
