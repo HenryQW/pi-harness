@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
+import { executionIssues, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
 import {
 	RUN_STATE_VERSION,
 	RUN_TASK_STATUSES,
@@ -88,7 +88,7 @@ export function createInitialRunState(input: {
 		default_branch: nonEmptyString(input.default_branch, "default_branch"),
 		created_at: nonEmptyString(input.created_at, "created_at"),
 		phase: "execution",
-		tasks: Object.fromEntries(graph.issues.map((issue) => [issue.id, { status: "pending", attempts: 0 }])),
+		tasks: Object.fromEntries(executionIssues(graph).map((issue) => [issue.id, { status: "pending", attempts: 0 }])),
 		resolutions: {},
 		main_pane: nonEmptyString(input.main_pane, "main Herdr pane"),
 		workspace_id: nonEmptyString(input.workspace_id, "Herdr workspace id"),
@@ -219,14 +219,14 @@ export function parseRunState(value: unknown): RunState {
 
 function parseTasks(value: unknown, graph: DeliveryGraph): Record<string, RunTaskState> {
 	const input = object(value, "run state.tasks");
-	const issueIds = graph.issues.map((issue) => issue.id);
+	const issueIds = executionIssues(graph).map((issue) => issue.id);
 	exactKeys(input, issueIds, "run state.tasks");
 	return Object.fromEntries(issueIds.map((issueId) => [issueId, parseRunTaskState(input[issueId], `run state.tasks.${issueId}`)]));
 }
 
 function parseResolutions(value: unknown, graph: DeliveryGraph): Record<string, string> {
 	const input = object(value, "run state.resolutions");
-	const issueIds = graph.issues.map((issue) => issue.id);
+	const issueIds = executionIssues(graph).map((issue) => issue.id);
 	knownKeys(input, issueIds, "run state.resolutions");
 	return Object.fromEntries(Object.entries(input).map(([issueId, resolution]) => [
 		issueId,
@@ -387,7 +387,7 @@ function nonNegativeInteger(value: unknown, label: string): number {
 }
 
 export function issueById(state: RunState, issueId: string): LocalIssue {
-	const issue = state.graph.issues.find((candidate) => candidate.id === issueId);
+	const issue = executionIssues(state.graph).find((candidate) => candidate.id === issueId);
 	if (!issue) throw new Error(`Run does not contain Local Issue: ${issueId}`);
 	return issue;
 }

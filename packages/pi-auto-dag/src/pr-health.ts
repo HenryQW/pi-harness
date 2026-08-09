@@ -1,11 +1,12 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
+import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RunState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { writeRunState, type Uuid } from "./state.ts";
-import { createWorkerLaunch, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { createWorkerLaunch, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface PrHealthOptions {
@@ -180,6 +181,7 @@ async function ensureHealthReviewer(
 	await promptWorkerAgent(state, agent, fullPrompt ? (promptMode === "triage" ? {
 		type: "auto_dag_pr_health_triage",
 		run_id: state.run_id,
+		delivery: workerDeliveryContext(state.graph),
 		pr: state.pr,
 		integration_head: state.integration_head,
 		attempt: health.attempt,
@@ -188,6 +190,7 @@ async function ensureHealthReviewer(
 	} : {
 		type: "auto_dag_pr_health_review",
 		run_id: state.run_id,
+		delivery: workerDeliveryContext(state.graph),
 		pr: state.pr,
 		worktree: health.worktree,
 		base: health.base,
@@ -335,6 +338,7 @@ async function ensureHealthCoder(
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_pr_health_repair",
 		run_id: state.run_id,
+		delivery: workerDeliveryContext(state.graph),
 		pr: state.pr,
 		worktree: health.worktree,
 		base: health.base,
@@ -722,9 +726,7 @@ function healthFastForwardIntent(state: RunState): HealthFastForwardIntent {
 }
 
 function finalCheck(state: RunState): LocalIssue {
-	const issue = state.graph.issues.find((candidate) => candidate.role === "final_check");
-	if (!issue) throw new Error("Run state has no final_check Local Issue");
-	return issue;
+	return executionIssues(state.graph).at(-1)!;
 }
 
 function workerLaunch(

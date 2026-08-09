@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { expandProfilePath } from "./config.ts";
 import { commandFailure, commandOutput, runCommand, type CommandRunner } from "./command.ts";
-import type { LocalIssue, WorkerEnvelope } from "./model.ts";
+import type { DeliveryGraph, LocalIssue, WorkerEnvelope } from "./model.ts";
+import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
 import { array, nonEmptyString, object, oneOf } from "./validate.ts";
 
 export type WorkerRole = "implementer" | "reviewer";
@@ -121,17 +122,38 @@ export interface WorkerExtensionOptions {
 export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 	return (pi: ExtensionAPI) => {
 		const environment = options.environment ?? process.env;
-		if ([
+		const runWorkerValues = [
 			environment.PI_AUTO_DAG_WORKER_ROLE,
 			environment.PI_AUTO_DAG_RUN_ID,
 			environment.PI_AUTO_DAG_ISSUE_ID,
 			environment.PI_AUTO_DAG_MAIN_PANE,
-		].every((value) => value === undefined)) return;
+		];
+		if (environment.PI_AUTO_DAG_PLANNING_ROOT !== undefined) {
+			if (runWorkerValues.some((value) => value !== undefined)) throw new Error("Planning reviewer cannot also be a run worker");
+			registerPlanningReviewTool(pi, nonEmptyString(environment.PI_AUTO_DAG_PLANNING_ROOT, "PI_AUTO_DAG_PLANNING_ROOT"));
+			return;
+		}
+		if (runWorkerValues.every((value) => value === undefined)) return;
 		const worker = workerEnvironment(environment);
 		const runner = options.runner ?? runCommand;
 		const cwd = options.cwd ?? process.cwd();
 		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd);
 	};
+}
+
+function registerPlanningReviewTool(pi: ExtensionAPI, mainWorktree: string): void {
+	pi.registerTool(defineTool({
+		name: PLANNING_REVIEW_TOOL,
+		label: "Submit planning review",
+		description: "Record PASS for exact current draft after independent semantic review. Call only when no material blockers remain.",
+		parameters: Type.Object({}),
+		async execute() {
+			return withFileMutationQueue(planningReviewPath(mainWorktree), async () => {
+				const pass = await writePlanningReviewPass(mainWorktree);
+				return { content: [{ type: "text", text: `Recorded reviewer PASS for ${pass.graph_id} at ${pass.graph_hash}.` }], details: pass, terminate: true };
+			});
+		},
+	}));
 }
 
 function registerWorkerTool(
@@ -170,6 +192,10 @@ function eventDefinition(type: WorkerEvent): {
 		case "block_task":
 			return { label: "Block task", description: "Report a blocker for the prompted task attempt and review round.", parameters: Type.Object({ reason: Type.String(), attempt: Type.Integer({ minimum: 1 }), review_round: Type.Integer({ minimum: 1 }) }), payload: (params) => params };
 	}
+}
+
+export function workerDeliveryContext(graph: DeliveryGraph): Record<string, unknown> {
+	return { goal: graph.goal, constraints: graph.constraints, non_goals: graph.non_goals };
 }
 
 export function workerIssueContext(issue: LocalIssue, includeTesting: boolean): Record<string, unknown> {

@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
 import { type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
-import { type LocalIssue, type RunState } from "../src/model.ts";
+import { type RunState } from "../src/model.ts";
 import { childWorktreePath, parseWorkerEnvelope } from "../src/orchestration.ts";
 import { writeRunState } from "../src/state.ts";
 
@@ -29,6 +29,7 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(state.tasks.alpha.worktree, childWorktreePath(project.root, RUN_ID, "alpha"));
 	await assert.rejects(readFile(join(state.tasks.alpha.worktree!, ".context")), /ENOENT/);
 	const implementerPrompt = JSON.parse(implementerPrompts(herdr).at(-1)!);
+	assert.deepEqual(implementerPrompt.delivery, { goal: "Exercise native orchestration.", constraints: ["local"], non_goals: [] });
 	assert.deepEqual(Object.keys(implementerPrompt.issue).sort(), ["acceptance", "id", "purpose", "testing", "title"]);
 
 	const alpha = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
@@ -40,6 +41,7 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.activity_started_at, "2026-08-09T00:00:00.000Z");
 	const reviewPrompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.deepEqual(reviewPrompt.delivery, implementerPrompt.delivery);
 	assert.equal(reviewPrompt.command, "npm test -- alpha");
 	assert.deepEqual(Object.keys(reviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	assert.equal("testing" in reviewPrompt, false);
@@ -91,7 +93,7 @@ test("wave completion rechecks local inputs before dispatching the next wave", a
 	const runner: CommandRunner = async (command, arguments_, options) => {
 		const result = await herdr.runner(command, arguments_, options);
 		if (command === "git" && arguments_[0] === "cherry-pick" && arguments_[1] === "-x" && result.code === 0 && ++cherryPicks === 2) {
-			await writeFile(join(project.root, ".context", "issues", "graph.json"), JSON.stringify({ ...deliveryGraph, title: "changed" }));
+			await writeFile(join(project.root, ".context", "issues", "graph.json"), JSON.stringify({ ...deliveryGraph, goal: "changed" }));
 		}
 		return result;
 	};
@@ -591,34 +593,22 @@ function makeLifecycle(runner: CommandRunner, delay?: (milliseconds: number) => 
 }
 
 function graph(ids: string[]) {
-	const issues: LocalIssue[] = ids.map((id, index) => ({
-		id,
-		title: id,
-		role: "implementation",
-		profile: "backend",
-		purpose: `Build ${id}.`,
-		acceptance: [id],
-		testing: `npm test -- ${id}`,
-		blocked_by: index === 2 ? [ids[0], ids[1]] : [],
-	}));
-	issues.push({
-		id: "final-check",
-		title: "Final check",
-		role: "final_check",
-		profile: null,
-		purpose: "Verify.",
-		acceptance: ["verified"],
-		testing: "npm test",
-		blocked_by: ids,
-	});
 	return {
-		version: 1,
 		status: "approved",
 		id: "orchestration-test",
-		title: "Orchestration test",
 		goal: "Exercise native orchestration.",
 		constraints: ["local"],
-		issues,
+		non_goals: [],
+		issues: ids.map((id, index) => ({
+			id,
+			title: id,
+			profile: "backend",
+			objective: `Build ${id}.`,
+			acceptance: [id],
+			testing: `npm test -- ${id}`,
+			depends_on: index === 2 ? [ids[0], ids[1]] : [],
+		})),
+		final_check: { acceptance: ["verified"], testing: "npm test" },
 	};
 }
 

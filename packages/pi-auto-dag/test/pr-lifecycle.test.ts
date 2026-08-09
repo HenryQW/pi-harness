@@ -87,6 +87,7 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt")
 		.map((call) => JSON.parse(call.args[3]));
 	const repairPrompt = workerPrompts().find((value) => value.type === "auto_dag_final_repair");
+	assert.deepEqual(repairPrompt.delivery, { goal: "Exercise final checks and retained PR health.", constraints: ["local"], non_goals: [] });
 	assert.deepEqual(Object.keys(repairPrompt.owner_issue).sort(), ["acceptance", "id", "purpose", "testing", "title"]);
 	const repairWorktree = state.tasks["final-check"].worktree!;
 	assert.match(repairWorktree, /final-repair-alpha-1$/);
@@ -106,6 +107,7 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	assert.equal(fullPrompt.attempt, state.tasks["final-check"].attempts);
 	assert.equal(fullPrompt.review_round, state.tasks["final-check"].review_rounds);
 	assert.equal(fullPrompt.command, "npm test -- final-check");
+	assert.deepEqual(fullPrompt.delivery, repairPrompt.delivery);
 	assert.deepEqual(Object.keys(fullPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	state = await lifecycle.resume(project.root);
 	const compactPrompt = prompts().at(-1);
@@ -358,34 +360,23 @@ function makeLifecycle(runner: CommandRunner): CoreLifecycle {
 
 function graph() {
 	return {
-		version: 1,
 		status: "approved",
 		id: "pr-lifecycle-test",
-		title: "PR lifecycle test",
 		goal: "Exercise final checks and retained PR health.",
 		constraints: ["local"],
+		non_goals: [],
 		issues: [
 			{
 				id: "alpha",
 				title: "Alpha",
-				role: "implementation",
 				profile: "backend",
-				purpose: "Implement alpha.",
+				objective: "Implement alpha.",
 				acceptance: ["alpha works"],
 				testing: "npm test -- alpha",
-				blocked_by: [],
-			},
-			{
-				id: "final-check",
-				title: "Final check",
-				role: "final_check",
-				profile: null,
-				purpose: "Verify the integrated delivery.",
-				acceptance: ["verified"],
-				testing: "npm test -- final-check",
-				blocked_by: ["alpha"],
+				depends_on: [],
 			},
 		],
+		final_check: { acceptance: ["verified"], testing: "npm test -- final-check" },
 	};
 }
 
@@ -437,7 +428,9 @@ function reviewEvent(
 	fixedThreadIds?: string[],
 ): string {
 	const task = state.tasks[issueId];
-	const command = state.graph.issues.find((issue) => issue.id === issueId)?.testing;
+	const command = issueId === "final-check"
+		? state.graph.final_check.testing
+		: state.graph.issues.find((issue) => issue.id === issueId)?.testing;
 	if (!command) throw new Error(`Missing frozen command for ${issueId}`);
 	return event(state, issueId, "reviewer", "submit_review", {
 		commit: task.commit,
@@ -481,7 +474,7 @@ function healthReviewEvent(
 		commit: health.commit,
 		attempt: health.attempt,
 		review_round: health.review_round,
-		command: state.graph.issues.find((issue) => issue.id === "final-check")!.testing,
+		command: state.graph.final_check.testing,
 		exit_code: 0,
 		verdict,
 		findings,
