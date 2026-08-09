@@ -187,6 +187,18 @@ test("local intake resolves the Git top-level and boundaries use agent config", 
 	await assert.rejects(assertRunBoundary(state), /Delivery Graph changed during the run/);
 });
 
+test("local intake rejects an integration branch missing the current default ref", async (t) => {
+	const project = await makeProject(t);
+	const advancedMain = await git(project.root, "commit-tree", "main^{tree}", "-p", "main", "-m", "advance default");
+	await git(project.root, "update-ref", "refs/heads/main", advancedMain);
+
+	await assert.rejects(
+		startLocalRun({ mainWorktree: project.root, mainPane: "main-pane", workspaceId: "main-workspace", uuid: () => RUN_ID }),
+		/Integration branch dag has an unsuitable base; it must contain refs\/heads\/main/,
+	);
+	assert.equal(await readActiveRunId(project.root), undefined);
+});
+
 test("local intake rejects selective ignores outside the .context boundary", async (t) => {
 	const project = await makeProject(t, ".context/issues/graph.json\n.context/pi-auto-dag/runs/\n.context/pi-auto-dag/active.json\n");
 	await assert.rejects(

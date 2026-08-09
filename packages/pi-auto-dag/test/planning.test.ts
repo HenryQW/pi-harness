@@ -148,6 +148,33 @@ for (const position of ["default branch", "detached HEAD"] as const) {
 	});
 }
 
+test("approval warns when integration branch misses the current default ref", async (t) => {
+	const project = await setup(t);
+	await writeDeliveryGraph(project.root, draft);
+	await writePlanningReviewPass(project.root);
+	const advancedMain = await git(project.root, "commit-tree", "main^{tree}", "-p", "main", "-m", "advance default");
+	await git(project.root, "update-ref", "refs/heads/main", advancedMain);
+	const tools = new Map<string, { execute: Function }>();
+	registerPlanning({
+		registerCommand() {},
+		registerTool(tool: { name: string; execute: Function }) { tools.set(tool.name, tool); },
+	} as never);
+	const notifications: string[] = [];
+
+	await tools.get(PLANNING_TOOLS.approve)!.execute("approve", {}, undefined, undefined, {
+		cwd: project.root,
+		mode: "tui",
+		ui: {
+			confirm: async () => true,
+			notify: (message: string) => { notifications.push(message); },
+		},
+	});
+
+	assert.deepEqual(notifications, [
+		"Auto DAG cannot start: Integration branch integration has an unsuitable base; it must contain refs/heads/main",
+	]);
+});
+
 for (const rejectedOperation of ["status", "add", "commit", "post-commit status"] as const) {
 	test(`approval survives rejected post-approval git ${rejectedOperation}`, async (t) => {
 		const project = await setup(t);
