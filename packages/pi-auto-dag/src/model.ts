@@ -1,26 +1,40 @@
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 export const RUN_STATE_VERSION = 1;
+export const PROFILE_RESOLUTION_VERSION = 1;
 export const DEFAULT_MAX_PARALLEL_TASKS = 5;
 export const DEFAULT_MAX_REVIEW_ROUNDS = 5;
 
-export const IMPLEMENTATION_PROFILES = ["coder", "backend", "frontend"] as const;
-export const PROFILE_NAMES = [...IMPLEMENTATION_PROFILES, "reviewer"] as const;
-export type ImplementationProfile = (typeof IMPLEMENTATION_PROFILES)[number];
-export type ProfileName = (typeof PROFILE_NAMES)[number];
+export type ProfileId = string;
 export type IssueRole = "implementation" | "final_check";
 
-export interface ProjectConfig {
+export interface ProfileRoutingConfig {
 	version: typeof CONFIG_VERSION;
-	profiles: Record<ProfileName, string>;
+	profile_resolver: string[];
+	implementation_profiles: ProfileId[];
+	reviewer_profile: ProfileId;
+	repair_profile: ProfileId;
 	max_parallel_tasks: number;
 	max_review_rounds: number;
+}
+
+export interface ResolvedProfile {
+	version: typeof PROFILE_RESOLUTION_VERSION;
+	id: ProfileId;
+	description: string;
+	agent_dir: string;
+	skills: string[];
+	tools: string[];
+}
+
+export interface ProjectConfig extends ProfileRoutingConfig {
+	profiles: Record<ProfileId, ResolvedProfile>;
 }
 
 export interface LocalIssue {
 	id: string;
 	title: string;
 	role: IssueRole;
-	profile: ImplementationProfile | null;
+	profile: ProfileId | null;
 	purpose: string;
 	acceptance: string[];
 	testing: string;
@@ -30,7 +44,7 @@ export interface LocalIssue {
 export interface DeliveryIssue {
 	id: string;
 	title: string;
-	profile: ImplementationProfile;
+	profile: ProfileId;
 	objective: string;
 	acceptance: string[];
 	testing: string;

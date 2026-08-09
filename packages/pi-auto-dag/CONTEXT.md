@@ -27,3 +27,7 @@ _Avoid_: Issue, Local Issue, worker
 **Run Resolution**:
 User-approved clarification that unblocks one Run Task without changing its Local Issue.
 _Avoid_: Graph edit, issue update, new requirement
+
+**Pi Profile Resolver**:
+External command that maps reusable profile ID to versioned Pi launch data: agent directory, description, skills, and baseline tools. Auto DAG owns only role bindings and worker lifecycle injection; Herdr only hosts resulting process.
+_Avoid_: Auto DAG profile, Herdr profile

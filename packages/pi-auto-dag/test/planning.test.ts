@@ -10,6 +10,7 @@ import { hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "../src
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "../src/planning-review.ts";
 import { PLANNING_TOOLS, registerPlanning } from "../src/planning.ts";
 import { createWorkerExtension } from "../src/worker.ts";
+import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
 
 const execFile = promisify(execFileCallback);
 
@@ -223,7 +224,9 @@ test("dag-plan resolves the Git top-level and refuses its active execution", asy
 	assert.match(messages[0], /Planning mode: resume/);
 	assert.match(messages[0], new RegExp(`Repository root: ${escapeRegExp(project.root)}`));
 	assert.match(messages[0], new RegExp(`Delivery Graph: ${escapeRegExp(join(project.root, ".context", "issues", "graph.json"))}`));
-	assert.match(messages[0], /Reviewer profile:/);
+	assert.match(messages[0], /Implementation profiles:.*backend test profile/);
+	assert.match(messages[0], /Reviewer launch environment:.*PI_CODING_AGENT_DIR/);
+	assert.match(messages[0], /Reviewer Pi arguments:.*shared-skills.*auto_dag_submit_plan_review/);
 	assert.match(messages[0], /Additional user context: preserve CLI contract/);
 	assert.match(messages[0], /do not start Auto DAG/);
 
@@ -271,12 +274,10 @@ async function setup(t: TestContext): Promise<{ root: string }> {
 	await git(root, "add", ".gitignore");
 	await git(root, "commit", "-m", "initial");
 	await git(root, "switch", "-c", "integration");
+	await createTestProfiles(root);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-planning-agent-"));
-	const reviewer = join(agentDir, "profiles", "reviewer");
-	await mkdir(reviewer, { recursive: true });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	const profiles = { coder: reviewer, backend: reviewer, frontend: reviewer, reviewer };
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify({ version: 1, profiles }));
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root)));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	t.after(async () => {

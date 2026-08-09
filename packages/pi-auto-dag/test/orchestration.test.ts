@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
+import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
 import { type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
@@ -82,7 +83,7 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(herdr.count("tab create"), 4);
 	const creates = herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "tab create");
 	assert.ok(creates.every(({ args }) => args[args.indexOf("--workspace") + 1] === "main-workspace"));
-	assert.equal(herdr.calls.some((call) => call.command !== "git" && call.command !== "herdr"), false);
+	assert.equal(herdr.calls.some((call) => !["git", "herdr", process.execPath].includes(call.command)), false);
 });
 
 test("wave completion rechecks local inputs before dispatching the next wave", async (t) => {
@@ -646,20 +647,14 @@ async function makeProject(
 	await git(root, "init", "-b", "main");
 	await git(root, "config", "user.email", "test@example.com");
 	await git(root, "config", "user.name", "Test User");
-	const profiles: Record<string, string> = {};
-	for (const name of ["coder", "backend", "frontend", "reviewer"]) {
-		profiles[name] = join(root, "profiles", name);
-		await mkdir(profiles[name], { recursive: true });
-	}
+	await createTestProfiles(root);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify({
-		version: 1,
-		profiles,
-		max_parallel_tasks: maxParallel,
-		max_review_rounds: maxReviews,
-	}));
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, {
+		maxParallel,
+		maxReviews,
+	})));
 	useAgentDir(t, agentDir);
 	await writeFile(join(root, ".gitignore"), ".context/\n");
 	if (shared !== undefined) await writeFile(join(root, "shared.txt"), shared);

@@ -848,12 +848,13 @@ function workerLaunch(
 	config: ProjectConfig,
 	role: WorkerRole,
 ): WorkerLaunch {
-	const profile = role === "reviewer" ? config.profiles.reviewer : config.profiles[issue.profile!];
+	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
+	const profile = config.profiles[profileId];
+	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
 	return createWorkerLaunch({
 		role,
 		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		profile_path: profile,
-		main_worktree: state.main_worktree,
+		profile,
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),

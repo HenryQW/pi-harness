@@ -2,13 +2,14 @@ import { access, readFile } from "node:fs/promises";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { commandFailure, errorMessage, runCommand, type CommandRunner } from "./command.ts";
-import { assertProfileDirectories, expandProfilePath, loadProjectConfig } from "./config.ts";
+import { loadProjectConfig } from "./config.ts";
 import { inspectIntegrationBranch, resolveGitTopLevel } from "./git.ts";
-import { deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
+import { assertDeliveryGraphProfiles, deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
 import { assertIgnoredLocalContext } from "./intake.ts";
 import type { DeliveryGraph } from "./model.ts";
 import { approvedGraphHash, clearPlanningReviewPass, planningReviewPath, requirePlanningReviewPass } from "./planning-review.ts";
 import { readActiveRunId } from "./state.ts";
+import { createPlanningReviewLaunch, type WorkerLaunch } from "./worker.ts";
 
 export const PLANNING_TOOLS = {
 	validate: "auto_dag_validate",
@@ -49,11 +50,12 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 				ctx.ui.notify(`Planning repository unavailable: ${errorMessage(error)}`, "error");
 				return;
 			}
-			let reviewerProfile: string;
+			let reviewerLaunch: WorkerLaunch;
+			let implementationProfiles: Array<{ id: string; description: string }>;
 			try {
-				const config = await loadProjectConfig();
-				await assertProfileDirectories(config);
-				reviewerProfile = expandProfilePath(config.profiles.reviewer);
+				const config = await loadProjectConfig(runner, root);
+				reviewerLaunch = createPlanningReviewLaunch(config.profiles[config.reviewer_profile], root);
+				implementationProfiles = config.implementation_profiles.map((id) => ({ id, description: config.profiles[id].description }));
 			} catch (error) {
 				ctx.ui.notify(`Planning profiles unavailable: ${errorMessage(error)}`, "error");
 				return;
@@ -68,7 +70,9 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 				`Planning mode: ${mode}`,
 				`Repository root: ${root}`,
 				`Delivery Graph: ${deliveryGraphPath(root)}`,
-				`Reviewer profile: ${reviewerProfile}`,
+				`Implementation profiles: ${JSON.stringify(implementationProfiles)}`,
+				`Reviewer launch environment: ${JSON.stringify(reviewerLaunch.env)}`,
+				`Reviewer Pi arguments: ${JSON.stringify(reviewerLaunch.args)}`,
 				args.trim() ? `Additional user context: ${args.trim()}` : "Additional user context: none",
 			].join("\n"));
 		},
@@ -81,7 +85,10 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const root = await planningRoot(ctx.cwd, runner);
-			return graphResult(await readDeliveryGraph(root));
+			const config = await loadProjectConfig(runner, root);
+			const graph = await readDeliveryGraph(root);
+			assertDeliveryGraphProfiles(graph, config.implementation_profiles);
+			return graphResult(graph);
 		},
 	}));
 
@@ -96,7 +103,9 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 			return withFileMutationQueue(deliveryGraphPath(root), () => withFileMutationQueue(planningReviewPath(root), async () => {
 				const activeRun = await readActiveRunId(root);
 				if (activeRun) throw new Error(`Cannot approve while Auto DAG run is active: ${activeRun}`);
+				const config = await loadProjectConfig(runner, root);
 				const draft = await readDeliveryGraph(root);
+				assertDeliveryGraphProfiles(draft, config.implementation_profiles);
 				if (draft.status !== "draft") throw new Error("Delivery Graph must have draft status before approval");
 				await requirePlanningReviewPass(root, draft);
 				const candidate = { ...draft, status: "approved" as const };

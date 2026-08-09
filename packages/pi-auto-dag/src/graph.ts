@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import {
-	IMPLEMENTATION_PROFILES,
-	type DeliveryFinalCheck,
-	type DeliveryGraph,
-	type DeliveryIssue,
-	type LocalIssue,
+import type {
+	DeliveryFinalCheck,
+	DeliveryGraph,
+	DeliveryIssue,
+	LocalIssue,
 } from "./model.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, stringArray } from "./validate.ts";
 
@@ -127,7 +126,7 @@ function parseIssue(value: unknown, index: number): DeliveryIssue {
 	return {
 		id: parseId(input.id, `${label}.id`),
 		title: nonEmptyString(input.title, `${label}.title`),
-		profile: oneOf(input.profile, IMPLEMENTATION_PROFILES, `${label}.profile`),
+		profile: nonEmptyString(input.profile, `${label}.profile`),
 		objective: nonEmptyString(input.objective, `${label}.objective`),
 		acceptance: nonEmptyCriteria(input.acceptance, `${label}.acceptance`),
 		testing: nonEmptyString(input.testing, `${label}.testing`),
@@ -155,6 +154,15 @@ function parseId(value: unknown, label: string): string {
 	const id = nonEmptyString(value, label);
 	if (!ID.test(id)) throw new Error(`${label} must be a path-safe lowercase-hyphen ID`);
 	return id;
+}
+
+export function assertDeliveryGraphProfiles(graph: DeliveryGraph, implementationProfiles: readonly string[]): void {
+	const allowed = new Set(implementationProfiles);
+	for (const issue of graph.issues) {
+		if (!allowed.has(issue.profile)) {
+			throw new Error(`Delivery Graph issues profile must be one of: ${implementationProfiles.join(", ")}; received ${issue.profile}`);
+		}
+	}
 }
 
 function validateGraph(graph: DeliveryGraph): void {

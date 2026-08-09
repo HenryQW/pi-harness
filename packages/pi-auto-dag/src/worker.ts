@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { expandProfilePath } from "./config.ts";
 import { commandFailure, commandOutput, runCommand, type CommandRunner } from "./command.ts";
-import type { DeliveryGraph, LocalIssue, WorkerEnvelope } from "./model.ts";
+import type { DeliveryGraph, LocalIssue, ResolvedProfile, WorkerEnvelope } from "./model.ts";
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
 import { array, nonEmptyString, object, oneOf } from "./validate.ts";
 
@@ -24,16 +23,10 @@ export const WORKER_ROLE_EVENTS: Record<WorkerRole, WorkerEvent[]> = {
 	reviewer: ["submit_review", "submit_health", "block_task"],
 };
 
-const ROLE_BUILTINS: Record<WorkerRole, string[]> = {
-	implementer: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-	reviewer: ["read", "bash", "grep", "find", "ls"],
-};
-
 export interface WorkerLaunchInput {
 	role: WorkerRole;
 	events?: WorkerEvent[];
-	profile_path: string;
-	main_worktree: string;
+	profile: ResolvedProfile;
 	run_id: string;
 	issue_id: string;
 	main_pane: string;
@@ -44,32 +37,45 @@ export interface WorkerLaunch {
 	args: string[];
 }
 
-/** Pi owns profile resources; workers merely narrow skills and available tools. */
+export const WORKER_EXTENSION_PATH = fileURLToPath(new URL("../extensions/worker.ts", import.meta.url));
+
+/** Profile owns baseline Pi resources; Auto DAG adds only its worker adapter and phase tools. */
 export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 	const role = parseWorkerRole(input.role);
 	const events = parseWorkerEvents(input.events ?? WORKER_ROLE_EVENTS[role], role);
-	const profilePath = expandProfilePath(nonEmptyString(input.profile_path, "worker profile_path"));
-	const skills = [...new Set([
-		join(profilePath, ".agents", "skills"),
-		join(nonEmptyString(input.main_worktree, "worker main_worktree"), ".pi", "shared-skills", ".agents", "skills"),
-	])];
 	return {
 		env: {
-			PI_CODING_AGENT_DIR: profilePath,
+			PI_CODING_AGENT_DIR: nonEmptyString(input.profile.agent_dir, "worker profile agent_dir"),
 			PI_AUTO_DAG_WORKER_ROLE: role,
 			PI_AUTO_DAG_WORKER_EVENTS: events.join(","),
 			PI_AUTO_DAG_RUN_ID: nonEmptyString(input.run_id, "worker run_id"),
 			PI_AUTO_DAG_ISSUE_ID: nonEmptyString(input.issue_id, "worker issue_id"),
 			PI_AUTO_DAG_MAIN_PANE: nonEmptyString(input.main_pane, "worker main_pane"),
 		},
-		args: [
-			"--offline",
-			"--no-skills",
-			...skills.flatMap((path) => ["--skill", path]),
-			"--tools",
-			[...ROLE_BUILTINS[role], ...events.map((event) => WORKER_TOOLS[event])].join(","),
-		],
+		args: profileLaunchArgs(input.profile, events.map((event) => WORKER_TOOLS[event])),
 	};
+}
+
+export function createPlanningReviewLaunch(profile: ResolvedProfile, mainWorktree: string): WorkerLaunch {
+	return {
+		env: {
+			PI_CODING_AGENT_DIR: nonEmptyString(profile.agent_dir, "planning reviewer profile agent_dir"),
+			PI_AUTO_DAG_PLANNING_ROOT: nonEmptyString(mainWorktree, "planning reviewer main worktree"),
+		},
+		args: profileLaunchArgs(profile, [PLANNING_REVIEW_TOOL]),
+	};
+}
+
+function profileLaunchArgs(profile: ResolvedProfile, addedTools: string[]): string[] {
+	return [
+		"--offline",
+		"--no-skills",
+		...profile.skills.flatMap((path) => ["--skill", nonEmptyString(path, `profile ${profile.id} skill path`)]),
+		"--extension",
+		WORKER_EXTENSION_PATH,
+		"--tools",
+		[...new Set([...profile.tools, ...addedTools])].join(","),
+	];
 }
 
 interface WorkerEnvironment {

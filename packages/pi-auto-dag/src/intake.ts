@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { assertProfileDirectories, loadProjectConfig } from "./config.ts";
+import { loadProjectConfig } from "./config.ts";
 import { runCommand, type CommandRunner } from "./command.ts";
-import { hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
+import { assertDeliveryGraphProfiles, hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
 import { inspectIntegrationWorktree, resolveGitTopLevel } from "./git.ts";
 import type { ProjectConfig, RunState } from "./model.ts";
 import { createInitialRunState, createRun, type Uuid } from "./state.ts";
@@ -27,9 +27,9 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const mainPane = nonEmptyString(options.mainPane, "main Herdr pane");
 	const source = await inspectIntegrationWorktree(mainWorktree, runner);
 	await assertIgnoredLocalContext(mainWorktree, runner);
-	const config = await loadProjectConfig();
-	await assertProfileDirectories(config);
+	const config = await loadProjectConfig(runner, mainWorktree);
 	const graph = await readDeliveryGraph(mainWorktree);
+	assertDeliveryGraphProfiles(graph, config.implementation_profiles);
 	if (graph.status !== "approved") throw new Error("Delivery Graph must be approved before starting a run");
 
 	const state = createInitialRunState({
@@ -75,7 +75,7 @@ export async function assertRunBoundary(
 	if (current.source_commit !== state.integration_head) {
 		throw new Error(`Main integration HEAD changed from ${state.integration_head} to ${current.source_commit}`);
 	}
-	const config = await loadProjectConfig();
-	await assertProfileDirectories(config);
+	const config = await loadProjectConfig(runner, state.main_worktree);
+	assertDeliveryGraphProfiles(graph, config.implementation_profiles);
 	return config;
 }
