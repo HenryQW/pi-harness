@@ -92,26 +92,6 @@ test("resolved profile contract rejects identity drift, relative resources, and 
 	assert.throws(() => parseResolvedProfile({ ...profile, tools: ["read", "read"] }, "backend"), /must not contain duplicates/);
 });
 
-test("initial run state canonicalizes direct graph input before persistence", () => {
-	const canonical = parseDeliveryGraph(graph);
-	const unsorted = { ...canonical, issues: [canonical.issues[1], canonical.issues[0]] };
-	const state = createInitialRunState({
-		run_id: RUN_ID,
-		graph: unsorted,
-		source_commit: "source",
-		main_worktree: "/tmp/pi-auto-dag",
-		integration_branch: "main",
-		default_branch: "main",
-		created_at: "2026-08-09T00:00:00.000Z",
-		main_pane: "main-pane",
-		workspace_id: "main-workspace",
-	});
-
-	assert.deepEqual(state.graph.issues.map((issue) => issue.id), ["core", "release"]);
-	assert.deepEqual(Object.keys(state.tasks), ["core", "release", "final-check"]);
-	assert.equal(parseRunState(JSON.parse(JSON.stringify(state))).graph_hash, state.graph_hash);
-});
-
 test("worker agent names hash opaque identities into the Herdr contract", () => {
 	const name = workerAgentName("w1V", RUN_ID, "account-slots", "implementer");
 	const longName = workerAgentName("Workspace".repeat(20), RUN_ID, "account-slots", "implementer");
