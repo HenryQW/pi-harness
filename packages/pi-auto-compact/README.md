@@ -44,7 +44,7 @@ Threshold must be at least 25% and below 100%; lower values are not meaningful. 
 - Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed/forked `session_start`.
 - Uses Pi's default `ctx.compact()` summary and session persistence.
 - Keeps newest 15% as temporary emergency context while compaction runs.
-- Sends a follow-up message after compaction so task execution continues.
+- Sends a follow-up message after mid-task compaction so task execution continues; final-answer compaction stays idle.
 - Compacts above configured `autoCompactThreshold` percentage (50% by default).
 
 `ctx.compact()` aborts current low-level run. Extension hides that empty internal abort message, then starts new run with current task resume message. Other aborts and provider errors remain visible.

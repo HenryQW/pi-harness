@@ -19,8 +19,8 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
  * - agent_end: catch growth from the final provider turn.
  * - context: last-resort guard with a temporary keep-recent context.
  *
- * Pi's ctx.compact() aborts active low-level run internally. Its completion
- * callback sends follow-up user message, which resumes task after summary.
+ * Pi's ctx.compact() aborts active low-level run internally. Mid-task
+ * compaction sends a follow-up user message to resume work after summary.
  */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
@@ -124,12 +124,13 @@ export default function (pi: ExtensionAPI) {
 	let compactionPending = false;
 	let compactionAbortExpected = false;
 
-	const runCompaction = (ctx: ExtensionContext) => {
+	const runCompaction = (ctx: ExtensionContext, resumeTask = true) => {
 		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
 		ctx.compact({
 			onComplete: () => {
 				compactionPending = false;
 				compactionAbortExpected = false;
+				if (!resumeTask) return;
 				// Pi may flush queued input during compaction_end. Wait one macrotask
 				// before checking idle, otherwise follow-up can race that flush.
 				setImmediate(() => {
@@ -143,14 +144,14 @@ export default function (pi: ExtensionAPI) {
 		});
 	};
 
-	const compactIfNeeded = (ctx: ExtensionContext) => {
+	const compactIfNeeded = (ctx: ExtensionContext, resumeTask = true) => {
 		if (!active || compactionPending) return;
 
 		const usage = ctx.getContextUsage();
 		if (usage?.percent == null || usage.percent <= autoCompactThreshold) return;
 
 		compactionPending = true;
-		runCompaction(ctx);
+		runCompaction(ctx, resumeTask);
 	};
 
 	// Hide only empty abort produced when ctx.compact() cancels active run.
@@ -183,7 +184,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Catch threshold crossings caused by the final provider turn.
-	pi.on("agent_end", (_event, ctx) => compactIfNeeded(ctx));
+	pi.on("agent_end", (_event, ctx) => compactIfNeeded(ctx, false));
 
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
