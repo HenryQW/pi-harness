@@ -83,7 +83,7 @@ Fix blockers, validate again, and send revised graph to same reviewer until `PAS
 After reviewer `PASS`:
 
 1. Show user full graph summary: goal, constraints, non-goals, every issue with profile/objective/acceptance/testing/dependencies, final check, and derived waves.
-2. Call `auto_dag_approve` only after summary. Approval requires reviewer-recorded `PASS` for current approved-form SHA-256; native confirmation binds user approval to same candidate graph ID, hash, and waves.
+2. Call `auto_dag_approve` only after summary. Approval requires reviewer-recorded `PASS` for current approved-form SHA-256; native confirmation binds user approval to same candidate graph ID, hash, and waves. After persistence, tool verifies current branch can host an Auto DAG run, checks for changes, offers to stage and commit them with a user-provided message, then identifies starting Auto DAG as next step.
 3. Close reviewer pane after approval or cancellation.
 4. Stop. Never call `auto_dag_start` from this workflow.
 

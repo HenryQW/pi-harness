@@ -174,7 +174,7 @@ Run `/plan-delivery` in an interactive Pi TUI inside Herdr. Invocation may start
 
 Workflow validates structure with `auto_dag_validate`, then starts configured read-only reviewer in pane split inside current Herdr tab. Reviewer checks acceptance traceability, vertical slicing, dependencies, interference, and test quality. Reviewer records `PASS` directly through `auto_dag_submit_plan_review`, producing temporary evidence bound to approved-form graph SHA-256. Planner then shows full summary and calls `auto_dag_approve`. Approval rejects missing or stale evidence, rechecks it after native confirmation, removes it, and atomically writes approved graph.
 
-Planning never calls `auto_dag_start`. Existing draft can resume or be replaced. Existing approved idle graph can only be replaced or left unchanged. Active run blocks planning and approval.
+After approval, planning verifies current branch can host an Auto DAG run, then checks for changes and offers to stage and commit them with a user-provided message. It then identifies `auto_dag_start` as next step but never calls it. Existing draft can resume or be replaced. Existing approved idle graph can only be replaced or left unchanged. Active run blocks planning and approval.
 
 ### 2. Start
 
