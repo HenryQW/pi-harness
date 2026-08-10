@@ -74,6 +74,7 @@ export async function resolveFinalRepair(
 	const finalTask = task(state, issue.id);
 	if (finalTask.status !== "blocked" || !finalTask.final_gate_head) return undefined;
 	if (issueId === issue.id) {
+		if (finalTask.review_exit_code !== undefined && finalTask.review_exit_code !== 0 && finalTask.review_commit === finalTask.commit) return undefined;
 		throw new Error("Final-gate failure must be resolved against its owning completed implementation Local Issue");
 	}
 	const owner = issueById(state, issueId);

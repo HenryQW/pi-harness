@@ -113,21 +113,24 @@ test("nonzero final gate blocks before reviewer and resolution reruns the same i
 		? { code: 1, stdout: "", stderr: "dependency unavailable\n" }
 		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
 	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
-	let state = await advanceToFinalReview(project.root, lifecycle);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
 
 	assert.equal(state.phase, "blocked");
-	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(state.tasks["final-check"].status, "blocked");
 	assert.equal(state.tasks["final-check"].review_exit_code, 1);
 	assert.equal(state.tasks["final-check"].reviewer_pane, undefined);
-	const commit = state.tasks["final-check"].commit;
+	const finalCommit = state.tasks["final-check"].commit;
 	const reviewerStarts = herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length;
 
 	failFinalGate = false;
 	state = await lifecycle.resolve(project.root, "final-check", "Dependency restored; rerun frozen gate.");
 	assert.equal(state.phase, "execution");
 	assert.equal(state.tasks["final-check"].status, "reviewing");
-	assert.equal(state.tasks["final-check"].commit, commit);
-	assert.equal(state.tasks["final-check"].review_commit, commit);
+	assert.equal(state.tasks["final-check"].commit, finalCommit);
+	assert.equal(state.tasks["final-check"].review_commit, finalCommit);
 	assert.equal(state.tasks["final-check"].review_exit_code, 0);
 	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.args[1] === FINAL_GATE_COMMAND).length, 2);
 	assert.equal(herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length, reviewerStarts + 1);
@@ -166,6 +169,30 @@ test("health refuses a retained historical run while another run is active witho
 	assert.equal(await git(project.root, "rev-parse", "HEAD"), head);
 	assert.equal(await readFile(historicalPath, "utf8"), historicalState);
 	assert.equal(await readFile(activePath, "utf8"), activeState);
+});
+
+test("a nonzero final gate remains recoverable through its completed owner", async (t) => {
+	const project = await makeProject(t);
+	let failFinalGate = true;
+	const herdr = fakeHerdr({ gate: (command) => failFinalGate && command === FINAL_GATE_COMMAND
+		? { code: 1, stdout: "", stderr: "final dependency unavailable\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await lifecycle.start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+
+	assert.equal(state.phase, "blocked");
+	assert.equal(state.tasks["final-check"].status, "blocked");
+	assert.equal(state.tasks["final-check"].review_exit_code, 1);
+	assert.equal(state.tasks["final-check"].final_gate_head, state.integration_head);
+
+	failFinalGate = false;
+	state = await lifecycle.resolve(project.root, "alpha", "Repair alpha or gate setup for final verification.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks["final-check"].status, "repairing");
+	assert.equal(state.tasks["final-check"].repair_issue_id, "alpha");
 });
 
 test("a failed final gate requires a completed owner resolution and a fresh reviewed repair", async (t) => {
@@ -391,6 +418,35 @@ test("nonzero PR-health repair gate blocks before reviewer dispatch and reruns t
 	assert.equal(state.health?.review_exit_code, 0);
 	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.cwd === worktree).length, gateRuns + 1);
 	assert.equal(repairReviewPrompts().length, 1);
+});
+
+test("failed health gate restarts triage when PR head advances", async (t) => {
+	const project = await makeProject(t);
+	let failHealthGate = false;
+	const herdr = fakeHerdr({ gate: (command) => failHealthGate
+		? { code: 1, stdout: "", stderr: "health gate failed\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	state = await lifecycle.health(project.root, RUN_ID, healthEvent(state, {
+		summary: "Repair required.", actionable: true, thread_ids: ["THREAD-1"], checks: [],
+	}));
+	const oldWorktree = state.health!.worktree!;
+	const repair = await commit(oldWorktree, "health.txt", "healthy\n", "health repair");
+	failHealthGate = true;
+	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
+	const gateRuns = herdr.calls.filter((call) => call.command === "sh" && call.cwd === oldWorktree).length;
+	await advanceRemote(t, project.remote);
+
+	state = await lifecycle.health(project.root, RUN_ID);
+
+	assert.equal(state.health?.status, "triaging");
+	assert.equal(state.health?.attempt, 2);
+	assert.equal(state.health?.head, state.integration_head);
+	assert.equal(state.health_history?.at(-1)?.review_exit_code, 1);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.cwd === oldWorktree).length, gateRuns);
+	await assert.rejects(readFile(join(oldWorktree, "health.txt")), /ENOENT/);
 });
 
 test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves only fixed triaged threads", async (t) => {

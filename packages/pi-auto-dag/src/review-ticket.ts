@@ -90,7 +90,6 @@ export async function ensureActionTicket(
 			const receipt = await readWorkerReceipt(current.receipt_path);
 			if (!receipt) return current;
 			if (receipt.event_id !== current.event_id) throw new Error("Worker receipt belongs to another event");
-			if (receipt.status !== "rejected") return current;
 		}
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

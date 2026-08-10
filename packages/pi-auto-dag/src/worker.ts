@@ -138,6 +138,8 @@ export async function sendWorkerEnvelope(
 			await commandOutput(runner, "herdr", ["agent", "prompt", worker.main_pane, JSON.stringify(envelope), "--wait", "--timeout", String(timeoutMs)], cwd);
 		} catch (error) {
 			lastError = error;
+			const receipt = await waitForReceipt(ticket.receipt_path, delivery.delay);
+			if (receipt) return requireReceipt(envelope, receipt);
 			if (attempt < attempts) {
 				await (delivery.delay ?? defaultDelay)(50);
 				continue;

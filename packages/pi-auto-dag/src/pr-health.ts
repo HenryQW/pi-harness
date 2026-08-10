@@ -43,7 +43,13 @@ export async function runPrHealth(
 	if (state.health?.status === "pushing") return await continueHealthPush(state, options);
 	if (state.health?.status === "post_push_cleanup") return await completeHealthRepair(state, options);
 	state = await fastForwardToPrHead(state, options);
-	if (state.health?.status === "blocked") return await retryFailedHealthGate(state, config, options);
+	if (state.health?.status === "blocked") {
+		if (state.health.head !== state.integration_head && hasFailedHealthGate(state.health)) {
+			state = await completeHealthRepair(state, options);
+			return await startHealthTriage(state, config, options);
+		}
+		return await retryFailedHealthGate(state, config, options);
+	}
 	if (envelope && hasAcceptedWorkerEvent(state, envelope.event_id)) {
 		const resumed = await resumePendingHealthWork(state, config, options);
 		state = resumed ?? state;
@@ -820,7 +826,7 @@ async function retryFailedHealthGate(
 	options: PrHealthOptions,
 ): Promise<RunState> {
 	const health = requiredHealth(state);
-	if (health.review_exit_code === undefined || health.review_exit_code === 0 || health.review_commit !== health.commit) return state;
+	if (!hasFailedHealthGate(health)) return state;
 	const {
 		summary: _summary,
 		blocked_role: _blockedRole,
@@ -836,6 +842,10 @@ async function retryFailedHealthGate(
 		health: { ...retry, status: "reviewing", activity_started_at: timestamp(options), instruction_pending: true },
 	}, options);
 	return await ensureHealthReviewer(state, config, options, "resume");
+}
+
+function hasFailedHealthGate(health: PrHealthState): boolean {
+	return health.review_exit_code !== undefined && health.review_exit_code !== 0 && health.review_commit === health.commit;
 }
 
 async function blockHealth(state: RunState, reason: string, options: PrHealthOptions): Promise<RunState> {

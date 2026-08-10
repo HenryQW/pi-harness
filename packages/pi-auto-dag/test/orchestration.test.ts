@@ -12,7 +12,7 @@ import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
-import { eventReceiptPath, readWorkerReceipt, reviewId } from "../src/review-ticket.ts";
+import { eventReceiptPath, readWorkerReceipt, reviewId, writeWorkerReceipt } from "../src/review-ticket.ts";
 import { runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -275,7 +275,7 @@ test("cleanup retains a completed child changed after review", async (t) => {
 	assert.equal(await readFile(join(worktree!, "late.txt"), "utf8"), "late\n");
 });
 
-test("accepted worker events resume downstream work before recovering receipts", async (t) => {
+test("accepted worker receipts resume downstream work before returning", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
 	const lifecycle = makeLifecycle(herdr.runner);
@@ -298,6 +298,7 @@ test("accepted worker events resume downstream work before recovering receipts",
 			},
 		},
 	}, () => "recover-state");
+	await writeWorkerReceipt(envelope.receipt_path, { event_id: envelope.event_id, status: "accepted" }, () => "recover-receipt");
 	const prompts = herdr.count("agent prompt");
 
 	state = await lifecycle.resume(project.root, message);
@@ -305,6 +306,32 @@ test("accepted worker events resume downstream work before recovering receipts",
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.ok(state.tasks.alpha.reviewer_pane);
 	assert.equal(herdr.count("agent prompt"), prompts + 1);
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+});
+
+test("approval receipt waits for durable automatic advancement", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	let crash = true;
+	const runner: CommandRunner = async (command, args, options) => {
+		if (crash && command === "git" && args[0] === "cherry-pick") {
+			crash = false;
+			throw new Error("simulated crash before integration");
+		}
+		return await herdr.runner(command, args, options);
+	};
+	const lifecycle = makeLifecycle(runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	const message = reviewEvent(state, "alpha", "approved", []);
+	const envelope = JSON.parse(message);
+
+	await assert.rejects(lifecycle.resume(project.root, message), /simulated crash before integration/);
+	assert.equal(await readWorkerReceipt(envelope.receipt_path), undefined);
+
+	state = await lifecycle.resume(project.root, message);
+	assert.equal(state.tasks.alpha.status, "completed");
 	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 

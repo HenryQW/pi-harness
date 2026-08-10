@@ -116,6 +116,29 @@ test("worker binds action ticket to the prompted turn", async (t) => {
 	await assert.rejects(readFile(replacement.receipt_path), /ENOENT/);
 });
 
+test("failed delivery still accepts a durable lifecycle receipt", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const action = await ticket(root);
+	const tools: Array<{ name: string; execute: Function }> = [];
+	let deliveries = 0;
+	createWorkerExtension({
+		environment: environment(action.path),
+		deliveryAttempts: 1,
+		delay: async () => {},
+		runner: async (command) => {
+			if (command === "git") return { code: 0, stdout: `${HEAD}\n`, stderr: "" };
+			deliveries += 1;
+			await writeWorkerReceipt(action.value.receipt_path, { event_id: action.value.event_id, status: "accepted" });
+			return { code: 1, stdout: "", stderr: "response lost" };
+		},
+	})({ on() {}, registerTool(tool: { name: string; execute: Function }) { tools.push(tool); } } as never);
+
+	const result = await tools.find((tool) => tool.name === WORKER_TOOLS.request_review)!.execute("call", { summary: "finished" });
+	assert.equal(result.details.status, "accepted");
+	assert.equal(deliveries, 1);
+});
+
 test("stale action ticket returns worker-visible rejection", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
@@ -192,7 +215,7 @@ test("worker requests compaction before high-context submission", async (t) => {
 	assert.deepEqual(sent, [{ text: "Auto-compact completed. Retry worker event submission now.", options: { deliverAs: "followUp" } }]);
 });
 
-test("rejected action ticket is replaced on same logical action", async (t) => {
+test("consumed action tickets are replaced on the same logical action", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
 	const path = join(root, "action-ticket.json");
@@ -200,11 +223,14 @@ test("rejected action ticket is replaced on same logical action", async (t) => {
 	await writeWorkerReceipt(first.receipt_path, { event_id: first.event_id, status: "rejected", reason: "bad verdict" }, () => "receipt-1");
 
 	const second = await ensureActionTicket(path, { attempt: 1, review_round: 1, role: "reviewer", review_id: "review-1" }, root, RUN_ID, () => "write-2", () => "event-2");
+	await writeWorkerReceipt(second.receipt_path, { event_id: second.event_id, status: "accepted" }, () => "receipt-2");
+	const third = await ensureActionTicket(path, { attempt: 1, review_round: 1, role: "reviewer", review_id: "review-1" }, root, RUN_ID, () => "write-3", () => "event-3");
 
 	assert.equal(first.event_id, "event-1");
 	assert.equal(second.event_id, "event-2");
-	assert.equal(second.receipt_path.endsWith("event-2.json"), true);
-	assert.equal((await readActionTicket(path)).event_id, "event-2");
+	assert.equal(third.event_id, "event-3");
+	assert.equal(third.receipt_path.endsWith("event-3.json"), true);
+	assert.equal((await readActionTicket(path)).event_id, "event-3");
 });
 
 test("worker environment requires action ticket", () => {

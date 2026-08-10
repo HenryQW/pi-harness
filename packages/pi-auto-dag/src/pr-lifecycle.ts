@@ -101,11 +101,7 @@ async function ensureFinalReviewer(
 	current = task(state, issue.id);
 	const gate = requiredTaskGate(current, commit, "Final check");
 	if (gate.exit_code !== 0) {
-		return await save({
-			...state,
-			phase: "blocked",
-			block_reason: `Final check required gate exited with code ${gate.exit_code}; reviewer was not launched`,
-		}, options);
+		return await failFinalGate(state, issue, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options);
 	}
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
 	let launch = await workerLaunch(state, issue, config, "reviewer");

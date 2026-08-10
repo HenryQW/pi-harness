@@ -1,6 +1,6 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { finished } from "node:stream/promises";
 import { promisify } from "node:util";
@@ -25,9 +25,11 @@ let child;
 let outputBytes = 0;
 let overflowed = false;
 let timedOut = false;
+let commandCompleted = false;
+let completedBeforeCancellation = false;
 const terminate = () => {
 	if (timedOut) return;
-	timedOut = true;
+	if (!commandCompleted) timedOut = true;
 	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
 };
 process.once("SIGTERM", terminate);
@@ -55,6 +57,8 @@ try {
 		const settle = (result) => {
 			if (settled) return;
 			settled = true;
+			commandCompleted = true;
+			completedBeforeCancellation = !existsSync(control.cancel);
 			resolve(result);
 		};
 		running.once("error", (error) => settle({ code: 1, signal: null, error }));
@@ -64,7 +68,7 @@ try {
 	if (running.pid !== undefined) await terminateGroup(running.pid);
 	await outputCompletion;
 	const exitCode = overflowed ? OUTPUT_OVERFLOW_EXIT_CODE : timedOut ? 124 : outcome.signal ? 1 : outcome.code ?? 1;
-	await markCompleted(recordPath, launchId, exitCode);
+	await markCompleted(recordPath, launchId, exitCode, completedBeforeCancellation);
 	process.exitCode = exitCode;
 } catch (error) {
 	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
@@ -110,8 +114,8 @@ async function markReady(path, expectedLaunchId) {
 	return control;
 }
 
-async function markCompleted(path, expectedLaunchId, exitCode) {
-	if (await exists(`${path}.${expectedLaunchId}.cancel`)) return;
+async function markCompleted(path, expectedLaunchId, exitCode, completedBeforeCancellation) {
+	if (!completedBeforeCancellation && await exists(`${path}.${expectedLaunchId}.cancel`)) return;
 	const record = await readRecord(path);
 	if (record.version !== 4 || record.launch_id !== expectedLaunchId) {
 		throw new Error("Required gate completion does not match launch intent");
