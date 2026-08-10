@@ -7,7 +7,7 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
-import { reviewId, reviewTicketPath, writeReviewTicket, type ReviewKind } from "./review-ticket.ts";
+import { actionTicketPath, ensureActionTicket, reviewId, type ReviewKind } from "./review-ticket.ts";
 import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 import { promptWorkerAgent, reconcileWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
@@ -130,9 +130,11 @@ async function ensureFinalReviewer(
 		: started !== "existing" || current.review_rounds === 1
 			? "full"
 			: "update";
-	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle"),
-		lifecycleReviewId(state, issue, current, "final_check"),
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle", "reviewer"),
+		{ attempt: current.attempts, review_round: positiveInteger(current.review_rounds, "final-check review round"), role: "reviewer", review_id: lifecycleReviewId(state, issue, current, "final_check") },
+		state.main_worktree,
+		state.run_id,
 		options.uuid,
 	);
 	await promptWorkerAgent(state, agent, reviewPrompt({
@@ -157,7 +159,7 @@ async function submitFinalReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the final-check reviewer can submit final review");
 	const current = task(state, issue.id);
-	if (envelope.review_id !== lifecycleReviewId(state, issue, current, "final_check")) return state;
+	if (envelope.review_id !== lifecycleReviewId(state, issue, current, "final_check")) throw new Error("Final-check review submission is stale");
 	const gate = requiredTaskGate(current, state.integration_head, "Final check");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-check verdict");
 	const findings = stringArray(envelope.payload.findings, "final-check findings");
@@ -264,7 +266,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle") } : {}),
+		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle", role),
 	});
 }
 
@@ -280,8 +282,8 @@ function lifecycleReviewId(state: RunState, issue: LocalIssue, current: RunTaskS
 }
 
 function matchesBlock(current: RunTaskState, envelope: WorkerEnvelope, implementer: boolean): boolean {
-	return envelope.payload.attempt === current.attempts
-		&& envelope.payload.review_round === (implementer ? (current.review_rounds ?? 0) + 1 : current.review_rounds);
+	return envelope.attempt === current.attempts
+		&& envelope.review_round === (implementer ? (current.review_rounds ?? 0) + 1 : current.review_rounds);
 }
 
 function finalReviewerLabel(state: RunState, attempt: number): string {

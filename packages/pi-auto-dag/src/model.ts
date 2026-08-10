@@ -241,7 +241,19 @@ interface WorkerEnvelopeBase {
 	version: 1;
 	run_id: string;
 	issue_id: string;
+	role: "implementer" | "reviewer";
+	event_id: string;
+	attempt: number;
+	review_round: number;
+	receipt_path: string;
 	payload: Record<string, unknown>;
+}
+
+export interface RequestReviewEnvelope extends WorkerEnvelopeBase {
+	type: "request_review";
+	role: "implementer";
+	/** System-read Git HEAD; never supplied by implementer model. */
+	commit: string;
 }
 
 export interface SubmitReviewEnvelope extends WorkerEnvelopeBase {
@@ -251,8 +263,6 @@ export interface SubmitReviewEnvelope extends WorkerEnvelopeBase {
 	review_id: string;
 }
 
-export type WorkerEnvelope = SubmitReviewEnvelope | (WorkerEnvelopeBase & {
-	type: "request_review" | "submit_health" | "block_task";
-	role: "implementer" | "reviewer";
-	review_id?: never;
+export type WorkerEnvelope = RequestReviewEnvelope | SubmitReviewEnvelope | (WorkerEnvelopeBase & {
+	type: "submit_health" | "block_task";
 });

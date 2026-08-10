@@ -196,7 +196,7 @@ For each task:
 5. Save command, verified commit SHA, exit code, and bounded stdout/stderr evidence, then restore original branch and commit, remove gate-created tracked, untracked, and ignored dirt, and restore pre-existing ignored resources from a private snapshot with recoverable staging. Output overflow becomes failed evidence, with exact captured streams retained in SHA-256-bound files instead of Run State.
 6. Start task-owned reviewer with one canonical Review Packet. Gate output uses same bounded evidence and read-on-demand full-output references.
 
-Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Reviewer submits only verdict and findings; worker extension captures scope-specific system-owned dispatch identity when each reviewer turn starts, so stale or duplicated verdicts cannot approve another commit or review round. Extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
+Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Worker tools accept intent only. Adapter adds action-ticket metadata and Git HEAD, delivers envelope, then waits for lifecycle acceptance receipt before reporting success. Stale or duplicated events are rejected. Reviewer submits only verdict and findings; extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
 
 ### 4. Integrate
 
@@ -238,7 +238,7 @@ To repair failed final check, call `auto_dag_resolve` with completed implementat
 
 `resume`, `resolve`, and `abort` use the only active run. `health` requires a retained `run_id`; `status` accepts one when reading run history.
 
-Run-worker messages go straight to lifecycle. Planning-review `PASS` goes straight to temporary `.context/issues/review.json`. Neither needs model turn in main pane. Fresh review agents receive one canonical packet containing delivery context, issue, worktree, base, and gate evidence. Existing reviewers receive only changed gate/findings/resolution data; a no-change resume sends only `{"type":"auto_dag_resend"}`.
+Worker envelopes go straight to lifecycle and complete only after durable acceptance receipt. Planning-review `PASS` goes straight to temporary `.context/issues/review.json`. Neither needs model turn in main pane. Fresh review agents receive one canonical packet containing delivery context, issue, worktree, base, and gate evidence. Existing reviewers receive only changed gate/findings/resolution data; a no-change resume sends only `{"type":"auto_dag_resend"}`.
 
 ## Blocks, recovery, and aborts
 

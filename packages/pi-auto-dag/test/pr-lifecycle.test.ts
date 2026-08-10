@@ -12,7 +12,7 @@ import { type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
-import { reviewId } from "../src/review-ticket.ts";
+import { eventReceiptPath, reviewId } from "../src/review-ticket.ts";
 import { readActiveRunId, runDirectory } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -485,7 +485,10 @@ function reviewEvent(
 		commit: task.commit!,
 		attempt: task.attempts,
 		review_round: task.review_rounds!,
-	}));
+	}), {
+		attempt: task.attempts,
+		review_round: task.review_rounds!,
+	});
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {
@@ -520,7 +523,11 @@ function healthReviewEvent(
 		commit: health.commit!,
 		attempt: health.attempt!,
 		review_round: health.review_round!,
-	}));
+	}), {
+		attempt: health.attempt!,
+		review_round: health.review_round!,
+		commit: health.commit,
+	});
 }
 
 function event(
@@ -530,8 +537,31 @@ function event(
 	type: string,
 	payload: Record<string, unknown>,
 	review_id?: string,
+	metadata: { attempt?: number; review_round?: number; commit?: string } = {},
 ): string {
-	return JSON.stringify({ version: 1, type, run_id: state.run_id, issue_id: issueId, role, ...(review_id ? { review_id } : {}), payload });
+	const eventPayload = { ...payload };
+	const attempt = metadata.attempt ?? Number(eventPayload.attempt ?? 1);
+	const review_round = metadata.review_round ?? Number(eventPayload.review_round ?? 1);
+	const commit = metadata.commit ?? (typeof eventPayload.commit === "string" ? eventPayload.commit : undefined);
+	delete eventPayload.attempt;
+	delete eventPayload.review_round;
+	if (type === "request_review") delete eventPayload.commit;
+	const suffix = commit ? `-${commit.slice(0, 12).replace(/[^A-Za-z0-9_-]/g, "_")}` : "";
+	const event_id = `${type}-${issueId}-${attempt}-${review_round}${suffix}`;
+	return JSON.stringify({
+		version: 1,
+		type,
+		run_id: state.run_id,
+		issue_id: issueId,
+		role,
+		event_id,
+		attempt,
+		review_round,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, event_id),
+		...(review_id ? { review_id } : {}),
+		...(type === "request_review" ? { commit } : {}),
+		payload: eventPayload,
+	});
 }
 
 async function commit(cwd: string, file: string, content: string, subject: string): Promise<string> {

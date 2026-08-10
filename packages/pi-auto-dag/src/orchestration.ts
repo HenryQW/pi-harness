@@ -20,6 +20,7 @@ import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, S
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
 import { issueById, readRunState, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
+import { eventReceiptPath, readWorkerReceipt, writeWorkerReceipt } from "./review-ticket.ts";
 import { findWorkerTab, retireWorkerTab, workerAgentName } from "./worker-host.ts";
 import { WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerRole } from "./worker.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -68,7 +69,24 @@ export async function resumeRun(
 	envelope: unknown,
 	options: OrchestrationOptions,
 ): Promise<RunState> {
-	if (state.phase === "aborted") return await abortRun(state, options);
+	const workerEnvelope = envelope === undefined ? undefined : parseWorkerEnvelope(envelope);
+	const receiptPath = workerEnvelope ? eventReceiptPath(state.main_worktree, state.run_id, workerEnvelope.event_id) : undefined;
+	if (workerEnvelope && workerEnvelope.receipt_path !== receiptPath) throw new Error("Worker receipt path does not belong to retained run");
+	if (workerEnvelope) {
+		const existing = await readWorkerReceipt(receiptPath!);
+		if (existing) {
+			if (existing.event_id !== workerEnvelope.event_id) throw new Error("Worker receipt belongs to another event");
+			if (existing.status === "accepted") return state;
+			throw new Error(`Auto DAG event ${workerEnvelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+		}
+	}
+	if (state.phase === "aborted") {
+		if (workerEnvelope) {
+			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: "Run is aborted" }, options.uuid);
+			throw new Error("Run is aborted");
+		}
+		return await abortRun(state, options);
+	}
 	state = await resumeFinalRepair(state, options);
 	if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
@@ -82,8 +100,14 @@ export async function resumeRun(
 		const { block_reason: _blockReason, ...recovered } = state;
 		state = await save({ ...recovered, phase: "execution" }, options);
 	}
-	if (envelope !== undefined) {
-		state = await acceptEnvelope(state, parseWorkerEnvelope(envelope), config, options);
+	if (workerEnvelope) {
+		try {
+			state = await acceptEnvelope(state, workerEnvelope, config, options);
+		} catch (error) {
+			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+			throw error;
+		}
+		await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
 		return state.phase === "blocked" ? state : await advanceWithConfig(state, config, options);
 	}
 	state = await retryCleanup(state, options);
@@ -121,25 +145,26 @@ export async function cleanupRun(state: RunState, options: OrchestrationOptions)
 export function parseWorkerEnvelope(value: unknown): WorkerEnvelope {
 	const input = object(value, "worker envelope");
 	const type = oneOf(input.type, ["request_review", "submit_review", "submit_health", "block_task"] as const, "worker envelope type");
-	exactKeys(
-		input,
-		type === "submit_review"
-			? ["version", "type", "run_id", "issue_id", "role", "review_id", "payload"]
-			: ["version", "type", "run_id", "issue_id", "role", "payload"],
-		"worker envelope",
-	);
+	const keys = ["version", "type", "run_id", "issue_id", "role", "event_id", "attempt", "review_round", "receipt_path", "payload"];
+	exactKeys(input, type === "submit_review" ? [...keys, "review_id"] : type === "request_review" ? [...keys, "commit"] : keys, "worker envelope");
 	if (input.version !== 1) throw new Error(`Unsupported worker envelope version: ${String(input.version)}`);
 	const role = oneOf(input.role, ["implementer", "reviewer"] as const, "worker envelope role");
 	if (!WORKER_ROLE_EVENTS[role].includes(type)) throw new Error(`${role} worker cannot send ${type}`);
-	const payload = parseEnvelopePayload(type, input.payload);
 	const base = {
 		version: 1 as const,
 		run_id: nonEmptyString(input.run_id, "worker envelope run_id"),
 		issue_id: nonEmptyString(input.issue_id, "worker envelope issue_id"),
-		payload,
+		event_id: nonEmptyString(input.event_id, "worker envelope event_id"),
+		attempt: positiveInteger(input.attempt, "worker envelope attempt"),
+		review_round: positiveInteger(input.review_round, "worker envelope review_round"),
+		receipt_path: nonEmptyString(input.receipt_path, "worker envelope receipt_path"),
+		payload: parseEnvelopePayload(type, input.payload),
 	};
 	if (type === "submit_review") {
 		return { ...base, type, role: "reviewer", review_id: nonEmptyString(input.review_id, "worker envelope review_id") };
+	}
+	if (type === "request_review") {
+		return { ...base, type, role: "implementer", commit: nonEmptyString(input.commit, "worker envelope commit") };
 	}
 	return { ...base, type, role };
 }
@@ -214,7 +239,7 @@ async function acceptEnvelope(
 		case "submit_review":
 			return await submitReview(state, issue, envelope, config, options);
 		case "submit_health":
-			return state;
+			throw new Error(`Health event is not valid for implementation issue ${issue.id}`);
 		case "block_task":
 			return await blockWorkerTask(state, issue.id, envelope, options);
 	}
@@ -224,7 +249,7 @@ async function blockWorkerTask(state: RunState, issueId: string, envelope: Worke
 	const current = task(state, issueId);
 	const active = envelope.role === "implementer" ? current.status === "implementing" : current.status === "reviewing";
 	const reviewRound = envelope.role === "implementer" ? (current.review_rounds ?? 0) + 1 : current.review_rounds;
-	if (!active || envelope.payload.attempt !== current.attempts || envelope.payload.review_round !== reviewRound) return state;
+	if (!active || envelope.attempt !== current.attempts || envelope.review_round !== reviewRound) throw new Error(`Worker block event is stale for Local Issue ${issueId}`);
 	return await blockTask(state, issueId, nonEmptyString(envelope.payload.reason, "block_task reason"), options, envelope.role);
 }
 
@@ -235,13 +260,13 @@ async function requestReview(
 	config: ProjectConfig,
 	options: OrchestrationOptions,
 ): Promise<RunState> {
-	if (envelope.role !== "implementer") throw new Error("Only an implementer can request review");
+	if (envelope.type !== "request_review" || envelope.role !== "implementer") throw new Error("Only an implementer can request review");
 	const current = task(state, issue.id);
-	const requestedCommit = nonEmptyString(envelope.payload.commit, "request_review commit");
+	const requestedCommit = nonEmptyString(envelope.commit, "request_review commit");
 	if (
-		envelope.payload.attempt !== current.attempts
-		|| envelope.payload.review_round !== (current.review_rounds ?? 0) + 1
-	) return state;
+		envelope.attempt !== current.attempts
+		|| envelope.review_round !== (current.review_rounds ?? 0) + 1
+	) throw new Error(`Review request is stale for Local Issue ${issue.id}`);
 	let commit: string;
 	try {
 		commit = await verifyReviewCommit(state, issue.id, requestedCommit, options);
@@ -282,8 +307,8 @@ async function submitReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only a reviewer can submit review");
 	const current = task(state, issue.id);
-	if (current.status !== "reviewing") return state;
-	if (envelope.review_id !== taskReviewId(state, issue.id, current)) return state;
+	if (current.status !== "reviewing") throw new Error(`Review submission is stale for Local Issue ${issue.id}`);
+	if (envelope.review_id !== taskReviewId(state, issue.id, current)) throw new Error(`Review submission is stale for Local Issue ${issue.id}`);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
 	const gate = requiredTaskGate(current, commit, issue.id);
 	try {
@@ -610,13 +635,8 @@ function parseEnvelopePayload(type: WorkerEvent, value: unknown): Record<string,
 	};
 	switch (type) {
 		case "request_review":
-			only(["commit", "attempt", "review_round", "summary"]);
-			return {
-				commit: nonEmptyString(input.commit, "request_review commit"),
-				attempt: positiveInteger(input.attempt, "request_review attempt"),
-				review_round: positiveInteger(input.review_round, "request_review review_round"),
-				...(input.summary === undefined ? {} : { summary: nonEmptyString(input.summary, "request_review summary") }),
-			};
+			only(["summary"]);
+			return input.summary === undefined ? {} : { summary: nonEmptyString(input.summary, "request_review summary") };
 		case "submit_review":
 			only(["verdict", "findings"]);
 			const verdict = oneOf(input.verdict, ["approved", "changes_requested", "blocked"] as const, "submit_review verdict");
@@ -626,23 +646,17 @@ function parseEnvelopePayload(type: WorkerEvent, value: unknown): Record<string,
 			}
 			return { verdict, findings };
 		case "submit_health":
-			only(["summary", "actionable", "thread_ids", "checks", "attempt", "review_round"]);
+			only(["summary", "actionable", "thread_ids", "checks"]);
 			if (typeof input.actionable !== "boolean") throw new Error("submit_health actionable must be a boolean");
 			return {
 				summary: nonEmptyString(input.summary, "submit_health summary"),
 				actionable: input.actionable,
-				attempt: positiveInteger(input.attempt, "submit_health attempt"),
-				review_round: positiveInteger(input.review_round, "submit_health review_round"),
 				...(input.thread_ids === undefined ? {} : { thread_ids: stringArray(input.thread_ids, "submit_health thread_ids") }),
 				...(input.checks === undefined ? {} : { checks: array(input.checks, "submit_health checks") }),
 			};
 		case "block_task":
-			only(["reason", "attempt", "review_round"]);
-			return {
-				reason: nonEmptyString(input.reason, "block_task reason"),
-				attempt: positiveInteger(input.attempt, "block_task attempt"),
-				review_round: positiveInteger(input.review_round, "block_task review_round"),
-			};
+			only(["reason"]);
+			return { reason: nonEmptyString(input.reason, "block_task reason") };
 	}
 }
 

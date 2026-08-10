@@ -4,7 +4,7 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
 import type { LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
-import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
+import { actionTicketPath, ensureActionTicket, reviewId } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 import { createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, startWorkerAgent, workerAgentName, workerTabExists } from "./worker-host.ts";
@@ -113,6 +113,13 @@ export async function ensureImplementer(
 	}
 	const promptMode = needsInstruction ? action : mode;
 	const fullPrompt = Boolean(mode === "initial" || mode === "replacement" || started !== "existing" || current.resolution_pending || (mode === "resume" && current.implementer_instruction_pending));
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", "implementer"),
+		{ attempt: current.attempts, review_round: (current.review_rounds ?? 0) + 1, role: "implementer" },
+		state.main_worktree,
+		state.run_id,
+		options.uuid,
+	);
 	await promptWorkerAgent(state, agent, implementerPrompt(state, issue, current, promptMode, fullPrompt), options);
 	if (task(state, issue.id).implementer_instruction_pending || task(state, issue.id).resolution_pending) {
 		state = await save(replaceTask(state, issue.id, {
@@ -211,9 +218,11 @@ export async function ensureReviewer(
 		: started !== "existing" || current.review_rounds === 1
 			? "full"
 			: "update";
-	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation"),
-		taskReviewId(state, issue.id, current),
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", "reviewer"),
+		{ attempt: current.attempts, review_round: positiveInteger(current.review_rounds, `Run Task ${issue.id} review round`), role: "reviewer", review_id: taskReviewId(state, issue.id, current) },
+		state.main_worktree,
+		state.run_id,
 		options.uuid,
 	);
 	await promptWorkerAgent(state, agent, reviewerPrompt(state, issue, current, promptMode), options);
@@ -300,7 +309,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: issue.id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation") } : {}),
+		action_ticket: actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", role),
 	});
 }
 

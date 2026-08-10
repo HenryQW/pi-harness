@@ -20,8 +20,16 @@ _Avoid_: Final issue, release task
 Auto DAG execution of exact frozen `issue.testing` text against verified clean commit, producing persisted command, commit SHA, exit code, and bounded stdout/stderr evidence before reviewer dispatch. POSIX host is required for exact `sh -c` execution and process-group cleanup. Durable launch intent and a separately bounded gate-host handshake bind process identity before command execution; host startup failure blocks without gate evidence. Launch-specific cancellation stops hosts transitioning during interrupted cleanup. Execution deadline starts when ready host is released and cannot exceed Node timer maximum; timeout and normal completion terminate remaining process-group members. Persisted process identity prevents interrupted recovery from signaling a reused PID. Cleanup restores original branch and commit, removes gate-created tracked, untracked, and ignored dirt, and restores pre-existing ignored resources from a private snapshot with deterministic recoverable staging. Final gate copies checkout-local ignored tools into a disposable child worktree so concurrent main-worktree edits and mutable dependencies remain isolated. Output overflow records failed evidence; Run State stores marked head/tail excerpts and SHA-256-bound paths to exact full captured streams. Reviewer may run extra checks but submits only verdict and findings; extra checks cannot replace gate.
 _Avoid_: Reviewer test, echoed command, suggested command
 
+**Worker Action Ticket**:
+Durable system-owned handoff containing event ID, attempt, review round, role, receipt path, and optional review ID. Worker tools accept intent only; adapter adds ticket metadata and Git HEAD.
+_Avoid_: Model correlation field, worker-supplied attempt, review token
+
+**Acceptance Receipt**:
+Durable lifecycle-owned accepted or rejected result for one action ticket. Delivery alone never reports success; retries reuse ticket identity and poll receipt. Stale tickets are rejected explicitly.
+_Avoid_: Sent message, transport success
+
 **Review Dispatch ID**:
-System-owned identity binding reviewer verdict to run, review kind, Local Issue, commit, attempt, and round. Orchestration writes it outside model prompt; worker extension attaches it outside reviewer-owned payload. Nonmatching stale or duplicated verdict is ignored.
+System-owned identity binding reviewer verdict to run, review kind, Local Issue, commit, attempt, and round. Orchestration writes it outside model prompt; worker extension attaches it outside reviewer-owned payload. Nonmatching stale or duplicated verdict is rejected.
 _Avoid_: Reviewer correlation field, model token, review result
 
 **Review Packet**:

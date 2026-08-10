@@ -102,6 +102,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 						status: blocked_role === "reviewer" ? "reviewing" : current.worktree ? "implementing" : "pending",
 						...((blocked_role || current.worktree) ? { activity_started_at: options.now?.() ?? new Date().toISOString() } : {}),
 						...(reviewerBlocked ? { review_rounds: reviewRound + 1 } : {}),
+						...(blocked_role === "implementer" ? { attempts: current.attempts + 1 } : {}),
 						resolution_pending: true,
 					}
 					: ["starting", "implementing", "reviewing"].includes(current.status)

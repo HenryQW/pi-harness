@@ -12,7 +12,7 @@ import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
-import { reviewId } from "../src/review-ticket.ts";
+import { eventReceiptPath, reviewId } from "../src/review-ticket.ts";
 import { runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -776,14 +776,23 @@ function event(
 	type: string,
 	payload: Record<string, unknown>,
 	review_id = "review-id",
+	metadata: { attempt?: number; review_round?: number; receipt_path?: string; commit?: string } = {},
 ): string {
+	const attempt = metadata.attempt ?? 1;
+	const review_round = metadata.review_round ?? 1;
+	const event_id = `${type}-${issueId}-${attempt}-${review_round}${metadata.commit ? `-${metadata.commit.slice(0, 12)}` : ""}`;
 	return JSON.stringify({
 		version: 1,
 		type,
 		run_id: RUN_ID,
 		issue_id: issueId,
 		role,
+		event_id,
+		attempt,
+		review_round,
+		receipt_path: metadata.receipt_path ?? "test-receipt",
 		...(type === "submit_review" ? { review_id } : {}),
+		...(type === "request_review" ? { commit: metadata.commit } : {}),
 		payload,
 	});
 }
@@ -802,24 +811,31 @@ function reviewEvent(
 		commit: task.commit!,
 		attempt: task.attempts,
 		review_round: task.review_rounds!,
-	}));
+	}), {
+		attempt: task.attempts,
+		review_round: task.review_rounds!,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `submit_review-${issueId}-${task.attempts}-${task.review_rounds}`),
+	});
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {
 	const task = state.tasks[issueId];
-	return event(issueId, "implementer", "request_review", {
-		commit,
+	const review_round = (task.review_rounds ?? 0) + 1;
+	return event(issueId, "implementer", "request_review", { summary: "finished" }, "review-id", {
 		attempt: task.attempts,
-		review_round: (task.review_rounds ?? 0) + 1,
+		review_round,
+		commit,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `request_review-${issueId}-${task.attempts}-${review_round}-${commit.slice(0, 12)}`),
 	});
 }
 
 function blockTaskEvent(state: RunState, issueId: string, role: "implementer" | "reviewer", reason: string): string {
 	const task = state.tasks[issueId];
-	return event(issueId, role, "block_task", {
-		reason,
+	const review_round = role === "implementer" ? (task.review_rounds ?? 0) + 1 : task.review_rounds!;
+	return event(issueId, role, "block_task", { reason }, "review-id", {
 		attempt: task.attempts,
-		review_round: role === "implementer" ? (task.review_rounds ?? 0) + 1 : task.review_rounds,
+		review_round,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `block_task-${issueId}-${task.attempts}-${review_round}`),
 	});
 }
 

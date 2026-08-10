@@ -5,7 +5,7 @@ import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAp
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
-import { reviewId, reviewTicketPath, writeReviewTicket, type ReviewKind } from "./review-ticket.ts";
+import { actionTicketPath, ensureActionTicket, reviewId, type ReviewKind } from "./review-ticket.ts";
 import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 import { ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerTabExists } from "./worker-host.ts";
@@ -212,14 +212,14 @@ async function requestFinalRepairReview(
 	config: ProjectConfig,
 	options: FinalRepairOptions,
 ): Promise<RunState> {
-	if (envelope.role !== "implementer") throw new Error("Only the final-gate repair implementer can request review");
+	if (envelope.type !== "request_review" || envelope.role !== "implementer") throw new Error("Only the final-gate repair implementer can request review");
 	const current = task(state, issue.id);
-	if (envelope.payload.attempt !== current.attempts || envelope.payload.review_round !== (current.review_rounds ?? 0) + 1) return state;
+	if (envelope.attempt !== current.attempts || envelope.review_round !== (current.review_rounds ?? 0) + 1) throw new Error("Final-gate repair request is stale");
 	const owner = repairOwner(state, current);
 	const commit = await verifyRepairCommit(
 		state,
 		issue,
-		nonEmptyString(envelope.payload.commit, "final-gate repair commit"),
+		nonEmptyString(envelope.commit, "final-gate repair commit"),
 		options,
 	);
 	if (Array.isArray(current.review_findings) && current.review_findings.length && current.commit === commit) {
@@ -279,6 +279,13 @@ async function ensureFinalRepairCoder(
 		: promptMode === "revision"
 			? "Address the reviewer findings by amending the sole repair commit, then request review again."
 			: "Implement the named final-gate repair in this fresh child worktree, commit exactly one change over the repair base, then request review.";
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle", "implementer"),
+		{ attempt: current.attempts, review_round: (current.review_rounds ?? 0) + 1, role: "implementer" },
+		state.main_worktree,
+		state.run_id,
+		options.uuid,
+	);
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_final_repair",
 		run_id: state.run_id,
@@ -345,9 +352,11 @@ async function ensureFinalRepairReviewer(
 		: started !== "existing" || current.review_rounds === 1
 			? "full"
 			: "update";
-	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle"),
-		lifecycleReviewId(state, issue, current, "final_repair"),
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle", "reviewer"),
+		{ attempt: current.attempts, review_round: positiveInteger(current.review_rounds, "final-gate repair review round"), role: "reviewer", review_id: lifecycleReviewId(state, issue, current, "final_repair") },
+		state.main_worktree,
+		state.run_id,
 		options.uuid,
 	);
 	await promptWorkerAgent(state, agent, reviewPrompt({
@@ -376,7 +385,7 @@ async function submitFinalRepairReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the final-gate repair reviewer can submit review");
 	const current = task(state, issue.id);
-	if (envelope.review_id !== lifecycleReviewId(state, issue, current, "final_repair")) return state;
+	if (envelope.review_id !== lifecycleReviewId(state, issue, current, "final_repair")) throw new Error("Final-gate repair review submission is stale");
 	const commit = nonEmptyString(current.commit, "final-gate repair commit");
 	const gate = requiredTaskGate(current, commit, "Final-gate repair");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-gate repair verdict");
@@ -587,7 +596,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle") } : {}),
+		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle", role),
 	});
 }
 
@@ -603,8 +612,8 @@ function lifecycleReviewId(state: RunState, issue: LocalIssue, current: RunTaskS
 }
 
 function matchesBlock(current: RunTaskState, envelope: WorkerEnvelope, implementer: boolean): boolean {
-	return envelope.payload.attempt === current.attempts
-		&& envelope.payload.review_round === (implementer ? (current.review_rounds ?? 0) + 1 : current.review_rounds);
+	return envelope.attempt === current.attempts
+		&& envelope.review_round === (implementer ? (current.review_rounds ?? 0) + 1 : current.review_rounds);
 }
 
 function repairWorktreePath(state: RunState, owner: string, attempt: number): string {

@@ -17,6 +17,7 @@ import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { PLANNING_TOOLS } from "../src/planning.ts";
 import { persistGateOutput } from "../src/review.ts";
+import { writeWorkerReceipt } from "../src/review-ticket.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
 import { workerAgentName } from "../src/worker-host.ts";
 import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
@@ -555,7 +556,8 @@ test("extensions separate public lifecycle tools and show active workers", async
 	const workerTemp = await mkdtemp(join(tmpdir(), "pi-auto-dag-worker-"));
 	t.after(async () => { await rm(workerTemp, { recursive: true, force: true }); });
 	const reviewTicket = join(workerTemp, "review-ticket.json");
-	await writeFile(reviewTicket, JSON.stringify({ review_id: "review-id" }));
+	const reviewReceipt = join(workerTemp, "review-receipt.json");
+	await writeFile(reviewTicket, JSON.stringify({ version: 1, event_id: "review-event", attempt: 1, review_round: 1, role: "reviewer", receipt_path: reviewReceipt, review_id: "review-id" }));
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
@@ -752,62 +754,60 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.ok(!(widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
 
 	const workerTools: Array<{ name: string; execute: Function }> = [];
-	let beforeWorkerTurn: (() => Promise<void>) | undefined;
 	createWorkerExtension({
-		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
+		runner: async (command) => {
+			if (command === "herdr") await writeWorkerReceipt(reviewReceipt, { event_id: "review-event", status: "accepted" });
+			return { code: 0, stdout: "", stderr: "" };
+		},
 		environment: {
 			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
 			PI_AUTO_DAG_WORKER_EVENTS: "submit_review,block_task",
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
-			PI_AUTO_DAG_REVIEW_TICKET: reviewTicket,
+			PI_AUTO_DAG_ACTION_TICKET: reviewTicket,
 		},
 	})({
-		on(event: string, handler: () => Promise<void>) { if (event === "before_agent_start") beforeWorkerTurn = handler; },
+		on() {},
 		registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); },
 	} as never);
-	assert.deepEqual(workerTools.map((tool) => tool.name), [
-		WORKER_TOOLS.submit_review,
-		WORKER_TOOLS.block_task,
-	]);
-	await beforeWorkerTurn!();
-	await writeFile(reviewTicket, JSON.stringify({ review_id: "later-review-id" }));
-	const workerResult = await workerTools[0].execute("call", { verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: { review_id: string; type: string }; terminate: boolean };
-	assert.equal(workerResult.details.review_id, "review-id");
-	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
-	assert.equal(workerResult.details.type, "submit_review");
+	assert.deepEqual(workerTools.map((tool) => tool.name), [WORKER_TOOLS.submit_review, WORKER_TOOLS.block_task]);
+	const workerResult = await workerTools[0].execute("call", { verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: { status: string }; terminate: boolean };
+	assert.equal(workerResult.details.status, "accepted");
+	assert.equal(workerResult.content[0].text, "Accepted submit_review for core.");
 	assert.equal(workerResult.terminate, true);
 
 	const healthReviewTicket = join(workerTemp, "health-review-ticket.json");
+	const healthReceipt = join(workerTemp, "health-receipt.json");
+	await writeFile(healthReviewTicket, JSON.stringify({ version: 1, event_id: "health-event", attempt: 1, review_round: 1, role: "reviewer", receipt_path: healthReceipt, review_id: "health-review-id" }));
 	const healthTools: Array<{ name: string; execute: Function }> = [];
-	let beforeHealthTurn: (() => Promise<void>) | undefined;
 	createWorkerExtension({
-		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
+		runner: async (command) => {
+			if (command === "herdr") await writeWorkerReceipt(healthReceipt, { event_id: "health-event", status: "accepted" });
+			return { code: 0, stdout: "", stderr: "" };
+		},
 		environment: {
 			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
 			PI_AUTO_DAG_WORKER_EVENTS: "submit_health,submit_review,block_task",
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
-			PI_AUTO_DAG_REVIEW_TICKET: healthReviewTicket,
+			PI_AUTO_DAG_ACTION_TICKET: healthReviewTicket,
 		},
-	})({
-		on(event: string, handler: () => Promise<void>) { if (event === "before_agent_start") beforeHealthTurn = handler; },
-		registerTool(tool: { name: string; execute: Function }) { healthTools.push(tool); },
-	} as never);
-	await beforeHealthTurn!();
-	await writeFile(healthReviewTicket, JSON.stringify({ review_id: "health-review-id" }));
-	await beforeHealthTurn!();
-	const healthReview = await healthTools.find((tool) => tool.name === WORKER_TOOLS.submit_review)!.execute("call", { verdict: "approved", findings: [] }) as { details: { review_id: string } };
-	assert.equal(healthReview.details.review_id, "health-review-id");
+	})({ on() {}, registerTool(tool: { name: string; execute: Function }) { healthTools.push(tool); } } as never);
+	const healthReview = await healthTools.find((tool) => tool.name === WORKER_TOOLS.submit_review)!.execute("call", { verdict: "approved", findings: [] }) as { details: { status: string } };
+	assert.equal(healthReview.details.status, "accepted");
 
 	const fullCommit = "310a75c7289830d9d3973263488de1140438f6e9";
 	const requestCalls: string[][] = [];
-	const requestTools: Array<{ prepareArguments: Function; execute: Function }> = [];
+	const requestTicket = join(workerTemp, "request-ticket.json");
+	const requestReceipt = join(workerTemp, "request-receipt.json");
+	await writeFile(requestTicket, JSON.stringify({ version: 1, event_id: "request-event", attempt: 1, review_round: 1, role: "implementer", receipt_path: requestReceipt }));
+	const requestTools: Array<{ execute: Function }> = [];
 	createWorkerExtension({
 		runner: async (command, args) => {
 			requestCalls.push([command, ...args]);
+			if (command === "herdr") await writeWorkerReceipt(requestReceipt, { event_id: "request-event", status: "accepted" });
 			return { code: 0, stdout: command === "git" ? `${fullCommit}\n` : "", stderr: "" };
 		},
 		environment: {
@@ -816,12 +816,11 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+			PI_AUTO_DAG_ACTION_TICKET: requestTicket,
 		},
-	})({ registerTool(tool: { prepareArguments: Function; execute: Function }) { requestTools.push(tool); } } as never);
-	const prepared = requestTools[0].prepareArguments({ commit: "wrong", attempt: 1, review_round: 1 });
-	assert.deepEqual(prepared, { attempt: 1, review_round: 1 });
-	const requestResult = await requestTools[0].execute("call", prepared) as { details: { payload: { commit: string } } };
-	assert.equal(requestResult.details.payload.commit, fullCommit);
+	})({ on() {}, registerTool(tool: { execute: Function }) { requestTools.push(tool); } } as never);
+	const requestResult = await requestTools[0].execute("call", { summary: "done", commit: "wrong", attempt: 999, review_round: 999 }) as { details: { status: string } };
+	assert.equal(requestResult.details.status, "accepted");
 	assert.deepEqual(requestCalls[0], ["git", "rev-parse", "HEAD"]);
 
 	const inertWorkerTools: Array<{ name: string }> = [];
@@ -835,6 +834,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
+		action_ticket: requestTicket,
 	});
 	assert.deepEqual(launch.args, [
 		"--offline", "--no-skills", "--skill", "/tmp/coder-skills", "--skill", "/Users/test/.pi/shared-skills/.agents/skills",
@@ -848,7 +848,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
-		review_ticket: reviewTicket,
+		action_ticket: reviewTicket,
 	});
 	assert.equal(reviewerLaunch.args.at(-1), "read,bash,web_search,auto_dag_submit_review,auto_dag_block_task");
 	const healthReviewerLaunch = createWorkerLaunch({
@@ -858,10 +858,13 @@ test("extensions separate public lifecycle tools and show active workers", async
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
-		review_ticket: reviewTicket,
+		action_ticket: reviewTicket,
 	});
 	assert.match(healthReviewerLaunch.args.at(-1)!, /auto_dag_submit_health/);
 
+	const directTicket = join(workerTemp, "direct-ticket.json");
+	const directReceipt = join(workerTemp, "direct-receipt.json");
+	await writeFile(directTicket, JSON.stringify({ version: 1, event_id: "direct-event", attempt: 1, review_round: 1, role: "reviewer", receipt_path: directReceipt, review_id: "direct-review-id" }));
 	const calls: unknown[][] = [];
 	const envelope = await sendWorkerEnvelope(
 		workerEnvironment({
@@ -870,16 +873,16 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
-			PI_AUTO_DAG_REVIEW_TICKET: reviewTicket,
+			PI_AUTO_DAG_ACTION_TICKET: directTicket,
 		}),
 		"submit_review",
 		{ verdict: "approved", findings: [] },
 		async (...args) => {
 			calls.push(args);
+			if (args[0] === "herdr") await writeWorkerReceipt(directReceipt, { event_id: "direct-event", status: "accepted" });
 			return { code: 0, stdout: "", stderr: "" };
 		},
 		"/tmp",
-		"direct-review-id",
 	);
 	assert.equal(envelope.type, "submit_review");
 	assert.equal(envelope.review_id, "direct-review-id");
@@ -937,7 +940,12 @@ test("orchestrator routes worker envelopes without an LLM turn and keeps tool te
 		run_id: RUN_ID,
 		issue_id: "core",
 		role: "implementer",
-		payload: { commit: "abc123", attempt: 1, review_round: 1 },
+		event_id: "event-core",
+		attempt: 1,
+		review_round: 1,
+		receipt_path: "/tmp/pi-auto-dag/.context/pi-auto-dag/runs/11111111-1111-4111-8111-111111111111/event-receipts/event-core.json",
+		commit: "abc123",
+		payload: {},
 	};
 	assert.deepEqual(await inputHandler({ text: JSON.stringify(envelope) }, ctx), { action: "handled" });
 	assert.deepEqual(received, envelope);
