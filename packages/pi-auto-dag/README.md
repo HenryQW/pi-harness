@@ -15,6 +15,8 @@ Pi extension for planning and running a Delivery Graph with Pi and Herdr.
 
 ## Setup
 
+Auto DAG requires a POSIX host for exact `sh -c` gate execution and process-group cleanup. Windows hosts fail before gate execution.
+
 Load orchestrator extension only in main integration profile:
 
 ```json
@@ -190,7 +192,7 @@ For each task:
 1. Create a child worktree at `.<repo>-auto-dag/<run-id>/<issue-id>`.
 2. Start one implementer.
 3. Require one commit over the wave base.
-4. Verify that commit and clean worktree, persist launch intent, then release a gate host to execute frozen `testing` text unchanged through `sh -c` with configured deadline and process-group cleanup. Active process identity is persisted before command execution, so resume or abort signals only the recorded gate; normal completion also reaps background descendants.
+4. Verify that commit and clean worktree, persist launch intent, then release a ready gate host to execute frozen `testing` text unchanged through `sh -c` with configured deadline and process-group cleanup. Host startup failure blocks without recording gate evidence. Active process identity is persisted before command execution, so resume or abort signals only the recorded gate; normal completion also reaps background descendants.
 5. Save command, verified commit SHA, exit code, and bounded stdout/stderr evidence, then restore original branch and commit, remove gate-created tracked, untracked, and ignored dirt, and restore pre-existing ignored resources from a private snapshot. Output overflow becomes failed evidence, with exact captured streams retained in SHA-256-bound files instead of Run State.
 6. Start task-owned reviewer with one canonical Review Packet. Gate output uses same bounded evidence and read-on-demand full-output references.
 

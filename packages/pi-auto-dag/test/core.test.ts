@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -83,6 +83,22 @@ test("command timeout terminates descendant processes", async (t) => {
 	assert.equal(result.code, 124);
 	await new Promise((resolve) => setTimeout(resolve, 250));
 	await assert.rejects(access(marker), /ENOENT/);
+});
+
+test("required gates reject Windows before command execution", async (t) => {
+	const platform = process.platform;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	t.after(() => { Object.defineProperty(process, "platform", { value: platform }); });
+	let executed = false;
+
+	await assert.rejects(
+		runRequiredGate(async () => {
+			executed = true;
+			return { code: 0, stdout: "", stderr: "" };
+		}, "echo unsafe", "commit", process.cwd()),
+		/Required gates support only POSIX hosts/,
+	);
+	assert.equal(executed, false);
 });
 
 test("successful commands reap background process-group members", async (t) => {
@@ -174,6 +190,25 @@ test("required gate records recoverable intent before command execution", async 
 	);
 
 	assert.equal(execution.exit_code, 0);
+});
+
+test("required gate rejects a host that exits before readiness", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX host process only");
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const failedHost = join(project.root, "failed-host");
+	await writeFile(failedHost, "#!/bin/sh\nexit 42\n");
+	await chmod(failedHost, 0o700);
+	const execPath = process.execPath;
+	process.execPath = failedHost;
+	t.after(() => { process.execPath = execPath; });
+
+	await assert.rejects(
+		runRequiredGate(runCommand, "echo must-not-run", commit, project.root, 10_000, processPath),
+		/Required gate host exited before acknowledging launch intent/,
+	);
+	await assert.rejects(access(processPath), /ENOENT/);
 });
 
 test("required gate restores original branch without moving gate-selected branch", async (t) => {

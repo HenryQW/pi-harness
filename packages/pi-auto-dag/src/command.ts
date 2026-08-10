@@ -240,6 +240,7 @@ export async function runRequiredGate(
 	timeoutMs?: number,
 	processPath?: string,
 ): Promise<RequiredGateExecution> {
+	if (process.platform === "win32") throw new Error("Required gates support only POSIX hosts");
 	if (processPath) await reconcileRequiredGateProcess(runner, processPath);
 	const temporarySnapshotRoot = processPath ? undefined : await mkdtemp(join(tmpdir(), "pi-auto-dag-gate-"));
 	const ignoredSnapshotPath = processPath ? `${processPath}.ignored` : join(temporarySnapshotRoot!, "ignored");
@@ -323,14 +324,14 @@ async function waitForGateHost(
 	launchId: string,
 	pid: number,
 	child: { exitCode: number | null; signalCode: NodeJS.Signals | null },
-): Promise<boolean> {
+): Promise<void> {
 	for (let attempt = 0; attempt < 2_000; attempt += 1) {
 		const record = await readGateProcess(path);
 		if (record?.phase === "ready") {
 			if (record.launch_id !== launchId || record.pid !== pid) throw new Error("Required gate host identity does not match launch intent");
-			return true;
+			return;
 		}
-		if (child.exitCode !== null || child.signalCode !== null) return false;
+		if (child.exitCode !== null || child.signalCode !== null) throw new Error("Required gate host exited before acknowledging launch intent");
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	throw new Error("Required gate host did not acknowledge launch intent");
