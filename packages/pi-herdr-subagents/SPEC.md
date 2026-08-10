@@ -25,7 +25,7 @@ Reject delegation when:
 
 - Pi does not run under Herdr (`HERDR_ENV=1` plus caller workspace/pane identity);
 - Main has no active model;
-- `task` is blank;
+- `task` is blank or contains a NUL byte;
 - live owned Workers equal or exceed Worker Limit.
 
 Before enforcing Worker Limit, query tracked Herdr tabs and prune missing tabs. Do not queue work or poll in background.

@@ -27,6 +27,7 @@ type OwnedWorker = {
 };
 
 type HerdrLocation = { workspace: string; pane: string };
+type HerdrTab = { id: string; label?: string };
 
 const object = (value: unknown, label: string): Record<string, unknown> => {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid.`);
@@ -141,17 +142,23 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	let limit = DEFAULT_LIMIT;
 	let cachedMainName: string | undefined;
 
-	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
+	const listTabs = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<HerdrTab[]> => {
 		const result = resultOf(await runHerdr(pi, ["tab", "list", "--workspace", where.workspace], ctx, signal), "Herdr tab list");
 		if (result.type !== "tab_list" || !Array.isArray(result.tabs)) throw new Error("Herdr tab list is invalid.");
-		const present = new Set(result.tabs.flatMap((candidate) => {
+		return result.tabs.flatMap((candidate) => {
 			if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
-			const tab = candidate as { tab_id?: unknown; workspace_id?: unknown };
-			return typeof tab.tab_id === "string" && tab.workspace_id === where.workspace ? [tab.tab_id] : [];
-		}));
+			const tab = candidate as { tab_id?: unknown; workspace_id?: unknown; label?: unknown };
+			if (typeof tab.tab_id !== "string" || tab.workspace_id !== where.workspace) return [];
+			return [{ id: tab.tab_id, label: typeof tab.label === "string" ? tab.label : undefined }];
+		});
+	};
+
+	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<Set<string>> => {
+		const present = new Set((await listTabs(where, ctx, signal)).map((tab) => tab.id));
 		for (const [taskId, worker] of workers) {
 			if (worker.tabId && !present.has(worker.tabId)) workers.delete(taskId);
 		}
+		return present;
 	};
 
 	const ensureMainName = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<string> => {
@@ -232,9 +239,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
 			const task = params.task;
 			if (!task.trim()) throw new Error("delegate_task task must not be blank.");
+			if (task.includes("\0")) throw new Error("delegate_task task must not contain NUL bytes.");
 			if (!ctx.model) throw new Error("delegate_task requires an active Pi model.");
 			const where = location();
-			await reconcile(where, ctx, signal);
+			const existingTabs = await reconcile(where, ctx, signal);
 			if (workers.size >= limit) throw new Error(`Worker Limit reached (${limit}); no task was queued.`);
 
 			const taskId = randomUUID();
@@ -242,15 +250,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			await chmod(tempDir, 0o700);
 			const resultPath = join(tempDir, "result.json");
 			const worker: OwnedWorker = { taskId, task, workerName: workerName(taskId), resultPath, tempDir };
+			const label = workerLabel(task, taskId);
+			let tabCreationAttempted = false;
 			workers.set(taskId, worker);
 			try {
 				const createdAt = new Date().toISOString();
 				await writeFile(resultPath, `${JSON.stringify({ version: PROTOCOL_VERSION, taskId, state: "pending", task, createdAt })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
 				await chmod(resultPath, 0o600);
 				const main = await ensureMainName(where, ctx, signal);
+				tabCreationAttempted = true;
 				const created = resultOf(await runHerdr(pi, [
 					"tab", "create", "--workspace", where.workspace, "--cwd", ctx.cwd,
-					"--label", workerLabel(task, taskId), "--no-focus",
+					"--label", label, "--no-focus",
 					"--env", `PI_HERDR_SUBAGENT_PROTOCOL=${PROTOCOL_VERSION}`,
 					"--env", `PI_HERDR_SUBAGENT_TASK_ID=${taskId}`,
 					"--env", `PI_HERDR_SUBAGENT_RESULT_PATH=${resultPath}`,
@@ -277,7 +288,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				};
 			} catch (error) {
 				workers.delete(taskId);
-				if (worker.tabId) await closeTab(pi, worker.tabId, ctx).catch(() => undefined);
+				if (worker.tabId) {
+					await closeTab(pi, worker.tabId, ctx).catch(() => undefined);
+				} else if (tabCreationAttempted) {
+					const tabs = await listTabs(where, ctx).catch(() => []);
+					await Promise.all(tabs.flatMap((tab) => !existingTabs.has(tab.id) && tab.label === label
+						? [closeTab(pi, tab.id, ctx).catch(() => undefined)]
+						: []));
+				}
 				await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 				throw error;
 			}

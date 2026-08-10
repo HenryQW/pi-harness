@@ -172,6 +172,6 @@ export default async function workerExtension(pi: ExtensionAPI): Promise<void> {
 			createdAt: protocol.createdAt,
 			finishedAt: new Date().toISOString(),
 		};
-		await complete(terminal, ctx, ctx.signal).catch(() => undefined);
+		await complete(terminal, ctx).catch(() => undefined);
 	});
 }

@@ -47,6 +47,7 @@ function mainHarness(options: {
 	thinkingLevel?: string;
 	trusted?: boolean;
 	malformedCreatedIdentity?: boolean;
+	tabCreateFailureAfterCreation?: boolean;
 	mainName?: string | null;
 } = {}) {
 	const handlers = new Map<string, Handler>();
@@ -57,7 +58,8 @@ function mainHarness(options: {
 	const closed: string[] = [];
 	let limitInput = options.limitInput;
 	let mainName: string | null = options.mainName ?? null;
-	let tabPresent = true;
+	let tabPresent = !options.tabCreateFailureAfterCreation;
+	let tabLabel = "existing";
 	let tabId = "tab-1";
 	let paneId = "pane-1";
 	let workerName = "";
@@ -79,8 +81,9 @@ function mainHarness(options: {
 		registerCommand(name: string, command: Command) { commands.set(name, command); },
 		exec: async (_command: string, args: string[]) => {
 			calls.push(args);
+			if (args.some((value) => value.includes("\0"))) throw new TypeError("spawn arguments cannot contain NUL bytes");
 			if (args[0] === "tab" && args[1] === "list") {
-				return success(JSON.stringify({ result: { type: "tab_list", tabs: tabPresent && (options.tabs?.() ?? true) ? [{ tab_id: tabId, workspace_id: "workspace-1" }] : [] } }));
+				return success(JSON.stringify({ result: { type: "tab_list", tabs: tabPresent && (options.tabs?.() ?? true) ? [{ tab_id: tabId, workspace_id: "workspace-1", label: tabLabel }] : [] } }));
 			}
 			if (args[0] === "agent" && args[1] === "get") {
 				return success(JSON.stringify({ result: { type: "agent_info", agent: { name: mainName, pane_id: "main-pane", workspace_id: "workspace-1" } } }));
@@ -90,6 +93,9 @@ function mainHarness(options: {
 				return success(JSON.stringify({ result: { type: "agent_info", agent: { name: mainName, pane_id: "main-pane", workspace_id: "workspace-1" } } }));
 			}
 			if (args[0] === "tab" && args[1] === "create") {
+				tabPresent = true;
+				tabLabel = args[args.indexOf("--label") + 1];
+				if (options.tabCreateFailureAfterCreation) return { stdout: "", stderr: "", code: 0, killed: true };
 				return success(JSON.stringify({ result: { type: "tab_created", tab: { tab_id: tabId, workspace_id: "workspace-1", focused: false, pane_count: 1 }, root_pane: { pane_id: paneId, tab_id: tabId, workspace_id: options.malformedCreatedIdentity ? "wrong-workspace" : "workspace-1", focused: false, cwd } } }));
 			}
 			if (args[0] === "agent" && args[1] === "start") {
@@ -124,8 +130,9 @@ function workerHarness(options: { branch?: any[]; wait?: () => Promise<any>; pro
 	const api = {
 		on(event: string, handler: Handler) { handlers.set(event, handler); },
 		registerTool(tool: Tool & { name: string }) { tools.set(tool.name, tool); },
-		exec: async (_command: string, args: string[]) => {
+		exec: async (_command: string, args: string[], execOptions?: { signal?: AbortSignal }) => {
 			calls.push(args);
+			if (execOptions?.signal?.aborted) return { stdout: "", stderr: "", code: 0, killed: true };
 			if (args[0] === "agent" && args[1] === "wait") {
 				return options.wait ? await options.wait() : success(JSON.stringify({ result: { type: "agent_info", agent: { agent_status: "idle" } } }));
 			}
@@ -242,6 +249,19 @@ test("valid tab ID rolls back when later created identity is malformed", async (
 	await rm(agentDir, { recursive: true, force: true });
 });
 
+test("indeterminate tab creation closes newly provisioned tab", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ tabCreateFailureAfterCreation: true });
+		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "lost creation response" }, undefined, undefined, app.ctx), /Herdr tab create failed/);
+		assert.deepEqual(app.closed, ["tab-1"]);
+		assert.equal(app.calls.filter((args) => args[0] === "tab" && args[1] === "list").length, 2);
+		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
+		await assert.rejects(readFile(path));
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
 test("missing and invalid config use default Worker Limit", async () => {
 	const invalid = ["{broken", "[]", "{}", "{\"maxConcurrentWorkers\":0}", "{\"maxConcurrentWorkers\":-1}", "{\"maxConcurrentWorkers\":1.5}", "{\"maxConcurrentWorkers\":\"10\"}"];
 	const cases = [{ contents: undefined, warning: false }, ...invalid.map((contents) => ({ contents, warning: true }))];
@@ -349,6 +369,8 @@ test("Main rejects preconditions, Worker Limit, stale notices, then reconciles c
 		await assert.rejects(noModel.tools.get("delegate_task")!.execute("x", { task: "task" }, undefined, undefined, noModel.ctx), /active Pi model/);
 		const app = mainHarness({ limitInput: "1" });
 		await assert.rejects(app.tools.get("delegate_task")!.execute("x", { task: "  " }, undefined, undefined, app.ctx), /blank/);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("x", { task: "bad\0task" }, undefined, undefined, app.ctx), /delegate_task task must not contain NUL bytes/);
+		assert.equal(app.calls.length, 0);
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 		const first = await app.tools.get("delegate_task")!.execute("x", { task: "first" }, undefined, undefined, app.ctx);
 		await assert.rejects(app.tools.get("delegate_task")!.execute("y", { task: "second" }, undefined, undefined, app.ctx), /Worker Limit reached/);
@@ -421,6 +443,23 @@ test("Worker sole finish atomically stores Result, waits, then sends one notice"
 		assert.equal(stored?.state, "finished");
 		assert.equal((await stat(pending.path)).mode & 0o777, 0o600);
 		assert.deepEqual(parseCompletionNotice(app.calls[1][3]), { version: 1, taskId: pending.taskId, resultPath: pending.path, excerpt: "complete" });
+	});
+	await rm(pending.dir, { recursive: true, force: true });
+});
+
+test("Worker notifies Main after aborted settlement without reusing aborted signal", async () => {
+	const pending = await pendingFile();
+	await withEnvironment({
+		PI_HERDR_SUBAGENT_PROTOCOL: "1", PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
+		PI_HERDR_SUBAGENT_RESULT_PATH: pending.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef",
+	}, async () => {
+		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", stopReason: "aborted", content: [] } }] });
+		await workerExtension(app.api);
+		(app.ctx as any).signal = AbortSignal.abort();
+		await app.handlers.get("agent_settled")?.({}, app.ctx);
+		assert.deepEqual(app.calls.map((args) => args.slice(0, 2)), [["agent", "wait"], ["agent", "prompt"]]);
+		const stored = parseTerminalResult(JSON.parse(await readFile(pending.path, "utf8")));
+		assert.deepEqual(stored?.error, { stopReason: "aborted", message: "aborted" });
 	});
 	await rm(pending.dir, { recursive: true, force: true });
 });
