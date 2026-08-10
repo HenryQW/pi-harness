@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
-import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RequiredGateEvidence, RunState, WorkerEnvelope } from "./model.ts";
+import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RequiredGateEvidence, RunState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
@@ -162,6 +162,7 @@ async function ensureHealthReviewer(
 				commit,
 				nonEmptyString(health.worktree, "PR-health repair worktree"),
 				config.required_gate_timeout_ms,
+				requiredGateProcessPath(state.main_worktree, state.run_id),
 			);
 			evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
 			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
@@ -224,7 +225,7 @@ async function ensureHealthReviewer(
 	}
 	if (health.status === "reviewing") {
 		await writeReviewTicket(
-			reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+			reviewTicketPath(state.main_worktree, state.run_id, issue.id, "pr_health"),
 			healthReviewId(state, health, issue.id),
 			options.uuid,
 		);
@@ -406,7 +407,7 @@ async function requestHealthRepairReview(
 
 async function submitHealthRepairReview(
 	state: RunState,
-	envelope: WorkerEnvelope,
+	envelope: SubmitReviewEnvelope,
 	config: ProjectConfig,
 	options: PrHealthOptions,
 ): Promise<RunState> {
@@ -724,7 +725,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id) } : {}),
+		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "pr_health") } : {}),
 	});
 }
 

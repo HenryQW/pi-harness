@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, restoreCleanCommit, runRequiredGate, type CommandRunner } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
-import type { LocalIssue, ProjectConfig, PullRequestIdentity, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
+import type { LocalIssue, ProjectConfig, PullRequestIdentity, RequiredGateEvidence, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket, type ReviewKind } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
@@ -249,7 +249,7 @@ async function ensureFinalReviewer(
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, "final-check commit");
 	if (commit !== state.integration_head) throw new Error("Final-check commit does not match the integration HEAD");
-	state = await ensureRecordedGate(state, issue, commit, state.main_worktree, config.required_gate_timeout_ms, options);
+	state = await ensureFinalGate(state, issue, commit, config.required_gate_timeout_ms, options);
 	current = task(state, issue.id);
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
 	const launch = workerLaunch(state, issue, config, "reviewer");
@@ -284,7 +284,7 @@ async function ensureFinalReviewer(
 			? "full"
 			: "update";
 	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle"),
 		lifecycleReviewId(state, issue, current, "final_check"),
 		options.uuid,
 	);
@@ -305,7 +305,7 @@ async function ensureFinalReviewer(
 async function submitFinalReview(
 	state: RunState,
 	issue: LocalIssue,
-	envelope: WorkerEnvelope,
+	envelope: SubmitReviewEnvelope,
 	options: PrLifecycleOptions,
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the final-check reviewer can submit final review");
@@ -493,7 +493,7 @@ async function ensureFinalRepairReviewer(
 			? "full"
 			: "update";
 	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle"),
 		lifecycleReviewId(state, issue, current, "final_repair"),
 		options.uuid,
 	);
@@ -517,7 +517,7 @@ async function ensureFinalRepairReviewer(
 async function submitFinalRepairReview(
 	state: RunState,
 	issue: LocalIssue,
-	envelope: WorkerEnvelope,
+	envelope: SubmitReviewEnvelope,
 	config: ProjectConfig,
 	options: PrLifecycleOptions,
 ): Promise<RunState> {
@@ -803,7 +803,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id) } : {}),
+		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle") } : {}),
 	});
 }
 
@@ -835,6 +835,36 @@ function finalReviewerLabel(state: RunState, attempt: number): string {
 	return `auto-dag:${state.run_id}:final-check:${attempt}:reviewer`;
 }
 
+async function ensureFinalGate(
+	state: RunState,
+	issue: LocalIssue,
+	commit: string,
+	timeoutMs: number,
+	options: PrLifecycleOptions,
+): Promise<RunState> {
+	const worktree = finalGateWorktreePath(state);
+	const branch = finalGateBranch(state);
+	try {
+		if (!recordedGateEvidence(task(state, issue.id), commit)) {
+			await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, commit, "Final gate");
+			await restoreCleanCommit(options.runner, commit, worktree);
+			state = await ensureRecordedGate(state, issue, commit, worktree, timeoutMs, options);
+		}
+	} finally {
+		await retireChildWorktree(options.runner, state.main_worktree, worktree, branch, "Final gate");
+		await deleteExpectedBranch(options.runner, state.main_worktree, branch, commit, "Final gate");
+	}
+	return state;
+}
+
+function finalGateWorktreePath(state: RunState): string {
+	return join(dirname(resolve(state.main_worktree)), `.${basename(state.main_worktree)}-auto-dag`, state.run_id, "final-gate");
+}
+
+function finalGateBranch(state: RunState): string {
+	return `pi-auto-dag/${state.run_id}/final-gate`;
+}
+
 async function ensureRecordedGate(
 	state: RunState,
 	issue: LocalIssue,
@@ -846,7 +876,14 @@ async function ensureRecordedGate(
 	const current = task(state, issue.id);
 	let evidence = recordedGateEvidence(current, commit);
 	if (!evidence) {
-		const execution = await runRequiredGate(options.runner, issue.testing, commit, cwd, timeoutMs);
+		const execution = await runRequiredGate(
+			options.runner,
+			issue.testing,
+			commit,
+			cwd,
+			timeoutMs,
+			requiredGateProcessPath(state.main_worktree, state.run_id),
+		);
 		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
 		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
 	}

@@ -1,5 +1,5 @@
 export const CONFIG_VERSION = 2;
-export const RUN_STATE_VERSION = 1;
+export const RUN_STATE_VERSION = 2;
 export const PROFILE_RESOLUTION_VERSION = 1;
 export const DEFAULT_MAX_PARALLEL_TASKS = 5;
 export const DEFAULT_MAX_REVIEW_ROUNDS = 5;
@@ -237,13 +237,22 @@ export interface RunState {
 	health_fast_forward_intent?: HealthFastForwardIntent;
 }
 
-export interface WorkerEnvelope {
+interface WorkerEnvelopeBase {
 	version: 1;
-	type: "request_review" | "submit_review" | "submit_health" | "block_task";
 	run_id: string;
 	issue_id: string;
-	role: "implementer" | "reviewer";
-	/** System-owned review dispatch identity; never supplied by reviewer model. */
-	review_id?: string;
 	payload: Record<string, unknown>;
 }
+
+export interface SubmitReviewEnvelope extends WorkerEnvelopeBase {
+	type: "submit_review";
+	role: "reviewer";
+	/** System-owned review dispatch identity; never supplied by reviewer model. */
+	review_id: string;
+}
+
+export type WorkerEnvelope = SubmitReviewEnvelope | (WorkerEnvelopeBase & {
+	type: "request_review" | "submit_health" | "block_task";
+	role: "implementer" | "reviewer";
+	review_id?: never;
+});

@@ -112,19 +112,20 @@ export async function sendWorkerEnvelope(
 	payload: Record<string, unknown>,
 	runner: CommandRunner = runCommand,
 	cwd = process.cwd(),
+	reviewId?: string,
 ): Promise<WorkerEnvelope> {
 	if (!worker.events.includes(type)) {
 		throw new Error(`${worker.role} worker cannot send ${type}`);
 	}
-	const envelope: WorkerEnvelope = {
-		version: 1,
-		type,
+	const base = {
+		version: 1 as const,
 		run_id: worker.run_id,
 		issue_id: worker.issue_id,
-		role: worker.role,
-		...(type === "submit_review" ? { review_id: await readReviewTicket(nonEmptyString(worker.review_ticket, "review ticket path")) } : {}),
 		payload,
 	};
+	const envelope: WorkerEnvelope = type === "submit_review"
+		? { ...base, type, role: "reviewer", review_id: nonEmptyString(reviewId, "captured review_id") }
+		: { ...base, type, role: worker.role };
 	await commandOutput(runner, "herdr", ["agent", "prompt", worker.main_pane, JSON.stringify(envelope)], cwd);
 	return envelope;
 }
@@ -153,7 +154,13 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 		const worker = workerEnvironment(environment);
 		const runner = options.runner ?? runCommand;
 		const cwd = options.cwd ?? process.cwd();
-		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd);
+		let capturedReviewId: string | undefined;
+		if (worker.events.includes("submit_review")) {
+			pi.on("before_agent_start", async () => {
+				capturedReviewId = await readReviewTicket(nonEmptyString(worker.review_ticket, "review ticket path"));
+			});
+		}
+		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd, () => capturedReviewId);
 	};
 }
 
@@ -178,6 +185,7 @@ function registerWorkerTool(
 	type: WorkerEvent,
 	runner: CommandRunner,
 	cwd: string,
+	capturedReviewId: () => string | undefined,
 ): void {
 	const definition = eventDefinition(type);
 	pi.registerTool(defineTool({
@@ -193,7 +201,7 @@ function registerWorkerTool(
 		async execute(_toolCallId, params) {
 			const payload = definition.payload(params as Record<string, unknown>);
 			if (type === "request_review") payload.commit = await commandOutput(runner, "git", ["rev-parse", "HEAD"], cwd);
-			const envelope = await sendWorkerEnvelope(worker, type, payload, runner, cwd);
+			const envelope = await sendWorkerEnvelope(worker, type, payload, runner, cwd, capturedReviewId());
 			return { content: [{ type: "text", text: `Sent ${type} for ${worker.issue_id}.` }], details: envelope, terminate: true };
 		},
 	}));

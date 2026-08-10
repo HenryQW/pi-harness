@@ -36,6 +36,27 @@ test("the frozen final check opens one exact integration PR and cleans successfu
 	assert.doesNotMatch(gh.pr?.body ?? "", /close[sd]? #/i);
 	assert.equal(herdr.tabs.size, 0);
 	assert.equal(gh.count("pr create"), 1);
+	const finalGate = herdr.calls.find((call) => call.command === "sh" && call.args[1] === "npm test -- final-check");
+	assert.match(finalGate?.cwd ?? "", /\/final-gate$/);
+	assert.notEqual(finalGate?.cwd, project.root);
+	await assert.rejects(readFile(finalGate!.cwd!, "utf8"), /ENOENT/);
+});
+
+test("final gate cannot erase changes created concurrently in main worktree", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const base = combinedRunner(herdr, fakeGh(project.root));
+	const runner: CommandRunner = async (command, args, options) => {
+		if (command === "sh" && args[1] === "npm test -- final-check") {
+			await writeFile(join(project.root, "user-during-final-gate.txt"), "keep\n");
+		}
+		return await base(command, args, options);
+	};
+
+	const state = await advanceToFinalReview(project.root, makeLifecycle(runner));
+
+	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(await readFile(join(project.root, "user-during-final-gate.txt"), "utf8"), "keep\n");
 });
 
 test("health refuses a retained historical run while another run is active without touching it", async (t) => {

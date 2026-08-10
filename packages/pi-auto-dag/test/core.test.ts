@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
-import { runCommand } from "../src/command.ts";
+import { reconcileRequiredGateProcess, runCommand } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../src/config.ts";
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
@@ -82,6 +82,36 @@ test("command timeout terminates descendant processes", async (t) => {
 	await assert.rejects(access(marker), /ENOENT/);
 });
 
+test("interrupted required gate process is terminated and its Git dirt is restored", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const script = `const fs=require("node:fs");fs.writeFileSync(".gitignore","changed\\n");fs.writeFileSync("gate-output.txt","generated\\n");setInterval(()=>{},1000)`;
+	const running = runCommand(process.execPath, ["-e", script], {
+		cwd: project.root,
+		timeoutMs: 10_000,
+		gateProcess: { path: processPath, command: "test gate", commit },
+	});
+	for (let index = 0; index < 100; index += 1) {
+		try {
+			await access(join(project.root, "gate-output.txt"));
+			break;
+		} catch {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+	}
+	assert.equal(JSON.parse(await readFile(processPath, "utf8")).commit, commit);
+
+	await reconcileRequiredGateProcess(runCommand, processPath, async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+	const result = await running;
+
+	assert.notEqual(result.code, 0);
+	await assert.rejects(access(processPath), /ENOENT/);
+	await assert.rejects(access(join(project.root, "gate-output.txt")), /ENOENT/);
+	assert.equal(await git(project.root, "status", "--porcelain"), "");
+});
+
 test("strict config and local graph validation derive deterministic dependencies", () => {
 	const config = parseProjectConfig(testProfileConfig("/tmp"));
 	assert.equal(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
@@ -152,6 +182,7 @@ test("persisted state rejects obsolete and malformed durable values", () => {
 		workspace_id: "main-workspace",
 	});
 
+	assert.throws(() => parseRunState({ ...state, version: 1 }), /Unsupported run state version: 1/);
 	assert.throws(() => parseRunState({ ...state, abort_cleanup_pending: true }), /Unknown run state setting: abort_cleanup_pending/);
 	assert.throws(() => parseRunState({ ...state, tasks: { ...state.tasks, core: { ...state.tasks.core, worker_ready: true } } }), /Unknown run state.tasks.core setting: worker_ready/);
 	assert.throws(() => parseRunState({ ...state, tasks: { ...state.tasks, core: { ...state.tasks.core, status: 1 } } }), /run state.tasks.core.status must be one of/);
@@ -422,6 +453,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.ok(!(widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
 
 	const workerTools: Array<{ name: string; execute: Function }> = [];
+	let beforeWorkerTurn: (() => Promise<void>) | undefined;
 	createWorkerExtension({
 		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
 		environment: {
@@ -432,14 +464,20 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
 			PI_AUTO_DAG_REVIEW_TICKET: reviewTicket,
 		},
-	})({ registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); } } as never);
+	})({
+		on(event: string, handler: () => Promise<void>) { if (event === "before_agent_start") beforeWorkerTurn = handler; },
+		registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); },
+	} as never);
 	assert.deepEqual(workerTools.map((tool) => tool.name), [
 		WORKER_TOOLS.submit_review,
 		WORKER_TOOLS.block_task,
 	]);
-	const workerResult = await workerTools[0].execute("call", { verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown; terminate: boolean };
+	await beforeWorkerTurn!();
+	await writeFile(reviewTicket, JSON.stringify({ review_id: "later-review-id" }));
+	const workerResult = await workerTools[0].execute("call", { verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: { review_id: string; type: string }; terminate: boolean };
+	assert.equal(workerResult.details.review_id, "review-id");
 	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
-	assert.equal((workerResult.details as { type: string }).type, "submit_review");
+	assert.equal(workerResult.details.type, "submit_review");
 	assert.equal(workerResult.terminate, true);
 
 	const fullCommit = "310a75c7289830d9d3973263488de1140438f6e9";
@@ -519,9 +557,10 @@ test("extensions separate public lifecycle tools and show active workers", async
 			return { code: 0, stdout: "", stderr: "" };
 		},
 		"/tmp",
+		"direct-review-id",
 	);
 	assert.equal(envelope.type, "submit_review");
-	assert.equal(envelope.review_id, "review-id");
+	assert.equal(envelope.review_id, "direct-review-id");
 	assert.deepEqual(calls[0].slice(0, 2), ["herdr", ["agent", "prompt", "main-pane", JSON.stringify(envelope)]]);
 });
 

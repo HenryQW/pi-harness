@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, readCurrentBranch, retireChildWorktree, verifySingleCommit } from "./git.ts";
-import type { CleanupBlock, LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
+import type { CleanupBlock, LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle, cleanupPrLifecycle, resumePrLifecycle } from "./pr-lifecycle.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
@@ -131,15 +131,16 @@ export function parseWorkerEnvelope(value: unknown): WorkerEnvelope {
 	const role = oneOf(input.role, ["implementer", "reviewer"] as const, "worker envelope role");
 	if (!WORKER_ROLE_EVENTS[role].includes(type)) throw new Error(`${role} worker cannot send ${type}`);
 	const payload = parseEnvelopePayload(type, input.payload);
-	return {
-		version: 1,
-		type,
+	const base = {
+		version: 1 as const,
 		run_id: nonEmptyString(input.run_id, "worker envelope run_id"),
 		issue_id: nonEmptyString(input.issue_id, "worker envelope issue_id"),
-		role,
-		...(type === "submit_review" ? { review_id: nonEmptyString(input.review_id, "worker envelope review_id") } : {}),
 		payload,
 	};
+	if (type === "submit_review") {
+		return { ...base, type, role: "reviewer", review_id: nonEmptyString(input.review_id, "worker envelope review_id") };
+	}
+	return { ...base, type, role };
 }
 
 async function advanceWithConfig(state: RunState, config: ProjectConfig, options: OrchestrationOptions): Promise<RunState> {
@@ -274,7 +275,7 @@ async function requestReview(
 async function submitReview(
 	state: RunState,
 	issue: LocalIssue,
-	envelope: WorkerEnvelope,
+	envelope: SubmitReviewEnvelope,
 	config: ProjectConfig,
 	options: OrchestrationOptions,
 ): Promise<RunState> {
@@ -616,7 +617,7 @@ async function ensureReviewer(
 			? "full"
 			: "update";
 	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation"),
 		taskReviewId(state, issue.id, current),
 		options.uuid,
 	);
@@ -643,6 +644,7 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 			commit,
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 			timeoutMs,
+			requiredGateProcessPath(state.main_worktree, state.run_id),
 		);
 		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
 		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
@@ -867,7 +869,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: issue.id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, issue.id) } : {}),
+		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation") } : {}),
 	});
 }
 

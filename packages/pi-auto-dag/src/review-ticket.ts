@@ -5,6 +5,7 @@ import { runDirectory, type Uuid } from "./state.ts";
 import { exactKeys, nonEmptyString, object } from "./validate.ts";
 
 export type ReviewKind = "implementation" | "final_check" | "final_repair" | "pr_health_repair";
+export type ReviewTicketScope = "implementation" | "lifecycle" | "pr_health";
 
 export interface ReviewIdentity {
 	run_id: string;
@@ -26,8 +27,8 @@ export function reviewId(identity: ReviewIdentity): string {
 	])).digest("hex");
 }
 
-export function reviewTicketPath(mainWorktree: string, runId: string, issueId: string): string {
-	return join(runDirectory(mainWorktree, runId), "review-tickets", `${issueId}.json`);
+export function reviewTicketPath(mainWorktree: string, runId: string, issueId: string, scope: ReviewTicketScope): string {
+	return join(runDirectory(mainWorktree, runId), "review-tickets", `${issueId}-${scope}.json`);
 }
 
 export async function writeReviewTicket(path: string, id: string, uuid: Uuid): Promise<void> {

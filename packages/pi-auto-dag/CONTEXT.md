@@ -17,7 +17,7 @@ Structural integrated acceptance and frozen test command that Auto DAG executes 
 _Avoid_: Final issue, release task
 
 **Required Gate**:
-Auto DAG execution of exact frozen `issue.testing` text against verified clean commit, producing persisted command, commit SHA, exit code, and bounded stdout/stderr evidence before reviewer dispatch. Execution deadline cannot exceed Node timer maximum, terminates process group on timeout, then restores commit and removes gate-created Git dirt. Run State stores marked head/tail excerpts and SHA-256-bound paths to exact full truncated streams; Review Packet uses same bounded evidence. Reviewer may run extra checks but submits only verdict and findings; extra checks cannot replace gate.
+Auto DAG execution of exact frozen `issue.testing` text against verified clean commit, producing persisted command, commit SHA, exit code, and bounded stdout/stderr evidence before reviewer dispatch. Execution deadline cannot exceed Node timer maximum, terminates process group on timeout, and persists active process-group intent for resume/abort reconciliation before restoring commit and removing gate-created Git dirt. Final gate runs in a disposable child worktree so concurrent main-worktree edits cannot be erased. Run State stores marked head/tail excerpts and SHA-256-bound paths to exact full truncated streams; Review Packet uses same bounded evidence. Reviewer may run extra checks but submits only verdict and findings; extra checks cannot replace gate.
 _Avoid_: Reviewer test, echoed command, suggested command
 
 **Review Dispatch ID**:
@@ -25,7 +25,7 @@ System-owned identity binding reviewer verdict to run, review kind, Local Issue,
 _Avoid_: Reviewer correlation field, model token, review result
 
 **Review Packet**:
-Canonical fresh reviewer handoff containing delivery context, Local Issue, worktree, base, and Required Gate. Auto DAG owns deterministic Git verification. Existing reviewer receives only changed gate, findings, or resolution data; no-change resume receives only resend event.
+Canonical fresh reviewer handoff containing delivery context, Local Issue, worktree, base, and Required Gate. Auto DAG owns deterministic Git verification and captures scope-specific dispatch identity at reviewer-turn start. Existing reviewer receives only changed gate, findings, or resolution data; no-change resume receives only resend event.
 _Avoid_: Reviewer prompt variant, echoed orchestration state, reviewer verification request
 
 **Local Issue**:

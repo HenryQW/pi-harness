@@ -190,11 +190,11 @@ For each task:
 1. Create a child worktree at `.<repo>-auto-dag/<run-id>/<issue-id>`.
 2. Start one implementer.
 3. Require one commit over the wave base.
-4. Verify that commit and clean worktree, then execute frozen `testing` text unchanged through `sh -c` with configured deadline and process-group cleanup.
+4. Verify that commit and clean worktree, then execute frozen `testing` text unchanged through `sh -c` with configured deadline and process-group cleanup. Active process-group intent is persisted so resume or abort terminates an interrupted gate before continuing.
 5. Save command, verified commit SHA, exit code, and bounded stdout/stderr evidence, then restore commit and remove gate-created Git dirt. Truncated streams keep exact full output in SHA-256-bound files instead of Run State.
 6. Start task-owned reviewer with one canonical Review Packet. Gate output uses same bounded evidence and read-on-demand full-output references.
 
-Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Reviewer submits only verdict and findings; worker extension attaches system-owned dispatch identity, so stale or duplicated verdicts cannot approve another commit or review round. Extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
+Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Reviewer submits only verdict and findings; worker extension captures scope-specific system-owned dispatch identity when each reviewer turn starts, so stale or duplicated verdicts cannot approve another commit or review round. Extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
 
 ### 4. Integrate
 
@@ -213,7 +213,7 @@ A cherry-pick conflict returns that task to its existing workers. They produce o
 
 After all implementation tasks finish, Auto DAG executes exact frozen `final_check.testing` text on clean integration `HEAD`, captures commit-bound evidence, then starts temporary read-only reviewer.
 
-- Pass: reviewer approves and system-owned gate exit code is `0`; push integration branch and open one PR.
+- Pass: execute final gate in a disposable child worktree at integration `HEAD`; reviewer approves and system-owned gate exit code is `0`; push integration branch and open one PR.
 - Fail: block before push or PR creation.
 
 To repair failed final check, call `auto_dag_resolve` with completed implementation task that owns bug. Auto DAG creates fresh repair worktree, executes same frozen gate against repair commit before review, cherry-picks approved repair, then executes final gate again on new integration `HEAD`. Broken frozen command needs user resolution or replacement Delivery Graph; reviewer cannot substitute another command.
@@ -284,7 +284,7 @@ Run files live under `.context/pi-auto-dag/`:
 
 `active.json` locks one checkout. Lock stays until cleanup succeeds.
 
-Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, and bounded required-gate evidence. Large gate streams live in referenced files. Writes are atomic.
+Run State schema version is `2`. v4 rejects v3 in-flight Run State; finish or abort active v3 runs before upgrading. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, and bounded required-gate evidence. Large gate streams and active gate-process intent live in separate run files. Writes are atomic.
 
 Main Pi widget shows:
 
