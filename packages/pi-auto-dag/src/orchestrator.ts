@@ -5,7 +5,7 @@ import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import type { RunState, WorkerEnvelope } from "./model.ts";
 import { parseWorkerEnvelope } from "./orchestration.ts";
 import { registerPlanning } from "./planning.ts";
-import { listWorkerAgents } from "./worker.ts";
+import { listWorkerAgents } from "./worker-host.ts";
 
 export const ORCHESTRATOR_TOOLS = {
 	start: "auto_dag_start",

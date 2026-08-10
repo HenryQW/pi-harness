@@ -1,0 +1,74 @@
+import { gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import type { LocalIssue, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
+import { persistGateOutput } from "./review.ts";
+import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
+
+export type FinalGateOptions = {
+	runner: CommandRunner;
+	uuid: Uuid;
+	now?: () => string;
+};
+
+export async function failFinalGate(
+	state: RunState,
+	issue: LocalIssue,
+	reason: string,
+	options: FinalGateOptions,
+	findings: string[] = [],
+): Promise<RunState> {
+	const current = task(state, issue.id);
+	const blockedRole = current.status === "repairing" ? "implementer" : ["reviewing", "repair_reviewing"].includes(current.status) ? "reviewer" : undefined;
+	return await save({
+		...replaceTask(state, issue.id, {
+			...current,
+			status: "blocked",
+			block_reason: reason,
+			activity_started_at: timestamp(options),
+			...(blockedRole ? { blocked_role: blockedRole } : {}),
+			final_gate_head: state.integration_head,
+			final_gate_findings: findings,
+		}),
+		phase: "blocked",
+		block_reason: `Final check blocked: ${reason}`,
+	}, options);
+}
+
+export async function ensureRecordedGate(
+	state: RunState,
+	issue: LocalIssue,
+	commit: string,
+	cwd: string,
+	timeoutMs: number,
+	options: FinalGateOptions,
+): Promise<RunState> {
+	const current = task(state, issue.id);
+	let evidence = recordedGateEvidence(current, commit);
+	if (!evidence) {
+		const execution = await runRequiredGate(
+			options.runner,
+			issue.testing,
+			commit,
+			cwd,
+			timeoutMs,
+			requiredGateProcessPath(state.main_worktree, state.run_id),
+		);
+		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
+		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+	}
+	return state;
+}
+
+export function requiredTaskGate(current: RunTaskState, commit: string, label: string): RequiredGateEvidence {
+	const evidence = recordedGateEvidence(current, commit);
+	if (!evidence) throw new Error(`${label} required-gate evidence is missing`);
+	return evidence;
+}
+
+async function save(state: RunState, options: FinalGateOptions): Promise<RunState> {
+	await writeRunState(state.main_worktree, state, options.uuid);
+	return state;
+}
+
+function timestamp(options: FinalGateOptions): string {
+	return options.now?.() ?? new Date().toISOString();
+}

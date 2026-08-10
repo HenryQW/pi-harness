@@ -14,7 +14,8 @@ import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { PLANNING_TOOLS } from "../src/planning.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
-import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerAgentName, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
+import { workerAgentName } from "../src/worker-host.ts";
+import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
 import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
 
 const execFile = promisify(execFileCallback);

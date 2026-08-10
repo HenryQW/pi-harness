@@ -1,15 +1,27 @@
-import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
+import { cleanupFinalRepair, resumeFinalRepair } from "./final-repair.ts";
 import { executionIssues } from "./graph.ts";
+import {
+	assertTaskBranch,
+	childBranch,
+	childWorktreePath,
+	ensureImplementer,
+	ensureReviewer,
+	ensureWorktree,
+	provisioningIdFor,
+	reconcileWorkers,
+	requiredTaskGate,
+	taskReviewId,
+	verifyReviewCommit,
+} from "./implementation-workers.ts";
 import { assertRunBoundary } from "./intake.ts";
-import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, readCurrentBranch, retireChildWorktree, verifySingleCommit } from "./git.ts";
-import type { CleanupBlock, LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
+import { assertAttachedBranch, deleteExpectedBranch, findAppliedCherryPick, readCurrentBranch, retireChildWorktree } from "./git.ts";
+import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
-import { acceptPrLifecycleEnvelope, advancePrLifecycle, cleanupPrLifecycle, resumePrLifecycle } from "./pr-lifecycle.ts";
-import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
-import { persistGateOutput, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
+import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
 import { issueById, readRunState, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
-import { createWorkerLaunch, createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, workerIssueContext, workerTabExists, WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { findWorkerTab, retireWorkerTab, workerAgentName } from "./worker-host.ts";
+import { WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerRole } from "./worker.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface OrchestrationOptions {
@@ -20,17 +32,6 @@ export interface OrchestrationOptions {
 }
 
 type CleanupOperation = CleanupBlock["operation"];
-type ImplementerAction = NonNullable<RunTaskState["pending_action"]>;
-
-/** The parent of the integration worktree is deliberate: `.context` never enters a child. */
-export function childWorktreePath(mainWorktree: string, runId: string, issueId: string): string {
-	const root = resolve(mainWorktree);
-	return join(dirname(root), `.${basename(root)}-auto-dag`, runId, issueId);
-}
-
-export function childBranch(runId: string, issueId: string): string {
-	return `pi-auto-dag/${runId}/${issueId}`;
-}
 
 /** A wave is frozen before work starts; only completed integration opens another one. */
 export function deriveReadyIssueIds(state: RunState): string[] {
@@ -68,7 +69,7 @@ export async function resumeRun(
 	options: OrchestrationOptions,
 ): Promise<RunState> {
 	if (state.phase === "aborted") return await abortRun(state, options);
-	state = await resumePrLifecycle(state, options);
+	state = await resumeFinalRepair(state, options);
 	if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
 	state = await recoverAppliedIntegration(state, options);
@@ -96,7 +97,7 @@ export async function resumeRun(
 export async function abortRun(state: RunState, options: OrchestrationOptions): Promise<RunState> {
 	if (await integrationBranchIsRecorded(state, options)) {
 		try {
-			state = await resumePrLifecycle(state, options);
+			state = await resumeFinalRepair(state, options);
 			if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 			await abortOwnedCherryPick(state, options);
 			state = await recoverAppliedIntegration(state, options);
@@ -109,7 +110,7 @@ export async function abortRun(state: RunState, options: OrchestrationOptions): 
 }
 
 export async function cleanupRun(state: RunState, options: OrchestrationOptions): Promise<RunState> {
-	state = await cleanupPrLifecycle(state, options);
+	state = await cleanupFinalRepair(state, options);
 	state = await cleanupPrHealth(state, options);
 	for (const issue of executionIssues(state.graph)) {
 		state = await cleanupTask(state, issue.id, options);
@@ -434,241 +435,6 @@ async function replaceConflictedCommit(
 	}
 }
 
-async function reconcileWorkers(state: RunState, config: ProjectConfig, options: OrchestrationOptions): Promise<RunState> {
-	const active = executionIssues(state.graph).filter((issue) => issue.role === "implementation" && ["starting", "implementing", "reviewing"].includes(task(state, issue.id).status));
-	if (!active.length) return state;
-	for (const issue of active.sort((left, right) => left.id.localeCompare(right.id))) {
-		const current = task(state, issue.id);
-		if (["starting", "implementing"].includes(current.status)) {
-			state = await ensureImplementer(state, issue, config, options, "resume");
-		}
-		if (task(state, issue.id).status === "reviewing") {
-			state = await ensureReviewer(state, issue, config, options, "resume");
-		}
-	}
-	return state;
-}
-
-async function ensureImplementer(
-	state: RunState,
-	issue: LocalIssue,
-	config: ProjectConfig,
-	options: OrchestrationOptions,
-	mode: ImplementerAction | "resume",
-): Promise<RunState> {
-	await ensureWorktree(state, issue.id, options);
-	config = await assertRunBoundary(state, options.runner);
-	let current = task(state, issue.id);
-	const action = pendingImplementerAction(current);
-	if (current.pending_action !== action) {
-		state = await save(replaceTask(state, issue.id, { ...current, pending_action: action }), options);
-		current = task(state, issue.id);
-	}
-	const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
-	if (current.implementer_provisioning_id !== provisioningId) {
-		state = await save(replaceTask(state, issue.id, { ...current, implementer_provisioning_id: provisioningId }), options);
-		current = task(state, issue.id);
-	}
-	const launch = workerLaunch(state, issue, config, "implementer");
-	const resource = await reconcileWorkerTab(state, {
-		tab_id: current.tab_id,
-		pane_id: current.implementer_pane,
-		cwd: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-		launch,
-		label: provisioningId,
-	}, options);
-	if (current.tab_id !== resource.tab_id || current.implementer_pane !== resource.pane_id) {
-		state = await save(replaceTask(state, issue.id, {
-			...current,
-			tab_id: resource.tab_id,
-			implementer_pane: resource.pane_id,
-			implementer_agent: current.implementer_agent ?? workerAgentName(state.workspace_id, state.run_id, issue.id, "implementer"),
-		}), options);
-		current = task(state, issue.id);
-	}
-	const agent = nonEmptyString(current.implementer_agent, `Run Task ${issue.id} implementer_agent`);
-	const started = await startWorkerAgent(
-		state,
-		agent,
-		nonEmptyString(current.implementer_pane, `Run Task ${issue.id} implementer_pane`),
-		launch,
-		options,
-		{
-			beforeStart: async () => {
-				const latest = task(state, issue.id);
-				if (!latest.implementer_instruction_pending) state = await save(replaceTask(state, issue.id, { ...latest, implementer_instruction_pending: true }), options);
-			},
-			onStarted: async () => {
-				if (mode === "resume") {
-					const latest = task(state, issue.id);
-					state = await save(replaceTask(state, issue.id, { ...latest, attempts: latest.attempts + 1 }), options);
-				}
-			},
-		},
-	);
-	current = task(state, issue.id);
-	const needsInstruction = Boolean(current.implementer_instruction_pending) || current.resolution_pending || current.status === "starting" || mode !== "resume" || started !== "existing";
-	if (needsInstruction && !current.implementer_instruction_pending) {
-		state = await save(replaceTask(state, issue.id, { ...current, implementer_instruction_pending: true }), options);
-		current = task(state, issue.id);
-	}
-	if (current.status === "starting") {
-		state = await save(replaceTask(state, issue.id, { ...current, status: "implementing" }), options);
-		current = task(state, issue.id);
-	}
-	const promptMode = needsInstruction ? action : mode;
-	const fullPrompt = Boolean(mode === "initial" || mode === "replacement" || started !== "existing" || current.resolution_pending || (mode === "resume" && current.implementer_instruction_pending));
-	await promptWorkerAgent(state, agent, implementerPrompt(state, issue, current, promptMode, fullPrompt), options);
-	if (task(state, issue.id).implementer_instruction_pending || task(state, issue.id).resolution_pending) {
-		state = await save(replaceTask(state, issue.id, {
-			...task(state, issue.id),
-			implementer_instruction_pending: undefined,
-			resolution_pending: undefined,
-		}), options);
-	}
-	return state;
-}
-
-async function ensureReviewer(
-	state: RunState,
-	issue: LocalIssue,
-	config: ProjectConfig,
-	options: OrchestrationOptions,
-	mode: "review" | "resume",
-): Promise<RunState> {
-	await ensureWorktree(state, issue.id, options);
-	config = await assertRunBoundary(state, options.runner);
-	state = await ensureTaskGate(state, issue, config.required_gate_timeout_ms, options);
-	let current = task(state, issue.id);
-	if (current.reviewer_pane) {
-		const tabId = nonEmptyString(current.tab_id, `Run Task ${issue.id} tab_id`);
-		if (!(await workerTabExists(state, tabId, options))) {
-			const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
-			current = {
-				...current,
-				tab_id: undefined,
-				implementer_pane: undefined,
-				reviewer_pane: undefined,
-				implementer_provisioning_id: provisioningId,
-			};
-			const created = await findWorkerTab(state, provisioningId, options)
-				?? await createWorkerTab(
-					state,
-					nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-					workerLaunch(state, issue, config, "implementer"),
-					provisioningId,
-					options,
-				);
-			state = await save(replaceTask(state, issue.id, {
-				...current,
-				tab_id: created.tab_id,
-				implementer_pane: created.pane_id,
-			}), options);
-			current = task(state, issue.id);
-		}
-	}
-	if (!current.reviewer_pane) {
-		const provisioningId = current.reviewer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "reviewer");
-		if (current.reviewer_provisioning_id !== provisioningId) {
-			state = await save(replaceTask(state, issue.id, { ...current, reviewer_provisioning_id: provisioningId }), options);
-			current = task(state, issue.id);
-		}
-		const tabId = nonEmptyString(current.tab_id, `Run Task ${issue.id} tab_id`);
-		const implementerPane = nonEmptyString(current.implementer_pane, `Run Task ${issue.id} implementer_pane`);
-		const paneId = await ensureWorkerPane(
-			state,
-			tabId,
-			implementerPane,
-			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-			workerLaunch(state, issue, config, "reviewer"),
-			provisioningId,
-			options,
-		);
-		state = await save(replaceTask(state, issue.id, {
-			...current,
-			reviewer_pane: paneId,
-			reviewer_agent: current.reviewer_agent ?? workerAgentName(state.workspace_id, state.run_id, issue.id, "reviewer"),
-		}), options);
-		current = task(state, issue.id);
-	}
-	const agent = nonEmptyString(current.reviewer_agent, `Run Task ${issue.id} reviewer_agent`);
-	const started = await startWorkerAgent(
-		state,
-		agent,
-		nonEmptyString(current.reviewer_pane, `Run Task ${issue.id} reviewer_pane`),
-		workerLaunch(state, issue, config, "reviewer"),
-		options,
-		{
-			beforeStart: async () => {
-				const latest = task(state, issue.id);
-				if (!latest.reviewer_instruction_pending) state = await save(replaceTask(state, issue.id, { ...latest, reviewer_instruction_pending: true }), options);
-			},
-		},
-	);
-	current = task(state, issue.id);
-	const needsInstruction = Boolean(current.reviewer_instruction_pending) || current.resolution_pending || mode === "review" || started !== "existing";
-	if (needsInstruction && !current.reviewer_instruction_pending) {
-		state = await save(replaceTask(state, issue.id, { ...current, reviewer_instruction_pending: true }), options);
-		current = task(state, issue.id);
-	}
-	const promptMode: ReviewPromptMode = !needsInstruction
-		? "resend"
-		: started !== "existing" || current.review_rounds === 1
-			? "full"
-			: "update";
-	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation"),
-		taskReviewId(state, issue.id, current),
-		options.uuid,
-	);
-	await promptWorkerAgent(state, agent, reviewerPrompt(state, issue, current, promptMode), options);
-	if (task(state, issue.id).reviewer_instruction_pending || task(state, issue.id).resolution_pending) {
-		state = await save(replaceTask(state, issue.id, {
-			...task(state, issue.id),
-			reviewer_instruction_pending: undefined,
-			resolution_pending: undefined,
-		}), options);
-	}
-	return state;
-}
-
-async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: number, options: OrchestrationOptions): Promise<RunState> {
-	const current = task(state, issue.id);
-	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
-	await verifyReviewCommit(state, issue.id, commit, options);
-	let evidence = recordedGateEvidence(current, commit);
-	if (!evidence) {
-		const execution = await runRequiredGate(
-			options.runner,
-			issue.testing,
-			commit,
-			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-			timeoutMs,
-			requiredGateProcessPath(state.main_worktree, state.run_id),
-		);
-		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
-		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
-	}
-	return state;
-}
-
-async function verifyReviewCommit(state: RunState, issueId: string, commit: string, options: OrchestrationOptions): Promise<string> {
-	const current = task(state, issueId);
-	const worktree = nonEmptyString(current.worktree, `Run Task ${issueId} worktree`);
-	const base = nonEmptyString(current.wave_base, `Run Task ${issueId} wave_base`);
-	await assertTaskBranch(state, issueId, options);
-	return await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, `Run Task ${issueId}`, "wave base");
-}
-
-async function assertTaskBranch(state: RunState, issueId: string, options: OrchestrationOptions): Promise<void> {
-	const current = task(state, issueId);
-	const worktree = nonEmptyString(current.worktree, `Run Task ${issueId} worktree`);
-	const branch = nonEmptyString(current.branch, `Run Task ${issueId} branch`);
-	const expected = childBranch(state.run_id, issueId);
-	if (branch !== expected) throw new Error(`Run Task ${issueId} branch is not its deterministic child branch: ${branch}`);
-	await assertAttachedBranch(options.runner, worktree, branch, `Run Task ${issueId} child worktree`);
-}
-
 async function assertIntegrationBranch(state: RunState, options: OrchestrationOptions): Promise<void> {
 	const branch = nonEmptyString(state.integration_branch, "recorded integration branch");
 	await assertAttachedBranch(options.runner, state.main_worktree, branch, "Main integration");
@@ -676,17 +442,6 @@ async function assertIntegrationBranch(state: RunState, options: OrchestrationOp
 
 async function integrationBranchIsRecorded(state: RunState, options: OrchestrationOptions): Promise<boolean> {
 	return (await readCurrentBranch(options.runner, state.main_worktree)) === nonEmptyString(state.integration_branch, "recorded integration branch");
-}
-
-async function ensureWorktree(state: RunState, issueId: string, options: OrchestrationOptions): Promise<void> {
-	const current = task(state, issueId);
-	const path = nonEmptyString(current.worktree, `Run Task ${issueId} worktree`);
-	const branch = nonEmptyString(current.branch, `Run Task ${issueId} branch`);
-	const base = nonEmptyString(current.wave_base, `Run Task ${issueId} wave_base`);
-	if (branch !== childBranch(state.run_id, issueId)) {
-		throw new Error(`Run Task ${issueId} branch is not its deterministic child branch: ${branch}`);
-	}
-	await ensureChildWorktree(options.runner, state.main_worktree, path, branch, base, `Run Task ${issueId}`);
 }
 
 async function cleanupTask(
@@ -839,11 +594,6 @@ function hasBlockedTask(state: RunState): boolean {
 	return Object.values(state.tasks).some((candidate) => candidate.status === "blocked");
 }
 
-function pendingImplementerAction(current: RunTaskState): ImplementerAction {
-	if (current.pending_action === "initial" || current.pending_action === "revision" || current.pending_action === "replacement") return current.pending_action;
-	return hasReviewFindings(current) ? "revision" : current.conflict_base ? "replacement" : "initial";
-}
-
 function hasReviewFindings(current: RunTaskState): boolean {
 	return Array.isArray(current.review_findings) && current.review_findings.length > 0;
 }
@@ -851,99 +601,6 @@ function hasReviewFindings(current: RunTaskState): boolean {
 function requiredWave(state: RunState): NonNullable<RunState["wave"]> {
 	if (!state.wave) throw new Error("Run has no active dependency wave");
 	return state.wave;
-}
-
-function workerLaunch(
-	state: RunState,
-	issue: LocalIssue,
-	config: ProjectConfig,
-	role: WorkerRole,
-): WorkerLaunch {
-	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = config.profiles[profileId];
-	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
-	return createWorkerLaunch({
-		role,
-		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		profile,
-		run_id: state.run_id,
-		issue_id: issue.id,
-		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation") } : {}),
-	});
-}
-
-function implementerPrompt(
-	state: RunState,
-	issue: LocalIssue,
-	current: RunTaskState,
-	mode: ImplementerAction | "resume",
-	full: boolean,
-): Record<string, unknown> {
-	const instruction = mode === "resume"
-		? "Resend your latest worker event through the worker tool. Do not start duplicate orchestration."
-		: mode === "revision"
-			? "Address the reviewer findings by amending the sole commit; do not add another commit, then request review again."
-			: mode === "replacement"
-				? "The previous commit conflicted. Produce one replacement commit on the new base, then request review again."
-				: "Implement this frozen Local Issue, commit exactly one change over the wave base, then request review through the worker tool.";
-	if (!full) return {
-		type: mode === "resume" ? "auto_dag_resend" : "auto_dag_task_update",
-		run_id: state.run_id,
-		issue_id: issue.id,
-		attempt: current.attempts,
-		review_round: (current.review_rounds ?? 0) + 1,
-		review_findings: current.review_findings,
-		instruction,
-	};
-	return {
-		type: "auto_dag_task",
-		run_id: state.run_id,
-		delivery: workerDeliveryContext(state.graph),
-		issue: workerIssueContext(issue, true),
-		wave_base: current.wave_base,
-		attempt: current.attempts,
-		review_round: (current.review_rounds ?? 0) + 1,
-		worktree: current.worktree,
-		review_findings: current.review_findings,
-		resolution: state.resolutions[issue.id],
-		instruction,
-	};
-}
-
-function reviewerPrompt(
-	state: RunState,
-	issue: LocalIssue,
-	current: RunTaskState,
-	mode: ReviewPromptMode,
-): Record<string, unknown> {
-	return reviewWorkerPrompt({
-		kind: "implementation",
-		graph: state.graph,
-		issue,
-		worktree: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-		base: nonEmptyString(current.wave_base, `Run Task ${issue.id} wave_base`),
-		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id),
-		prior_findings: current.review_findings,
-		resolution: state.resolutions[issue.id],
-	}, mode);
-}
-
-function taskReviewId(state: RunState, issueId: string, current: RunTaskState): string {
-	return reviewId({
-		run_id: state.run_id,
-		kind: "implementation",
-		issue_id: issueId,
-		commit: nonEmptyString(current.commit, `Run Task ${issueId} review commit`),
-		attempt: current.attempts,
-		review_round: positiveInteger(current.review_rounds, `Run Task ${issueId} review round`),
-	});
-}
-
-function requiredTaskGate(current: RunTaskState, commit: string, issueId: string): RequiredGateEvidence {
-	const evidence = recordedGateEvidence(current, commit);
-	if (!evidence) throw new Error(`Run Task ${issueId} required-gate evidence is missing`);
-	return evidence;
 }
 
 function parseEnvelopePayload(type: WorkerEvent, value: unknown): Record<string, unknown> {
@@ -1004,10 +661,6 @@ async function abortOwnedCherryPick(state: RunState, options: OrchestrationOptio
 	if (!issueId) throw new Error(`Refusing to abort a cherry-pick not owned by this run: ${commit}`);
 	await commandOutput(options.runner, "git", ["cherry-pick", "--abort"], state.main_worktree);
 	return issueId;
-}
-
-function provisioningIdFor(runId: string, issueId: string, role: WorkerRole): string {
-	return `auto-dag:${runId}:${issueId}:${role}`;
 }
 
 async function save(state: RunState, options: OrchestrationOptions): Promise<RunState> {

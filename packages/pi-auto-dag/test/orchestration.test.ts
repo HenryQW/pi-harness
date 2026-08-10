@@ -9,8 +9,9 @@ import { fakeHerdr } from "./support/fake-herdr.ts";
 import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
 import { type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
+import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
-import { childWorktreePath, parseWorkerEnvelope } from "../src/orchestration.ts";
+import { parseWorkerEnvelope } from "../src/orchestration.ts";
 import { reviewId } from "../src/review-ticket.ts";
 import { runDirectory, writeRunState } from "../src/state.ts";
 

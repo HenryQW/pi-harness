@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { reconcileRequiredGateProcess, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
+import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
 import type { ProjectConfig, RunState, RunTaskState } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { runPrHealth } from "./pr-health.ts";
-import { resolvePrLifecycle } from "./pr-lifecycle.ts";
 import { claimActiveRun, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
-import { workerWorkspaceId } from "./worker.ts";
+import { workerWorkspaceId } from "./worker-host.ts";
 
 export interface CoreLifecycleOptions {
 	runner?: CommandRunner;
@@ -79,7 +79,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				const config = await guardBoundary(state, runner, uuid);
 				const id = nonEmptyString(issueId, "resolution issue_id");
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
-				const prResolved = await resolvePrLifecycle(state, id, resolution, config, orchestration);
+				const prResolved = await resolveFinalRepair(state, id, resolution, config, orchestration);
 				if (prResolved) return await completeSuccessfulRun(prResolved, orchestration);
 				const current = state.tasks[id];
 				const { block_reason: _taskBlockReason, blocked_role, activity_started_at: _activityStartedAt, ...resolvedTask } = current;

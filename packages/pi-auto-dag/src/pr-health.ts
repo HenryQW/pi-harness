@@ -8,7 +8,8 @@ import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { writeRunState, type Uuid } from "./state.ts";
-import { createWorkerLaunch, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
+import { createWorkerLaunch, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface PrHealthOptions {
