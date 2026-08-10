@@ -102,6 +102,12 @@ function commandError(args: string[], stderr: string, code: number): Error {
 	return new Error(`Herdr ${args.slice(0, 2).join(" ")} failed: ${stderr.trim() || `exit code ${code}`}`);
 }
 
+function rollbackCleanupError(worker: OwnedWorker, tabId: string, launchError: unknown, cleanupError: unknown): Error {
+	const launch = launchError instanceof Error ? launchError.message : String(launchError);
+	const cleanup = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+	return new Error(`Delegated Task ${worker.taskId} launch failed and Worker tab cleanup also failed; Worker remains owned.\nWorker: ${worker.workerName}\nTab: ${tabId}\nResult: ${worker.resultPath}\nStop: herdr tab close ${tabId}\nLaunch error: ${launch}\nCleanup error: ${cleanup}`);
+}
+
 function herdrErrorCode(stderr: string): string | undefined {
 	try {
 		const code = (JSON.parse(stderr) as { error?: { code?: unknown } }).error?.code;
@@ -310,15 +316,24 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					const message = error instanceof Error ? error.message : String(error);
 					throw new Error(`Delegated Task ${taskId} prompt outcome is unknown; Worker may be running and remains owned.\nWorker: ${worker.workerName}\nTab: ${worker.tabId}\nResult: ${worker.resultPath}\nStop: herdr tab close ${worker.tabId}\n${message}`);
 				}
-				workers.delete(taskId);
 				if (worker.tabId) {
-					await closeTab(pi, worker.tabId, ctx).catch(() => undefined);
+					try {
+						await closeTab(pi, worker.tabId, ctx);
+					} catch (cleanupError) {
+						throw rollbackCleanupError(worker, worker.tabId, error, cleanupError);
+					}
 				} else if (tabCreationAttempted) {
 					const tabs = await listTabs(where, ctx).catch(() => []);
-					await Promise.all(tabs.flatMap((tab) => !existingTabs.has(tab.id) && tab.label === label
-						? [closeTab(pi, tab.id, ctx).catch(() => undefined)]
-						: []));
+					for (const tab of tabs.filter((candidate) => !existingTabs.has(candidate.id) && candidate.label === label)) {
+						try {
+							await closeTab(pi, tab.id, ctx);
+						} catch (cleanupError) {
+							worker.tabId = tab.id;
+							throw rollbackCleanupError(worker, tab.id, error, cleanupError);
+						}
+					}
 				}
+				workers.delete(taskId);
 				await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 				throw error;
 			}

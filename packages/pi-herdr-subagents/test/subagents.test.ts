@@ -43,6 +43,7 @@ function mainHarness(options: {
 	limitInput?: string;
 	promptFailure?: boolean;
 	promptIndeterminate?: boolean;
+	closeFailures?: number;
 	tabs?: () => boolean;
 	noModel?: boolean;
 	thinkingLevel?: string;
@@ -62,6 +63,7 @@ function mainHarness(options: {
 	let mainName: string | null = options.mainName ?? null;
 	let tabPresent = !options.tabCreateFailureAfterCreation;
 	let tabLabel = "existing";
+	let closeFailures = options.closeFailures ?? 0;
 	let tabId = "tab-1";
 	let paneId = "pane-1";
 	let workerName = "";
@@ -112,6 +114,10 @@ function mainHarness(options: {
 				return success(JSON.stringify({ result: { type: "agent_prompted", agent: { name: args[2], pane_id: paneId, tab_id: tabId, workspace_id: "workspace-1" } } }));
 			}
 			if (args[0] === "tab" && args[1] === "close") {
+				if (closeFailures > 0) {
+					closeFailures--;
+					return failure("tab_close_failed");
+				}
 				closed.push(args[2]);
 				tabPresent = false;
 				return success(JSON.stringify({ result: { type: "ok" } }));
@@ -405,6 +411,24 @@ test("Worker Limit command persists immediately and pre-submission launch rolls 
 		assert.deepEqual(app.closed, ["tab-1"]);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
 		await assert.rejects(readFile(path));
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("rollback close failure preserves owned Worker and Result details", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ limitInput: "1", promptFailure: true, closeFailures: 1 });
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("call", { task: "definitive prompt failure" }, undefined, undefined, app.ctx),
+			/launch failed and Worker tab cleanup also failed; Worker remains owned[\s\S]*Tab: tab-1[\s\S]*Stop: herdr tab close tab-1/,
+		);
+		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
+		assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
+		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		assert.deepEqual(app.closed, ["tab-1"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
