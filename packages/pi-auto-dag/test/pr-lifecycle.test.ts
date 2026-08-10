@@ -56,6 +56,39 @@ test("the frozen final check prepares its disposable checkout and opens one exac
 	await assert.rejects(readFile(finalGate!.cwd!, "utf8"), /ENOENT/);
 });
 
+test("final gate cleans ignored resources recovered into its retained worktree", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr({
+		gate: (command, cwd) => {
+			if (command === FINAL_GATE_COMMAND) {
+				assert.throws(() => readFileSync(join(cwd!, ".local-tools", "ready"), "utf8"), /ENOENT/);
+				assert.throws(() => readFileSync(join(cwd!, ".local-tools", "obsolete"), "utf8"), /ENOENT/);
+			}
+			return { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" };
+		},
+	});
+	const base = combinedRunner(herdr, fakeGh(project.root));
+	let seeded = false;
+	const runner: CommandRunner = async (command, args, options) => {
+		const result = await base(command, args, options);
+		const finalWorktree = command === "git" && args[0] === "worktree" && args[1] === "add"
+			? args.find((argument) => argument.startsWith("/") && argument.endsWith("/final-gate"))
+			: undefined;
+		if (!seeded && finalWorktree) {
+			seeded = true;
+			await mkdir(join(finalWorktree, ".local-tools"));
+			await writeFile(join(finalWorktree, ".local-tools", "ready"), "recovered\n");
+			await writeFile(join(finalWorktree, ".local-tools", "obsolete"), "stale\n");
+		}
+		return result;
+	};
+
+	const state = await advanceToFinalReview(project.root, makeLifecycle(runner));
+
+	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(seeded, true);
+});
+
 test("final gate cannot erase changes created concurrently in main worktree", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();

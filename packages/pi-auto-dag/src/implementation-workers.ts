@@ -1,12 +1,12 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { revalidateResolvedProfile } from "./config.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
 import type { LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
 import { actionTicketPath, ensureActionTicket, reviewId } from "./review-ticket.ts";
-import { persistGateOutput, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
+import { recordGateExecution, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 import { createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, startWorkerAgent, workerAgentName, workerTabExists } from "./worker-host.ts";
 import { createWorkerLaunch, workerDeliveryContext, workerIssueContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
@@ -245,7 +245,7 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 	const current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
 	await verifyReviewCommit(state, issue.id, commit, options);
-	let evidence = recordedGateEvidence(current, commit);
+	const evidence = recordedGateEvidence(current, commit);
 	if (!evidence) {
 		const execution = await runRequiredGate(
 			options.runner,
@@ -254,9 +254,9 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 			timeoutMs,
 			requiredGateProcessPath(state.main_worktree, state.run_id),
+			{ kind: "task", issue_id: issue.id },
 		);
-		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
-		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+		state = await recordGateExecution(state, { kind: "task", issue_id: issue.id }, execution, options.uuid);
 	}
 	return state;
 }

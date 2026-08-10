@@ -192,8 +192,8 @@ For each task:
 1. Create a child worktree at `.<repo>-auto-dag/<run-id>/<issue-id>`.
 2. Start one implementer.
 3. Require one commit over the wave base.
-4. Verify that commit and clean worktree, persist launch intent, complete a separately bounded gate-host handshake, then release host to execute frozen `testing` text unchanged through `sh -c`. Configured deadline starts at release; timeout uses process-group cleanup. Host startup failure blocks without recording gate evidence. Launch-specific cancellation prevents interrupted cleanup from orphaning a transitioning host. Active process identity is persisted before command execution, so resume or abort signals only recorded gate; normal completion also reaps background descendants.
-5. Save command, verified commit SHA, exit code, and bounded stdout/stderr evidence, then restore original branch and commit, remove gate-created tracked, untracked, and ignored dirt, and restore pre-existing ignored resources from a private snapshot with recoverable staging. Output overflow becomes failed evidence, with exact captured streams retained in SHA-256-bound files instead of Run State.
+4. Verify that commit and clean worktree, persist launch intent, complete a separately bounded gate-host handshake, then release host to execute frozen `testing` text unchanged through `sh -c`. Configured deadline starts at release; detached host owns deadline, output capture, child process-group cleanup, and completed journal so lifecycle-process loss cannot orphan or rerun completed command. Host startup failure blocks without recording gate evidence. Launch-specific cancellation prevents interrupted cleanup from orphaning a transitioning host. Active process identity is persisted before command execution, so resume or abort signals only recorded gate; normal completion also reaps background descendants.
+5. Journal completed command, owner, exit code, and captured output before cleanup. Restore original branch and commit, remove gate-created tracked, untracked, and ignored dirt, and restore pre-existing ignored resources from a private snapshot with recoverable staging. Save bounded evidence to Run State, then acknowledge and remove journal, snapshot, and output spools. Resume reuses unacknowledged completed evidence instead of rerunning command. Output overflow becomes failed evidence, with exact captured streams retained in SHA-256-bound files instead of Run State.
 6. Start task-owned reviewer with one canonical Review Packet. Gate output uses same bounded evidence and read-on-demand full-output references.
 
 Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Worker tools accept intent only. Adapter adds action-ticket metadata and Git HEAD, delivers envelope, then waits for lifecycle acceptance receipt before reporting success. Stale or duplicated events are rejected. Reviewer submits only verdict and findings; extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
@@ -215,7 +215,7 @@ A cherry-pick conflict returns that task to its existing workers. They produce o
 
 After all implementation tasks finish, Auto DAG executes exact frozen `final_check.testing` text on clean integration `HEAD`, captures commit-bound evidence, then starts temporary read-only reviewer.
 
-- Pass: create a disposable child worktree at integration `HEAD`, execute frozen command that prepares its own checkout (for example, `npm ci && ...`), require reviewer approval and system-owned gate exit code `0`, then push integration branch and open one PR.
+- Pass: create clean disposable child worktree at integration `HEAD`, execute frozen command that prepares its own checkout (for example, `npm ci && ...`), require reviewer approval and system-owned gate exit code `0`, then push integration branch and open one PR.
 - Fail: block before reviewer dispatch, push, or PR creation. Resolution clears failed gate evidence and reruns same commit.
 
 To repair failed final check, call `auto_dag_resolve` with completed implementation task that owns bug. Auto DAG creates fresh repair worktree, executes same frozen gate against repair commit before review, cherry-picks approved repair, then executes final gate again on new integration `HEAD`. Broken frozen command needs user resolution or replacement Delivery Graph; reviewer cannot substitute another command.
@@ -286,7 +286,7 @@ Run files live under `.context/pi-auto-dag/`:
 
 `active.json` locks one checkout. Lock stays until cleanup succeeds.
 
-Run State schema version is `2`. Current releases reject v3 in-flight Run State; finish or abort active v3 runs before upgrading. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, accepted worker event IDs, and bounded required-gate evidence. Large gate streams and active gate-process intent live in separate run files. Writes are atomic.
+Run State schema version is `2`. Current releases reject v3 in-flight Run State; finish or abort active v3 runs before upgrading. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, accepted worker event IDs, and bounded required-gate evidence. Large gate streams and active or completed gate-process journals live in separate run files until evidence is saved. Writes are atomic.
 
 Main Pi widget shows:
 

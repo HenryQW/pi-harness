@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { reconcileRequiredGateProcess, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
+import { acknowledgeRequiredGate, reconcileRequiredGateProcess, recordedGateEvidence, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
 import type { ProjectConfig, RunState, RunTaskState } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { runPrHealth } from "./pr-health.ts";
+import { recordGateExecution } from "./review.ts";
 import { claimActiveRun, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 import { findWorkerTab, retireWorkerTab, workerWorkspaceId } from "./worker-host.ts";
@@ -51,8 +52,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 
 		async resume(mainWorktree, envelope) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
-				const state = await readActiveRun(root);
-				await reconcileGate(state, orchestration);
+				let state = await readActiveRun(root);
+				state = await reconcileGate(state, orchestration);
 				if (state.phase !== "aborted" && state.health) {
 					if (state.health.status === "completed") {
 						return await releaseCompletedHealth(state, uuid, orchestration);
@@ -71,8 +72,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 
 		async resolve(mainWorktree, issueId, resolution) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
-				const state = await readActiveRun(root);
-				await reconcileGate(state, orchestration);
+				let state = await readActiveRun(root);
+				state = await reconcileGate(state, orchestration);
 				if (state.phase === "aborted" || state.phase === "completed") {
 					throw new Error(`Cannot resolve a ${state.phase} run`);
 				}
@@ -127,8 +128,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 
 		async abort(mainWorktree, reason) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
-				const state = await readActiveRun(root);
-				await reconcileGate(state, orchestration);
+				let state = await readActiveRun(root);
+				state = await reconcileGate(state, orchestration);
 				const next: RunState = {
 					...state,
 					phase: "aborted",
@@ -147,9 +148,9 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				const id = nonEmptyString(runId, "health run_id");
 				const active = await readActiveRunId(root);
 				if (active && active !== id) throw new Error(`Cannot run PR health for retained run ${id} while active run ${active} exists`);
-				const state = await readRunState(root, id);
+				let state = await readRunState(root, id);
 				if (!state) throw new Error(`No pi-auto-dag run found: ${runId}`);
-				if (active === id) await reconcileGate(state, orchestration);
+				if (active === id) state = await reconcileGate(state, orchestration);
 				if (active === id && state.health?.status === "completed") {
 					return await releaseCompletedHealth(state, uuid, orchestration);
 				}
@@ -216,12 +217,22 @@ function clearFailedGateEvidence(current: RunTaskState): RunTaskState {
 	return cleared;
 }
 
-async function reconcileGate(state: RunState, options: OrchestrationOptions): Promise<void> {
-	await reconcileRequiredGateProcess(
-		options.runner,
-		requiredGateProcessPath(state.main_worktree, state.run_id),
-		options.delay,
-	);
+async function reconcileGate(state: RunState, options: OrchestrationOptions): Promise<RunState> {
+	const path = requiredGateProcessPath(state.main_worktree, state.run_id);
+	const execution = await reconcileRequiredGateProcess(options.runner, path, options.delay);
+	if (!execution?.handoff) return state;
+	const target = execution.handoff.target;
+	const owner = target.kind === "task" ? state.tasks[target.issue_id] : state.health;
+	if (!owner) throw new Error(`Completed required gate target is missing: ${target.kind} ${target.issue_id}`);
+	const evidence = recordedGateEvidence(owner, execution.commit);
+	if (evidence) {
+		if (evidence.command !== execution.command || evidence.exit_code !== execution.exit_code) {
+			throw new Error("Completed required gate handoff conflicts with saved evidence");
+		}
+		await acknowledgeRequiredGate(path, execution);
+		return state;
+	}
+	return await recordGateExecution(state, target, execution, options.uuid);
 }
 
 async function guardBoundary(state: RunState, runner: CommandRunner, uuid: Uuid): Promise<ProjectConfig> {

@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { RequiredGateExecution } from "./command.ts";
+import { acknowledgeRequiredGate, gateEvidenceRecord, requiredGateProcessPath, type GateEvidenceTarget, type RequiredGateExecution } from "./command.ts";
 import type { DeliveryGraph, GateOutputEvidence, GateOutputReference, LocalIssue, RequiredGateEvidence, RunState } from "./model.ts";
 import type { ReviewKind } from "./review-ticket.ts";
-import { runDirectory, type Uuid } from "./state.ts";
+import { replaceTask, runDirectory, writeRunState, type Uuid } from "./state.ts";
 import { workerDeliveryContext, workerIssueContext } from "./worker.ts";
 
 const OUTPUT_EXCERPT_CHARACTERS = 8 * 1024;
@@ -38,6 +38,27 @@ export async function persistGateOutput(
 		await persistOutput(execution.output[stream], execution.output_files?.[stream], paths[stream], `${stream}-${uuid()}`),
 	]))) as { stdout: GateOutputEvidence; stderr: GateOutputEvidence };
 	return { command: execution.command, commit: execution.commit, exit_code: execution.exit_code, output };
+}
+
+export async function recordGateExecution(
+	state: RunState,
+	target: GateEvidenceTarget,
+	execution: RequiredGateExecution,
+	uuid: Uuid,
+): Promise<RunState> {
+	if (execution.handoff && (
+		execution.handoff.target.kind !== target.kind
+		|| execution.handoff.target.issue_id !== target.issue_id
+	)) throw new Error("Required gate handoff evidence target changed before persistence");
+	if (target.kind === "task" && !state.tasks[target.issue_id]) throw new Error(`Required gate target task is missing: ${target.issue_id}`);
+	if (target.kind === "health" && !state.health) throw new Error("Required gate target health state is missing");
+	const evidence = await persistGateOutput(state, target.issue_id, execution, uuid);
+	const next = target.kind === "task"
+		? replaceTask(state, target.issue_id, { ...state.tasks[target.issue_id], ...gateEvidenceRecord(evidence) })
+		: { ...state, health: { ...state.health!, ...gateEvidenceRecord(evidence) } };
+	await writeRunState(state.main_worktree, next, uuid);
+	await acknowledgeRequiredGate(requiredGateProcessPath(state.main_worktree, state.run_id), execution);
+	return next;
 }
 
 export function reviewPrompt(input: ReviewPromptInput, mode: ReviewPromptMode): Record<string, unknown> {
@@ -82,11 +103,10 @@ async function persistOutput(
 	if (spooledPath) {
 		const contents = await readFile(spooledPath);
 		if (contents.length <= OUTPUT_EXCERPT_CHARACTERS) {
-			await unlink(spooledPath);
 			return { excerpt: contents.toString("utf8"), bytes: contents.length, truncated: false };
 		}
 		await mkdir(dirname(path), { recursive: true });
-		await rename(spooledPath, path);
+		await atomicWrite(path, contents, temporaryName);
 		const omitted = contents.length - OUTPUT_EXCERPT_CHARACTERS;
 		return {
 			excerpt: `${contents.subarray(0, OUTPUT_EXCERPT_HEAD).toString("utf8")}\n... ${omitted} bytes omitted ...\n${contents.subarray(-(OUTPUT_EXCERPT_CHARACTERS - OUTPUT_EXCERPT_HEAD)).toString("utf8")}`,
@@ -126,7 +146,7 @@ function outputReference(path: string, output: string | Buffer): GateOutputRefer
 	return { path, sha256: createHash("sha256").update(output).digest("hex") };
 }
 
-async function atomicWrite(path: string, output: string, temporaryName: string): Promise<void> {
+async function atomicWrite(path: string, output: string | Buffer, temporaryName: string): Promise<void> {
 	const temporary = join(path, "..", `.${temporaryName}.tmp`);
 	await writeFile(temporary, output, { encoding: "utf8", mode: 0o600 });
 	await rename(temporary, path);

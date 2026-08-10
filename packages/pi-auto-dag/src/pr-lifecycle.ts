@@ -313,6 +313,7 @@ async function ensureFinalGate(
 		if (!recordedGateEvidence(task(state, issue.id), commit)) {
 			await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, commit, "Final gate");
 			await restoreCleanCommit(options.runner, commit, worktree);
+			await commandOutput(options.runner, "git", ["clean", "-ffdx"], worktree);
 			state = await ensureRecordedGate(state, issue, commit, worktree, timeoutMs, options);
 		}
 	} finally {

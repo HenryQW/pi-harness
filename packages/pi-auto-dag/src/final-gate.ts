@@ -1,6 +1,6 @@
-import { gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import type { LocalIssue, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
-import { persistGateOutput } from "./review.ts";
+import { recordGateExecution } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 
 export type FinalGateOptions = {
@@ -42,7 +42,7 @@ export async function ensureRecordedGate(
 	options: FinalGateOptions,
 ): Promise<RunState> {
 	const current = task(state, issue.id);
-	let evidence = recordedGateEvidence(current, commit);
+	const evidence = recordedGateEvidence(current, commit);
 	if (!evidence) {
 		const execution = await runRequiredGate(
 			options.runner,
@@ -51,9 +51,9 @@ export async function ensureRecordedGate(
 			cwd,
 			timeoutMs,
 			requiredGateProcessPath(state.main_worktree, state.run_id),
+			{ kind: "task", issue_id: issue.id },
 		);
-		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
-		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+		state = await recordGateExecution(state, { kind: "task", issue_id: issue.id }, execution, options.uuid);
 	}
 	return state;
 }
