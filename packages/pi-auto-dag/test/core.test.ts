@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
-import { reconcileRequiredGateProcess, runCommand, runRequiredGate } from "../src/command.ts";
+import { markGateHostReady, reconcileRequiredGateProcess, runCommand, runRequiredGate } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../src/config.ts";
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
@@ -174,11 +174,25 @@ test("required gate cleanup restores existing ignored files and removes new ones
 	await assert.rejects(access(join(cache, "gate-output")), /ENOENT/);
 });
 
+test("required gate replaces interrupted ignored snapshot staging", async (t) => {
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const staging = `${processPath}.ignored.tmp`;
+	await mkdir(staging, { recursive: true });
+	await writeFile(join(staging, "orphan"), "stale\n");
+
+	const execution = await runRequiredGate(runCommand, "exit 0", commit, project.root, 10_000, processPath);
+
+	assert.equal(execution.exit_code, 0);
+	await assert.rejects(access(staging), /ENOENT/);
+});
+
 test("required gate records recoverable intent before command execution", async (t) => {
 	const project = await makeProject(t);
 	const commit = await git(project.root, "rev-parse", "HEAD");
 	const processPath = join(project.root, ".context", "required-gate-process.json");
-	const check = `const fs=require("node:fs");const r=JSON.parse(fs.readFileSync(${JSON.stringify(processPath)},"utf8"));process.exit(r.version===2&&r.phase==="ready"&&r.pid&&r.identity&&r.launch_id&&r.commit===${JSON.stringify(commit)}?0:1)`;
+	const check = `const fs=require("node:fs");const p=${JSON.stringify(processPath)};const r=JSON.parse(fs.readFileSync(p,"utf8"));const h=JSON.parse(fs.readFileSync(p+"."+r.launch_id+".host","utf8"));process.exit(r.version===3&&r.phase==="launching"&&h.pid&&h.identity&&h.launch_id===r.launch_id&&r.commit===${JSON.stringify(commit)}?0:1)`;
 
 	const execution = await runRequiredGate(
 		runCommand,
@@ -211,6 +225,23 @@ test("required gate rejects a host that exits before readiness", async (t) => {
 	await assert.rejects(access(processPath), /ENOENT/);
 });
 
+test("required gate timeout starts after host readiness", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX host process only");
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const slowNode = join(project.root, "slow-node");
+	const execPath = process.execPath;
+	await writeFile(slowNode, `#!/bin/sh\nsleep 1\nexec ${JSON.stringify(execPath)} "$@"\n`);
+	await chmod(slowNode, 0o700);
+	process.execPath = slowNode;
+	t.after(() => { process.execPath = execPath; });
+
+	const execution = await runRequiredGate(runCommand, "exit 0", commit, project.root, 200, processPath);
+
+	assert.equal(execution.exit_code, 0);
+});
+
 test("required gate restores original branch without moving gate-selected branch", async (t) => {
 	const project = await makeProject(t);
 	await git(project.root, "branch", "gate-other");
@@ -234,6 +265,43 @@ test("required gate restores original branch without moving gate-selected branch
 	assert.equal(await git(project.root, "rev-parse", "gate-other"), otherCommit);
 });
 
+test("interrupted launch cannot become ready during reconciliation", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX host process only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const launchId = "transitioning-host";
+	await writeFile(processPath, `${JSON.stringify({
+		version: 3,
+		phase: "launching",
+		launch_id: launchId,
+		grouped: true,
+		release: `${processPath}.${launchId}.release`,
+		cwd: project.root,
+		command: "test gate",
+		commit,
+	})}\n`);
+	let cancelled = false;
+	let transitionAttempted = false;
+	const runner: typeof runCommand = async (command, arguments_, options) => {
+		if (!transitionAttempted) {
+			transitionAttempted = true;
+			try {
+				await markGateHostReady(processPath, launchId);
+			} catch (error) {
+				assert.match(String(error), /Required gate launch was cancelled/);
+				cancelled = true;
+			}
+		}
+		return await runCommand(command, arguments_, options);
+	};
+
+	await reconcileRequiredGateProcess(runner, processPath, async () => {});
+
+	assert.equal(cancelled, true);
+	await assert.rejects(access(processPath), /ENOENT/);
+});
+
 test("interrupted gate reconciliation ignores reused process identities", async (t) => {
 	if (process.platform === "win32") return t.skip("Unix process identity only");
 	const project = await makeProject(t);
@@ -247,17 +315,22 @@ test("interrupted gate reconciliation ignores reused process identities", async 
 	let exited = false;
 	child.once("exit", () => { exited = true; });
 	t.after(() => { if (!exited) child.kill("SIGKILL"); });
+	const launchId = "reused-process";
 	await writeFile(processPath, `${JSON.stringify({
-		version: 2,
-		phase: "ready",
-		launch_id: "reused-process",
-		pid: child.pid,
+		version: 3,
+		phase: "launching",
+		launch_id: launchId,
 		grouped: false,
-		identity: "different-process",
-		release: `${processPath}.release`,
+		release: `${processPath}.${launchId}.release`,
 		cwd: project.root,
 		command: "test gate",
 		commit,
+	})}\n`);
+	await writeFile(`${processPath}.${launchId}.host`, `${JSON.stringify({
+		version: 1,
+		launch_id: launchId,
+		pid: child.pid,
+		identity: "different-process",
 	})}\n`);
 
 	await reconcileRequiredGateProcess(runCommand, processPath, async () => {});

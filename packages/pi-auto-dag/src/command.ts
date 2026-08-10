@@ -1,7 +1,7 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants, createWriteStream } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,7 +75,7 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 	const releasePath = options.gateProcess ? `${options.gateProcess.path}.${launchId}.release` : undefined;
 	if (options.gateProcess && launchId && releasePath) {
 		await writeGateProcess(options.gateProcess.path, {
-			version: 2,
+			version: 3,
 			phase: "launching",
 			launch_id: launchId,
 			grouped,
@@ -117,14 +117,18 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 	let closing = false;
 	let timedOut = false;
 	let overflowed = false;
+	let timeout: NodeJS.Timeout | undefined;
 	let forceKill: NodeJS.Timeout | undefined;
 	const kill = (signal: NodeJS.Signals): boolean => child.pid !== undefined && signalProcess(child.pid, grouped, signal);
-	const completion = new Promise<CommandResult>((resolve, reject) => {
-		const timeout = options.timeoutMs === undefined ? undefined : setTimeout(() => {
+	const armTimeout = (): void => {
+		if (options.timeoutMs === undefined || settled) return;
+		timeout = setTimeout(() => {
 			timedOut = true;
 			kill("SIGTERM");
 			forceKill = setTimeout(() => kill("SIGKILL"), 1_000);
 		}, options.timeoutMs);
+	};
+	const completion = new Promise<CommandResult>((resolve, reject) => {
 		const fail = (error: unknown): void => {
 			if (settled) return;
 			settled = true;
@@ -167,11 +171,13 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 		});
 	});
 	void completion.catch(() => undefined);
+	if (!options.gateProcess) armTimeout();
 	try {
 		if (options.gateProcess) {
 			if (child.pid === undefined) throw new Error("Required gate process has no PID");
 			await waitForGateHost(options.gateProcess.path, launchId!, child.pid, child);
 			await writeFile(releasePath!, "run\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+			armTimeout();
 		}
 		return await completion;
 	} catch (error) {
@@ -182,8 +188,9 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 	}
 };
 
-interface GateProcessRecordBase {
-	version: 2;
+interface GateProcessRecord {
+	version: 3;
+	phase: "launching";
 	launch_id: string;
 	grouped: boolean;
 	release: string;
@@ -195,17 +202,18 @@ interface GateProcessRecordBase {
 	output_files?: GateOutputFiles;
 }
 
-interface LaunchingGateProcessRecord extends GateProcessRecordBase {
-	phase: "launching";
-}
-
-interface ReadyGateProcessRecord extends GateProcessRecordBase {
-	phase: "ready";
+interface GateHostRecord {
+	version: 1;
+	launch_id: string;
 	pid: number;
 	identity: string;
 }
 
-type GateProcessRecord = LaunchingGateProcessRecord | ReadyGateProcessRecord;
+export interface GateHostControl {
+	release: string;
+	cancel: string;
+	ready: string;
+}
 
 export function requiredGateProcessPath(mainWorktree: string, runId: string): string {
 	return join(runDirectory(mainWorktree, runId), "required-gate-process.json");
@@ -218,10 +226,13 @@ export async function reconcileRequiredGateProcess(
 ): Promise<void> {
 	const record = await readGateProcess(path);
 	if (!record) return;
-	if (record.phase === "ready" && await processIdentity(record.pid) === record.identity) {
-		if (signalProcess(record.pid, record.grouped, "SIGTERM")) {
+	const cancelPath = gateHostCancelPath(path, record.launch_id);
+	await writeGateCancellation(cancelPath);
+	const host = await readGateHost(gateHostReadyPath(path, record.launch_id));
+	if (host && await processIdentity(host.pid) === host.identity) {
+		if (signalProcess(host.pid, record.grouped, "SIGTERM")) {
 			await delay(100);
-			signalProcess(record.pid, record.grouped, "SIGKILL");
+			signalProcess(host.pid, record.grouped, "SIGKILL");
 			await delay(100);
 		}
 	}
@@ -229,6 +240,8 @@ export async function reconcileRequiredGateProcess(
 	if (record.output_files) await removeGateOutputFiles(record.output_files);
 	if (record.ignored_snapshot) await rm(record.ignored_snapshot, { recursive: true, force: true });
 	await removeFile(record.release);
+	await removeFile(gateHostReadyPath(path, record.launch_id));
+	if (host) await removeFile(cancelPath);
 	await removeFile(path);
 }
 
@@ -297,26 +310,39 @@ export async function copyIgnoredResources(runner: CommandRunner, source: string
 }
 
 async function writeGateProcess(path: string, record: GateProcessRecord): Promise<void> {
-	const temporary = `${path}.${randomUUID()}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
-	await rename(temporary, path);
+	await writeJson(path, record);
 }
 
 async function removeGateProcess(path: string): Promise<void> {
 	const record = await readGateProcess(path);
-	if (record) await removeFile(record.release);
+	if (record) {
+		await removeFile(record.release);
+		await removeFile(gateHostReadyPath(path, record.launch_id));
+		await removeFile(gateHostCancelPath(path, record.launch_id));
+	}
 	await removeFile(path);
 }
 
-export async function markGateHostReady(path: string, launchId: string): Promise<string> {
+export async function markGateHostReady(path: string, launchId: string): Promise<GateHostControl> {
 	const record = await readGateProcess(path);
 	if (!record || record.phase !== "launching" || record.launch_id !== launchId) {
 		throw new Error("Required gate launch intent does not match gate host");
 	}
+	const control = {
+		release: record.release,
+		cancel: gateHostCancelPath(path, launchId),
+		ready: gateHostReadyPath(path, launchId),
+	};
+	if (await fileExists(control.cancel)) throw new Error("Required gate launch was cancelled");
 	const identity = await processIdentity(process.pid);
 	if (!identity) throw new Error("Required gate host lacks a safe process identity");
-	await writeGateProcess(path, { ...record, phase: "ready", pid: process.pid, identity });
-	return record.release;
+	if (await fileExists(control.cancel)) throw new Error("Required gate launch was cancelled");
+	await writeJson(control.ready, { version: 1, launch_id: launchId, pid: process.pid, identity } satisfies GateHostRecord);
+	if (await fileExists(control.cancel)) {
+		await removeFile(control.ready);
+		throw new Error("Required gate launch was cancelled");
+	}
+	return control;
 }
 
 async function waitForGateHost(
@@ -325,16 +351,34 @@ async function waitForGateHost(
 	pid: number,
 	child: { exitCode: number | null; signalCode: NodeJS.Signals | null },
 ): Promise<void> {
+	const readyPath = gateHostReadyPath(path, launchId);
 	for (let attempt = 0; attempt < 2_000; attempt += 1) {
-		const record = await readGateProcess(path);
-		if (record?.phase === "ready") {
-			if (record.launch_id !== launchId || record.pid !== pid) throw new Error("Required gate host identity does not match launch intent");
+		const host = await readGateHost(readyPath);
+		if (host) {
+			if (host.launch_id !== launchId || host.pid !== pid) throw new Error("Required gate host identity does not match launch intent");
 			return;
 		}
 		if (child.exitCode !== null || child.signalCode !== null) throw new Error("Required gate host exited before acknowledging launch intent");
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	throw new Error("Required gate host did not acknowledge launch intent");
+}
+
+async function readGateHost(path: string): Promise<GateHostRecord | undefined> {
+	let value: unknown;
+	try {
+		value = JSON.parse(await readFile(path, "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Required gate host record must be an object");
+	const input = value as Record<string, unknown>;
+	if (input.version !== 1) throw new Error("Unsupported required gate host record version");
+	if (typeof input.launch_id !== "string" || !input.launch_id) throw new Error("Required gate host launch ID must be a non-empty string");
+	if (!Number.isSafeInteger(input.pid) || (input.pid as number) <= 0) throw new Error("Required gate host PID must be a positive integer");
+	if (typeof input.identity !== "string" || !input.identity) throw new Error("Required gate host identity must be a non-empty string");
+	return input as unknown as GateHostRecord;
 }
 
 async function readGateProcess(path: string): Promise<GateProcessRecord | undefined> {
@@ -347,15 +391,11 @@ async function readGateProcess(path: string): Promise<GateProcessRecord | undefi
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Required gate process record must be an object");
 	const input = value as Record<string, unknown>;
-	if (input.version !== 2) throw new Error("Unsupported required gate process record version");
-	if (!["launching", "ready"].includes(String(input.phase))) throw new Error("Required gate process phase is invalid");
+	if (input.version !== 3) throw new Error("Unsupported required gate process record version");
+	if (input.phase !== "launching") throw new Error("Required gate process phase is invalid");
 	if (typeof input.grouped !== "boolean") throw new Error("Required gate process grouped must be boolean");
 	for (const key of ["launch_id", "release", "cwd", "command", "commit"] as const) {
 		if (typeof input[key] !== "string" || !input[key]) throw new Error(`Required gate process ${key} must be a non-empty string`);
-	}
-	if (input.phase === "ready") {
-		if (!Number.isSafeInteger(input.pid) || (input.pid as number) <= 0) throw new Error("Required gate process PID must be a positive integer");
-		if (typeof input.identity !== "string" || !input.identity) throw new Error("Required gate process identity must be a non-empty string");
 	}
 	if (input.head_ref !== undefined && input.head_ref !== null && (typeof input.head_ref !== "string" || !input.head_ref)) throw new Error("Required gate head ref must be a non-empty string or null");
 	if (input.ignored_snapshot !== undefined && (typeof input.ignored_snapshot !== "string" || !input.ignored_snapshot)) throw new Error("Required gate ignored snapshot must be a non-empty string");
@@ -367,6 +407,36 @@ async function readGateProcess(path: string): Promise<GateProcessRecord | undefi
 		}
 	}
 	return input as unknown as GateProcessRecord;
+}
+
+async function writeJson(path: string, value: unknown): Promise<void> {
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+	await rename(temporary, path);
+}
+
+function gateHostReadyPath(path: string, launchId: string): string {
+	return `${path}.${launchId}.host`;
+}
+
+function gateHostCancelPath(path: string, launchId: string): string {
+	return `${path}.${launchId}.cancel`;
+}
+
+async function writeGateCancellation(path: string): Promise<void> {
+	await writeFile(path, "cancel\n", { encoding: "utf8", mode: 0o600, flag: "wx" }).catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "EEXIST") throw error;
+	});
+}
+
+async function fileExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
 }
 
 function signalProcess(pid: number, grouped: boolean, signal: NodeJS.Signals): boolean {
@@ -430,9 +500,10 @@ async function removeFile(path: string): Promise<void> {
 }
 
 async function writeIgnoredSnapshot(path: string, cwd: string, runner: CommandRunner): Promise<void> {
-	const temporary = `${path}.${randomUUID()}.tmp`;
-	const roots = await ignoredWorktreeRoots(runner, cwd);
+	const temporary = `${path}.tmp`;
+	await rm(temporary, { recursive: true, force: true });
 	try {
+		const roots = await ignoredWorktreeRoots(runner, cwd);
 		await mkdir(join(temporary, "contents"), { recursive: true });
 		for (const root of roots) {
 			await copyResource(safeWorktreePath(cwd, root), safeWorktreePath(join(temporary, "contents"), root));
