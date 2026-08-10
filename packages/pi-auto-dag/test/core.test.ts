@@ -3,10 +3,12 @@ import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
-import { markGateHostReady, reconcileRequiredGateProcess, runCommand, runRequiredGate } from "../src/command.ts";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { markGateHostReady, reconcileRequiredGateProcess, runCommand, runRequiredGate, type RequiredGateExecution } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../src/config.ts";
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
@@ -112,6 +114,47 @@ test("successful commands reap background process-group members", async (t) => {
 	assert.equal(result.code, 0);
 	await new Promise((resolve) => setTimeout(resolve, 250));
 	await assert.rejects(access(marker), /ENOENT/);
+});
+
+test("packed package runs required gate through plain Node host", async (t) => {
+	if (process.platform === "win32") return t.skip("Required gates execute through POSIX host");
+	const project = await makeProject(t, ".context/\ngenerated.txt\n");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-packed-"));
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+	const { stdout: packedJson } = await execFile("npm", ["pack", "--json", "--pack-destination", root], { cwd: packageRoot });
+	const tarball = join(root, (JSON.parse(packedJson) as Array<{ filename: string }>)[0].filename);
+	const app = join(root, "app");
+	await mkdir(app);
+	await writeFile(join(app, "package.json"), "{\"type\":\"module\"}\n");
+	await execFile("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--legacy-peer-deps", tarball], { cwd: app });
+	const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+	const jitiPath = piRequire.resolve("jiti");
+	const commandUrl = pathToFileURL(join(app, "node_modules", "@henryqw", "pi-auto-dag", "src", "command.ts")).href;
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const gateScript = "const fs=require('node:fs');process.stdout.write('packed gate\\n'+'x'.repeat(9000));fs.writeFileSync('.gitignore','changed\\n');fs.writeFileSync('generated.txt','generated\\n')";
+	const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(gateScript)}`;
+	const harness = join(app, "gate-smoke.mjs");
+	await writeFile(harness, `
+import { createRequire } from "node:module";
+const { createJiti } = createRequire(import.meta.url)(${JSON.stringify(jitiPath)});
+const jiti = createJiti(import.meta.url, { moduleCache: false });
+const { runCommand, runRequiredGate } = await jiti.import(${JSON.stringify(commandUrl)});
+const execution = await runRequiredGate(runCommand, ${JSON.stringify(command)}, ${JSON.stringify(commit)}, ${JSON.stringify(project.root)}, 10_000, ${JSON.stringify(processPath)});
+process.stdout.write(JSON.stringify(execution));
+`);
+
+	const { stdout } = await execFile(process.execPath, [harness], { cwd: app });
+	const execution = JSON.parse(stdout) as RequiredGateExecution;
+	assert.equal(execution.exit_code, 0);
+	assert.equal(execution.command, command);
+	const output = await readFile(execution.output_files!.stdout, "utf8");
+	assert.match(output, /^packed gate\n/);
+	assert.ok(output.length > 9_000);
+	assert.equal(await readFile(join(project.root, ".gitignore"), "utf8"), ".context/\ngenerated.txt\n");
+	await assert.rejects(access(join(project.root, "generated.txt")), /ENOENT/);
+	assert.equal(await git(project.root, "status", "--porcelain"), "");
 });
 
 test("required gate output overflow becomes exact failed evidence", async (t) => {
