@@ -2,7 +2,7 @@
 
 Pi extension for planning and running a Delivery Graph with Pi and Herdr.
 
-`/dag-plan` turns current conversation and repository context into an independently reviewed, user-approved graph. Auto DAG then runs dependent tasks in parallel, reviews every commit, integrates approved work, runs a final check, and opens one PR.
+`/dag-plan` turns current conversation and repository context into an independently reviewed, user-approved graph. Auto DAG then runs dependent tasks in parallel, executes each frozen test gate, gives commit-bound evidence to reviewers, integrates approved work, runs a final check, and opens one PR.
 
 ## Key terms
 
@@ -14,6 +14,8 @@ Pi extension for planning and running a Delivery Graph with Pi and Herdr.
 | Run State | Saved progress for one run |
 
 ## Setup
+
+Auto DAG requires a POSIX host for exact `sh -c` gate execution and process-group cleanup. Windows hosts fail before gate execution.
 
 Load orchestrator extension only in main integration profile:
 
@@ -31,7 +33,7 @@ Worker profiles remain reusable Pi profiles and must not load Auto DAG. Auto DAG
 
 - Implementers request review or report blockers.
 - Planning reviewers record `PASS` for exact current graph hash.
-- Run reviewers submit review, health, or blocker events allowed by current phase.
+- Run reviewers inspect code and system-owned gate evidence, then submit verdicts, findings, health, or blocker events allowed by current phase.
 
 Herdr only hosts processes. Auto DAG passes resolved environment and Pi arguments when creating each process.
 
@@ -86,8 +88,9 @@ Optional settings:
 | --- | ---: | --- |
 | `max_parallel_tasks` | `5` | Most implementation tasks running at once |
 | `max_review_rounds` | `5` | Most review rounds per task |
+| `required_gate_timeout_ms` | `1800000` | Maximum runtime for each required gate; timeout exits with code `124` |
 
-Both values must be positive integers.
+All values must be positive integers. `required_gate_timeout_ms` cannot exceed Node's timer maximum, `2147483647`.
 
 ## Delivery Graph
 
@@ -142,14 +145,14 @@ flowchart TD
     A --> B["Start and validate"]
     B --> C["Freeze ready wave at current HEAD"]
     C --> D["Run implementers in child worktrees"]
-    D --> E["Review each exact commit and run its test"]
+    D --> E["Auto DAG runs exact test; reviewer inspects commit and evidence"]
     E -->|changes requested| D
     E -->|blocked| X["Resolve task or abort run"]
     X --> D
     E -->|wave approved| F["Cherry-pick commits in ID order"]
     F --> G{"More implementation tasks?"}
     G -->|yes| C
-    G -->|no| H["Run final check on integration HEAD"]
+    G -->|no| H["Auto DAG runs final gate; reviewer inspects HEAD and evidence"]
     H -->|failed| I["Repair owning implementation task"]
     I --> H
     H -->|passed| J["Push branch and open one PR"]
@@ -189,10 +192,11 @@ For each task:
 1. Create a child worktree at `.<repo>-auto-dag/<run-id>/<issue-id>`.
 2. Start one implementer.
 3. Require one commit over the wave base.
-4. Start a task-owned reviewer.
-5. Run the task's exact `testing` command.
+4. Verify that commit and clean worktree, persist launch intent, complete a separately bounded gate-host handshake, then release host to execute frozen `testing` text unchanged through `sh -c`. Configured deadline starts at release; timeout uses process-group cleanup. Host startup failure blocks without recording gate evidence. Launch-specific cancellation prevents interrupted cleanup from orphaning a transitioning host. Active process identity is persisted before command execution, so resume or abort signals only recorded gate; normal completion also reaps background descendants.
+5. Save command, verified commit SHA, exit code, and bounded stdout/stderr evidence, then restore original branch and commit, remove gate-created tracked, untracked, and ignored dirt, and restore pre-existing ignored resources from a private snapshot with recoverable staging. Output overflow becomes failed evidence, with exact captured streams retained in SHA-256-bound files instead of Run State.
+6. Start task-owned reviewer with one canonical Review Packet. Gate output uses same bounded evidence and read-on-demand full-output references.
 
-Approval requires exit code `0`. Requested changes return to the same implementer for a new commit SHA.
+Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Reviewer submits only verdict and findings; worker extension captures scope-specific system-owned dispatch identity when each reviewer turn starts, so stale or duplicated verdicts cannot approve another commit or review round. Extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
 
 ### 4. Integrate
 
@@ -209,12 +213,12 @@ A cherry-pick conflict returns that task to its existing workers. They produce o
 
 ### 5. Final check and PR
 
-After all implementation tasks finish, a temporary read-only reviewer runs `final_check.testing` on the integration `HEAD`.
+After all implementation tasks finish, Auto DAG executes exact frozen `final_check.testing` text on clean integration `HEAD`, captures commit-bound evidence, then starts temporary read-only reviewer.
 
-- Pass: push the integration branch and open one PR.
+- Pass: copy checkout-local ignored tools into a disposable child worktree at integration `HEAD`, execute final gate without sharing mutable files, require reviewer approval and system-owned gate exit code `0`, then push integration branch and open one PR.
 - Fail: block before push or PR creation.
 
-To repair a failed final check, call `auto_dag_resolve` with the completed implementation task that owns the bug. Auto DAG creates a fresh repair worktree, reviews its commit, cherry-picks it, and reruns the final check.
+To repair failed final check, call `auto_dag_resolve` with completed implementation task that owns bug. Auto DAG creates fresh repair worktree, executes same frozen gate against repair commit before review, cherry-picks approved repair, then executes final gate again on new integration `HEAD`. Broken frozen command needs user resolution or replacement Delivery Graph; reviewer cannot substitute another command.
 
 ## Lifecycle tools
 
@@ -234,7 +238,7 @@ To repair a failed final check, call `auto_dag_resolve` with the completed imple
 
 `resume`, `resolve`, and `abort` use the only active run. `health` requires a retained `run_id`; `status` accepts one when reading run history.
 
-Run-worker messages go straight to lifecycle. Planning-review `PASS` goes straight to temporary `.context/issues/review.json`. Neither needs model turn in main pane. Initial run-worker prompts include graph `goal`, `constraints`, and `non_goals` alongside task context.
+Run-worker messages go straight to lifecycle. Planning-review `PASS` goes straight to temporary `.context/issues/review.json`. Neither needs model turn in main pane. Fresh review agents receive one canonical packet containing delivery context, issue, worktree, base, and gate evidence. Existing reviewers receive only changed gate/findings/resolution data; a no-change resume sends only `{"type":"auto_dag_resend"}`.
 
 ## Blocks, recovery, and aborts
 
@@ -263,10 +267,10 @@ Auto DAG:
 2. Uses one read-only reviewer to inspect unresolved threads and failing checks.
 3. Stops if nothing needs work.
 4. Otherwise creates one repair worktree and starts configured repair profile.
-5. Uses the same reviewer to approve the repair.
+5. Executes frozen final-check gate against exact repair commit and gives evidence to same reviewer.
 6. Pushes once to the same PR and resolves only fixed, triaged threads.
 
-It never resets or switches branches. A changed remote PR head blocks an active repair.
+For approved PR-health repair, reviewer `findings` contain only fixed triaged thread IDs. It never resets or switches branches. Changed remote PR head blocks active repair.
 
 Run health again for later feedback.
 
@@ -282,7 +286,7 @@ Run files live under `.context/pi-auto-dag/`:
 
 `active.json` locks one checkout. Lock stays until cleanup succeeds.
 
-Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, and health evidence. Writes are atomic.
+Run State schema version is `2`. v4 rejects v3 in-flight Run State; finish or abort active v3 runs before upgrading. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, and bounded required-gate evidence. Large gate streams and active gate-process intent live in separate run files. Writes are atomic.
 
 Main Pi widget shows:
 

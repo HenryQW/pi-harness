@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { runCommand, type CommandRunner } from "./command.ts";
+import { reconcileRequiredGateProcess, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
+import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
 import type { ProjectConfig, RunState, RunTaskState } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { runPrHealth } from "./pr-health.ts";
-import { resolvePrLifecycle } from "./pr-lifecycle.ts";
 import { claimActiveRun, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
-import { workerWorkspaceId } from "./worker.ts";
+import { workerWorkspaceId } from "./worker-host.ts";
 
 export interface CoreLifecycleOptions {
 	runner?: CommandRunner;
@@ -52,6 +52,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		async resume(mainWorktree, envelope) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const state = await readActiveRun(root);
+				await reconcileGate(state, orchestration);
 				if (state.phase !== "aborted" && state.health) {
 					if (state.health.status === "completed") {
 						return await releaseCompletedHealth(state, uuid, orchestration);
@@ -71,13 +72,14 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		async resolve(mainWorktree, issueId, resolution) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const state = await readActiveRun(root);
+				await reconcileGate(state, orchestration);
 				if (state.phase === "aborted" || state.phase === "completed") {
 					throw new Error(`Cannot resolve a ${state.phase} run`);
 				}
 				const config = await guardBoundary(state, runner, uuid);
 				const id = nonEmptyString(issueId, "resolution issue_id");
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
-				const prResolved = await resolvePrLifecycle(state, id, resolution, config, orchestration);
+				const prResolved = await resolveFinalRepair(state, id, resolution, config, orchestration);
 				if (prResolved) return await completeSuccessfulRun(prResolved, orchestration);
 				const current = state.tasks[id];
 				const { block_reason: _taskBlockReason, blocked_role, activity_started_at: _activityStartedAt, ...resolvedTask } = current;
@@ -121,6 +123,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		async abort(mainWorktree, reason) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const state = await readActiveRun(root);
+				await reconcileGate(state, orchestration);
 				const next: RunState = {
 					...state,
 					phase: "aborted",
@@ -141,6 +144,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				if (active && active !== id) throw new Error(`Cannot run PR health for retained run ${id} while active run ${active} exists`);
 				const state = await readRunState(root, id);
 				if (!state) throw new Error(`No pi-auto-dag run found: ${runId}`);
+				if (active === id) await reconcileGate(state, orchestration);
 				if (active === id && state.health?.status === "completed") {
 					return await releaseCompletedHealth(state, uuid, orchestration);
 				}
@@ -173,6 +177,14 @@ async function withLifecycleMutation<T>(mainWorktree: string, runner: CommandRun
 		release();
 		if (lifecycleMutationTails.get(root) === tail) lifecycleMutationTails.delete(root);
 	}
+}
+
+async function reconcileGate(state: RunState, options: OrchestrationOptions): Promise<void> {
+	await reconcileRequiredGateProcess(
+		options.runner,
+		requiredGateProcessPath(state.main_worktree, state.run_id),
+		options.delay,
+	);
 }
 
 async function guardBoundary(state: RunState, runner: CommandRunner, uuid: Uuid): Promise<ProjectConfig> {

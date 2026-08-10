@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import { type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
+import { reviewId } from "../src/review-ticket.ts";
 import { readActiveRunId, runDirectory } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -19,7 +21,16 @@ const ACTIVE_RUN_ID = "44444444-4444-4444-8444-444444444444";
 
 test("the frozen final check opens one exact integration PR and cleans successful resources", async (t) => {
 	const project = await makeProject(t);
-	const herdr = fakeHerdr();
+	await mkdir(join(project.root, ".local-tools"));
+	await writeFile(join(project.root, ".local-tools", "ready"), "available\n");
+	const herdr = fakeHerdr({
+		gate: (command, cwd) => {
+			if (command === "npm test -- final-check") {
+				assert.equal(readFileSync(join(cwd!, ".local-tools", "ready"), "utf8"), "available\n");
+			}
+			return { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" };
+		},
+	});
 	const gh = fakeGh(project.root);
 	const lifecycle = makeLifecycle(combinedRunner(herdr, gh));
 
@@ -35,6 +46,27 @@ test("the frozen final check opens one exact integration PR and cleans successfu
 	assert.doesNotMatch(gh.pr?.body ?? "", /close[sd]? #/i);
 	assert.equal(herdr.tabs.size, 0);
 	assert.equal(gh.count("pr create"), 1);
+	const finalGate = herdr.calls.find((call) => call.command === "sh" && call.args[1] === "npm test -- final-check");
+	assert.match(finalGate?.cwd ?? "", /\/final-gate$/);
+	assert.notEqual(finalGate?.cwd, project.root);
+	await assert.rejects(readFile(finalGate!.cwd!, "utf8"), /ENOENT/);
+});
+
+test("final gate cannot erase changes created concurrently in main worktree", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const base = combinedRunner(herdr, fakeGh(project.root));
+	const runner: CommandRunner = async (command, args, options) => {
+		if (command === "sh" && args[1] === "npm test -- final-check") {
+			await writeFile(join(project.root, "user-during-final-gate.txt"), "keep\n");
+		}
+		return await base(command, args, options);
+	};
+
+	const state = await advanceToFinalReview(project.root, makeLifecycle(runner));
+
+	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(await readFile(join(project.root, "user-during-final-gate.txt"), "utf8"), "keep\n");
 });
 
 test("health refuses a retained historical run while another run is active without touching it", async (t) => {
@@ -94,9 +126,19 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	assert.match(repairWorktree, /final-repair-alpha-1$/);
 	const repair = await commit(repairWorktree, "repair.txt", "fixed\n", "repair alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "final-check", repair));
-	const repairReviewPrompt = workerPrompts().find((value) => value.type === "auto_dag_final_repair_review");
-	assert.deepEqual(Object.keys(repairReviewPrompt.owner_issue).sort(), ["acceptance", "id", "purpose", "title"]);
-	assert.equal(repairReviewPrompt.command, "npm test -- final-check");
+	const repairReviewPrompt = workerPrompts().find((value) => value.type === "auto_dag_review" && value.kind === "final_repair");
+	assert.deepEqual(Object.keys(repairReviewPrompt.context.owner_issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	assert.deepEqual(Object.keys(repairReviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	assert.deepEqual(repairReviewPrompt.gate, {
+		command: "npm test -- final-check",
+		commit: repair,
+		exit_code: 0,
+		output: {
+			stdout: { excerpt: "required gate passed: npm test -- final-check\n", bytes: Buffer.byteLength("required gate passed: npm test -- final-check\n"), truncated: false },
+			stderr: { excerpt: "", bytes: 0, truncated: false },
+		},
+	});
+	for (const key of ["run_id", "attempt", "review_round", "required_gate", "command", "commit"]) assert.equal(key in repairReviewPrompt, false);
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(await git(project.root, "show", "HEAD:repair.txt"), "fixed");
@@ -104,17 +146,17 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	const prompts = () => herdr.calls
 		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === finalReviewer)
 		.map((call) => JSON.parse(call.args[3]));
-	const fullPrompt = prompts().find((value) => value.type === "auto_dag_final_check");
-	assert.equal(fullPrompt.attempt, state.tasks["final-check"].attempts);
-	assert.equal(fullPrompt.review_round, state.tasks["final-check"].review_rounds);
-	assert.equal(fullPrompt.command, "npm test -- final-check");
+	const fullPrompt = prompts().find((value) => value.type === "auto_dag_review" && value.kind === "final_check");
+	assert.equal(fullPrompt.gate.command, "npm test -- final-check");
+	assert.equal(fullPrompt.gate.commit, state.integration_head);
+	assert.equal(fullPrompt.gate.exit_code, 0);
+	assert.equal(fullPrompt.worktree, project.root);
+	assert.equal("command" in fullPrompt, false);
 	assert.deepEqual(fullPrompt.delivery, repairPrompt.delivery);
 	assert.deepEqual(Object.keys(fullPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	for (const key of ["run_id", "attempt", "review_round", "required_gate"]) assert.equal(key in fullPrompt, false);
 	state = await lifecycle.resume(project.root);
-	const compactPrompt = prompts().at(-1);
-	assert.equal(compactPrompt.type, "auto_dag_resend");
-	assert.equal(compactPrompt.attempt, state.tasks["final-check"].attempts);
-	assert.equal(compactPrompt.review_round, state.tasks["final-check"].review_rounds);
+	assert.deepEqual(prompts().at(-1), { type: "auto_dag_resend" });
 
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.phase, "completed");
@@ -196,7 +238,19 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	const repair = await commit(state.health!.worktree!, "health.txt", "healthy\n", "health repair");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
 	assert.equal(state.health?.reviewer_agent, reviewer);
-	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-1", "THREAD-2"]));
+	assert.equal(state.health?.review_commit, repair);
+	assert.equal(state.health?.review_command, "npm test -- final-check");
+	assert.equal(state.health?.review_exit_code, 0);
+	const reviewPrompt = herdr.calls
+		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === reviewer)
+		.map((call) => JSON.parse(call.args[3]))
+		.reverse()
+		.find((value) => value.type === "auto_dag_review");
+	assert.equal(reviewPrompt.kind, "pr_health_repair");
+	assert.deepEqual(reviewPrompt.context.triage.thread_ids, ["THREAD-1", "THREAD-2"]);
+	assert.equal(reviewPrompt.gate.commit, repair);
+	for (const key of ["run_id", "attempt", "review_round", "required_gate"]) assert.equal(key in reviewPrompt, false);
+	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-1", "THREAD-2"]));
 
 	assert.equal(state.health?.status, "completed");
 	assert.deepEqual(state.health?.resolved_thread_ids, ["THREAD-1", "THREAD-2"]);
@@ -311,7 +365,7 @@ test("health recovers a crashed repair pick and persists post-push cleanup befor
 	}));
 	const repair = await commit(state.health!.worktree!, "health.txt", "healthy\n", "health repair");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
-	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-1"])), /simulated crash/);
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-1"])), /simulated crash/);
 	const stuck = await lifecycle.status(project.root, RUN_ID);
 	assert.equal(stuck?.health?.status, "applying");
 	assert.equal(stuck?.health?.integration_intent, repair);
@@ -327,7 +381,7 @@ test("health recovers a crashed repair pick and persists post-push cleanup befor
 	}));
 	const second = await commit(state.health!.worktree!, "health-2.txt", "healthy\n", "health repair 2");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", second));
-	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-2"])), /simulated cleanup failure/);
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-2"])), /simulated cleanup failure/);
 	const failed = await lifecycle.status(project.root, RUN_ID);
 	assert.equal(failed?.health?.status, "post_push_cleanup");
 	const pushed = gh.gitPushes;
@@ -393,7 +447,7 @@ async function makeProject(t: TestContext): Promise<{ root: string; remote: stri
 	await mkdir(join(agentDir, "config"), { recursive: true });
 	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: 2 })));
 	useAgentDir(t, agentDir);
-	await writeFile(join(root, ".gitignore"), ".context/\n");
+	await writeFile(join(root, ".gitignore"), ".context/\n.local-tools/\n");
 	await writeFile(join(root, "conflict.txt"), "base\n");
 	await git(root, "add", ".");
 	await git(root, "commit", "-m", "initial");
@@ -422,23 +476,16 @@ function reviewEvent(
 	issueId: string,
 	verdict: "approved" | "changes_requested" | "blocked",
 	findings: string[],
-	fixedThreadIds?: string[],
 ): string {
 	const task = state.tasks[issueId];
-	const command = issueId === "final-check"
-		? state.graph.final_check.testing
-		: state.graph.issues.find((issue) => issue.id === issueId)?.testing;
-	if (!command) throw new Error(`Missing frozen command for ${issueId}`);
-	return event(state, issueId, "reviewer", "submit_review", {
-		commit: task.commit,
+	return event(state, issueId, "reviewer", "submit_review", { verdict, findings }, reviewId({
+		run_id: state.run_id,
+		kind: issueId !== "final-check" ? "implementation" : task.status === "repair_reviewing" ? "final_repair" : "final_check",
+		issue_id: issueId,
+		commit: task.commit!,
 		attempt: task.attempts,
-		review_round: task.review_rounds,
-		command,
-		exit_code: 0,
-		verdict,
-		findings,
-		...(fixedThreadIds ? { fixed_thread_ids: fixedThreadIds } : {}),
-	});
+		review_round: task.review_rounds!,
+	}));
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {
@@ -464,23 +511,27 @@ function healthReviewEvent(
 	state: RunState,
 	verdict: "approved" | "changes_requested" | "blocked",
 	findings: string[],
-	fixedThreadIds: string[],
 ): string {
 	const health = state.health!;
-	return event(state, "final-check", "reviewer", "submit_review", {
-		commit: health.commit,
-		attempt: health.attempt,
-		review_round: health.review_round,
-		command: state.graph.final_check.testing,
-		exit_code: 0,
-		verdict,
-		findings,
-		fixed_thread_ids: fixedThreadIds,
-	});
+	return event(state, "final-check", "reviewer", "submit_review", { verdict, findings }, reviewId({
+		run_id: state.run_id,
+		kind: "pr_health_repair",
+		issue_id: "final-check",
+		commit: health.commit!,
+		attempt: health.attempt!,
+		review_round: health.review_round!,
+	}));
 }
 
-function event(state: RunState, issueId: string, role: "implementer" | "reviewer", type: string, payload: Record<string, unknown>): string {
-	return JSON.stringify({ version: 1, type, run_id: state.run_id, issue_id: issueId, role, payload });
+function event(
+	state: RunState,
+	issueId: string,
+	role: "implementer" | "reviewer",
+	type: string,
+	payload: Record<string, unknown>,
+	review_id?: string,
+): string {
+	return JSON.stringify({ version: 1, type, run_id: state.run_id, issue_id: issueId, role, ...(review_id ? { review_id } : {}), payload });
 }
 
 async function commit(cwd: string, file: string, content: string, subject: string): Promise<string> {
@@ -503,7 +554,7 @@ async function advanceRemote(t: TestContext, remote: string): Promise<void> {
 
 function combinedRunner(herdr: ReturnType<typeof fakeHerdr>, gh: ReturnType<typeof fakeGh>): CommandRunner {
 	return async (command, args, options) => {
-		if (command === "herdr") return await herdr.runner(command, args, options);
+		if (command === "herdr" || command === "sh") return await herdr.runner(command, args, options);
 		if (command === "gh") return await gh.runner(command, args);
 		if (command === "git" && args[0] === "push") gh.gitPushes += 1;
 		return await runCommand(command, args, options);

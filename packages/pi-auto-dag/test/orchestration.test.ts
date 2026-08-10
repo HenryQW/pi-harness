@@ -9,9 +9,11 @@ import { fakeHerdr } from "./support/fake-herdr.ts";
 import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
 import { type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
+import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
-import { childWorktreePath, parseWorkerEnvelope } from "../src/orchestration.ts";
-import { writeRunState } from "../src/state.ts";
+import { parseWorkerEnvelope } from "../src/orchestration.ts";
+import { reviewId } from "../src/review-ticket.ts";
+import { runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -43,10 +45,25 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(state.tasks.alpha.activity_started_at, "2026-08-09T00:00:00.000Z");
 	const reviewPrompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
 	assert.deepEqual(reviewPrompt.delivery, implementerPrompt.delivery);
-	assert.equal(reviewPrompt.command, "npm test -- alpha");
+	assert.equal(reviewPrompt.type, "auto_dag_review");
+	assert.equal(reviewPrompt.kind, "implementation");
+	assert.deepEqual(reviewPrompt.gate, {
+		command: "npm test -- alpha",
+		commit: alpha,
+		exit_code: 0,
+		output: {
+			stdout: { excerpt: "required gate passed: npm test -- alpha\n", bytes: Buffer.byteLength("required gate passed: npm test -- alpha\n"), truncated: false },
+			stderr: { excerpt: "", bytes: 0, truncated: false },
+		},
+	});
+	for (const key of ["run_id", "attempt", "review_round", "required_gate", "command", "commit"]) assert.equal(key in reviewPrompt, false);
+	assert.equal(reviewPrompt.base, state.tasks.alpha.wave_base);
 	assert.deepEqual(Object.keys(reviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	assert.equal("testing" in reviewPrompt, false);
 	assert.equal(herdr.count("pane split"), 1);
+	const gateCall = herdr.calls.findIndex((call) => call.command === "sh");
+	const reviewDispatch = herdr.calls.findIndex((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt" && call.args[2].endsWith("-r"));
+	assert.ok(gateCall >= 0 && gateCall < reviewDispatch);
 
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
 	assert.equal(state.tasks.alpha.status, "approved");
@@ -83,7 +100,7 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(herdr.count("tab create"), 4);
 	const creates = herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "tab create");
 	assert.ok(creates.every(({ args }) => args[args.indexOf("--workspace") + 1] === "main-workspace"));
-	assert.equal(herdr.calls.some((call) => !["git", "herdr", process.execPath].includes(call.command)), false);
+	assert.equal(herdr.calls.some((call) => !["git", "herdr", "sh", process.execPath].includes(call.command)), false);
 });
 
 test("wave completion rechecks local inputs before dispatching the next wave", async (t) => {
@@ -319,7 +336,9 @@ test("task blocks defer review dispatch and explicit recovery until resolved", a
 	state = await lifecycle.resolve(project.root, "alpha", "Proceed with alpha.");
 	assert.equal(state.tasks.beta.reviewer_instruction_pending, undefined);
 	assert.equal(herdr.count("agent start"), starts + 2);
-	assert.match(JSON.parse(reviewPrompts(herdr).at(-1)!).instruction, /Independently verify/);
+	const prompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.match(prompt.instruction, /Auto DAG already verified/);
+	assert.doesNotMatch(prompt.instruction, /Independently verify/);
 });
 
 test("review requests canonicalize abbreviated commits and reject wrong revisions", async (t) => {
@@ -344,71 +363,122 @@ test("review requests canonicalize abbreviated commits and reject wrong revision
 	assert.match(String(state.tasks.beta.block_reason), /git rev-parse --verify not-a-commit\^\{commit\} failed:/);
 });
 
-test("review verdicts bind the commit, attempt, and review round", async (t) => {
-	const project = await makeProject(t, graph(["alpha"]), 1, 3);
-	const herdr = fakeHerdr();
-	const lifecycle = makeLifecycle(herdr.runner);
-	let state = await lifecycle.start(project.root, "main-pane");
-	const first = await commitTask(state, "alpha", "alpha.txt", "first\n", "first");
-	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", first));
-	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "changes_requested", ["change it"]));
-	await writeFile(join(state.tasks.alpha.worktree!, "alpha.txt"), "second\n");
-	await git(state.tasks.alpha.worktree!, "add", "alpha.txt");
-	await git(state.tasks.alpha.worktree!, "commit", "--amend", "-m", "second");
-	const second = await git(state.tasks.alpha.worktree!, "rev-parse", "HEAD");
-	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", second));
-
-	for (const payload of [
-		{ commit: first, attempt: state.tasks.alpha.attempts, review_round: state.tasks.alpha.review_rounds },
-		{ commit: state.tasks.alpha.commit, attempt: state.tasks.alpha.attempts + 1, review_round: state.tasks.alpha.review_rounds },
-		{ commit: state.tasks.alpha.commit, attempt: state.tasks.alpha.attempts, review_round: state.tasks.alpha.review_rounds! - 1 },
-	]) {
-		state = await lifecycle.resume(project.root, event("alpha", "reviewer", "submit_review", { ...payload, command: "npm test -- alpha", exit_code: 0, verdict: "approved", findings: [] }));
-		assert.equal(state.tasks.alpha.status, "reviewing");
-		assert.equal(state.tasks.alpha.commit, second);
-		assert.equal(state.tasks.alpha.review_rounds, 2);
+test("review submissions contain only reviewer-owned verdict data", () => {
+	for (const key of ["commit", "attempt", "review_round", "command", "exit_code", "fixed_thread_ids"]) {
+		assert.throws(() => parseWorkerEnvelope(JSON.parse(event("alpha", "reviewer", "submit_review", {
+			verdict: "approved",
+			findings: [],
+			[key]: key === "command" || key === "commit" ? "value" : 1,
+		}))), new RegExp(`Unknown worker envelope submit_review payload setting: ${key}`));
 	}
 	for (const verdict of ["changes_requested", "blocked"] as const) {
 		assert.throws(() => parseWorkerEnvelope(JSON.parse(event("alpha", "reviewer", "submit_review", {
-			commit: second,
-			attempt: state.tasks.alpha.attempts,
-			review_round: state.tasks.alpha.review_rounds,
-			command: "npm test -- alpha",
-			exit_code: 0,
 			verdict,
 			findings: [],
 		}))), /Non-approval review verdict requires findings/);
 	}
 });
 
-test("review verdicts persist frozen command evidence and reject nonzero approvals", async (t) => {
+test("Auto DAG persists required-gate evidence and rejects nonzero approvals", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
-	const herdr = fakeHerdr();
+	const herdr = fakeHerdr({ gate: () => ({ code: 1, stdout: "failed output\n", stderr: "failure details\n" }) });
 	const lifecycle = makeLifecycle(herdr.runner);
 	let state = await lifecycle.start(project.root, "main-pane");
 	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
-	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", [], 1));
 
-	assert.equal(state.tasks.alpha.status, "blocked");
 	assert.equal(state.tasks.alpha.review_command, "npm test -- alpha");
 	assert.equal(state.tasks.alpha.review_commit, commit);
 	assert.equal(state.tasks.alpha.review_exit_code, 1);
+	assert.deepEqual(state.tasks.alpha.review_stdout, { excerpt: "failed output\n", bytes: 14, truncated: false });
+	assert.deepEqual(state.tasks.alpha.review_stderr, { excerpt: "failure details\n", bytes: 16, truncated: false });
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+	assert.equal(state.tasks.alpha.status, "blocked");
 	assert.match(String(state.tasks.alpha.block_reason), /approval requires exit code 0/);
 });
 
-test("review verdicts reject a command other than the frozen command", async (t) => {
+test("Auto DAG restores gate-created worktree changes before review", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
+	const runner: CommandRunner = async (command, args, options) => {
+		if (command === "sh") {
+			await writeFile(join(options.cwd, "alpha.txt"), "gate changed tracked file\n");
+			await writeFile(join(options.cwd, "gate-dropping.txt"), "generated\n");
+			return { code: 0, stdout: "passed\n", stderr: "" };
+		}
+		return await herdr.runner(command, args, options);
+	};
+	const lifecycle = makeLifecycle(runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(await git(state.tasks.alpha.worktree!, "status", "--porcelain"), "");
+	assert.equal(await readFile(join(state.tasks.alpha.worktree!, "alpha.txt"), "utf8"), "alpha\n");
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+	assert.notEqual(state.phase, "blocked");
+});
+
+test("review handoff bounds gate output and retains exact full output", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const stdout = `start\n${"x".repeat(1_000_000)}\nend\n`;
+	const herdr = fakeHerdr({ gate: () => ({ code: 0, stdout, stderr: "" }) });
 	const lifecycle = makeLifecycle(herdr.runner);
 	let state = await lifecycle.start(project.root, "main-pane");
 	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
-	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", [], 0, "npm test -- substituted"));
+	const prompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	const output = prompt.gate.output.stdout;
 
-	assert.equal(state.tasks.alpha.status, "blocked");
-	assert.equal(state.tasks.alpha.review_command, "npm test -- substituted");
-	assert.match(String(state.tasks.alpha.block_reason), /frozen testing command/);
+	const stored = state.tasks.alpha.review_stdout!;
+	assert.equal(stored.excerpt, output.excerpt);
+	assert.equal(stored.bytes, Buffer.byteLength(stdout));
+	assert.equal(stored.truncated, true);
+	assert.deepEqual(stored.full_output, output.full_output);
+	assert.ok(stored.excerpt.length < stdout.length);
+	assert.equal(await readFile(stored.full_output!.path, "utf8"), stdout);
+	assert.match(stored.full_output!.sha256, /^[0-9a-f]{64}$/);
+	const stateJson = await readFile(join(runDirectory(project.root, state.run_id), "state.json"), "utf8");
+	assert.ok(Buffer.byteLength(stateJson) < 50_000);
+});
+
+test("Auto DAG executes frozen command text unchanged in clean task worktree", async (t) => {
+	const deliveryGraph = graph(["alpha"]);
+	deliveryGraph.issues[0].testing = "  printf 'one  two\\n'  ";
+	const project = await makeProject(t, deliveryGraph, 1, 1);
+	let received: { command: string; cwd?: string } | undefined;
+	const herdr = fakeHerdr({ gate: (command, cwd) => {
+		received = { command, cwd };
+		return { code: 0, stdout: "one  two\n", stderr: "" };
+	} });
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+
+	assert.deepEqual(received, { command: "  printf 'one  two\\n'  ", cwd: state.tasks.alpha.worktree });
+	assert.deepEqual(herdr.calls.find((call) => call.command === "sh")?.args, ["-c", "  printf 'one  two\\n'  "]);
+	assert.equal(state.tasks.alpha.review_command, "  printf 'one  two\\n'  ");
+});
+
+test("stale reviewer verdict cannot approve a later review round", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 3);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const first = await commitTask(state, "alpha", "alpha.txt", "first\n", "first");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", first));
+	const staleApproval = reviewEvent(state, "alpha", "approved", []);
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "changes_requested", ["change it"]));
+	await writeFile(join(state.tasks.alpha.worktree!, "alpha.txt"), "second\n");
+	await git(state.tasks.alpha.worktree!, "add", "alpha.txt");
+	await git(state.tasks.alpha.worktree!, "commit", "--amend", "-m", "second");
+	const second = await git(state.tasks.alpha.worktree!, "rev-parse", "HEAD");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", second));
+	state = await lifecycle.resume(project.root, staleApproval);
+
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(state.tasks.alpha.commit, second);
 });
 
 test("review revisions need a new SHA after changes requested", async (t) => {
@@ -451,22 +521,24 @@ test("review revisions need a new SHA after changes requested", async (t) => {
 	assert.equal(state.tasks.alpha.review_rounds, 2);
 });
 
-test("reviewer block resolution starts a fresh bounded review round", async (t) => {
+test("reviewer block resolution starts a fresh bounded review round with same commit evidence", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 2);
 	const herdr = fakeHerdr();
 	const lifecycle = makeLifecycle(herdr.runner);
 	let state = await lifecycle.start(project.root, "main-pane");
 	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
-	const staleRound = reviewEvent(state, "alpha", "approved", []);
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "blocked", ["need policy"]));
+	const gateRuns = herdr.calls.filter((call) => call.command === "sh").length;
 
 	state = await lifecycle.resolve(project.root, "alpha", "Use the approved policy.");
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.review_rounds, 2);
-	state = await lifecycle.resume(project.root, staleRound);
-	assert.equal(state.tasks.alpha.status, "reviewing");
-	assert.equal(state.tasks.alpha.review_rounds, 2);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, gateRuns);
+	const update = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.equal(update.type, "auto_dag_review_update");
+	assert.deepEqual(update.prior_findings, ["need policy"]);
+	for (const key of ["delivery", "issue", "worktree", "base", "instruction", "run_id", "attempt", "review_round"]) assert.equal(key in update, false);
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "blocked", ["still blocked"]));
 
 	state = await lifecycle.resolve(project.root, "alpha", "Try again.");
@@ -698,8 +770,22 @@ async function commitTask(state: RunState, issueId: string, file: string, conten
 	return await git(worktree, "rev-parse", "HEAD");
 }
 
-function event(issueId: string, role: "implementer" | "reviewer", type: string, payload: Record<string, unknown>): string {
-	return JSON.stringify({ version: 1, type, run_id: RUN_ID, issue_id: issueId, role, payload });
+function event(
+	issueId: string,
+	role: "implementer" | "reviewer",
+	type: string,
+	payload: Record<string, unknown>,
+	review_id = "review-id",
+): string {
+	return JSON.stringify({
+		version: 1,
+		type,
+		run_id: RUN_ID,
+		issue_id: issueId,
+		role,
+		...(type === "submit_review" ? { review_id } : {}),
+		payload,
+	});
 }
 
 function reviewEvent(
@@ -707,20 +793,16 @@ function reviewEvent(
 	issueId: string,
 	verdict: "approved" | "changes_requested" | "blocked",
 	findings: string[],
-	exitCode = 0,
-	command = state.graph.issues.find((issue) => issue.id === issueId)?.testing,
 ): string {
 	const task = state.tasks[issueId];
-	if (!command) throw new Error(`No testing command for ${issueId}`);
-	return event(issueId, "reviewer", "submit_review", {
-		commit: task.commit,
+	return event(issueId, "reviewer", "submit_review", { verdict, findings }, reviewId({
+		run_id: state.run_id,
+		kind: "implementation",
+		issue_id: issueId,
+		commit: task.commit!,
 		attempt: task.attempts,
-		review_round: task.review_rounds,
-		command,
-		exit_code: exitCode,
-		verdict,
-		findings,
-	});
+		review_round: task.review_rounds!,
+	}));
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {

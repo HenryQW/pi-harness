@@ -1,20 +1,23 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
-import { runCommand } from "../src/command.ts";
+import { markGateHostReady, reconcileRequiredGateProcess, runCommand, runRequiredGate } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../src/config.ts";
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle } from "../src/lifecycle.ts";
-import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS } from "../src/model.ts";
+import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED_GATE_TIMEOUT_MS, MAX_REQUIRED_GATE_TIMEOUT_MS } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { PLANNING_TOOLS } from "../src/planning.ts";
+import { persistGateOutput } from "../src/review.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
-import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerAgentName, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
+import { workerAgentName } from "../src/worker-host.ts";
+import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
 import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
 
 const execFile = promisify(execFileCallback);
@@ -59,10 +62,326 @@ test("command runner bounds combined process output", async () => {
 	);
 });
 
+test("command runner terminates an expired command as failed evidence", async () => {
+	const started = Date.now();
+	const result = await runCommand(process.execPath, ["-e", "setTimeout(() => {}, 200)"], {
+		cwd: process.cwd(),
+		timeoutMs: 20,
+	});
+	assert.equal(result.code, 124);
+	assert.equal(result.stderr, "");
+	assert.ok(Date.now() - started < 180);
+});
+
+test("command timeout terminates descendant processes", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-timeout-"));
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const marker = join(root, "orphaned.txt");
+	const descendant = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 150)`;
+	const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" }); setTimeout(() => {}, 500)`;
+	const result = await runCommand(process.execPath, ["-e", parent], { cwd: root, timeoutMs: 20 });
+	assert.equal(result.code, 124);
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	await assert.rejects(access(marker), /ENOENT/);
+});
+
+test("required gates reject Windows before command execution", async (t) => {
+	const platform = process.platform;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	t.after(() => { Object.defineProperty(process, "platform", { value: platform }); });
+	let executed = false;
+
+	await assert.rejects(
+		runRequiredGate(async () => {
+			executed = true;
+			return { code: 0, stdout: "", stderr: "" };
+		}, "echo unsafe", "commit", process.cwd()),
+		/Required gates support only POSIX hosts/,
+	);
+	assert.equal(executed, false);
+});
+
+test("successful commands reap background process-group members", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-background-"));
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const marker = join(root, "orphaned.txt");
+	const descendant = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 150)`;
+	const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" }).unref()`;
+	const result = await runCommand(process.execPath, ["-e", parent], { cwd: root, timeoutMs: 1_000 });
+	assert.equal(result.code, 0);
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	await assert.rejects(access(marker), /ENOENT/);
+});
+
+test("required gate output overflow becomes exact failed evidence", async (t) => {
+	if (process.platform === "win32") return t.skip("Required gates execute through sh");
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const bytes = 16 * 1024 * 1024 + 1;
+	const script = `process.stdout.write("x".repeat(${bytes}))`;
+	const execution = await runRequiredGate(
+		runCommand,
+		`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+	const state = createInitialRunState({
+		run_id: RUN_ID,
+		graph: parseDeliveryGraph(graph),
+		source_commit: commit,
+		main_worktree: project.root,
+		integration_branch: "main",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	const evidence = await persistGateOutput(state, "core", execution, () => "output");
+
+	assert.notEqual(evidence.exit_code, 0);
+	assert.equal(evidence.output.stdout.truncated, true);
+	assert.ok(evidence.output.stdout.bytes > 16 * 1024 * 1024);
+	const full = await readFile(evidence.output.stdout.full_output!.path);
+	assert.equal(full.length, evidence.output.stdout.bytes);
+	assert.equal(createHash("sha256").update(full).digest("hex"), evidence.output.stdout.full_output!.sha256);
+});
+
+test("required gate cleanup restores existing ignored files and removes new ones", async (t) => {
+	const project = await makeProject(t, ".context/\n.cache/\n");
+	const cache = join(project.root, ".cache");
+	await mkdir(cache);
+	await writeFile(join(cache, "dependency"), "keep\n");
+	await writeFile(join(cache, "deleted"), "restore\n");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+
+	const execution = await runRequiredGate(
+		runCommand,
+		"printf 'changed\\n' > .cache/dependency && rm .cache/deleted && printf 'generated\\n' > .cache/gate-output",
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+
+	assert.equal(execution.exit_code, 0);
+	assert.equal(await readFile(join(cache, "dependency"), "utf8"), "keep\n");
+	assert.equal(await readFile(join(cache, "deleted"), "utf8"), "restore\n");
+	await assert.rejects(access(join(cache, "gate-output")), /ENOENT/);
+});
+
+test("required gate replaces interrupted ignored snapshot staging", async (t) => {
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const staging = `${processPath}.ignored.tmp`;
+	await mkdir(staging, { recursive: true });
+	await writeFile(join(staging, "orphan"), "stale\n");
+
+	const execution = await runRequiredGate(runCommand, "exit 0", commit, project.root, 10_000, processPath);
+
+	assert.equal(execution.exit_code, 0);
+	await assert.rejects(access(staging), /ENOENT/);
+});
+
+test("required gate records recoverable intent before command execution", async (t) => {
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const check = `const fs=require("node:fs");const p=${JSON.stringify(processPath)};const r=JSON.parse(fs.readFileSync(p,"utf8"));const h=JSON.parse(fs.readFileSync(p+"."+r.launch_id+".host","utf8"));process.exit(r.version===3&&r.phase==="launching"&&h.pid&&h.identity&&h.launch_id===r.launch_id&&r.commit===${JSON.stringify(commit)}?0:1)`;
+
+	const execution = await runRequiredGate(
+		runCommand,
+		`${JSON.stringify(process.execPath)} -e ${JSON.stringify(check)}`,
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+
+	assert.equal(execution.exit_code, 0);
+});
+
+test("required gate rejects a host that exits before readiness", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX host process only");
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const failedHost = join(project.root, "failed-host");
+	await writeFile(failedHost, "#!/bin/sh\nexit 42\n");
+	await chmod(failedHost, 0o700);
+	const execPath = process.execPath;
+	process.execPath = failedHost;
+	t.after(() => { process.execPath = execPath; });
+
+	await assert.rejects(
+		runRequiredGate(runCommand, "echo must-not-run", commit, project.root, 10_000, processPath),
+		/Required gate host exited before acknowledging launch intent/,
+	);
+	await assert.rejects(access(processPath), /ENOENT/);
+});
+
+test("required gate timeout starts after host readiness", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX host process only");
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const slowNode = join(project.root, "slow-node");
+	const execPath = process.execPath;
+	await writeFile(slowNode, `#!/bin/sh\nsleep 1\nexec ${JSON.stringify(execPath)} "$@"\n`);
+	await chmod(slowNode, 0o700);
+	process.execPath = slowNode;
+	t.after(() => { process.execPath = execPath; });
+
+	const execution = await runRequiredGate(runCommand, "exit 0", commit, project.root, 200, processPath);
+
+	assert.equal(execution.exit_code, 0);
+});
+
+test("required gate restores original branch without moving gate-selected branch", async (t) => {
+	const project = await makeProject(t);
+	await git(project.root, "branch", "gate-other");
+	await git(project.root, "commit", "--allow-empty", "-m", "reviewed");
+	const otherCommit = await git(project.root, "rev-parse", "gate-other");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+
+	const execution = await runRequiredGate(
+		runCommand,
+		"git switch gate-other",
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+
+	assert.equal(execution.exit_code, 0);
+	assert.equal(await git(project.root, "branch", "--show-current"), "dag");
+	assert.equal(await git(project.root, "rev-parse", "HEAD"), commit);
+	assert.equal(await git(project.root, "rev-parse", "gate-other"), otherCommit);
+});
+
+test("interrupted launch cannot become ready during reconciliation", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX host process only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const launchId = "transitioning-host";
+	await writeFile(processPath, `${JSON.stringify({
+		version: 3,
+		phase: "launching",
+		launch_id: launchId,
+		grouped: true,
+		release: `${processPath}.${launchId}.release`,
+		cwd: project.root,
+		command: "test gate",
+		commit,
+	})}\n`);
+	let cancelled = false;
+	let transitionAttempted = false;
+	const runner: typeof runCommand = async (command, arguments_, options) => {
+		if (!transitionAttempted) {
+			transitionAttempted = true;
+			try {
+				await markGateHostReady(processPath, launchId);
+			} catch (error) {
+				assert.match(String(error), /Required gate launch was cancelled/);
+				cancelled = true;
+			}
+		}
+		return await runCommand(command, arguments_, options);
+	};
+
+	await reconcileRequiredGateProcess(runner, processPath, async () => {});
+
+	assert.equal(cancelled, true);
+	await assert.rejects(access(processPath), /ENOENT/);
+});
+
+test("interrupted gate reconciliation ignores reused process identities", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process identity only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: project.root, stdio: "ignore" });
+	await new Promise<void>((resolve, reject) => {
+		child.once("spawn", resolve);
+		child.once("error", reject);
+	});
+	let exited = false;
+	child.once("exit", () => { exited = true; });
+	t.after(() => { if (!exited) child.kill("SIGKILL"); });
+	const launchId = "reused-process";
+	await writeFile(processPath, `${JSON.stringify({
+		version: 3,
+		phase: "launching",
+		launch_id: launchId,
+		grouped: false,
+		release: `${processPath}.${launchId}.release`,
+		cwd: project.root,
+		command: "test gate",
+		commit,
+	})}\n`);
+	await writeFile(`${processPath}.${launchId}.host`, `${JSON.stringify({
+		version: 1,
+		launch_id: launchId,
+		pid: child.pid,
+		identity: "different-process",
+	})}\n`);
+
+	await reconcileRequiredGateProcess(runCommand, processPath, async () => {});
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(exited, false);
+});
+
+test("interrupted required gate process is terminated and its Git dirt is restored", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const script = `const fs=require("node:fs");fs.writeFileSync(".gitignore","changed\\n");fs.writeFileSync("gate-output.txt","generated\\n");setInterval(()=>{},1000)`;
+	const running = runCommand(process.execPath, ["-e", script], {
+		cwd: project.root,
+		timeoutMs: 10_000,
+		gateProcess: { path: processPath, command: "test gate", commit },
+	});
+	for (let index = 0; index < 100; index += 1) {
+		try {
+			await access(join(project.root, "gate-output.txt"));
+			break;
+		} catch {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+	}
+	assert.equal(JSON.parse(await readFile(processPath, "utf8")).commit, commit);
+
+	await reconcileRequiredGateProcess(runCommand, processPath, async () => await new Promise((resolve) => setTimeout(resolve, 20)));
+	const result = await running;
+
+	assert.notEqual(result.code, 0);
+	await assert.rejects(access(processPath), /ENOENT/);
+	await assert.rejects(access(join(project.root, "gate-output.txt")), /ENOENT/);
+	assert.equal(await git(project.root, "status", "--porcelain"), "");
+});
+
 test("strict config and local graph validation derive deterministic dependencies", () => {
 	const config = parseProjectConfig(testProfileConfig("/tmp"));
 	assert.equal(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
 	assert.equal(config.max_review_rounds, DEFAULT_MAX_REVIEW_ROUNDS);
+	assert.equal(config.required_gate_timeout_ms, DEFAULT_REQUIRED_GATE_TIMEOUT_MS);
+	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: 0 }), /must be a positive integer/);
+	assert.equal(
+		parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS }).required_gate_timeout_ms,
+		MAX_REQUIRED_GATE_TIMEOUT_MS,
+	);
+	assert.throws(
+		() => parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS + 1 }),
+		/must not exceed 2147483647/,
+	);
 	assert.throws(() => parseProjectConfig({ ...config, unknown: true }), /Unknown auto-dag configuration setting/);
 	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), implementation_profiles: ["coder", "coder"] }), /must not contain duplicates/);
 	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), repair_profile: "reviewer" }), /must be an implementation profile/);
@@ -119,6 +438,7 @@ test("persisted state rejects obsolete and malformed durable values", () => {
 		workspace_id: "main-workspace",
 	});
 
+	assert.throws(() => parseRunState({ ...state, version: 1 }), /Unsupported run state version: 1/);
 	assert.throws(() => parseRunState({ ...state, abort_cleanup_pending: true }), /Unknown run state setting: abort_cleanup_pending/);
 	assert.throws(() => parseRunState({ ...state, tasks: { ...state.tasks, core: { ...state.tasks.core, worker_ready: true } } }), /Unknown run state.tasks.core setting: worker_ready/);
 	assert.throws(() => parseRunState({ ...state, tasks: { ...state.tasks, core: { ...state.tasks.core, status: 1 } } }), /run state.tasks.core.status must be one of/);
@@ -188,7 +508,11 @@ test("local intake rejects selective ignores outside the .context boundary", asy
 	assert.equal(await readActiveRunId(project.root), undefined);
 });
 
-test("extensions separate public lifecycle tools and show active workers", async () => {
+test("extensions separate public lifecycle tools and show active workers", async (t) => {
+	const workerTemp = await mkdtemp(join(tmpdir(), "pi-auto-dag-worker-"));
+	t.after(async () => { await rm(workerTemp, { recursive: true, force: true }); });
+	const reviewTicket = join(workerTemp, "review-ticket.json");
+	await writeFile(reviewTicket, JSON.stringify({ review_id: "review-id" }));
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
@@ -385,6 +709,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.ok(!(widgets.at(-1)?.[1] as string[]).some((line) => line.includes("PR health")));
 
 	const workerTools: Array<{ name: string; execute: Function }> = [];
+	let beforeWorkerTurn: (() => Promise<void>) | undefined;
 	createWorkerExtension({
 		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
 		environment: {
@@ -393,16 +718,46 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+			PI_AUTO_DAG_REVIEW_TICKET: reviewTicket,
 		},
-	})({ registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); } } as never);
+	})({
+		on(event: string, handler: () => Promise<void>) { if (event === "before_agent_start") beforeWorkerTurn = handler; },
+		registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); },
+	} as never);
 	assert.deepEqual(workerTools.map((tool) => tool.name), [
 		WORKER_TOOLS.submit_review,
 		WORKER_TOOLS.block_task,
 	]);
-	const workerResult = await workerTools[0].execute("call", { commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown; terminate: boolean };
+	await beforeWorkerTurn!();
+	await writeFile(reviewTicket, JSON.stringify({ review_id: "later-review-id" }));
+	const workerResult = await workerTools[0].execute("call", { verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: { review_id: string; type: string }; terminate: boolean };
+	assert.equal(workerResult.details.review_id, "review-id");
 	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
-	assert.equal((workerResult.details as { type: string }).type, "submit_review");
+	assert.equal(workerResult.details.type, "submit_review");
 	assert.equal(workerResult.terminate, true);
+
+	const healthReviewTicket = join(workerTemp, "health-review-ticket.json");
+	const healthTools: Array<{ name: string; execute: Function }> = [];
+	let beforeHealthTurn: (() => Promise<void>) | undefined;
+	createWorkerExtension({
+		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
+		environment: {
+			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
+			PI_AUTO_DAG_WORKER_EVENTS: "submit_health,submit_review,block_task",
+			PI_AUTO_DAG_RUN_ID: RUN_ID,
+			PI_AUTO_DAG_ISSUE_ID: "core",
+			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+			PI_AUTO_DAG_REVIEW_TICKET: healthReviewTicket,
+		},
+	})({
+		on(event: string, handler: () => Promise<void>) { if (event === "before_agent_start") beforeHealthTurn = handler; },
+		registerTool(tool: { name: string; execute: Function }) { healthTools.push(tool); },
+	} as never);
+	await beforeHealthTurn!();
+	await writeFile(healthReviewTicket, JSON.stringify({ review_id: "health-review-id" }));
+	await beforeHealthTurn!();
+	const healthReview = await healthTools.find((tool) => tool.name === WORKER_TOOLS.submit_review)!.execute("call", { verdict: "approved", findings: [] }) as { details: { review_id: string } };
+	assert.equal(healthReview.details.review_id, "health-review-id");
 
 	const fullCommit = "310a75c7289830d9d3973263488de1140438f6e9";
 	const requestCalls: string[][] = [];
@@ -450,6 +805,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
+		review_ticket: reviewTicket,
 	});
 	assert.equal(reviewerLaunch.args.at(-1), "read,bash,web_search,auto_dag_submit_review,auto_dag_block_task");
 	const healthReviewerLaunch = createWorkerLaunch({
@@ -459,6 +815,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
+		review_ticket: reviewTicket,
 	});
 	assert.match(healthReviewerLaunch.args.at(-1)!, /auto_dag_submit_health/);
 
@@ -470,16 +827,19 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+			PI_AUTO_DAG_REVIEW_TICKET: reviewTicket,
 		}),
 		"submit_review",
-		{ commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] },
+		{ verdict: "approved", findings: [] },
 		async (...args) => {
 			calls.push(args);
 			return { code: 0, stdout: "", stderr: "" };
 		},
 		"/tmp",
+		"direct-review-id",
 	);
 	assert.equal(envelope.type, "submit_review");
+	assert.equal(envelope.review_id, "direct-review-id");
 	assert.deepEqual(calls[0].slice(0, 2), ["herdr", ["agent", "prompt", "main-pane", JSON.stringify(envelope)]]);
 });
 

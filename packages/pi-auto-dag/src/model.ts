@@ -1,11 +1,35 @@
 export const CONFIG_VERSION = 2;
-export const RUN_STATE_VERSION = 1;
+export const RUN_STATE_VERSION = 2;
 export const PROFILE_RESOLUTION_VERSION = 1;
 export const DEFAULT_MAX_PARALLEL_TASKS = 5;
 export const DEFAULT_MAX_REVIEW_ROUNDS = 5;
+export const DEFAULT_REQUIRED_GATE_TIMEOUT_MS = 30 * 60 * 1_000;
+export const MAX_REQUIRED_GATE_TIMEOUT_MS = 2_147_483_647;
 
 export type ProfileId = string;
 export type IssueRole = "implementation" | "final_check";
+
+export interface GateOutputReference {
+	path: string;
+	sha256: string;
+}
+
+export interface GateOutputEvidence {
+	excerpt: string;
+	bytes: number;
+	truncated: boolean;
+	full_output?: GateOutputReference;
+}
+
+export interface RequiredGateEvidence {
+	command: string;
+	commit: string;
+	exit_code: number;
+	output: {
+		stdout: GateOutputEvidence;
+		stderr: GateOutputEvidence;
+	};
+}
 
 export interface ProfileRoutingConfig {
 	version: typeof CONFIG_VERSION;
@@ -15,6 +39,7 @@ export interface ProfileRoutingConfig {
 	repair_profile: ProfileId;
 	max_parallel_tasks: number;
 	max_review_rounds: number;
+	required_gate_timeout_ms: number;
 }
 
 export interface ResolvedProfile {
@@ -99,10 +124,12 @@ export interface RunTaskState {
 	resolution_pending?: boolean;
 	/** Identifies which active role raised a task block. */
 	blocked_role?: "implementer" | "reviewer";
-	/** The reviewer-reported frozen command evidence for the active review. */
+	/** System-executed required-gate evidence for the active review commit. */
 	review_command?: string;
 	review_commit?: string;
 	review_exit_code?: number;
+	review_stdout?: GateOutputEvidence;
+	review_stderr?: GateOutputEvidence;
 	review_findings?: string[];
 	conflict_base?: string;
 	final_gate_head?: string;
@@ -155,6 +182,11 @@ export interface PrHealthState {
 	commit?: string;
 	attempt?: number;
 	review_round?: number;
+	review_command?: string;
+	review_commit?: string;
+	review_exit_code?: number;
+	review_stdout?: GateOutputEvidence;
+	review_stderr?: GateOutputEvidence;
 	review_findings?: string[];
 	blocked_role?: "implementer" | "reviewer";
 	/** A repair commit persisted before the lifecycle-owned cherry-pick starts. */
@@ -205,11 +237,22 @@ export interface RunState {
 	health_fast_forward_intent?: HealthFastForwardIntent;
 }
 
-export interface WorkerEnvelope {
+interface WorkerEnvelopeBase {
 	version: 1;
-	type: "request_review" | "submit_review" | "submit_health" | "block_task";
 	run_id: string;
 	issue_id: string;
-	role: "implementer" | "reviewer";
 	payload: Record<string, unknown>;
 }
+
+export interface SubmitReviewEnvelope extends WorkerEnvelopeBase {
+	type: "submit_review";
+	role: "reviewer";
+	/** System-owned review dispatch identity; never supplied by reviewer model. */
+	review_id: string;
+}
+
+export type WorkerEnvelope = SubmitReviewEnvelope | (WorkerEnvelopeBase & {
+	type: "request_review" | "submit_health" | "block_task";
+	role: "implementer" | "reviewer";
+	review_id?: never;
+});

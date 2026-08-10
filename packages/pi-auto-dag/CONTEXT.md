@@ -13,8 +13,20 @@ Read-only semantic review of draft Delivery Graph in one same-tab Herdr pane. Re
 _Avoid_: Task review, implementation review, approval
 
 **Final Check**:
-Structural integrated acceptance and frozen test command that executes after every implementation Local Issue. It is not user-authored as fake Local Issue.
+Structural integrated acceptance and frozen test command that Auto DAG executes after every implementation Local Issue. It is not user-authored as fake Local Issue.
 _Avoid_: Final issue, release task
+
+**Required Gate**:
+Auto DAG execution of exact frozen `issue.testing` text against verified clean commit, producing persisted command, commit SHA, exit code, and bounded stdout/stderr evidence before reviewer dispatch. POSIX host is required for exact `sh -c` execution and process-group cleanup. Durable launch intent and a separately bounded gate-host handshake bind process identity before command execution; host startup failure blocks without gate evidence. Launch-specific cancellation stops hosts transitioning during interrupted cleanup. Execution deadline starts when ready host is released and cannot exceed Node timer maximum; timeout and normal completion terminate remaining process-group members. Persisted process identity prevents interrupted recovery from signaling a reused PID. Cleanup restores original branch and commit, removes gate-created tracked, untracked, and ignored dirt, and restores pre-existing ignored resources from a private snapshot with deterministic recoverable staging. Final gate copies checkout-local ignored tools into a disposable child worktree so concurrent main-worktree edits and mutable dependencies remain isolated. Output overflow records failed evidence; Run State stores marked head/tail excerpts and SHA-256-bound paths to exact full captured streams. Reviewer may run extra checks but submits only verdict and findings; extra checks cannot replace gate.
+_Avoid_: Reviewer test, echoed command, suggested command
+
+**Review Dispatch ID**:
+System-owned identity binding reviewer verdict to run, review kind, Local Issue, commit, attempt, and round. Orchestration writes it outside model prompt; worker extension attaches it outside reviewer-owned payload. Nonmatching stale or duplicated verdict is ignored.
+_Avoid_: Reviewer correlation field, model token, review result
+
+**Review Packet**:
+Canonical fresh reviewer handoff containing delivery context, Local Issue, worktree, base, and Required Gate. Auto DAG owns deterministic Git verification and captures scope-specific dispatch identity at reviewer-turn start. Existing reviewer receives only changed gate, findings, or resolution data; no-change resume receives only resend event.
+_Avoid_: Reviewer prompt variant, echoed orchestration state, reviewer verification request
 
 **Local Issue**:
 Immutable work definition identified by a stable string within a Delivery Graph.
