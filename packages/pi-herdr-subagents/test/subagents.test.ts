@@ -42,6 +42,7 @@ async function withEnvironment(values: Record<string, string | undefined>, run: 
 function mainHarness(options: {
 	limitInput?: string;
 	promptFailure?: boolean;
+	promptIndeterminate?: boolean;
 	tabs?: () => boolean;
 	noModel?: boolean;
 	thinkingLevel?: string;
@@ -104,6 +105,7 @@ function mainHarness(options: {
 			}
 			if (args[0] === "agent" && args[1] === "prompt") {
 				if (options.promptFailure) return failure("agent_prompt_failed");
+				if (options.promptIndeterminate) return { stdout: "", stderr: "", code: 0, killed: true };
 				return success(JSON.stringify({ result: { type: "agent_prompted", agent: { name: args[2], pane_id: paneId, tab_id: tabId, workspace_id: "workspace-1" } } }));
 			}
 			if (args[0] === "tab" && args[1] === "close") {
@@ -400,6 +402,30 @@ test("Worker Limit command persists immediately and pre-submission launch rolls 
 		assert.deepEqual(app.closed, ["tab-1"]);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
 		await assert.rejects(readFile(path));
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("indeterminate task submission preserves owned Worker and Result", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ limitInput: "1", promptIndeterminate: true });
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("call", { task: "possibly accepted" }, undefined, undefined, app.ctx),
+			/prompt outcome is unknown; Worker may be running and remains owned[\s\S]*Tab: tab-1/,
+		);
+		assert.deepEqual(app.closed, []);
+		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
+		const pending = parsePendingResult(JSON.parse(await readFile(path, "utf8")));
+		assert.ok(pending);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must not duplicate" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+
+		const terminal = { version: 1, taskId: pending.taskId, state: "finished", task: pending.task, result: "completed", error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
+		await writeFile(path, JSON.stringify(terminal));
+		const input = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(path, terminal) }, app.ctx);
+		assert.equal(input.action, "transform");
+		assert.deepEqual(app.closed, ["tab-1"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });

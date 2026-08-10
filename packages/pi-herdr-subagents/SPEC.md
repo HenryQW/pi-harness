@@ -19,7 +19,7 @@ On success it returns:
 - full Result file path;
 - exact `herdr tab close <tab-id>` command Main can run with existing `bash` when work is no longer needed.
 
-Delegation is accepted only after Herdr accepts initial task submission. Any failure before submission closes created tab, removes active ownership, deletes pending Result file, and returns actionable tool error.
+Delegation is accepted only after Herdr confirms initial task submission. Any definitive failure before submission closes created tab, removes active ownership, deletes pending Result file, and returns actionable tool error. If prompt submission has an indeterminate outcome, preserve Worker ownership, tab, and pending Result because work may already be running; return their identifiers and exact stop command in the error.
 
 Reject delegation when:
 
@@ -163,7 +163,7 @@ At extension/tool boundary, verify:
 - config default, validation, command persistence, immediate update, and reduced-limit behavior;
 - per-Main Worker Limit, missing-tab reconciliation, and no queue;
 - tab label/cwd/env, inherited model/thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
-- successful launch response and pre-submission rollback;
+- successful launch response, definitive pre-submission rollback, and indeterminate prompt preservation;
 - Completion Notice validation, 1,000-character cap, capacity release, completed-tab close, and shutdown cleanup;
 - exact versioned Result/notice schemas, malformed/spoofed/path/state/excerpt/control-text rejection, and fixed sanitized Main transform;
 - natural Worker Question settlement remains live;

@@ -16,6 +16,10 @@ const DEFAULT_LIMIT = 10;
 const CONFIG_PATH = () => join(getAgentDir(), "config", "pi-herdr-subagents.json");
 const WORKER_EXTENSION = fileURLToPath(new URL("../internal/worker.ts", import.meta.url));
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+const DEFINITIVE_PROMPT_ERRORS = new Set([
+	"agent_not_found", "agent_not_running", "agent_not_ready", "agent_not_idle",
+	"empty_agent_prompt", "invalid_agent_name", "agent_prompt_failed",
+]);
 
 type OwnedWorker = {
 	taskId: string;
@@ -98,13 +102,16 @@ function commandError(args: string[], stderr: string, code: number): Error {
 	return new Error(`Herdr ${args.slice(0, 2).join(" ")} failed: ${stderr.trim() || `exit code ${code}`}`);
 }
 
-function hasHerdrError(stderr: string, code: string): boolean {
+function herdrErrorCode(stderr: string): string | undefined {
 	try {
-		return (JSON.parse(stderr) as { error?: { code?: unknown } }).error?.code === code;
+		const code = (JSON.parse(stderr) as { error?: { code?: unknown } }).error?.code;
+		return typeof code === "string" ? code : undefined;
 	} catch {
-		return false;
+		return undefined;
 	}
 }
+
+const hasHerdrError = (stderr: string, code: string): boolean => herdrErrorCode(stderr) === code;
 
 async function runHerdr(pi: ExtensionAPI, args: string[], ctx: ExtensionContext, signal?: AbortSignal): Promise<string> {
 	const result = await pi.exec("herdr", args, { cwd: ctx.cwd, signal });
@@ -252,6 +259,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const worker: OwnedWorker = { taskId, task, workerName: workerName(taskId), resultPath, tempDir };
 			const label = workerLabel(task, taskId);
 			let tabCreationAttempted = false;
+			let promptOutcomeUnknown = false;
 			workers.set(taskId, worker);
 			try {
 				const createdAt = new Date().toISOString();
@@ -278,15 +286,29 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					|| tab.focused !== false || pane.focused !== false || tab.pane_count !== 1 || pane.cwd !== ctx.cwd
 				) throw new Error("Herdr Worker tab identity is invalid.");
 				await startWorker(worker.workerName, tabId, paneId, where, ctx, signal);
-				const prompted = resultOf(await runHerdr(pi, ["agent", "prompt", worker.workerName, task], ctx, signal), "Herdr Worker prompt");
+				const promptArgs = ["agent", "prompt", worker.workerName, task];
+				promptOutcomeUnknown = true;
+				const response = await pi.exec("herdr", promptArgs, { cwd: ctx.cwd, signal });
+				if (response.code !== 0 || response.killed) {
+					if (!response.killed && DEFINITIVE_PROMPT_ERRORS.has(herdrErrorCode(response.stderr) ?? "")) {
+						promptOutcomeUnknown = false;
+					}
+					throw commandError(promptArgs, response.stderr, response.code);
+				}
+				const prompted = resultOf(response.stdout, "Herdr Worker prompt");
 				if (prompted.type !== "agent_prompted") throw new Error("Herdr Worker prompt was not accepted.");
 				const agent = object(prompted.agent, "Herdr prompted Worker");
 				assertAgent(agent, { name: worker.workerName, pane: paneId, workspace: where.workspace, tab: tabId });
+				promptOutcomeUnknown = false;
 				return {
 					content: [{ type: "text", text: `Delegated Task ${taskId}\nWorker: ${worker.workerName}\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
 					details: {},
 				};
 			} catch (error) {
+				if (promptOutcomeUnknown) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Delegated Task ${taskId} prompt outcome is unknown; Worker may be running and remains owned.\nWorker: ${worker.workerName}\nTab: ${worker.tabId}\nResult: ${worker.resultPath}\nStop: herdr tab close ${worker.tabId}\n${message}`);
+				}
 				workers.delete(taskId);
 				if (worker.tabId) {
 					await closeTab(pi, worker.tabId, ctx).catch(() => undefined);
