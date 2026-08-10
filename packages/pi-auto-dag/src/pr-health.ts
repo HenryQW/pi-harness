@@ -5,6 +5,7 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RunState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
+import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { writeRunState, type Uuid } from "./state.ts";
 import { createWorkerLaunch, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
@@ -155,7 +156,13 @@ async function ensureHealthReviewer(
 		await verifyHealthRepairCommit(state, commit, options);
 		let evidence = recordedGateEvidence(health, commit);
 		if (!evidence) {
-			evidence = await runRequiredGate(options.runner, issue.testing, commit, nonEmptyString(health.worktree, "PR-health repair worktree"));
+			evidence = await runRequiredGate(
+				options.runner,
+				issue.testing,
+				commit,
+				nonEmptyString(health.worktree, "PR-health repair worktree"),
+				config.required_gate_timeout_ms,
+			);
 			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
 			health = requiredHealth(state);
 		}
@@ -216,6 +223,13 @@ async function ensureHealthReviewer(
 				approval_findings: "Only triaged thread IDs fixed by this repair.",
 			},
 		}, reviewMode);
+	}
+	if (health.status === "reviewing") {
+		await writeReviewTicket(
+			reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+			healthReviewId(state, health, issue.id),
+			options.uuid,
+		);
 	}
 	await promptWorkerAgent(state, agent, prompt, options);
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);
@@ -401,6 +415,7 @@ async function submitHealthRepairReview(
 	if (envelope.role !== "reviewer") throw new Error("Only the same PR-health reviewer can submit repair review");
 	const health = requiredHealth(state);
 	const issue = finalCheck(state);
+	if (envelope.review_id !== healthReviewId(state, health, issue.id)) return state;
 	const commit = nonEmptyString(health.commit, "PR-health repair commit");
 	const gate = requiredHealthGate(health, commit);
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "PR-health repair verdict");
@@ -711,6 +726,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
+		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id) } : {}),
 	});
 }
 
@@ -725,6 +741,17 @@ function healthWorktreePath(state: RunState, attempt: number): string {
 
 function healthBranch(state: RunState, attempt: number): string {
 	return `pi-auto-dag/${state.run_id}/pr-health/${attempt}`;
+}
+
+function healthReviewId(state: RunState, health: PrHealthState, issueId: string): string {
+	return reviewId({
+		run_id: state.run_id,
+		kind: "pr_health_repair",
+		issue_id: issueId,
+		commit: nonEmptyString(health.commit, "PR-health review commit"),
+		attempt: positiveInteger(health.attempt, "PR-health review attempt"),
+		review_round: positiveInteger(health.review_round, "PR-health review round"),
+	});
 }
 
 function requiredHealthGate(health: PrHealthState, commit: string): RequiredGateEvidence {

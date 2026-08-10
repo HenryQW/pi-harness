@@ -11,6 +11,7 @@ import { type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
+import { reviewId } from "../src/review-ticket.ts";
 import { readActiveRunId, runDirectory } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -445,7 +446,15 @@ function reviewEvent(
 	verdict: "approved" | "changes_requested" | "blocked",
 	findings: string[],
 ): string {
-	return event(state, issueId, "reviewer", "submit_review", { verdict, findings });
+	const task = state.tasks[issueId];
+	return event(state, issueId, "reviewer", "submit_review", { verdict, findings }, reviewId({
+		run_id: state.run_id,
+		kind: issueId !== "final-check" ? "implementation" : task.status === "repair_reviewing" ? "final_repair" : "final_check",
+		issue_id: issueId,
+		commit: task.commit!,
+		attempt: task.attempts,
+		review_round: task.review_rounds!,
+	}));
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {
@@ -472,11 +481,26 @@ function healthReviewEvent(
 	verdict: "approved" | "changes_requested" | "blocked",
 	findings: string[],
 ): string {
-	return event(state, "final-check", "reviewer", "submit_review", { verdict, findings });
+	const health = state.health!;
+	return event(state, "final-check", "reviewer", "submit_review", { verdict, findings }, reviewId({
+		run_id: state.run_id,
+		kind: "pr_health_repair",
+		issue_id: "final-check",
+		commit: health.commit!,
+		attempt: health.attempt!,
+		review_round: health.review_round!,
+	}));
 }
 
-function event(state: RunState, issueId: string, role: "implementer" | "reviewer", type: string, payload: Record<string, unknown>): string {
-	return JSON.stringify({ version: 1, type, run_id: state.run_id, issue_id: issueId, role, payload });
+function event(
+	state: RunState,
+	issueId: string,
+	role: "implementer" | "reviewer",
+	type: string,
+	payload: Record<string, unknown>,
+	review_id?: string,
+): string {
+	return JSON.stringify({ version: 1, type, run_id: state.run_id, issue_id: issueId, role, ...(review_id ? { review_id } : {}), payload });
 }
 
 async function commit(cwd: string, file: string, content: string, subject: string): Promise<string> {

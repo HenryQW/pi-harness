@@ -6,6 +6,7 @@ import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAp
 import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle, cleanupPrLifecycle, resumePrLifecycle } from "./pr-lifecycle.ts";
+import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
 import { issueById, readRunState, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
 import { createWorkerLaunch, createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, workerIssueContext, workerTabExists, WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerLaunch, type WorkerRole } from "./worker.ts";
@@ -118,9 +119,15 @@ export async function cleanupRun(state: RunState, options: OrchestrationOptions)
 
 export function parseWorkerEnvelope(value: unknown): WorkerEnvelope {
 	const input = object(value, "worker envelope");
-	exactKeys(input, ["version", "type", "run_id", "issue_id", "role", "payload"], "worker envelope");
-	if (input.version !== 1) throw new Error(`Unsupported worker envelope version: ${String(input.version)}`);
 	const type = oneOf(input.type, ["request_review", "submit_review", "submit_health", "block_task"] as const, "worker envelope type");
+	exactKeys(
+		input,
+		type === "submit_review"
+			? ["version", "type", "run_id", "issue_id", "role", "review_id", "payload"]
+			: ["version", "type", "run_id", "issue_id", "role", "payload"],
+		"worker envelope",
+	);
+	if (input.version !== 1) throw new Error(`Unsupported worker envelope version: ${String(input.version)}`);
 	const role = oneOf(input.role, ["implementer", "reviewer"] as const, "worker envelope role");
 	if (!WORKER_ROLE_EVENTS[role].includes(type)) throw new Error(`${role} worker cannot send ${type}`);
 	const payload = parseEnvelopePayload(type, input.payload);
@@ -130,6 +137,7 @@ export function parseWorkerEnvelope(value: unknown): WorkerEnvelope {
 		run_id: nonEmptyString(input.run_id, "worker envelope run_id"),
 		issue_id: nonEmptyString(input.issue_id, "worker envelope issue_id"),
 		role,
+		...(type === "submit_review" ? { review_id: nonEmptyString(input.review_id, "worker envelope review_id") } : {}),
 		payload,
 	};
 }
@@ -273,6 +281,7 @@ async function submitReview(
 	if (envelope.role !== "reviewer") throw new Error("Only a reviewer can submit review");
 	const current = task(state, issue.id);
 	if (current.status !== "reviewing") return state;
+	if (envelope.review_id !== taskReviewId(state, issue.id, current)) return state;
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
 	const gate = requiredTaskGate(current, commit, issue.id);
 	try {
@@ -528,7 +537,7 @@ async function ensureReviewer(
 ): Promise<RunState> {
 	await ensureWorktree(state, issue.id, options);
 	config = await assertRunBoundary(state, options.runner);
-	state = await ensureTaskGate(state, issue, options);
+	state = await ensureTaskGate(state, issue, config.required_gate_timeout_ms, options);
 	let current = task(state, issue.id);
 	if (current.reviewer_pane) {
 		const tabId = nonEmptyString(current.tab_id, `Run Task ${issue.id} tab_id`);
@@ -606,6 +615,11 @@ async function ensureReviewer(
 		: started !== "existing" || current.review_rounds === 1
 			? "full"
 			: "update";
+	await writeReviewTicket(
+		reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+		taskReviewId(state, issue.id, current),
+		options.uuid,
+	);
 	await promptWorkerAgent(state, agent, reviewerPrompt(state, issue, current, promptMode), options);
 	if (task(state, issue.id).reviewer_instruction_pending || task(state, issue.id).resolution_pending) {
 		state = await save(replaceTask(state, issue.id, {
@@ -617,7 +631,7 @@ async function ensureReviewer(
 	return state;
 }
 
-async function ensureTaskGate(state: RunState, issue: LocalIssue, options: OrchestrationOptions): Promise<RunState> {
+async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: number, options: OrchestrationOptions): Promise<RunState> {
 	const current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
 	await verifyReviewCommit(state, issue.id, commit, options);
@@ -628,6 +642,7 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, options: Orche
 			issue.testing,
 			commit,
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+			timeoutMs,
 		);
 		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
 	}
@@ -852,6 +867,7 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: issue.id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
+		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, issue.id) } : {}),
 	});
 }
 
@@ -911,6 +927,17 @@ function reviewerPrompt(
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
 	}, mode);
+}
+
+function taskReviewId(state: RunState, issueId: string, current: RunTaskState): string {
+	return reviewId({
+		run_id: state.run_id,
+		kind: "implementation",
+		issue_id: issueId,
+		commit: nonEmptyString(current.commit, `Run Task ${issueId} review commit`),
+		attempt: current.attempts,
+		review_round: positiveInteger(current.review_rounds, `Run Task ${issueId} review round`),
+	});
 }
 
 function requiredTaskGate(current: RunTaskState, commit: string, issueId: string): RequiredGateEvidence {

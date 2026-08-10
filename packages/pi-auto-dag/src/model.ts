@@ -3,6 +3,7 @@ export const RUN_STATE_VERSION = 1;
 export const PROFILE_RESOLUTION_VERSION = 1;
 export const DEFAULT_MAX_PARALLEL_TASKS = 5;
 export const DEFAULT_MAX_REVIEW_ROUNDS = 5;
+export const DEFAULT_REQUIRED_GATE_TIMEOUT_MS = 30 * 60 * 1_000;
 
 export type ProfileId = string;
 export type IssueRole = "implementation" | "final_check";
@@ -15,6 +16,7 @@ export interface ProfileRoutingConfig {
 	repair_profile: ProfileId;
 	max_parallel_tasks: number;
 	max_review_rounds: number;
+	required_gate_timeout_ms: number;
 }
 
 export interface ResolvedProfile {
@@ -218,5 +220,7 @@ export interface WorkerEnvelope {
 	run_id: string;
 	issue_id: string;
 	role: "implementer" | "reviewer";
+	/** System-owned review dispatch identity; never supplied by reviewer model. */
+	review_id?: string;
 	payload: Record<string, unknown>;
 }

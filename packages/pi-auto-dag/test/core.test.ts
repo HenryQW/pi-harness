@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle } from "../src/lifecycle.ts";
-import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS } from "../src/model.ts";
+import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED_GATE_TIMEOUT_MS } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { PLANNING_TOOLS } from "../src/planning.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
@@ -59,10 +59,35 @@ test("command runner bounds combined process output", async () => {
 	);
 });
 
+test("command runner terminates an expired command as failed evidence", async () => {
+	const started = Date.now();
+	const result = await runCommand(process.execPath, ["-e", "setTimeout(() => {}, 200)"], {
+		cwd: process.cwd(),
+		timeoutMs: 20,
+	});
+	assert.equal(result.code, 124);
+	assert.equal(result.stderr, "");
+	assert.ok(Date.now() - started < 180);
+});
+
+test("command timeout terminates descendant processes", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-timeout-"));
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const marker = join(root, "orphaned.txt");
+	const descendant = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 150)`;
+	const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" }); setTimeout(() => {}, 500)`;
+	const result = await runCommand(process.execPath, ["-e", parent], { cwd: root, timeoutMs: 20 });
+	assert.equal(result.code, 124);
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	await assert.rejects(access(marker), /ENOENT/);
+});
+
 test("strict config and local graph validation derive deterministic dependencies", () => {
 	const config = parseProjectConfig(testProfileConfig("/tmp"));
 	assert.equal(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
 	assert.equal(config.max_review_rounds, DEFAULT_MAX_REVIEW_ROUNDS);
+	assert.equal(config.required_gate_timeout_ms, DEFAULT_REQUIRED_GATE_TIMEOUT_MS);
+	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: 0 }), /must be a positive integer/);
 	assert.throws(() => parseProjectConfig({ ...config, unknown: true }), /Unknown auto-dag configuration setting/);
 	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), implementation_profiles: ["coder", "coder"] }), /must not contain duplicates/);
 	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), repair_profile: "reviewer" }), /must be an implementation profile/);
@@ -188,7 +213,11 @@ test("local intake rejects selective ignores outside the .context boundary", asy
 	assert.equal(await readActiveRunId(project.root), undefined);
 });
 
-test("extensions separate public lifecycle tools and show active workers", async () => {
+test("extensions separate public lifecycle tools and show active workers", async (t) => {
+	const workerTemp = await mkdtemp(join(tmpdir(), "pi-auto-dag-worker-"));
+	t.after(async () => { await rm(workerTemp, { recursive: true, force: true }); });
+	const reviewTicket = join(workerTemp, "review-ticket.json");
+	await writeFile(reviewTicket, JSON.stringify({ review_id: "review-id" }));
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
@@ -393,6 +422,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+			PI_AUTO_DAG_REVIEW_TICKET: reviewTicket,
 		},
 	})({ registerTool(tool: { name: string; execute: Function }) { workerTools.push(tool); } } as never);
 	assert.deepEqual(workerTools.map((tool) => tool.name), [
@@ -450,6 +480,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
+		review_ticket: reviewTicket,
 	});
 	assert.equal(reviewerLaunch.args.at(-1), "read,bash,web_search,auto_dag_submit_review,auto_dag_block_task");
 	const healthReviewerLaunch = createWorkerLaunch({
@@ -459,6 +490,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
+		review_ticket: reviewTicket,
 	});
 	assert.match(healthReviewerLaunch.args.at(-1)!, /auto_dag_submit_health/);
 
@@ -470,6 +502,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_RUN_ID: RUN_ID,
 			PI_AUTO_DAG_ISSUE_ID: "core",
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+			PI_AUTO_DAG_REVIEW_TICKET: reviewTicket,
 		}),
 		"submit_review",
 		{ verdict: "approved", findings: [] },
@@ -480,6 +513,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		"/tmp",
 	);
 	assert.equal(envelope.type, "submit_review");
+	assert.equal(envelope.review_id, "review-id");
 	assert.deepEqual(calls[0].slice(0, 2), ["herdr", ["agent", "prompt", "main-pane", JSON.stringify(envelope)]]);
 });
 

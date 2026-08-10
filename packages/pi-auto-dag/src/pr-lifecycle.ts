@@ -5,6 +5,7 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
+import { reviewId, reviewTicketPath, writeReviewTicket, type ReviewKind } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 import { createWorkerLaunch, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, workerIssueContext, workerTabExists, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
@@ -248,7 +249,7 @@ async function ensureFinalReviewer(
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, "final-check commit");
 	if (commit !== state.integration_head) throw new Error("Final-check commit does not match the integration HEAD");
-	state = await ensureRecordedGate(state, issue, commit, state.main_worktree, options);
+	state = await ensureRecordedGate(state, issue, commit, state.main_worktree, config.required_gate_timeout_ms, options);
 	current = task(state, issue.id);
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
 	const launch = workerLaunch(state, issue, config, "reviewer");
@@ -282,6 +283,11 @@ async function ensureFinalReviewer(
 		: started !== "existing" || current.review_rounds === 1
 			? "full"
 			: "update";
+	await writeReviewTicket(
+		reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+		lifecycleReviewId(state, issue, current, "final_check"),
+		options.uuid,
+	);
 	await promptWorkerAgent(state, agent, reviewPrompt({
 		kind: "final_check",
 		graph: state.graph,
@@ -306,6 +312,7 @@ async function submitFinalReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the final-check reviewer can submit final review");
 	const current = task(state, issue.id);
+	if (envelope.review_id !== lifecycleReviewId(state, issue, current, "final_check")) return state;
 	const gate = requiredTaskGate(current, state.integration_head, "Final check");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-check verdict");
 	const findings = stringArray(envelope.payload.findings, "final-check findings");
@@ -458,7 +465,7 @@ async function ensureFinalRepairReviewer(
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, "final-gate repair commit");
 	await verifyRepairCommit(state, issue, commit, options);
-	state = await ensureRecordedGate(state, issue, commit, nonEmptyString(current.worktree, "final repair worktree"), options);
+	state = await ensureRecordedGate(state, issue, commit, nonEmptyString(current.worktree, "final repair worktree"), config.required_gate_timeout_ms, options);
 	current = task(state, issue.id);
 	const launch = workerLaunch(state, owner, config, "reviewer");
 	if (current.reviewer_pane) {
@@ -487,6 +494,11 @@ async function ensureFinalRepairReviewer(
 		: started !== "existing" || current.review_rounds === 1
 			? "full"
 			: "update";
+	await writeReviewTicket(
+		reviewTicketPath(state.main_worktree, state.run_id, issue.id),
+		lifecycleReviewId(state, issue, current, "final_repair"),
+		options.uuid,
+	);
 	await promptWorkerAgent(state, agent, reviewPrompt({
 		kind: "final_repair",
 		graph: state.graph,
@@ -515,6 +527,7 @@ async function submitFinalRepairReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the final-gate repair reviewer can submit review");
 	const current = task(state, issue.id);
+	if (envelope.review_id !== lifecycleReviewId(state, issue, current, "final_repair")) return state;
 	const commit = nonEmptyString(current.commit, "final-gate repair commit");
 	const gate = requiredTaskGate(current, commit, "Final-gate repair");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-gate repair verdict");
@@ -794,6 +807,18 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
+		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id) } : {}),
+	});
+}
+
+function lifecycleReviewId(state: RunState, issue: LocalIssue, current: RunTaskState, kind: ReviewKind): string {
+	return reviewId({
+		run_id: state.run_id,
+		kind,
+		issue_id: issue.id,
+		commit: nonEmptyString(current.commit, `${kind} review commit`),
+		attempt: current.attempts,
+		review_round: positiveInteger(current.review_rounds, `${kind} review round`),
 	});
 }
 
@@ -819,12 +844,13 @@ async function ensureRecordedGate(
 	issue: LocalIssue,
 	commit: string,
 	cwd: string,
+	timeoutMs: number,
 	options: PrLifecycleOptions,
 ): Promise<RunState> {
 	const current = task(state, issue.id);
 	let evidence = recordedGateEvidence(current, commit);
 	if (!evidence) {
-		evidence = await runRequiredGate(options.runner, issue.testing, commit, cwd);
+		evidence = await runRequiredGate(options.runner, issue.testing, commit, cwd, timeoutMs);
 		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
 	}
 	await persistGateOutput(state, issue.id, evidence, options.uuid);

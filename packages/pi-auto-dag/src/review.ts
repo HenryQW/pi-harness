@@ -3,13 +3,13 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RequiredGateEvidence } from "./command.ts";
 import type { DeliveryGraph, LocalIssue, RunState } from "./model.ts";
+import type { ReviewKind } from "./review-ticket.ts";
 import { runDirectory, type Uuid } from "./state.ts";
 import { workerDeliveryContext, workerIssueContext } from "./worker.ts";
 
 const OUTPUT_EXCERPT_CHARACTERS = 8 * 1024;
 const OUTPUT_EXCERPT_HEAD = 2 * 1024;
 
-export type ReviewKind = "implementation" | "final_check" | "final_repair" | "pr_health_repair";
 export type ReviewPromptMode = "full" | "update" | "resend";
 
 export interface ReviewPromptInput {

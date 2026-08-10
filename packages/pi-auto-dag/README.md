@@ -86,8 +86,9 @@ Optional settings:
 | --- | ---: | --- |
 | `max_parallel_tasks` | `5` | Most implementation tasks running at once |
 | `max_review_rounds` | `5` | Most review rounds per task |
+| `required_gate_timeout_ms` | `1800000` | Maximum runtime for each required gate; timeout exits with code `124` |
 
-Both values must be positive integers.
+All values must be positive integers.
 
 ## Delivery Graph
 
@@ -189,11 +190,11 @@ For each task:
 1. Create a child worktree at `.<repo>-auto-dag/<run-id>/<issue-id>`.
 2. Start one implementer.
 3. Require one commit over the wave base.
-4. Verify that commit and clean worktree, then execute frozen `testing` text unchanged through `sh -c`.
-5. Save command, verified commit SHA, exit code, and full stdout/stderr.
+4. Verify that commit and clean worktree, then execute frozen `testing` text unchanged through `sh -c` with configured deadline and process-group cleanup.
+5. Save command, verified commit SHA, exit code, and exact full stdout/stderr, then restore commit and remove gate-created Git dirt.
 6. Start task-owned reviewer with one canonical Review Packet. Gate output is bounded to head/tail excerpts; truncated streams include byte count, SHA-256, and a read-on-demand path to exact full output.
 
-Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Reviewer submits only verdict and findings. Extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
+Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Reviewer submits only verdict and findings; worker extension attaches system-owned dispatch identity, so stale or duplicated verdicts cannot approve another commit or review round. Extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
 
 ### 4. Integrate
 

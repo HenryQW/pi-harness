@@ -17,8 +17,12 @@ Structural integrated acceptance and frozen test command that Auto DAG executes 
 _Avoid_: Final issue, release task
 
 **Required Gate**:
-Auto DAG execution of exact frozen `issue.testing` text against verified clean commit, producing persisted command, commit SHA, exit code, stdout, and stderr evidence before reviewer dispatch. Review Packet bounds model-facing output to marked head/tail excerpts and gives truncated streams SHA-256-bound paths to full output. Reviewer may run extra checks but submits only verdict and findings; extra checks cannot replace gate.
+Auto DAG execution of exact frozen `issue.testing` text against verified clean commit, producing persisted command, commit SHA, exit code, stdout, and stderr evidence before reviewer dispatch. Execution has configured deadline, terminates process group on timeout, then restores commit and removes gate-created Git dirt. Review Packet bounds model-facing output to marked head/tail excerpts and gives truncated streams SHA-256-bound paths to full output. Reviewer may run extra checks but submits only verdict and findings; extra checks cannot replace gate.
 _Avoid_: Reviewer test, echoed command, suggested command
+
+**Review Dispatch ID**:
+System-owned identity binding reviewer verdict to run, review kind, Local Issue, commit, attempt, and round. Orchestration writes it outside model prompt; worker extension attaches it outside reviewer-owned payload. Nonmatching stale or duplicated verdict is ignored.
+_Avoid_: Reviewer correlation field, model token, review result
 
 **Review Packet**:
 Canonical fresh reviewer handoff containing delivery context, Local Issue, worktree, base, and Required Gate. Auto DAG owns deterministic Git verification. Existing reviewer receives only changed gate, findings, or resolution data; no-change resume receives only resend event.

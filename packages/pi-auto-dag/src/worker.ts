@@ -5,6 +5,7 @@ import { defineTool, withFileMutationQueue, type ExtensionAPI } from "@earendil-
 import { commandFailure, commandOutput, runCommand, type CommandRunner } from "./command.ts";
 import type { DeliveryGraph, LocalIssue, ResolvedProfile, WorkerEnvelope } from "./model.ts";
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
+import { readReviewTicket } from "./review-ticket.ts";
 import { array, nonEmptyString, object, oneOf } from "./validate.ts";
 
 export type WorkerRole = "implementer" | "reviewer";
@@ -30,6 +31,7 @@ export interface WorkerLaunchInput {
 	run_id: string;
 	issue_id: string;
 	main_pane: string;
+	review_ticket?: string;
 }
 
 export interface WorkerLaunch {
@@ -43,6 +45,9 @@ export const WORKER_EXTENSION_PATH = fileURLToPath(new URL("../extensions/worker
 export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 	const role = parseWorkerRole(input.role);
 	const events = parseWorkerEvents(input.events ?? WORKER_ROLE_EVENTS[role], role);
+	const reviewTicket = events.includes("submit_review")
+		? nonEmptyString(input.review_ticket, "reviewer review ticket")
+		: undefined;
 	return {
 		env: {
 			PI_CODING_AGENT_DIR: nonEmptyString(input.profile.agent_dir, "worker profile agent_dir"),
@@ -51,6 +56,7 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 			PI_AUTO_DAG_RUN_ID: nonEmptyString(input.run_id, "worker run_id"),
 			PI_AUTO_DAG_ISSUE_ID: nonEmptyString(input.issue_id, "worker issue_id"),
 			PI_AUTO_DAG_MAIN_PANE: nonEmptyString(input.main_pane, "worker main_pane"),
+			...(reviewTicket ? { PI_AUTO_DAG_REVIEW_TICKET: reviewTicket } : {}),
 		},
 		args: profileLaunchArgs(input.profile, events.map((event) => WORKER_TOOLS[event])),
 	};
@@ -84,16 +90,19 @@ interface WorkerEnvironment {
 	run_id: string;
 	issue_id: string;
 	main_pane: string;
+	review_ticket?: string;
 }
 
 export function workerEnvironment(environment: NodeJS.ProcessEnv): WorkerEnvironment {
 	const role = parseWorkerRole(environment.PI_AUTO_DAG_WORKER_ROLE);
+	const events = parseWorkerEvents(environment.PI_AUTO_DAG_WORKER_EVENTS?.split(",") ?? WORKER_ROLE_EVENTS[role], role);
 	return {
 		role,
-		events: parseWorkerEvents(environment.PI_AUTO_DAG_WORKER_EVENTS?.split(",") ?? WORKER_ROLE_EVENTS[role], role),
+		events,
 		run_id: nonEmptyString(environment.PI_AUTO_DAG_RUN_ID, "PI_AUTO_DAG_RUN_ID"),
 		issue_id: nonEmptyString(environment.PI_AUTO_DAG_ISSUE_ID, "PI_AUTO_DAG_ISSUE_ID"),
 		main_pane: nonEmptyString(environment.PI_AUTO_DAG_MAIN_PANE, "PI_AUTO_DAG_MAIN_PANE"),
+		...(events.includes("submit_review") ? { review_ticket: nonEmptyString(environment.PI_AUTO_DAG_REVIEW_TICKET, "PI_AUTO_DAG_REVIEW_TICKET") } : {}),
 	};
 }
 
@@ -113,6 +122,7 @@ export async function sendWorkerEnvelope(
 		run_id: worker.run_id,
 		issue_id: worker.issue_id,
 		role: worker.role,
+		...(type === "submit_review" ? { review_id: await readReviewTicket(nonEmptyString(worker.review_ticket, "review ticket path")) } : {}),
 		payload,
 	};
 	await commandOutput(runner, "herdr", ["agent", "prompt", worker.main_pane, JSON.stringify(envelope)], cwd);

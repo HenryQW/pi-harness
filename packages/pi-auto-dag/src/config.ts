@@ -7,6 +7,7 @@ import {
 	CONFIG_VERSION,
 	DEFAULT_MAX_PARALLEL_TASKS,
 	DEFAULT_MAX_REVIEW_ROUNDS,
+	DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
 	PROFILE_RESOLUTION_VERSION,
 	type ProfileRoutingConfig,
 	type ProjectConfig,
@@ -21,7 +22,7 @@ const CONFIG_KEYS = [
 	"reviewer_profile",
 	"repair_profile",
 ] as const;
-const OPTIONAL_CONFIG_KEYS = ["max_parallel_tasks", "max_review_rounds"] as const;
+const OPTIONAL_CONFIG_KEYS = ["max_parallel_tasks", "max_review_rounds", "required_gate_timeout_ms"] as const;
 
 export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
 	const input = object(value, "auto-dag configuration");
@@ -65,6 +66,11 @@ export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
 			input.max_review_rounds,
 			DEFAULT_MAX_REVIEW_ROUNDS,
 			"configuration max_review_rounds",
+		),
+		required_gate_timeout_ms: optionalPositiveInteger(
+			input.required_gate_timeout_ms,
+			DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
+			"configuration required_gate_timeout_ms",
 		),
 	};
 }
