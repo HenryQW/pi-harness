@@ -19,7 +19,8 @@
       "./packages/pi-auto-dag/extensions/auto-dag.ts",
       "./packages/pi-model-thinking/extensions",
       "./packages/pi-open-in/extensions",
-      "./packages/pi-herdr-rename/extensions"
+      "./packages/pi-herdr-rename/extensions",
+      "./packages/pi-herdr-subagents/extensions/subagents.ts"
     ]
   },
   "scripts": {
