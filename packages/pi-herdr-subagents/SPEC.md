@@ -28,7 +28,7 @@ Reject delegation when:
 - `task` is blank or contains a NUL byte;
 - live owned Workers equal or exceed Worker Limit.
 
-Before enforcing Worker Limit, query tracked Herdr tabs and prune missing tabs. Do not queue work or poll in background.
+Before enforcing Worker Limit, query tracked Herdr tabs and prune missing tabs. Treat any malformed tab entry as reconciliation failure; invalid responses cannot release ownership. Do not queue work or poll in background.
 
 ### `/subagent-limit`
 
@@ -128,7 +128,7 @@ If Completion Notice cannot reach Main, preserve Result and Worker tab. A later 
 Main keeps only in-memory ownership for Workers it created.
 
 - Valid Completion Notice: release ownership and best-effort close completed Worker tab.
-- Main session shutdown or switch: best-effort close every owned Worker tab.
+- Main session shutdown or switch: reconcile any label-only provisioning record, then best-effort close every identified owned Worker tab.
 - Main decides task is no longer needed: run returned `herdr tab close` command through existing `bash`.
 - Abrupt Main crash: leave Worker tabs and Result files for user inspection or manual cleanup.
 - Result files remain for operating-system temporary cleanup; package has no persistent registry or janitor.
@@ -161,13 +161,13 @@ At extension/tool boundary, verify:
 
 - Herdr/model/task preconditions, exact public surface, and same-batch sequential capacity enforcement;
 - config default, validation, command persistence, immediate update, and reduced-limit behavior;
-- per-Main Worker Limit, missing-tab reconciliation, and no queue;
+- per-Main Worker Limit, strict missing-tab and provisioning reconciliation, and no queue;
 - tab label/cwd/env, inherited model/thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
 - successful launch response, definitive pre-submission rollback, indeterminate creation reconciliation, failed-rollback retention, and indeterminate prompt preservation;
 - Completion Notice validation, 1,000-character cap, capacity release, completed-tab close, and shutdown cleanup;
 - exact versioned Result/notice schemas, malformed/spoofed/path/state/excerpt/control-text rejection, and fixed sanitized Main transform;
 - natural Worker Question settlement remains live;
-- `finish_task` sole-call enforcement, synchronous latch, atomic Result write, mode, wait-before-notice order, batch termination, duplicate suppression, and failed-delivery preservation;
+- `finish_task` sole-call enforcement, synchronous latch, atomic Result write and mode without post-commit failure, wait-before-notice order, batch termination, duplicate suppression, and failed-delivery preservation;
 - terminal runtime failure notice versus recoverable tool error and normal settlement;
 - package typecheck, tests, intended packed files, documentation, and release metadata.
 

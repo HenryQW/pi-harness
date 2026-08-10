@@ -166,11 +166,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	const listTabs = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<HerdrTab[]> => {
 		const result = resultOf(await runHerdr(pi, ["tab", "list", "--workspace", where.workspace], ctx, signal), "Herdr tab list");
 		if (result.type !== "tab_list" || !Array.isArray(result.tabs)) throw new Error("Herdr tab list is invalid.");
-		return result.tabs.flatMap((candidate) => {
-			if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
-			const tab = candidate as { tab_id?: unknown; workspace_id?: unknown; label?: unknown };
-			if (typeof tab.tab_id !== "string" || tab.workspace_id !== where.workspace) return [];
-			return [{ id: tab.tab_id, label: typeof tab.label === "string" ? tab.label : undefined }];
+		return result.tabs.map((candidate, index) => {
+			const tab = object(candidate, `Herdr tab list entry ${index + 1}`);
+			const id = text(tab.tab_id, `Herdr tab list entry ${index + 1} tab ID`);
+			if (tab.workspace_id !== where.workspace) throw new Error(`Herdr tab list entry ${index + 1} workspace is invalid.`);
+			if (tab.label !== undefined && typeof tab.label !== "string") throw new Error(`Herdr tab list entry ${index + 1} label is invalid.`);
+			return { id, label: tab.label as string | undefined };
 		});
 	};
 
@@ -396,6 +397,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		try {
+			await reconcile(location(), ctx);
+		} catch {}
 		const owned = [...workers.values()];
 		workers.clear();
 		await Promise.all(owned.flatMap((worker) => worker.tabId ? [closeTab(pi, worker.tabId, ctx).catch(() => undefined)] : []));

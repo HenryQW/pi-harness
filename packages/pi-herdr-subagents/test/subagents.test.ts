@@ -46,6 +46,7 @@ function mainHarness(options: {
 	closeFailures?: number;
 	closeKilled?: boolean;
 	listFailuresAfterCreate?: number;
+	malformedTabs?: () => boolean;
 	tabs?: () => boolean;
 	noModel?: boolean;
 	thinkingLevel?: string;
@@ -95,7 +96,10 @@ function mainHarness(options: {
 					listFailuresAfterCreate--;
 					return failure("tab_list_failed");
 				}
-				return success(JSON.stringify({ result: { type: "tab_list", tabs: tabPresent && (options.tabs?.() ?? true) ? [{ tab_id: tabId, workspace_id: "workspace-1", label: tabLabel }] : [] } }));
+				const tab = options.malformedTabs?.()
+					? { tab_id: tabId, label: tabLabel }
+					: { tab_id: tabId, workspace_id: "workspace-1", label: tabLabel };
+				return success(JSON.stringify({ result: { type: "tab_list", tabs: tabPresent && (options.tabs?.() ?? true) ? [tab] : [] } }));
 			}
 			if (args[0] === "agent" && args[1] === "get") {
 				return success(JSON.stringify({ result: { type: "agent_info", agent: { name: mainName, pane_id: "main-pane", workspace_id: "workspace-1" } } }));
@@ -291,7 +295,6 @@ test("failed reconciliation preserves indeterminate tab provisioning", async () 
 		);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
 		assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
-		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		assert.deepEqual(app.closed, ["tab-1"]);
 	});
@@ -331,6 +334,23 @@ test("lowered limit leaves live Workers, then reconciliation frees capacity", as
 		await assert.rejects(app.tools.get("delegate_task")!.execute("3", { task: "blocked" }, undefined, undefined, app.ctx), /Worker Limit reached \(1\)/);
 		app.setTabPresent(false);
 		await app.tools.get("delegate_task")!.execute("4", { task: "after reconciliation" }, undefined, undefined, app.ctx);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("malformed tab entries cannot prune Worker ownership", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+	let malformed = false;
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ limitInput: "1", malformedTabs: () => malformed });
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		await app.tools.get("delegate_task")!.execute("first", { task: "owned task" }, undefined, undefined, app.ctx);
+		malformed = true;
+		await assert.rejects(app.tools.get("delegate_task")!.execute("malformed", { task: "must not start" }, undefined, undefined, app.ctx), /Herdr tab list entry 1 workspace is invalid/);
+		malformed = false;
+		await assert.rejects(app.tools.get("delegate_task")!.execute("capacity", { task: "still blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		assert.deepEqual(app.closed, ["tab-1"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });

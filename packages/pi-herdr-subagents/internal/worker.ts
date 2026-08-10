@@ -86,7 +86,6 @@ async function atomicResult(protocol: WorkerProtocol, terminal: TerminalResult):
 		await writeFile(temporary, `${JSON.stringify(terminal)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
 		await chmod(temporary, 0o600);
 		await rename(temporary, protocol.resultPath);
-		await chmod(protocol.resultPath, 0o600);
 	} catch (error) {
 		await rm(temporary, { force: true }).catch(() => undefined);
 		throw error;
