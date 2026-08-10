@@ -63,7 +63,7 @@ export type CommandRunner = (
 
 const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const OUTPUT_OVERFLOW_EXIT_CODE = 125;
-const GATE_HOST_PATH = fileURLToPath(new URL("./gate-host.ts", import.meta.url));
+const GATE_HOST_PATH = fileURLToPath(new URL("./gate-host.mjs", import.meta.url));
 const execFile = promisify(execFileCallback);
 
 export const runCommand: CommandRunner = async (command, arguments_, options) => {
