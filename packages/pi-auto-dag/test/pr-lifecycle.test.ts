@@ -12,8 +12,8 @@ import { type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
-import { eventReceiptPath, reviewId } from "../src/review-ticket.ts";
-import { readActiveRunId, runDirectory } from "../src/state.ts";
+import { eventReceiptPath, readWorkerReceipt, reviewId } from "../src/review-ticket.ts";
+import { readActiveRunId, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "33333333-3333-4333-8333-333333333333";
@@ -216,6 +216,41 @@ test("PR health records non-actionable triage without a coder or push", async (t
 	assert.equal(gh.gitPushes, pushes);
 	assert.equal(herdr.tabs.size, 0);
 	assert.equal(await readActiveRunId(project.root), undefined);
+});
+
+test("PR health accepted triage resumes repair before recovering receipt", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const gh = fakeGh(project.root);
+	const lifecycle = makeLifecycle(combinedRunner(herdr, gh));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	const message = healthEvent(state, {
+		summary: "One unresolved review thread.",
+		actionable: true,
+		thread_ids: ["THREAD-1"],
+		checks: [],
+	});
+	const envelope = JSON.parse(message);
+	await writeRunState(project.root, {
+		...state,
+		accepted_events: [envelope.event_id],
+		health: {
+			...state.health!,
+			summary: "One unresolved review thread.",
+			actionable: true,
+			thread_ids: ["THREAD-1"],
+			checks: [],
+		},
+	}, () => "recover-health");
+	const prompts = herdr.count("agent prompt");
+
+	state = await lifecycle.health(project.root, RUN_ID, message);
+
+	assert.equal(state.health?.status, "repairing");
+	assert.ok(state.health?.coder_pane);
+	assert.equal(herdr.count("agent prompt"), prompts + 1);
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 
 test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves only fixed triaged threads", async (t) => {

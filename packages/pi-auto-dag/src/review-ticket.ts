@@ -86,7 +86,12 @@ export async function ensureActionTicket(
 ): Promise<ActionTicket> {
 	try {
 		const current = await readActionTicket(path);
-		if (current.attempt === input.attempt && current.review_round === input.review_round && current.role === input.role && current.review_id === input.review_id) return current;
+		if (current.attempt === input.attempt && current.review_round === input.review_round && current.role === input.role && current.review_id === input.review_id) {
+			const receipt = await readWorkerReceipt(current.receipt_path);
+			if (!receipt) return current;
+			if (receipt.event_id !== current.event_id) throw new Error("Worker receipt belongs to another event");
+			if (receipt.status !== "rejected") return current;
+		}
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}

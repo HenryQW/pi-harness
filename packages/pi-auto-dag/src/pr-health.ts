@@ -32,10 +32,6 @@ export async function runPrHealth(
 			if (existing.status === "accepted") return state;
 			throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
 		}
-		if (hasAcceptedWorkerEvent(state, envelope.event_id)) {
-			await writeWorkerReceipt(receiptPath, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
-			return state;
-		}
 	}
 	state = await resumePrHealth(state, options);
 	const config = await loadPrHealthConfig(state, options);
@@ -47,6 +43,12 @@ export async function runPrHealth(
 	if (state.health?.status === "post_push_cleanup") return await completeHealthRepair(state, options);
 	state = await fastForwardToPrHead(state, options);
 	if (state.health?.status === "blocked") return state;
+	if (envelope && hasAcceptedWorkerEvent(state, envelope.event_id)) {
+		const resumed = await resumePendingHealthWork(state, config, options);
+		state = resumed ?? state;
+		await writeWorkerReceipt(eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id), { event_id: envelope.event_id, status: "accepted" }, options.uuid);
+		return state;
+	}
 	if (envelope) {
 		const receiptPath = eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id);
 		try {
@@ -58,12 +60,18 @@ export async function runPrHealth(
 		await writeWorkerReceipt(receiptPath, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
 		return state;
 	}
-	if (state.health?.status === "triaging" && state.health.actionable === false) return await completeHealthyTriage(state, options);
 	if (!state.health || state.health.status === "completed") return await startHealthTriage(state, config, options);
-	if (state.health.status === "triaging") return await ensureHealthReviewer(state, config, options, "resume");
-	if (state.health.status === "repairing") return await ensureHealthCoder(state, config, options, "resume");
-	if (state.health.status === "reviewing") return await ensureHealthReviewer(state, config, options, "resume");
-	return state;
+	return await resumePendingHealthWork(state, config, options) ?? state;
+}
+
+async function resumePendingHealthWork(state: RunState, config: ProjectConfig, options: PrHealthOptions): Promise<RunState | undefined> {
+	const health = state.health;
+	if (health?.status === "triaging" && health.actionable === false) return await completeHealthyTriage(state, options);
+	if (health?.status === "triaging" && health.actionable === true) return await startHealthRepair(state, config, options);
+	if (health?.status === "triaging") return await ensureHealthReviewer(state, config, options, "resume");
+	if (health?.status === "repairing") return await ensureHealthCoder(state, config, options, "resume");
+	if (health?.status === "reviewing") return await ensureHealthReviewer(state, config, options, "resume");
+	return undefined;
 }
 
 async function loadPrHealthConfig(state: RunState, options: PrHealthOptions): Promise<ProjectConfig> {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createWorkerExtension, WORKER_TOOLS, workerEnvironment } from "../src/worker.ts";
-import { type ActionTicket, writeWorkerReceipt } from "../src/review-ticket.ts";
+import { ensureActionTicket, readActionTicket, type ActionTicket, writeWorkerReceipt } from "../src/review-ticket.ts";
 
 const RUN_ID = "55555555-5555-4555-8555-555555555555";
 const HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -190,6 +190,21 @@ test("worker requests compaction before high-context submission", async (t) => {
 	assert.deepEqual(result, { block: true, terminate: true, reason: "Auto-compact ran before worker event submission; retry event." });
 	assert.equal(compacted, 1);
 	assert.deepEqual(sent, [{ text: "Auto-compact completed. Retry worker event submission now.", options: { deliverAs: "followUp" } }]);
+});
+
+test("rejected action ticket is replaced on same logical action", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const path = join(root, "action-ticket.json");
+	const first = await ensureActionTicket(path, { attempt: 1, review_round: 1, role: "reviewer", review_id: "review-1" }, root, RUN_ID, () => "write-1", () => "event-1");
+	await writeWorkerReceipt(first.receipt_path, { event_id: first.event_id, status: "rejected", reason: "bad verdict" }, () => "receipt-1");
+
+	const second = await ensureActionTicket(path, { attempt: 1, review_round: 1, role: "reviewer", review_id: "review-1" }, root, RUN_ID, () => "write-2", () => "event-2");
+
+	assert.equal(first.event_id, "event-1");
+	assert.equal(second.event_id, "event-2");
+	assert.equal(second.receipt_path.endsWith("event-2.json"), true);
+	assert.equal((await readActionTicket(path)).event_id, "event-2");
 });
 
 test("worker environment requires action ticket", () => {

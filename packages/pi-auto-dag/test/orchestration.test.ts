@@ -275,7 +275,7 @@ test("cleanup retains a completed child changed after review", async (t) => {
 	assert.equal(await readFile(join(worktree!, "late.txt"), "utf8"), "late\n");
 });
 
-test("accepted worker events recover missing receipts", async (t) => {
+test("accepted worker events resume downstream work before recovering receipts", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
 	const lifecycle = makeLifecycle(herdr.runner);
@@ -283,15 +283,28 @@ test("accepted worker events recover missing receipts", async (t) => {
 	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	const message = requestReviewEvent(state, "alpha", commit);
 	const envelope = JSON.parse(message);
-	state = await lifecycle.resume(project.root, message);
-	assert.ok(state.accepted_events?.includes(envelope.event_id));
+	await writeRunState(project.root, {
+		...state,
+		accepted_events: [envelope.event_id],
+		tasks: {
+			...state.tasks,
+			alpha: {
+				...state.tasks.alpha,
+				status: "reviewing",
+				activity_started_at: "2026-08-09T00:00:00.000Z",
+				commit,
+				review_rounds: 1,
+				reviewer_provisioning_id: `auto-dag:${state.run_id}:alpha:reviewer`,
+			},
+		},
+	}, () => "recover-state");
 	const prompts = herdr.count("agent prompt");
 
-	await rm(envelope.receipt_path, { force: true });
 	state = await lifecycle.resume(project.root, message);
 
 	assert.equal(state.tasks.alpha.status, "reviewing");
-	assert.equal(herdr.count("agent prompt"), prompts);
+	assert.ok(state.tasks.alpha.reviewer_pane);
+	assert.equal(herdr.count("agent prompt"), prompts + 1);
 	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 
