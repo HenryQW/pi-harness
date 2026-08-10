@@ -8,7 +8,7 @@ import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, res
 import { runPrHealth } from "./pr-health.ts";
 import { claimActiveRun, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
-import { workerWorkspaceId } from "./worker-host.ts";
+import { findWorkerTab, retireWorkerTab, workerWorkspaceId } from "./worker-host.ts";
 
 export interface CoreLifecycleOptions {
 	runner?: CommandRunner;
@@ -81,9 +81,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
 				const prResolved = await resolveFinalRepair(state, id, resolution, config, orchestration);
 				if (prResolved) return await completeSuccessfulRun(prResolved, orchestration);
-				const current = state.tasks[id];
-				const { block_reason: _taskBlockReason, blocked_role, activity_started_at: _activityStartedAt, ...resolvedTask } = current;
-				const reviewerBlocked = current.status === "blocked" && blocked_role === "reviewer";
+				let current = state.tasks[id];
+				const reviewerBlocked = current.status === "blocked" && current.blocked_role === "reviewer";
 				const reviewRound = current.review_rounds ?? 0;
 				if (reviewerBlocked && reviewRound >= config.max_review_rounds) {
 					const reason = `Review rounds exceed configured maximum of ${config.max_review_rounds}`;
@@ -96,6 +95,11 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 					await writeRunState(state.main_worktree, next, uuid);
 					return next;
 				}
+				if (["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(current.status)) {
+					current = await retireActiveTaskWorker(state, current, orchestration);
+				}
+				current = clearFailedGateEvidence(current);
+				const { block_reason: _taskBlockReason, blocked_role, activity_started_at: _activityStartedAt, ...resolvedTask } = current;
 				const resolved: RunTaskState = current.status === "blocked"
 					? {
 						...resolvedTask,
@@ -105,7 +109,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 						...(blocked_role === "implementer" ? { attempts: current.attempts + 1 } : {}),
 						resolution_pending: true,
 					}
-					: ["starting", "implementing", "reviewing"].includes(current.status)
+					: ["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(current.status)
 						? { ...current, resolution_pending: true }
 						: current;
 				const updated = replaceTask({
@@ -178,6 +182,38 @@ async function withLifecycleMutation<T>(mainWorktree: string, runner: CommandRun
 		release();
 		if (lifecycleMutationTails.get(root) === tail) lifecycleMutationTails.delete(root);
 	}
+}
+
+async function retireActiveTaskWorker(
+	state: RunState,
+	current: RunTaskState,
+	options: OrchestrationOptions,
+): Promise<RunTaskState> {
+	const tabId = current.tab_id ?? (current.implementer_provisioning_id
+		? (await findWorkerTab(state, current.implementer_provisioning_id, options))?.tab_id
+		: undefined);
+	if (tabId) await retireWorkerTab(state, tabId, options);
+	const {
+		tab_id: _tabId,
+		implementer_pane: _implementerPane,
+		reviewer_pane: _reviewerPane,
+		tab_cleanup_done: _tabCleanupDone,
+		...retired
+	} = current;
+	return retired;
+}
+
+function clearFailedGateEvidence(current: RunTaskState): RunTaskState {
+	if (current.review_exit_code === undefined || current.review_exit_code === 0) return current;
+	const {
+		review_command: _command,
+		review_commit: _commit,
+		review_exit_code: _exitCode,
+		review_stdout: _stdout,
+		review_stderr: _stderr,
+		...cleared
+	} = current;
+	return cleared;
 }
 
 async function reconcileGate(state: RunState, options: OrchestrationOptions): Promise<void> {

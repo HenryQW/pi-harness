@@ -1,5 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandOutput, copyIgnoredResources, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
+import { commandOutput, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
+import { revalidateResolvedProfile } from "./config.ts";
 import { ensureRecordedGate, failFinalGate, requiredTaskGate } from "./final-gate.ts";
 import { acceptFinalRepairEnvelope, advanceFinalRepair, isFinalRepairActive, recoverFinalRepairIntegration } from "./final-repair.ts";
 import { deleteExpectedBranch, ensureChildWorktree, retireChildWorktree } from "./git.ts";
@@ -98,8 +99,16 @@ async function ensureFinalReviewer(
 	if (commit !== state.integration_head) throw new Error("Final-check commit does not match the integration HEAD");
 	state = await ensureFinalGate(state, issue, commit, config.required_gate_timeout_ms, options);
 	current = task(state, issue.id);
+	const gate = requiredTaskGate(current, commit, "Final check");
+	if (gate.exit_code !== 0) {
+		return await save({
+			...state,
+			phase: "blocked",
+			block_reason: `Final check required gate exited with code ${gate.exit_code}; reviewer was not launched`,
+		}, options);
+	}
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
-	const launch = workerLaunch(state, issue, config, "reviewer");
+	let launch = await workerLaunch(state, issue, config, "reviewer");
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: current.tab_id,
 		pane_id: current.reviewer_pane,
@@ -117,6 +126,7 @@ async function ensureFinalReviewer(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, "final reviewer agent");
+	launch = await workerLaunch(state, issue, config, "reviewer");
 	const started = await startWorkerAgent(state, agent, nonEmptyString(current.reviewer_pane, "final reviewer pane"), launch, options, {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
@@ -137,6 +147,7 @@ async function ensureFinalReviewer(
 		state.run_id,
 		options.uuid,
 	);
+	await revalidateResolvedProfile(config, config.reviewer_profile);
 	await promptWorkerAgent(state, agent, reviewPrompt({
 		kind: "final_check",
 		graph: state.graph,
@@ -250,15 +261,14 @@ function finalCheck(state: RunState): LocalIssue {
 	return executionIssues(state.graph).at(-1)!;
 }
 
-function workerLaunch(
+async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
-): WorkerLaunch {
+): Promise<WorkerLaunch> {
 	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = config.profiles[profileId];
-	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
+	const profile = await revalidateResolvedProfile(config, profileId);
 	return createWorkerLaunch({
 		role,
 		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
@@ -303,7 +313,6 @@ async function ensureFinalGate(
 		if (!recordedGateEvidence(task(state, issue.id), commit)) {
 			await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, commit, "Final gate");
 			await restoreCleanCommit(options.runner, commit, worktree);
-			await copyIgnoredResources(options.runner, state.main_worktree, worktree);
 			state = await ensureRecordedGate(state, issue, commit, worktree, timeoutMs, options);
 		}
 	} finally {
