@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import type { GateOutputEvidence, RequiredGateEvidence } from "./model.ts";
 
 interface CommandResult {
 	code: number;
@@ -8,7 +9,7 @@ interface CommandResult {
 	stderr: string;
 }
 
-export interface RequiredGateEvidence {
+export interface RequiredGateExecution {
 	command: string;
 	commit: string;
 	exit_code: number;
@@ -22,8 +23,8 @@ export interface RecordedGateEvidence {
 	review_command?: string;
 	review_commit?: string;
 	review_exit_code?: number;
-	review_stdout?: string;
-	review_stderr?: string;
+	review_stdout?: GateOutputEvidence;
+	review_stderr?: GateOutputEvidence;
 }
 
 interface CommandOptions {
@@ -109,7 +110,7 @@ export async function runRequiredGate(
 	commit: string,
 	cwd: string,
 	timeoutMs?: number,
-): Promise<RequiredGateEvidence> {
+): Promise<RequiredGateExecution> {
 	try {
 		const result = await runner("sh", ["-c", command], { cwd, timeoutMs });
 		return {

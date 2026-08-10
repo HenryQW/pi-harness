@@ -8,6 +8,7 @@ import {
 	DEFAULT_MAX_PARALLEL_TASKS,
 	DEFAULT_MAX_REVIEW_ROUNDS,
 	DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
+	MAX_REQUIRED_GATE_TIMEOUT_MS,
 	PROFILE_RESOLUTION_VERSION,
 	type ProfileRoutingConfig,
 	type ProjectConfig,
@@ -50,6 +51,14 @@ export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
 	if (!implementationProfiles.includes(repairProfile)) {
 		throw new Error(`configuration repair_profile must be an implementation profile: ${repairProfile}`);
 	}
+	const requiredGateTimeoutMs = optionalPositiveInteger(
+		input.required_gate_timeout_ms,
+		DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
+		"configuration required_gate_timeout_ms",
+	);
+	if (requiredGateTimeoutMs > MAX_REQUIRED_GATE_TIMEOUT_MS) {
+		throw new Error(`configuration required_gate_timeout_ms must not exceed ${MAX_REQUIRED_GATE_TIMEOUT_MS}`);
+	}
 
 	return {
 		version: CONFIG_VERSION,
@@ -67,11 +76,7 @@ export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
 			DEFAULT_MAX_REVIEW_ROUNDS,
 			"configuration max_review_rounds",
 		),
-		required_gate_timeout_ms: optionalPositiveInteger(
-			input.required_gate_timeout_ms,
-			DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
-			"configuration required_gate_timeout_ms",
-		),
+		required_gate_timeout_ms: requiredGateTimeoutMs,
 	};
 }
 

@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner, type RequiredGateEvidence } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
-import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RunState, WorkerEnvelope } from "./model.ts";
+import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RequiredGateEvidence, RunState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
@@ -156,17 +156,17 @@ async function ensureHealthReviewer(
 		await verifyHealthRepairCommit(state, commit, options);
 		let evidence = recordedGateEvidence(health, commit);
 		if (!evidence) {
-			evidence = await runRequiredGate(
+			const execution = await runRequiredGate(
 				options.runner,
 				issue.testing,
 				commit,
 				nonEmptyString(health.worktree, "PR-health repair worktree"),
 				config.required_gate_timeout_ms,
 			);
+			evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
 			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
 			health = requiredHealth(state);
 		}
-		await persistGateOutput(state, issue.id, evidence, options.uuid);
 	}
 	const launch = workerLaunch(state, issue, config, "reviewer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:reviewer`;
@@ -214,8 +214,6 @@ async function ensureHealthReviewer(
 			worktree: nonEmptyString(health.worktree, "PR-health repair worktree"),
 			base: nonEmptyString(health.base, "PR-health repair base"),
 			gate: requiredHealthGate(health, nonEmptyString(health.commit, "PR-health repair commit")),
-			main_worktree: state.main_worktree,
-			run_id: state.run_id,
 			prior_findings: health.review_findings,
 			context: {
 				pr: state.pr,

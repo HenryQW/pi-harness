@@ -12,7 +12,7 @@ import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
 import { childWorktreePath, parseWorkerEnvelope } from "../src/orchestration.ts";
 import { reviewId } from "../src/review-ticket.ts";
-import { writeRunState } from "../src/state.ts";
+import { runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -389,8 +389,8 @@ test("Auto DAG persists required-gate evidence and rejects nonzero approvals", a
 	assert.equal(state.tasks.alpha.review_command, "npm test -- alpha");
 	assert.equal(state.tasks.alpha.review_commit, commit);
 	assert.equal(state.tasks.alpha.review_exit_code, 1);
-	assert.equal(state.tasks.alpha.review_stdout, "failed output\n");
-	assert.equal(state.tasks.alpha.review_stderr, "failure details\n");
+	assert.deepEqual(state.tasks.alpha.review_stdout, { excerpt: "failed output\n", bytes: 14, truncated: false });
+	assert.deepEqual(state.tasks.alpha.review_stderr, { excerpt: "failure details\n", bytes: 16, truncated: false });
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
 	assert.equal(state.tasks.alpha.status, "blocked");
 	assert.match(String(state.tasks.alpha.block_reason), /approval requires exit code 0/);
@@ -420,7 +420,7 @@ test("Auto DAG restores gate-created worktree changes before review", async (t) 
 
 test("review handoff bounds gate output and retains exact full output", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
-	const stdout = `start\n${"x".repeat(10_000)}\nend\n`;
+	const stdout = `start\n${"x".repeat(1_000_000)}\nend\n`;
 	const herdr = fakeHerdr({ gate: () => ({ code: 0, stdout, stderr: "" }) });
 	const lifecycle = makeLifecycle(herdr.runner);
 	let state = await lifecycle.start(project.root, "main-pane");
@@ -429,12 +429,16 @@ test("review handoff bounds gate output and retains exact full output", async (t
 	const prompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
 	const output = prompt.gate.output.stdout;
 
-	assert.equal(state.tasks.alpha.review_stdout, stdout);
-	assert.equal(output.truncated, true);
-	assert.equal(output.bytes, Buffer.byteLength(stdout));
-	assert.ok(output.excerpt.length < stdout.length);
-	assert.equal(await readFile(output.full_output.path, "utf8"), stdout);
-	assert.match(output.full_output.sha256, /^[0-9a-f]{64}$/);
+	const stored = state.tasks.alpha.review_stdout!;
+	assert.equal(stored.excerpt, output.excerpt);
+	assert.equal(stored.bytes, Buffer.byteLength(stdout));
+	assert.equal(stored.truncated, true);
+	assert.deepEqual(stored.full_output, output.full_output);
+	assert.ok(stored.excerpt.length < stdout.length);
+	assert.equal(await readFile(stored.full_output!.path, "utf8"), stdout);
+	assert.match(stored.full_output!.sha256, /^[0-9a-f]{64}$/);
+	const stateJson = await readFile(join(runDirectory(project.root, state.run_id), "state.json"), "utf8");
+	assert.ok(Buffer.byteLength(stateJson) < 50_000);
 });
 
 test("Auto DAG executes frozen command text unchanged in clean task worktree", async (t) => {

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { RequiredGateEvidence } from "./command.ts";
-import type { DeliveryGraph, LocalIssue, RunState } from "./model.ts";
+import { dirname, join } from "node:path";
+import type { RequiredGateExecution } from "./command.ts";
+import type { DeliveryGraph, GateOutputEvidence, GateOutputReference, LocalIssue, RequiredGateEvidence, RunState } from "./model.ts";
 import type { ReviewKind } from "./review-ticket.ts";
 import { runDirectory, type Uuid } from "./state.ts";
 import { workerDeliveryContext, workerIssueContext } from "./worker.ts";
@@ -19,32 +19,25 @@ export interface ReviewPromptInput {
 	worktree: string;
 	base: string;
 	gate: RequiredGateEvidence;
-	main_worktree: string;
-	run_id: string;
 	prior_findings?: string[];
 	resolution?: unknown;
 	context?: Record<string, unknown>;
 }
 
-interface OutputReference {
-	path: string;
-	sha256: string;
-}
-
-/** Full gate output stays outside model context but remains available to its reviewer. */
+/** Full gate output stays outside Run State and model context but remains available to its reviewer. */
 export async function persistGateOutput(
 	state: RunState,
 	gateOwnerId: string,
-	evidence: RequiredGateEvidence,
+	execution: RequiredGateExecution,
 	uuid: Uuid,
-): Promise<void> {
-	const streams = (["stdout", "stderr"] as const).filter((stream) => evidence.output[stream].length > OUTPUT_EXCERPT_CHARACTERS);
-	if (!streams.length) return;
-	const references = gateOutputReferences(state.main_worktree, state.run_id, gateOwnerId, evidence);
-	await mkdir(join(runDirectory(state.main_worktree, state.run_id), "gate-output", gateOwnerId, evidence.commit), { recursive: true });
-	await Promise.all(streams.map(async (stream) => {
-		await atomicWrite(references[stream].path, evidence.output[stream], `${stream}-${uuid()}`);
-	}));
+): Promise<RequiredGateEvidence> {
+	const references = gateOutputReferences(state.main_worktree, state.run_id, gateOwnerId, execution);
+	const streams = ["stdout", "stderr"] as const;
+	const output = Object.fromEntries(await Promise.all(streams.map(async (stream) => [
+		stream,
+		await persistOutput(execution.output[stream], references[stream], `${stream}-${uuid()}`),
+	]))) as { stdout: GateOutputEvidence; stderr: GateOutputEvidence };
+	return { command: execution.command, commit: execution.commit, exit_code: execution.exit_code, output };
 }
 
 export function reviewPrompt(input: ReviewPromptInput, mode: ReviewPromptMode): Record<string, unknown> {
@@ -72,21 +65,20 @@ export function reviewPrompt(input: ReviewPromptInput, mode: ReviewPromptMode): 
 }
 
 function gatePromptEvidence(input: ReviewPromptInput): Record<string, unknown> {
-	const references = gateOutputReferences(input.main_worktree, input.run_id, input.issue.id, input.gate);
 	return {
 		command: input.gate.command,
 		commit: input.gate.commit,
 		exit_code: input.gate.exit_code,
-		output: {
-			stdout: outputExcerpt(input.gate.output.stdout, references.stdout),
-			stderr: outputExcerpt(input.gate.output.stderr, references.stderr),
-		},
+		output: input.gate.output,
 	};
 }
 
-function outputExcerpt(output: string, reference: OutputReference): Record<string, unknown> {
-	const truncated = output.length > OUTPUT_EXCERPT_CHARACTERS;
-	if (!truncated) return { excerpt: output, bytes: Buffer.byteLength(output), truncated: false };
+async function persistOutput(output: string, reference: GateOutputReference, temporaryName: string): Promise<GateOutputEvidence> {
+	if (output.length <= OUTPUT_EXCERPT_CHARACTERS) {
+		return { excerpt: output, bytes: Buffer.byteLength(output), truncated: false };
+	}
+	await mkdir(dirname(reference.path), { recursive: true });
+	await atomicWrite(reference.path, output, temporaryName);
 	const omitted = output.length - OUTPUT_EXCERPT_CHARACTERS;
 	return {
 		excerpt: `${output.slice(0, OUTPUT_EXCERPT_HEAD)}\n... ${omitted} characters omitted ...\n${output.slice(-(OUTPUT_EXCERPT_CHARACTERS - OUTPUT_EXCERPT_HEAD))}`,
@@ -100,8 +92,8 @@ function gateOutputReferences(
 	mainWorktree: string,
 	runId: string,
 	gateOwnerId: string,
-	evidence: RequiredGateEvidence,
-): { stdout: OutputReference; stderr: OutputReference } {
+	evidence: RequiredGateExecution,
+): { stdout: GateOutputReference; stderr: GateOutputReference } {
 	const directory = join(runDirectory(mainWorktree, runId), "gate-output", gateOwnerId, evidence.commit);
 	return {
 		stdout: outputReference(join(directory, "stdout.txt"), evidence.output.stdout),
@@ -109,7 +101,7 @@ function gateOutputReferences(
 	};
 }
 
-function outputReference(path: string, output: string): OutputReference {
+function outputReference(path: string, output: string): GateOutputReference {
 	return { path, sha256: createHash("sha256").update(output).digest("hex") };
 }
 

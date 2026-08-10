@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner, type RequiredGateEvidence } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
-import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
+import type { LocalIssue, ProjectConfig, PullRequestIdentity, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket, type ReviewKind } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
@@ -295,8 +295,6 @@ async function ensureFinalReviewer(
 		worktree: state.main_worktree,
 		base: state.source_commit,
 		gate: requiredTaskGate(current, commit, "Final check"),
-		main_worktree: state.main_worktree,
-		run_id: state.run_id,
 	}, promptMode), options);
 	if (needsInstruction) {
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);
@@ -506,8 +504,6 @@ async function ensureFinalRepairReviewer(
 		worktree: nonEmptyString(current.worktree, "final repair worktree"),
 		base: nonEmptyString(current.repair_base, "final repair base"),
 		gate: requiredTaskGate(current, commit, "Final-gate repair"),
-		main_worktree: state.main_worktree,
-		run_id: state.run_id,
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[owner.id],
 		context: { owner_issue: workerIssueContext(owner, false) },
@@ -850,10 +846,10 @@ async function ensureRecordedGate(
 	const current = task(state, issue.id);
 	let evidence = recordedGateEvidence(current, commit);
 	if (!evidence) {
-		evidence = await runRequiredGate(options.runner, issue.testing, commit, cwd, timeoutMs);
+		const execution = await runRequiredGate(options.runner, issue.testing, commit, cwd, timeoutMs);
+		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
 		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
 	}
-	await persistGateOutput(state, issue.id, evidence, options.uuid);
 	return state;
 }
 

@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner, type RequiredGateEvidence } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner } from "./command.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, readCurrentBranch, retireChildWorktree, verifySingleCommit } from "./git.ts";
-import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
+import type { CleanupBlock, LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle, cleanupPrLifecycle, resumePrLifecycle } from "./pr-lifecycle.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
@@ -637,16 +637,16 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 	await verifyReviewCommit(state, issue.id, commit, options);
 	let evidence = recordedGateEvidence(current, commit);
 	if (!evidence) {
-		evidence = await runRequiredGate(
+		const execution = await runRequiredGate(
 			options.runner,
 			issue.testing,
 			commit,
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 			timeoutMs,
 		);
+		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
 		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
 	}
-	await persistGateOutput(state, issue.id, evidence, options.uuid);
 	return state;
 }
 
@@ -922,8 +922,6 @@ function reviewerPrompt(
 		worktree: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 		base: nonEmptyString(current.wave_base, `Run Task ${issue.id} wave_base`),
 		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id),
-		main_worktree: state.main_worktree,
-		run_id: state.run_id,
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
 	}, mode);

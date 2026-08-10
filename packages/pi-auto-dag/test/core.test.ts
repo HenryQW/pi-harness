@@ -10,7 +10,7 @@ import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle } from "../src/lifecycle.ts";
-import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED_GATE_TIMEOUT_MS } from "../src/model.ts";
+import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED_GATE_TIMEOUT_MS, MAX_REQUIRED_GATE_TIMEOUT_MS } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { PLANNING_TOOLS } from "../src/planning.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
@@ -88,6 +88,14 @@ test("strict config and local graph validation derive deterministic dependencies
 	assert.equal(config.max_review_rounds, DEFAULT_MAX_REVIEW_ROUNDS);
 	assert.equal(config.required_gate_timeout_ms, DEFAULT_REQUIRED_GATE_TIMEOUT_MS);
 	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: 0 }), /must be a positive integer/);
+	assert.equal(
+		parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS }).required_gate_timeout_ms,
+		MAX_REQUIRED_GATE_TIMEOUT_MS,
+	);
+	assert.throws(
+		() => parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS + 1 }),
+		/must not exceed 2147483647/,
+	);
 	assert.throws(() => parseProjectConfig({ ...config, unknown: true }), /Unknown auto-dag configuration setting/);
 	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), implementation_profiles: ["coder", "coder"] }), /must not contain duplicates/);
 	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), repair_profile: "reviewer" }), /must be an implementation profile/);

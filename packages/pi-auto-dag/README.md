@@ -88,7 +88,7 @@ Optional settings:
 | `max_review_rounds` | `5` | Most review rounds per task |
 | `required_gate_timeout_ms` | `1800000` | Maximum runtime for each required gate; timeout exits with code `124` |
 
-All values must be positive integers.
+All values must be positive integers. `required_gate_timeout_ms` cannot exceed Node's timer maximum, `2147483647`.
 
 ## Delivery Graph
 
@@ -191,8 +191,8 @@ For each task:
 2. Start one implementer.
 3. Require one commit over the wave base.
 4. Verify that commit and clean worktree, then execute frozen `testing` text unchanged through `sh -c` with configured deadline and process-group cleanup.
-5. Save command, verified commit SHA, exit code, and exact full stdout/stderr, then restore commit and remove gate-created Git dirt.
-6. Start task-owned reviewer with one canonical Review Packet. Gate output is bounded to head/tail excerpts; truncated streams include byte count, SHA-256, and a read-on-demand path to exact full output.
+5. Save command, verified commit SHA, exit code, and bounded stdout/stderr evidence, then restore commit and remove gate-created Git dirt. Truncated streams keep exact full output in SHA-256-bound files instead of Run State.
+6. Start task-owned reviewer with one canonical Review Packet. Gate output uses same bounded evidence and read-on-demand full-output references.
 
 Auto DAG owns deterministic Git and gate verification. Reviewer inspects diff and acceptance criteria instead of repeating clean-worktree, base, or commit-count checks. Reviewer submits only verdict and findings; worker extension attaches system-owned dispatch identity, so stale or duplicated verdicts cannot approve another commit or review round. Extra diagnostics or broader tests cannot replace required frozen gate, and approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
 
@@ -284,7 +284,7 @@ Run files live under `.context/pi-auto-dag/`:
 
 `active.json` locks one checkout. Lock stays until cleanup succeeds.
 
-Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, and health evidence. Writes are atomic.
+Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, and bounded required-gate evidence. Large gate streams live in referenced files. Writes are atomic.
 
 Main Pi widget shows:
 

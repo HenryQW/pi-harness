@@ -8,6 +8,7 @@ import {
 	type CleanupBlock,
 	type DeliveryGraph,
 	type HealthCheckEvidence,
+	type GateOutputEvidence,
 	type HealthFastForwardIntent,
 	type LocalIssue,
 	type PrHealthState,
@@ -31,7 +32,7 @@ const TASK_STRING_FIELDS = [
 	"block_reason", "wave_base", "worktree", "branch", "tab_id",
 	"implementer_provisioning_id", "implementer_pane", "implementer_agent",
 	"reviewer_provisioning_id", "reviewer_pane", "reviewer_agent", "activity_started_at",
-	"commit", "integration_intent", "review_command", "review_commit", "review_stdout", "review_stderr", "conflict_base",
+	"commit", "integration_intent", "review_command", "review_commit", "conflict_base",
 	"final_gate_head", "repair_issue_id", "repair_base", "repair_commit",
 ] as const;
 const TASK_BOOLEAN_FIELDS = [
@@ -40,16 +41,16 @@ const TASK_BOOLEAN_FIELDS = [
 ] as const;
 const RUN_TASK_KEYS = [
 	"status", "attempts", ...TASK_STRING_FIELDS, ...TASK_BOOLEAN_FIELDS,
-	"review_rounds", "pending_action", "blocked_role", "review_exit_code", "review_findings", "final_gate_findings", "repair_attempt",
+	"review_rounds", "pending_action", "blocked_role", "review_exit_code", "review_stdout", "review_stderr", "review_findings", "final_gate_findings", "repair_attempt",
 ] as const;
 
 const HEALTH_STRING_FIELDS = [
 	"summary", "worktree", "branch", "base", "commit", "integration_intent",
 	"reviewer_tab_id", "reviewer_pane", "reviewer_agent", "coder_tab_id", "coder_pane", "coder_agent", "activity_started_at",
-	"review_command", "review_commit", "review_stdout", "review_stderr",
+	"review_command", "review_commit",
 ] as const;
 const PR_HEALTH_KEYS = [
-	"status", "head", ...HEALTH_STRING_FIELDS, "actionable", "thread_ids", "checks", "resolved_thread_ids", "attempt", "review_round", "review_exit_code", "review_findings", "fixed_thread_ids", "blocked_role", "instruction_pending",
+	"status", "head", ...HEALTH_STRING_FIELDS, "actionable", "thread_ids", "checks", "resolved_thread_ids", "attempt", "review_round", "review_exit_code", "review_stdout", "review_stderr", "review_findings", "fixed_thread_ids", "blocked_role", "instruction_pending",
 ] as const;
 
 export type Uuid = () => string;
@@ -258,8 +259,8 @@ function parseRunTaskState(value: unknown, label: string): RunTaskState {
 	if (input.integration_intent !== undefined) task.integration_intent = nonEmptyString(input.integration_intent, `${label}.integration_intent`);
 	if (input.review_command !== undefined) task.review_command = nonEmptyString(input.review_command, `${label}.review_command`);
 	if (input.review_commit !== undefined) task.review_commit = nonEmptyString(input.review_commit, `${label}.review_commit`);
-	if (input.review_stdout !== undefined) task.review_stdout = text(input.review_stdout, `${label}.review_stdout`);
-	if (input.review_stderr !== undefined) task.review_stderr = text(input.review_stderr, `${label}.review_stderr`);
+	if (input.review_stdout !== undefined) task.review_stdout = parseGateOutputEvidence(input.review_stdout, `${label}.review_stdout`);
+	if (input.review_stderr !== undefined) task.review_stderr = parseGateOutputEvidence(input.review_stderr, `${label}.review_stderr`);
 	if (input.conflict_base !== undefined) task.conflict_base = nonEmptyString(input.conflict_base, `${label}.conflict_base`);
 	if (input.final_gate_head !== undefined) task.final_gate_head = nonEmptyString(input.final_gate_head, `${label}.final_gate_head`);
 	if (input.repair_issue_id !== undefined) task.repair_issue_id = nonEmptyString(input.repair_issue_id, `${label}.repair_issue_id`);
@@ -342,8 +343,8 @@ function parsePrHealthState(value: unknown, label: string): PrHealthState {
 	if (input.review_command !== undefined) health.review_command = nonEmptyString(input.review_command, `${label}.review_command`);
 	if (input.review_commit !== undefined) health.review_commit = nonEmptyString(input.review_commit, `${label}.review_commit`);
 	if (input.review_exit_code !== undefined) health.review_exit_code = nonNegativeInteger(input.review_exit_code, `${label}.review_exit_code`);
-	if (input.review_stdout !== undefined) health.review_stdout = text(input.review_stdout, `${label}.review_stdout`);
-	if (input.review_stderr !== undefined) health.review_stderr = text(input.review_stderr, `${label}.review_stderr`);
+	if (input.review_stdout !== undefined) health.review_stdout = parseGateOutputEvidence(input.review_stdout, `${label}.review_stdout`);
+	if (input.review_stderr !== undefined) health.review_stderr = parseGateOutputEvidence(input.review_stderr, `${label}.review_stderr`);
 	if (input.review_findings !== undefined) health.review_findings = stringArray(input.review_findings, `${label}.review_findings`);
 	if (input.fixed_thread_ids !== undefined) health.fixed_thread_ids = stringArray(input.fixed_thread_ids, `${label}.fixed_thread_ids`);
 	if (input.blocked_role !== undefined) health.blocked_role = oneOf(input.blocked_role, ["implementer", "reviewer"] as const, `${label}.blocked_role`);
@@ -355,6 +356,26 @@ function timestamp(value: unknown, label: string): string {
 	const text = nonEmptyString(value, label);
 	if (Number.isNaN(Date.parse(text))) throw new Error(`${label} must be a timestamp`);
 	return text;
+}
+
+function parseGateOutputEvidence(value: unknown, label: string): GateOutputEvidence {
+	const input = object(value, label);
+	knownKeys(input, ["excerpt", "bytes", "truncated", "full_output"], label);
+	const evidence: GateOutputEvidence = {
+		excerpt: text(input.excerpt, `${label}.excerpt`),
+		bytes: nonNegativeInteger(input.bytes, `${label}.bytes`),
+		truncated: boolean(input.truncated, `${label}.truncated`),
+	};
+	if (input.full_output !== undefined) {
+		const reference = object(input.full_output, `${label}.full_output`);
+		exactKeys(reference, ["path", "sha256"], `${label}.full_output`);
+		evidence.full_output = {
+			path: nonEmptyString(reference.path, `${label}.full_output.path`),
+			sha256: nonEmptyString(reference.sha256, `${label}.full_output.sha256`),
+		};
+	}
+	if (evidence.truncated !== Boolean(evidence.full_output)) throw new Error(`${label}.truncated must match full_output`);
+	return evidence;
 }
 
 function parseHealthCheckEvidence(value: unknown, label: string): HealthCheckEvidence {
