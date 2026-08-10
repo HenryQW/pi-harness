@@ -5,6 +5,7 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
+import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 import { createWorkerLaunch, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, workerIssueContext, workerTabExists, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -276,32 +277,21 @@ async function ensureFinalReviewer(
 	});
 	current = task(state, issue.id);
 	const needsInstruction = Boolean(current.reviewer_instruction_pending) || mode === "review" || started !== "existing";
-	const promptMode = needsInstruction && mode === "resume" ? "review" : mode;
-	const fullPrompt = started !== "existing" || (mode === "resume" && Boolean(current.reviewer_instruction_pending));
-	const instruction = promptMode === "resume"
-		? "Resend your latest final-check review event through the worker tool."
-		: "Read-only final check: inspect the exact integration HEAD, acceptance criteria, and system-owned required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. Submit only verdict and findings.";
-	const requiredGate = requiredTaskGate(current, commit, "Final check");
-	await promptWorkerAgent(state, agent, fullPrompt ? {
-		type: "auto_dag_final_check",
+	const promptMode: ReviewPromptMode = !needsInstruction
+		? "resend"
+		: started !== "existing" || current.review_rounds === 1
+			? "full"
+			: "update";
+	await promptWorkerAgent(state, agent, reviewPrompt({
+		kind: "final_check",
+		graph: state.graph,
+		issue,
+		worktree: state.main_worktree,
+		base: state.source_commit,
+		gate: requiredTaskGate(current, commit, "Final check"),
+		main_worktree: state.main_worktree,
 		run_id: state.run_id,
-		delivery: workerDeliveryContext(state.graph),
-		issue: workerIssueContext(issue, false),
-		integration_head: state.integration_head,
-		required_gate: requiredGate,
-		attempt: current.attempts,
-		review_round: current.review_rounds,
-		instruction,
-	} : {
-		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_final_check_update",
-		run_id: state.run_id,
-		issue_id: issue.id,
-		integration_head: state.integration_head,
-		required_gate: requiredGate,
-		attempt: current.attempts,
-		review_round: current.review_rounds,
-		instruction,
-	}, options);
+	}, promptMode), options);
 	if (needsInstruction) {
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);
 	}
@@ -492,32 +482,24 @@ async function ensureFinalRepairReviewer(
 	});
 	current = task(state, issue.id);
 	const needsInstruction = Boolean(current.reviewer_instruction_pending) || mode === "review" || started !== "existing";
-	const promptMode = needsInstruction && mode === "resume" ? "review" : mode;
-	const fullPrompt = started !== "existing" || (mode === "resume" && Boolean(current.reviewer_instruction_pending));
-	const instruction = promptMode === "resume"
-		? "Resend your latest worker event through the worker tool."
-		: "Read-only review: verify the exact one-commit repair, acceptance criteria, and system-owned required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. Submit only verdict and findings.";
-	const requiredGate = requiredTaskGate(current, commit, "Final-gate repair");
-	await promptWorkerAgent(state, agent, fullPrompt ? {
-		type: "auto_dag_final_repair_review",
+	const promptMode: ReviewPromptMode = !needsInstruction
+		? "resend"
+		: started !== "existing" || current.review_rounds === 1
+			? "full"
+			: "update";
+	await promptWorkerAgent(state, agent, reviewPrompt({
+		kind: "final_repair",
+		graph: state.graph,
+		issue,
+		worktree: nonEmptyString(current.worktree, "final repair worktree"),
+		base: nonEmptyString(current.repair_base, "final repair base"),
+		gate: requiredTaskGate(current, commit, "Final-gate repair"),
+		main_worktree: state.main_worktree,
 		run_id: state.run_id,
-		delivery: workerDeliveryContext(state.graph),
-		owner_issue: workerIssueContext(owner, false),
-		worktree: current.worktree,
-		wave_base: current.repair_base,
-		attempt: current.attempts,
-		review_round: current.review_rounds,
-		required_gate: requiredGate,
-		instruction,
-	} : {
-		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_final_repair_review_update",
-		run_id: state.run_id,
-		issue_id: owner.id,
-		attempt: current.attempts,
-		review_round: current.review_rounds,
-		required_gate: requiredGate,
-		instruction,
-	}, options);
+		prior_findings: current.review_findings,
+		resolution: state.resolutions[owner.id],
+		context: { owner_issue: workerIssueContext(owner, false) },
+	}, promptMode), options);
 	if (needsInstruction) {
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);
 	}
@@ -840,9 +822,13 @@ async function ensureRecordedGate(
 	options: PrLifecycleOptions,
 ): Promise<RunState> {
 	const current = task(state, issue.id);
-	if (recordedGateEvidence(current, commit)) return state;
-	const evidence = await runRequiredGate(options.runner, issue.testing, commit, cwd);
-	return await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+	let evidence = recordedGateEvidence(current, commit);
+	if (!evidence) {
+		evidence = await runRequiredGate(options.runner, issue.testing, commit, cwd);
+		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+	}
+	await persistGateOutput(state, issue.id, evidence, options.uuid);
+	return state;
 }
 
 function requiredTaskGate(current: RunTaskState, commit: string, label: string): RequiredGateEvidence {

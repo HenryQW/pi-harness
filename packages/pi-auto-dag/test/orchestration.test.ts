@@ -43,14 +43,19 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	assert.equal(state.tasks.alpha.activity_started_at, "2026-08-09T00:00:00.000Z");
 	const reviewPrompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
 	assert.deepEqual(reviewPrompt.delivery, implementerPrompt.delivery);
-	assert.deepEqual(reviewPrompt.required_gate, {
+	assert.equal(reviewPrompt.type, "auto_dag_review");
+	assert.equal(reviewPrompt.kind, "implementation");
+	assert.deepEqual(reviewPrompt.gate, {
 		command: "npm test -- alpha",
 		commit: alpha,
 		exit_code: 0,
-		output: { stdout: "required gate passed: npm test -- alpha\n", stderr: "" },
+		output: {
+			stdout: { excerpt: "required gate passed: npm test -- alpha\n", bytes: Buffer.byteLength("required gate passed: npm test -- alpha\n"), truncated: false },
+			stderr: { excerpt: "", bytes: 0, truncated: false },
+		},
 	});
-	assert.equal("command" in reviewPrompt, false);
-	assert.equal("commit" in reviewPrompt, false);
+	for (const key of ["run_id", "attempt", "review_round", "required_gate", "command", "commit"]) assert.equal(key in reviewPrompt, false);
+	assert.equal(reviewPrompt.base, state.tasks.alpha.wave_base);
 	assert.deepEqual(Object.keys(reviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	assert.equal("testing" in reviewPrompt, false);
 	assert.equal(herdr.count("pane split"), 1);
@@ -329,7 +334,9 @@ test("task blocks defer review dispatch and explicit recovery until resolved", a
 	state = await lifecycle.resolve(project.root, "alpha", "Proceed with alpha.");
 	assert.equal(state.tasks.beta.reviewer_instruction_pending, undefined);
 	assert.equal(herdr.count("agent start"), starts + 2);
-	assert.match(JSON.parse(reviewPrompts(herdr).at(-1)!).instruction, /Independently verify/);
+	const prompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.match(prompt.instruction, /Auto DAG already verified/);
+	assert.doesNotMatch(prompt.instruction, /Independently verify/);
 });
 
 test("review requests canonicalize abbreviated commits and reject wrong revisions", async (t) => {
@@ -386,6 +393,25 @@ test("Auto DAG persists required-gate evidence and rejects nonzero approvals", a
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
 	assert.equal(state.tasks.alpha.status, "blocked");
 	assert.match(String(state.tasks.alpha.block_reason), /approval requires exit code 0/);
+});
+
+test("review handoff bounds gate output and retains exact full output", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const stdout = `start\n${"x".repeat(10_000)}\nend\n`;
+	const herdr = fakeHerdr({ gate: () => ({ code: 0, stdout, stderr: "" }) });
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	const prompt = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	const output = prompt.gate.output.stdout;
+
+	assert.equal(state.tasks.alpha.review_stdout, stdout);
+	assert.equal(output.truncated, true);
+	assert.equal(output.bytes, Buffer.byteLength(stdout));
+	assert.ok(output.excerpt.length < stdout.length);
+	assert.equal(await readFile(output.full_output.path, "utf8"), stdout);
+	assert.match(output.full_output.sha256, /^[0-9a-f]{64}$/);
 });
 
 test("Auto DAG executes frozen command text unchanged in clean task worktree", async (t) => {
@@ -461,6 +487,10 @@ test("reviewer block resolution starts a fresh bounded review round with same co
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.review_rounds, 2);
 	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, gateRuns);
+	const update = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.equal(update.type, "auto_dag_review_update");
+	assert.deepEqual(update.prior_findings, ["need policy"]);
+	for (const key of ["delivery", "issue", "worktree", "base", "instruction", "run_id", "attempt", "review_round"]) assert.equal(key in update, false);
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "blocked", ["still blocked"]));
 
 	state = await lifecycle.resolve(project.root, "alpha", "Try again.");

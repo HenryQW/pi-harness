@@ -6,6 +6,7 @@ import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAp
 import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle, cleanupPrLifecycle, resumePrLifecycle } from "./pr-lifecycle.ts";
+import { persistGateOutput, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
 import { issueById, readRunState, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
 import { createWorkerLaunch, createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, workerIssueContext, workerTabExists, WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -600,9 +601,12 @@ async function ensureReviewer(
 		state = await save(replaceTask(state, issue.id, { ...current, reviewer_instruction_pending: true }), options);
 		current = task(state, issue.id);
 	}
-	const promptMode = needsInstruction ? "review" : mode;
-	const fullPrompt = Boolean(started !== "existing" || current.resolution_pending || (mode === "resume" && current.reviewer_instruction_pending));
-	await promptWorkerAgent(state, agent, reviewerPrompt(state, issue, current, promptMode, fullPrompt), options);
+	const promptMode: ReviewPromptMode = !needsInstruction
+		? "resend"
+		: started !== "existing" || current.review_rounds === 1
+			? "full"
+			: "update";
+	await promptWorkerAgent(state, agent, reviewerPrompt(state, issue, current, promptMode), options);
 	if (task(state, issue.id).reviewer_instruction_pending || task(state, issue.id).resolution_pending) {
 		state = await save(replaceTask(state, issue.id, {
 			...task(state, issue.id),
@@ -617,14 +621,18 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, options: Orche
 	const current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
 	await verifyReviewCommit(state, issue.id, commit, options);
-	if (recordedGateEvidence(current, commit)) return state;
-	const evidence = await runRequiredGate(
-		options.runner,
-		issue.testing,
-		commit,
-		nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-	);
-	return await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+	let evidence = recordedGateEvidence(current, commit);
+	if (!evidence) {
+		evidence = await runRequiredGate(
+			options.runner,
+			issue.testing,
+			commit,
+			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+		);
+		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+	}
+	await persistGateOutput(state, issue.id, evidence, options.uuid);
+	return state;
 }
 
 async function verifyReviewCommit(state: RunState, issueId: string, commit: string, options: OrchestrationOptions): Promise<string> {
@@ -889,37 +897,20 @@ function reviewerPrompt(
 	state: RunState,
 	issue: LocalIssue,
 	current: RunTaskState,
-	mode: "review" | "resume",
-	full: boolean,
+	mode: ReviewPromptMode,
 ): Record<string, unknown> {
-	const instruction = mode === "resume"
-		? "Resend your latest worker event through the worker tool."
-		: "Independently verify the clean worktree, exact base, sole commit, acceptance criteria, and required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. Submit only verdict and findings.";
-	const requiredGate = requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id);
-	if (!full) return {
-		type: mode === "resume" ? "auto_dag_resend" : "auto_dag_review_update",
+	return reviewWorkerPrompt({
+		kind: "implementation",
+		graph: state.graph,
+		issue,
+		worktree: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+		base: nonEmptyString(current.wave_base, `Run Task ${issue.id} wave_base`),
+		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id),
+		main_worktree: state.main_worktree,
 		run_id: state.run_id,
-		issue_id: issue.id,
-		attempt: current.attempts,
-		review_round: current.review_rounds,
-		review_findings: current.review_findings,
-		required_gate: requiredGate,
-		instruction,
-	};
-	return {
-		type: "auto_dag_review",
-		run_id: state.run_id,
-		delivery: workerDeliveryContext(state.graph),
-		issue: workerIssueContext(issue, false),
-		wave_base: current.wave_base,
-		attempt: current.attempts,
-		review_round: current.review_rounds,
-		worktree: current.worktree,
-		review_findings: current.review_findings,
+		prior_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
-		required_gate: requiredGate,
-		instruction,
-	};
+	}, mode);
 }
 
 function requiredTaskGate(current: RunTaskState, commit: string, issueId: string): RequiredGateEvidence {

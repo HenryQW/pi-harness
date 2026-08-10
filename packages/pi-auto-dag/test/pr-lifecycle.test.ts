@@ -94,16 +94,19 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	assert.match(repairWorktree, /final-repair-alpha-1$/);
 	const repair = await commit(repairWorktree, "repair.txt", "fixed\n", "repair alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "final-check", repair));
-	const repairReviewPrompt = workerPrompts().find((value) => value.type === "auto_dag_final_repair_review");
-	assert.deepEqual(Object.keys(repairReviewPrompt.owner_issue).sort(), ["acceptance", "id", "purpose", "title"]);
-	assert.deepEqual(repairReviewPrompt.required_gate, {
+	const repairReviewPrompt = workerPrompts().find((value) => value.type === "auto_dag_review" && value.kind === "final_repair");
+	assert.deepEqual(Object.keys(repairReviewPrompt.context.owner_issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	assert.deepEqual(Object.keys(repairReviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	assert.deepEqual(repairReviewPrompt.gate, {
 		command: "npm test -- final-check",
 		commit: repair,
 		exit_code: 0,
-		output: { stdout: "required gate passed: npm test -- final-check\n", stderr: "" },
+		output: {
+			stdout: { excerpt: "required gate passed: npm test -- final-check\n", bytes: Buffer.byteLength("required gate passed: npm test -- final-check\n"), truncated: false },
+			stderr: { excerpt: "", bytes: 0, truncated: false },
+		},
 	});
-	assert.equal("command" in repairReviewPrompt, false);
-	assert.equal("commit" in repairReviewPrompt, false);
+	for (const key of ["run_id", "attempt", "review_round", "required_gate", "command", "commit"]) assert.equal(key in repairReviewPrompt, false);
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(await git(project.root, "show", "HEAD:repair.txt"), "fixed");
@@ -111,20 +114,17 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	const prompts = () => herdr.calls
 		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === finalReviewer)
 		.map((call) => JSON.parse(call.args[3]));
-	const fullPrompt = prompts().find((value) => value.type === "auto_dag_final_check");
-	assert.equal(fullPrompt.attempt, state.tasks["final-check"].attempts);
-	assert.equal(fullPrompt.review_round, state.tasks["final-check"].review_rounds);
-	assert.equal(fullPrompt.required_gate.command, "npm test -- final-check");
-	assert.equal(fullPrompt.required_gate.commit, state.integration_head);
-	assert.equal(fullPrompt.required_gate.exit_code, 0);
+	const fullPrompt = prompts().find((value) => value.type === "auto_dag_review" && value.kind === "final_check");
+	assert.equal(fullPrompt.gate.command, "npm test -- final-check");
+	assert.equal(fullPrompt.gate.commit, state.integration_head);
+	assert.equal(fullPrompt.gate.exit_code, 0);
+	assert.equal(fullPrompt.worktree, project.root);
 	assert.equal("command" in fullPrompt, false);
 	assert.deepEqual(fullPrompt.delivery, repairPrompt.delivery);
 	assert.deepEqual(Object.keys(fullPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
+	for (const key of ["run_id", "attempt", "review_round", "required_gate"]) assert.equal(key in fullPrompt, false);
 	state = await lifecycle.resume(project.root);
-	const compactPrompt = prompts().at(-1);
-	assert.equal(compactPrompt.type, "auto_dag_resend");
-	assert.equal(compactPrompt.attempt, state.tasks["final-check"].attempts);
-	assert.equal(compactPrompt.review_round, state.tasks["final-check"].review_rounds);
+	assert.deepEqual(prompts().at(-1), { type: "auto_dag_resend" });
 
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.phase, "completed");
@@ -209,6 +209,15 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	assert.equal(state.health?.review_commit, repair);
 	assert.equal(state.health?.review_command, "npm test -- final-check");
 	assert.equal(state.health?.review_exit_code, 0);
+	const reviewPrompt = herdr.calls
+		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === reviewer)
+		.map((call) => JSON.parse(call.args[3]))
+		.reverse()
+		.find((value) => value.type === "auto_dag_review");
+	assert.equal(reviewPrompt.kind, "pr_health_repair");
+	assert.deepEqual(reviewPrompt.context.triage.thread_ids, ["THREAD-1", "THREAD-2"]);
+	assert.equal(reviewPrompt.gate.commit, repair);
+	for (const key of ["run_id", "attempt", "review_round", "required_gate"]) assert.equal(key in reviewPrompt, false);
 	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-1", "THREAD-2"]));
 
 	assert.equal(state.health?.status, "completed");

@@ -5,6 +5,7 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RunState, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
+import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { writeRunState, type Uuid } from "./state.ts";
 import { createWorkerLaunch, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -152,11 +153,13 @@ async function ensureHealthReviewer(
 	if (health.status === "reviewing") {
 		const commit = nonEmptyString(health.commit, "PR-health repair commit");
 		await verifyHealthRepairCommit(state, commit, options);
-		if (!recordedGateEvidence(health, commit)) {
-			const evidence = await runRequiredGate(options.runner, issue.testing, commit, nonEmptyString(health.worktree, "PR-health repair worktree"));
+		let evidence = recordedGateEvidence(health, commit);
+		if (!evidence) {
+			evidence = await runRequiredGate(options.runner, issue.testing, commit, nonEmptyString(health.worktree, "PR-health repair worktree"));
 			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
 			health = requiredHealth(state);
 		}
+		await persistGateOutput(state, issue.id, evidence, options.uuid);
 	}
 	const launch = workerLaunch(state, issue, config, "reviewer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:reviewer`;
@@ -181,44 +184,40 @@ async function ensureHealthReviewer(
 	health = requiredHealth(state);
 	const needsInstruction = Boolean(health.instruction_pending) || mode !== "resume" || started !== "existing";
 	const promptMode = mode === "resume" && needsInstruction ? (health.status === "triaging" ? "triage" : "review") : mode;
-	const fullPrompt = started !== "existing" || promptMode === "triage" || (mode === "resume" && Boolean(health.instruction_pending));
-	const instruction = promptMode === "resume"
-		? "Resend your latest worker event through the worker tool."
-		: promptMode === "triage"
-			? "Read-only PR health triage: inspect unresolved review threads and failing checks for this exact open PR. Submit only a concise summary, actionable boolean, unresolved thread node IDs, and failing-check name/link/output evidence."
-			: "Read-only PR-health repair review: inspect the exact one-commit repair and system-owned required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. For approval, findings must contain only triaged thread IDs this repair fixes.";
-	const requiredGate = health.status === "reviewing"
-		? requiredHealthGate(health, nonEmptyString(health.commit, "PR-health repair commit"))
-		: undefined;
-	await promptWorkerAgent(state, agent, fullPrompt ? (promptMode === "triage" ? {
-		type: "auto_dag_pr_health_triage",
-		run_id: state.run_id,
-		delivery: workerDeliveryContext(state.graph),
-		pr: state.pr,
-		integration_head: state.integration_head,
-		attempt: health.attempt,
-		review_round: health.review_round,
-		instruction,
-	} : {
-		type: "auto_dag_pr_health_review",
-		run_id: state.run_id,
-		delivery: workerDeliveryContext(state.graph),
-		pr: state.pr,
-		worktree: health.worktree,
-		base: health.base,
-		attempt: health.attempt,
-		review_round: health.review_round,
-		required_gate: requiredGate,
-		instruction,
-	}) : {
-		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_pr_health_review_update",
-		run_id: state.run_id,
-		issue_id: issue.id,
-		attempt: health.attempt,
-		review_round: health.review_round,
-		...(requiredGate ? { required_gate: requiredGate } : {}),
-		instruction,
-	}, options);
+	let prompt: Record<string, unknown>;
+	if (!needsInstruction) {
+		prompt = { type: "auto_dag_resend" };
+	} else if (promptMode === "triage") {
+		prompt = {
+			type: "auto_dag_pr_health_triage",
+			run_id: state.run_id,
+			delivery: workerDeliveryContext(state.graph),
+			pr: state.pr,
+			integration_head: state.integration_head,
+			attempt: health.attempt,
+			review_round: health.review_round,
+			instruction: "Read-only PR health triage: inspect unresolved review threads and failing checks for this exact open PR. Submit only a concise summary, actionable boolean, unresolved thread node IDs, and failing-check name/link/output evidence.",
+		};
+	} else {
+		const reviewMode: ReviewPromptMode = started !== "existing" || health.review_round === 1 ? "full" : "update";
+		prompt = reviewPrompt({
+			kind: "pr_health_repair",
+			graph: state.graph,
+			issue,
+			worktree: nonEmptyString(health.worktree, "PR-health repair worktree"),
+			base: nonEmptyString(health.base, "PR-health repair base"),
+			gate: requiredHealthGate(health, nonEmptyString(health.commit, "PR-health repair commit")),
+			main_worktree: state.main_worktree,
+			run_id: state.run_id,
+			prior_findings: health.review_findings,
+			context: {
+				pr: state.pr,
+				triage: { summary: health.summary, thread_ids: health.thread_ids, checks: health.checks },
+				approval_findings: "Only triaged thread IDs fixed by this repair.",
+			},
+		}, reviewMode);
+	}
+	await promptWorkerAgent(state, agent, prompt, options);
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);
 	return state;
 }
