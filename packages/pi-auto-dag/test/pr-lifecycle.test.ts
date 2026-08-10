@@ -285,7 +285,7 @@ test("PR health records non-actionable triage without a coder or push", async (t
 	assert.equal(await readActiveRunId(project.root), undefined);
 });
 
-test("nonzero PR-health repair gate blocks before reviewer dispatch", async (t) => {
+test("nonzero PR-health repair gate blocks before reviewer dispatch and reruns the same commit", async (t) => {
 	const project = await makeProject(t);
 	let failHealthGate = false;
 	const herdr = fakeHerdr({ gate: (command) => failHealthGate
@@ -307,10 +307,22 @@ test("nonzero PR-health repair gate blocks before reviewer dispatch", async (t) 
 	assert.equal(state.health?.status, "blocked");
 	assert.equal(state.health?.review_commit, repair);
 	assert.equal(state.health?.review_exit_code, 1);
-	assert.equal(herdr.calls
+	const repairReviewPrompts = () => herdr.calls
 		.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt")
 		.map((call) => JSON.parse(call.args[3]))
-		.filter((prompt) => prompt.kind === "pr_health_repair").length, 0);
+		.filter((prompt) => prompt.kind === "pr_health_repair");
+	assert.equal(repairReviewPrompts().length, 0);
+	const worktree = state.health?.worktree;
+	const gateRuns = herdr.calls.filter((call) => call.command === "sh" && call.cwd === worktree).length;
+
+	failHealthGate = false;
+	state = await lifecycle.health(project.root, RUN_ID);
+	assert.equal(state.health?.status, "reviewing");
+	assert.equal(state.health?.commit, repair);
+	assert.equal(state.health?.review_commit, repair);
+	assert.equal(state.health?.review_exit_code, 0);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.cwd === worktree).length, gateRuns + 1);
+	assert.equal(repairReviewPrompts().length, 1);
 });
 
 test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves only fixed triaged threads", async (t) => {

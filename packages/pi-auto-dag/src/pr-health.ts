@@ -33,7 +33,7 @@ export async function runPrHealth(
 	if (state.health?.status === "pushing") return await continueHealthPush(state, options);
 	if (state.health?.status === "post_push_cleanup") return await completeHealthRepair(state, options);
 	state = await fastForwardToPrHead(state, options);
-	if (state.health?.status === "blocked") return state;
+	if (state.health?.status === "blocked") return await retryFailedHealthGate(state, config, options);
 	if (state.health?.status === "triaging" && state.health.actionable === false) return await completeHealthyTriage(state, options);
 	if (envelope) return await acceptHealthEnvelope(state, envelope, config, options);
 	if (!state.health || state.health.status === "completed") return await startHealthTriage(state, config, options);
@@ -765,6 +765,30 @@ function requiredHealthGate(health: PrHealthState, commit: string): RequiredGate
 	const evidence = recordedGateEvidence(health, commit);
 	if (!evidence) throw new Error("PR-health required-gate evidence is missing");
 	return evidence;
+}
+
+async function retryFailedHealthGate(
+	state: RunState,
+	config: ProjectConfig,
+	options: PrHealthOptions,
+): Promise<RunState> {
+	const health = requiredHealth(state);
+	if (health.review_exit_code === undefined || health.review_exit_code === 0 || health.review_commit !== health.commit) return state;
+	const {
+		summary: _summary,
+		blocked_role: _blockedRole,
+		review_command: _command,
+		review_commit: _commit,
+		review_exit_code: _exitCode,
+		review_stdout: _stdout,
+		review_stderr: _stderr,
+		...retry
+	} = health;
+	state = await save({
+		...state,
+		health: { ...retry, status: "reviewing", activity_started_at: timestamp(options), instruction_pending: true },
+	}, options);
+	return await ensureHealthReviewer(state, config, options, "resume");
 }
 
 async function blockHealth(state: RunState, reason: string, options: PrHealthOptions): Promise<RunState> {
