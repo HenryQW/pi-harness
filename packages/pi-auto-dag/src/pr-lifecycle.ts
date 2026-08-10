@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandOutput, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
+import { commandOutput, copyIgnoredResources, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
 import { ensureRecordedGate, failFinalGate, requiredTaskGate } from "./final-gate.ts";
 import { acceptFinalRepairEnvelope, advanceFinalRepair, isFinalRepairActive, recoverFinalRepairIntegration } from "./final-repair.ts";
 import { deleteExpectedBranch, ensureChildWorktree, retireChildWorktree } from "./git.ts";
@@ -301,6 +301,7 @@ async function ensureFinalGate(
 		if (!recordedGateEvidence(task(state, issue.id), commit)) {
 			await ensureChildWorktree(options.runner, state.main_worktree, worktree, branch, commit, "Final gate");
 			await restoreCleanCommit(options.runner, commit, worktree);
+			await copyIgnoredResources(options.runner, state.main_worktree, worktree);
 			state = await ensureRecordedGate(state, issue, commit, worktree, timeoutMs, options);
 		}
 	} finally {

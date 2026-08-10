@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
-import { reconcileRequiredGateProcess, runCommand } from "../src/command.ts";
+import { reconcileRequiredGateProcess, runCommand, runRequiredGate } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../src/config.ts";
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
@@ -13,6 +14,7 @@ import { createCoreLifecycle } from "../src/lifecycle.ts";
 import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED_GATE_TIMEOUT_MS, MAX_REQUIRED_GATE_TIMEOUT_MS } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { PLANNING_TOOLS } from "../src/planning.ts";
+import { persistGateOutput } from "../src/review.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
 import { workerAgentName } from "../src/worker-host.ts";
 import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
@@ -81,6 +83,105 @@ test("command timeout terminates descendant processes", async (t) => {
 	assert.equal(result.code, 124);
 	await new Promise((resolve) => setTimeout(resolve, 250));
 	await assert.rejects(access(marker), /ENOENT/);
+});
+
+test("successful commands reap background process-group members", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-background-"));
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const marker = join(root, "orphaned.txt");
+	const descendant = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 150)`;
+	const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" }).unref()`;
+	const result = await runCommand(process.execPath, ["-e", parent], { cwd: root, timeoutMs: 1_000 });
+	assert.equal(result.code, 0);
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	await assert.rejects(access(marker), /ENOENT/);
+});
+
+test("required gate output overflow becomes exact failed evidence", async (t) => {
+	if (process.platform === "win32") return t.skip("Required gates execute through sh");
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const bytes = 16 * 1024 * 1024 + 1;
+	const script = `process.stdout.write("x".repeat(${bytes}))`;
+	const execution = await runRequiredGate(
+		runCommand,
+		`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+	const state = createInitialRunState({
+		run_id: RUN_ID,
+		graph: parseDeliveryGraph(graph),
+		source_commit: commit,
+		main_worktree: project.root,
+		integration_branch: "main",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	const evidence = await persistGateOutput(state, "core", execution, () => "output");
+
+	assert.notEqual(evidence.exit_code, 0);
+	assert.equal(evidence.output.stdout.truncated, true);
+	assert.ok(evidence.output.stdout.bytes > 16 * 1024 * 1024);
+	const full = await readFile(evidence.output.stdout.full_output!.path);
+	assert.equal(full.length, evidence.output.stdout.bytes);
+	assert.equal(createHash("sha256").update(full).digest("hex"), evidence.output.stdout.full_output!.sha256);
+});
+
+test("required gate cleanup removes new ignored files but preserves existing dependencies", async (t) => {
+	const project = await makeProject(t, ".context/\n.cache/\n");
+	const cache = join(project.root, ".cache");
+	await mkdir(cache);
+	await writeFile(join(cache, "dependency"), "keep\n");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+
+	const execution = await runRequiredGate(
+		runCommand,
+		"printf 'generated\\n' > .cache/gate-output",
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+
+	assert.equal(execution.exit_code, 0);
+	assert.equal(await readFile(join(cache, "dependency"), "utf8"), "keep\n");
+	await assert.rejects(access(join(cache, "gate-output")), /ENOENT/);
+});
+
+test("interrupted gate reconciliation ignores reused process identities", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process identity only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: project.root, stdio: "ignore" });
+	await new Promise<void>((resolve, reject) => {
+		child.once("spawn", resolve);
+		child.once("error", reject);
+	});
+	let exited = false;
+	child.once("exit", () => { exited = true; });
+	t.after(() => { if (!exited) child.kill("SIGKILL"); });
+	await writeFile(processPath, `${JSON.stringify({
+		version: 1,
+		pid: child.pid,
+		grouped: false,
+		identity: "different-process",
+		cwd: project.root,
+		command: "test gate",
+		commit,
+	})}\n`);
+
+	await reconcileRequiredGateProcess(runCommand, processPath, async () => {});
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(exited, false);
 });
 
 test("interrupted required gate process is terminated and its Git dirt is restored", async (t) => {
@@ -480,6 +581,29 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
 	assert.equal(workerResult.details.type, "submit_review");
 	assert.equal(workerResult.terminate, true);
+
+	const healthReviewTicket = join(workerTemp, "health-review-ticket.json");
+	const healthTools: Array<{ name: string; execute: Function }> = [];
+	let beforeHealthTurn: (() => Promise<void>) | undefined;
+	createWorkerExtension({
+		runner: async () => ({ code: 0, stdout: "", stderr: "" }),
+		environment: {
+			PI_AUTO_DAG_WORKER_ROLE: "reviewer",
+			PI_AUTO_DAG_WORKER_EVENTS: "submit_health,submit_review,block_task",
+			PI_AUTO_DAG_RUN_ID: RUN_ID,
+			PI_AUTO_DAG_ISSUE_ID: "core",
+			PI_AUTO_DAG_MAIN_PANE: "main-pane",
+			PI_AUTO_DAG_REVIEW_TICKET: healthReviewTicket,
+		},
+	})({
+		on(event: string, handler: () => Promise<void>) { if (event === "before_agent_start") beforeHealthTurn = handler; },
+		registerTool(tool: { name: string; execute: Function }) { healthTools.push(tool); },
+	} as never);
+	await beforeHealthTurn!();
+	await writeFile(healthReviewTicket, JSON.stringify({ review_id: "health-review-id" }));
+	await beforeHealthTurn!();
+	const healthReview = await healthTools.find((tool) => tool.name === WORKER_TOOLS.submit_review)!.execute("call", { verdict: "approved", findings: [] }) as { details: { review_id: string } };
+	assert.equal(healthReview.details.review_id, "health-review-id");
 
 	const fullCommit = "310a75c7289830d9d3973263488de1140438f6e9";
 	const requestCalls: string[][] = [];

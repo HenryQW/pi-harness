@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RequiredGateExecution } from "./command.ts";
 import type { DeliveryGraph, GateOutputEvidence, GateOutputReference, LocalIssue, RequiredGateEvidence, RunState } from "./model.ts";
@@ -31,11 +31,11 @@ export async function persistGateOutput(
 	execution: RequiredGateExecution,
 	uuid: Uuid,
 ): Promise<RequiredGateEvidence> {
-	const references = gateOutputReferences(state.main_worktree, state.run_id, gateOwnerId, execution);
+	const paths = gateOutputPaths(state.main_worktree, state.run_id, gateOwnerId, execution.commit);
 	const streams = ["stdout", "stderr"] as const;
 	const output = Object.fromEntries(await Promise.all(streams.map(async (stream) => [
 		stream,
-		await persistOutput(execution.output[stream], references[stream], `${stream}-${uuid()}`),
+		await persistOutput(execution.output[stream], execution.output_files?.[stream], paths[stream], `${stream}-${uuid()}`),
 	]))) as { stdout: GateOutputEvidence; stderr: GateOutputEvidence };
 	return { command: execution.command, commit: execution.commit, exit_code: execution.exit_code, output };
 }
@@ -73,35 +73,56 @@ function gatePromptEvidence(input: ReviewPromptInput): Record<string, unknown> {
 	};
 }
 
-async function persistOutput(output: string, reference: GateOutputReference, temporaryName: string): Promise<GateOutputEvidence> {
+async function persistOutput(
+	output: string,
+	spooledPath: string | undefined,
+	path: string,
+	temporaryName: string,
+): Promise<GateOutputEvidence> {
+	if (spooledPath) {
+		const contents = await readFile(spooledPath);
+		if (contents.length <= OUTPUT_EXCERPT_CHARACTERS) {
+			await unlink(spooledPath);
+			return { excerpt: contents.toString("utf8"), bytes: contents.length, truncated: false };
+		}
+		await mkdir(dirname(path), { recursive: true });
+		await rename(spooledPath, path);
+		const omitted = contents.length - OUTPUT_EXCERPT_CHARACTERS;
+		return {
+			excerpt: `${contents.subarray(0, OUTPUT_EXCERPT_HEAD).toString("utf8")}\n... ${omitted} bytes omitted ...\n${contents.subarray(-(OUTPUT_EXCERPT_CHARACTERS - OUTPUT_EXCERPT_HEAD)).toString("utf8")}`,
+			bytes: contents.length,
+			truncated: true,
+			full_output: outputReference(path, contents),
+		};
+	}
 	if (output.length <= OUTPUT_EXCERPT_CHARACTERS) {
 		return { excerpt: output, bytes: Buffer.byteLength(output), truncated: false };
 	}
-	await mkdir(dirname(reference.path), { recursive: true });
-	await atomicWrite(reference.path, output, temporaryName);
+	await mkdir(dirname(path), { recursive: true });
+	await atomicWrite(path, output, temporaryName);
 	const omitted = output.length - OUTPUT_EXCERPT_CHARACTERS;
 	return {
 		excerpt: `${output.slice(0, OUTPUT_EXCERPT_HEAD)}\n... ${omitted} characters omitted ...\n${output.slice(-(OUTPUT_EXCERPT_CHARACTERS - OUTPUT_EXCERPT_HEAD))}`,
 		bytes: Buffer.byteLength(output),
 		truncated: true,
-		full_output: reference,
+		full_output: outputReference(path, output),
 	};
 }
 
-function gateOutputReferences(
+function gateOutputPaths(
 	mainWorktree: string,
 	runId: string,
 	gateOwnerId: string,
-	evidence: RequiredGateExecution,
-): { stdout: GateOutputReference; stderr: GateOutputReference } {
-	const directory = join(runDirectory(mainWorktree, runId), "gate-output", gateOwnerId, evidence.commit);
+	commit: string,
+): { stdout: string; stderr: string } {
+	const directory = join(runDirectory(mainWorktree, runId), "gate-output", gateOwnerId, commit);
 	return {
-		stdout: outputReference(join(directory, "stdout.txt"), evidence.output.stdout),
-		stderr: outputReference(join(directory, "stderr.txt"), evidence.output.stderr),
+		stdout: join(directory, "stdout.txt"),
+		stderr: join(directory, "stderr.txt"),
 	};
 }
 
-function outputReference(path: string, output: string): GateOutputReference {
+function outputReference(path: string, output: string | Buffer): GateOutputReference {
 	return { path, sha256: createHash("sha256").update(output).digest("hex") };
 }
 

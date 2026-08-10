@@ -156,7 +156,12 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 		let capturedReviewId: string | undefined;
 		if (worker.events.includes("submit_review")) {
 			pi.on("before_agent_start", async () => {
-				capturedReviewId = await readReviewTicket(nonEmptyString(worker.review_ticket, "review ticket path"));
+				try {
+					capturedReviewId = await readReviewTicket(nonEmptyString(worker.review_ticket, "review ticket path"));
+				} catch (error) {
+					if (!worker.events.includes("submit_health") || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					capturedReviewId = undefined;
+				}
 			});
 		}
 		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd, () => capturedReviewId);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,16 @@ const ACTIVE_RUN_ID = "44444444-4444-4444-8444-444444444444";
 
 test("the frozen final check opens one exact integration PR and cleans successful resources", async (t) => {
 	const project = await makeProject(t);
-	const herdr = fakeHerdr();
+	await mkdir(join(project.root, ".local-tools"));
+	await writeFile(join(project.root, ".local-tools", "ready"), "available\n");
+	const herdr = fakeHerdr({
+		gate: (command, cwd) => {
+			if (command === "npm test -- final-check") {
+				assert.equal(readFileSync(join(cwd!, ".local-tools", "ready"), "utf8"), "available\n");
+			}
+			return { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" };
+		},
+	});
 	const gh = fakeGh(project.root);
 	const lifecycle = makeLifecycle(combinedRunner(herdr, gh));
 
@@ -437,7 +447,7 @@ async function makeProject(t: TestContext): Promise<{ root: string; remote: stri
 	await mkdir(join(agentDir, "config"), { recursive: true });
 	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: 2 })));
 	useAgentDir(t, agentDir);
-	await writeFile(join(root, ".gitignore"), ".context/\n");
+	await writeFile(join(root, ".gitignore"), ".context/\n.local-tools/\n");
 	await writeFile(join(root, "conflict.txt"), "base\n");
 	await git(root, "add", ".");
 	await git(root, "commit", "-m", "initial");
