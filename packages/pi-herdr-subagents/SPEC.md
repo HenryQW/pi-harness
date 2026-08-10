@@ -19,7 +19,7 @@ On success it returns:
 - full Result file path;
 - exact `herdr tab close <tab-id>` command Main can run with existing `bash` when work is no longer needed.
 
-Delegation is accepted only after Herdr confirms initial task submission. Any definitive failure before submission closes created tab, removes active ownership, deletes pending Result file, and returns actionable tool error. If rollback cannot close a known tab, preserve Worker ownership and pending Result, and return tab details plus exact stop command. If prompt submission has an indeterminate outcome, preserve Worker ownership, tab, and pending Result because work may already be running; return their identifiers and exact stop command in the error.
+Delegation is accepted only after Herdr confirms initial task submission. Any definitive failure before submission closes created tab, removes active ownership, deletes pending Result file, and returns actionable tool error. If tab creation has an indeterminate outcome, reconcile its unique label against pre-creation tabs; if reconciliation fails, preserve provisioning ownership and pending Result, and return label plus inspection command. If rollback cannot confirm closure of a known tab, preserve Worker ownership and pending Result, and return tab details plus exact stop command. If prompt submission has an indeterminate outcome, preserve Worker ownership, tab, and pending Result because work may already be running; return their identifiers and exact stop command in the error.
 
 Reject delegation when:
 
@@ -163,7 +163,7 @@ At extension/tool boundary, verify:
 - config default, validation, command persistence, immediate update, and reduced-limit behavior;
 - per-Main Worker Limit, missing-tab reconciliation, and no queue;
 - tab label/cwd/env, inherited model/thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
-- successful launch response, definitive pre-submission rollback, failed-rollback retention, and indeterminate prompt preservation;
+- successful launch response, definitive pre-submission rollback, indeterminate creation reconciliation, failed-rollback retention, and indeterminate prompt preservation;
 - Completion Notice validation, 1,000-character cap, capacity release, completed-tab close, and shutdown cleanup;
 - exact versioned Result/notice schemas, malformed/spoofed/path/state/excerpt/control-text rejection, and fixed sanitized Main transform;
 - natural Worker Question settlement remains live;

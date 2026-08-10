@@ -44,6 +44,8 @@ function mainHarness(options: {
 	promptFailure?: boolean;
 	promptIndeterminate?: boolean;
 	closeFailures?: number;
+	closeKilled?: boolean;
+	listFailuresAfterCreate?: number;
 	tabs?: () => boolean;
 	noModel?: boolean;
 	thinkingLevel?: string;
@@ -64,6 +66,7 @@ function mainHarness(options: {
 	let tabPresent = !options.tabCreateFailureAfterCreation;
 	let tabLabel = "existing";
 	let closeFailures = options.closeFailures ?? 0;
+	let listFailuresAfterCreate = options.listFailuresAfterCreate ?? 0;
 	let tabId = "tab-1";
 	let paneId = "pane-1";
 	let workerName = "";
@@ -88,6 +91,10 @@ function mainHarness(options: {
 			if (execOptions?.signal?.aborted) return { stdout: "", stderr: "", code: 0, killed: true };
 			if (args.some((value) => value.includes("\0"))) throw new TypeError("spawn arguments cannot contain NUL bytes");
 			if (args[0] === "tab" && args[1] === "list") {
+				if (tabPresent && listFailuresAfterCreate > 0) {
+					listFailuresAfterCreate--;
+					return failure("tab_list_failed");
+				}
 				return success(JSON.stringify({ result: { type: "tab_list", tabs: tabPresent && (options.tabs?.() ?? true) ? [{ tab_id: tabId, workspace_id: "workspace-1", label: tabLabel }] : [] } }));
 			}
 			if (args[0] === "agent" && args[1] === "get") {
@@ -116,7 +123,7 @@ function mainHarness(options: {
 			if (args[0] === "tab" && args[1] === "close") {
 				if (closeFailures > 0) {
 					closeFailures--;
-					return failure("tab_close_failed");
+					return options.closeKilled ? { stdout: "", stderr: "", code: 0, killed: true } : failure("tab_close_failed");
 				}
 				closed.push(args[2]);
 				tabPresent = false;
@@ -273,6 +280,24 @@ test("indeterminate tab creation closes newly provisioned tab", async () => {
 	await rm(agentDir, { recursive: true, force: true });
 });
 
+test("failed reconciliation preserves indeterminate tab provisioning", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ limitInput: "1", tabCreateFailureAfterCreation: true, listFailuresAfterCreate: 1 });
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("call", { task: "lost creation and list responses" }, undefined, undefined, app.ctx),
+			/tab creation outcome and reconciliation also failed; provisioning remains owned[\s\S]*Inspect: herdr tab list --workspace workspace-1/,
+		);
+		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
+		assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
+		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		assert.deepEqual(app.closed, ["tab-1"]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
 test("missing and invalid config use default Worker Limit", async () => {
 	const invalid = ["{broken", "[]", "{}", "{\"maxConcurrentWorkers\":0}", "{\"maxConcurrentWorkers\":-1}", "{\"maxConcurrentWorkers\":1.5}", "{\"maxConcurrentWorkers\":\"10\"}"];
 	const cases = [{ contents: undefined, warning: false }, ...invalid.map((contents) => ({ contents, warning: true }))];
@@ -415,22 +440,24 @@ test("Worker Limit command persists immediately and pre-submission launch rolls 
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("rollback close failure preserves owned Worker and Result details", async () => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
-	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
-		const app = mainHarness({ limitInput: "1", promptFailure: true, closeFailures: 1 });
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		await assert.rejects(
-			app.tools.get("delegate_task")!.execute("call", { task: "definitive prompt failure" }, undefined, undefined, app.ctx),
-			/launch failed and Worker tab cleanup also failed; Worker remains owned[\s\S]*Tab: tab-1[\s\S]*Stop: herdr tab close tab-1/,
-		);
-		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
-		assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
-		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
-		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		assert.deepEqual(app.closed, ["tab-1"]);
-	});
-	await rm(agentDir, { recursive: true, force: true });
+test("rollback close failures preserve owned Worker and Result details", async () => {
+	for (const closeKilled of [false, true]) {
+		const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+		await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+			const app = mainHarness({ limitInput: "1", promptFailure: true, closeFailures: 1, closeKilled });
+			await app.commands.get("subagent-limit")!.handler("", app.ctx);
+			await assert.rejects(
+				app.tools.get("delegate_task")!.execute("call", { task: "definitive prompt failure" }, undefined, undefined, app.ctx),
+				/launch failed and Worker tab cleanup also failed; Worker remains owned[\s\S]*Tab: tab-1[\s\S]*Stop: herdr tab close tab-1/,
+			);
+			const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
+			assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
+			await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+			assert.deepEqual(app.closed, ["tab-1"]);
+		});
+		await rm(agentDir, { recursive: true, force: true });
+	}
 });
 
 test("pre-aborted task submission rolls back Worker and Result", async () => {

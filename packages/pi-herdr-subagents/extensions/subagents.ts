@@ -27,6 +27,8 @@ type OwnedWorker = {
 	workerName: string;
 	resultPath: string;
 	tempDir: string;
+	label: string;
+	existingTabs: Set<string>;
 	tabId?: string;
 };
 
@@ -108,6 +110,12 @@ function rollbackCleanupError(worker: OwnedWorker, tabId: string, launchError: u
 	return new Error(`Delegated Task ${worker.taskId} launch failed and Worker tab cleanup also failed; Worker remains owned.\nWorker: ${worker.workerName}\nTab: ${tabId}\nResult: ${worker.resultPath}\nStop: herdr tab close ${tabId}\nLaunch error: ${launch}\nCleanup error: ${cleanup}`);
 }
 
+function provisioningReconciliationError(worker: OwnedWorker, where: HerdrLocation, launchError: unknown, reconciliationError: unknown): Error {
+	const launch = launchError instanceof Error ? launchError.message : String(launchError);
+	const reconciliation = reconciliationError instanceof Error ? reconciliationError.message : String(reconciliationError);
+	return new Error(`Delegated Task ${worker.taskId} tab creation outcome and reconciliation also failed; provisioning remains owned.\nWorker: ${worker.workerName}\nLabel: ${worker.label}\nResult: ${worker.resultPath}\nInspect: herdr tab list --workspace ${where.workspace}\nClose matching tab: herdr tab close <tab-id>\nLaunch error: ${launch}\nReconciliation error: ${reconciliation}`);
+}
+
 function herdrErrorCode(stderr: string): string | undefined {
 	try {
 		const code = (JSON.parse(stderr) as { error?: { code?: unknown } }).error?.code;
@@ -145,7 +153,7 @@ function assertAgent(agent: Record<string, unknown>, expected: { name?: string; 
 
 async function closeTab(pi: ExtensionAPI, tabId: string, ctx: ExtensionContext): Promise<void> {
 	const result = await pi.exec("herdr", ["tab", "close", tabId], { cwd: ctx.cwd });
-	if (result.code !== 0 && !hasHerdrError(result.stderr, "tab_not_found")) {
+	if (result.killed || (result.code !== 0 && !hasHerdrError(result.stderr, "tab_not_found"))) {
 		throw commandError(["tab", "close"], result.stderr, result.code);
 	}
 }
@@ -167,9 +175,16 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	};
 
 	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<Set<string>> => {
-		const present = new Set((await listTabs(where, ctx, signal)).map((tab) => tab.id));
+		const tabs = await listTabs(where, ctx, signal);
+		const present = new Set(tabs.map((tab) => tab.id));
 		for (const [taskId, worker] of workers) {
-			if (worker.tabId && !present.has(worker.tabId)) workers.delete(taskId);
+			if (worker.tabId) {
+				if (!present.has(worker.tabId)) workers.delete(taskId);
+				continue;
+			}
+			const provisioned = tabs.filter((tab) => !worker.existingTabs.has(tab.id) && tab.label === worker.label);
+			if (provisioned.length === 1) worker.tabId = provisioned[0].id;
+			else if (provisioned.length === 0) workers.delete(taskId);
 		}
 		return present;
 	};
@@ -262,8 +277,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const tempDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-"));
 			await chmod(tempDir, 0o700);
 			const resultPath = join(tempDir, "result.json");
-			const worker: OwnedWorker = { taskId, task, workerName: workerName(taskId), resultPath, tempDir };
 			const label = workerLabel(task, taskId);
+			const worker: OwnedWorker = { taskId, task, workerName: workerName(taskId), resultPath, tempDir, label, existingTabs };
 			let tabCreationAttempted = false;
 			let promptOutcomeUnknown = false;
 			workers.set(taskId, worker);
@@ -323,7 +338,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 						throw rollbackCleanupError(worker, worker.tabId, error, cleanupError);
 					}
 				} else if (tabCreationAttempted) {
-					const tabs = await listTabs(where, ctx).catch(() => []);
+					let tabs: HerdrTab[];
+					try {
+						tabs = await listTabs(where, ctx);
+					} catch (reconciliationError) {
+						throw provisioningReconciliationError(worker, where, error, reconciliationError);
+					}
 					for (const tab of tabs.filter((candidate) => !existingTabs.has(candidate.id) && candidate.label === label)) {
 						try {
 							await closeTab(pi, tab.id, ctx);
