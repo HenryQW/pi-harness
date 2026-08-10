@@ -7,7 +7,7 @@ import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealth
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { actionTicketPath, ensureActionTicket, eventReceiptPath, readWorkerReceipt, reviewId, writeWorkerReceipt } from "./review-ticket.ts";
 import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
-import { writeRunState, type Uuid } from "./state.ts";
+import { hasAcceptedWorkerEvent, recordAcceptedWorkerEvent, writeRunState, type Uuid } from "./state.ts";
 import { findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
 import { createWorkerLaunch, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -32,6 +32,10 @@ export async function runPrHealth(
 			if (existing.status === "accepted") return state;
 			throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
 		}
+		if (hasAcceptedWorkerEvent(state, envelope.event_id)) {
+			await writeWorkerReceipt(receiptPath, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
+			return state;
+		}
 	}
 	state = await resumePrHealth(state, options);
 	const config = await loadPrHealthConfig(state, options);
@@ -46,7 +50,7 @@ export async function runPrHealth(
 	if (envelope) {
 		const receiptPath = eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id);
 		try {
-			state = await acceptHealthEnvelope(state, envelope, config, options);
+			state = await acceptHealthEnvelope(recordAcceptedWorkerEvent(state, envelope.event_id), envelope, config, options);
 		} catch (error) {
 			await writeWorkerReceipt(receiptPath, { event_id: envelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
 			throw error;

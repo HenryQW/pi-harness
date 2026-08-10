@@ -25,7 +25,7 @@ const PR_HEALTH_STATUSES = ["triaging", "repairing", "reviewing", "applying", "p
 
 const RUN_STATE_KEYS = [
 	"version", "run_id", "graph_hash", "graph", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "main_pane", "workspace_id",
-	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "health", "health_history", "health_fast_forward_intent",
+	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "health", "health_history", "health_fast_forward_intent", "accepted_events",
 ] as const;
 
 const TASK_STRING_FIELDS = [
@@ -171,6 +171,15 @@ export async function readActiveRun(mainWorktree: string): Promise<RunState> {
 	return state;
 }
 
+export function hasAcceptedWorkerEvent(state: RunState, eventId: string): boolean {
+	return Boolean(state.accepted_events?.includes(nonEmptyString(eventId, "worker event_id")));
+}
+
+export function recordAcceptedWorkerEvent(state: RunState, eventId: string): RunState {
+	const id = nonEmptyString(eventId, "worker event_id");
+	return hasAcceptedWorkerEvent(state, id) ? state : { ...state, accepted_events: [...(state.accepted_events ?? []), id] };
+}
+
 /** Call only after all owned worker/worktree cleanup has succeeded. */
 export async function releaseActiveRun(mainWorktree: string, runId: string): Promise<void> {
 	const active = await readActiveRunId(mainWorktree);
@@ -216,6 +225,7 @@ export function parseRunState(value: unknown): RunState {
 	if (input.health_fast_forward_intent !== undefined) {
 		state.health_fast_forward_intent = parseHealthFastForwardIntent(input.health_fast_forward_intent, "run state.health_fast_forward_intent");
 	}
+	if (input.accepted_events !== undefined) state.accepted_events = [...new Set(stringArray(input.accepted_events, "run state.accepted_events"))];
 	return state;
 }
 

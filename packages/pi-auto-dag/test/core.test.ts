@@ -886,7 +886,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 	);
 	assert.equal(envelope.type, "submit_review");
 	assert.equal(envelope.review_id, "direct-review-id");
-	assert.deepEqual(calls[0].slice(0, 2), ["herdr", ["agent", "prompt", "main-pane", JSON.stringify(envelope)]]);
+	assert.deepEqual(calls[0].slice(0, 2), ["herdr", ["agent", "prompt", "main-pane", JSON.stringify(envelope), "--wait", "--timeout", "1860000"]]);
 });
 
 test("orchestrator routes worker envelopes without an LLM turn and keeps tool text compact", async () => {

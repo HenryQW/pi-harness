@@ -74,6 +74,46 @@ test("worker tools accept intent only and adapter owns protocol metadata", async
 	assert.equal(result.content[0].text, "Accepted request_review for core.");
 	assert.equal("attempt" in result.details, false);
 	assert.deepEqual(calls[0], ["git", "rev-parse", "HEAD"]);
+	const prompt = calls.find((call) => call[0] === "herdr")!;
+	assert.deepEqual(prompt.slice(1, 4), ["agent", "prompt", "main-pane"]);
+	assert.equal(prompt[5], "--wait");
+	assert.equal(prompt[6], "--timeout");
+	assert.equal(prompt[7], "1860000");
+});
+
+test("worker binds action ticket to the prompted turn", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const action = await ticket(root);
+	const replacement: ActionTicket = {
+		...action.value,
+		event_id: "77777777-7777-4777-8777-777777777777",
+		receipt_path: join(root, "replacement-receipt.json"),
+	};
+	const tools: Array<{ name: string; execute: Function }> = [];
+	let input: ((event: unknown, ctx: unknown) => unknown) | undefined;
+	createWorkerExtension({
+		environment: environment(action.path),
+		deliveryAttempts: 1,
+		delay: async () => {},
+		runner: async (command, args) => {
+			if (command === "git") return { code: 0, stdout: `${HEAD}\n`, stderr: "" };
+			const envelope = JSON.parse(args[3]);
+			assert.equal(envelope.event_id, action.value.event_id);
+			await writeWorkerReceipt(action.value.receipt_path, { event_id: action.value.event_id, status: "accepted" });
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	})({
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			if (event === "input") input = handler;
+		},
+		registerTool(tool: { name: string; execute: Function }) { tools.push(tool); },
+	} as never);
+
+	await input!({ type: "input", text: "work", source: "rpc" }, {});
+	await writeFile(action.path, `${JSON.stringify(replacement)}\n`);
+	await tools.find((tool) => tool.name === WORKER_TOOLS.request_review)!.execute("call", { summary: "finished" });
+	await assert.rejects(readFile(replacement.receipt_path), /ENOENT/);
 });
 
 test("stale action ticket returns worker-visible rejection", async (t) => {
@@ -128,20 +168,28 @@ test("worker requests compaction before high-context submission", async (t) => {
 	t.after(async () => await rm(root, { recursive: true, force: true }));
 	const action = await ticket(root);
 	let compacted = 0;
+	const sent: unknown[] = [];
 	let toolCall: ((event: unknown, ctx: any) => unknown) | undefined;
 	createWorkerExtension({ environment: environment(action.path) })({
 		on(event: string, handler: (event: unknown, ctx: any) => unknown) {
 			if (event === "tool_call") toolCall = handler;
 		},
 		registerTool() {},
+		sendUserMessage(text: string, options: unknown) { sent.push({ text, options }); },
 	} as never);
 	assert.ok(toolCall);
 	const result = await toolCall!({ toolName: WORKER_TOOLS.request_review }, {
 		getContextUsage: () => ({ percent: 80, contextWindow: 100, tokens: 80 }),
-		compact: () => { compacted += 1; },
+		isIdle: () => true,
+		compact: (options: { onComplete: () => void }) => {
+			compacted += 1;
+			options.onComplete();
+		},
 	});
+	await new Promise<void>((done) => { setImmediate(done); });
 	assert.deepEqual(result, { block: true, terminate: true, reason: "Auto-compact ran before worker event submission; retry event." });
 	assert.equal(compacted, 1);
+	assert.deepEqual(sent, [{ text: "Auto-compact completed. Retry worker event submission now.", options: { deliverAs: "followUp" } }]);
 });
 
 test("worker environment requires action ticket", () => {

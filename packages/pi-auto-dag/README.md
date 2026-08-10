@@ -286,7 +286,7 @@ Run files live under `.context/pi-auto-dag/`:
 
 `active.json` locks one checkout. Lock stays until cleanup succeeds.
 
-Run State schema version is `2`. v4 rejects v3 in-flight Run State; finish or abort active v3 runs before upgrading. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, and bounded required-gate evidence. Large gate streams and active gate-process intent live in separate run files. Writes are atomic.
+Run State schema version is `2`. Current releases reject v3 in-flight Run State; finish or abort active v3 runs before upgrading. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, accepted worker event IDs, and bounded required-gate evidence. Large gate streams and active gate-process intent live in separate run files. Writes are atomic.
 
 Main Pi widget shows:
 

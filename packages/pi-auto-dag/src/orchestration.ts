@@ -19,7 +19,7 @@ import { assertAttachedBranch, deleteExpectedBranch, findAppliedCherryPick, read
 import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
-import { issueById, readRunState, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
+import { hasAcceptedWorkerEvent, issueById, readRunState, recordAcceptedWorkerEvent, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
 import { eventReceiptPath, readWorkerReceipt, writeWorkerReceipt } from "./review-ticket.ts";
 import { findWorkerTab, retireWorkerTab, workerAgentName } from "./worker-host.ts";
 import { WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerRole } from "./worker.ts";
@@ -79,6 +79,10 @@ export async function resumeRun(
 			if (existing.status === "accepted") return state;
 			throw new Error(`Auto DAG event ${workerEnvelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
 		}
+		if (hasAcceptedWorkerEvent(state, workerEnvelope.event_id)) {
+			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
+			return state;
+		}
 	}
 	if (state.phase === "aborted") {
 		if (workerEnvelope) {
@@ -102,7 +106,7 @@ export async function resumeRun(
 	}
 	if (workerEnvelope) {
 		try {
-			state = await acceptEnvelope(state, workerEnvelope, config, options);
+			state = await acceptEnvelope(recordAcceptedWorkerEvent(state, workerEnvelope.event_id), workerEnvelope, config, options);
 		} catch (error) {
 			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
 			throw error;

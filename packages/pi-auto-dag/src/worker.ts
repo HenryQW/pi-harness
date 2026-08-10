@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { commandOutput, runCommand, type CommandRunner } from "./command.ts";
-import type { DeliveryGraph, LocalIssue, ResolvedProfile, WorkerEnvelope } from "./model.ts";
+import { DEFAULT_REQUIRED_GATE_TIMEOUT_MS, type DeliveryGraph, type LocalIssue, type ResolvedProfile, type WorkerEnvelope } from "./model.ts";
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
 import { readActionTicket, readWorkerReceipt, type ActionTicket } from "./review-ticket.ts";
 import { nonEmptyString, oneOf } from "./validate.ts";
@@ -104,8 +104,13 @@ export function workerEnvironment(environment: NodeJS.ProcessEnv): WorkerEnviron
 
 export interface WorkerDeliveryOptions {
 	deliveryAttempts?: number;
+	deliveryTimeoutMs?: number;
 	delay?: (milliseconds: number) => Promise<void>;
+	ticket?: ActionTicket | Promise<ActionTicket>;
 }
+
+const DEFAULT_DELIVERY_TIMEOUT_MS = DEFAULT_REQUIRED_GATE_TIMEOUT_MS + 60_000;
+const COMPACT_RESUME_MESSAGE = "Auto-compact completed. Retry worker event submission now.";
 
 export async function sendWorkerEnvelope(
 	worker: WorkerEnvironment,
@@ -116,18 +121,20 @@ export async function sendWorkerEnvelope(
 	delivery: WorkerDeliveryOptions = {},
 ): Promise<WorkerEnvelope> {
 	if (!worker.events.includes(type)) throw new Error(`${worker.role} worker cannot send ${type}`);
-	const ticket = await readActionTicket(worker.action_ticket);
+	const ticket = await (delivery.ticket ?? readWorkerActionTicket(worker));
 	if (ticket.role !== worker.role) throw new Error(`Action ticket role ${ticket.role} does not match ${worker.role} worker`);
 	const envelope = await buildWorkerEnvelope(worker, type, payload, ticket, runner, cwd);
 	const existing = await readWorkerReceipt(ticket.receipt_path);
 	if (existing) return requireReceipt(envelope, existing);
 
 	const attempts = delivery.deliveryAttempts ?? 3;
+	const timeoutMs = delivery.deliveryTimeoutMs ?? DEFAULT_DELIVERY_TIMEOUT_MS;
 	if (!Number.isInteger(attempts) || attempts < 1) throw new Error("worker deliveryAttempts must be a positive integer");
+	if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error("worker deliveryTimeoutMs must be a positive integer");
 	let lastError: unknown;
 	for (let attempt = 1; attempt <= attempts; attempt += 1) {
 		try {
-			await commandOutput(runner, "herdr", ["agent", "prompt", worker.main_pane, JSON.stringify(envelope)], cwd);
+			await commandOutput(runner, "herdr", ["agent", "prompt", worker.main_pane, JSON.stringify(envelope), "--wait", "--timeout", String(timeoutMs)], cwd);
 		} catch (error) {
 			lastError = error;
 			if (attempt < attempts) {
@@ -181,6 +188,12 @@ async function buildWorkerEnvelope(
 	return { ...base, type, role: worker.role };
 }
 
+async function readWorkerActionTicket(worker: WorkerEnvironment): Promise<ActionTicket> {
+	const ticket = await readActionTicket(worker.action_ticket);
+	if (ticket.role !== worker.role) throw new Error(`Action ticket role ${ticket.role} does not match ${worker.role} worker`);
+	return ticket;
+}
+
 function requireReceipt(envelope: WorkerEnvelope, receipt: NonNullable<Awaited<ReturnType<typeof readWorkerReceipt>>>): WorkerEnvelope {
 	if (receipt.event_id !== envelope.event_id) throw new Error(`Worker receipt belongs to another event: ${receipt.event_id}`);
 	if (receipt.status === "rejected") throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${receipt.reason ?? "lifecycle rejected event"}`);
@@ -221,6 +234,11 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 		const runner = options.runner ?? runCommand;
 		const cwd = options.cwd ?? process.cwd();
 		let compacting = false;
+		let turnTicket: Promise<ActionTicket> | undefined;
+		pi.on("input", async () => {
+			turnTicket = undefined;
+			turnTicket = Promise.resolve(await readWorkerActionTicket(worker));
+		});
 		pi.on("tool_call", (event, ctx) => {
 			if (!Object.values(WORKER_TOOLS).includes(event.toolName as typeof WORKER_TOOLS[WorkerEvent])) return;
 			const usage = ctx.getContextUsage();
@@ -228,12 +246,17 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 			compacting = true;
 			ctx.compact({
 				customInstructions: "Preserve current task, worker action intent, and retry submission after compaction.",
-				onComplete: () => { compacting = false; },
+				onComplete: () => {
+					compacting = false;
+					setImmediate(() => {
+						if (ctx.isIdle()) pi.sendUserMessage(COMPACT_RESUME_MESSAGE, { deliverAs: "followUp" });
+					});
+				},
 				onError: () => { compacting = false; },
 			});
 			return { block: true, terminate: true, reason: "Auto-compact ran before worker event submission; retry event." };
 		});
-		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd, options);
+		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd, () => turnTicket, options);
 	};
 }
 
@@ -258,6 +281,7 @@ function registerWorkerTool(
 	type: WorkerEvent,
 	runner: CommandRunner,
 	cwd: string,
+	turnTicket: () => Promise<ActionTicket> | undefined,
 	delivery: WorkerDeliveryOptions,
 ): void {
 	const definition = eventDefinition(type);
@@ -268,7 +292,8 @@ function registerWorkerTool(
 		parameters: definition.parameters,
 		async execute(_toolCallId, params) {
 			const payload = definition.payload(params as Record<string, unknown>);
-			const envelope = await sendWorkerEnvelope(worker, type, payload, runner, cwd, delivery);
+			const ticket = turnTicket();
+			const envelope = await sendWorkerEnvelope(worker, type, payload, runner, cwd, ticket ? { ...delivery, ticket } : delivery);
 			return {
 				content: [{ type: "text", text: `Accepted ${type} for ${worker.issue_id}.` }],
 				details: { status: "accepted" },

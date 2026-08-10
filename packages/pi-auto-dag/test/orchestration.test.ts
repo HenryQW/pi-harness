@@ -12,7 +12,7 @@ import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
-import { eventReceiptPath, reviewId } from "../src/review-ticket.ts";
+import { eventReceiptPath, readWorkerReceipt, reviewId } from "../src/review-ticket.ts";
 import { runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -273,6 +273,26 @@ test("cleanup retains a completed child changed after review", async (t) => {
 	assert.equal(state.tasks.alpha.branch_cleanup_done, undefined);
 	assert.match(await git(project.root, "branch", "--list", branch!), new RegExp(`${branch}$`));
 	assert.equal(await readFile(join(worktree!, "late.txt"), "utf8"), "late\n");
+});
+
+test("accepted worker events recover missing receipts", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	const message = requestReviewEvent(state, "alpha", commit);
+	const envelope = JSON.parse(message);
+	state = await lifecycle.resume(project.root, message);
+	assert.ok(state.accepted_events?.includes(envelope.event_id));
+	const prompts = herdr.count("agent prompt");
+
+	await rm(envelope.receipt_path, { force: true });
+	state = await lifecycle.resume(project.root, message);
+
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(herdr.count("agent prompt"), prompts);
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 
 test("simultaneous worker envelopes preserve both durable updates", async (t) => {

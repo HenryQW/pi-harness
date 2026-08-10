@@ -21,11 +21,11 @@ Auto DAG execution of exact frozen `issue.testing` text against verified clean c
 _Avoid_: Reviewer test, echoed command, suggested command
 
 **Worker Action Ticket**:
-Durable system-owned handoff containing event ID, attempt, review round, role, receipt path, and optional review ID. Worker tools accept intent only; adapter adds ticket metadata and Git HEAD.
+Durable system-owned handoff containing event ID, attempt, review round, role, receipt path, and optional review ID. Worker tools accept intent only; adapter captures ticket at turn start and adds ticket metadata plus Git HEAD.
 _Avoid_: Model correlation field, worker-supplied attempt, review token
 
 **Acceptance Receipt**:
-Durable lifecycle-owned accepted or rejected result for one action ticket. Delivery alone never reports success; retries reuse ticket identity and poll receipt. Stale tickets are rejected explicitly.
+Durable lifecycle-owned accepted or rejected result for one action ticket. Delivery alone never reports success; retries reuse ticket identity and poll receipt. Run State records accepted event IDs so missing receipts can be recovered. Stale tickets are rejected explicitly.
 _Avoid_: Sent message, transport success
 
 **Review Dispatch ID**:
