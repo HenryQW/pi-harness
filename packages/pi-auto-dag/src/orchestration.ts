@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner, type RequiredGateEvidence } from "./command.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, readCurrentBranch, retireChildWorktree, verifySingleCommit } from "./git.ts";
@@ -272,27 +272,8 @@ async function submitReview(
 	if (envelope.role !== "reviewer") throw new Error("Only a reviewer can submit review");
 	const current = task(state, issue.id);
 	if (current.status !== "reviewing") return state;
-	if (
-		envelope.payload.commit !== current.commit
-		|| envelope.payload.attempt !== current.attempts
-		|| envelope.payload.review_round !== current.review_rounds
-	) return state;
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
-	const command = nonEmptyString(envelope.payload.command, "submit_review command");
-	const exitCode = envelope.payload.exit_code;
-	if (typeof exitCode !== "number" || !Number.isInteger(exitCode) || exitCode < 0) {
-		throw new Error("submit_review exit_code must be a non-negative integer");
-	}
-	state = await save(replaceTask(state, issue.id, {
-		...current,
-		review_command: command,
-		review_commit: commit,
-		review_exit_code: exitCode,
-	}), options);
-	const reviewed = task(state, issue.id);
-	if (command !== issue.testing) {
-		return await blockTask(state, issue.id, "Review command does not match the frozen testing command", options, "reviewer");
-	}
+	const gate = requiredTaskGate(current, commit, issue.id);
 	try {
 		await verifyReviewCommit(state, issue.id, commit, options);
 	} catch (error) {
@@ -302,15 +283,15 @@ async function submitReview(
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "review verdict");
 	const findings = stringArray(envelope.payload.findings, "review findings");
 	if (verdict === "blocked") {
-		state = await save(replaceTask(state, issue.id, { ...reviewed, review_findings: findings }), options);
+		state = await save(replaceTask(state, issue.id, { ...current, review_findings: findings }), options);
 		return await blockTask(state, issue.id, findings.join("; ") || "Reviewer blocked the task", options, "reviewer");
 	}
-	if (verdict === "approved" && exitCode !== 0) {
-		return await blockTask(state, issue.id, `Review command exited with code ${exitCode}; approval requires exit code 0`, options, "reviewer");
+	if (verdict === "approved" && gate.exit_code !== 0) {
+		return await blockTask(state, issue.id, `Required gate exited with code ${gate.exit_code}; approval requires exit code 0`, options, "reviewer");
 	}
 	if (verdict === "approved") {
 		return await save(replaceTask(state, issue.id, {
-			...reviewed,
+			...current,
 			status: "approved",
 			review_findings: findings,
 		}), options);
@@ -318,7 +299,7 @@ async function submitReview(
 
 	const dispatchBlocked = hasBlockedTask(state);
 	state = await save(replaceTask(state, issue.id, {
-		...reviewed,
+		...current,
 		status: "implementing",
 		activity_started_at: timestamp(options),
 		review_findings: findings,
@@ -546,6 +527,7 @@ async function ensureReviewer(
 ): Promise<RunState> {
 	await ensureWorktree(state, issue.id, options);
 	config = await assertRunBoundary(state, options.runner);
+	state = await ensureTaskGate(state, issue, options);
 	let current = task(state, issue.id);
 	if (current.reviewer_pane) {
 		const tabId = nonEmptyString(current.tab_id, `Run Task ${issue.id} tab_id`);
@@ -629,6 +611,20 @@ async function ensureReviewer(
 		}), options);
 	}
 	return state;
+}
+
+async function ensureTaskGate(state: RunState, issue: LocalIssue, options: OrchestrationOptions): Promise<RunState> {
+	const current = task(state, issue.id);
+	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
+	await verifyReviewCommit(state, issue.id, commit, options);
+	if (recordedGateEvidence(current, commit)) return state;
+	const evidence = await runRequiredGate(
+		options.runner,
+		issue.testing,
+		commit,
+		nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+	);
+	return await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
 }
 
 async function verifyReviewCommit(state: RunState, issueId: string, commit: string, options: OrchestrationOptions): Promise<string> {
@@ -898,17 +894,17 @@ function reviewerPrompt(
 ): Record<string, unknown> {
 	const instruction = mode === "resume"
 		? "Resend your latest worker event through the worker tool."
-		: "Independently verify a clean worktree, exact base and sole commit. Run only the frozen testing command, then submit its exact command and exit code with approved, changes_requested with findings, or blocked with a reason in findings.";
+		: "Independently verify the clean worktree, exact base, sole commit, acceptance criteria, and required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. Submit only verdict and findings.";
+	const requiredGate = requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id);
 	if (!full) return {
 		type: mode === "resume" ? "auto_dag_resend" : "auto_dag_review_update",
 		run_id: state.run_id,
 		issue_id: issue.id,
-		commit: current.commit,
 		attempt: current.attempts,
 		review_round: current.review_rounds,
 		review_findings: current.review_findings,
+		required_gate: requiredGate,
 		instruction,
-		command: issue.testing,
 	};
 	return {
 		type: "auto_dag_review",
@@ -916,15 +912,20 @@ function reviewerPrompt(
 		delivery: workerDeliveryContext(state.graph),
 		issue: workerIssueContext(issue, false),
 		wave_base: current.wave_base,
-		commit: current.commit,
 		attempt: current.attempts,
 		review_round: current.review_rounds,
 		worktree: current.worktree,
 		review_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
+		required_gate: requiredGate,
 		instruction,
-		command: issue.testing,
 	};
+}
+
+function requiredTaskGate(current: RunTaskState, commit: string, issueId: string): RequiredGateEvidence {
+	const evidence = recordedGateEvidence(current, commit);
+	if (!evidence) throw new Error(`Run Task ${issueId} required-gate evidence is missing`);
+	return evidence;
 }
 
 function parseEnvelopePayload(type: WorkerEvent, value: unknown): Record<string, unknown> {
@@ -942,26 +943,13 @@ function parseEnvelopePayload(type: WorkerEvent, value: unknown): Record<string,
 				...(input.summary === undefined ? {} : { summary: nonEmptyString(input.summary, "request_review summary") }),
 			};
 		case "submit_review":
-			only(["commit", "attempt", "review_round", "command", "exit_code", "verdict", "findings", "fixed_thread_ids"]);
+			only(["verdict", "findings"]);
 			const verdict = oneOf(input.verdict, ["approved", "changes_requested", "blocked"] as const, "submit_review verdict");
 			const findings = stringArray(input.findings, "submit_review findings");
-			const exitCode = input.exit_code;
-			if (typeof exitCode !== "number" || !Number.isInteger(exitCode) || exitCode < 0) {
-				throw new Error("submit_review exit_code must be a non-negative integer");
-			}
 			if (verdict !== "approved" && !findings.length) {
 				throw new Error("Non-approval review verdict requires findings");
 			}
-			return {
-				commit: nonEmptyString(input.commit, "submit_review commit"),
-				attempt: positiveInteger(input.attempt, "submit_review attempt"),
-				review_round: positiveInteger(input.review_round, "submit_review review_round"),
-				command: nonEmptyString(input.command, "submit_review command"),
-				exit_code: exitCode,
-				verdict,
-				findings,
-				...(input.fixed_thread_ids === undefined ? {} : { fixed_thread_ids: stringArray(input.fixed_thread_ids, "submit_review fixed_thread_ids") }),
-			};
+			return { verdict, findings };
 		case "submit_health":
 			only(["summary", "actionable", "thread_ids", "checks", "attempt", "review_round"]);
 			if (typeof input.actionable !== "boolean") throw new Error("submit_health actionable must be a boolean");

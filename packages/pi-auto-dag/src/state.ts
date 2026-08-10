@@ -31,7 +31,7 @@ const TASK_STRING_FIELDS = [
 	"block_reason", "wave_base", "worktree", "branch", "tab_id",
 	"implementer_provisioning_id", "implementer_pane", "implementer_agent",
 	"reviewer_provisioning_id", "reviewer_pane", "reviewer_agent", "activity_started_at",
-	"commit", "integration_intent", "review_command", "review_commit", "conflict_base",
+	"commit", "integration_intent", "review_command", "review_commit", "review_stdout", "review_stderr", "conflict_base",
 	"final_gate_head", "repair_issue_id", "repair_base", "repair_commit",
 ] as const;
 const TASK_BOOLEAN_FIELDS = [
@@ -46,9 +46,10 @@ const RUN_TASK_KEYS = [
 const HEALTH_STRING_FIELDS = [
 	"summary", "worktree", "branch", "base", "commit", "integration_intent",
 	"reviewer_tab_id", "reviewer_pane", "reviewer_agent", "coder_tab_id", "coder_pane", "coder_agent", "activity_started_at",
+	"review_command", "review_commit", "review_stdout", "review_stderr",
 ] as const;
 const PR_HEALTH_KEYS = [
-	"status", "head", ...HEALTH_STRING_FIELDS, "actionable", "thread_ids", "checks", "resolved_thread_ids", "attempt", "review_round", "review_findings", "fixed_thread_ids", "blocked_role", "instruction_pending",
+	"status", "head", ...HEALTH_STRING_FIELDS, "actionable", "thread_ids", "checks", "resolved_thread_ids", "attempt", "review_round", "review_exit_code", "review_findings", "fixed_thread_ids", "blocked_role", "instruction_pending",
 ] as const;
 
 export type Uuid = () => string;
@@ -257,6 +258,8 @@ function parseRunTaskState(value: unknown, label: string): RunTaskState {
 	if (input.integration_intent !== undefined) task.integration_intent = nonEmptyString(input.integration_intent, `${label}.integration_intent`);
 	if (input.review_command !== undefined) task.review_command = nonEmptyString(input.review_command, `${label}.review_command`);
 	if (input.review_commit !== undefined) task.review_commit = nonEmptyString(input.review_commit, `${label}.review_commit`);
+	if (input.review_stdout !== undefined) task.review_stdout = text(input.review_stdout, `${label}.review_stdout`);
+	if (input.review_stderr !== undefined) task.review_stderr = text(input.review_stderr, `${label}.review_stderr`);
 	if (input.conflict_base !== undefined) task.conflict_base = nonEmptyString(input.conflict_base, `${label}.conflict_base`);
 	if (input.final_gate_head !== undefined) task.final_gate_head = nonEmptyString(input.final_gate_head, `${label}.final_gate_head`);
 	if (input.repair_issue_id !== undefined) task.repair_issue_id = nonEmptyString(input.repair_issue_id, `${label}.repair_issue_id`);
@@ -336,6 +339,11 @@ function parsePrHealthState(value: unknown, label: string): PrHealthState {
 	if (input.resolved_thread_ids !== undefined) health.resolved_thread_ids = stringArray(input.resolved_thread_ids, `${label}.resolved_thread_ids`);
 	if (input.attempt !== undefined) health.attempt = positiveInteger(input.attempt, `${label}.attempt`);
 	if (input.review_round !== undefined) health.review_round = nonNegativeInteger(input.review_round, `${label}.review_round`);
+	if (input.review_command !== undefined) health.review_command = nonEmptyString(input.review_command, `${label}.review_command`);
+	if (input.review_commit !== undefined) health.review_commit = nonEmptyString(input.review_commit, `${label}.review_commit`);
+	if (input.review_exit_code !== undefined) health.review_exit_code = nonNegativeInteger(input.review_exit_code, `${label}.review_exit_code`);
+	if (input.review_stdout !== undefined) health.review_stdout = text(input.review_stdout, `${label}.review_stdout`);
+	if (input.review_stderr !== undefined) health.review_stderr = text(input.review_stderr, `${label}.review_stderr`);
 	if (input.review_findings !== undefined) health.review_findings = stringArray(input.review_findings, `${label}.review_findings`);
 	if (input.fixed_thread_ids !== undefined) health.fixed_thread_ids = stringArray(input.fixed_thread_ids, `${label}.fixed_thread_ids`);
 	if (input.blocked_role !== undefined) health.blocked_role = oneOf(input.blocked_role, ["implementer", "reviewer"] as const, `${label}.blocked_role`);
@@ -376,6 +384,11 @@ function knownKeys(value: Record<string, unknown>, keys: readonly string[], labe
 
 function boolean(value: unknown, label: string): boolean {
 	if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+	return value;
+}
+
+function text(value: unknown, label: string): string {
+	if (typeof value !== "string") throw new Error(`${label} must be a string`);
 	return value;
 }
 

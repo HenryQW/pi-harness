@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner, type RequiredGateEvidence } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
@@ -15,7 +15,7 @@ type PrLifecycleOptions = {
 	now?: () => string;
 };
 
-/** Run the non-worker final check, then create or recover the one integration PR. */
+/** Run the lifecycle-owned final gate and reviewer, then create or recover the one integration PR. */
 export async function advancePrLifecycle(
 	state: RunState,
 	config: ProjectConfig,
@@ -243,7 +243,12 @@ async function ensureFinalReviewer(
 	options: PrLifecycleOptions,
 	mode: "review" | "resume",
 ): Promise<RunState> {
+	await assertRunBoundary(state, options.runner);
 	let current = task(state, issue.id);
+	const commit = nonEmptyString(current.commit, "final-check commit");
+	if (commit !== state.integration_head) throw new Error("Final-check commit does not match the integration HEAD");
+	state = await ensureRecordedGate(state, issue, commit, state.main_worktree, options);
+	current = task(state, issue.id);
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
 	const launch = workerLaunch(state, issue, config, "reviewer");
 	const resource = await reconcileWorkerTab(state, {
@@ -275,14 +280,15 @@ async function ensureFinalReviewer(
 	const fullPrompt = started !== "existing" || (mode === "resume" && Boolean(current.reviewer_instruction_pending));
 	const instruction = promptMode === "resume"
 		? "Resend your latest final-check review event through the worker tool."
-		: "Read-only final check: inspect exactly the recorded integration HEAD in the main worktree, run only the frozen command, and submit the exact commit, command, exit code, verdict, and findings.";
+		: "Read-only final check: inspect the exact integration HEAD, acceptance criteria, and system-owned required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. Submit only verdict and findings.";
+	const requiredGate = requiredTaskGate(current, commit, "Final check");
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_final_check",
 		run_id: state.run_id,
 		delivery: workerDeliveryContext(state.graph),
 		issue: workerIssueContext(issue, false),
 		integration_head: state.integration_head,
-		command: issue.testing,
+		required_gate: requiredGate,
 		attempt: current.attempts,
 		review_round: current.review_rounds,
 		instruction,
@@ -291,7 +297,7 @@ async function ensureFinalReviewer(
 		run_id: state.run_id,
 		issue_id: issue.id,
 		integration_head: state.integration_head,
-		command: issue.testing,
+		required_gate: requiredGate,
 		attempt: current.attempts,
 		review_round: current.review_rounds,
 		instruction,
@@ -310,24 +316,18 @@ async function submitFinalReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the final-check reviewer can submit final review");
 	const current = task(state, issue.id);
-	if (!matchesReview(current, envelope)) return state;
-	const command = nonEmptyString(envelope.payload.command, "final-check command");
-	const exitCode = nonNegativeInteger(envelope.payload.exit_code, "final-check exit_code");
+	const gate = requiredTaskGate(current, state.integration_head, "Final check");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-check verdict");
 	const findings = stringArray(envelope.payload.findings, "final-check findings");
 	await assertRunBoundary(state, options.runner);
-	if (command !== issue.testing) return await failFinalGate(state, issue, "Final-check command does not match the frozen testing command", options);
-	if (envelope.payload.commit !== state.integration_head || current.final_gate_head !== state.integration_head) {
+	if (current.commit !== state.integration_head || current.final_gate_head !== state.integration_head) {
 		return await failFinalGate(state, issue, "Final-check review did not inspect the exact integration HEAD", options);
 	}
 	if (verdict !== "approved") return await failFinalGate(state, issue, findings.join("; "), options, findings);
-	if (exitCode !== 0) return await failFinalGate(state, issue, `Final-check command exited with code ${exitCode}; approval requires exit code 0`, options, findings);
+	if (gate.exit_code !== 0) return await failFinalGate(state, issue, `Required gate exited with code ${gate.exit_code}; approval requires exit code 0`, options, findings);
 	state = await save(replaceTask(state, issue.id, {
 		...current,
 		status: "approved",
-		review_command: command,
-		review_commit: state.integration_head,
-		review_exit_code: exitCode,
 		final_gate_findings: findings,
 	}), options);
 	return await openPr(state, issue, options);
@@ -466,6 +466,10 @@ async function ensureFinalRepairReviewer(
 	mode: "review" | "resume",
 ): Promise<RunState> {
 	let current = task(state, issue.id);
+	const commit = nonEmptyString(current.commit, "final-gate repair commit");
+	await verifyRepairCommit(state, issue, commit, options);
+	state = await ensureRecordedGate(state, issue, commit, nonEmptyString(current.worktree, "final repair worktree"), options);
+	current = task(state, issue.id);
 	const launch = workerLaunch(state, owner, config, "reviewer");
 	if (current.reviewer_pane) {
 		const tabId = nonEmptyString(current.tab_id, "final repair tab id");
@@ -492,7 +496,8 @@ async function ensureFinalRepairReviewer(
 	const fullPrompt = started !== "existing" || (mode === "resume" && Boolean(current.reviewer_instruction_pending));
 	const instruction = promptMode === "resume"
 		? "Resend your latest worker event through the worker tool."
-		: "Read-only review: verify the exact one-commit repair and run only the frozen final-check command before submitting the exact verdict.";
+		: "Read-only review: verify the exact one-commit repair, acceptance criteria, and system-owned required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. Submit only verdict and findings.";
+	const requiredGate = requiredTaskGate(current, commit, "Final-gate repair");
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_final_repair_review",
 		run_id: state.run_id,
@@ -500,19 +505,17 @@ async function ensureFinalRepairReviewer(
 		owner_issue: workerIssueContext(owner, false),
 		worktree: current.worktree,
 		wave_base: current.repair_base,
-		commit: current.commit,
 		attempt: current.attempts,
 		review_round: current.review_rounds,
-		command: issue.testing,
+		required_gate: requiredGate,
 		instruction,
 	} : {
 		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_final_repair_review_update",
 		run_id: state.run_id,
 		issue_id: owner.id,
-		commit: current.commit,
 		attempt: current.attempts,
 		review_round: current.review_rounds,
-		command: issue.testing,
+		required_gate: requiredGate,
 		instruction,
 	}, options);
 	if (needsInstruction) {
@@ -530,13 +533,11 @@ async function submitFinalRepairReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the final-gate repair reviewer can submit review");
 	const current = task(state, issue.id);
-	if (!matchesReview(current, envelope)) return state;
-	const command = nonEmptyString(envelope.payload.command, "final-gate repair review command");
-	const exitCode = nonNegativeInteger(envelope.payload.exit_code, "final-gate repair review exit_code");
+	const commit = nonEmptyString(current.commit, "final-gate repair commit");
+	const gate = requiredTaskGate(current, commit, "Final-gate repair");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-gate repair verdict");
 	const findings = stringArray(envelope.payload.findings, "final-gate repair findings");
-	await verifyRepairCommit(state, issue, nonEmptyString(current.commit, "final-gate repair commit"), options);
-	if (command !== issue.testing) return await failFinalGate(state, issue, "Repair review command does not match the frozen final-check command", options);
+	await verifyRepairCommit(state, issue, commit, options);
 	if (verdict === "blocked") return await failFinalGate(state, issue, findings.join("; "), options, findings);
 	if (verdict === "changes_requested") {
 		const owner = repairOwner(state, current);
@@ -549,16 +550,12 @@ async function submitFinalRepairReview(
 		}), options);
 		return await ensureFinalRepairCoder(state, issue, owner, config, options, "revision");
 	}
-	if (exitCode !== 0) return await failFinalGate(state, issue, `Repair review command exited with code ${exitCode}; approval requires exit code 0`, options, findings);
-	const commit = nonEmptyString(current.commit, "final-gate repair commit");
+	if (gate.exit_code !== 0) return await failFinalGate(state, issue, `Required gate exited with code ${gate.exit_code}; approval requires exit code 0`, options, findings);
 	state = await save(replaceTask(state, issue.id, {
 		...current,
 		status: "repair_applying",
 		integration_intent: commit,
 		repair_commit: commit,
-		review_command: command,
-		review_commit: commit,
-		review_exit_code: exitCode,
 		review_findings: findings,
 	}), options);
 	return await applyFinalRepair(state, issue, config, options);
@@ -818,12 +815,6 @@ function workerLaunch(
 	});
 }
 
-function matchesReview(current: RunTaskState, envelope: WorkerEnvelope): boolean {
-	return envelope.payload.commit === current.commit
-		&& envelope.payload.attempt === current.attempts
-		&& envelope.payload.review_round === current.review_rounds;
-}
-
 function matchesBlock(current: RunTaskState, envelope: WorkerEnvelope, implementer: boolean): boolean {
 	return envelope.payload.attempt === current.attempts
 		&& envelope.payload.review_round === (implementer ? (current.review_rounds ?? 0) + 1 : current.review_rounds);
@@ -841,9 +832,23 @@ function finalReviewerLabel(state: RunState, attempt: number): string {
 	return `auto-dag:${state.run_id}:final-check:${attempt}:reviewer`;
 }
 
-function nonNegativeInteger(value: unknown, label: string): number {
-	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) throw new Error(`${label} must be a non-negative integer`);
-	return value;
+async function ensureRecordedGate(
+	state: RunState,
+	issue: LocalIssue,
+	commit: string,
+	cwd: string,
+	options: PrLifecycleOptions,
+): Promise<RunState> {
+	const current = task(state, issue.id);
+	if (recordedGateEvidence(current, commit)) return state;
+	const evidence = await runRequiredGate(options.runner, issue.testing, commit, cwd);
+	return await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+}
+
+function requiredTaskGate(current: RunTaskState, commit: string, label: string): RequiredGateEvidence {
+	const evidence = recordedGateEvidence(current, commit);
+	if (!evidence) throw new Error(`${label} required-gate evidence is missing`);
+	return evidence;
 }
 
 async function save(state: RunState, options: PrLifecycleOptions): Promise<RunState> {

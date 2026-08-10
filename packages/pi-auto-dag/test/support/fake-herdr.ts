@@ -2,11 +2,13 @@ import { runCommand, type CommandRunner } from "../../src/command.ts";
 
 export interface FakeHerdrOptions {
 	fail_tab_close?: number;
+	gate?: (command: string, cwd?: string) => { code: number; stdout: string; stderr: string };
 }
 
 export interface FakeHerdrCall {
 	command: string;
 	args: string[];
+	cwd?: string;
 }
 
 export interface FakeHerdr {
@@ -30,7 +32,10 @@ export function fakeHerdr(input: FakeHerdrOptions = {}): FakeHerdr {
 	const calls: FakeHerdrCall[] = [];
 	const runner: CommandRunner = async (command, arguments_, options) => {
 		const args = [...arguments_];
-		calls.push({ command, args });
+		calls.push({ command, args, cwd: options.cwd });
+		if (command === "sh" && args[0] === "-c") {
+			return input.gate?.(args[1], options.cwd) ?? { code: 0, stdout: `required gate passed: ${args[1]}\n`, stderr: "" };
+		}
 		if (command !== "herdr") return await runCommand(command, args, options);
 		switch (args.slice(0, 2).join(" ")) {
 			case "tab create": {

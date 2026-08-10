@@ -6,6 +6,24 @@ interface CommandResult {
 	stderr: string;
 }
 
+export interface RequiredGateEvidence {
+	command: string;
+	commit: string;
+	exit_code: number;
+	output: {
+		stdout: string;
+		stderr: string;
+	};
+}
+
+export interface RecordedGateEvidence {
+	review_command?: string;
+	review_commit?: string;
+	review_exit_code?: number;
+	review_stdout?: string;
+	review_stderr?: string;
+}
+
 interface CommandOptions {
 	cwd: string;
 	maxOutputBytes?: number;
@@ -53,6 +71,50 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 		});
 	});
 });
+
+export async function runRequiredGate(
+	runner: CommandRunner,
+	command: string,
+	commit: string,
+	cwd: string,
+): Promise<RequiredGateEvidence> {
+	const result = await runner("sh", ["-c", command], { cwd });
+	return {
+		command,
+		commit,
+		exit_code: result.code,
+		output: { stdout: result.stdout, stderr: result.stderr },
+	};
+}
+
+export function recordedGateEvidence(
+	record: RecordedGateEvidence,
+	commit: string,
+): RequiredGateEvidence | undefined {
+	if (
+		record.review_command === undefined
+		|| record.review_commit !== commit
+		|| record.review_exit_code === undefined
+		|| record.review_stdout === undefined
+		|| record.review_stderr === undefined
+	) return undefined;
+	return {
+		command: record.review_command,
+		commit,
+		exit_code: record.review_exit_code,
+		output: { stdout: record.review_stdout, stderr: record.review_stderr },
+	};
+}
+
+export function gateEvidenceRecord(evidence: RequiredGateEvidence): Required<RecordedGateEvidence> {
+	return {
+		review_command: evidence.command,
+		review_commit: evidence.commit,
+		review_exit_code: evidence.exit_code,
+		review_stdout: evidence.output.stdout,
+		review_stderr: evidence.output.stderr,
+	};
+}
 
 export async function commandOutput(
 	runner: CommandRunner,

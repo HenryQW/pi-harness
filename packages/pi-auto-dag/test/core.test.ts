@@ -399,7 +399,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		WORKER_TOOLS.submit_review,
 		WORKER_TOOLS.block_task,
 	]);
-	const workerResult = await workerTools[0].execute("call", { commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown; terminate: boolean };
+	const workerResult = await workerTools[0].execute("call", { verdict: "approved", findings: [] }) as { content: Array<{ text: string }>; details: unknown; terminate: boolean };
 	assert.equal(workerResult.content[0].text, "Sent submit_review for core.");
 	assert.equal((workerResult.details as { type: string }).type, "submit_review");
 	assert.equal(workerResult.terminate, true);
@@ -472,7 +472,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 			PI_AUTO_DAG_MAIN_PANE: "main-pane",
 		}),
 		"submit_review",
-		{ commit: "abc123", attempt: 1, review_round: 1, command: "npm test", exit_code: 0, verdict: "approved", findings: [] },
+		{ verdict: "approved", findings: [] },
 		async (...args) => {
 			calls.push(args);
 			return { code: 0, stdout: "", stderr: "" };

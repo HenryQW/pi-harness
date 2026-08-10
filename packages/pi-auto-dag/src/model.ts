@@ -99,10 +99,12 @@ export interface RunTaskState {
 	resolution_pending?: boolean;
 	/** Identifies which active role raised a task block. */
 	blocked_role?: "implementer" | "reviewer";
-	/** The reviewer-reported frozen command evidence for the active review. */
+	/** System-executed required-gate evidence for the active review commit. */
 	review_command?: string;
 	review_commit?: string;
 	review_exit_code?: number;
+	review_stdout?: string;
+	review_stderr?: string;
 	review_findings?: string[];
 	conflict_base?: string;
 	final_gate_head?: string;
@@ -155,6 +157,11 @@ export interface PrHealthState {
 	commit?: string;
 	attempt?: number;
 	review_round?: number;
+	review_command?: string;
+	review_commit?: string;
+	review_exit_code?: number;
+	review_stdout?: string;
+	review_stderr?: string;
 	review_findings?: string[];
 	blocked_role?: "implementer" | "reviewer";
 	/** A repair commit persisted before the lifecycle-owned cherry-pick starts. */

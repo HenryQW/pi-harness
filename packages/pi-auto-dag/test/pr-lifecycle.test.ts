@@ -96,7 +96,14 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "final-check", repair));
 	const repairReviewPrompt = workerPrompts().find((value) => value.type === "auto_dag_final_repair_review");
 	assert.deepEqual(Object.keys(repairReviewPrompt.owner_issue).sort(), ["acceptance", "id", "purpose", "title"]);
-	assert.equal(repairReviewPrompt.command, "npm test -- final-check");
+	assert.deepEqual(repairReviewPrompt.required_gate, {
+		command: "npm test -- final-check",
+		commit: repair,
+		exit_code: 0,
+		output: { stdout: "required gate passed: npm test -- final-check\n", stderr: "" },
+	});
+	assert.equal("command" in repairReviewPrompt, false);
+	assert.equal("commit" in repairReviewPrompt, false);
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(await git(project.root, "show", "HEAD:repair.txt"), "fixed");
@@ -107,7 +114,10 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	const fullPrompt = prompts().find((value) => value.type === "auto_dag_final_check");
 	assert.equal(fullPrompt.attempt, state.tasks["final-check"].attempts);
 	assert.equal(fullPrompt.review_round, state.tasks["final-check"].review_rounds);
-	assert.equal(fullPrompt.command, "npm test -- final-check");
+	assert.equal(fullPrompt.required_gate.command, "npm test -- final-check");
+	assert.equal(fullPrompt.required_gate.commit, state.integration_head);
+	assert.equal(fullPrompt.required_gate.exit_code, 0);
+	assert.equal("command" in fullPrompt, false);
 	assert.deepEqual(fullPrompt.delivery, repairPrompt.delivery);
 	assert.deepEqual(Object.keys(fullPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	state = await lifecycle.resume(project.root);
@@ -196,7 +206,10 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	const repair = await commit(state.health!.worktree!, "health.txt", "healthy\n", "health repair");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
 	assert.equal(state.health?.reviewer_agent, reviewer);
-	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-1", "THREAD-2"]));
+	assert.equal(state.health?.review_commit, repair);
+	assert.equal(state.health?.review_command, "npm test -- final-check");
+	assert.equal(state.health?.review_exit_code, 0);
+	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-1", "THREAD-2"]));
 
 	assert.equal(state.health?.status, "completed");
 	assert.deepEqual(state.health?.resolved_thread_ids, ["THREAD-1", "THREAD-2"]);
@@ -311,7 +324,7 @@ test("health recovers a crashed repair pick and persists post-push cleanup befor
 	}));
 	const repair = await commit(state.health!.worktree!, "health.txt", "healthy\n", "health repair");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
-	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-1"])), /simulated crash/);
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-1"])), /simulated crash/);
 	const stuck = await lifecycle.status(project.root, RUN_ID);
 	assert.equal(stuck?.health?.status, "applying");
 	assert.equal(stuck?.health?.integration_intent, repair);
@@ -327,7 +340,7 @@ test("health recovers a crashed repair pick and persists post-push cleanup befor
 	}));
 	const second = await commit(state.health!.worktree!, "health-2.txt", "healthy\n", "health repair 2");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", second));
-	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", [], ["THREAD-2"])), /simulated cleanup failure/);
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-2"])), /simulated cleanup failure/);
 	const failed = await lifecycle.status(project.root, RUN_ID);
 	assert.equal(failed?.health?.status, "post_push_cleanup");
 	const pushed = gh.gitPushes;
@@ -422,23 +435,8 @@ function reviewEvent(
 	issueId: string,
 	verdict: "approved" | "changes_requested" | "blocked",
 	findings: string[],
-	fixedThreadIds?: string[],
 ): string {
-	const task = state.tasks[issueId];
-	const command = issueId === "final-check"
-		? state.graph.final_check.testing
-		: state.graph.issues.find((issue) => issue.id === issueId)?.testing;
-	if (!command) throw new Error(`Missing frozen command for ${issueId}`);
-	return event(state, issueId, "reviewer", "submit_review", {
-		commit: task.commit,
-		attempt: task.attempts,
-		review_round: task.review_rounds,
-		command,
-		exit_code: 0,
-		verdict,
-		findings,
-		...(fixedThreadIds ? { fixed_thread_ids: fixedThreadIds } : {}),
-	});
+	return event(state, issueId, "reviewer", "submit_review", { verdict, findings });
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {
@@ -464,19 +462,8 @@ function healthReviewEvent(
 	state: RunState,
 	verdict: "approved" | "changes_requested" | "blocked",
 	findings: string[],
-	fixedThreadIds: string[],
 ): string {
-	const health = state.health!;
-	return event(state, "final-check", "reviewer", "submit_review", {
-		commit: health.commit,
-		attempt: health.attempt,
-		review_round: health.review_round,
-		command: state.graph.final_check.testing,
-		exit_code: 0,
-		verdict,
-		findings,
-		fixed_thread_ids: fixedThreadIds,
-	});
+	return event(state, "final-check", "reviewer", "submit_review", { verdict, findings });
 }
 
 function event(state: RunState, issueId: string, role: "implementer" | "reviewer", type: string, payload: Record<string, unknown>): string {
@@ -503,7 +490,7 @@ async function advanceRemote(t: TestContext, remote: string): Promise<void> {
 
 function combinedRunner(herdr: ReturnType<typeof fakeHerdr>, gh: ReturnType<typeof fakeGh>): CommandRunner {
 	return async (command, args, options) => {
-		if (command === "herdr") return await herdr.runner(command, args, options);
+		if (command === "herdr" || command === "sh") return await herdr.runner(command, args, options);
 		if (command === "gh") return await gh.runner(command, args);
 		if (command === "git" && args[0] === "push") gh.gitPushes += 1;
 		return await runCommand(command, args, options);

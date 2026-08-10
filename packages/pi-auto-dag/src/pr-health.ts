@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, runRequiredGate, type CommandRunner, type RequiredGateEvidence } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
@@ -149,6 +149,15 @@ async function ensureHealthReviewer(
 ): Promise<RunState> {
 	let health = requiredHealth(state);
 	const issue = finalCheck(state);
+	if (health.status === "reviewing") {
+		const commit = nonEmptyString(health.commit, "PR-health repair commit");
+		await verifyHealthRepairCommit(state, commit, options);
+		if (!recordedGateEvidence(health, commit)) {
+			const evidence = await runRequiredGate(options.runner, issue.testing, commit, nonEmptyString(health.worktree, "PR-health repair worktree"));
+			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
+			health = requiredHealth(state);
+		}
+	}
 	const launch = workerLaunch(state, issue, config, "reviewer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:reviewer`;
 	const resource = await reconcileWorkerTab(state, {
@@ -177,7 +186,10 @@ async function ensureHealthReviewer(
 		? "Resend your latest worker event through the worker tool."
 		: promptMode === "triage"
 			? "Read-only PR health triage: inspect unresolved review threads and failing checks for this exact open PR. Submit only a concise summary, actionable boolean, unresolved thread node IDs, and failing-check name/link/output evidence."
-			: "Read-only PR-health repair review: inspect exactly this one repair commit, run only the frozen command, and submit an exact verdict. List only triaged thread IDs that this repair fixes.";
+			: "Read-only PR-health repair review: inspect the exact one-commit repair and system-owned required-gate evidence. Extra checks are unrestricted but cannot replace the required gate. For approval, findings must contain only triaged thread IDs this repair fixes.";
+	const requiredGate = health.status === "reviewing"
+		? requiredHealthGate(health, nonEmptyString(health.commit, "PR-health repair commit"))
+		: undefined;
 	await promptWorkerAgent(state, agent, fullPrompt ? (promptMode === "triage" ? {
 		type: "auto_dag_pr_health_triage",
 		run_id: state.run_id,
@@ -194,19 +206,17 @@ async function ensureHealthReviewer(
 		pr: state.pr,
 		worktree: health.worktree,
 		base: health.base,
-		commit: health.commit,
 		attempt: health.attempt,
 		review_round: health.review_round,
-		command: issue.testing,
+		required_gate: requiredGate,
 		instruction,
 	}) : {
 		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_pr_health_review_update",
 		run_id: state.run_id,
 		issue_id: issue.id,
-		commit: health.commit,
 		attempt: health.attempt,
 		review_round: health.review_round,
-		command: issue.testing,
+		...(requiredGate ? { required_gate: requiredGate } : {}),
 		instruction,
 	}, options);
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);
@@ -391,25 +401,22 @@ async function submitHealthRepairReview(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the same PR-health reviewer can submit repair review");
 	const health = requiredHealth(state);
-	if (envelope.payload.commit !== health.commit || envelope.payload.attempt !== health.attempt || envelope.payload.review_round !== health.review_round) return state;
 	const issue = finalCheck(state);
-	const command = nonEmptyString(envelope.payload.command, "PR-health repair review command");
-	const exitCode = nonNegativeInteger(envelope.payload.exit_code, "PR-health repair review exit_code");
+	const commit = nonEmptyString(health.commit, "PR-health repair commit");
+	const gate = requiredHealthGate(health, commit);
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "PR-health repair verdict");
 	const findings = stringArray(envelope.payload.findings, "PR-health repair findings");
 	if (!(await activeHealthHeadMatches(state, health, options))) {
 		return await blockHealth(state, "PR head changed before health repair approval", options);
 	}
-	await verifyHealthRepairCommit(state, nonEmptyString(health.commit, "PR-health repair commit"), options);
-	if (command !== issue.testing) return await blockHealth(state, "PR-health repair review command does not match the frozen final-check command", options);
+	await verifyHealthRepairCommit(state, commit, options);
 	if (verdict === "blocked") return await blockHealth(state, findings.join("; "), options);
 	if (verdict === "changes_requested") {
 		state = await save({ ...state, health: { ...health, status: "repairing", activity_started_at: timestamp(options), review_findings: findings, instruction_pending: true } }, options);
 		return await ensureHealthCoder(state, config, options, "revision");
 	}
-	if (exitCode !== 0) return await blockHealth(state, `PR-health repair command exited with code ${exitCode}; approval requires exit code 0`, options);
-	const commit = nonEmptyString(health.commit, "PR-health repair commit");
-	const fixed = stringArray(envelope.payload.fixed_thread_ids ?? [], "fixed review thread IDs");
+	if (gate.exit_code !== 0) return await blockHealth(state, `Required gate exited with code ${gate.exit_code}; approval requires exit code 0`, options);
+	const fixed = findings;
 	const triaged = new Set(health.thread_ids ?? []);
 	if (fixed.some((id) => !triaged.has(id))) throw new Error("PR-health repair may resolve only triaged review threads");
 	state = await save({
@@ -721,9 +728,10 @@ function healthBranch(state: RunState, attempt: number): string {
 	return `pi-auto-dag/${state.run_id}/pr-health/${attempt}`;
 }
 
-function nonNegativeInteger(value: unknown, label: string): number {
-	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) throw new Error(`${label} must be a non-negative integer`);
-	return value;
+function requiredHealthGate(health: PrHealthState, commit: string): RequiredGateEvidence {
+	const evidence = recordedGateEvidence(health, commit);
+	if (!evidence) throw new Error("PR-health required-gate evidence is missing");
+	return evidence;
 }
 
 async function blockHealth(state: RunState, reason: string, options: PrHealthOptions): Promise<RunState> {

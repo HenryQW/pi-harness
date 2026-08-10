@@ -13,8 +13,12 @@ Read-only semantic review of draft Delivery Graph in one same-tab Herdr pane. Re
 _Avoid_: Task review, implementation review, approval
 
 **Final Check**:
-Structural integrated acceptance and frozen test command that executes after every implementation Local Issue. It is not user-authored as fake Local Issue.
+Structural integrated acceptance and frozen test command that Auto DAG executes after every implementation Local Issue. It is not user-authored as fake Local Issue.
 _Avoid_: Final issue, release task
+
+**Required Gate**:
+Auto DAG execution of exact frozen `issue.testing` text against verified clean commit, producing persisted command, commit SHA, exit code, stdout, and stderr evidence before reviewer dispatch. Reviewer may run extra checks but submits only verdict and findings; extra checks cannot replace gate.
+_Avoid_: Reviewer test, echoed command, suggested command
 
 **Local Issue**:
 Immutable work definition identified by a stable string within a Delivery Graph.

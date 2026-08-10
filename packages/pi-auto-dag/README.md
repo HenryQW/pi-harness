@@ -2,7 +2,7 @@
 
 Pi extension for planning and running a Delivery Graph with Pi and Herdr.
 
-`/dag-plan` turns current conversation and repository context into an independently reviewed, user-approved graph. Auto DAG then runs dependent tasks in parallel, reviews every commit, integrates approved work, runs a final check, and opens one PR.
+`/dag-plan` turns current conversation and repository context into an independently reviewed, user-approved graph. Auto DAG then runs dependent tasks in parallel, executes each frozen test gate, gives commit-bound evidence to reviewers, integrates approved work, runs a final check, and opens one PR.
 
 ## Key terms
 
@@ -31,7 +31,7 @@ Worker profiles remain reusable Pi profiles and must not load Auto DAG. Auto DAG
 
 - Implementers request review or report blockers.
 - Planning reviewers record `PASS` for exact current graph hash.
-- Run reviewers submit review, health, or blocker events allowed by current phase.
+- Run reviewers inspect code and system-owned gate evidence, then submit verdicts, findings, health, or blocker events allowed by current phase.
 
 Herdr only hosts processes. Auto DAG passes resolved environment and Pi arguments when creating each process.
 
@@ -142,14 +142,14 @@ flowchart TD
     A --> B["Start and validate"]
     B --> C["Freeze ready wave at current HEAD"]
     C --> D["Run implementers in child worktrees"]
-    D --> E["Review each exact commit and run its test"]
+    D --> E["Auto DAG runs exact test; reviewer inspects commit and evidence"]
     E -->|changes requested| D
     E -->|blocked| X["Resolve task or abort run"]
     X --> D
     E -->|wave approved| F["Cherry-pick commits in ID order"]
     F --> G{"More implementation tasks?"}
     G -->|yes| C
-    G -->|no| H["Run final check on integration HEAD"]
+    G -->|no| H["Auto DAG runs final gate; reviewer inspects HEAD and evidence"]
     H -->|failed| I["Repair owning implementation task"]
     I --> H
     H -->|passed| J["Push branch and open one PR"]
@@ -189,10 +189,11 @@ For each task:
 1. Create a child worktree at `.<repo>-auto-dag/<run-id>/<issue-id>`.
 2. Start one implementer.
 3. Require one commit over the wave base.
-4. Start a task-owned reviewer.
-5. Run the task's exact `testing` command.
+4. Verify that commit and clean worktree, then execute frozen `testing` text unchanged through `sh -c`.
+5. Save command, verified commit SHA, exit code, stdout, and stderr.
+6. Start task-owned reviewer with that evidence.
 
-Approval requires exit code `0`. Requested changes return to the same implementer for a new commit SHA.
+Reviewer submits only verdict and findings. Reviewer may run extra diagnostics or broader tests, but those cannot replace required frozen gate. Approval requires system-owned exit code `0`. Requested changes return to same implementer for new commit SHA, which gets fresh gate evidence. Auto DAG never normalizes shell text or asks reviewer to echo it for comparison.
 
 ### 4. Integrate
 
@@ -209,12 +210,12 @@ A cherry-pick conflict returns that task to its existing workers. They produce o
 
 ### 5. Final check and PR
 
-After all implementation tasks finish, a temporary read-only reviewer runs `final_check.testing` on the integration `HEAD`.
+After all implementation tasks finish, Auto DAG executes exact frozen `final_check.testing` text on clean integration `HEAD`, captures commit-bound evidence, then starts temporary read-only reviewer.
 
-- Pass: push the integration branch and open one PR.
+- Pass: reviewer approves and system-owned gate exit code is `0`; push integration branch and open one PR.
 - Fail: block before push or PR creation.
 
-To repair a failed final check, call `auto_dag_resolve` with the completed implementation task that owns the bug. Auto DAG creates a fresh repair worktree, reviews its commit, cherry-picks it, and reruns the final check.
+To repair failed final check, call `auto_dag_resolve` with completed implementation task that owns bug. Auto DAG creates fresh repair worktree, executes same frozen gate against repair commit before review, cherry-picks approved repair, then executes final gate again on new integration `HEAD`. Broken frozen command needs user resolution or replacement Delivery Graph; reviewer cannot substitute another command.
 
 ## Lifecycle tools
 
@@ -263,10 +264,10 @@ Auto DAG:
 2. Uses one read-only reviewer to inspect unresolved threads and failing checks.
 3. Stops if nothing needs work.
 4. Otherwise creates one repair worktree and starts configured repair profile.
-5. Uses the same reviewer to approve the repair.
+5. Executes frozen final-check gate against exact repair commit and gives evidence to same reviewer.
 6. Pushes once to the same PR and resolves only fixed, triaged threads.
 
-It never resets or switches branches. A changed remote PR head blocks an active repair.
+For approved PR-health repair, reviewer `findings` contain only fixed triaged thread IDs. It never resets or switches branches. Changed remote PR head blocks active repair.
 
 Run health again for later feedback.
 
