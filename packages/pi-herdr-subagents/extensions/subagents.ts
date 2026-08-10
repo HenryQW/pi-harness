@@ -286,6 +286,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					|| tab.focused !== false || pane.focused !== false || tab.pane_count !== 1 || pane.cwd !== ctx.cwd
 				) throw new Error("Herdr Worker tab identity is invalid.");
 				await startWorker(worker.workerName, tabId, paneId, where, ctx, signal);
+				if (signal?.aborted) throw new Error("delegate_task was aborted before task submission.");
 				const promptArgs = ["agent", "prompt", worker.workerName, task];
 				promptOutcomeUnknown = true;
 				const response = await pi.exec("herdr", promptArgs, { cwd: ctx.cwd, signal });

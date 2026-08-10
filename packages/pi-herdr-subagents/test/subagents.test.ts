@@ -49,6 +49,7 @@ function mainHarness(options: {
 	trusted?: boolean;
 	malformedCreatedIdentity?: boolean;
 	tabCreateFailureAfterCreation?: boolean;
+	abortAfterStart?: AbortController;
 	mainName?: string | null;
 } = {}) {
 	const handlers = new Map<string, Handler>();
@@ -80,8 +81,9 @@ function mainHarness(options: {
 		on(event: string, handler: Handler) { handlers.set(event, handler); },
 		registerTool(tool: Tool & { name: string }) { tools.set(tool.name, tool); },
 		registerCommand(name: string, command: Command) { commands.set(name, command); },
-		exec: async (_command: string, args: string[]) => {
+		exec: async (_command: string, args: string[], execOptions?: { signal?: AbortSignal }) => {
 			calls.push(args);
+			if (execOptions?.signal?.aborted) return { stdout: "", stderr: "", code: 0, killed: true };
 			if (args.some((value) => value.includes("\0"))) throw new TypeError("spawn arguments cannot contain NUL bytes");
 			if (args[0] === "tab" && args[1] === "list") {
 				return success(JSON.stringify({ result: { type: "tab_list", tabs: tabPresent && (options.tabs?.() ?? true) ? [{ tab_id: tabId, workspace_id: "workspace-1", label: tabLabel }] : [] } }));
@@ -101,6 +103,7 @@ function mainHarness(options: {
 			}
 			if (args[0] === "agent" && args[1] === "start") {
 				workerName = args[2];
+				options.abortAfterStart?.abort();
 				return success(JSON.stringify({ result: { type: "agent_started", agent: { name: workerName, pane_id: paneId, tab_id: tabId, workspace_id: "workspace-1", interactive_ready: true } } }));
 			}
 			if (args[0] === "agent" && args[1] === "prompt") {
@@ -400,6 +403,23 @@ test("Worker Limit command persists immediately and pre-submission launch rolls 
 		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentWorkers: 2 });
 		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "fails before submit" }, undefined, undefined, app.ctx), /agent prompt failed/);
 		assert.deepEqual(app.closed, ["tab-1"]);
+		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
+		await assert.rejects(readFile(path));
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("pre-aborted task submission rolls back Worker and Result", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const controller = new AbortController();
+		const app = mainHarness({ abortAfterStart: controller });
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("call", { task: "cancel before prompt" }, controller.signal, undefined, app.ctx),
+			/aborted before task submission/,
+		);
+		assert.deepEqual(app.closed, ["tab-1"]);
+		assert.equal(app.calls.some((args) => args[0] === "agent" && args[1] === "prompt"), false);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
 		await assert.rejects(readFile(path));
 	});
