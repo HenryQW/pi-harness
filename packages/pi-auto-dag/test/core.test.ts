@@ -134,17 +134,18 @@ test("required gate output overflow becomes exact failed evidence", async (t) =>
 	assert.equal(createHash("sha256").update(full).digest("hex"), evidence.output.stdout.full_output!.sha256);
 });
 
-test("required gate cleanup removes new ignored files but preserves existing dependencies", async (t) => {
+test("required gate cleanup restores existing ignored files and removes new ones", async (t) => {
 	const project = await makeProject(t, ".context/\n.cache/\n");
 	const cache = join(project.root, ".cache");
 	await mkdir(cache);
 	await writeFile(join(cache, "dependency"), "keep\n");
+	await writeFile(join(cache, "deleted"), "restore\n");
 	const commit = await git(project.root, "rev-parse", "HEAD");
 	const processPath = join(project.root, ".context", "required-gate-process.json");
 
 	const execution = await runRequiredGate(
 		runCommand,
-		"printf 'generated\\n' > .cache/gate-output",
+		"printf 'changed\\n' > .cache/dependency && rm .cache/deleted && printf 'generated\\n' > .cache/gate-output",
 		commit,
 		project.root,
 		10_000,
@@ -153,7 +154,49 @@ test("required gate cleanup removes new ignored files but preserves existing dep
 
 	assert.equal(execution.exit_code, 0);
 	assert.equal(await readFile(join(cache, "dependency"), "utf8"), "keep\n");
+	assert.equal(await readFile(join(cache, "deleted"), "utf8"), "restore\n");
 	await assert.rejects(access(join(cache, "gate-output")), /ENOENT/);
+});
+
+test("required gate records recoverable intent before command execution", async (t) => {
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const check = `const fs=require("node:fs");const r=JSON.parse(fs.readFileSync(${JSON.stringify(processPath)},"utf8"));process.exit(r.version===2&&r.phase==="ready"&&r.pid&&r.identity&&r.launch_id&&r.commit===${JSON.stringify(commit)}?0:1)`;
+
+	const execution = await runRequiredGate(
+		runCommand,
+		`${JSON.stringify(process.execPath)} -e ${JSON.stringify(check)}`,
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+
+	assert.equal(execution.exit_code, 0);
+});
+
+test("required gate restores original branch without moving gate-selected branch", async (t) => {
+	const project = await makeProject(t);
+	await git(project.root, "branch", "gate-other");
+	await git(project.root, "commit", "--allow-empty", "-m", "reviewed");
+	const otherCommit = await git(project.root, "rev-parse", "gate-other");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+
+	const execution = await runRequiredGate(
+		runCommand,
+		"git switch gate-other",
+		commit,
+		project.root,
+		10_000,
+		processPath,
+	);
+
+	assert.equal(execution.exit_code, 0);
+	assert.equal(await git(project.root, "branch", "--show-current"), "dag");
+	assert.equal(await git(project.root, "rev-parse", "HEAD"), commit);
+	assert.equal(await git(project.root, "rev-parse", "gate-other"), otherCommit);
 });
 
 test("interrupted gate reconciliation ignores reused process identities", async (t) => {
@@ -170,10 +213,13 @@ test("interrupted gate reconciliation ignores reused process identities", async 
 	child.once("exit", () => { exited = true; });
 	t.after(() => { if (!exited) child.kill("SIGKILL"); });
 	await writeFile(processPath, `${JSON.stringify({
-		version: 1,
+		version: 2,
+		phase: "ready",
+		launch_id: "reused-process",
 		pid: child.pid,
 		grouped: false,
 		identity: "different-process",
+		release: `${processPath}.release`,
 		cwd: project.root,
 		command: "test gate",
 		commit,
