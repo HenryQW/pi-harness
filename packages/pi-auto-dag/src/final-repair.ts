@@ -1,5 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
+import { revalidateResolvedProfile } from "./config.ts";
 import { ensureRecordedGate, failFinalGate, requiredTaskGate } from "./final-gate.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
@@ -248,7 +249,7 @@ async function ensureFinalRepairCoder(
 ): Promise<RunState> {
 	await ensureRepairWorktree(state, issue, options);
 	let current = task(state, issue.id);
-	const launch = workerLaunch(state, owner, config, "implementer");
+	let launch = await workerLaunch(state, owner, config, "implementer");
 	const label = nonEmptyString(current.implementer_provisioning_id, "final repair implementer provisioning identity");
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: current.tab_id,
@@ -262,6 +263,7 @@ async function ensureFinalRepairCoder(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.implementer_agent, "final repair implementer agent");
+	launch = await workerLaunch(state, owner, config, "implementer");
 	const started = await startWorkerAgent(state, agent, nonEmptyString(current.implementer_pane, "final repair implementer pane"), launch, options, {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
@@ -279,6 +281,7 @@ async function ensureFinalRepairCoder(
 		: promptMode === "revision"
 			? "Address the reviewer findings by amending the sole repair commit, then request review again."
 			: "Implement the named final-gate repair in this fresh child worktree, commit exactly one change over the repair base, then request review.";
+	await revalidateResolvedProfile(config, config.repair_profile);
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_final_repair",
 		run_id: state.run_id,
@@ -318,11 +321,32 @@ async function ensureFinalRepairReviewer(
 	await verifyRepairCommit(state, issue, commit, options);
 	state = await ensureRecordedGate(state, issue, commit, nonEmptyString(current.worktree, "final repair worktree"), config.required_gate_timeout_ms, options);
 	current = task(state, issue.id);
-	const launch = workerLaunch(state, owner, config, "reviewer");
-	if (current.reviewer_pane) {
-		const tabId = nonEmptyString(current.tab_id, "final repair tab id");
-		if (!(await workerTabExists(state, tabId, options))) throw new Error(`Final repair tab is missing: ${tabId}`);
+	const gate = requiredTaskGate(current, commit, "Final-gate repair");
+	if (gate.exit_code !== 0) {
+		return await save({
+			...state,
+			phase: "blocked",
+			block_reason: `Final-gate repair required gate exited with code ${gate.exit_code}; reviewer was not launched`,
+		}, options);
 	}
+	if (!current.tab_id || !current.implementer_pane || (current.reviewer_pane && !(await workerTabExists(state, current.tab_id, options)))) {
+		const label = nonEmptyString(current.implementer_provisioning_id, "final repair implementer provisioning identity");
+		const resource = await reconcileWorkerTab(state, {
+			tab_id: undefined,
+			pane_id: undefined,
+			cwd: nonEmptyString(current.worktree, "final repair worktree"),
+			launch: await workerLaunch(state, owner, config, "implementer"),
+			label,
+		}, options);
+		state = await save(replaceTask(state, issue.id, {
+			...current,
+			tab_id: resource.tab_id,
+			implementer_pane: resource.pane_id,
+			reviewer_pane: undefined,
+		}), options);
+		current = task(state, issue.id);
+	}
+	let launch = await workerLaunch(state, owner, config, "reviewer");
 	if (!current.reviewer_pane) {
 		const tab = nonEmptyString(current.tab_id, "final repair tab id");
 		const root = nonEmptyString(current.implementer_pane, "final repair implementer pane");
@@ -332,6 +356,7 @@ async function ensureFinalRepairReviewer(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, "final repair reviewer agent");
+	launch = await workerLaunch(state, owner, config, "reviewer");
 	const started = await startWorkerAgent(state, agent, nonEmptyString(current.reviewer_pane, "final repair reviewer pane"), launch, options, {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
@@ -350,6 +375,7 @@ async function ensureFinalRepairReviewer(
 		lifecycleReviewId(state, issue, current, "final_repair"),
 		options.uuid,
 	);
+	await revalidateResolvedProfile(config, config.reviewer_profile);
 	await promptWorkerAgent(state, agent, reviewPrompt({
 		kind: "final_repair",
 		graph: state.graph,
@@ -571,15 +597,14 @@ function finalCheck(state: RunState): LocalIssue {
 	return executionIssues(state.graph).at(-1)!;
 }
 
-function workerLaunch(
+async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
-): WorkerLaunch {
+): Promise<WorkerLaunch> {
 	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = config.profiles[profileId];
-	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
+	const profile = await revalidateResolvedProfile(config, profileId);
 	return createWorkerLaunch({
 		role,
 		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),

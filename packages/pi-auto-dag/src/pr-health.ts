@@ -1,5 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { revalidateResolvedProfile } from "./config.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
@@ -169,8 +170,10 @@ async function ensureHealthReviewer(
 			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
 			health = requiredHealth(state);
 		}
+		const gate = requiredHealthGate(health, nonEmptyString(health.commit, "PR-health repair commit"));
+		if (gate.exit_code !== 0) return await blockHealth(state, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options);
 	}
-	const launch = workerLaunch(state, issue, config, "reviewer");
+	let launch = await workerLaunch(state, issue, config, "reviewer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:reviewer`;
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: health.reviewer_tab_id,
@@ -184,6 +187,7 @@ async function ensureHealthReviewer(
 		state = await save({ ...state, health }, options);
 	}
 	const agent = nonEmptyString(health.reviewer_agent, "PR-health reviewer agent");
+	launch = await workerLaunch(state, issue, config, "reviewer");
 	const started = await startWorkerAgent(state, agent, nonEmptyString(health.reviewer_pane, "PR-health reviewer pane"), launch, options, {
 		beforeStart: async () => {
 			const latest = requiredHealth(state);
@@ -231,6 +235,7 @@ async function ensureHealthReviewer(
 			options.uuid,
 		);
 	}
+	await revalidateResolvedProfile(config, config.reviewer_profile);
 	await promptWorkerAgent(state, agent, prompt, options);
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);
 	return state;
@@ -329,7 +334,8 @@ async function ensureHealthCoder(
 	let health = requiredHealth(state);
 	await ensureHealthWorktree(state, options);
 	const issue = finalCheck(state);
-	const launch = workerLaunch(state, { ...issue, profile: config.repair_profile, role: "implementation" }, config, "implementer");
+	const repairIssue = { ...issue, profile: config.repair_profile, role: "implementation" } as const;
+	let launch = await workerLaunch(state, repairIssue, config, "implementer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:coder`;
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: health.coder_tab_id,
@@ -343,6 +349,7 @@ async function ensureHealthCoder(
 		state = await save({ ...state, health }, options);
 	}
 	const agent = nonEmptyString(health.coder_agent, "PR-health coder agent");
+	launch = await workerLaunch(state, repairIssue, config, "implementer");
 	const started = await startWorkerAgent(state, agent, nonEmptyString(health.coder_pane, "PR-health coder pane"), launch, options, {
 		beforeStart: async () => {
 			const latest = requiredHealth(state);
@@ -358,6 +365,7 @@ async function ensureHealthCoder(
 		: promptMode === "resume"
 			? "Resend your latest worker event through the worker tool."
 			: "Repair the actionable PR feedback in this fresh child worktree. Commit exactly one change over the current PR head, then request review.";
+	await revalidateResolvedProfile(config, config.repair_profile);
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_pr_health_repair",
 		run_id: state.run_id,
@@ -710,15 +718,14 @@ function finalCheck(state: RunState): LocalIssue {
 	return executionIssues(state.graph).at(-1)!;
 }
 
-function workerLaunch(
+async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
-): WorkerLaunch {
+): Promise<WorkerLaunch> {
 	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = config.profiles[profileId];
-	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
+	const profile = await revalidateResolvedProfile(config, profileId);
 	return createWorkerLaunch({
 		role,
 		events: WORKER_ROLE_EVENTS[role],

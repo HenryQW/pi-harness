@@ -74,6 +74,7 @@ export function createPlanningReviewLaunch(profile: ResolvedProfile, mainWorktre
 function profileLaunchArgs(profile: ResolvedProfile, addedTools: string[]): string[] {
 	return [
 		"--offline",
+		"--no-session",
 		"--no-skills",
 		...profile.skills.flatMap((path) => ["--skill", nonEmptyString(path, `profile ${profile.id} skill path`)]),
 		"--extension",

@@ -128,6 +128,14 @@ export async function resolveProjectConfig(
 	return { ...config, profiles };
 }
 
+export async function revalidateResolvedProfile(config: ProjectConfig, id: string): Promise<ResolvedProfile> {
+	const profile = config.profiles[id];
+	if (!profile) throw new Error(`Resolved Pi profile is missing: ${id}`);
+	const validated = parseResolvedProfile(profile, id);
+	await assertProfileResources(validated);
+	return validated;
+}
+
 export function parseResolvedProfile(value: unknown, expectedId: string): ResolvedProfile {
 	const label = `resolved Pi profile ${expectedId}`;
 	const input = object(value, label);

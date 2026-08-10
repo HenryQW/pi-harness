@@ -379,22 +379,74 @@ test("review submissions contain only reviewer-owned verdict data", () => {
 	}
 });
 
-test("Auto DAG persists required-gate evidence and rejects nonzero approvals", async (t) => {
+test("nonzero required gate blocks before review and resolution reruns the same commit", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
-	const herdr = fakeHerdr({ gate: () => ({ code: 1, stdout: "failed output\n", stderr: "failure details\n" }) });
+	let failGate = true;
+	const herdr = fakeHerdr({ gate: () => failGate
+		? { code: 1, stdout: "failed output\n", stderr: "failure details\n" }
+		: { code: 0, stdout: "passed output\n", stderr: "" } });
 	const lifecycle = makeLifecycle(herdr.runner);
 	let state = await lifecycle.start(project.root, "main-pane");
 	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
 
+	assert.equal(state.phase, "blocked");
+	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.review_command, "npm test -- alpha");
 	assert.equal(state.tasks.alpha.review_commit, commit);
 	assert.equal(state.tasks.alpha.review_exit_code, 1);
 	assert.deepEqual(state.tasks.alpha.review_stdout, { excerpt: "failed output\n", bytes: 14, truncated: false });
 	assert.deepEqual(state.tasks.alpha.review_stderr, { excerpt: "failure details\n", bytes: 16, truncated: false });
-	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
-	assert.equal(state.tasks.alpha.status, "blocked");
-	assert.match(String(state.tasks.alpha.block_reason), /approval requires exit code 0/);
+	assert.equal(reviewPrompts(herdr).length, 0);
+
+	failGate = false;
+	state = await lifecycle.resolve(project.root, "alpha", "Required dependency is available; rerun gate.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(state.tasks.alpha.commit, commit);
+	assert.equal(state.tasks.alpha.review_commit, commit);
+	assert.equal(state.tasks.alpha.review_exit_code, 0);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, 2);
+	assert.equal(reviewPrompts(herdr).length, 1);
+});
+
+test("reviewer-profile deletion mid-review blocks, then resolution launches a fresh reviewer from durable evidence", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	let deleteReviewerProfile = false;
+	const runner: CommandRunner = async (command, args, options) => {
+		const result = await herdr.runner(command, args, options);
+		if (deleteReviewerProfile && command === "herdr" && args.slice(0, 2).join(" ") === "agent get" && args[2].endsWith("-r")) {
+			deleteReviewerProfile = false;
+			await rm(join(project.root, "profiles", "reviewer"), { recursive: true, force: true });
+		}
+		return result;
+	};
+	const lifecycle = makeLifecycle(runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(reviewPrompts(herdr).length, 1);
+
+	deleteReviewerProfile = true;
+	await assert.rejects(lifecycle.resume(project.root), /Profile reviewer directory is missing/);
+	state = (await lifecycle.status(project.root))!;
+	assert.equal(state.phase, "blocked");
+	assert.match(String(state.block_reason), /Profile reviewer directory is missing/);
+	const stuckTab = state.tasks.alpha.tab_id;
+	const gateRuns = herdr.calls.filter((call) => call.command === "sh").length;
+	assert.equal(state.tasks.alpha.review_commit, commit);
+
+	await createTestProfiles(project.root);
+	state = await lifecycle.resolve(project.root, "alpha", "Reviewer profile restored; restart review.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.notEqual(state.tasks.alpha.tab_id, stuckTab);
+	assert.equal(herdr.tabs.has(stuckTab!), false);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, gateRuns);
+	assert.equal(state.tasks.alpha.review_commit, commit);
+	assert.equal(reviewPrompts(herdr).length, 2);
 });
 
 test("Auto DAG restores gate-created worktree changes before review", async (t) => {

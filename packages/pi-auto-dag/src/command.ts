@@ -302,13 +302,6 @@ export async function restoreCleanCommit(
 	}
 }
 
-/** Copy checkout-local ignored tools into a disposable gate worktree without sharing mutable files. */
-export async function copyIgnoredResources(runner: CommandRunner, source: string, target: string): Promise<void> {
-	for (const path of await ignoredWorktreeRoots(runner, source)) {
-		await copyResource(safeWorktreePath(source, path), safeWorktreePath(target, path));
-	}
-}
-
 async function writeGateProcess(path: string, record: GateProcessRecord): Promise<void> {
 	await writeJson(path, record);
 }

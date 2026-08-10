@@ -837,7 +837,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		main_pane: "main-pane",
 	});
 	assert.deepEqual(launch.args, [
-		"--offline", "--no-skills", "--skill", "/tmp/coder-skills", "--skill", "/Users/test/.pi/shared-skills/.agents/skills",
+		"--offline", "--no-session", "--no-skills", "--skill", "/tmp/coder-skills", "--skill", "/Users/test/.pi/shared-skills/.agents/skills",
 		"--extension", WORKER_EXTENSION_PATH, "--tools",
 		"read,bash,edit,write,web_search,auto_dag_request_review,auto_dag_block_task",
 	]);

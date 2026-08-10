@@ -130,7 +130,7 @@ Minimal example:
   ],
   "final_check": {
     "acceptance": ["Integrated verification passes."],
-    "testing": "npm test"
+    "testing": "npm ci && npm test && npm run typecheck"
   }
 }
 ```
@@ -215,8 +215,8 @@ A cherry-pick conflict returns that task to its existing workers. They produce o
 
 After all implementation tasks finish, Auto DAG executes exact frozen `final_check.testing` text on clean integration `HEAD`, captures commit-bound evidence, then starts temporary read-only reviewer.
 
-- Pass: copy checkout-local ignored tools into a disposable child worktree at integration `HEAD`, execute final gate without sharing mutable files, require reviewer approval and system-owned gate exit code `0`, then push integration branch and open one PR.
-- Fail: block before push or PR creation.
+- Pass: create a disposable child worktree at integration `HEAD`, execute frozen command that prepares its own checkout (for example, `npm ci && ...`), require reviewer approval and system-owned gate exit code `0`, then push integration branch and open one PR.
+- Fail: block before reviewer dispatch, push, or PR creation. Resolution clears failed gate evidence and reruns same commit.
 
 To repair failed final check, call `auto_dag_resolve` with completed implementation task that owns bug. Auto DAG creates fresh repair worktree, executes same frozen gate against repair commit before review, cherry-picks approved repair, then executes final gate again on new integration `HEAD`. Broken frozen command needs user resolution or replacement Delivery Graph; reviewer cannot substitute another command.
 
