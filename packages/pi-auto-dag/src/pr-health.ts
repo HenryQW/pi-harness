@@ -1,12 +1,12 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RequiredGateEvidence, RunState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
-import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
+import { recordGateExecution, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { writeRunState, type Uuid } from "./state.ts";
 import { findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
 import { createWorkerLaunch, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
@@ -155,7 +155,7 @@ async function ensureHealthReviewer(
 	if (health.status === "reviewing") {
 		const commit = nonEmptyString(health.commit, "PR-health repair commit");
 		await verifyHealthRepairCommit(state, commit, options);
-		let evidence = recordedGateEvidence(health, commit);
+		const evidence = recordedGateEvidence(health, commit);
 		if (!evidence) {
 			const execution = await runRequiredGate(
 				options.runner,
@@ -164,9 +164,9 @@ async function ensureHealthReviewer(
 				nonEmptyString(health.worktree, "PR-health repair worktree"),
 				config.required_gate_timeout_ms,
 				requiredGateProcessPath(state.main_worktree, state.run_id),
+				{ kind: "health", issue_id: issue.id },
 			);
-			evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
-			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
+			state = await recordGateExecution(state, { kind: "health", issue_id: issue.id }, execution, options.uuid);
 			health = requiredHealth(state);
 		}
 	}
