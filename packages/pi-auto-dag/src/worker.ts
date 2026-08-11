@@ -129,10 +129,21 @@ export async function sendWorkerEnvelope(
 	delivery: WorkerDeliveryOptions = {},
 ): Promise<WorkerEnvelope> {
 	if (!worker.events.includes(type)) throw new Error(`${worker.role} worker cannot send ${type}`);
-	const ticket = await (delivery.ticket ?? readWorkerActionTicket(worker));
+	let ticket = await (delivery.ticket ?? readWorkerActionTicket(worker));
 	if (ticket.role !== worker.role) throw new Error(`Action ticket role ${ticket.role} does not match ${worker.role} worker`);
-	const envelope = await buildWorkerEnvelope(worker, type, payload, ticket, runner, cwd);
-	const existing = await readWorkerReceipt(ticket.receipt_path);
+	let envelope = await buildWorkerEnvelope(worker, type, payload, ticket, runner, cwd);
+	let existing = await readWorkerReceipt(ticket.receipt_path);
+	if (existing?.status === "rejected") {
+		const replacement = await readWorkerActionTicket(worker);
+		if (sameAction(ticket, replacement)) {
+			if (replacement.event_id === ticket.event_id) existing = undefined;
+			else {
+				ticket = replacement;
+				envelope = await buildWorkerEnvelope(worker, type, payload, ticket, runner, cwd);
+				existing = await readWorkerReceipt(ticket.receipt_path);
+			}
+		}
+	}
 	if (existing) return requireReceipt(envelope, existing);
 
 	const attempts = delivery.deliveryAttempts ?? 3;
@@ -202,6 +213,13 @@ async function readWorkerActionTicket(worker: WorkerEnvironment): Promise<Action
 	const ticket = await readActionTicket(worker.action_ticket);
 	if (ticket.role !== worker.role) throw new Error(`Action ticket role ${ticket.role} does not match ${worker.role} worker`);
 	return ticket;
+}
+
+function sameAction(left: ActionTicket, right: ActionTicket): boolean {
+	return left.attempt === right.attempt
+		&& left.review_round === right.review_round
+		&& left.role === right.role
+		&& left.review_id === right.review_id;
 }
 
 function requireReceipt(envelope: WorkerEnvelope, receipt: NonNullable<Awaited<ReturnType<typeof readWorkerReceipt>>>): WorkerEnvelope {

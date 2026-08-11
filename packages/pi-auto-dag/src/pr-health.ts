@@ -6,7 +6,7 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RequiredGateEvidence, RunState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
-import { actionTicketPath, ensureActionTicket, eventReceiptPath, readWorkerReceipt, reviewId, writeWorkerReceipt } from "./review-ticket.ts";
+import { actionTicketPath, ensureActionTicket, eventReceiptPath, readWorkerReceipt, reviewId, rotateRejectedActionTicket, writeWorkerReceipt } from "./review-ticket.ts";
 import { recordGateExecution, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { hasAcceptedWorkerEvent, readRunState, recordAcceptedWorkerEvent, writeRunState, type Uuid } from "./state.ts";
 import { findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
@@ -31,7 +31,10 @@ export async function runPrHealth(
 		const existing = await readWorkerReceipt(receiptPath!);
 		if (existing) {
 			if (existing.event_id !== envelope.event_id) throw new Error("Worker receipt belongs to another event");
-			if (existing.status === "rejected") throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+			if (existing.status === "rejected") {
+				await rotateHealthActionTicket(state, envelope, options);
+				throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+			}
 			receiptAccepted = true;
 		}
 	}
@@ -75,15 +78,27 @@ export async function runPrHealth(
 			const persisted = await readRunState(state.main_worktree, state.run_id);
 			if (!persisted || !hasAcceptedWorkerEvent(persisted, envelope)) {
 				await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+				await rotateHealthActionTicket(state, envelope, options);
 			}
 			throw error;
 		}
+		state = await save(state, options);
 		await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
 		return state;
 	}
 	if (state.health?.status === "triaging" && state.health.actionable === false) return await completeHealthyTriage(state, options);
 	if (!state.health || state.health.status === "completed") return await startHealthTriage(state, config, options);
 	return await resumePendingHealthWork(state, config, options) ?? state;
+}
+
+async function rotateHealthActionTicket(state: RunState, envelope: WorkerEnvelope, options: PrHealthOptions): Promise<void> {
+	await rotateRejectedActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "pr_health", envelope.role),
+		envelope.event_id,
+		state.main_worktree,
+		state.run_id,
+		options.uuid,
+	);
 }
 
 async function resumePendingHealthWork(state: RunState, config: ProjectConfig, options: PrHealthOptions): Promise<RunState | undefined> {

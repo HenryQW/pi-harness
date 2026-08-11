@@ -13,7 +13,7 @@ import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
-import { eventReceiptPath, readWorkerReceipt, reviewId } from "../src/review-ticket.ts";
+import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, writeWorkerReceipt } from "../src/review-ticket.ts";
 import { readActiveRunId, recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -378,6 +378,39 @@ test("PR health accepted triage resumes repair before recovering receipt", async
 	assert.ok(state.health?.coder_pane);
 	assert.equal(herdr.count("agent prompt"), prompts + 1);
 	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+});
+
+test("PR health recovers ticket rotation after a durable rejection", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	const ticketPath = actionTicketPath(project.root, RUN_ID, "final-check", "pr_health", "reviewer");
+	const current = await readActionTicket(ticketPath);
+	const submission = {
+		...JSON.parse(healthEvent(state, {
+			summary: "No unresolved review threads or failing checks.",
+			actionable: false,
+			thread_ids: [],
+			checks: [],
+		})),
+		event_id: current.event_id,
+		receipt_path: current.receipt_path,
+	};
+	await writeWorkerReceipt(current.receipt_path, { event_id: current.event_id, status: "rejected", reason: "interrupted health rejection" });
+
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(submission)), /interrupted health rejection/);
+	const replacement = await readActionTicket(ticketPath);
+	assert.notEqual(replacement.event_id, current.event_id);
+	state = await lifecycle.health(project.root, RUN_ID, JSON.stringify({
+		...submission,
+		event_id: replacement.event_id,
+		receipt_path: replacement.receipt_path,
+	}));
+
+	assert.equal(state.health?.status, "completed");
+	assert.equal((await readWorkerReceipt(replacement.receipt_path))?.status, "accepted");
 });
 
 test("blocked PR health recovers accepted receipts and rejects fresh events", async (t) => {
