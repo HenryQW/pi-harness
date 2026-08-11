@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -89,7 +90,7 @@ test("suppresses only empty abort caused by pending extension compaction", async
 	}
 });
 
-test("configures threshold and compaction model", async () => {
+test("configures threshold, model, and thinking level from menus", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-"));
 	const configFile = join(tempRoot, "config", "pi-auto-compact.json");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -101,6 +102,7 @@ test("configures threshold and compaction model", async () => {
 		await writeFile(configFile, JSON.stringify({
 			autoCompactThreshold: 65,
 			compactionModel: "provider/model",
+			compactionThinkingLevel: "low",
 		}));
 
 		const commands = new Map<string, Command>();
@@ -110,8 +112,15 @@ test("configures threshold and compaction model", async () => {
 		let autoInstructions: string | undefined;
 		const notices: string[] = [];
 		const modelLookups: unknown[][] = [];
-		const modelPrompts: Array<{ title: string; options: string[] }> = [];
-		const newModel = { provider: "provider", id: "new-model", input: ["text"] };
+		const prompts: Array<{ title: string; options: string[] }> = [];
+		const selections: string[] = [];
+		const newModel = {
+			provider: "provider",
+			id: "new-model",
+			input: ["text"],
+			reasoning: true,
+			thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+		};
 		const ctx = {
 			cwd: tempRoot,
 			isProjectTrusted: () => true,
@@ -133,8 +142,8 @@ test("configures threshold and compaction model", async () => {
 			ui: {
 				input: async () => input,
 				select: async (title: string, options: string[]) => {
-					modelPrompts.push({ title, options });
-					return "provider/new-model";
+					prompts.push({ title, options });
+					return selections.shift();
 				},
 				notify: (message: string) => notices.push(message),
 			},
@@ -147,40 +156,43 @@ test("configures threshold and compaction model", async () => {
 		handlers.get("turn_start")?.({} as never, ctx);
 		assert.equal(compactions, 0);
 
+		selections.push("Threshold · 65%");
 		await commands.get("auto-compact")?.("", ctx);
 		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
 			autoCompactThreshold: 40,
 			compactionModel: "provider/model",
+			compactionThinkingLevel: "low",
 		});
 		handlers.get("turn_start")?.({} as never, ctx);
 		assert.equal(compactions, 1);
-		assert.equal(notices.at(-1), "Auto-compact threshold set to 40%.");
-
-		input = "45";
-		await commands.get("auto-compact")?.("threshold", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
-			autoCompactThreshold: 45,
-			compactionModel: "provider/model",
-		});
 
 		input = "20";
-		await commands.get("auto-compact")?.("threshold", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
-			autoCompactThreshold: 45,
-			compactionModel: "provider/model",
-		});
+		selections.push("Threshold · 40%");
+		await commands.get("auto-compact")?.("", ctx);
 		assert.equal(notices.at(-1), "Auto-compact threshold below 25% is not meaningful.");
 
-		await commands.get("auto-compact")?.("model", ctx);
-		assert.deepEqual(modelPrompts, [{
-			title: "Auto-compact model · current: provider/model",
-			options: ["provider/new-model"],
-		}]);
+		selections.push("Model · provider/model (low)", "provider/new-model", "max");
+		await commands.get("auto-compact")?.("", ctx);
+		assert.deepEqual(prompts.slice(-3), [
+			{
+				title: "Configure auto-compact",
+				options: ["Model · provider/model (low)", "Threshold · 40%"],
+			},
+			{
+				title: "Auto-compact model",
+				options: ["Current session model", "provider/new-model"],
+			},
+			{
+				title: "Thinking level · provider/new-model",
+				options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+			},
+		]);
 		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
-			autoCompactThreshold: 45,
+			autoCompactThreshold: 40,
 			compactionModel: "provider/new-model",
+			compactionThinkingLevel: "max",
 		});
-		assert.equal(notices.at(-1), "Auto-compact model set to provider/new-model.");
+		assert.equal(notices.at(-1), "Auto-compact model set to provider/new-model (max).");
 
 		const compactionEvent = {
 			type: "session_before_compact",
@@ -191,15 +203,14 @@ test("configures threshold and compaction model", async () => {
 		await handlers.get("session_before_compact")?.(compactionEvent as never, ctx);
 		assert.deepEqual(modelLookups, [["provider", "new-model"]]);
 
-		await commands.get("auto-compact")?.("model current", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 45 });
-		assert.equal(notices.at(-1), "Auto-compact model set to current session model.");
+		selections.push("Model · provider/new-model (max)", "Current session model");
+		await commands.get("auto-compact")?.("", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 40 });
 		await handlers.get("session_before_compact")?.(compactionEvent as never, ctx);
 		assert.deepEqual(modelLookups, [["provider", "new-model"]]);
 
-		await commands.get("auto-compact")?.("unknown", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 45 });
-		assert.equal(notices.at(-1), "Usage: /auto-compact [threshold|model|model current]");
+		await commands.get("auto-compact")?.("model", ctx);
+		assert.equal(notices.at(-1), "Usage: /auto-compact");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -290,6 +301,101 @@ test("routes only auto compaction, carries file operations, and falls back on au
 			"Couldn't authenticate configured compaction model; using current session model.",
 		]);
 	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
+test("passes configured thinking level to dedicated compaction model", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-thinking-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+	let requestBody = "";
+	const server = createServer(async (request, response) => {
+		for await (const chunk of request) requestBody += chunk;
+		response.writeHead(200, { "content-type": "text/event-stream" });
+		response.write(`data: ${JSON.stringify({
+			id: "response",
+			model: "model",
+			choices: [{ delta: { content: "summary" }, finish_reason: null }],
+		})}\n\n`);
+		response.write(`data: ${JSON.stringify({
+			id: "response",
+			model: "model",
+			choices: [{ delta: {}, finish_reason: "stop" }],
+			usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+		})}\n\n`);
+		response.end("data: [DONE]\n\n");
+	});
+
+	try {
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		assert.ok(address && typeof address !== "string");
+		await mkdir(join(tempRoot, "config"), { recursive: true });
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		await writeFile(join(tempRoot, "config", "pi-auto-compact.json"), JSON.stringify({
+			autoCompactThreshold: 50,
+			compactionModel: "provider/model",
+			compactionThinkingLevel: "max",
+		}));
+
+		const handlers = loadExtension();
+		let autoInstructions: string | undefined;
+		const model = {
+			id: "model",
+			name: "Model",
+			api: "openai-completions",
+			provider: "provider",
+			baseUrl: `http://127.0.0.1:${address.port}/v1`,
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 10_000,
+			maxTokens: 1_000,
+			thinkingLevelMap: { max: "high" },
+			compat: { supportsFinishReason: true, thinkingFormat: "openai" },
+		};
+		const ctx = {
+			cwd: tempRoot,
+			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+			compact: (options: { customInstructions?: string }) => {
+				autoInstructions = options.customInstructions;
+			},
+			modelRegistry: {
+				find: () => model,
+				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+			},
+			ui: { notify() {} },
+		} as unknown as ExtensionContext;
+
+		handlers.get("session_start")?.(
+			{ type: "session_start", reason: "startup" } as never,
+			ctx,
+		);
+		handlers.get("turn_start")?.({} as never, ctx);
+		const result = await handlers.get("session_before_compact")?.({
+			type: "session_before_compact",
+			customInstructions: autoInstructions,
+			signal: new AbortController().signal,
+			preparation: {
+				firstKeptEntryId: "kept",
+				messagesToSummarize: [{ role: "user", content: "hello", timestamp: Date.now() }],
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+				tokensBefore: 10,
+				fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+				settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
+			},
+			branchEntries: [],
+		} as never, ctx) as { compaction?: { summary?: string } } | undefined;
+
+		assert.equal(result?.compaction?.summary, "summary");
+		assert.equal(JSON.parse(requestBody).reasoning_effort, "high");
+	} finally {
+		server.close();
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(tempRoot, { recursive: true, force: true });

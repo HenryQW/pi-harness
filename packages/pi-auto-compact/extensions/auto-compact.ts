@@ -12,6 +12,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
+type ThinkingLevel = NonNullable<Parameters<typeof compact>[6]>;
+type TextModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
 
 /**
  * Proactive compaction runs at four points:
@@ -25,17 +27,31 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
  */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
 type Config = {
 	autoCompactThreshold: number;
 	compactionModel?: string;
+	compactionThinkingLevel?: ThinkingLevel;
 };
 
 type ModelReference = { provider: string; modelId: string };
 
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
+}
+
+function isValidThinkingLevel(value: unknown): value is ThinkingLevel {
+	return typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
+}
+
+function supportedThinkingLevels(model: TextModel): ThinkingLevel[] {
+	if (!model.reasoning) return ["off"];
+	return THINKING_LEVELS.filter((level) => {
+		const mapped = model.thinkingLevelMap?.[level];
+		return mapped !== null && ((level !== "xhigh" && level !== "max") || mapped !== undefined);
+	});
 }
 
 function parseModelReference(value: unknown): ModelReference | undefined {
@@ -69,9 +85,17 @@ function readConfig(): Config {
 	if (config.compactionModel !== undefined && !parseModelReference(config.compactionModel)) {
 		throw new Error("compactionModel must be a provider/model string.");
 	}
+	const thinkingLevel = config.compactionThinkingLevel;
+	if (thinkingLevel !== undefined && !isValidThinkingLevel(thinkingLevel)) {
+		throw new Error("compactionThinkingLevel is invalid.");
+	}
+	if (thinkingLevel !== undefined && config.compactionModel === undefined) {
+		throw new Error("compactionThinkingLevel requires compactionModel.");
+	}
 	return {
 		autoCompactThreshold: threshold,
 		compactionModel: typeof config.compactionModel === "string" ? config.compactionModel.trim() : undefined,
+		compactionThinkingLevel: thinkingLevel,
 	};
 }
 
@@ -153,6 +177,7 @@ export default function (pi: ExtensionAPI) {
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	let compactionModel: string | undefined;
+	let compactionThinkingLevel: ThinkingLevel | undefined;
 	// Prevent lifecycle hooks from starting duplicate summaries.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
@@ -245,9 +270,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("auto-compact", {
 		description: "configure automatic compaction",
 		handler: async (args, ctx) => {
-			const command = args.trim();
-			if (command && !["threshold", "model", "model current"].includes(command)) {
-				ctx.ui.notify("Usage: /auto-compact [threshold|model|model current]", "error");
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /auto-compact", "error");
 				return;
 			}
 
@@ -268,39 +292,50 @@ export default function (pi: ExtensionAPI) {
 				}
 			};
 
-			if (command === "model current") {
-				if (!save({ ...config, compactionModel: undefined })) return;
-				compactionModel = undefined;
-				ctx.ui.notify("Auto-compact model set to current session model.", "info");
-				return;
-			}
+			const thresholdOption = `Threshold · ${config.autoCompactThreshold}%`;
+			const modelOption = `Model · ${config.compactionModel
+				? `${config.compactionModel} (${config.compactionThinkingLevel ?? "off"})`
+				: "current session"}`;
+			const setting = await ctx.ui.select("Configure auto-compact", [modelOption, thresholdOption]);
+			if (!setting) return;
 
-			if (command === "model") {
+			if (setting === modelOption) {
 				const models = ctx.modelRegistry
 					.getAvailable()
 					.filter((model) => model.input.includes("text"))
-					.map((model) => `${model.provider}/${model.id}`)
-					.sort();
-				if (!models.length) {
-					ctx.ui.notify("No authenticated text models are available.", "error");
+					.sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
+				const currentModel = "Current session model";
+				const selected = await ctx.ui.select("Auto-compact model", [
+					currentModel,
+					...models.map((model) => `${model.provider}/${model.id}`),
+				]);
+				if (!selected) return;
+
+				if (selected === currentModel) {
+					if (!save({ ...config, compactionModel: undefined, compactionThinkingLevel: undefined })) return;
+					compactionModel = undefined;
+					compactionThinkingLevel = undefined;
+					ctx.ui.notify("Auto-compact model set to current session model.", "info");
 					return;
 				}
 
-				const selected = await ctx.ui.select(
-					`Auto-compact model · current: ${config.compactionModel ?? "session model"}`,
-					models,
-				);
-				if (!selected) return;
+				const model = models.find((candidate) => `${candidate.provider}/${candidate.id}` === selected);
+				if (!model) return;
+				const thinkingLevels = supportedThinkingLevels(model);
+				const thinkingLevel = thinkingLevels.length === 1
+					? thinkingLevels[0]
+					: await ctx.ui.select(`Thinking level · ${selected}`, thinkingLevels);
+				if (!isValidThinkingLevel(thinkingLevel)) return;
 
-				if (!save({ ...config, compactionModel: selected })) return;
+				if (!save({ ...config, compactionModel: selected, compactionThinkingLevel: thinkingLevel })) return;
 				compactionModel = selected;
-				ctx.ui.notify(`Auto-compact model set to ${selected}.`, "info");
+				compactionThinkingLevel = thinkingLevel;
+				ctx.ui.notify(`Auto-compact model set to ${selected} (${thinkingLevel}).`, "info");
 				return;
 			}
 
-			const current = config.autoCompactThreshold;
 			const input = await ctx.ui.input(
-				`Auto-compact threshold (%) · current: ${current}`,
+				`Auto-compact threshold (%) · current: ${config.autoCompactThreshold}`,
 				"Enter a number at least 25 and below 100",
 			);
 			if (input === undefined) return;
@@ -328,9 +363,11 @@ export default function (pi: ExtensionAPI) {
 			const config = readConfig();
 			autoCompactThreshold = config.autoCompactThreshold;
 			compactionModel = config.compactionModel;
+			compactionThinkingLevel = config.compactionThinkingLevel;
 		} catch {
 			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 			compactionModel = undefined;
+			compactionThinkingLevel = undefined;
 			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
 		}
 
@@ -374,6 +411,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("Configured compaction model not found; using current session model.", "error");
 			return;
 		}
+		if (compactionThinkingLevel && !supportedThinkingLevels(model).includes(compactionThinkingLevel)) {
+			ctx.ui.notify("Configured thinking level is unsupported; using current session model.", "error");
+			return;
+		}
 
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -391,7 +432,7 @@ export default function (pi: ExtensionAPI) {
 					withoutDeletedHeaders(auth.headers),
 					event.customInstructions,
 					event.signal,
-					undefined,
+					compactionThinkingLevel,
 					undefined,
 					auth.env,
 				),
