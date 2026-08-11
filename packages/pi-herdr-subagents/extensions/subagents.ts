@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient, hasHerdrErrorCode, herdrCommandFailure } from "@henryqw/pi-herdr";
 import { Type } from "typebox";
 import {
 	PROTOCOL_VERSION,
@@ -149,6 +148,10 @@ function location(): HerdrLocation {
 	return { workspace, pane };
 }
 
+function commandError(args: string[], stderr: string, code: number): Error {
+	return new Error(`Herdr ${args.slice(0, 2).join(" ")} failed: ${stderr.trim() || `exit code ${code}`}`);
+}
+
 function rollbackCleanupError(subagent: OwnedSubagent, tabId: string, launchError: unknown, cleanupError: unknown): Error {
 	const launch = launchError instanceof Error ? launchError.message : String(launchError);
 	const cleanup = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
@@ -161,12 +164,29 @@ function provisioningReconciliationError(subagent: OwnedSubagent, where: HerdrLo
 	return new Error(`Delegated Task ${subagent.taskId} tab creation outcome and reconciliation also failed; provisioning remains owned.\nSubagent: ${subagent.subagentName}\nLabel: ${subagent.label}\nResult: ${subagent.resultPath}\nInspect: herdr tab list --workspace ${where.workspace}\nClose matching tab: herdr tab close <tab-id>\nLaunch error: ${launch}\nReconciliation error: ${reconciliation}`);
 }
 
-function resultOf(response: Record<string, unknown>, label: string): Record<string, unknown> {
-	return object(response.result, `${label} result`);
+function herdrErrorCode(stderr: string): string | undefined {
+	try {
+		const code = (JSON.parse(stderr) as { error?: { code?: unknown } }).error?.code;
+		return typeof code === "string" ? code : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
-function agentInfo(response: Record<string, unknown>, label: string): Record<string, unknown> {
-	const result = resultOf(response, label);
+const hasHerdrError = (stderr: string, code: string): boolean => herdrErrorCode(stderr) === code;
+
+async function runHerdr(pi: ExtensionAPI, args: string[], ctx: ExtensionContext, signal?: AbortSignal): Promise<string> {
+	const result = await pi.exec("herdr", args, { cwd: ctx.cwd, signal });
+	if (result.code !== 0 || result.killed) throw commandError(args, result.stderr, result.code);
+	return result.stdout;
+}
+
+function resultOf(stdout: string, label: string): Record<string, unknown> {
+	return object(parseJson(stdout, label).result, `${label} result`);
+}
+
+function agentInfo(stdout: string, label: string): Record<string, unknown> {
+	const result = resultOf(stdout, label);
 	if (result.type !== "agent_info") throw new Error(`${label} did not return agent_info.`);
 	return object(result.agent, `${label} agent`);
 }
@@ -179,23 +199,20 @@ function assertAgent(agent: Record<string, unknown>, expected: { name?: string; 
 	if (expected.tab && agent.tab_id !== expected.tab) throw new Error("Herdr agent tab does not match request.");
 }
 
+async function closeTab(pi: ExtensionAPI, tabId: string, ctx: ExtensionContext): Promise<void> {
+	const result = await pi.exec("herdr", ["tab", "close", tabId], { cwd: ctx.cwd });
+	if (result.killed || (result.code !== 0 && !hasHerdrError(result.stderr, "tab_not_found"))) {
+		throw commandError(["tab", "close"], result.stderr, result.code);
+	}
+}
+
 export default function subagentsExtension(pi: ExtensionAPI): void {
-	const herdr = createHerdrClient((command, args, options: { cwd: string; signal?: AbortSignal }) =>
-		pi.exec(command, [...args], options));
 	const subagents = new Map<string, OwnedSubagent>();
 	let config = defaultConfig();
 	let cachedMainName: string | undefined;
 
-	const closeTab = async (tabId: string, ctx: ExtensionContext): Promise<void> => {
-		const args = ["tab", "close", tabId];
-		const result = await herdr.exec(args, { cwd: ctx.cwd });
-		if (result.killed || (result.code !== 0 && !hasHerdrErrorCode(result, "tab_not_found"))) {
-			throw new Error(herdrCommandFailure(args, result));
-		}
-	};
-
 	const listTabs = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<HerdrTab[]> => {
-		const result = resultOf(await herdr.json(["tab", "list", "--workspace", where.workspace], { cwd: ctx.cwd, signal }), "Herdr tab list");
+		const result = resultOf(await runHerdr(pi, ["tab", "list", "--workspace", where.workspace], ctx, signal), "Herdr tab list");
 		if (result.type !== "tab_list" || !Array.isArray(result.tabs)) throw new Error("Herdr tab list is invalid.");
 		return result.tabs.map((candidate, index) => {
 			const tab = object(candidate, `Herdr tab list entry ${index + 1}`);
@@ -223,7 +240,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	const ensureMainName = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<string> => {
 		if (cachedMainName) return cachedMainName;
-		const current = agentInfo(await herdr.json(["agent", "get", where.pane], { cwd: ctx.cwd, signal }), "Herdr Main lookup");
+		const current = agentInfo(await runHerdr(pi, ["agent", "get", where.pane], ctx, signal), "Herdr Main lookup");
 		assertAgent(current, { pane: where.pane, workspace: where.workspace });
 		if (typeof current.name === "string") {
 			cachedMainName = herdrName(current.name, "Herdr Main name");
@@ -231,7 +248,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		}
 		if (current.name !== null && current.name !== undefined) throw new Error("Herdr Main name is invalid.");
 		const name = mainName();
-		const renamed = agentInfo(await herdr.json(["agent", "rename", where.pane, name], { cwd: ctx.cwd, signal }), "Herdr Main rename");
+		const renamed = agentInfo(await runHerdr(pi, ["agent", "rename", where.pane, name], ctx, signal), "Herdr Main rename");
 		assertAgent(renamed, { name, pane: where.pane, workspace: where.workspace });
 		cachedMainName = name;
 		return name;
@@ -247,17 +264,17 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			ctx.isProjectTrusted() ? "--approve" : "--no-approve",
 		];
 		for (let attempt = 0; attempt < 5; attempt++) {
-			const result = await herdr.exec(args, { cwd: ctx.cwd, signal });
+			const result = await pi.exec("herdr", args, { cwd: ctx.cwd, signal });
 			if (result.code === 0 && !result.killed) {
-				const started = resultOf(parseJson(result.stdout, "Herdr Subagent start"), "Herdr Subagent start");
+				const started = resultOf(result.stdout, "Herdr Subagent start");
 				if (started.type !== "agent_started") throw new Error("Herdr Subagent start did not return agent_started.");
 				const agent = object(started.agent, "Herdr Subagent agent");
 				assertAgent(agent, { name, pane: paneId, workspace: where.workspace, tab: tabId });
 				if (agent.interactive_ready !== true) throw new Error("Herdr Subagent is not interactive.");
 				return;
 			}
-			if (!hasHerdrErrorCode(result, "agent_pane_busy") || attempt === 4) {
-				throw new Error(herdrCommandFailure(args, result));
+			if (!hasHerdrError(result.stderr, "agent_pane_busy") || attempt === 4) {
+				throw commandError(args, result.stderr, result.code);
 			}
 			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
@@ -386,14 +403,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				await chmod(resultPath, 0o600);
 				const main = await ensureMainName(where, ctx, signal);
 				tabCreationAttempted = true;
-				const created = resultOf(await herdr.json([
+				const created = resultOf(await runHerdr(pi, [
 					"tab", "create", "--workspace", where.workspace, "--cwd", ctx.cwd,
 					"--label", label, "--no-focus",
 					"--env", `PI_HERDR_SUBAGENT_PROTOCOL=${PROTOCOL_VERSION}`,
 					"--env", `PI_HERDR_SUBAGENT_TASK_ID=${taskId}`,
 					"--env", `PI_HERDR_SUBAGENT_RESULT_PATH=${resultPath}`,
 					"--env", `PI_HERDR_SUBAGENT_MAIN=${main}`,
-				], { cwd: ctx.cwd, signal }), "Herdr tab create");
+				], ctx, signal), "Herdr tab create");
 				if (created.type !== "tab_created") throw new Error("Herdr tab create did not return tab_created.");
 				const tab = object(created.tab, "Herdr Subagent tab");
 				const pane = object(created.root_pane, "Herdr Subagent root pane");
@@ -408,14 +425,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				if (signal?.aborted) throw new Error("delegate_task was aborted before task submission.");
 				const promptArgs = ["agent", "prompt", subagent.subagentName, task];
 				promptOutcomeUnknown = true;
-				const response = await herdr.exec(promptArgs, { cwd: ctx.cwd, signal });
+				const response = await pi.exec("herdr", promptArgs, { cwd: ctx.cwd, signal });
 				if (response.code !== 0 || response.killed) {
-					if (!response.killed && [...DEFINITIVE_PROMPT_ERRORS].some((code) => hasHerdrErrorCode(response, code))) {
+					if (!response.killed && DEFINITIVE_PROMPT_ERRORS.has(herdrErrorCode(response.stderr) ?? "")) {
 						promptOutcomeUnknown = false;
 					}
-					throw new Error(herdrCommandFailure(promptArgs, response));
+					throw commandError(promptArgs, response.stderr, response.code);
 				}
-				const prompted = resultOf(parseJson(response.stdout, "Herdr Subagent prompt"), "Herdr Subagent prompt");
+				const prompted = resultOf(response.stdout, "Herdr Subagent prompt");
 				if (prompted.type !== "agent_prompted") throw new Error("Herdr Subagent prompt was not accepted.");
 				const agent = object(prompted.agent, "Herdr prompted Subagent");
 				assertAgent(agent, { name: subagent.subagentName, pane: paneId, workspace: where.workspace, tab: tabId });
@@ -432,7 +449,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				}
 				if (subagent.tabId) {
 					try {
-						await closeTab(subagent.tabId, ctx);
+						await closeTab(pi, subagent.tabId, ctx);
 					} catch (cleanupError) {
 						throw rollbackCleanupError(subagent, subagent.tabId, error, cleanupError);
 					}
@@ -445,7 +462,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					}
 					for (const tab of tabs.filter((candidate) => !existingTabs.has(candidate.id) && candidate.label === label)) {
 						try {
-							await closeTab(tab.id, ctx);
+							await closeTab(pi, tab.id, ctx);
 						} catch (cleanupError) {
 							subagent.tabId = tab.id;
 							throw rollbackCleanupError(subagent, tab.id, error, cleanupError);
@@ -487,7 +504,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			return { action: "continue" } as const;
 		}
 		for (const { subagent } of completed) subagents.delete(subagent.taskId);
-		for (const { subagent } of completed) if (subagent.tabId) void closeTab(subagent.tabId, ctx).catch(() => undefined);
+		for (const { subagent } of completed) if (subagent.tabId) void closeTab(pi, subagent.tabId, ctx).catch(() => undefined);
 		return {
 			action: "transform",
 			text: completed.map(({ subagent, terminal }) => `Subagent ${subagent.subagentName} completed Delegated Task ${subagent.taskId} (${terminal.state}). Read Result before relying on it: ${subagent.resultPath}`).join("\n\n"),
@@ -500,6 +517,6 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		} catch {}
 		const owned = [...subagents.values()];
 		subagents.clear();
-		await Promise.all(owned.flatMap((subagent) => subagent.tabId ? [closeTab(subagent.tabId, ctx).catch(() => undefined)] : []));
+		await Promise.all(owned.flatMap((subagent) => subagent.tabId ? [closeTab(pi, subagent.tabId, ctx).catch(() => undefined)] : []));
 	});
 }

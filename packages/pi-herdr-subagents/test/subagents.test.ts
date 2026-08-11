@@ -445,7 +445,7 @@ test("indeterminate tab creation closes newly provisioned tab", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ tabCreateFailureAfterCreation: true });
-		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "lost creation response" }, undefined, undefined, app.ctx), /herdr tab create failed/);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "lost creation response" }, undefined, undefined, app.ctx), /Herdr tab create failed/);
 		assert.deepEqual(app.closed, ["tab-1"]);
 		assert.equal(app.calls.filter((args) => args[0] === "tab" && args[1] === "list").length, 2);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
