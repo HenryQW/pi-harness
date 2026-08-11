@@ -517,11 +517,12 @@ class CodexQuotaStatus {
 
 	private async refreshDue(generation: number, session: AbortController, resolveSlotAuth: SlotAuthResolver): Promise<void> {
 		const credentials = readCodexCredentials();
+		const state = await this.state();
 		await Promise.all([...credentials.entries()].map(async ([slot, credential]) => {
 			if (!this.alive(generation, session) || this.active.has(slot)) return;
 			const identity = identityFor(credential);
 			if (!identity) return;
-			const snapshot = (await this.state()).slots.get(slot);
+			const snapshot = state.slots.get(slot);
 			if (isFresh(snapshot, identity, Date.now()) || checkedRecently(snapshot, identity, Date.now())) return;
 			this.launch(slot, identity, generation, session, resolveSlotAuth);
 		})).catch(() => undefined);
