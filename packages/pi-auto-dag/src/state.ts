@@ -8,6 +8,7 @@ import {
 	type CleanupBlock,
 	type DeliveryGraph,
 	type HealthCheckEvidence,
+	type GateCommandAmendment,
 	type GateOutputEvidence,
 	type HealthFastForwardIntent,
 	type LocalIssue,
@@ -28,7 +29,7 @@ const RUN_PHASES = ["execution", "blocked", "aborted", "completed"] as const;
 const PR_HEALTH_STATUSES = ["triaging", "repairing", "reviewing", "applying", "pushing", "post_push_cleanup", "blocked", "completed"] as const;
 
 const RUN_STATE_KEYS = [
-	"version", "run_id", "graph_hash", "graph", "skill_registry", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "main_pane", "workspace_id",
+	"version", "run_id", "graph_hash", "graph", "skill_registry", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "gate_command_amendments", "main_pane", "workspace_id",
 	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "health", "health_history", "health_fast_forward_intent", "accepted_events",
 ] as const;
 
@@ -231,6 +232,9 @@ export function parseRunState(value: unknown): RunState {
 		main_pane: nonEmptyString(input.main_pane, "run state.main_pane"),
 		workspace_id: nonEmptyString(input.workspace_id, "run state.workspace_id"),
 	};
+	if (input.gate_command_amendments !== undefined) {
+		state.gate_command_amendments = parseGateCommandAmendments(input.gate_command_amendments, graph);
+	}
 	if (input.abort_reason !== undefined) state.abort_reason = nonEmptyString(input.abort_reason, "run state.abort_reason");
 	if (input.block_reason !== undefined) state.block_reason = nonEmptyString(input.block_reason, "run state.block_reason");
 	if (input.wave !== undefined) state.wave = parseRunWave(input.wave, "run state.wave");
@@ -285,6 +289,31 @@ function parseResolutions(value: unknown, graph: DeliveryGraph): Record<string, 
 		issueId,
 		nonEmptyString(resolution, `run state.resolutions.${issueId}`),
 	]));
+}
+
+function parseGateCommandAmendments(value: unknown, graph: DeliveryGraph): GateCommandAmendment[] {
+	const commands = new Map(executionIssues(graph).map((issue) => [issue.id, issue.testing]));
+	return array(value, "run state.gate_command_amendments").map((entry, index) => {
+		const label = `run state.gate_command_amendments[${index}]`;
+		const input = object(entry, label);
+		exactKeys(input, ["issue_id", "previous_command", "replacement_command", "failed_commit", "reason", "approved_at"], label);
+		const issueId = nonEmptyString(input.issue_id, `${label}.issue_id`);
+		const previous = nonEmptyString(input.previous_command, `${label}.previous_command`);
+		const replacement = nonEmptyString(input.replacement_command, `${label}.replacement_command`);
+		const current = commands.get(issueId);
+		if (current === undefined) throw new Error(`${label}.issue_id must name a Delivery Graph Local Issue`);
+		if (previous !== current) throw new Error(`${label}.previous_command does not match prior Required Gate command`);
+		if (replacement === previous) throw new Error(`${label}.replacement_command must change Required Gate command`);
+		commands.set(issueId, replacement);
+		return {
+			issue_id: issueId,
+			previous_command: previous,
+			replacement_command: replacement,
+			failed_commit: nonEmptyString(input.failed_commit, `${label}.failed_commit`),
+			reason: nonEmptyString(input.reason, `${label}.reason`),
+			approved_at: timestamp(input.approved_at, `${label}.approved_at`),
+		};
+	});
 }
 
 function parseRunTaskState(value: unknown, label: string): RunTaskState {

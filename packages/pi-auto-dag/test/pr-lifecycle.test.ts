@@ -199,6 +199,85 @@ test("user-approved infrastructure retry archives persisted final-gate evidence 
 	assert.equal(finalWorktreeBuilds.length, 2);
 });
 
+test("failed final gate accepts an exact command amendment on same integration commit", async (t) => {
+	const project = await makeProject(t, { maxReviews: 1 });
+	const replacement = `bootstrap && ${FINAL_GATE_COMMAND}`;
+	const herdr = fakeHerdr({ gate: (command) => command === FINAL_GATE_COMMAND
+		? { code: 1, stdout: "", stderr: "dependency bootstrap missing\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await lifecycle.start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+	const finalCommit = state.tasks["final-check"].commit!;
+
+	state = await lifecycle.resolve(project.root, "final-check", "Bootstrap dependencies in clean final worktree.", {
+		replacement_command: replacement,
+		expected_run_id: state.run_id,
+		expected_command: FINAL_GATE_COMMAND,
+		expected_commit: finalCommit,
+	});
+
+	assert.equal(state.phase, "execution");
+	assert.equal(state.graph.final_check.testing, FINAL_GATE_COMMAND);
+	assert.equal(state.tasks["final-check"].review_command, replacement);
+	assert.equal(state.tasks["final-check"].review_commit, finalCommit);
+	assert.equal(state.tasks["final-check"].review_exit_code, 0);
+	assert.deepEqual(state.gate_command_amendments, [{
+		issue_id: "final-check",
+		previous_command: FINAL_GATE_COMMAND,
+		replacement_command: replacement,
+		failed_commit: finalCommit,
+		reason: "Bootstrap dependencies in clean final worktree.",
+		approved_at: "2026-08-09T00:00:00.000Z",
+	}]);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.args[1] === FINAL_GATE_COMMAND).length, 1);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.args[1] === replacement).length, 1);
+	const prompt = herdr.calls
+		.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt")
+		.map((call) => JSON.parse(call.args[3]))
+		.find((value) => value.kind === "final_check");
+	assert.deepEqual(prompt.context.gate_command_amendments, state.gate_command_amendments);
+});
+
+test("infrastructure retry reruns the amended final gate command", async (t) => {
+	const project = await makeProject(t, { maxReviews: 1 });
+	const replacement = `bootstrap && ${FINAL_GATE_COMMAND}`;
+	let infrastructureFixed = false;
+	const herdr = fakeHerdr({ gate: (command) => command === replacement
+		? infrastructureFixed
+			? { code: 0, stdout: "required gate passed\n", stderr: "" }
+			: { code: 1, stdout: "", stderr: "dependency bootstrap failed\n" }
+		: command === FINAL_GATE_COMMAND
+			? { code: 1, stdout: "", stderr: "dependency bootstrap missing\n" }
+			: { code: 0, stdout: "required gate passed\n", stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await lifecycle.start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+	const finalCommit = state.integration_head;
+
+	state = await lifecycle.resolve(project.root, "final-check", "Use checkout bootstrap command.", {
+		replacement_command: replacement,
+		expected_run_id: state.run_id,
+		expected_command: FINAL_GATE_COMMAND,
+		expected_commit: finalCommit,
+	});
+	const failedAmendedGate = recordedGateEvidence(state.tasks["final-check"], finalCommit)!;
+	assert.equal(state.phase, "blocked");
+	assert.equal(failedAmendedGate.command, replacement);
+
+	infrastructureFixed = true;
+	state = await lifecycle.retryGate(project.root, "Bootstrap service restored.", failedAmendedGate);
+
+	assert.equal(state.tasks["final-check"].review_command, replacement);
+	assert.equal(state.tasks["final-check"].review_exit_code, 0);
+	assert.deepEqual(state.tasks["final-check"].required_gate_invalidations?.at(-1)?.evidence, failedAmendedGate);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.args[1] === replacement).length, 2);
+});
+
 test("health refuses a retained historical run while another run is active without touching it", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();
@@ -584,12 +663,25 @@ test("failed health gate restarts triage when PR head advances", async (t) => {
 	await assert.rejects(readFile(join(oldWorktree, "health.txt")), /ENOENT/);
 });
 
-test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves only fixed triaged threads", async (t) => {
+test("PR health fast-forwards, uses amended final gate, pushes once, and resolves only fixed triaged threads", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();
 	const gh = fakeGh(project.root);
 	const lifecycle = makeLifecycle(combinedRunner(herdr, gh));
 	let state = await finishInitialRun(project.root, lifecycle);
+	const replacement = `bootstrap && ${FINAL_GATE_COMMAND}`;
+	state = {
+		...state,
+		gate_command_amendments: [{
+			issue_id: "final-check",
+			previous_command: FINAL_GATE_COMMAND,
+			replacement_command: replacement,
+			failed_commit: state.integration_head,
+			reason: "Bootstrap clean gates.",
+			approved_at: "2026-08-09T00:00:00.000Z",
+		}],
+	};
+	await writeRunState(project.root, state);
 	const pushes = gh.gitPushes;
 
 	state = await lifecycle.health(project.root, RUN_ID);
@@ -605,7 +697,7 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
 	assert.equal(state.health?.reviewer_agent, reviewer);
 	assert.equal(state.health?.review_commit, repair);
-	assert.equal(state.health?.review_command, FINAL_GATE_COMMAND);
+	assert.equal(state.health?.review_command, replacement);
 	assert.equal(state.health?.review_exit_code, 0);
 	const reviewPrompt = herdr.calls
 		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === reviewer)
@@ -614,6 +706,7 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 		.find((value) => value.type === "auto_dag_review");
 	assert.equal(reviewPrompt.kind, "pr_health_repair");
 	assert.deepEqual(reviewPrompt.context.triage.thread_ids, ["THREAD-1", "THREAD-2"]);
+	assert.deepEqual(reviewPrompt.context.gate_command_amendments, state.gate_command_amendments);
 	assert.equal(reviewPrompt.gate.commit, repair);
 	for (const key of ["run_id", "attempt", "review_round", "required_gate"]) assert.equal(key in reviewPrompt, false);
 	state = await lifecycle.health(project.root, RUN_ID, healthReviewEvent(state, "approved", ["THREAD-1", "THREAD-2"]));

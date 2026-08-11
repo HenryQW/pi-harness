@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
+import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
@@ -250,7 +251,7 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 	if (!evidence) {
 		const execution = await runRequiredGate(
 			options.runner,
-			issue.testing,
+			requiredGateCommand(state, issue),
 			commit,
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 			timeoutMs,
@@ -363,6 +364,7 @@ function reviewerPrompt(
 	current: RunTaskState,
 	mode: ReviewPromptMode,
 ): Record<string, unknown> {
+	const amendments = gateCommandAmendments(state, issue.id);
 	return reviewWorkerPrompt({
 		kind: "implementation",
 		graph: state.graph,
@@ -372,6 +374,7 @@ function reviewerPrompt(
 		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id),
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
+		...(amendments.length ? { context: { gate_command_amendments: amendments } } : {}),
 	}, mode);
 }
 

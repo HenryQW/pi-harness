@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { acknowledgeRequiredGate, reconcileRequiredGateProcess, recordedGateEvidence, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
 import type { AvailableSkill } from "./config.ts";
-import { isRetryableFinalGate, retryableFinalGate } from "./final-gate.ts";
+import { amendRequiredGateCommand, isRetryableFinalGate, retryableFinalGate, type GateCommandAmendmentRequest } from "./final-gate.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
@@ -28,7 +28,7 @@ export interface CoreLifecycle {
 	status(mainWorktree: string, runId?: string): Promise<RunState | undefined>;
 	resume(mainWorktree: string, envelope?: unknown): Promise<RunState>;
 	retryGate(mainWorktree: string, reason: string, expectedEvidence: RequiredGateEvidence): Promise<RunState>;
-	resolve(mainWorktree: string, issueId: string, resolution: string): Promise<RunState>;
+	resolve(mainWorktree: string, issueId: string, resolution: string, amendment?: GateCommandAmendmentRequest): Promise<RunState>;
 	abort(mainWorktree: string, reason?: string): Promise<RunState>;
 	health(mainWorktree: string, runId: string, envelope?: unknown): Promise<RunState>;
 }
@@ -125,7 +125,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 			});
 		},
 
-		async resolve(mainWorktree, issueId, resolution) {
+		async resolve(mainWorktree, issueId, resolution, amendment) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				let state = await readActiveRun(root);
 				state = await reconcileGate(state, orchestration);
@@ -135,10 +135,19 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				const config = await guardBoundary(state, runner, uuid, options.availableSkills?.());
 				const id = nonEmptyString(issueId, "resolution issue_id");
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
-				if (id === "final-check" && isRetryableFinalGate(state)) {
+				if (!amendment && id === "final-check" && isRetryableFinalGate(state)) {
 					throw new Error("Infrastructure-invalid Final Check must use auto_dag_retry_gate");
 				}
-				const prResolved = await resolveFinalRepair(state, id, resolution, config, orchestration);
+				if (amendment) {
+					state = amendRequiredGateCommand(
+						state,
+						id,
+						resolution,
+						amendment,
+						options.now?.() ?? new Date().toISOString(),
+					);
+				}
+				const prResolved = amendment ? undefined : await resolveFinalRepair(state, id, resolution, config, orchestration);
 				if (prResolved) return await completeSuccessfulRun(prResolved, orchestration);
 				let current = state.tasks[id];
 				const reviewerBlocked = current.status === "blocked" && current.blocked_role === "reviewer";
