@@ -108,6 +108,7 @@ async function withApp(
 			},
 		} as unknown as ExtensionAPI);
 		await check({ agentDir, handlers, commands, ctx, setModels, statuses, notices, sessionEntries });
+		handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 	} finally {
 		globalThis.fetch = priorFetch;
 		if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;

@@ -419,9 +419,8 @@ test("two Pi processes reclaim one stale cache mutex", async () => {
 	const fetchMock = join(agentDir, "fetch-mock.mjs");
 	try {
 		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("stale-mutex-account") }));
-		const mutex = join(agentDir, "config", "pi-multi-codex", "usage.json.lock");
+		const mutex = join(agentDir, "config", "pi-multi-codex", "usage.json.mutex");
 		await mkdir(mutex, { recursive: true });
-		await writeFile(join(mutex, "owner"), "dead-owner");
 		const staleAt = new Date(Date.now() - 45_000);
 		await utimes(mutex, staleAt, staleAt);
 		await writeFile(fetchMock, `
@@ -436,8 +435,6 @@ test("two Pi processes reclaim one stale cache mutex", async () => {
 		`);
 		await Promise.all([runQuotaProcess(agentDir, fetchMock, countFile), runQuotaProcess(agentDir, fetchMock, countFile)]);
 		assert.equal((await readFile(countFile, "utf8")).trim(), "1");
-		const tombstone = `${mutex}.${createHash("sha256").update("dead-owner").digest("hex")}.stale`;
-		assert.equal(await readFile(join(tombstone, "owner"), "utf8"), "dead-owner");
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -471,9 +468,8 @@ test("shutdown cancels fresh stranded cache-mutex wait", async () => {
 	const fetchMock = join(agentDir, "fetch-mock.mjs");
 	try {
 		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("stranded-account") }));
-		const mutex = join(agentDir, "config", "pi-multi-codex", "usage.json.lock");
+		const mutex = join(agentDir, "config", "pi-multi-codex", "usage.json.mutex");
 		await mkdir(mutex, { recursive: true });
-		await writeFile(join(mutex, "owner"), "stranded-owner");
 		await writeFile(fetchMock, `globalThis.fetch = async () => { throw new Error("must not fetch"); };`);
 		const started = Date.now();
 		await runQuotaProcess(agentDir, fetchMock, countFile, 20);

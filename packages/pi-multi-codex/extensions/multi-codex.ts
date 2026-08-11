@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { lock } from "proper-lockfile";
 import {
 	createAssistantMessageEventStream,
 	type AssistantMessageEventStream,
@@ -79,7 +80,7 @@ const OPERATION_TIMEOUT_MS = 10_000;
 const CACHE_MUTEX_RETRY_MS = 20;
 const CLEANUP_TIMEOUT_MS = 250;
 const cachePath = () => join(getAgentDir(), "config", "pi-multi-codex", "usage.json");
-const cacheMutexPath = () => `${cachePath()}.lock`;
+const cacheMutexPath = () => `${cachePath()}.mutex`;
 
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -99,7 +100,8 @@ function isOAuthCredential(value: unknown): value is CodexOAuthCredential {
 function slotForProvider(providerId: string): number | undefined {
 	if (providerId === NATIVE_PROVIDER_ID) return 1;
 	const match = CODEX_ALIAS_PATTERN.exec(providerId);
-	return match ? Number(match[1]) : undefined;
+	const slot = match ? Number(match[1]) : undefined;
+	return validSlot(slot) ? slot : undefined;
 }
 
 function readCodexCredentials(): Map<number, CodexOAuthCredential> {
@@ -249,12 +251,6 @@ async function saveState(state: UsageState): Promise<void> {
 	}
 }
 
-type CacheMutex = { directory: string; owner: string };
-
-function staleMutexPath(directory: string, owner: string): string {
-	return `${directory}.${createHash("sha256").update(owner).digest("hex")}.stale`;
-}
-
 function errorCode(error: unknown): string | undefined {
 	return error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
 }
@@ -285,57 +281,31 @@ function cleanupSignal(): AbortSignal {
 	return controller.signal;
 }
 
-async function acquireCacheMutex(signal?: AbortSignal): Promise<CacheMutex> {
+async function withCacheMutex<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 	signal?.throwIfAborted();
 	await mkdir(join(getAgentDir(), "config", "pi-multi-codex"), { recursive: true, mode: 0o700 });
-	const directory = cacheMutexPath();
-	const owner = randomUUID();
-	const ownerFile = join(directory, "owner");
-	while (true) {
+	let release: (() => Promise<void>) | undefined;
+	while (!release) {
 		signal?.throwIfAborted();
 		try {
-			await mkdir(directory, { mode: 0o700 });
-			try {
-				signal?.throwIfAborted();
-				await writeFile(ownerFile, owner, { encoding: "utf8", mode: 0o600, flag: "wx" });
-				return { directory, owner };
-			} catch (error) {
-				await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-				throw error;
-			}
+			release = await lock(cachePath(), {
+				lockfilePath: cacheMutexPath(),
+				realpath: false,
+				stale: LOCK_STALE_MS,
+				update: HEARTBEAT_MS,
+				retries: 0,
+				onCompromised: () => undefined,
+			});
 		} catch (error) {
-			if (errorCode(error) !== "EEXIST") throw error;
-			try {
-				const observedOwner = await readFile(ownerFile, "utf8");
-				if (Date.now() - (await stat(directory)).mtimeMs >= LOCK_STALE_MS) {
-					// Non-empty tombstone ties reclaim to observed owner. A delayed reclaimer cannot rename a replacement lock.
-					await rename(directory, staleMutexPath(directory, observedOwner));
-					continue;
-				}
-			} catch (reclaimError) {
-				if (errorCode(reclaimError) === "ENOENT") continue;
-			}
+			if (errorCode(error) !== "ELOCKED") throw error;
 			await sleepUnref(CACHE_MUTEX_RETRY_MS, signal);
 		}
 	}
-}
-
-async function releaseCacheMutex(mutex: CacheMutex): Promise<void> {
-	try {
-		if (await readFile(join(mutex.directory, "owner"), "utf8") !== mutex.owner) return;
-		await rm(mutex.directory, { recursive: true, force: true });
-	} catch {
-		// Reclaimed or already released.
-	}
-}
-
-async function withCacheMutex<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-	const mutex = await acquireCacheMutex(signal);
 	try {
 		signal?.throwIfAborted();
 		return await operation();
 	} finally {
-		await releaseCacheMutex(mutex);
+		await release().catch(() => undefined);
 	}
 }
 

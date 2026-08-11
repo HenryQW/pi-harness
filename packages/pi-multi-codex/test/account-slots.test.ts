@@ -77,6 +77,8 @@ test("discovers canonical OAuth slots and ignores invalid or API-key entries", a
 			"openai-codex-1": oauth,
 			"openai-codex-02": oauth,
 			"openai-codex-4.5": oauth,
+			"openai-codex-9007199254740993": oauth,
+			"openai-codex-999999999999999999999999999999999999999999999999999999999999": oauth,
 			"openai-codex-5": oauth,
 		},
 		async (providers) => {
