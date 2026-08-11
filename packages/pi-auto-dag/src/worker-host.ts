@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode } from "@henryqw/pi-herdr";
-import type { CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, type CommandRunner } from "./command.ts";
 import type { WorkerLaunch, WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object } from "./validate.ts";
 
@@ -13,6 +12,8 @@ interface WorkerHostOptions {
 	runner: CommandRunner;
 	delay?: (milliseconds: number) => Promise<void>;
 }
+
+type CommandResult = Awaited<ReturnType<CommandRunner>>;
 
 export function workerEnvironmentArgs(launch: WorkerLaunch): string[] {
 	return Object.entries(launch.env).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
@@ -36,7 +37,7 @@ export async function workerWorkspaceId(mainWorktree: string, mainPane: string, 
 /** Every agent-list consumer gets only agents owned by this Herdr workspace. */
 export async function listWorkerAgents(state: WorkerHostState, options: WorkerHostOptions): Promise<Map<string, string>> {
 	const workspaceId = nonEmptyString(state.workspace_id, "recorded Herdr workspace");
-	const response = object(await createHerdrClient(options.runner).json(["agent", "list"], { cwd: state.main_worktree }), "Herdr agent list response");
+	const response = object(JSON.parse(await commandOutput(options.runner, "herdr", ["agent", "list"], state.main_worktree)), "Herdr agent list response");
 	const result = object(response.result, "Herdr agent list result");
 	return new Map(array(result.agents, "Herdr agents").flatMap((entry, index) => {
 		const agent = object(entry, `Herdr agent ${index}`);
@@ -55,10 +56,10 @@ export async function createWorkerTab(
 	label: string,
 	options: WorkerHostOptions,
 ): Promise<{ tab_id: string; pane_id: string }> {
-	const response = await createHerdrClient(options.runner).json([
+	const text = await commandOutput(options.runner, "herdr", [
 		"tab", "create", "--workspace", nonEmptyString(state.workspace_id, "recorded Herdr workspace"), "--cwd", cwd, ...workerEnvironmentArgs(launch), "--label", label, "--no-focus",
-	], { cwd: state.main_worktree });
-	const result = object(object(response, "Herdr tab response").result, "Herdr tab result");
+	], state.main_worktree);
+	const result = object(object(JSON.parse(text), "Herdr tab response").result, "Herdr tab result");
 	return {
 		tab_id: nonEmptyString(object(result.tab, "Herdr tab").tab_id, "Herdr tab id"),
 		pane_id: nonEmptyString(object(result.root_pane, "Herdr root pane").pane_id, "Herdr root pane id"),
@@ -143,14 +144,13 @@ export async function ensureWorkerPane(
 	if (named.length) return nonEmptyString(named[0].pane_id, "Herdr reviewer pane id");
 	if (reviewers.length > 1) throw new Error(`Provisioned Herdr tab ${tab} has multiple reviewer panes`);
 	if (reviewers.length) return nonEmptyString(reviewers[0].pane_id, "Herdr reviewer pane id");
-	const herdr = createHerdrClient(options.runner);
-	const response = await herdr.json([
+	const text = await commandOutput(options.runner, "herdr", [
 		"pane", "split", "--pane", root,
 		"--direction", "right", "--cwd", cwd, ...workerEnvironmentArgs(launch), "--no-focus",
-	], { cwd: state.main_worktree });
-	const result = object(object(response, "Herdr pane response").result, "Herdr pane result");
+	], state.main_worktree);
+	const result = object(object(JSON.parse(text), "Herdr pane response").result, "Herdr pane result");
 	const pane = nonEmptyString(object(result.pane, "Herdr reviewer pane").pane_id, "Herdr reviewer pane id");
-	await herdr.run(["pane", "rename", pane, label], { cwd: state.main_worktree });
+	await commandOutput(options.runner, "herdr", ["pane", "rename", pane, label], state.main_worktree);
 	return pane;
 }
 
@@ -172,10 +172,9 @@ export async function startWorkerAgent(
 	}
 	await hooks.beforeStart?.();
 	const arguments_ = ["agent", "start", name, "--kind", "pi", "--pane", paneId, "--", ...launch.args];
-	const herdr = createHerdrClient(options.runner);
 	for (let attempt = 1; attempt <= 5; attempt += 1) {
-		const result = await herdr.exec(arguments_, { cwd: state.main_worktree });
-		if (result.code === 0 && !result.killed) {
+		const result = await options.runner("herdr", arguments_, { cwd: state.main_worktree });
+		if (result.code === 0) {
 			await hooks.onStarted?.();
 			return "started";
 		}
@@ -186,7 +185,7 @@ export async function startWorkerAgent(
 			return "existing";
 		}
 		if (!hasHerdrErrorCode(result, "agent_pane_busy") || attempt === 5) {
-			throw new Error(herdrCommandFailure(arguments_, result));
+			throw new Error(commandFailure("herdr", arguments_, result));
 		}
 		await (options.delay ?? delay)(250);
 	}
@@ -200,14 +199,14 @@ export async function promptWorkerAgent(
 	options: WorkerHostOptions,
 ): Promise<void> {
 	assertWorkerAgentName(agent);
-	await createHerdrClient(options.runner).run(["agent", "prompt", agent, JSON.stringify(payload)], { cwd: state.main_worktree });
+	await commandOutput(options.runner, "herdr", ["agent", "prompt", agent, JSON.stringify(payload)], state.main_worktree);
 }
 
 export async function retireWorkerTab(state: WorkerHostState, tabId: string, options: WorkerHostOptions): Promise<void> {
 	const id = nonEmptyString(tabId, "Herdr tab id");
 	try {
 		if (!(await workerTabExists(state, id, options))) return;
-		await createHerdrClient(options.runner).run(["tab", "close", id], { cwd: state.main_worktree });
+		await commandOutput(options.runner, "herdr", ["tab", "close", id], state.main_worktree);
 	} catch (error) {
 		if (!(await confirmsWorkerTabAbsent(state, id, options))) throw error;
 	}
@@ -218,23 +217,21 @@ function assertWorkerAgentName(agent: string): void {
 }
 
 async function listWorkerTabs(mainWorktree: string, options: WorkerHostOptions): Promise<unknown[]> {
-	const response = await createHerdrClient(options.runner).json(["tab", "list"], { cwd: mainWorktree });
-	const result = object(object(response, "Herdr tab list response").result, "Herdr tab list result");
+	const result = object(object(JSON.parse(await commandOutput(options.runner, "herdr", ["tab", "list"], mainWorktree)), "Herdr tab list response").result, "Herdr tab list result");
 	return array(result.tabs, "Herdr tabs");
 }
 
 async function listWorkerPanes(mainWorktree: string, options: WorkerHostOptions): Promise<unknown[]> {
-	const response = await createHerdrClient(options.runner).json(["pane", "list"], { cwd: mainWorktree });
-	const result = object(object(response, "Herdr pane list response").result, "Herdr pane list result");
+	const result = object(object(JSON.parse(await commandOutput(options.runner, "herdr", ["pane", "list"], mainWorktree)), "Herdr pane list response").result, "Herdr pane list result");
 	return array(result.panes, "Herdr panes");
 }
 
 async function getWorkerAgent(state: WorkerHostState, name: string, options: WorkerHostOptions): Promise<Record<string, unknown> | undefined> {
 	const arguments_ = ["agent", "get", name];
-	const result = await createHerdrClient(options.runner).exec(arguments_, { cwd: state.main_worktree });
-	if (result.code !== 0 || result.killed) {
+	const result = await options.runner("herdr", arguments_, { cwd: state.main_worktree });
+	if (result.code !== 0) {
 		if (hasHerdrErrorCode(result, "agent_not_found")) return undefined;
-		throw new Error(herdrCommandFailure(arguments_, result));
+		throw new Error(commandFailure("herdr", arguments_, result));
 	}
 	const response = object(JSON.parse(result.stdout), "Herdr agent get response");
 	return object(object(response.result, "Herdr agent get result").agent, `Herdr agent ${name}`);
@@ -249,11 +246,30 @@ function assertWorkerAgentPane(name: string, expected: string, agent: Record<str
 
 async function confirmsWorkerTabAbsent(state: WorkerHostState, tabId: string, options: WorkerHostOptions): Promise<boolean> {
 	try {
-		const result = await createHerdrClient(options.runner).exec(["tab", "get", tabId], { cwd: state.main_worktree });
-		return !result.killed && result.code !== 0 && hasHerdrErrorCode(result, "tab_not_found");
+		const result = await options.runner("herdr", ["tab", "get", tabId], { cwd: state.main_worktree });
+		return result.code !== 0 && hasHerdrErrorCode(result, "tab_not_found");
 	} catch {
 		return false;
 	}
+}
+
+function hasHerdrErrorCode(result: CommandResult, expected: string): boolean {
+	return [result.stdout, result.stderr].some((text) => {
+		try {
+			return containsHerdrErrorCode(JSON.parse(text), expected);
+		} catch {
+			return false;
+		}
+	});
+}
+
+function containsHerdrErrorCode(value: unknown, expected: string): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	if (Array.isArray(value)) return value.some((entry) => containsHerdrErrorCode(entry, expected));
+	const input = value as Record<string, unknown>;
+	const error = input.error;
+	return (typeof error === "object" && error !== null && !Array.isArray(error) && (error as Record<string, unknown>).code === expected)
+		|| Object.values(input).some((entry) => containsHerdrErrorCode(entry, expected));
 }
 
 async function delay(milliseconds: number): Promise<void> {

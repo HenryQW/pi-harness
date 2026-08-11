@@ -1,7 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient } from "@henryqw/pi-herdr";
 import { commandOutput, runCommand, type CommandRunner } from "./command.ts";
 import { DEFAULT_REQUIRED_GATE_TIMEOUT_MS, type DeliveryGraph, type LocalIssue, type ResolvedProfile, type WorkerEnvelope } from "./model.ts";
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
@@ -152,10 +151,9 @@ export async function sendWorkerEnvelope(
 	if (!Number.isInteger(attempts) || attempts < 1) throw new Error("worker deliveryAttempts must be a positive integer");
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error("worker deliveryTimeoutMs must be a positive integer");
 	let lastError: unknown;
-	const herdr = createHerdrClient(runner);
 	for (let attempt = 1; attempt <= attempts; attempt += 1) {
 		try {
-			await herdr.run(["agent", "prompt", worker.main_pane, JSON.stringify(envelope), "--wait", "--timeout", String(timeoutMs)], { cwd });
+			await commandOutput(runner, "herdr", ["agent", "prompt", worker.main_pane, JSON.stringify(envelope), "--wait", "--timeout", String(timeoutMs)], cwd);
 		} catch (error) {
 			lastError = error;
 			const receipt = await waitForReceipt(ticket.receipt_path, delivery.delay);
