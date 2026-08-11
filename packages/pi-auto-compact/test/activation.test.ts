@@ -94,11 +94,15 @@ test("reads and writes autoCompactThreshold", async () => {
 	const configFile = join(tempRoot, "config", "pi-auto-compact.json");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
+	const expectedConfig = {
+		autoCompactThreshold: 40,
+		compactionModel: "provider/model",
+	};
 
 	try {
 		await mkdir(join(tempRoot, "config"), { recursive: true });
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		await writeFile(configFile, JSON.stringify({ autoCompactThreshold: 65 }));
+		await writeFile(configFile, JSON.stringify({ ...expectedConfig, autoCompactThreshold: 65 }));
 
 		const commands = new Map<string, Command>();
 		const handlers = loadExtension(commands);
@@ -124,15 +128,61 @@ test("reads and writes autoCompactThreshold", async () => {
 		assert.equal(compactions, 0);
 
 		await commands.get("auto-compact")?.("", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 40 });
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), expectedConfig);
 		handlers.get("turn_start")?.({} as never, ctx);
 		assert.equal(compactions, 1);
 		assert.deepEqual(notices, ["Auto-compact threshold set to 40%."]);
 
 		input = "20";
 		await commands.get("auto-compact")?.("", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 40 });
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), expectedConfig);
 		assert.equal(notices.at(-1), "Auto-compact threshold below 25% is not meaningful.");
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
+test("falls back when configured compaction model cannot authenticate", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-model-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+
+	try {
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		await mkdir(join(tempRoot, "config"), { recursive: true });
+		await writeFile(join(tempRoot, "config", "pi-auto-compact.json"), JSON.stringify({
+			autoCompactThreshold: 50,
+			compactionModel: "provider/model",
+		}));
+
+		const handlers = loadExtension();
+		const calls: unknown[][] = [];
+		const ctx = {
+			cwd: tempRoot,
+			isProjectTrusted: () => true,
+			modelRegistry: {
+				find: (...args: unknown[]) => {
+					calls.push(args);
+					return {};
+				},
+				getApiKeyAndHeaders: async () => ({ ok: false, error: "missing" }),
+			},
+		} as unknown as ExtensionContext;
+
+		handlers.get("session_start")?.(
+			{ type: "session_start", reason: "startup" } as never,
+			ctx,
+		);
+		const warn = console.warn;
+		console.warn = () => {};
+		try {
+			assert.equal(await handlers.get("session_before_compact")?.({} as never, ctx), undefined);
+		} finally {
+			console.warn = warn;
+		}
+		assert.deepEqual(calls, [["provider", "model"]]);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

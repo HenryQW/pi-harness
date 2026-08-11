@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+	compact,
 	estimateTokens,
 	getAgentDir,
 	SettingsManager,
@@ -26,11 +27,28 @@ const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
+type Config = {
+	autoCompactThreshold: number;
+	compactionModel?: string;
+};
+
+type ModelReference = { provider: string; modelId: string };
+
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
 }
 
-function readConfig(): { autoCompactThreshold: number } {
+function parseModelReference(value: unknown): ModelReference | undefined {
+	if (typeof value !== "string") return undefined;
+	const separator = value.indexOf("/");
+	if (separator <= 0 || separator === value.length - 1) return undefined;
+
+	const provider = value.slice(0, separator).trim();
+	const modelId = value.slice(separator + 1).trim();
+	return provider && modelId ? { provider, modelId } : undefined;
+}
+
+function readConfig(): Config {
 	let value: unknown;
 	try {
 		value = JSON.parse(readFileSync(configPath(), "utf8"));
@@ -43,17 +61,52 @@ function readConfig(): { autoCompactThreshold: number } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error("Config must be an object.");
 	}
-	const threshold = (value as Record<string, unknown>).autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
+	const config = value as Record<string, unknown>;
+	const threshold = config.autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	if (!isValidThreshold(threshold)) {
 		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
 	}
-	return { autoCompactThreshold: threshold };
+	if (config.compactionModel !== undefined && !parseModelReference(config.compactionModel)) {
+		throw new Error("compactionModel must be a provider/model string.");
+	}
+	return {
+		autoCompactThreshold: threshold,
+		compactionModel: typeof config.compactionModel === "string" ? config.compactionModel.trim() : undefined,
+	};
 }
 
-function writeConfig(autoCompactThreshold: number): void {
+function writeConfig(config: Config): void {
 	const file = configPath();
 	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${JSON.stringify({ autoCompactThreshold }, null, 2)}\n`);
+	writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function withoutDeletedHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
+	return headers
+		? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null))
+		: undefined;
+}
+
+// Pi does not trust file-operation details from extension compactions. Restore
+// its native details before generating next summary so file lists persist.
+function restorePreviousFileOperations(
+	preparation: { fileOps: { read: Set<string>; edited: Set<string> } },
+	branchEntries: Array<{ type: string; details?: unknown }>,
+): void {
+	const previous = [...branchEntries].reverse().find((entry) => entry.type === "compaction");
+	if (!previous || !previous.details || typeof previous.details !== "object") return;
+
+	const details = previous.details as { readFiles?: unknown; modifiedFiles?: unknown };
+	if (Array.isArray(details.readFiles)) {
+		for (const path of details.readFiles) {
+			if (typeof path === "string") preparation.fileOps.read.add(path);
+		}
+	}
+	if (Array.isArray(details.modifiedFiles)) {
+		for (const path of details.modifiedFiles) {
+			if (typeof path === "string") preparation.fileOps.edited.add(path);
+		}
+	}
 }
 
 // Emergency context guard keeps recent messages while default compaction runs.
@@ -120,6 +173,7 @@ function hasToolCall(message: AgentMessage): boolean {
 export default function (pi: ExtensionAPI) {
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
+	let compactionModel: string | undefined;
 	// Prevent lifecycle hooks from starting duplicate summaries.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
@@ -211,13 +265,14 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("auto-compact", {
 		description: "set automatic compaction threshold",
 		handler: async (_args, ctx) => {
-			let current: number;
+			let config: Config;
 			try {
-				current = readConfig().autoCompactThreshold;
+				config = readConfig();
 			} catch {
 				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
 				return;
 			}
+			const current = config.autoCompactThreshold;
 
 			const input = await ctx.ui.input(
 				`Auto-compact threshold (%) · current: ${current}`,
@@ -236,7 +291,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				writeConfig(threshold);
+				writeConfig({ ...config, autoCompactThreshold: threshold });
 			} catch {
 				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
 				return;
@@ -250,9 +305,12 @@ export default function (pi: ExtensionAPI) {
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
 		try {
-			autoCompactThreshold = readConfig().autoCompactThreshold;
+			const config = readConfig();
+			autoCompactThreshold = config.autoCompactThreshold;
+			compactionModel = config.compactionModel;
 		} catch {
 			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
+			compactionModel = undefined;
 			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
 		}
 
@@ -263,5 +321,45 @@ export default function (pi: ExtensionAPI) {
 
 		// Resume/fork can load an already-large session before first turn.
 		if (event.reason === "resume" || event.reason === "fork") compactIfNeeded(ctx);
+	});
+
+	pi.on("session_before_compact", async (event, ctx) => {
+		if (!active || !compactionModel) return;
+
+		const reference = parseModelReference(compactionModel);
+		if (!reference) return;
+		const model = ctx.modelRegistry.find(reference.provider, reference.modelId);
+		if (!model) {
+			console.warn("[pi-auto-compact] Configured compaction model not found; using current session model.");
+			return;
+		}
+
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) {
+			console.warn("[pi-auto-compact] Couldn't authenticate configured compaction model; using current session model.");
+			return;
+		}
+
+		try {
+			restorePreviousFileOperations(event.preparation, event.branchEntries);
+			const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+			return {
+				compaction: await compact(
+					event.preparation,
+					requestModel,
+					auth.apiKey,
+					withoutDeletedHeaders(auth.headers),
+					event.customInstructions,
+					event.signal,
+					undefined,
+					undefined,
+					auth.env,
+				),
+			};
+		} catch {
+			if (!event.signal.aborted) {
+				console.warn("[pi-auto-compact] Configured compaction model failed; using current session model.");
+			}
+		}
 	});
 }
