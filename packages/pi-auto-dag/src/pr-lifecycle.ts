@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandOutput, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile } from "./config.ts";
+import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
 import { ensureRecordedGate, failFinalGate, requiredTaskGate } from "./final-gate.ts";
 import { acceptFinalRepairEnvelope, advanceFinalRepair, isFinalRepairActive, recoverFinalRepairIntegration } from "./final-repair.ts";
 import { deleteExpectedBranch, ensureChildWorktree, retireChildWorktree } from "./git.ts";
@@ -19,6 +19,7 @@ type PrLifecycleOptions = {
 	runner: CommandRunner;
 	uuid: Uuid;
 	now?: () => string;
+	availableSkills?: () => readonly AvailableSkill[] | undefined;
 };
 
 /** Run the lifecycle-owned final gate and reviewer, then create or recover the one integration PR. */
@@ -93,7 +94,7 @@ async function ensureFinalReviewer(
 	options: PrLifecycleOptions,
 	mode: "review" | "resume",
 ): Promise<RunState> {
-	await assertRunBoundary(state, options.runner);
+	await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, "final-check commit");
 	if (commit !== state.integration_head) throw new Error("Final-check commit does not match the integration HEAD");
@@ -170,7 +171,7 @@ async function submitFinalReview(
 	const gate = requiredTaskGate(current, state.integration_head, "Final check");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-check verdict");
 	const findings = stringArray(envelope.payload.findings, "final-check findings");
-	await assertRunBoundary(state, options.runner);
+	await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	if (current.commit !== state.integration_head || current.final_gate_head !== state.integration_head) {
 		return await failFinalGate(state, issue, "Final-check review did not inspect the exact integration HEAD", options);
 	}
@@ -185,7 +186,7 @@ async function submitFinalReview(
 }
 
 async function openPr(state: RunState, issue: LocalIssue, options: PrLifecycleOptions): Promise<RunState> {
-	await assertRunBoundary(state, options.runner);
+	await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	if (state.pr) return await completePr(state, issue, options);
 	await matchingOpenPr(state, options);
 	await commandOutput(options.runner, "git", ["push", "origin", state.integration_branch], state.main_worktree);

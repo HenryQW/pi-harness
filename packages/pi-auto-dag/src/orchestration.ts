@@ -1,4 +1,5 @@
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
+import type { AvailableSkill } from "./config.ts";
 import { cleanupFinalRepair, resumeFinalRepair } from "./final-repair.ts";
 import { executionIssues } from "./graph.ts";
 import {
@@ -30,6 +31,7 @@ export interface OrchestrationOptions {
 	uuid: Uuid;
 	now?: () => string;
 	delay?: (milliseconds: number) => Promise<void>;
+	availableSkills?: () => readonly AvailableSkill[] | undefined;
 }
 
 type CleanupOperation = CleanupBlock["operation"];
@@ -60,7 +62,7 @@ export async function advanceRun(state: RunState, options: OrchestrationOptions)
 	state = await retryCleanup(state, options);
 	if (state.cleanup_blocks?.length) return state;
 	if (state.phase === "aborted" || state.phase === "blocked" || state.phase === "completed") return state;
-	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner), options);
+	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner, options.availableSkills?.()), options);
 }
 
 /** Resume is the only ingress for worker events, so workers never write Run State. */
@@ -100,7 +102,7 @@ export async function resumeRun(
 	if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
 	state = await recoverAppliedIntegration(state, options);
-	const config = await assertRunBoundary(state, options.runner);
+	const config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	if (conflictedIssueId) {
 		const { block_reason: _blockReason, ...recovered } = state;
 		return await replaceConflictedCommit(hasBlockedTask(state) ? state : { ...recovered, phase: "execution" }, conflictedIssueId, config, options);
@@ -393,7 +395,7 @@ async function integrateWave(state: RunState, config: ProjectConfig, options: Or
 		const current = task(state, issueId);
 		if (current.status === "completed") continue;
 		if (current.status !== "approved") return state;
-		config = await assertRunBoundary(state, options.runner);
+		config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
 		const commit = nonEmptyString(current.commit, `Run Task ${issueId} approved commit`);
 		if (current.integration_intent && current.integration_intent !== commit) {
 			throw new Error(`Run Task ${issueId} integration intent does not match its approved commit`);
@@ -411,7 +413,7 @@ async function integrateWave(state: RunState, config: ProjectConfig, options: Or
 		} catch (error) {
 			return await blockRun(state, errorMessage(error), options);
 		}
-		config = await assertRunBoundary(state, options.runner);
+		config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
 		state = await save(replaceTask(state, issueId, { ...current, integration_intent: commit }), options);
 		try {
 			await commandOutput(options.runner, "git", ["cherry-pick", "-x", commit], state.main_worktree);
@@ -426,7 +428,7 @@ async function integrateWave(state: RunState, config: ProjectConfig, options: Or
 		if (state.cleanup_blocks?.length) return state;
 	}
 	state = await save({ ...state, wave: undefined }, options);
-	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner), options);
+	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner, options.availableSkills?.()), options);
 }
 
 async function markIntegrated(state: RunState, issueId: string, integrationCommit: string, options: OrchestrationOptions): Promise<RunState> {
@@ -465,7 +467,7 @@ async function replaceConflictedCommit(
 	config: ProjectConfig,
 	options: OrchestrationOptions,
 ): Promise<RunState> {
-	config = await assertRunBoundary(state, options.runner);
+	config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	await ensureWorktree(state, issueId, options);
 	const base = await commandOutput(options.runner, "git", ["rev-parse", "HEAD"], state.main_worktree);
 	const current = task(state, issueId);

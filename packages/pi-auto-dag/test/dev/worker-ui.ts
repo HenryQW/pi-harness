@@ -17,6 +17,7 @@ const state = createInitialRunState({
 		],
 		final_check: { acceptance: ["Checks pass."], testing: "npm test" },
 	}),
+	skill_registry: [],
 	source_commit: "demo",
 	main_worktree: process.cwd(),
 	integration_branch: "demo",

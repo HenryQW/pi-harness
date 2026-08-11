@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile } from "./config.ts";
+import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
@@ -16,6 +16,7 @@ export interface ImplementationWorkerOptions {
 	runner: CommandRunner;
 	uuid: Uuid;
 	delay?: (milliseconds: number) => Promise<void>;
+	availableSkills?: () => readonly AvailableSkill[] | undefined;
 }
 
 export type ImplementerAction = NonNullable<RunTaskState["pending_action"]>;
@@ -53,7 +54,7 @@ export async function ensureImplementer(
 	mode: ImplementerAction | "resume",
 ): Promise<RunState> {
 	await ensureWorktree(state, issue.id, options);
-	config = await assertRunBoundary(state, options.runner);
+	config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	let current = task(state, issue.id);
 	const action = pendingImplementerAction(current);
 	if (current.pending_action !== action) {
@@ -142,7 +143,7 @@ export async function ensureReviewer(
 	mode: "review" | "resume",
 ): Promise<RunState> {
 	await ensureWorktree(state, issue.id, options);
-	config = await assertRunBoundary(state, options.runner);
+	config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	state = await ensureTaskGate(state, issue, config.required_gate_timeout_ms, options);
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);

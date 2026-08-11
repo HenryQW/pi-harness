@@ -2,7 +2,7 @@ import { access, readFile } from "node:fs/promises";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { commandFailure, errorMessage, runCommand, type CommandRunner } from "./command.ts";
-import { loadProjectConfig } from "./config.ts";
+import { loadProjectConfig, type AvailableSkill } from "./config.ts";
 import { inspectIntegrationBranch, resolveGitTopLevel } from "./git.ts";
 import { assertDeliveryGraphProfiles, deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
 import { assertIgnoredLocalContext } from "./intake.ts";
@@ -16,7 +16,11 @@ export const PLANNING_TOOLS = {
 	approve: "auto_dag_approve",
 } as const;
 
-export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCommand): void {
+export function registerPlanning(
+	pi: ExtensionAPI,
+	runner: CommandRunner = runCommand,
+	availableSkills: () => readonly AvailableSkill[] | undefined = () => undefined,
+): void {
 	pi.registerCommand("dag-plan", {
 		description: "Plan and approve a local Delivery Graph without starting execution",
 		handler: async (args, ctx) => {
@@ -53,7 +57,7 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 			let reviewerLaunch: WorkerLaunch;
 			let implementationProfiles: Array<{ id: string; description: string }>;
 			try {
-				const config = await loadProjectConfig(runner, root);
+				const config = await loadProjectConfig(ctx.getSystemPromptOptions().skills ?? []);
 				reviewerLaunch = createPlanningReviewLaunch(config.profiles[config.reviewer_profile], root);
 				implementationProfiles = config.implementation_profiles.map((id) => ({ id, description: config.profiles[id].description }));
 			} catch (error) {
@@ -85,7 +89,7 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const root = await planningRoot(ctx.cwd, runner);
-			const config = await loadProjectConfig(runner, root);
+			const config = await loadProjectConfig(availableSkills() ?? []);
 			const graph = await readDeliveryGraph(root);
 			assertDeliveryGraphProfiles(graph, config.implementation_profiles);
 			return graphResult(graph);
@@ -103,7 +107,7 @@ export function registerPlanning(pi: ExtensionAPI, runner: CommandRunner = runCo
 			return withFileMutationQueue(deliveryGraphPath(root), () => withFileMutationQueue(planningReviewPath(root), async () => {
 				const activeRun = await readActiveRunId(root);
 				if (activeRun) throw new Error(`Cannot approve while Auto DAG run is active: ${activeRun}`);
-				const config = await loadProjectConfig(runner, root);
+				const config = await loadProjectConfig(availableSkills() ?? []);
 				const draft = await readDeliveryGraph(root);
 				assertDeliveryGraphProfiles(draft, config.implementation_profiles);
 				if (draft.status !== "draft") throw new Error("Delivery Graph must have draft status before approval");

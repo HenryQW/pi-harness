@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { acknowledgeRequiredGate, reconcileRequiredGateProcess, recordedGateEvidence, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
+import type { AvailableSkill } from "./config.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
@@ -17,6 +18,7 @@ export interface CoreLifecycleOptions {
 	now?: () => string;
 	mainPane?: () => string | undefined;
 	delay?: (milliseconds: number) => Promise<void>;
+	availableSkills?: () => readonly AvailableSkill[] | undefined;
 }
 
 export interface CoreLifecycle {
@@ -34,13 +36,27 @@ const lifecycleMutationTails = new Map<string, Promise<void>>();
 export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLifecycle {
 	const runner = options.runner ?? runCommand;
 	const uuid = options.uuid ?? randomUUID;
-	const orchestration: OrchestrationOptions = { runner, uuid, now: options.now, delay: options.delay };
+	const orchestration: OrchestrationOptions = {
+		runner,
+		uuid,
+		now: options.now,
+		delay: options.delay,
+		availableSkills: options.availableSkills,
+	};
 	return {
 		async start(mainWorktree, mainPane) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const pane = nonEmptyString(mainPane ?? options.mainPane?.(), "main Herdr pane");
 				const workspaceId = await workerWorkspaceId(root, pane, { runner });
-				const state = await startLocalRun({ mainWorktree: root, runner, uuid, now: options.now, mainPane: pane, workspaceId });
+				const state = await startLocalRun({
+					mainWorktree: root,
+					runner,
+					uuid,
+					now: options.now,
+					mainPane: pane,
+					workspaceId,
+					availableSkills: options.availableSkills?.(),
+				});
 				return await completeSuccessfulRun(await blockOnFailure(state, uuid, async () => await initializeOrchestration(state, pane, orchestration)), orchestration);
 			});
 		},
@@ -77,7 +93,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				if (state.phase === "aborted" || state.phase === "completed") {
 					throw new Error(`Cannot resolve a ${state.phase} run`);
 				}
-				const config = await guardBoundary(state, runner, uuid);
+				const config = await guardBoundary(state, runner, uuid, options.availableSkills?.());
 				const id = nonEmptyString(issueId, "resolution issue_id");
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
 				const prResolved = await resolveFinalRepair(state, id, resolution, config, orchestration);
@@ -235,9 +251,14 @@ async function reconcileGate(state: RunState, options: OrchestrationOptions): Pr
 	return await recordGateExecution(state, target, execution, options.uuid);
 }
 
-async function guardBoundary(state: RunState, runner: CommandRunner, uuid: Uuid): Promise<ProjectConfig> {
+async function guardBoundary(
+	state: RunState,
+	runner: CommandRunner,
+	uuid: Uuid,
+	availableSkills?: readonly AvailableSkill[],
+): Promise<ProjectConfig> {
 	try {
-		return await assertRunBoundary(state, runner);
+		return await assertRunBoundary(state, runner, availableSkills);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		await writeRunState(state.main_worktree, { ...state, phase: "blocked", block_reason: message }, uuid);

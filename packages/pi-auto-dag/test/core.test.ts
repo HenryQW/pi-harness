@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { markGateHostReady, reconcileRequiredGateProcess, requiredGateProcessPath, runCommand, runRequiredGate, type RequiredGateExecution } from "../src/command.ts";
-import { loadProjectConfig, parseProjectConfig, parseResolvedProfile } from "../src/config.ts";
+import { loadProjectConfig, parseProjectConfig, resolveProjectConfig } from "../src/config.ts";
 import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle } from "../src/lifecycle.ts";
@@ -21,7 +21,7 @@ import { writeWorkerReceipt } from "../src/review-ticket.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
 import { workerAgentName } from "../src/worker-host.ts";
 import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
-import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
+import { createTestProfiles, createTestSkills, testProfileConfig, testSkills } from "./support/profiles.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
@@ -178,6 +178,7 @@ test("required gate output overflow becomes exact failed evidence", async (t) =>
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
 		source_commit: commit,
 		main_worktree: project.root,
 		integration_branch: "main",
@@ -321,6 +322,7 @@ test("completed required gate handoff is recovered without rerunning the command
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
 		source_commit: commit,
 		main_worktree: project.root,
 		integration_branch: "main",
@@ -859,19 +861,31 @@ test("strict config and local graph validation derive deterministic dependencies
 	assert.throws(() => parseDeliveryGraph({ ...graph, final_check: { ...graph.final_check, acceptance: [] } }), /must contain at least one criterion/);
 });
 
-test("resolved profile contract rejects identity drift, relative resources, and duplicate tools", () => {
-	const profile = {
-		version: 1,
-		id: "backend",
-		description: "Backend implementation",
-		agent_dir: "/tmp/backend",
-		skills: ["/tmp/backend-skills", "/tmp/shared-skills"],
-		tools: ["read", "bash"],
-	};
-	assert.deepEqual(parseResolvedProfile(profile, "backend"), profile);
-	assert.throws(() => parseResolvedProfile({ ...profile, id: "coder" }, "backend"), /must equal requested profile ID/);
-	assert.throws(() => parseResolvedProfile({ ...profile, agent_dir: "relative" }, "backend"), /must be absolute/);
-	assert.throws(() => parseResolvedProfile({ ...profile, tools: ["read", "read"] }, "backend"), /must not contain duplicates/);
+test("config profiles resolve skill names from effective Pi registry without collapsing registry duplicates", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-profile-config-"));
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	await createTestProfiles(root);
+	await createTestSkills(root);
+	const config = parseProjectConfig(testProfileConfig(root, {
+		profileSkills: { backend: ["coding", "shared"] },
+	}));
+	const [coding, shared] = testSkills(root);
+	const resolved = await resolveProjectConfig(config, [shared, coding, shared]);
+	assert.deepEqual(resolved.profiles.backend.skills, [shared.filePath, coding.filePath, shared.filePath]);
+	assert.deepEqual(resolved.skill_registry, [
+		{ name: "shared", file_path: shared.filePath },
+		{ name: "coding", file_path: coding.filePath },
+		{ name: "shared", file_path: shared.filePath },
+	]);
+	await assert.rejects(resolveProjectConfig(config, [coding]), /Configured Pi skill is unavailable: shared/);
+	assert.throws(() => parseProjectConfig({
+		...testProfileConfig(root),
+		profiles: { ...testProfileConfig(root).profiles, backend: { ...testProfileConfig(root).profiles.backend, agent_dir: "relative" } },
+	}), /must be absolute/);
+	assert.throws(() => parseProjectConfig({
+		...testProfileConfig(root),
+		profiles: { ...testProfileConfig(root).profiles, backend: { ...testProfileConfig(root).profiles.backend, tools: ["read", "read"] } },
+	}), /must not contain duplicates/);
 });
 
 test("worker agent names hash opaque identities into the Herdr contract", () => {
@@ -892,6 +906,7 @@ test("persisted state rejects obsolete and malformed durable values", () => {
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -916,14 +931,15 @@ test("agent config follows PI_CODING_AGENT_DIR and strictly loads JSON", async (
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
 	await createTestProfiles(agentDir);
+	await createTestSkills(agentDir);
 	useAgentDir(t, agentDir);
-	const config = testProfileConfig(agentDir);
+	const config = testProfileConfig(agentDir, { profileSkills: { backend: ["coding", "shared"] } });
 	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(config));
-	const loaded = await loadProjectConfig();
+	const loaded = await loadProjectConfig(testSkills(agentDir));
 	assert.deepEqual(Object.keys(loaded.profiles), ["coder", "backend", "frontend", "reviewer"]);
 	assert.equal(loaded.profiles.backend.agent_dir, join(agentDir, "profiles", "backend"));
-	assert.equal(loaded.profiles.backend.skills[1], join(agentDir, "shared-skills", ".agents", "skills"));
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), "version: 2\n");
+	assert.deepEqual(loaded.profiles.backend.skills, testSkills(agentDir).map((skill) => skill.filePath));
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), "version: 3\n");
 	await assert.rejects(loadProjectConfig(), /not valid JSON/);
 	await rm(join(agentDir, "config", "pi-auto-dag.json"));
 	await assert.rejects(loadProjectConfig(), /Cannot read pi-auto-dag configuration/);
@@ -933,17 +949,41 @@ test("local intake resolves the Git top-level and boundaries use agent config", 
 	const project = await makeProject(t);
 	const subdirectory = join(project.root, "packages", "app");
 	await mkdir(subdirectory, { recursive: true });
-	const state = await startLocalRun({ mainWorktree: subdirectory, mainPane: "main-pane", workspaceId: "main-workspace", uuid: () => RUN_ID, now: () => "2026-08-09T00:00:00.000Z" });
+	await createTestSkills(project.agentDir);
+	const [coding] = testSkills(project.agentDir);
+	const profileSkills = { coder: ["coding"] };
+	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(project.root, { profileSkills })));
+	const availableSkills = [coding, coding];
+	const state = await startLocalRun({
+		mainWorktree: subdirectory,
+		mainPane: "main-pane",
+		workspaceId: "main-workspace",
+		uuid: () => RUN_ID,
+		now: () => "2026-08-09T00:00:00.000Z",
+		availableSkills,
+	});
 
 	assert.equal(state.main_worktree, project.root);
+	assert.deepEqual(state.skill_registry, [
+		{ name: "coding", file_path: coding.filePath },
+		{ name: "coding", file_path: coding.filePath },
+	]);
 	assert.equal(state.graph_hash, hashDeliveryGraph(parseDeliveryGraph(graph)));
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	assert.equal((await createCoreLifecycle().status(subdirectory))?.run_id, RUN_ID);
 	assert.equal((await readRunState(project.root, RUN_ID))?.source_commit, state.source_commit);
-	await assert.rejects(startLocalRun({ mainWorktree: project.root, mainPane: "main-pane", workspaceId: "main-workspace", uuid: () => "22222222-2222-4222-8222-222222222222" }), /active pi-auto-dag run/);
+	await assert.rejects(startLocalRun({
+		mainWorktree: project.root,
+		mainPane: "main-pane",
+		workspaceId: "main-workspace",
+		uuid: () => "22222222-2222-4222-8222-222222222222",
+		availableSkills,
+	}), /active pi-auto-dag run/);
 
-	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(project.root, { maxParallel: 2 })));
-	assert.equal((await assertRunBoundary(state)).max_parallel_tasks, 2);
+	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(project.root, { maxParallel: 2, profileSkills })));
+	const recoveredConfig = await assertRunBoundary(state);
+	assert.equal(recoveredConfig.max_parallel_tasks, 2);
+	assert.deepEqual(recoveredConfig.profiles.coder.skills, [coding.filePath, coding.filePath]);
 
 	const changedGraph = { ...graph, goal: "Changed local DAG" };
 	await writeFile(join(project.root, ".context", "issues", "graph.json"), JSON.stringify(changedGraph));
@@ -980,6 +1020,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -1258,7 +1299,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 	});
 	assert.equal(launch.env.PI_AUTO_DAG_DELIVERY_TIMEOUT_MS, "7260000");
 	assert.deepEqual(launch.args, [
-		"--offline", "--no-session", "--no-skills", "--skill", "/tmp/coder-skills", "--skill", "/Users/test/.pi/shared-skills/.agents/skills",
+		"--offline", "--no-session", "--no-skills", "--skill", "/tmp/coder/SKILL.md", "--skill", "/Users/test/.pi/shared/SKILL.md",
 		"--extension", WORKER_EXTENSION_PATH, "--tools",
 		"read,bash,edit,write,web_search,auto_dag_request_review,auto_dag_block_task",
 	]);
@@ -1316,6 +1357,7 @@ test("orchestrator routes worker envelopes without an LLM turn and keeps tool te
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -1439,11 +1481,10 @@ async function makeProject(t: TestContext, gitignore = ".context/\n"): Promise<{
 
 function resolvedProfile(id: string, tools: string[]) {
 	return {
-		version: 1 as const,
 		id,
 		description: `${id} profile`,
 		agent_dir: `/tmp/${id}`,
-		skills: [`/tmp/${id}-skills`, "/Users/test/.pi/shared-skills/.agents/skills"],
+		skills: [`/tmp/${id}/SKILL.md`, "/Users/test/.pi/shared/SKILL.md"],
 		tools,
 	};
 }

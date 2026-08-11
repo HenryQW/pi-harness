@@ -29,7 +29,7 @@ Load orchestrator extension only in main integration profile:
 }
 ```
 
-Worker profiles remain reusable Pi profiles and must not load Auto DAG. Auto DAG injects `extensions/worker.ts` when it launches a worker, adding only role-specific lifecycle tools:
+Worker profile directories remain reusable Pi agent directories and must not load Auto DAG. Auto DAG injects `extensions/worker.ts` when it launches a worker, adding only role-specific lifecycle tools:
 
 - Implementers request review or report blockers.
 - Planning reviewers record `PASS` for exact current graph hash.
@@ -37,50 +37,48 @@ Worker profiles remain reusable Pi profiles and must not load Auto DAG. Auto DAG
 
 Herdr only hosts processes. Auto DAG passes resolved environment and Pi arguments when creating each process.
 
-## Profile resolver
-
-Profile definitions live outside Auto DAG. Configure one command which accepts profile ID as final argument and writes one JSON object to stdout:
-
-```json
-{
-  "version": 1,
-  "id": "backend",
-  "description": "Backend implementation",
-  "agent_dir": "/absolute/path/to/profiles/backend",
-  "skills": [
-    "/absolute/path/to/profiles/backend/.agents/skills",
-    "/absolute/path/to/shared-skills/.agents/skills"
-  ],
-  "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"]
-}
-```
-
-`id` must match requested ID. `agent_dir` and every skill path must be absolute existing directories. Profile directory settings own model, system prompt, packages, and other Pi behavior. Resolver owns baseline skills and tools. Auto DAG adds worker extension and lifecycle tools.
-
-Packaged [`examples/pi-profile.sh`](examples/pi-profile.sh) provides reusable launch and resolver modes. Copy it into Pi config, then customize profile IDs and tool lists:
-
-```bash
-mkdir -p ~/.pi/scripts
-cp node_modules/@henryqw/pi-auto-dag/examples/pi-profile.sh ~/.pi/scripts/pi-profile.sh
-chmod +x ~/.pi/scripts/pi-profile.sh
-~/.pi/scripts/pi-profile.sh resolve backend
-```
-
 ## Configuration
 
 Create `~/.pi/agent/config/pi-auto-dag.json`:
 
 ```json
 {
-  "version": 2,
-  "profile_resolver": ["~/.pi/scripts/pi-profile.sh", "resolve"],
+  "version": 3,
+  "profiles": {
+    "coder": {
+      "description": "General implementation",
+      "agent_dir": "/absolute/path/to/profiles/coder",
+      "skills": ["agent-memory", "tdd"],
+      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"]
+    },
+    "backend": {
+      "description": "Backend implementation",
+      "agent_dir": "/absolute/path/to/profiles/backend",
+      "skills": ["agent-memory", "tdd"],
+      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"]
+    },
+    "frontend": {
+      "description": "Frontend implementation",
+      "agent_dir": "/absolute/path/to/profiles/frontend",
+      "skills": ["agent-memory", "tdd"],
+      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"]
+    },
+    "reviewer": {
+      "description": "Read-only review",
+      "agent_dir": "/absolute/path/to/profiles/reviewer",
+      "skills": [],
+      "tools": ["read", "bash", "grep", "find", "ls"]
+    }
+  },
   "implementation_profiles": ["coder", "backend", "frontend"],
   "reviewer_profile": "reviewer",
   "repair_profile": "coder"
 }
 ```
 
-Auto DAG appends each configured profile ID to `profile_resolver`, resolves all profiles before use, and rejects malformed output or missing resources. `repair_profile` must be one of `implementation_profiles`.
+Each profile ID is its key. `agent_dir` must be an absolute existing directory. `skills` contains effective Pi skill names, not paths. `tools` contains baseline tool names. `repair_profile` must be one of `implementation_profiles`; every referenced profile must exist.
+
+At runtime Auto DAG resolves configured skill names only from Pi's ordered `event.systemPromptOptions.skills` registry. This preserves Pi discovery, trust, precedence, collision winners, and any entries repeated in that effective list. Unknown names block before Worker creation. Workers launch with `--no-skills` followed by one `--skill <absolute SKILL.md>` argument per selected registry entry, so no ambient skills load. Run State stores selected registry entries only as derived recovery data.
 
 Optional settings:
 

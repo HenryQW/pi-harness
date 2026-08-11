@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { loadProjectConfig } from "./config.ts";
+import { loadProjectConfig, type AvailableSkill } from "./config.ts";
 import { runCommand, type CommandRunner } from "./command.ts";
 import { assertDeliveryGraphProfiles, hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
 import { inspectActiveIntegrationWorktree, inspectIntegrationCandidate, resolveGitTopLevel } from "./git.ts";
@@ -17,6 +17,7 @@ export interface IntakeOptions {
 	now?: () => string;
 	mainPane: string;
 	workspaceId: string;
+	availableSkills?: readonly AvailableSkill[];
 }
 
 /** Validate local authority once, then persist the normalized graph and integration facts. */
@@ -27,7 +28,7 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const mainPane = nonEmptyString(options.mainPane, "main Herdr pane");
 	const source = await inspectIntegrationCandidate(mainWorktree, runner);
 	await assertIgnoredLocalContext(mainWorktree, runner);
-	const config = await loadProjectConfig(runner, mainWorktree);
+	const config = await loadProjectConfig(options.availableSkills);
 	const graph = await readDeliveryGraph(mainWorktree);
 	assertDeliveryGraphProfiles(graph, config.implementation_profiles);
 	if (graph.status !== "approved") throw new Error("Delivery Graph must be approved before starting a run");
@@ -35,6 +36,7 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const state = createInitialRunState({
 		run_id: uuid(),
 		graph,
+		skill_registry: config.skill_registry,
 		source_commit: source.head,
 		main_worktree: mainWorktree,
 		integration_branch: source.branch,
@@ -63,6 +65,7 @@ export async function assertIgnoredLocalContext(mainWorktree: string, runner: Co
 export async function assertRunBoundary(
 	state: RunState,
 	runner: CommandRunner = runCommand,
+	availableSkills?: readonly AvailableSkill[],
 ): Promise<ProjectConfig> {
 	const current = await inspectActiveIntegrationWorktree(state.main_worktree, runner);
 	if (current.branch !== state.integration_branch) {
@@ -75,7 +78,10 @@ export async function assertRunBoundary(
 	if (hashDeliveryGraph(graph) !== state.graph_hash) {
 		throw new Error("Delivery Graph changed during the run; execution is blocked");
 	}
-	const config = await loadProjectConfig(runner, state.main_worktree);
+	const config = await loadProjectConfig(availableSkills ?? state.skill_registry.map((skill) => ({
+		name: skill.name,
+		filePath: skill.file_path,
+	})));
 	assertDeliveryGraphProfiles(graph, config.implementation_profiles);
 	return config;
 }

@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile } from "./config.ts";
+import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
@@ -17,6 +17,7 @@ export interface PrHealthOptions {
 	runner: CommandRunner;
 	uuid: Uuid;
 	now?: () => string;
+	availableSkills?: () => readonly AvailableSkill[] | undefined;
 }
 
 export async function runPrHealth(
@@ -113,7 +114,7 @@ async function resumePendingHealthWork(state: RunState, config: ProjectConfig, o
 
 async function loadPrHealthConfig(state: RunState, options: PrHealthOptions): Promise<ProjectConfig> {
 	try {
-		return await assertRunBoundary(state, options.runner);
+		return await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	} catch (error) {
 		await save({ ...state, phase: "blocked", block_reason: errorMessage(error) }, options);
 		throw error;
@@ -543,7 +544,7 @@ async function applyHealthRepair(state: RunState, options: PrHealthOptions): Pro
 	if (!(await activeHealthHeadMatches(state, health, options))) {
 		return await blockHealth(state, "PR head changed before applying health repair", options);
 	}
-	await assertRunBoundary(state, options.runner);
+	await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	await verifyHealthRepairCommit(state, commit, options);
 	if (!health.integration_intent) {
 		state = await save({ ...state, health: { ...health, status: "applying", integration_intent: commit } }, options);
@@ -670,7 +671,7 @@ async function recoverHealthFastForward(state: RunState, options: PrHealthOption
 		if (head !== intent.expected_head && head !== intent.remote_head) {
 			throw new Error("PR-health fast-forward did not leave the exact intended integration HEAD");
 		}
-		if (head === intent.expected_head) await assertRunBoundary(state, options.runner);
+		if (head === intent.expected_head) await assertRunBoundary(state, options.runner, options.availableSkills?.());
 		const fastForwardArgs = ["merge-base", "--is-ancestor", intent.expected_head, intent.remote_head];
 		const fastForward = await options.runner("git", fastForwardArgs, { cwd: state.main_worktree });
 		if (fastForward.code === 1) {

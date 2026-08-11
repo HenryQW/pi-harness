@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
+import type { AvailableSkill } from "./config.ts";
 import { executionIssues } from "./graph.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
@@ -29,10 +30,18 @@ const ORCHESTRATOR_TOOL_NAMES = new Set<string>(Object.values(ORCHESTRATOR_TOOLS
 
 /** The main integration extension exposes the public lifecycle surface and nothing else. */
 export function createOrchestratorExtension(options: OrchestratorExtensionOptions = {}) {
-	const lifecycle = options.lifecycle ?? createCoreLifecycle({ mainPane: () => process.env.HERDR_PANE_ID });
+	let effectiveSkills: readonly AvailableSkill[] | undefined;
+	const availableSkills = (): readonly AvailableSkill[] | undefined => effectiveSkills;
+	const lifecycle = options.lifecycle ?? createCoreLifecycle({
+		mainPane: () => process.env.HERDR_PANE_ID,
+		availableSkills,
+	});
 	const runner = options.runner ?? runCommand;
 	return (pi: ExtensionAPI) => {
-		registerPlanning(pi, runner);
+		pi.on("before_agent_start", (event) => {
+			effectiveSkills = event.systemPromptOptions.skills ?? [];
+		});
+		registerPlanning(pi, runner, availableSkills);
 		let state: RunState | undefined;
 		let liveAgents: Map<string, string> | undefined;
 		let pendingHandoffs = new Set<string>();

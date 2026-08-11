@@ -1,21 +1,41 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 export const TEST_PROFILE_IDS = ["coder", "backend", "frontend", "reviewer"] as const;
-const resolver = fileURLToPath(new URL("./fake-profile-resolver.mjs", import.meta.url));
+export const TEST_SKILL_NAMES = ["coding", "shared"] as const;
 
 export async function createTestProfiles(root: string): Promise<void> {
-	await mkdir(join(root, "shared-skills", ".agents", "skills"), { recursive: true });
 	await Promise.all(TEST_PROFILE_IDS.map(async (id) => {
-		await mkdir(join(root, "profiles", id, ".agents", "skills"), { recursive: true });
+		await mkdir(join(root, "profiles", id), { recursive: true });
 	}));
 }
 
-export function testProfileConfig(root: string, options: { maxParallel?: number; maxReviews?: number } = {}) {
+export async function createTestSkills(root: string): Promise<void> {
+	await Promise.all(TEST_SKILL_NAMES.map(async (name) => {
+		const directory = join(root, "skills", name);
+		await mkdir(directory, { recursive: true });
+		await writeFile(join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: Test skill\n---\n`);
+	}));
+}
+
+export function testSkills(root: string) {
+	return TEST_SKILL_NAMES.map((name) => ({ name, filePath: join(root, "skills", name, "SKILL.md") }));
+}
+
+export function testProfileConfig(root: string, options: {
+	maxParallel?: number;
+	maxReviews?: number;
+	profileSkills?: Partial<Record<(typeof TEST_PROFILE_IDS)[number], string[]>>;
+} = {}) {
+	const coding = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search"];
 	return {
-		version: 2,
-		profile_resolver: [process.execPath, resolver, root],
+		version: 3,
+		profiles: Object.fromEntries(TEST_PROFILE_IDS.map((id) => [id, {
+			description: `${id} test profile`,
+			agent_dir: join(root, "profiles", id),
+			skills: options.profileSkills?.[id] ?? [],
+			tools: id === "reviewer" ? ["read", "bash", "grep", "find", "ls", "web_search"] : coding,
+		}])),
 		implementation_profiles: ["coder", "backend", "frontend"],
 		reviewer_profile: "reviewer",
 		repair_profile: "coder",
