@@ -77,7 +77,10 @@ export async function resumeRun(
 		const existing = await readWorkerReceipt(receiptPath!);
 		if (existing) {
 			if (existing.event_id !== workerEnvelope.event_id) throw new Error("Worker receipt belongs to another event");
-			if (existing.status === "rejected") throw new Error(`Auto DAG event ${workerEnvelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+			if (existing.status === "rejected") {
+				await rotateEnvelopeActionTicket(state, workerEnvelope, options);
+				throw new Error(`Auto DAG event ${workerEnvelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+			}
 			receiptAccepted = true;
 		}
 	}
@@ -122,16 +125,7 @@ export async function resumeRun(
 			const persisted = await readRunState(state.main_worktree, state.run_id);
 			if (!persisted || !hasAcceptedWorkerEvent(persisted, workerEnvelope)) {
 				await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
-				const issue = executionIssues(state.graph).find((candidate) => candidate.id === workerEnvelope.issue_id);
-				if (issue) {
-					await rotateRejectedActionTicket(
-						actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.role === "final_check" ? "lifecycle" : "implementation", workerEnvelope.role),
-						workerEnvelope.event_id,
-						state.main_worktree,
-						state.run_id,
-						options.uuid,
-					);
-				}
+				await rotateEnvelopeActionTicket(state, workerEnvelope, options);
 			}
 			throw error;
 		}
@@ -145,6 +139,18 @@ export async function resumeRun(
 	if (hasBlockedTask(state)) return state;
 	state = await reconcileWorkers(state, config, options);
 	return state.phase === "blocked" ? state : await advanceWithConfig(state, config, options);
+}
+
+async function rotateEnvelopeActionTicket(state: RunState, envelope: WorkerEnvelope, options: OrchestrationOptions): Promise<void> {
+	const issue = executionIssues(state.graph).find((candidate) => candidate.id === envelope.issue_id);
+	if (!issue) return;
+	await rotateRejectedActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.role === "final_check" ? "lifecycle" : "implementation", envelope.role),
+		envelope.event_id,
+		state.main_worktree,
+		state.run_id,
+		options.uuid,
+	);
 }
 
 /** Abort cleanup never forces an uncommitted worktree away. */

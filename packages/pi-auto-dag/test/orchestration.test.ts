@@ -358,6 +358,38 @@ test("rejected active action rotates ticket for corrected retry", async (t) => {
 	assert.equal((await readWorkerReceipt(replacement.receipt_path))?.status, "accepted");
 });
 
+test("rejected receipt recovery rotates active action ticket", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	const ticketPath = actionTicketPath(project.root, RUN_ID, "alpha", "implementation", "reviewer");
+	const current = await readActionTicket(ticketPath);
+	const submission = {
+		...JSON.parse(reviewEvent(state, "alpha", "approved", [])),
+		event_id: current.event_id,
+		receipt_path: current.receipt_path,
+		review_id: current.review_id,
+	};
+	await writeWorkerReceipt(current.receipt_path, { event_id: current.event_id, status: "rejected", reason: "interrupted rejection" });
+
+	await assert.rejects(lifecycle.resume(project.root, JSON.stringify(submission)), /interrupted rejection/);
+	const replacement = await readActionTicket(ticketPath);
+	assert.notEqual(replacement.event_id, current.event_id);
+	const corrected = {
+		...submission,
+		event_id: replacement.event_id,
+		receipt_path: replacement.receipt_path,
+		review_id: replacement.review_id,
+	};
+
+	state = await lifecycle.resume(project.root, JSON.stringify(corrected));
+	assert.equal(state.tasks.alpha.status, "completed");
+	assert.equal((await readWorkerReceipt(replacement.receipt_path))?.status, "accepted");
+});
+
 test("accepted event IDs reject a changed envelope body", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();

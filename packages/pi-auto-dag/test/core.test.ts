@@ -570,6 +570,55 @@ test("interrupted required gate process is terminated and its Git dirt is restor
 	assert.equal(await git(project.root, "status", "--porcelain"), "");
 });
 
+test("gate cancellation is durable before command termination", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const started = join(project.root, "gate-started.txt");
+	const running = runCommand(process.execPath, ["-e", `require("node:fs").writeFileSync(${JSON.stringify(started)}, "started\\n"); setInterval(() => {}, 1000)`], {
+		cwd: project.root,
+		timeoutMs: 10_000,
+		gateProcess: { path: processPath, command: "test gate", commit, target: CORE_GATE_TARGET },
+	});
+	for (let attempt = 0; attempt < 200; attempt += 1) {
+		try { await access(started); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+	}
+	await access(started);
+	const record = JSON.parse(await readFile(processPath, "utf8"));
+	const commandPath = `${processPath}.${record.launch_id}.command`;
+	const command = JSON.parse(await readFile(commandPath, "utf8"));
+	const cancelPath = `${processPath}.${record.launch_id}.cancel`;
+	await writeFile(cancelPath, "cancel\n");
+	await chmod(dirname(processPath), 0o500);
+	let interruption: unknown;
+	try {
+		await reconcileRequiredGateProcess(runCommand, processPath);
+	} catch (error) {
+		interruption = error;
+	} finally {
+		await chmod(dirname(processPath), 0o700);
+	}
+	assert.match(String(interruption), /EACCES|EPERM/);
+	let commandStoppedWithoutMarker = false;
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		try {
+			const { stdout } = await execFile("ps", ["-o", "stat=", "-p", String(command.pid)]);
+			if (stdout.trim().startsWith("Z")) { commandStoppedWithoutMarker = true; break; }
+		} catch (error) {
+			if (String((error as NodeJS.ErrnoException).code) === "1") { commandStoppedWithoutMarker = true; break; }
+			throw error;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	const recovered = await reconcileRequiredGateProcess(runCommand, processPath);
+	await running;
+
+	assert.equal(commandStoppedWithoutMarker, false);
+	assert.equal(recovered, undefined);
+	await assert.rejects(access(processPath), /ENOENT/);
+});
+
 test("reconciliation preserves completion journaled during cancellation", async (t) => {
 	if (process.platform === "win32") return t.skip("Unix process groups only");
 	const project = await makeProject(t);

@@ -249,16 +249,21 @@ export async function reconcileRequiredGateProcess(
 	let hostCancellationSent = false;
 	if (command && await processIdentity(command.pid) === command.identity) {
 		const hostStopped = Boolean(host && await processIdentity(host.pid) === host.identity && signalProcess(host.pid, false, "SIGSTOP"));
-		commandCancelled = signalProcess(command.pid, true, "SIGTERM");
-		if (commandCancelled) {
-			await writeGateCancellation(gateHostCancelledPath(path, record.launch_id));
-			if (hostStopped && host && await processIdentity(host.pid) === host.identity) {
-				hostCancellationSent = signalProcess(host.pid, false, "SIGTERM");
+		const cancelledPath = gateHostCancelledPath(path, record.launch_id);
+		try {
+			await writeGateCancellation(cancelledPath);
+			commandCancelled = signalProcess(command.pid, true, "SIGTERM");
+			if (!commandCancelled) await removeFile(cancelledPath);
+			if (commandCancelled) {
+				if (hostStopped && host && await processIdentity(host.pid) === host.identity) {
+					hostCancellationSent = signalProcess(host.pid, false, "SIGTERM");
+				}
+				await delay(100);
+				if (await processIdentity(command.pid) === command.identity) signalProcess(command.pid, true, "SIGKILL");
 			}
-			await delay(100);
-			if (await processIdentity(command.pid) === command.identity) signalProcess(command.pid, true, "SIGKILL");
+		} finally {
+			if (hostStopped && host && await processIdentity(host.pid) === host.identity) signalProcess(host.pid, false, "SIGCONT");
 		}
-		if (hostStopped && host && await processIdentity(host.pid) === host.identity) signalProcess(host.pid, false, "SIGCONT");
 	}
 	if (command && !commandCancelled) {
 		await removeFile(cancelPath);
