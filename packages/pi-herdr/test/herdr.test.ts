@@ -23,4 +23,12 @@ test("Herdr client keeps execution generic and normalizes CLI responses", async 
 
 	const invalid = createHerdrClient(async () => ({ code: 0, stdout: "not json", stderr: "" }));
 	await assert.rejects(invalid.json(["tab", "list"], { cwd: "/repo" }), /herdr tab list returned invalid JSON/);
+
+	let executed = false;
+	const validated = createHerdrClient(async () => {
+		executed = true;
+		return { code: 0, stdout: "", stderr: "" };
+	});
+	await assert.rejects(validated.exec([1] as unknown as string[], {}), /arguments must be an array of strings/);
+	assert.equal(executed, false);
 });

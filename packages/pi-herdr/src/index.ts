@@ -18,8 +18,12 @@ export interface HerdrClient<Options> {
 }
 
 export function createHerdrClient<Options>(execute: HerdrExecutor<Options>): HerdrClient<Options> {
-	const exec = async (args: readonly string[], options: Options): Promise<HerdrExecResult> =>
-		await execute("herdr", args, options);
+	const exec = async (args: readonly string[], options: Options): Promise<HerdrExecResult> => {
+		if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
+			throw new TypeError("Herdr command arguments must be an array of strings");
+		}
+		return await execute("herdr", args, options);
+	};
 	const run = async (args: readonly string[], options: Options): Promise<string> => {
 		const result = await exec(args, options);
 		if (result.code !== 0 || result.killed) throw new Error(herdrCommandFailure(args, result));

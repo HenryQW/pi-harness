@@ -10,7 +10,7 @@ const herdr = createHerdrClient((command, args, options) =>
 const response = await herdr.json(["agent", "list"], { cwd: ctx.cwd });
 ```
 
-`exec` returns raw process result, `run` requires successful exit and returns stdout, and `json` also parses JSON object response. `hasHerdrErrorCode` detects structured CLI errors in stdout or stderr.
+`exec` validates string argv and returns raw process result, `run` requires successful exit and returns stdout, and `json` also parses JSON object response. `hasHerdrErrorCode` detects structured CLI errors in stdout or stderr.
 
 Package does not mirror Herdr command catalog or validate command-specific response fields. Callers keep domain checks; Herdr remains protocol source of truth.
 
