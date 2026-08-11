@@ -89,7 +89,7 @@ function withoutDeletedHeaders(headers: Record<string, string | null> | undefine
 
 // Emergency context guard keeps recent messages while default compaction runs.
 const KEEP_RECENT_PERCENT = 15;
-const COMPACTION_INSTRUCTIONS = "Preserve current task for automatic resumption.";
+const COMPACTION_INSTRUCTIONS = "Preserve current task to be resumed after compaction.";
 const RESUME_MESSAGE = "Auto-compact ran. Continue the current task.";
 const COMPACTION_ABORT_ERROR = "This operation was aborted";
 const ACTIVATION_ERROR =
