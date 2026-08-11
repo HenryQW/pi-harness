@@ -45,6 +45,22 @@ export interface WorkerReceipt {
 	reason?: string;
 }
 
+export class WorkerEnvelopeRejectedError extends Error {
+	override name = "WorkerEnvelopeRejectedError";
+}
+
+export async function rejectWorkerEnvelope(
+	receiptPath: string | undefined,
+	eventId: string,
+	reason: string,
+	uuid: Uuid = randomUUID,
+): Promise<never> {
+	if (receiptPath && !(await readWorkerReceipt(receiptPath))) {
+		await writeWorkerReceipt(receiptPath, { event_id: eventId, status: "rejected", reason }, uuid);
+	}
+	throw new WorkerEnvelopeRejectedError(reason);
+}
+
 export function actionTicketPath(
 	mainWorktree: string,
 	runId: string,
@@ -74,6 +90,26 @@ export async function writeActionTicket(path: string, ticket: ActionTicket, uuid
 
 export async function readActionTicket(path: string): Promise<ActionTicket> {
 	return parseActionTicket(JSON.parse(await readFile(path, "utf8")));
+}
+
+export async function assertActiveActionTicket(path: string, action: ActionTicket): Promise<void> {
+	let ticket: ActionTicket;
+	try {
+		ticket = await readActionTicket(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			throw new WorkerEnvelopeRejectedError(`Worker event ${action.event_id} does not match active action ticket`);
+		}
+		throw error;
+	}
+	if (
+		ticket.event_id !== action.event_id
+		|| ticket.attempt !== action.attempt
+		|| ticket.review_round !== action.review_round
+		|| ticket.role !== action.role
+		|| ticket.receipt_path !== action.receipt_path
+		|| (action.review_id !== undefined && ticket.review_id !== action.review_id)
+	) throw new WorkerEnvelopeRejectedError(`Worker event ${action.event_id} does not match active action ticket`);
 }
 
 export async function ensureActionTicket(

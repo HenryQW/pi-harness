@@ -1,4 +1,5 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,10 @@ import {
 const DEFAULT_LIMIT = 10;
 const MODEL_CLASSES = ["fast", "balanced", "frontier"] as const;
 const CONFIG_PATH = () => join(getAgentDir(), "config", "pi-herdr-subagents.json");
+const CONFIG_LOCK_TIMEOUT_MS = 1_000;
+const CONFIG_LOCK_RETRY_MS = 25;
+const CONFIG_LOCK_FAILURE = "Subagent config is busy; try again.";
+const CONFIG_LOCK_OWNER = "owner";
 const SUBAGENT_EXTENSION = fileURLToPath(new URL("../internal/subagent.ts", import.meta.url));
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const DEFINITIVE_PROMPT_ERRORS = new Set([
@@ -102,9 +107,9 @@ function configModels(value: unknown): { value: Config["models"]; invalid: boole
 	return { value: models, invalid };
 }
 
-async function readConfig(): Promise<{ value: Config; invalid: boolean }> {
+async function readConfig(path = CONFIG_PATH()): Promise<{ value: Config; invalid: boolean }> {
 	try {
-		const value = JSON.parse(await readFile(CONFIG_PATH(), "utf8")) as unknown;
+		const value = JSON.parse(await readFile(path, "utf8")) as unknown;
 		if (!value || typeof value !== "object" || Array.isArray(value)) return { value: defaultConfig(), invalid: true };
 		const record = value as Record<string, unknown>;
 		const limit = configLimit(record.maxConcurrentSubagents ?? record.maxConcurrentWorkers);
@@ -121,10 +126,71 @@ async function readConfig(): Promise<{ value: Config; invalid: boolean }> {
 	}
 }
 
-async function writeConfig(config: Config): Promise<void> {
+async function removeConfigLock(lock: string): Promise<void> {
+	const tombstone = `${lock}.${randomUUID()}.tombstone`;
+	await rename(lock, tombstone);
+	await rm(tombstone, { recursive: true, force: true });
+}
+
+async function mutateConfig(mutate: (config: Config) => Config): Promise<void> {
 	const path = CONFIG_PATH();
+	const lock = `${path}.lock`;
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+	const deadline = Date.now() + CONFIG_LOCK_TIMEOUT_MS;
+	for (;;) {
+		try {
+			await mkdir(lock);
+		} catch (error: unknown) {
+			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") throw error;
+			const owner = await readFile(join(lock, CONFIG_LOCK_OWNER), "utf8").catch(() => "");
+			const pid = /^[1-9]\d*$/.test(owner) ? Number(owner) : NaN;
+			if (Number.isSafeInteger(pid)) {
+				try {
+					process.kill(pid, 0);
+				} catch (error: unknown) {
+					if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") {
+						try {
+							await removeConfigLock(lock);
+						} catch (error: unknown) {
+							if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+						}
+						continue;
+					}
+				}
+			}
+			if (Date.now() >= deadline) throw new Error(CONFIG_LOCK_FAILURE);
+			await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
+			continue;
+		}
+		try {
+			await writeFile(join(lock, CONFIG_LOCK_OWNER), String(process.pid), { encoding: "utf8", flag: "wx" });
+		} catch (error) {
+			await removeConfigLock(lock);
+			throw error;
+		}
+		break;
+	}
+	try {
+		await access(path, constants.W_OK).catch((error: unknown) => {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+			throw error;
+		});
+		const mode = await stat(path).then(({ mode }) => mode & 0o777).catch((error: unknown) => {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+			throw error;
+		});
+		const config = mutate((await readConfig(path)).value);
+		const temporary = `${path}.${randomUUID()}.tmp`;
+		try {
+			await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+			if (mode !== undefined) await chmod(temporary, mode);
+			await rename(temporary, path);
+		} finally {
+			await rm(temporary, { force: true });
+		}
+	} finally {
+		await removeConfigLock(lock);
+	}
 }
 
 const availableTextModels = (ctx: ExtensionContext) => ctx.modelRegistry
@@ -286,12 +352,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			try {
 				// Merge against disk so another Main session's model mappings survive this limit update.
-				const latest = (await readConfig()).value;
-				await writeConfig({ ...latest, maxConcurrentSubagents: parsed });
+				await mutateConfig((latest) => ({ ...latest, maxConcurrentSubagents: parsed }));
 				config = { ...config, maxConcurrentSubagents: parsed };
 				ctx.ui.notify(`Subagent Limit set to ${config.maxConcurrentSubagents}.`, "info");
-			} catch {
-				ctx.ui.notify("Couldn't save Subagent Limit config.", "warning");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error && error.message === CONFIG_LOCK_FAILURE ? error.message : "Couldn't save Subagent Limit config.", "warning");
 			}
 		},
 	});
@@ -323,12 +388,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			try {
 				const route = { model: selected, thinkingLevel };
 				// Merge against disk so another Main session's limit and model mappings survive this route update.
-				const latest = (await readConfig()).value;
-				await writeConfig({ ...latest, models: { ...latest.models, [modelClass]: route } });
+				await mutateConfig((latest) => ({ ...latest, models: { ...latest.models, [modelClass]: route } }));
 				config = { ...config, models: { ...config.models, [modelClass]: route } };
 				ctx.ui.notify(`${modelClass} Subagent set to ${selected} with thinking ${thinkingLevel}.`, "info");
-			} catch {
-				ctx.ui.notify("Couldn't save Subagent model config.", "warning");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error && error.message === CONFIG_LOCK_FAILURE ? error.message : "Couldn't save Subagent model config.", "warning");
 			}
 		},
 	});

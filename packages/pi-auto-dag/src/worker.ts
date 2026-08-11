@@ -245,6 +245,8 @@ export interface WorkerExtensionOptions extends WorkerDeliveryOptions {
 	cwd?: string;
 }
 
+type WorkerTurn = { ticket?: Promise<ActionTicket>; reported: boolean };
+
 export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 	return (pi: ExtensionAPI) => {
 		const environment = options.environment ?? process.env;
@@ -264,10 +266,11 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 		const runner = options.runner ?? runCommand;
 		const cwd = options.cwd ?? process.cwd();
 		let compacting = false;
-		let turnTicket: Promise<ActionTicket> | undefined;
+		let turn: WorkerTurn = { reported: false };
 		pi.on("input", async () => {
-			turnTicket = undefined;
-			turnTicket = Promise.resolve(await readWorkerActionTicket(worker));
+			const current = { reported: false, ticket: readWorkerActionTicket(worker) };
+			turn = current;
+			await current.ticket;
 		});
 		pi.on("tool_call", (event, ctx) => {
 			if (!Object.values(WORKER_TOOLS).includes(event.toolName as typeof WORKER_TOOLS[WorkerEvent])) return;
@@ -286,7 +289,7 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 			});
 			return { block: true, terminate: true, reason: "Auto-compact ran before worker event submission; retry event." };
 		});
-		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd, () => turnTicket, options);
+		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd, () => turn, options);
 	};
 }
 
@@ -311,7 +314,7 @@ function registerWorkerTool(
 	type: WorkerEvent,
 	runner: CommandRunner,
 	cwd: string,
-	turnTicket: () => Promise<ActionTicket> | undefined,
+	turn: () => WorkerTurn,
 	delivery: WorkerDeliveryOptions,
 ): void {
 	const definition = eventDefinition(type);
@@ -321,14 +324,21 @@ function registerWorkerTool(
 		description: definition.description,
 		parameters: definition.parameters,
 		async execute(_toolCallId, params) {
-			const payload = definition.payload(params as Record<string, unknown>);
-			const ticket = turnTicket();
-			const envelope = await sendWorkerEnvelope(worker, type, payload, runner, cwd, ticket ? { ...delivery, ticket } : delivery);
-			return {
-				content: [{ type: "text", text: `Accepted ${type} for ${worker.issue_id}.` }],
-				details: { status: "accepted" },
-				terminate: true,
-			};
+			const current = turn();
+			if (current.reported) throw new Error("Worker turn already submitted a terminal report");
+			current.reported = true;
+			try {
+				const payload = definition.payload(params as Record<string, unknown>);
+				await sendWorkerEnvelope(worker, type, payload, runner, cwd, current.ticket ? { ...delivery, ticket: current.ticket } : delivery);
+				return {
+					content: [{ type: "text", text: `Accepted ${type} for ${worker.issue_id}.` }],
+					details: { status: "accepted" },
+					terminate: true,
+				};
+			} catch (error) {
+				current.reported = false;
+				throw error;
+			}
 		},
 	}));
 }

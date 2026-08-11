@@ -13,7 +13,7 @@ import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
-import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, writeWorkerReceipt } from "../src/review-ticket.ts";
+import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, type ActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "../src/review-ticket.ts";
 import { readActiveRunId, recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -510,6 +510,127 @@ test("PR health records non-actionable triage without a coder or push", async (t
 	assert.equal(await readActiveRunId(project.root), undefined);
 });
 
+test("PR-health preflight rejects wrong run and issue scopes without blocking", async (t) => {
+	for (const [name, forge] of [
+		["run", (envelope: Record<string, unknown>) => ({ ...envelope, run_id: "99999999-9999-4999-8999-999999999999" })],
+		["issue", (envelope: Record<string, unknown>) => ({ ...envelope, issue_id: "forged-issue" })],
+	] as const) {
+		await t.test(name, async (t) => {
+			const project = await makeProject(t);
+			const herdr = fakeHerdr();
+			const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+			let state = await finishInitialRun(project.root, lifecycle);
+			state = await lifecycle.health(project.root, RUN_ID);
+			const envelope: Record<string, unknown> = forge(JSON.parse(healthEvent(state, {
+				summary: "No unresolved review threads or failing checks.",
+				actionable: false,
+				thread_ids: [],
+				checks: [],
+			})));
+			const before = (await lifecycle.status(project.root, RUN_ID))!;
+
+			await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(envelope)), (error: unknown) => {
+				assert.ok(error instanceof WorkerEnvelopeRejectedError);
+				return true;
+			});
+			assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+			assert.equal((await readWorkerReceipt(String(envelope.receipt_path)))?.status, "rejected");
+		});
+	}
+});
+
+test("non-ticket PR-health preflight failures block resume and health ingress", async (t) => {
+	for (const ingress of ["resume", "health"] as const) {
+		await t.test(ingress, async (t) => {
+			const project = await makeProject(t);
+			const herdr = fakeHerdr();
+			const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+			let state = await finishInitialRun(project.root, lifecycle);
+			state = await lifecycle.health(project.root, RUN_ID);
+			const envelope = {
+				...JSON.parse(healthEvent(state, {
+					summary: "No unresolved review threads or failing checks.",
+					actionable: false,
+					thread_ids: [],
+					checks: [],
+				})),
+				receipt_path: join(project.root, "wrong-receipt.json"),
+			};
+
+			await assert.rejects(
+				ingress === "resume"
+					? lifecycle.resume(project.root, JSON.stringify(envelope))
+					: lifecycle.health(project.root, RUN_ID, JSON.stringify(envelope)),
+				/receipt path does not belong/,
+			);
+			const blocked = (await lifecycle.status(project.root, RUN_ID))!;
+			assert.equal(blocked.phase, "blocked");
+			assert.match(blocked.block_reason!, /receipt path does not belong/);
+		});
+	}
+});
+
+test("aborted retained PR health rejects malformed envelopes without rewriting or revival", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	state = await lifecycle.abort(project.root, "Retain aborted PR health for regression coverage.");
+	const before = (await lifecycle.status(project.root, RUN_ID))!;
+
+	assert.equal(before.phase, "aborted");
+	assert.ok(before.pr);
+	assert.ok(before.health);
+	assert.equal(await readActiveRunId(project.root), undefined);
+	for (const [kind, envelope] of [["malformed JSON", "{"], ["invalid worker envelope", "{}"]] as const) {
+		await assert.rejects(lifecycle.health(project.root, RUN_ID, envelope), /PR health requires a completed retained run with an integration PR/, kind);
+		assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before, kind);
+	}
+	await assert.rejects(lifecycle.health(project.root, RUN_ID), /PR health requires a completed retained run with an integration PR/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+	assert.equal(await readActiveRunId(project.root), undefined);
+});
+
+test("completed PR health recovers an accepted event receipt before releasing", async (t) => {
+	for (const ingress of ["resume", "health"] as const) {
+		await t.test(ingress, async (t) => {
+			const project = await makeProject(t);
+			const herdr = fakeHerdr();
+			const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+			let state = await finishInitialRun(project.root, lifecycle);
+			state = await lifecycle.health(project.root, RUN_ID);
+			const message = healthEvent(state, {
+				summary: "No unresolved review threads or failing checks.",
+				actionable: false,
+				thread_ids: [],
+				checks: [],
+			});
+			const envelope = parseWorkerEnvelope(JSON.parse(message));
+			const { reviewer_tab_id: _tab, reviewer_pane: _pane, ...completedHealth } = state.health!;
+			await writeRunState(project.root, {
+				...recordAcceptedWorkerEvent(state, envelope),
+				health: {
+					...completedHealth,
+					status: "completed",
+					summary: "No unresolved review threads or failing checks.",
+					actionable: false,
+					thread_ids: [],
+					checks: [],
+				},
+			});
+
+			const recovered = ingress === "resume"
+				? await lifecycle.resume(project.root, message)
+				: await lifecycle.health(project.root, RUN_ID, message);
+
+			assert.equal(recovered.health?.status, "completed");
+			assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+			assert.equal(await readActiveRunId(project.root), undefined);
+		});
+	}
+});
+
 test("PR health accepted triage resumes repair before recovering receipt", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();
@@ -534,6 +655,13 @@ test("PR health accepted triage resumes repair before recovering receipt", async
 			checks: [],
 		},
 	}, () => "recover-health");
+	const ticketPath = actionTicketPath(project.root, RUN_ID, "final-check", "pr_health", "reviewer");
+	const active = await readActionTicket(ticketPath);
+	await writeFile(ticketPath, `${JSON.stringify({
+		...active,
+		event_id: "replacement-health-after-acceptance",
+		receipt_path: eventReceiptPath(project.root, RUN_ID, "replacement-health-after-acceptance"),
+	})}\n`);
 	const prompts = herdr.count("agent prompt");
 
 	state = await lifecycle.health(project.root, RUN_ID, message);
@@ -563,18 +691,38 @@ test("PR health recovers ticket rotation after a durable rejection", async (t) =
 		receipt_path: current.receipt_path,
 	};
 	await writeWorkerReceipt(current.receipt_path, { event_id: current.event_id, status: "rejected", reason: "interrupted health rejection" });
+	const before = (await lifecycle.status(project.root, RUN_ID))!;
 
 	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(submission)), /interrupted health rejection/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
 	const replacement = await readActionTicket(ticketPath);
 	assert.notEqual(replacement.event_id, current.event_id);
-	state = await lifecycle.health(project.root, RUN_ID, JSON.stringify({
+	const stale = {
 		...submission,
 		event_id: replacement.event_id,
 		receipt_path: replacement.receipt_path,
+		review_round: replacement.review_round + 1,
+	};
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(stale)), /active action ticket/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+	const correctedTicket = await readActionTicket(ticketPath);
+	assert.notEqual(correctedTicket.event_id, replacement.event_id);
+	const invented = {
+		...submission,
+		event_id: "invented-fresh-health",
+		receipt_path: eventReceiptPath(project.root, RUN_ID, "invented-fresh-health"),
+	};
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(invented)), /active action ticket/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+	assert.equal((await readWorkerReceipt(invented.receipt_path))?.status, "rejected");
+	state = await lifecycle.health(project.root, RUN_ID, JSON.stringify({
+		...submission,
+		event_id: correctedTicket.event_id,
+		receipt_path: correctedTicket.receipt_path,
 	}));
 
 	assert.equal(state.health?.status, "completed");
-	assert.equal((await readWorkerReceipt(replacement.receipt_path))?.status, "accepted");
+	assert.equal((await readWorkerReceipt(correctedTicket.receipt_path))?.status, "accepted");
 });
 
 test("blocked PR health recovers accepted receipts and rejects fresh events", async (t) => {
@@ -596,13 +744,16 @@ test("blocked PR health recovers accepted receipts and rejects fresh events", as
 	state = await lifecycle.health(project.root, RUN_ID, message);
 	assert.equal(state.health?.status, "blocked");
 	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+	await writeRunState(project.root, { ...state, phase: "blocked", block_reason: "Retained health recovery pending" });
+	const before = (await lifecycle.status(project.root, RUN_ID))!;
 
 	const fresh = {
 		...envelope,
 		event_id: "fresh-blocked-health-event",
 		receipt_path: eventReceiptPath(project.root, RUN_ID, "fresh-blocked-health-event"),
 	};
-	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(fresh)), /Reviewer dependency unavailable/);
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(fresh)), /active action ticket/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
 	assert.equal((await readWorkerReceipt(fresh.receipt_path))?.status, "rejected");
 });
 
@@ -1041,25 +1192,25 @@ function event(
 	metadata: { attempt?: number; review_round?: number; commit?: string } = {},
 ): string {
 	const eventPayload = { ...payload };
-	const attempt = metadata.attempt ?? Number(eventPayload.attempt ?? 1);
-	const review_round = metadata.review_round ?? Number(eventPayload.review_round ?? 1);
+	const scope = state.health ? "pr_health" : issueId === "final-check" ? "lifecycle" : "implementation";
+	const ticket = JSON.parse(readFileSync(actionTicketPath(state.main_worktree, state.run_id, issueId, scope, role), "utf8")) as ActionTicket;
+	const attempt = ticket.attempt;
+	const review_round = ticket.review_round;
 	const commit = metadata.commit ?? (typeof eventPayload.commit === "string" ? eventPayload.commit : undefined);
 	delete eventPayload.attempt;
 	delete eventPayload.review_round;
 	if (type === "request_review") delete eventPayload.commit;
-	const suffix = commit ? `-${commit.slice(0, 12).replace(/[^A-Za-z0-9_-]/g, "_")}` : "";
-	const event_id = `${type}-${issueId}-${attempt}-${review_round}${suffix}`;
 	return JSON.stringify({
 		version: 1,
 		type,
 		run_id: state.run_id,
 		issue_id: issueId,
 		role,
-		event_id,
+		event_id: ticket.event_id,
 		attempt,
 		review_round,
-		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, event_id),
-		...(review_id ? { review_id } : {}),
+		receipt_path: ticket.receipt_path,
+		...(review_id ? { review_id: ticket.review_id ?? review_id } : {}),
 		...(type === "request_review" ? { commit } : {}),
 		payload: eventPayload,
 	});
