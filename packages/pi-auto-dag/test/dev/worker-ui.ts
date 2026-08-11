@@ -45,6 +45,7 @@ const lifecycle: CoreLifecycle = {
 	start: async () => state,
 	status: async () => state,
 	resume: async () => state,
+	retryGate: async () => state,
 	resolve: async () => state,
 	abort: async () => state,
 	health: async () => state,

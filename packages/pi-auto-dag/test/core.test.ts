@@ -342,6 +342,41 @@ test("completed required gate handoff is recovered without rerunning the command
 	await assert.rejects(access(recovered.output_files!.stdout), /ENOENT/);
 });
 
+test("same-commit Required Gate retries retain immutable full output", async (t) => {
+	const project = await makeProject(t);
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const state = createInitialRunState({
+		run_id: RUN_ID,
+		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
+		source_commit: commit,
+		main_worktree: project.root,
+		integration_branch: "main",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	const oldOutput = "old".repeat(4_000);
+	const newOutput = "new".repeat(4_000);
+	const oldEvidence = await persistGateOutput(state, "final-check", {
+		command: "npm test",
+		commit,
+		exit_code: 1,
+		output: { stdout: oldOutput, stderr: "" },
+	}, () => "old-execution");
+	const newEvidence = await persistGateOutput(state, "final-check", {
+		command: "npm test",
+		commit,
+		exit_code: 0,
+		output: { stdout: newOutput, stderr: "" },
+	}, () => "new-execution");
+
+	assert.notEqual(oldEvidence.output.stdout.full_output?.path, newEvidence.output.stdout.full_output?.path);
+	assert.equal(await readFile(oldEvidence.output.stdout.full_output!.path, "utf8"), oldOutput);
+	assert.equal(await readFile(newEvidence.output.stdout.full_output!.path, "utf8"), newOutput);
+});
+
 test("detached gate host journals completion after lifecycle process crashes", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX host process only");
 	const project = await makeProject(t);
@@ -1095,6 +1130,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 			start: async () => { throw new Error("not called"); },
 			status: async () => runningState,
 			resume: async () => runningState,
+			retryGate: async () => { throw new Error("not called"); },
 			resolve: async () => { throw new Error("not called"); },
 			abort: async () => { throw new Error("not called"); },
 			health: async () => { throw new Error("not called"); },
@@ -1356,6 +1392,87 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.deepEqual(calls[0].slice(0, 2), ["herdr", ["agent", "prompt", "main-pane", JSON.stringify(envelope), "--wait", "--timeout", "1860000"]]);
 });
 
+test("orchestrator requires interactive approval and exposes no Required Gate command override", async () => {
+	const initial = createInitialRunState({
+		run_id: RUN_ID,
+		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
+		source_commit: "source",
+		main_worktree: "/tmp/pi-auto-dag",
+		integration_branch: "main",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	const output = { stdout: { excerpt: "", bytes: 0, truncated: false }, stderr: { excerpt: "missing dependency\n", bytes: 19, truncated: false } };
+	const failed = {
+		...initial,
+		phase: "blocked" as const,
+		tasks: {
+			core: { status: "completed" as const, attempts: 1 },
+			release: { status: "completed" as const, attempts: 1 },
+			"final-check": {
+				status: "blocked" as const,
+				attempts: 1,
+				final_gate_head: "source",
+				review_command: "npm test",
+				review_commit: "source",
+				review_exit_code: 1,
+				review_stdout: output.stdout,
+				review_stderr: output.stderr,
+			},
+		},
+	};
+	const tools: Array<{ name: string; execute: Function; parameters: { properties: Record<string, unknown> } }> = [];
+	const retries: unknown[][] = [];
+	let sessionStart: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
+	let activeTools = ["read", ...Object.values(ORCHESTRATOR_TOOLS)];
+	createOrchestratorExtension({
+		lifecycle: {
+			start: async () => failed,
+			status: async () => failed,
+			resume: async () => failed,
+			retryGate: async (...args) => { retries.push(args); return failed; },
+			resolve: async () => failed,
+			abort: async () => failed,
+			health: async () => failed,
+		},
+	})({
+		on(event: string, handler: unknown) { if (event === "session_start") sessionStart = handler as typeof sessionStart; },
+		registerCommand() {},
+		registerTool(tool: { name: string; execute: Function; parameters: { properties: Record<string, unknown> } }) { tools.push(tool); },
+		getActiveTools() { return activeTools; },
+		setActiveTools(next: string[]) { activeTools = next; },
+	} as never);
+	assert.ok(sessionStart);
+	await sessionStart({}, { cwd: "/tmp", mode: "rpc", ui: { setWidget() {}, notify() {} } });
+	assert.ok(activeTools.includes(ORCHESTRATOR_TOOLS.retryGate));
+	assert.ok(activeTools.includes(ORCHESTRATOR_TOOLS.resolve));
+	const retry = tools.find((tool) => tool.name === ORCHESTRATOR_TOOLS.retryGate)!;
+	assert.deepEqual(Object.keys(retry.parameters.properties), ["reason"]);
+	await assert.rejects(retry.execute("retry", { reason: "fixed" }, undefined, undefined, { cwd: "/tmp", mode: "rpc", ui: {} }), /requires interactive TUI/);
+	let confirmation = "";
+	const ctx = {
+		cwd: "/tmp",
+		mode: "tui",
+		ui: {
+			confirm: async (_title: string, message: string) => { confirmation = message; return true; },
+		},
+	};
+	await retry.execute("retry", { reason: "Runtime dependency provisioning restored.", command: "printf substituted" }, undefined, undefined, ctx);
+	assert.match(confirmation, /Commit: source/);
+	assert.match(confirmation, /Command: npm test/);
+	assert.equal(retries.length, 1);
+	assert.equal(retries[0][1], "Runtime dependency provisioning restored.");
+	assert.deepEqual(retries[0][2], {
+		command: "npm test",
+		commit: "source",
+		exit_code: 1,
+		output,
+	});
+});
+
 test("orchestrator routes worker envelopes without an LLM turn and keeps tool text compact", async () => {
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
@@ -1378,6 +1495,7 @@ test("orchestrator routes worker envelopes without an LLM turn and keeps tool te
 			start: async () => runningState,
 			status: async () => runningState,
 			resume: async (_cwd, envelope) => { received = envelope; return runningState; },
+			retryGate: async () => runningState,
 			resolve: async () => runningState,
 			abort: async () => runningState,
 			health: async () => runningState,

@@ -8,7 +8,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
 import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
-import { type CommandRunner, runCommand } from "../src/command.ts";
+import { recordedGateEvidence, type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
@@ -107,7 +107,7 @@ test("final gate cannot erase changes created concurrently in main worktree", as
 	assert.equal(await readFile(join(project.root, "user-during-final-gate.txt"), "utf8"), "keep\n");
 });
 
-test("nonzero final gate blocks before reviewer and resolution reruns the same integration commit", async (t) => {
+test("nonzero final gate blocks before reviewer and approved retry reruns the same integration commit", async (t) => {
 	const project = await makeProject(t, { maxReviews: 1 });
 	let failFinalGate = true;
 	const herdr = fakeHerdr({ gate: (command) => command === FINAL_GATE_COMMAND && failFinalGate
@@ -124,10 +124,17 @@ test("nonzero final gate blocks before reviewer and resolution reruns the same i
 	assert.equal(state.tasks["final-check"].review_exit_code, 1);
 	assert.equal(state.tasks["final-check"].reviewer_pane, undefined);
 	const finalCommit = state.tasks["final-check"].commit;
+	const failedEvidence = recordedGateEvidence(state.tasks["final-check"], finalCommit!)!;
 	const reviewerStarts = herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length;
 
+	await assert.rejects(
+		lifecycle.resolve(project.root, "final-check", "Dependency restored; rerun frozen gate."),
+		/must use auto_dag_retry_gate/,
+	);
+	assert.deepEqual(recordedGateEvidence((await lifecycle.status(project.root))!.tasks["final-check"], finalCommit!), failedEvidence);
+
 	failFinalGate = false;
-	state = await lifecycle.resolve(project.root, "final-check", "Dependency restored; rerun frozen gate.");
+	state = await lifecycle.retryGate(project.root, "Dependency restored; rerun frozen gate.", failedEvidence);
 	assert.equal(state.phase, "execution");
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(state.tasks["final-check"].commit, finalCommit);
@@ -135,6 +142,61 @@ test("nonzero final gate blocks before reviewer and resolution reruns the same i
 	assert.equal(state.tasks["final-check"].review_exit_code, 0);
 	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.args[1] === FINAL_GATE_COMMAND).length, 2);
 	assert.equal(herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length, reviewerStarts + 1);
+});
+
+test("user-approved infrastructure retry archives persisted final-gate evidence after runtime reload", async (t) => {
+	const project = await makeProject(t);
+	let dependenciesProvisioned = false;
+	const herdr = fakeHerdr({ gate: (command) => command === FINAL_GATE_COMMAND && !dependenciesProvisioned
+		? { code: 1, stdout: "", stderr: "ERR_MODULE_NOT_FOUND: dependency provisioning failed\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const baseRunner = combinedRunner(herdr, fakeGh(project.root));
+	const runnerCalls: Array<{ command: string; args: readonly string[] }> = [];
+	const runner: CommandRunner = async (command, args, options) => {
+		runnerCalls.push({ command, args: [...args] });
+		return await baseRunner(command, args, options);
+	};
+	let state = await makeLifecycle(runner).start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await makeLifecycle(runner).resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await makeLifecycle(runner).resume(project.root, reviewEvent(state, "alpha", "approved", []));
+	const finalCommit = state.integration_head;
+	const oldEvidence = recordedGateEvidence(state.tasks["final-check"], finalCommit)!;
+	const persisted = {
+		...state,
+		tasks: { ...state.tasks, "final-check": { ...state.tasks["final-check"], commit: undefined } },
+	};
+	await writeRunState(project.root, persisted, () => "persisted-failure");
+	await assert.rejects(
+		makeLifecycle(runner).resolve(project.root, "final-check", "Infrastructure failure; retry exact gate."),
+		/must use auto_dag_retry_gate/,
+	);
+
+	dependenciesProvisioned = true;
+	const updatedRuntime = makeLifecycle(runner);
+	await assert.rejects(
+		updatedRuntime.retryGate(project.root, "Runtime dependency provisioning restored.", { ...oldEvidence, commit: "replacement" }),
+		/evidence changed during infrastructure retry approval/,
+	);
+	assert.equal((await updatedRuntime.status(project.root))?.tasks["final-check"].review_exit_code, 1);
+	state = await updatedRuntime.retryGate(project.root, "Runtime dependency provisioning restored.", oldEvidence);
+
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(state.tasks["final-check"].review_command, FINAL_GATE_COMMAND);
+	assert.equal(state.tasks["final-check"].review_commit, finalCommit);
+	assert.equal(state.tasks["final-check"].review_exit_code, 0);
+	assert.deepEqual(state.tasks["final-check"].required_gate_invalidations, [{
+		invalidated_at: "2026-08-09T00:00:00.000Z",
+		reason: "Runtime dependency provisioning restored.",
+		evidence: oldEvidence,
+	}]);
+	const gateCalls = herdr.calls.filter((call) => call.command === "sh" && call.args[0] === "-c" && call.args[1] === FINAL_GATE_COMMAND);
+	assert.equal(gateCalls.length, 2);
+	assert.ok(gateCalls.every((call) => call.cwd?.endsWith("/final-gate")));
+	const finalWorktreeBuilds = runnerCalls.filter((call) => call.command === "git"
+		&& call.args[0] === "worktree" && call.args[1] === "add" && call.args.some((arg) => arg.endsWith("/final-gate")));
+	assert.equal(finalWorktreeBuilds.length, 2);
 });
 
 test("health refuses a retained historical run while another run is active without touching it", async (t) => {
@@ -194,6 +256,17 @@ test("a nonzero final gate remains recoverable through its completed owner", asy
 	assert.equal(state.phase, "execution");
 	assert.equal(state.tasks["final-check"].status, "repairing");
 	assert.equal(state.tasks["final-check"].repair_issue_id, "alpha");
+
+	const repair = state.tasks["final-check"];
+	state = await lifecycle.resume(project.root, event(state, "final-check", "implementer", "block_task", {
+		reason: "repair worker unavailable", attempt: repair.attempts, review_round: (repair.review_rounds ?? 0) + 1,
+	}));
+	const failedEvidence = recordedGateEvidence(state.tasks["final-check"], state.integration_head)!;
+	await assert.rejects(
+		lifecycle.retryGate(project.root, "Retry gate setup.", failedEvidence),
+		/Final Check repair is active/,
+	);
+	assert.equal((await lifecycle.status(project.root))!.tasks["final-check"].status, "blocked");
 });
 
 test("a failed final gate requires a completed owner resolution and a fresh reviewed repair", async (t) => {

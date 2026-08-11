@@ -214,9 +214,10 @@ A cherry-pick conflict returns that task to its existing workers. They produce o
 After all implementation tasks finish, Auto DAG executes exact frozen `final_check.testing` text on clean integration `HEAD`, captures commit-bound evidence, then starts temporary read-only reviewer.
 
 - Pass: create clean disposable child worktree at integration `HEAD`, execute frozen command that prepares its own checkout (for example, `npm ci && ...`), require reviewer approval and system-owned gate exit code `0`, then push integration branch and open one PR.
-- Fail: block before reviewer dispatch, push, or PR creation. Resolution clears failed gate evidence and reruns same commit.
+- Fail: block before reviewer dispatch, push, or PR creation.
+- Infrastructure failure: call `auto_dag_retry_gate` with only an invalidation reason. Auto DAG confirms exact failed evidence interactively, archives it, rebuilds disposable gate worktree, and reruns frozen command against same integration commit. Caller cannot supply replacement command or commit.
 
-To repair failed final check, call `auto_dag_resolve` with completed implementation task that owns bug. Auto DAG creates fresh repair worktree, executes same frozen gate against repair commit before review, cherry-picks approved repair, then executes final gate again on new integration `HEAD`. Broken frozen command needs user resolution or replacement Delivery Graph; reviewer cannot substitute another command.
+To repair an application failure found by Final Check or reviewer, call `auto_dag_resolve` with completed implementation task that owns bug. Auto DAG creates fresh repair worktree, executes same frozen gate against repair commit before review, cherry-picks approved repair, then executes final gate again on new integration `HEAD`. Broken frozen command needs user resolution or replacement Delivery Graph; reviewer cannot substitute another command.
 
 ## Lifecycle tools
 
@@ -230,11 +231,12 @@ To repair failed final check, call `auto_dag_resolve` with completed implementat
 | `auto_dag_start` | Start approved graph |
 | `auto_dag_status` | Read active or retained run |
 | `auto_dag_resume` | Recover workers, pending events, or cleanup |
+| `auto_dag_retry_gate` | Interactively archive infrastructure-invalid Final Check evidence and retry exact frozen gate |
 | `auto_dag_resolve` | Unblock one task with user guidance |
 | `auto_dag_abort` | Stop run and clean owned resources |
 | `auto_dag_health` | Check feedback and CI on completed PR |
 
-`resume`, `resolve`, and `abort` use the only active run. `health` requires a retained `run_id`; `status` accepts one when reading run history.
+`auto_dag_resume`, `auto_dag_retry_gate`, `auto_dag_resolve`, and `auto_dag_abort` use the only active run. `auto_dag_retry_gate` accepts an invalidation reason only and requires interactive TUI approval. `auto_dag_health` requires a retained `run_id`; `auto_dag_status` accepts one when reading run history.
 
 Worker envelopes go straight to lifecycle and complete only after durable acceptance receipt. Planning-review `PASS` goes straight to temporary `.context/issues/review.json`. Neither needs model turn in main pane. Fresh review agents receive one canonical packet containing delivery context, issue, worktree, base, and gate evidence. Existing reviewers receive only changed gate/findings/resolution data; a no-change resume sends only `{"type":"auto_dag_resend"}`.
 
@@ -246,7 +248,9 @@ When a task blocks:
 - In-flight reviewers may still report results.
 - `auto_dag_resolve` resumes the blocked role with user guidance.
 
-`auto_dag_resume` rechecks config and Git state. It also:
+`auto_dag_resume` rechecks config and Git state. Failed Required Gate evidence remains active and is never rerun automatically. `auto_dag_retry_gate` is available only for failed Final Check evidence bound to current integration `HEAD` after every implementation Local Issue completed.
+
+`auto_dag_resume` also:
 
 - Asks live workers to resend their last event.
 - Restarts missing workers with saved instructions.
@@ -284,7 +288,7 @@ Run files live under `.context/pi-auto-dag/`:
 
 `active.json` locks one checkout. Lock stays until cleanup succeeds.
 
-Run State schema version is `2`. Current releases reject v3 in-flight Run State; finish or abort active v3 runs before upgrading. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, accepted worker event IDs, and bounded required-gate evidence. Large gate streams and active or completed gate-process journals live in separate run files until evidence is saved. Writes are atomic.
+Run State schema version is `3`. Run State records graph hash, source commit, expected integration `HEAD`, main pane, tasks, PR, health evidence, accepted worker event IDs, bounded Required Gate evidence, and archived infrastructure invalidations. Large gate streams use execution-specific SHA-256-bound files so same-commit retries cannot overwrite archived output. Active or completed gate-process journals live in separate run files until evidence is saved. Writes are atomic.
 
 Main Pi widget shows:
 

@@ -1,4 +1,5 @@
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { executionIssues } from "./graph.ts";
 import type { LocalIssue, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
 import { recordGateExecution } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
@@ -64,6 +65,37 @@ export function requiredTaskGate(current: RunTaskState, commit: string, label: s
 	const evidence = recordedGateEvidence(current, commit);
 	if (!evidence) throw new Error(`${label} required-gate evidence is missing`);
 	return evidence;
+}
+
+export function isRetryableFinalGate(state: RunState): boolean {
+	try {
+		retryableFinalGate(state);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function retryableFinalGate(state: RunState): { issue: LocalIssue; evidence: RequiredGateEvidence } {
+	const issue = executionIssues(state.graph).at(-1)!;
+	const current = task(state, issue.id);
+	const commit = state.integration_head;
+	if (state.phase !== "blocked" || current.status !== "blocked" || current.final_gate_head !== commit) {
+		throw new Error("Infrastructure retry requires a blocked Final Check at the current integration HEAD");
+	}
+	if (state.cleanup_blocks?.length) throw new Error("Infrastructure retry cannot run while cleanup is blocked");
+	if (current.repair_issue_id && current.repair_base && current.repair_attempt) {
+		throw new Error("Infrastructure retry cannot run while Final Check repair is active");
+	}
+	if (executionIssues(state.graph).some((candidate) => candidate.role === "implementation" && task(state, candidate.id).status !== "completed")) {
+		throw new Error("Infrastructure retry requires every implementation Local Issue to be completed");
+	}
+	const evidence = recordedGateEvidence(current, commit);
+	if (!evidence || evidence.exit_code === 0) {
+		throw new Error("Infrastructure retry requires failed Final Check Required Gate evidence for the current integration HEAD");
+	}
+	if (evidence.command !== issue.testing) throw new Error("Failed Final Check Required Gate command does not match the frozen command");
+	return { issue, evidence };
 }
 
 async function save(state: RunState, options: FinalGateOptions): Promise<RunState> {

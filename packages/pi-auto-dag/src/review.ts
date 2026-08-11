@@ -31,7 +31,8 @@ export async function persistGateOutput(
 	execution: RequiredGateExecution,
 	uuid: Uuid,
 ): Promise<RequiredGateEvidence> {
-	const paths = gateOutputPaths(state.main_worktree, state.run_id, gateOwnerId, execution.commit);
+	const executionId = createHash("sha256").update(execution.handoff?.launch_id ?? uuid()).digest("hex");
+	const paths = gateOutputPaths(state.main_worktree, state.run_id, gateOwnerId, execution.commit, executionId);
 	const streams = ["stdout", "stderr"] as const;
 	const output = Object.fromEntries(await Promise.all(streams.map(async (stream) => [
 		stream,
@@ -134,8 +135,9 @@ function gateOutputPaths(
 	runId: string,
 	gateOwnerId: string,
 	commit: string,
+	executionId: string,
 ): { stdout: string; stderr: string } {
-	const directory = join(runDirectory(mainWorktree, runId), "gate-output", gateOwnerId, commit);
+	const directory = join(runDirectory(mainWorktree, runId), "gate-output", gateOwnerId, commit, executionId);
 	return {
 		stdout: join(directory, "stdout.txt"),
 		stderr: join(directory, "stderr.txt"),

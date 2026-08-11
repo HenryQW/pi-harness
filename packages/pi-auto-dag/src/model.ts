@@ -30,6 +30,12 @@ export interface RequiredGateEvidence {
 	};
 }
 
+export interface RequiredGateInvalidation {
+	invalidated_at: string;
+	reason: string;
+	evidence: RequiredGateEvidence;
+}
+
 export interface ConfiguredProfile {
 	description: string;
 	agent_dir: string;
@@ -137,6 +143,8 @@ export interface RunTaskState {
 	review_exit_code?: number;
 	review_stdout?: GateOutputEvidence;
 	review_stderr?: GateOutputEvidence;
+	/** Failed Required Gate evidence invalidated by explicit infrastructure retry. */
+	required_gate_invalidations?: RequiredGateInvalidation[];
 	review_findings?: string[];
 	conflict_base?: string;
 	final_gate_head?: string;
