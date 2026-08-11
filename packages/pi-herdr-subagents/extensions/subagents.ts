@@ -136,6 +136,7 @@ const subagentName = (taskId: string) => `subagent_${taskId.replaceAll("-", "").
 const mainName = () => `main_${randomBytes(4).toString("hex")}`;
 
 function subagentLabel(task: string, taskId: string): string {
+	// Used as recovery key when Herdr loses a tab-create response.
 	const suffix = ` · ${taskId.replaceAll("-", "").slice(0, 8)}`;
 	const words = task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ");
 	return `${words.slice(0, 40 - suffix.length).trim() || "subagent"}${suffix}`;
@@ -209,6 +210,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<Set<string>> => {
 		const tabs = await listTabs(where, ctx, signal);
 		const present = new Set(tabs.map((tab) => tab.id));
+		// Missing tab ID means create response was indeterminate. Adopt only one matching new label; ambiguity stays owned.
 		for (const [taskId, subagent] of subagents) {
 			if (subagent.tabId) {
 				if (!present.has(subagent.tabId)) subagents.delete(taskId);
@@ -247,6 +249,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			ctx.isProjectTrusted() ? "--approve" : "--no-approve",
 		];
 		for (let attempt = 0; attempt < 5; attempt++) {
+			// Pane setup can briefly be busy after tab creation. Retry only this known transient Herdr error.
 			const result = await herdr.exec(args, { cwd: ctx.cwd, signal });
 			if (result.code === 0 && !result.killed) {
 				const started = resultOf(parseJson(result.stdout, "Herdr Subagent start"), "Herdr Subagent start");
@@ -264,6 +267,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Pi does not watch models-store.json. Reload cached metadata without network; catalog errors must not block startup.
+		await ctx.modelRegistry.refresh({ allowNetwork: false }).catch(() => undefined);
 		const loaded = await readConfig();
 		config = loaded.value;
 		if (loaded.invalid) ctx.ui.notify("Invalid pi-herdr-subagents config values were ignored.", "warning");
@@ -280,6 +285,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			try {
+				// Merge against disk so another Main session's model mappings survive this limit update.
 				const latest = (await readConfig()).value;
 				await writeConfig({ ...latest, maxConcurrentSubagents: parsed });
 				config = { ...config, maxConcurrentSubagents: parsed };
@@ -316,6 +322,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (!isThinkingLevel(thinkingLevel) || !levels.some((level) => level === thinkingLevel)) return;
 			try {
 				const route = { model: selected, thinkingLevel };
+				// Merge against disk so another Main session's limit and model mappings survive this route update.
 				const latest = (await readConfig()).value;
 				await writeConfig({ ...latest, models: { ...latest.models, [modelClass]: route } });
 				config = { ...config, models: { ...config.models, [modelClass]: route } };
@@ -364,6 +371,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (params.modelClass && configuredModel && availableModel && !thinkingAvailable) {
 				throw new Error(`Configured ${modelClass} Subagent thinking level is unavailable; run /subagent-model.`);
 			}
+			// Explicit unavailable routes reject above. Omitted balanced routes alone may fall back to Main.
 			const configuredRoute = thinkingAvailable ? configuredModel : undefined;
 			const selectedModel = configuredRoute?.model ?? `${ctx.model.provider}/${ctx.model.id}`;
 			const selectedThinkingLevel = configuredRoute?.thinkingLevel ?? ctx.thinkingLevel;
@@ -379,6 +387,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const subagent: OwnedSubagent = { taskId, task, subagentName: subagentName(taskId), resultPath, tempDir, label, existingTabs };
 			let tabCreationAttempted = false;
 			let promptOutcomeUnknown = false;
+			// Claim ownership before side effects; indeterminate tab creation still needs reconciliation and cleanup.
 			subagents.set(taskId, subagent);
 			try {
 				const createdAt = new Date().toISOString();
@@ -407,6 +416,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				await startSubagent(subagent.subagentName, tabId, paneId, selectedModel, selectedThinkingLevel, where, ctx, signal);
 				if (signal?.aborted) throw new Error("delegate_task was aborted before task submission.");
 				const promptArgs = ["agent", "prompt", subagent.subagentName, task];
+				// Lost prompt response can still mean Herdr accepted task, so retain ownership until outcome is known.
 				promptOutcomeUnknown = true;
 				const response = await herdr.exec(promptArgs, { cwd: ctx.cwd, signal });
 				if (response.code !== 0 || response.killed) {
@@ -426,6 +436,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					terminate: true,
 				};
 			} catch (error) {
+				// Never close a tab with unknown prompt outcome: task may already be running.
 				if (promptOutcomeUnknown) {
 					const message = error instanceof Error ? error.message : String(error);
 					throw new Error(`Delegated Task ${taskId} prompt outcome is unknown; Subagent may be running and remains owned.\nSubagent: ${subagent.subagentName}\nTab: ${subagent.tabId}\nResult: ${subagent.resultPath}\nStop: herdr tab close ${subagent.tabId}\n${message}`);
@@ -461,6 +472,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" } as const;
+		// Coalesced notices are atomic: invalid frame must not release another Subagent's capacity.
 		const notices = parseCompletionNotices(event.text);
 		if (!notices) return { action: "continue" } as const;
 		const seen = new Set<string>();
@@ -486,6 +498,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (completed.length !== notices.length || completed.some(({ notice, subagent }) => subagents.get(notice.taskId) !== subagent)) {
 			return { action: "continue" } as const;
 		}
+		// Result is durable; free capacity even if best-effort tab cleanup later fails.
 		for (const { subagent } of completed) subagents.delete(subagent.taskId);
 		for (const { subagent } of completed) if (subagent.tabId) void closeTab(subagent.tabId, ctx).catch(() => undefined);
 		return {
@@ -495,6 +508,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		// No persistent registry: cleanup applies only to tabs this Main session recorded.
 		try {
 			await reconcile(location(), ctx);
 		} catch { }

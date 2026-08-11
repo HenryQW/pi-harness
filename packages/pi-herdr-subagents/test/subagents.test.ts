@@ -65,6 +65,7 @@ function mainHarness(options: {
 	mainName?: string | null;
 	selectResults?: Array<string | undefined>;
 	availableModels?: TestModel[];
+	onModelRegistryRefresh?: (options: { allowNetwork?: boolean }) => Promise<void> | void;
 } = {}) {
 	const handlers = new Map<string, Handler>();
 	const tools = new Map<string, Tool>();
@@ -74,6 +75,7 @@ function mainHarness(options: {
 	const closed: string[] = [];
 	const inputs: Array<{ title: string; value: string }> = [];
 	const selections: Array<{ title: string; options: string[] }> = [];
+	const refreshes: Array<{ allowNetwork?: boolean }> = [];
 	const selectResults = [...(options.selectResults ?? [])];
 	let limitInput = options.limitInput;
 	let mainName: string | null = options.mainName ?? null;
@@ -92,6 +94,10 @@ function mainHarness(options: {
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: {
 			getAvailable: () => options.availableModels ?? [{ ...model, input: ["text"] }],
+			refresh: async (refreshOptions: { allowNetwork?: boolean } = {}) => {
+				refreshes.push(refreshOptions);
+				await options.onModelRegistryRefresh?.(refreshOptions);
+			},
 		},
 		sessionManager: { getBranch: () => [] },
 		ui: {
@@ -160,7 +166,7 @@ function mainHarness(options: {
 		},
 	} as unknown as ExtensionAPI;
 	subagentsExtension(api);
-	return { api, ctx, handlers, tools, commands, calls, notices, closed, inputs, selections, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
+	return { api, ctx, handlers, tools, commands, calls, notices, closed, inputs, selections, refreshes, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
 }
 
 function subagentHarness(options: { branch?: any[]; wait?: () => Promise<any>; promptFailure?: boolean } = {}) {
@@ -412,6 +418,32 @@ test("delegate_task rejects stale explicit routes and falls back from stale impl
 		const modelFallback = await reloaded.tools.get("delegate_task")!.execute("model-fallback", { task: "simple" }, undefined, undefined, reloaded.ctx);
 		assert.match(modelFallback.content[0].text, /^Model: test-provider\/test-model \(Main\)$/m);
 		assert.match(modelFallback.content[0].text, /^Thinking: high$/m);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("session start locally refreshes stale model catalog and survives refresh failure", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-models-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		await mkdir(join(agentDir, "config"));
+		await writeFile(join(agentDir, "config", "pi-herdr-subagents.json"), JSON.stringify({
+			maxConcurrentSubagents: 10,
+			models: { fast: { model: "test-provider/test-model", thinkingLevel: "max" } },
+		}));
+		const availableModels: TestModel[] = [{ ...model, input: ["text"], thinkingLevelMap: { high: "high" } }];
+		const app = mainHarness({
+			availableModels,
+			onModelRegistryRefresh: () => { availableModels[0].thinkingLevelMap = { max: "max" }; },
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.deepEqual(app.refreshes, [{ allowNetwork: false }]);
+		const delegated = await app.tools.get("delegate_task")!.execute("fast", { task: "use refreshed route", modelClass: "fast" }, undefined, undefined, app.ctx);
+		assert.match(delegated.content[0].text, /^Model: test-provider\/test-model \(fast\)$/m);
+		assert.match(delegated.content[0].text, /^Thinking: max$/m);
+
+		const failed = mainHarness({ onModelRegistryRefresh: () => { throw new Error("catalog unavailable"); } });
+		await assert.doesNotReject(failed.handlers.get("session_start")?.({}, failed.ctx));
+		assert.deepEqual(failed.refreshes, [{ allowNetwork: false }]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
