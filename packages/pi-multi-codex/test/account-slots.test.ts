@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
 	createAssistantMessageEventStream,
 	type AssistantMessage,
@@ -136,6 +139,31 @@ test("codex-add requires native slot 1", async () => {
 			assert.deepEqual(notices, ["Run /login and select OpenAI Codex for slot 1 first."]);
 		},
 	);
+});
+
+test("Pi extension loader registers Codex aliases", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-loader-"));
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({
+			"openai-codex": { ...oauth, accountId: "native-account" },
+			"openai-codex-2": { ...oauth, accountId: "alias-account" },
+		}));
+		const child = spawn("pi", ["--list-models", "--extension", fileURLToPath(new URL("../extensions/multi-codex.ts", import.meta.url))], {
+			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+			stdio: "pipe",
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+		child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+		const [code, signal] = await once(child, "exit") as [number | null, string | null];
+		assert.equal(code, 0, stderr || `Pi exited from ${signal}`);
+		assert.match(stdout, /^openai-codex-2\s+/m);
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+	}
 });
 
 test("alias keeps native request provider and rewrites response identity", async () => {

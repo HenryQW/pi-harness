@@ -15,7 +15,7 @@ import {
 	type Provider,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
 	getAgentDir,
 	type ExtensionAPI,
@@ -792,7 +792,8 @@ function sessionHasAgentWork(ctx: ExtensionContext): boolean {
 }
 
 export default function multiCodex(pi: ExtensionAPI): void {
-	const native = openaiCodexProvider();
+	const native = builtinProviders().find((provider) => provider.id === NATIVE_PROVIDER_ID) as CodexProvider | undefined;
+	if (!native) return;
 	const quota = new CodexQuotaStatus(native);
 	const registered = new Map<number, CodexProvider>();
 	let sessionContext: ExtensionContext | undefined;

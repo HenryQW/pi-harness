@@ -9,6 +9,16 @@ import multiCodex from "../extensions/multi-codex.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Command = (args: string, ctx: any) => Promise<void>;
+type App = {
+	agentDir: string;
+	handlers: Map<string, Handler>;
+	commands: Map<string, Command>;
+	ctx: any;
+	setModels: ReturnType<typeof model>[];
+	statuses: (string | undefined)[];
+	notices: string[];
+	sessionEntries: any[];
+};
 
 const model = (provider = "openai-codex") => ({
 	id: "gpt-5.3-codex",
@@ -51,15 +61,11 @@ async function writeFreshCache(agentDir: string, remaining: Record<number, numbe
 async function withApp(
 	remaining: Record<number, number>,
 	scopedModels: readonly { model: ReturnType<typeof model> }[] = [],
-	check: (app: {
-		handlers: Map<string, Handler>;
-		commands: Map<string, Command>;
-		ctx: any;
-		setModels: ReturnType<typeof model>[];
-		statuses: (string | undefined)[];
-		notices: string[];
-		sessionEntries: any[];
-	}) => Promise<void>,
+	check: (app: App) => Promise<void>,
+	setModel = async (next: ReturnType<typeof model>, apply: () => void) => {
+		apply();
+		return true;
+	},
 ): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-routing-"));
 	const prior = process.env.PI_CODING_AGENT_DIR;
@@ -97,11 +103,10 @@ async function withApp(
 			appendEntry(customType: string) { sessionEntries.push({ type: "custom", customType }); },
 			async setModel(next: ReturnType<typeof model>) {
 				setModels.push(next);
-				activeModel = next;
-				return true;
+				return setModel(next, () => { activeModel = next; });
 			},
 		} as unknown as ExtensionAPI);
-		await check({ handlers, commands, ctx, setModels, statuses, notices, sessionEntries });
+		await check({ agentDir, handlers, commands, ctx, setModels, statuses, notices, sessionEntries });
 	} finally {
 		globalThis.fetch = priorFetch;
 		if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -152,4 +157,54 @@ test("manual switch uses native selector and keeps active model id", async () =>
 		await commands.get("codex-switch")?.("", ctx);
 		assert.deepEqual(setModels.map((selected) => [selected.provider, selected.id]), [["openai-codex-2", "gpt-5.3-codex"]]);
 	});
+});
+
+test("scoped session skips alias added after session start", async () => {
+	await withApp({ 1: 40 }, [{ model: model() }], async ({ agentDir, handlers, commands, ctx, setModels, notices }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({
+			"openai-codex": credential("account-1"),
+			"openai-codex-2": credential("account-2"),
+		}));
+		await commands.get("codex-switch")?.("", ctx);
+		assert.equal(setModels.length, 0);
+		assert.match(notices.at(-1) ?? "", /model scope.*Restart Pi/i);
+	});
+});
+
+test("serializes automatic switch while first agent boundary is deferred", async () => {
+	let release!: () => void;
+	const deferred = new Promise<void>((resolve) => { release = resolve; });
+	await withApp(
+		{ 1: 40, 2: 90 },
+		[],
+		async ({ handlers, ctx, setModels }) => {
+			handlers.get("session_start")?.({ type: "session_start" }, ctx);
+			const first = handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+			await Promise.resolve();
+			assert.equal(setModels.length, 1);
+			handlers.get("model_select")?.({ model: model("openai-codex") }, ctx);
+			await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+			assert.equal(setModels.length, 1);
+			release();
+			await first;
+			handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
+			await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+			assert.deepEqual(setModels.map((selected) => selected.provider), ["openai-codex-2"]);
+		},
+		async (_next, apply) => {
+			await deferred;
+			apply();
+			return true;
+		},
+	);
+});
+
+test("colors fresh footer at every quota threshold", async () => {
+	for (const [remaining, color] of [[50, "success"], [25, "warning"], [24, "error"]] as const) {
+		await withApp({ 1: remaining }, [], async ({ handlers, ctx, statuses }) => {
+			handlers.get("session_start")?.({ type: "session_start" }, ctx);
+			assert.equal(statuses.at(-1), `<${color}>Codex #1 · ${remaining}% · 7d 1h</${color}>`);
+		});
+	}
 });

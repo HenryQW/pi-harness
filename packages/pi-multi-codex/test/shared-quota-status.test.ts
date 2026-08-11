@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,6 +20,8 @@ const oauth = (accountId: string) => ({
 	expires: Date.now() + 60_000,
 	accountId,
 });
+
+const hash = (accountId: string) => createHash("sha256").update(accountId).digest("hex");
 
 function context(notices: string[]): ExtensionContext {
 	return { ui: { notify: (message: string) => notices.push(message) } } as unknown as ExtensionContext;
@@ -214,6 +217,99 @@ test("shutdown releases owned slot lock before next Pi refresh", async () => {
 		await runQuotaProcess(agentDir, successFetch, countFile);
 		assert.ok(Date.now() - started < 2_000);
 		assert.equal((await readFile(countFile, "utf8")).trim(), "1");
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("failed refresh shares five-minute backoff across Pi processes", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-failure-backoff-"));
+	const countFile = join(agentDir, "requests");
+	const failedFetch = join(agentDir, "failed-fetch.mjs");
+	const blockedFetch = join(agentDir, "blocked-fetch.mjs");
+	const retryFetch = join(agentDir, "retry-fetch.mjs");
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("failed-account") }));
+		await writeFile(failedFetch, `
+			import { appendFileSync } from "node:fs";
+			globalThis.fetch = async () => {
+				appendFileSync(process.env.QUOTA_REQUESTS, "failed\\n");
+				throw new Error("offline");
+			};
+		`);
+		await runQuotaProcess(agentDir, failedFetch, countFile, 400);
+		const file = join(agentDir, "config", "pi-multi-codex", "usage.json");
+		const failed = JSON.parse(await readFile(file, "utf8"));
+		assert.equal(failed.slots[0].fetchedAt, undefined);
+		assert.equal(typeof failed.slots[0].checkedAt, "number");
+
+		await writeFile(blockedFetch, `
+			import { appendFileSync } from "node:fs";
+			globalThis.fetch = async () => { appendFileSync(process.env.QUOTA_REQUESTS, "early-retry\\n"); throw new Error("must not fetch"); };
+		`);
+		await runQuotaProcess(agentDir, blockedFetch, countFile, 400);
+		assert.equal(await readFile(countFile, "utf8"), "failed\n");
+
+		failed.slots[0].checkedAt = Date.now() - 5 * 60_000;
+		await writeFile(file, JSON.stringify(failed));
+		await writeFile(retryFetch, `
+			import { appendFileSync } from "node:fs";
+			globalThis.fetch = async () => {
+				appendFileSync(process.env.QUOTA_REQUESTS, "retry\\n");
+				return new Response(JSON.stringify({ rate_limit: {
+					secondary_window: { used_percent: 50, limit_window_seconds: 604800, reset_after_seconds: 3600 }
+				} }));
+			};
+		`);
+		await runQuotaProcess(agentDir, retryFetch, countFile, 400);
+		assert.equal(await readFile(countFile, "utf8"), "failed\nretry\n");
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("credential replacement discards stale cross-process refresh", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-replaced-refresh-"));
+	const countFile = join(agentDir, "requests");
+	const oldFetch = join(agentDir, "old-fetch.mjs");
+	const replacementFetch = join(agentDir, "replacement-fetch.mjs");
+	const releaseFile = join(agentDir, "release");
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("old-account") }));
+		await writeFile(oldFetch, `
+			import { existsSync, writeFileSync } from "node:fs";
+			import { join } from "node:path";
+			globalThis.fetch = async () => {
+				writeFileSync(process.env.QUOTA_REQUESTS, "old\\n");
+				while (!existsSync(join(process.env.PI_CODING_AGENT_DIR, "release"))) await new Promise((resolve) => setTimeout(resolve, 5));
+				return new Response(JSON.stringify({ rate_limit: {
+					secondary_window: { used_percent: 1, limit_window_seconds: 604800, reset_after_seconds: 3600 }
+				} }));
+			};
+		`);
+		await writeFile(replacementFetch, `
+			import { appendFileSync } from "node:fs";
+			globalThis.fetch = async () => {
+				appendFileSync(process.env.QUOTA_REQUESTS, "replacement\\n");
+				return new Response(JSON.stringify({ rate_limit: {
+					secondary_window: { used_percent: 80, limit_window_seconds: 604800, reset_after_seconds: 3600 }
+				} }));
+			};
+		`);
+
+		const oldRefresh = runQuotaProcess(agentDir, oldFetch, countFile, 500);
+		await waitFor(async () => (await readFile(countFile, "utf8").catch(() => "")) === "old\n");
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("replacement-account") }));
+		const replacementRefresh = runQuotaProcess(agentDir, replacementFetch, countFile, 500);
+		await waitFor(async () => (await readFile(countFile, "utf8").catch(() => "")).includes("replacement\n"));
+		await writeFile(releaseFile, "");
+		await Promise.all([oldRefresh, replacementRefresh]);
+
+		const state = JSON.parse(await readFile(join(agentDir, "config", "pi-multi-codex", "usage.json"), "utf8"));
+		assert.deepEqual(state.locks, []);
+		assert.equal(state.slots[0].accountHash, hash("replacement-account"));
+		assert.equal(state.slots[0].remaining, 20);
+		assert.notEqual(state.slots[0].accountHash, hash("old-account"));
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}
