@@ -329,15 +329,15 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
-		description: "Delegate one bounded, self-contained task to one interactive Herdr Pi Subagent. Choose fast for simple tasks, balanced for normal tasks, or frontier for complex tasks.",
+		description: "Delegate one bounded task to one interactive Herdr Pi Subagent. Split independent work, keep tightly coupled steps together, include only needed context, and choose the lowest model class likely to succeed. Never delegate overlapping writes.",
 		parameters: Type.Object({
 			task: Type.String({
 				minLength: 1,
-				description: "Self-contained task with relevant context, exact paths, constraints, and success criteria.",
+				description: "Self-contained task with only relevant context, exact paths, constraints, and success criteria. Request a concise Result.",
 			}),
 			modelClass: Type.Optional(Type.String({
 				enum: MODEL_CLASSES,
-				description: "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.",
+				description: "Classify each task by complexity: fast for lookups, single-file summaries, or mechanical edits; balanced for bounded bug fixes, focused reviews, or clear multi-file features; frontier for architecture, ambiguous cross-cutting changes, or subtle concurrency/security reasoning. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.",
 			})),
 		}),
 		executionMode: "sequential",
@@ -497,7 +497,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		try {
 			await reconcile(location(), ctx);
-		} catch {}
+		} catch { }
 		const owned = [...subagents.values()];
 		subagents.clear();
 		await Promise.all(owned.flatMap((subagent) => subagent.tabId ? [closeTab(subagent.tabId, ctx).catch(() => undefined)] : []));
