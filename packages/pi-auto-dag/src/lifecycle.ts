@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { acknowledgeRequiredGate, reconcileRequiredGateProcess, recordedGateEvidence, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
 import type { AvailableSkill } from "./config.ts";
-import { retryableFinalGate } from "./final-gate.ts";
+import { isRetryableFinalGate, retryableFinalGate } from "./final-gate.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
@@ -135,6 +135,9 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				const config = await guardBoundary(state, runner, uuid, options.availableSkills?.());
 				const id = nonEmptyString(issueId, "resolution issue_id");
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
+				if (id === "final-check" && isRetryableFinalGate(state)) {
+					throw new Error("Infrastructure-invalid Final Check must use auto_dag_retry_gate");
+				}
 				const prResolved = await resolveFinalRepair(state, id, resolution, config, orchestration);
 				if (prResolved) return await completeSuccessfulRun(prResolved, orchestration);
 				let current = state.tasks[id];

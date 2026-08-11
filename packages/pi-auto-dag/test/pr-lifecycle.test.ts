@@ -107,7 +107,7 @@ test("final gate cannot erase changes created concurrently in main worktree", as
 	assert.equal(await readFile(join(project.root, "user-during-final-gate.txt"), "utf8"), "keep\n");
 });
 
-test("nonzero final gate blocks before reviewer and resolution reruns the same integration commit", async (t) => {
+test("nonzero final gate blocks before reviewer and approved retry reruns the same integration commit", async (t) => {
 	const project = await makeProject(t, { maxReviews: 1 });
 	let failFinalGate = true;
 	const herdr = fakeHerdr({ gate: (command) => command === FINAL_GATE_COMMAND && failFinalGate
@@ -124,10 +124,17 @@ test("nonzero final gate blocks before reviewer and resolution reruns the same i
 	assert.equal(state.tasks["final-check"].review_exit_code, 1);
 	assert.equal(state.tasks["final-check"].reviewer_pane, undefined);
 	const finalCommit = state.tasks["final-check"].commit;
+	const failedEvidence = recordedGateEvidence(state.tasks["final-check"], finalCommit!)!;
 	const reviewerStarts = herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length;
 
+	await assert.rejects(
+		lifecycle.resolve(project.root, "final-check", "Dependency restored; rerun frozen gate."),
+		/must use auto_dag_retry_gate/,
+	);
+	assert.deepEqual(recordedGateEvidence((await lifecycle.status(project.root))!.tasks["final-check"], finalCommit!), failedEvidence);
+
 	failFinalGate = false;
-	state = await lifecycle.resolve(project.root, "final-check", "Dependency restored; rerun frozen gate.");
+	state = await lifecycle.retryGate(project.root, "Dependency restored; rerun frozen gate.", failedEvidence);
 	assert.equal(state.phase, "execution");
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(state.tasks["final-check"].commit, finalCommit);
@@ -162,7 +169,7 @@ test("user-approved infrastructure retry archives persisted final-gate evidence 
 	await writeRunState(project.root, persisted, () => "persisted-failure");
 	await assert.rejects(
 		makeLifecycle(runner).resolve(project.root, "final-check", "Infrastructure failure; retry exact gate."),
-		/must be resolved against/,
+		/must use auto_dag_retry_gate/,
 	);
 
 	dependenciesProvisioned = true;

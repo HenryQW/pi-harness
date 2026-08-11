@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import type { AvailableSkill } from "./config.ts";
-import { retryableFinalGate } from "./final-gate.ts";
+import { isRetryableFinalGate, retryableFinalGate } from "./final-gate.ts";
 import { executionIssues } from "./graph.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
@@ -57,7 +57,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume,
-					...(hasRetryableFinalGate(state) ? [ORCHESTRATOR_TOOLS.retryGate] : []),
+					...(isRetryableFinalGate(state) ? [ORCHESTRATOR_TOOLS.retryGate] : []),
 					ORCHESTRATOR_TOOLS.abort,
 					...(hasBlockedTask(state) ? [ORCHESTRATOR_TOOLS.resolve] : []),
 					...(state.health ? [ORCHESTRATOR_TOOLS.health] : [])]
@@ -416,16 +416,8 @@ function workerEnvelopeInput(text: string): WorkerEnvelope | undefined {
 	return parseWorkerEnvelope(input);
 }
 
-function hasRetryableFinalGate(state: RunState): boolean {
-	try {
-		retryableFinalGate(state);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 function hasBlockedTask(state: RunState): boolean {
+	if (isRetryableFinalGate(state)) return false;
 	return Object.values(state.tasks).some((task) => task.status === "blocked"
 		|| (state.phase === "blocked" && ["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(task.status)));
 }

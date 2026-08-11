@@ -67,6 +67,15 @@ export function requiredTaskGate(current: RunTaskState, commit: string, label: s
 	return evidence;
 }
 
+export function isRetryableFinalGate(state: RunState): boolean {
+	try {
+		retryableFinalGate(state);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function retryableFinalGate(state: RunState): { issue: LocalIssue; evidence: RequiredGateEvidence } {
 	const issue = executionIssues(state.graph).at(-1)!;
 	const current = task(state, issue.id);
