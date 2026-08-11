@@ -417,7 +417,6 @@ function workerEnvelopeInput(text: string): WorkerEnvelope | undefined {
 }
 
 function hasBlockedTask(state: RunState): boolean {
-	if (isRetryableFinalGate(state)) return false;
 	return Object.values(state.tasks).some((task) => task.status === "blocked"
 		|| (state.phase === "blocked" && ["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(task.status)));
 }

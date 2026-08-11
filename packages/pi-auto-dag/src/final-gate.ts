@@ -84,6 +84,9 @@ export function retryableFinalGate(state: RunState): { issue: LocalIssue; eviden
 		throw new Error("Infrastructure retry requires a blocked Final Check at the current integration HEAD");
 	}
 	if (state.cleanup_blocks?.length) throw new Error("Infrastructure retry cannot run while cleanup is blocked");
+	if (current.repair_issue_id && current.repair_base && current.repair_attempt) {
+		throw new Error("Infrastructure retry cannot run while Final Check repair is active");
+	}
 	if (executionIssues(state.graph).some((candidate) => candidate.role === "implementation" && task(state, candidate.id).status !== "completed")) {
 		throw new Error("Infrastructure retry requires every implementation Local Issue to be completed");
 	}

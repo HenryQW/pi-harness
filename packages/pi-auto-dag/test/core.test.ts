@@ -1448,7 +1448,7 @@ test("orchestrator requires interactive approval and exposes no Required Gate co
 	assert.ok(sessionStart);
 	await sessionStart({}, { cwd: "/tmp", mode: "rpc", ui: { setWidget() {}, notify() {} } });
 	assert.ok(activeTools.includes(ORCHESTRATOR_TOOLS.retryGate));
-	assert.ok(!activeTools.includes(ORCHESTRATOR_TOOLS.resolve));
+	assert.ok(activeTools.includes(ORCHESTRATOR_TOOLS.resolve));
 	const retry = tools.find((tool) => tool.name === ORCHESTRATOR_TOOLS.retryGate)!;
 	assert.deepEqual(Object.keys(retry.parameters.properties), ["reason"]);
 	await assert.rejects(retry.execute("retry", { reason: "fixed" }, undefined, undefined, { cwd: "/tmp", mode: "rpc", ui: {} }), /requires interactive TUI/);

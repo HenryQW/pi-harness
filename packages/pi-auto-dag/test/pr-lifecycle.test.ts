@@ -256,6 +256,17 @@ test("a nonzero final gate remains recoverable through its completed owner", asy
 	assert.equal(state.phase, "execution");
 	assert.equal(state.tasks["final-check"].status, "repairing");
 	assert.equal(state.tasks["final-check"].repair_issue_id, "alpha");
+
+	const repair = state.tasks["final-check"];
+	state = await lifecycle.resume(project.root, event(state, "final-check", "implementer", "block_task", {
+		reason: "repair worker unavailable", attempt: repair.attempts, review_round: (repair.review_rounds ?? 0) + 1,
+	}));
+	const failedEvidence = recordedGateEvidence(state.tasks["final-check"], state.integration_head)!;
+	await assert.rejects(
+		lifecycle.retryGate(project.root, "Retry gate setup.", failedEvidence),
+		/Final Check repair is active/,
+	);
+	assert.equal((await lifecycle.status(project.root))!.tasks["final-check"].status, "blocked");
 });
 
 test("a failed final gate requires a completed owner resolution and a fresh reviewed repair", async (t) => {
