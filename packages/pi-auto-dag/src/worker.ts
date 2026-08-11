@@ -135,10 +135,13 @@ export async function sendWorkerEnvelope(
 	let existing = await readWorkerReceipt(ticket.receipt_path);
 	if (existing?.status === "rejected") {
 		const replacement = await readWorkerActionTicket(worker);
-		if (replacement.event_id !== ticket.event_id && sameAction(ticket, replacement)) {
-			ticket = replacement;
-			envelope = await buildWorkerEnvelope(worker, type, payload, ticket, runner, cwd);
-			existing = await readWorkerReceipt(ticket.receipt_path);
+		if (sameAction(ticket, replacement)) {
+			if (replacement.event_id === ticket.event_id) existing = undefined;
+			else {
+				ticket = replacement;
+				envelope = await buildWorkerEnvelope(worker, type, payload, ticket, runner, cwd);
+				existing = await readWorkerReceipt(ticket.receipt_path);
+			}
 		}
 	}
 	if (existing) return requireReceipt(envelope, existing);

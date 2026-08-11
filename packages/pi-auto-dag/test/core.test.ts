@@ -504,6 +504,30 @@ test("interrupted launch cannot become ready during reconciliation", async (t) =
 	await assert.rejects(access(processPath), /ENOENT/);
 });
 
+test("startup cancellation remains when no host identity was observed", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX host process only");
+	const project = await makeProject(t);
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	const launchId = "unobserved-host";
+	const cancelPath = `${processPath}.${launchId}.cancel`;
+	await writeFile(processPath, `${JSON.stringify({
+		version: 3,
+		phase: "launching",
+		launch_id: launchId,
+		grouped: true,
+		release: `${processPath}.${launchId}.release`,
+		cwd: project.root,
+		command: "test gate",
+		commit,
+	})}\n`);
+
+	await reconcileRequiredGateProcess(runCommand, processPath, async () => {});
+
+	await access(cancelPath);
+	await assert.rejects(access(processPath), /ENOENT/);
+});
+
 test("interrupted gate reconciliation ignores reused process identities", async (t) => {
 	if (process.platform === "win32") return t.skip("Unix process identity only");
 	const project = await makeProject(t);

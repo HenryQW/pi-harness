@@ -301,7 +301,7 @@ export async function reconcileRequiredGateProcess(
 	await restoreCleanCommit(runner, record.commit, record.cwd, record.ignored_snapshot, record.head_ref);
 	if (record.output_files) await removeGateOutputFiles(record.output_files);
 	if (record.ignored_snapshot) await rm(record.ignored_snapshot, { recursive: true, force: true });
-	await removeGateControlFiles(path, record);
+	await removeGateControlFiles(path, record, !host && !command);
 	await removeFile(path);
 	return undefined;
 }
@@ -467,11 +467,11 @@ async function discardGateProcess(path: string): Promise<void> {
 	await removeFile(path);
 }
 
-async function removeGateControlFiles(path: string, record: GateProcessRecord): Promise<void> {
+async function removeGateControlFiles(path: string, record: GateProcessRecord, preserveStartupCancel = false): Promise<void> {
 	await Promise.all([
 		removeFile(record.release),
 		removeFile(gateHostReadyPath(path, record.launch_id)),
-		removeFile(gateHostCancelPath(path, record.launch_id)),
+		...(preserveStartupCancel ? [] : [removeFile(gateHostCancelPath(path, record.launch_id))]),
 		removeFile(gateHostCancelledPath(path, record.launch_id)),
 		removeFile(gateCommandPath(path, record.launch_id)),
 		removeFile(gateCommandReleasePath(path, record.launch_id)),
