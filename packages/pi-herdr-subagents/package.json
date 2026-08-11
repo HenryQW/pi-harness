@@ -1,12 +1,12 @@
 {
   "name": "@henryqw/pi-herdr-subagents",
-  "version": "0.1.1",
-  "description": "Delegate bounded tasks to interactive Pi Workers in Herdr tabs.",
+  "version": "0.2.0",
+  "description": "Delegate bounded tasks to interactive Pi Subagents in Herdr tabs.",
   "keywords": [
     "pi-package",
     "pi",
     "herdr",
-    "workers",
+    "subagents",
     "delegation"
   ],
   "type": "module",
@@ -22,10 +22,11 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/subagents.ts internal/protocol.ts internal/worker.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/subagents.ts internal/protocol.ts internal/subagent.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },

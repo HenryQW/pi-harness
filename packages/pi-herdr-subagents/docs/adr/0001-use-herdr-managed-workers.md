@@ -1,3 +1,0 @@
-# Use Herdr-managed workers
-
-Pi Herdr Subagents delegates each task to one interactive Pi Worker in its own Herdr tab, uses Herdr prompts for task submission and Completion Notices, and stores full Results in temporary files. We choose this over in-process `AgentSession` orchestration to keep ownership visible and avoid queues, resume, status, and recovery infrastructure; explicit `finish_task` distinguishes completion from multi-turn Worker Questions, while crash recovery remains manual. Because simultaneous Herdr prompts can coalesce back-to-back Completion Notices, Main validates each coalesced batch atomically before releasing ownership or closing tabs.
