@@ -1,84 +1,139 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { finished } from "node:stream/promises";
 import { promisify } from "node:util";
 
 const OUTPUT_OVERFLOW_EXIT_CODE = 125;
-const [recordPath, launchId, command, ...arguments_] = process.argv.slice(2);
-if (!recordPath || !launchId || !command) throw new Error("Required gate host arguments are incomplete");
+const GATE_COMMAND_LAUNCHER = `
+"$1" "$2" --mark-command "$3" "$4" "$$" || exit $?
+while [ ! -e "$5" ]; do
+	[ -e "$6" ] && exit 1
+	sleep 0.005
+done
+rm -f "$5"
+[ -e "$6" ] && exit 1
+shift 6
+exec "$@"
+`;
+const arguments_ = process.argv.slice(2);
+if (arguments_[0] === "--mark-command") await markCommand(...arguments_.slice(1));
+else await runHost(arguments_);
 
-const control = await markReady(recordPath, launchId);
-while (true) {
+async function runHost([recordPath, launchId, command, ...commandArguments]) {
+	if (!recordPath || !launchId || !command) throw new Error("Required gate host arguments are incomplete");
+	const control = await markReady(recordPath, launchId);
+	while (true) {
+		if (await exists(control.cancel)) await cancelLaunch(control.ready, control.cancel);
+		if (await exists(control.release)) break;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	await unlink(control.release);
 	if (await exists(control.cancel)) await cancelLaunch(control.ready, control.cancel);
-	if (await exists(control.release)) break;
-	await new Promise((resolve) => setTimeout(resolve, 5));
-}
-await unlink(control.release);
-if (await exists(control.cancel)) await cancelLaunch(control.ready, control.cancel);
 
-const stdout = createWriteStream(control.output_files.stdout, { mode: 0o600 });
-const stderr = createWriteStream(control.output_files.stderr, { mode: 0o600 });
-const outputCompletion = Promise.all([finished(stdout), finished(stderr)]);
-let child;
-let outputBytes = 0;
-let overflowed = false;
-let timedOut = false;
-let commandCompleted = false;
-let completedBeforeCancellation = false;
-const terminate = () => {
-	if (timedOut) return;
-	if (!commandCompleted) timedOut = true;
-	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
-};
-process.once("SIGTERM", terminate);
-const timeout = control.timeout_ms === undefined ? undefined : setTimeout(terminate, control.timeout_ms);
-void outputCompletion.catch(() => {
-	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
-});
-
-try {
-	const running = spawn(command, arguments_, { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], detached: true });
-	child = running;
-	running.stdout.pipe(stdout);
-	running.stderr.pipe(stderr);
-	const collect = (chunk) => {
-		outputBytes += chunk.length;
-		if (outputBytes > control.max_output_bytes && !overflowed) {
-			overflowed = true;
-			if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
-		}
+	const stdout = createWriteStream(control.output_files.stdout, { mode: 0o600 });
+	const stderr = createWriteStream(control.output_files.stderr, { mode: 0o600 });
+	const outputCompletion = Promise.all([finished(stdout), finished(stderr)]);
+	let child;
+	let outputBytes = 0;
+	let overflowed = false;
+	let timedOut = false;
+	let commandCompleted = false;
+	let cancelled = false;
+	const terminate = () => {
+		if (timedOut) return;
+		if (!commandCompleted) timedOut = true;
+		if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
 	};
-	running.stdout.on("data", collect);
-	running.stderr.on("data", collect);
-	const outcome = await new Promise((resolve) => {
-		let settled = false;
-		const settle = (result) => {
-			if (settled) return;
-			settled = true;
-			commandCompleted = true;
-			completedBeforeCancellation = !existsSync(control.cancel);
-			resolve(result);
-		};
-		running.once("error", (error) => settle({ code: 1, signal: null, error }));
-		running.once("exit", (code, signal) => settle({ code, signal }));
+	const cancel = () => {
+		cancelled = true;
+		terminate();
+	};
+	process.once("SIGTERM", cancel);
+	const timeout = control.timeout_ms === undefined ? undefined : setTimeout(terminate, control.timeout_ms);
+	void outputCompletion.catch(() => {
+		if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
 	});
-	if (outcome.error) stderr.write(`${outcome.error.message}\n`);
-	if (running.pid !== undefined) await terminateGroup(running.pid);
-	await outputCompletion;
-	const exitCode = overflowed ? OUTPUT_OVERFLOW_EXIT_CODE : timedOut ? 124 : outcome.signal ? 1 : outcome.code ?? 1;
-	await markCompleted(recordPath, launchId, exitCode, completedBeforeCancellation);
-	process.exitCode = exitCode;
-} catch (error) {
-	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
-	stdout.destroy();
-	stderr.destroy();
-	await outputCompletion.catch(() => undefined);
-	throw error;
-} finally {
-	if (timeout) clearTimeout(timeout);
-	process.removeListener("SIGTERM", terminate);
+
+	try {
+		const running = spawn("sh", ["-c", GATE_COMMAND_LAUNCHER, "pi-auto-dag-gate", process.execPath, process.argv[1], recordPath, launchId, control.command_release, control.cancel, command, ...commandArguments], {
+			cwd: process.cwd(),
+			stdio: ["ignore", "pipe", "pipe"],
+			detached: true,
+		});
+		child = running;
+		running.stdout.pipe(stdout);
+		running.stderr.pipe(stderr);
+		const collect = (chunk) => {
+			outputBytes += chunk.length;
+			if (outputBytes > control.max_output_bytes && !overflowed) {
+				overflowed = true;
+				if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
+			}
+		};
+		running.stdout.on("data", collect);
+		running.stderr.on("data", collect);
+		const outcome = new Promise((resolve) => {
+			let settled = false;
+			const settle = (result) => {
+				if (settled) return;
+				settled = true;
+				commandCompleted = true;
+				resolve(result);
+			};
+			running.once("error", (error) => settle({ code: 1, signal: null, error }));
+			running.once("exit", (code, signal) => settle({ code, signal }));
+		});
+		await waitForCommand(control.command, launchId, running);
+		if (await exists(control.cancel)) throw new Error("Required gate launch was cancelled");
+		await writeFile(control.command_release, "run\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+		const result = await outcome;
+		if (result.error) stderr.write(`${result.error.message}\n`);
+		if (running.pid !== undefined) await terminateGroup(running.pid);
+		await outputCompletion;
+		const exitCode = overflowed ? OUTPUT_OVERFLOW_EXIT_CODE : timedOut ? 124 : result.signal ? 1 : result.code ?? 1;
+		await markCompleted(recordPath, launchId, exitCode, cancelled);
+		process.exitCode = exitCode;
+	} catch (error) {
+		if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
+		stdout.destroy();
+		stderr.destroy();
+		await outputCompletion.catch(() => undefined);
+		throw error;
+	} finally {
+		if (timeout) clearTimeout(timeout);
+		process.removeListener("SIGTERM", cancel);
+	}
+}
+
+async function markCommand(recordPath, launchId, pidText) {
+	if (!recordPath || !launchId || !pidText) throw new Error("Required gate command identity arguments are incomplete");
+	const pid = Number(pidText);
+	if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Required gate command PID must be a positive integer");
+	const cancel = `${recordPath}.${launchId}.cancel`;
+	if (await exists(cancel)) throw new Error("Required gate launch was cancelled");
+	const identity = await processIdentity(pid);
+	if (!identity) throw new Error("Required gate command lacks a safe process identity");
+	await writeJson(`${recordPath}.${launchId}.command`, { version: 1, launch_id: launchId, pid, identity });
+	if (await exists(cancel)) throw new Error("Required gate launch was cancelled");
+}
+
+async function waitForCommand(path, launchId, child) {
+	for (let attempt = 0; attempt < 2_000; attempt += 1) {
+		try {
+			const record = JSON.parse(await readFile(path, "utf8"));
+			if (record.version !== 1 || record.launch_id !== launchId || record.pid !== child.pid || typeof record.identity !== "string" || !record.identity) {
+				throw new Error("Required gate command identity does not match launch intent");
+			}
+			return;
+		} catch (error) {
+			if (error.code !== "ENOENT") throw error;
+		}
+		if (child.exitCode !== null || child.signalCode !== null) throw new Error("Required gate command exited before recording its identity");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error("Required gate command did not record its identity");
 }
 
 async function markReady(path, expectedLaunchId) {
@@ -98,6 +153,8 @@ async function markReady(path, expectedLaunchId) {
 		release: record.release,
 		cancel,
 		ready: `${path}.${expectedLaunchId}.host`,
+		command: `${path}.${expectedLaunchId}.command`,
+		command_release: `${path}.${expectedLaunchId}.command.release`,
 		output_files: record.output_files,
 		max_output_bytes: record.max_output_bytes,
 		...(record.timeout_ms === undefined ? {} : { timeout_ms: record.timeout_ms }),
@@ -114,8 +171,8 @@ async function markReady(path, expectedLaunchId) {
 	return control;
 }
 
-async function markCompleted(path, expectedLaunchId, exitCode, completedBeforeCancellation) {
-	if (!completedBeforeCancellation && await exists(`${path}.${expectedLaunchId}.cancel`)) return;
+async function markCompleted(path, expectedLaunchId, exitCode, cancelled) {
+	if (cancelled || await exists(`${path}.${expectedLaunchId}.cancelled`)) return;
 	const record = await readRecord(path);
 	if (record.version !== 4 || record.launch_id !== expectedLaunchId) {
 		throw new Error("Required gate completion does not match launch intent");
@@ -157,18 +214,23 @@ async function processIdentity(pid) {
 				readFile("/proc/sys/kernel/random/boot_id", "utf8"),
 				readFile(`/proc/${pid}/stat`, "utf8"),
 			]);
-			const started = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[19];
+			const fields = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
+			const started = fields[19];
 			if (!started) throw new Error("Linux process stat lacks start time");
-			return `linux:${bootId.trim()}:${started}`;
+			return fields[0] === "Z" ? undefined : `linux:${bootId.trim()}:${started}`;
 		} catch (error) {
 			if (["ENOENT", "ESRCH"].includes(error.code ?? "")) return undefined;
 			throw error;
 		}
 	}
 	try {
-		const { stdout } = await promisify(execFileCallback)("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
+		const execFile = promisify(execFileCallback);
+		const [{ stdout }, { stdout: status }] = await Promise.all([
+			execFile("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }),
+			execFile("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }),
+		]);
 		const started = stdout.trim();
-		return started ? `${process.platform}:${started}` : undefined;
+		return started && !status.trim().startsWith("Z") ? `${process.platform}:${started}` : undefined;
 	} catch (error) {
 		if (String(error.code) === "1") return undefined;
 		throw error;

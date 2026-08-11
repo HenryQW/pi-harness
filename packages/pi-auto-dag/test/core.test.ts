@@ -392,7 +392,7 @@ test("required gate records recoverable intent before command execution", async 
 	const project = await makeProject(t);
 	const commit = await git(project.root, "rev-parse", "HEAD");
 	const processPath = join(project.root, ".context", "required-gate-process.json");
-	const check = `const fs=require("node:fs");const p=${JSON.stringify(processPath)};const r=JSON.parse(fs.readFileSync(p,"utf8"));const h=JSON.parse(fs.readFileSync(p+"."+r.launch_id+".host","utf8"));process.exit(r.version===4&&r.phase==="launching"&&r.target.issue_id==="core"&&h.pid&&h.identity&&h.launch_id===r.launch_id&&r.commit===${JSON.stringify(commit)}?0:1)`;
+	const check = `const fs=require("node:fs");const p=${JSON.stringify(processPath)};const r=JSON.parse(fs.readFileSync(p,"utf8"));const h=JSON.parse(fs.readFileSync(p+"."+r.launch_id+".host","utf8"));const c=JSON.parse(fs.readFileSync(p+"."+r.launch_id+".command","utf8"));process.exit(r.version===4&&r.phase==="launching"&&r.target.issue_id==="core"&&h.pid&&h.identity&&h.launch_id===r.launch_id&&c.pid&&c.identity&&c.launch_id===r.launch_id&&r.commit===${JSON.stringify(commit)}?0:1)`;
 
 	const execution = await runRequiredGate(
 		runCommand,
@@ -636,7 +636,7 @@ test("gate host preserves a command result completed before late cancellation", 
 		max_output_bytes: 1024,
 		timeout_ms: 10_000,
 	})}\n`);
-	const script = `printf '%s' "$$" > ${JSON.stringify(shellPidPath)}; printf 'run\\n' >> ${JSON.stringify(marker)}; sh -c 'trap "" TERM; while :; do sleep 1; done' >/dev/null 2>&1 & printf '%s' "$!" > ${JSON.stringify(descendantPidPath)}`;
+	const script = `printf '%s' "$$" > ${JSON.stringify(shellPidPath)}; printf 'run\\n' >> ${JSON.stringify(marker)}; sh -c 'trap "" TERM; while :; do sleep 1; done' >/dev/null 2>&1 & printf '%s' "$!" > ${JSON.stringify(descendantPidPath)}; kill -STOP "$(node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).pid))' ${JSON.stringify(ready)})"`;
 	const host = spawn(process.execPath, [fileURLToPath(new URL("../src/gate-host.mjs", import.meta.url)), processPath, launchId, "sh", "-c", script], {
 		cwd: project.root,
 		stdio: "ignore",
@@ -676,7 +676,12 @@ test("gate host preserves a command result completed before late cancellation", 
 	}
 	assert.equal(JSON.parse(await readFile(processPath, "utf8")).phase, "launching");
 
+	let resumed = false;
 	const recovered = await reconcileRequiredGateProcess(runCommand, processPath, async () => {
+		if (!resumed && host.pid !== undefined) {
+			resumed = true;
+			process.kill(host.pid, "SIGCONT");
+		}
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	});
 	await hostExit;
@@ -684,6 +689,73 @@ test("gate host preserves a command result completed before late cancellation", 
 	assert.equal(recovered?.exit_code, 0);
 	assert.equal(await readFile(marker, "utf8"), "run\n");
 	assert.throws(() => process.kill(descendantPid, 0), (error: NodeJS.ErrnoException) => error.code === "ESRCH");
+});
+
+test("reconciliation kills detached gate command after gate host SIGKILL", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
+	const project = await makeProject(t);
+	const external = await mkdtemp(join(tmpdir(), "pi-auto-dag-host-kill-"));
+	t.after(async () => await rm(external, { recursive: true, force: true }));
+	const processPath = join(project.root, ".context", "required-gate-process.json");
+	const launchId = "killed-host";
+	const release = `${processPath}.${launchId}.release`;
+	const ready = `${processPath}.${launchId}.host`;
+	const outputFiles = { stdout: `${processPath}.stdout`, stderr: `${processPath}.stderr` };
+	const started = join(external, "started.txt");
+	const marker = join(external, "late.txt");
+	const commandPidPath = join(external, "command.pid");
+	const commit = await git(project.root, "rev-parse", "HEAD");
+	await mkdir(dirname(processPath), { recursive: true });
+	await writeFile(processPath, `${JSON.stringify({
+		version: 4,
+		phase: "launching",
+		launch_id: launchId,
+		grouped: true,
+		release,
+		cwd: project.root,
+		command: "host crash gate",
+		commit,
+		target: CORE_GATE_TARGET,
+		head_ref: "refs/heads/dag",
+		output_files: outputFiles,
+		max_output_bytes: 1024,
+		timeout_ms: 10_000,
+	})}\n`);
+	const script = `printf '%s' "$$" > ${JSON.stringify(commandPidPath)}; printf 'started\\n' > ${JSON.stringify(started)}; sleep 0.4; printf 'late\\n' > ${JSON.stringify(marker)}`;
+	const host = spawn(process.execPath, [fileURLToPath(new URL("../src/gate-host.mjs", import.meta.url)), processPath, launchId, "sh", "-c", script], {
+		cwd: project.root,
+		stdio: "ignore",
+		detached: true,
+	});
+	let hostExited = false;
+	const hostExit = new Promise<void>((resolve, reject) => {
+		host.once("exit", () => { hostExited = true; resolve(); });
+		host.once("error", reject);
+	});
+	t.after(() => {
+		if (!hostExited && host.pid !== undefined) {
+			try { process.kill(host.pid, "SIGKILL"); } catch {}
+		}
+	});
+	for (let attempt = 0; attempt < 200; attempt += 1) {
+		try { await access(ready); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+	}
+	await writeFile(release, "run\n", { flag: "wx" });
+	for (let attempt = 0; attempt < 200; attempt += 1) {
+		try { await Promise.all([access(started), access(commandPidPath)]); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+	}
+	const commandPid = Number(await readFile(commandPidPath, "utf8"));
+	t.after(() => {
+		try { process.kill(-commandPid, "SIGKILL"); } catch {}
+	});
+	process.kill(host.pid!, "SIGKILL");
+	await hostExit;
+
+	await reconcileRequiredGateProcess(runCommand, processPath, async () => await new Promise((resolve) => setTimeout(resolve, 10)));
+	await new Promise((resolve) => setTimeout(resolve, 500));
+
+	await assert.rejects(access(marker), /ENOENT/);
+	assert.throws(() => process.kill(commandPid, 0), (error: NodeJS.ErrnoException) => error.code === "ESRCH");
 });
 
 test("strict config and local graph validation derive deterministic dependencies", () => {

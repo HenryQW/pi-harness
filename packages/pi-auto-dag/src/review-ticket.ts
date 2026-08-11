@@ -108,6 +108,29 @@ export async function ensureActionTicket(
 	return ticket;
 }
 
+export async function rotateRejectedActionTicket(
+	path: string,
+	eventId: string,
+	mainWorktree: string,
+	runId: string,
+	uuid: Uuid,
+): Promise<ActionTicket | undefined> {
+	let current: ActionTicket;
+	try {
+		current = await readActionTicket(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	if (current.event_id !== eventId) return undefined;
+	return await ensureActionTicket(path, {
+		attempt: current.attempt,
+		review_round: current.review_round,
+		role: current.role,
+		...(current.review_id === undefined ? {} : { review_id: current.review_id }),
+	}, mainWorktree, runId, uuid);
+}
+
 export async function writeWorkerReceipt(path: string, receipt: Omit<WorkerReceipt, "version"> & { version?: 1 }, uuid: Uuid = randomUUID): Promise<void> {
 	const value = parseWorkerReceipt({ version: 1, ...receipt });
 	await mkdir(dirname(path), { recursive: true });

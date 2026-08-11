@@ -20,7 +20,7 @@ import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, S
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
 import { hasAcceptedWorkerEvent, issueById, readRunState, recordAcceptedWorkerEvent, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
-import { eventReceiptPath, readWorkerReceipt, writeWorkerReceipt } from "./review-ticket.ts";
+import { actionTicketPath, eventReceiptPath, readWorkerReceipt, rotateRejectedActionTicket, writeWorkerReceipt } from "./review-ticket.ts";
 import { findWorkerTab, retireWorkerTab, workerAgentName } from "./worker-host.ts";
 import { WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerRole } from "./worker.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -122,10 +122,21 @@ export async function resumeRun(
 			const persisted = await readRunState(state.main_worktree, state.run_id);
 			if (!persisted || !hasAcceptedWorkerEvent(persisted, workerEnvelope)) {
 				await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+				const issue = executionIssues(state.graph).find((candidate) => candidate.id === workerEnvelope.issue_id);
+				if (issue) {
+					await rotateRejectedActionTicket(
+						actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.role === "final_check" ? "lifecycle" : "implementation", workerEnvelope.role),
+						workerEnvelope.event_id,
+						state.main_worktree,
+						state.run_id,
+						options.uuid,
+					);
+				}
 			}
 			throw error;
 		}
 		if (state.phase !== "blocked") state = await advanceWithConfig(state, config, options);
+		state = await save(state, options);
 		await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
 		return state;
 	}

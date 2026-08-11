@@ -165,6 +165,42 @@ test("stale action ticket returns worker-visible rejection", async (t) => {
 	);
 });
 
+test("corrected retry uses rotated ticket after turn ticket rejection", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const action = await ticket(root);
+	const replacement: ActionTicket = {
+		...action.value,
+		event_id: "77777777-7777-4777-8777-777777777777",
+		receipt_path: join(root, "replacement-receipt.json"),
+	};
+	const tools: Array<{ name: string; execute: Function }> = [];
+	let input: ((event: unknown, ctx: unknown) => unknown) | undefined;
+	createWorkerExtension({
+		environment: environment(action.path),
+		deliveryAttempts: 1,
+		delay: async () => {},
+		runner: async (command, args) => {
+			if (command === "git") return { code: 0, stdout: `${HEAD}\n`, stderr: "" };
+			const envelope = JSON.parse(args[3]);
+			assert.equal(envelope.event_id, replacement.event_id);
+			await writeWorkerReceipt(replacement.receipt_path, { event_id: replacement.event_id, status: "accepted" });
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	})({
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			if (event === "input") input = handler;
+		},
+		registerTool(tool: { name: string; execute: Function }) { tools.push(tool); },
+	} as never);
+	await input!({ type: "input", text: "review correction", source: "rpc" }, {});
+	await writeWorkerReceipt(action.value.receipt_path, { event_id: action.value.event_id, status: "rejected", reason: "bad review" });
+	await writeFile(action.path, `${JSON.stringify(replacement)}\n`);
+
+	const result = await tools.find((tool) => tool.name === WORKER_TOOLS.request_review)!.execute("call", { summary: "corrected" });
+	assert.equal(result.details.status, "accepted");
+});
+
 test("delivery without lifecycle acceptance does not report Sent", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
