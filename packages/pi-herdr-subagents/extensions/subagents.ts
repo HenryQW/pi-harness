@@ -9,7 +9,6 @@ import {
 	PROTOCOL_VERSION,
 	parseCompletionNotices,
 	parseTerminalResult,
-	resultExcerpt,
 } from "../internal/protocol.ts";
 
 const DEFAULT_LIMIT = 10;
@@ -262,8 +261,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
-		description: "Delegate one bounded task to one interactive Herdr Pi Worker.",
-		parameters: Type.Object({ task: Type.String({ minLength: 1 }) }),
+		description: "Delegate one bounded, self-contained task to one interactive Herdr Pi Worker.",
+		parameters: Type.Object({
+			task: Type.String({
+				minLength: 1,
+				description: "Self-contained task with relevant context, exact paths, constraints, and success criteria.",
+			}),
+		}),
 		executionMode: "sequential",
 		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
 			const task = params.task;
@@ -326,6 +330,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text", text: `Delegated Task ${taskId}\nWorker: ${worker.workerName}\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
 					details: {},
+					terminate: true,
 				};
 			} catch (error) {
 				if (promptOutcomeUnknown) {
@@ -378,7 +383,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		try {
 			validated = await Promise.all(owned.map(async ({ notice, worker }) => {
 				const terminal = parseTerminalResult(JSON.parse(await readFile(worker.resultPath, "utf8")) as unknown);
-				if (!terminal || terminal.taskId !== worker.taskId || terminal.task !== worker.task || notice.excerpt !== resultExcerpt(terminal)) return;
+				if (!terminal || terminal.taskId !== worker.taskId || terminal.task !== worker.task) return;
 				return { notice, worker, terminal };
 			}));
 		} catch {
@@ -392,7 +397,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		for (const { worker } of completed) if (worker.tabId) void closeTab(pi, worker.tabId, ctx).catch(() => undefined);
 		return {
 			action: "transform",
-			text: completed.map(({ notice, worker, terminal }) => `Worker ${worker.workerName} completed Delegated Task ${worker.taskId} (${terminal.state}). Result: ${worker.resultPath}\n\n${notice.excerpt}`).join("\n\n"),
+			text: completed.map(({ worker, terminal }) => `Worker ${worker.workerName} completed Delegated Task ${worker.taskId} (${terminal.state}). Read Result before relying on it: ${worker.resultPath}`).join("\n\n"),
 		};
 	});
 

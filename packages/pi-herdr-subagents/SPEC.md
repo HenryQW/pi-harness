@@ -10,7 +10,7 @@ Create publish-ready `@henryqw/pi-herdr-subagents`, a Pi extension that lets Mai
 
 ### `delegate_task({ task })`
 
-Register one Main tool with one required, non-empty string parameter named `task`. Set `executionMode: "sequential"`; Pi then serializes any tool batch containing delegation, so same-batch calls reserve capacity one at a time.
+Register one Main tool with one required, non-empty string parameter named `task`. Model-visible schema tells Main to provide self-contained task with relevant context, exact paths, constraints, and success criteria. Set `executionMode: "sequential"`; Pi then serializes any tool batch containing delegation, so same-batch calls reserve capacity one at a time. Successful delegation returns `terminate: true`, avoiding post-delegation Main model turn when every tool result in batch terminates.
 
 On success it returns:
 
@@ -44,9 +44,9 @@ Value must be positive integer. Missing file uses `10`. Malformed or invalid con
 
 ## Private protocol
 
-Use protocol version `1` and these exact Worker environment keys:
+Use protocol version `2` and these exact Worker environment keys:
 
-- `PI_HERDR_SUBAGENT_PROTOCOL=1`
+- `PI_HERDR_SUBAGENT_PROTOCOL=2`
 - `PI_HERDR_SUBAGENT_TASK_ID=<UUID>`
 - `PI_HERDR_SUBAGENT_RESULT_PATH=<absolute path>`
 - `PI_HERDR_SUBAGENT_MAIN=<Herdr agent name>`
@@ -55,7 +55,7 @@ Pending Result JSON:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "taskId": "<UUID>",
   "state": "pending",
   "task": "<Delegated Task>",
@@ -68,14 +68,14 @@ Completed Result JSON replaces it atomically and has exactly `version`, `taskId`
 Raw Completion Notice is one line:
 
 ```text
-PI_HERDR_SUBAGENT_COMPLETION_V1 <base64url UTF-8 JSON>
+PI_HERDR_SUBAGENT_COMPLETION_V2 <base64url UTF-8 JSON>
 ```
 
 Simultaneous Herdr prompts may coalesce exact back-to-back Completion Notice frames into one Main input. Main parses and validates the whole batch atomically before releasing ownership or closing tabs; any bad frame rejects whole input.
 
-Decoded JSON has exactly `version: 1`, `taskId`, `resultPath`, and `excerpt`. `excerpt` is derived from final Result text or failure message by removing C0/C1 control characters except newline and tab, then taking first 1,000 UTF-16 code units.
+Decoded JSON has exactly `version: 2`, `taskId`, and `resultPath`.
 
-Main accepts raw notice only when prefix/encoding/schema are valid, task ID is actively owned, path exactly equals tracked Result path, final Result file parses with matching version/task ID and terminal state, and envelope excerpt equals excerpt recomputed from file. Malformed, stale, duplicate, mismatched, or control-text input is ordinary user input and cannot release ownership or close a tab. Valid input is transformed before model delivery to fixed prose containing Worker/task ID, terminal state, tracked Result path, and sanitized excerpt; raw framing never reaches model context.
+Main accepts raw notice only when prefix/encoding/schema are valid, task ID is actively owned, path exactly equals tracked Result path, and final Result file parses with matching version/task ID and terminal state. Malformed, stale, duplicate, mismatched, or control-text input is ordinary user input and cannot release ownership or close a tab. Valid input is transformed before model delivery to fixed prose containing Worker/task ID, terminal state, tracked Result path, and instruction to read Result before relying on it; raw framing and Result content never reach model context.
 
 ## Worker launch
 
@@ -102,7 +102,7 @@ Package-internal Worker extension exposes only:
 finish_task({ result: string })
 ```
 
-`result` must be non-empty. Set `executionMode: "sequential"`. A call is valid only when `finish_task` is sole tool call in current assistant message; inspect persisted current assistant message by tool-call ID and reject mixed or repeated finish batches before writing. This makes `terminate: true` effective for complete batch and prevents tools running after accepted completion.
+`result` must be non-empty. Model-visible schema asks for concise outcome with files changed, validation performed, and remaining risks. Set `executionMode: "sequential"`. A call is valid only when `finish_task` is sole tool call in current assistant message; inspect persisted current assistant message by tool-call ID and reject mixed or repeated finish batches before writing. This makes `terminate: true` effective for complete batch and prevents tools running after accepted completion.
 
 First valid call claims an in-process completion latch synchronously before any await, then:
 
@@ -117,7 +117,7 @@ Reset latch only when Result persistence itself fails. Once Result is durable, f
 
 Herdr cannot atomically reserve Main's idle state. Notice is best-effort idle delivery: rare state-change race may make it steering input. Do not add mailbox, polling, or replay infrastructure.
 
-Validated Completion Notice releases Worker Limit capacity, best-effort closes Worker tab, and exposes fixed sanitized text to Main's model. Full Result stays on disk and Main reads it with existing `read` only when needed. Result is evidence; Main must verify claimed repository changes and validation before reporting completion.
+Validated Completion Notice releases Worker Limit capacity, best-effort closes Worker tab, and exposes fixed Result-path text to Main's model. Full Result stays on disk and Main reads it with existing `read`. Result is evidence; Main must verify claimed repository changes and validation before reporting completion.
 
 If final settled assistant message has terminal Pi/model `error` or `aborted` stop reason before `finish_task`, Worker atomically stores failure information and sends same Completion Notice. Ordinary tool errors remain recoverable and do not auto-finish. Normal successful settlement without `finish_task` leaves Worker live. Hard process crash leaves tab and pending Result for inspection.
 
@@ -159,13 +159,13 @@ Use Node built-in test runner and assertions. Fake `pi.exec`, extension contexts
 
 At extension/tool boundary, verify:
 
-- Herdr/model/task preconditions, exact public surface, and same-batch sequential capacity enforcement;
+- Herdr/model/task preconditions, exact public surface, model-visible handoff guidance, successful delegation termination, and same-batch sequential capacity enforcement;
 - config default, validation, command persistence, immediate update, and reduced-limit behavior;
 - per-Main Worker Limit, strict missing-tab and provisioning reconciliation, and no queue;
 - tab label/cwd/env, inherited model/thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
 - successful launch response, definitive pre-submission rollback, indeterminate creation reconciliation, failed-rollback retention, and indeterminate prompt preservation;
-- Completion Notice validation, 1,000-character cap, capacity release, completed-tab close, and shutdown cleanup;
-- exact versioned Result/notice schemas, malformed/spoofed/path/state/excerpt/control-text rejection, and fixed sanitized Main transform;
+- Completion Notice validation, capacity release, completed-tab close, and shutdown cleanup;
+- exact versioned Result/notice schemas, malformed/spoofed/path/state/control-text rejection, and fixed path-only Main transform;
 - natural Worker Question settlement remains live;
 - `finish_task` sole-call enforcement, synchronous latch, atomic Result write and mode without post-commit failure, wait-before-notice order, batch termination, duplicate suppression, and failed-delivery preservation;
 - terminal runtime failure notice versus recoverable tool error and normal settlement;

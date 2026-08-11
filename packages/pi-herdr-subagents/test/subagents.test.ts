@@ -172,7 +172,7 @@ async function pendingFile(task = "write test file") {
 	const path = join(dir, "result.json");
 	const taskId = "123e4567-e89b-42d3-a456-426614174000";
 	const createdAt = "2026-08-10T00:00:00.000Z";
-	await writeFile(path, `${JSON.stringify({ version: 1, taskId, state: "pending", task, createdAt })}\n`, { mode: 0o600 });
+	await writeFile(path, `${JSON.stringify({ version: PROTOCOL_VERSION, taskId, state: "pending", task, createdAt })}\n`, { mode: 0o600 });
 	return { dir, path, taskId, task, createdAt };
 }
 
@@ -183,9 +183,11 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		assert.deepEqual([...app.tools.keys()], ["delegate_task"]);
 		assert.equal(app.tools.get("delegate_task")?.executionMode, "sequential");
+		assert.equal(app.tools.get("delegate_task")?.parameters.properties.task.description, "Self-contained task with relevant context, exact paths, constraints, and success criteria.");
 		assert.deepEqual([...app.commands.keys()], ["subagent-limit"]);
 
 		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, undefined, app.ctx);
+		assert.equal(delegated.terminate, true);
 		const output = delegated.content[0].text as string;
 		const resultPath = output.match(/^Result: (.+)$/m)?.[1];
 		assert.ok(resultPath);
@@ -193,7 +195,7 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		assert.match(output, /^Stop: herdr tab close tab-1$/m);
 		assert.equal((await stat(resultPath!)).mode & 0o777, 0o600);
 		assert.deepEqual(parsePendingResult(JSON.parse(await readFile(resultPath!, "utf8"))), {
-			version: 1,
+			version: PROTOCOL_VERSION,
 			taskId: output.match(/^Delegated Task (.+)$/m)![1],
 			state: "pending",
 			task: "inspect code and report",
@@ -206,7 +208,7 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		assert.equal(created[created.indexOf("--label") + 1].length <= 40, true);
 		assert.equal(created[created.indexOf("--label") + 1].split(" · ")[0].split(/\s+/).length, 4);
 		assert.deepEqual(created.filter((value) => value.startsWith("PI_HERDR_SUBAGENT_")), [
-			"PI_HERDR_SUBAGENT_PROTOCOL=1",
+			`PI_HERDR_SUBAGENT_PROTOCOL=${PROTOCOL_VERSION}`,
 			`PI_HERDR_SUBAGENT_TASK_ID=${taskId}`,
 			`PI_HERDR_SUBAGENT_RESULT_PATH=${resultPath}`,
 			`PI_HERDR_SUBAGENT_MAIN=${app.calls.find((args) => args[0] === "agent" && args[1] === "rename")![3]}`,
@@ -219,27 +221,25 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		]);
 
 		const pending = JSON.parse(await readFile(resultPath!, "utf8"));
-		const terminal = { version: 1, taskId: pending.taskId, state: "finished", task: pending.task, result: "done\u0000\nnext", error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
+		const terminal = { version: PROTOCOL_VERSION, taskId: pending.taskId, state: "finished", task: pending.task, result: "done\u0000\nnext", error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
 		await writeFile(resultPath!, JSON.stringify(terminal));
-		const spoofed = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice("/tmp/not-owned.json", terminal) }, app.ctx);
+		const spoofed = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice("/tmp/not-owned.json", terminal.taskId) }, app.ctx);
 		assert.deepEqual(spoofed, { action: "continue" });
 		const wrongTask = { ...terminal, task: "other task" } as const;
 		await writeFile(resultPath!, JSON.stringify(wrongTask));
-		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, wrongTask) }, app.ctx), { action: "continue" });
+		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal.taskId) }, app.ctx), { action: "continue" });
 		const wrongTaskId = { ...terminal, taskId: "123e4567-e89b-42d3-a456-426614174000" } as const;
 		await writeFile(resultPath!, JSON.stringify(wrongTaskId));
-		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, wrongTaskId) }, app.ctx), { action: "continue" });
-		await writeFile(resultPath!, JSON.stringify({ version: 1, taskId: terminal.taskId, state: "pending", task: terminal.task, createdAt: terminal.createdAt }));
-		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal) }, app.ctx), { action: "continue" });
+		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, wrongTaskId.taskId) }, app.ctx), { action: "continue" });
+		await writeFile(resultPath!, JSON.stringify({ version: PROTOCOL_VERSION, taskId: terminal.taskId, state: "pending", task: terminal.task, createdAt: terminal.createdAt }));
+		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal.taskId) }, app.ctx), { action: "continue" });
 		await writeFile(resultPath!, JSON.stringify(terminal));
-		const wrongExcerpt = completionNotice(resultPath!, { ...terminal, result: "wrong" });
-		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: wrongExcerpt }, app.ctx), { action: "continue" });
 		assert.deepEqual(app.closed, []);
-		const input = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal) }, app.ctx);
+		const input = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal.taskId) }, app.ctx);
 		assert.equal(input.action, "transform");
 		assert.match(input.text, /completed Delegated Task .* \(finished\)/);
-		assert.match(input.text, /done\nnext/);
-		assert.equal(input.text.includes("\u0000"), false);
+		assert.match(input.text, new RegExp(resultPath!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.equal(input.text.includes("done"), false);
 		assert.deepEqual(app.closed, ["tab-1"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
@@ -363,9 +363,9 @@ test("completion releases capacity once and shutdown closes remaining Worker", a
 		const first = await app.tools.get("delegate_task")!.execute("1", { task: "first" }, undefined, undefined, app.ctx);
 		const firstPath = (first.content[0].text as string).match(/^Result: (.+)$/m)![1];
 		const firstPending = JSON.parse(await readFile(firstPath, "utf8"));
-		const firstTerminal = { version: 1, taskId: firstPending.taskId, state: "finished", task: firstPending.task, result: "done", error: null, createdAt: firstPending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
+		const firstTerminal = { version: PROTOCOL_VERSION, taskId: firstPending.taskId, state: "finished", task: firstPending.task, result: "done", error: null, createdAt: firstPending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
 		await writeFile(firstPath, JSON.stringify(firstTerminal));
-		const notice = completionNotice(firstPath, firstTerminal);
+		const notice = completionNotice(firstPath, firstTerminal.taskId);
 		const input = app.handlers.get("input")!;
 		const results = await Promise.all([
 			input({ source: "interactive", text: notice }, app.ctx),
@@ -392,18 +392,18 @@ test("Main accepts merged parallel Completion Notices atomically", async () => {
 		const terminals = await Promise.all(delegated.map(async (item, index) => {
 			const path = (item.content[0].text as string).match(/^Result: (.+)$/m)![1];
 			const pending = JSON.parse(await readFile(path, "utf8"));
-			const terminal = { version: 1, taskId: pending.taskId, state: "finished", task: pending.task, result: `done ${index + 1}`, error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
+			const terminal = { version: PROTOCOL_VERSION, taskId: pending.taskId, state: "finished", task: pending.task, result: `done ${index + 1}`, error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
 			await writeFile(path, JSON.stringify(terminal));
 			return { path, terminal };
 		}));
 		const inputHandler = app.handlers.get("input")!;
-		const invalid = `${completionNotice(terminals[0].path, terminals[0].terminal)}${completionNotice(terminals[1].path, { ...terminals[1].terminal, result: "spoofed" })}`;
+		const invalid = `${completionNotice(terminals[0].path, terminals[0].terminal.taskId)}${completionNotice("/tmp/not-owned.json", terminals[1].terminal.taskId)}`;
 		assert.deepEqual(await inputHandler({ source: "interactive", text: invalid }, app.ctx), { action: "continue" });
 		assert.deepEqual(app.closed, []);
-		const duplicate = `${completionNotice(terminals[0].path, terminals[0].terminal)}${completionNotice(terminals[0].path, terminals[0].terminal)}`;
+		const duplicate = `${completionNotice(terminals[0].path, terminals[0].terminal.taskId)}${completionNotice(terminals[0].path, terminals[0].terminal.taskId)}`;
 		assert.deepEqual(await inputHandler({ source: "interactive", text: duplicate }, app.ctx), { action: "continue" });
 		assert.deepEqual(app.closed, []);
-		const merged = terminals.map(({ path, terminal }) => completionNotice(path, terminal)).join("");
+		const merged = terminals.map(({ path, terminal }) => completionNotice(path, terminal.taskId)).join("");
 		const input = await inputHandler({ source: "interactive", text: merged }, app.ctx);
 		assert.equal(input.action, "transform");
 		for (const { terminal } of terminals) assert.match(input.text, new RegExp(terminal.taskId));
@@ -512,54 +512,54 @@ test("indeterminate task submission preserves owned Worker and Result", async ()
 		assert.ok(pending);
 		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must not duplicate" }, undefined, undefined, app.ctx), /Worker Limit reached/);
 
-		const terminal = { version: 1, taskId: pending.taskId, state: "finished", task: pending.task, result: "completed", error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
+		const terminal = { version: PROTOCOL_VERSION, taskId: pending.taskId, state: "finished", task: pending.task, result: "completed", error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
 		await writeFile(path, JSON.stringify(terminal));
-		const input = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(path, terminal) }, app.ctx);
+		const input = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(path, terminal.taskId) }, app.ctx);
 		assert.equal(input.action, "transform");
 		assert.deepEqual(app.closed, ["tab-1"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("Protocol rejects malformed, extra, state, path, excerpt, and control input", () => {
+test("Protocol rejects malformed, extra, old-version, and control input", () => {
 	const terminal = {
-		version: 1, taskId: "123e4567-e89b-42d3-a456-426614174000", state: "failed", task: "task", result: null,
+		version: PROTOCOL_VERSION, taskId: "123e4567-e89b-42d3-a456-426614174000", state: "failed", task: "task", result: null,
 		error: { stopReason: "error", message: "bad" }, createdAt: "2026-08-10T00:00:00.000Z", finishedAt: "2026-08-10T00:01:00.000Z",
 	} as const;
 	assert.ok(parseTerminalResult(terminal));
 	assert.equal(parseTerminalResult({ ...terminal, extra: true }), undefined);
-	const raw = completionNotice("/tmp/result.json", terminal);
-	assert.deepEqual(parseCompletionNotice(raw), { version: 1, taskId: terminal.taskId, resultPath: "/tmp/result.json", excerpt: "bad" });
+	const raw = completionNotice("/tmp/result.json", terminal.taskId);
+	assert.deepEqual(parseCompletionNotice(raw), { version: PROTOCOL_VERSION, taskId: terminal.taskId, resultPath: "/tmp/result.json" });
 	assert.deepEqual(parseCompletionNotices(`${raw}${raw}`), [parseCompletionNotice(raw), parseCompletionNotice(raw)]);
 	for (const malformed of ["bad", `${raw}\n`, `${raw.slice(0, -1)}!`]) assert.equal(parseCompletionNotice(malformed), undefined);
 	for (const malformed of [` ${raw}`, `${raw} ${raw}`, `${raw}\n${raw}`, `${raw}x${raw}`]) assert.equal(parseCompletionNotices(malformed), undefined);
-	const altered = JSON.stringify({ version: 1, taskId: terminal.taskId, resultPath: "/tmp/result.json", excerpt: "wrong" });
-	assert.equal(parseCompletionNotice(`PI_HERDR_SUBAGENT_COMPLETION_V1 ${Buffer.from(altered).toString("base64url")}`)?.excerpt, "wrong");
-	const controls = JSON.stringify({ version: 1, taskId: terminal.taskId, resultPath: "/tmp/result.json", excerpt: "bad\u0000" });
-	assert.equal(parseCompletionNotice(`PI_HERDR_SUBAGENT_COMPLETION_V1 ${Buffer.from(controls).toString("base64url")}`), undefined);
-	const long = { ...terminal, state: "finished", result: "😀".repeat(501), error: null } as const;
-	const capped = parseCompletionNotice(completionNotice("/tmp/result.json", long));
-	assert.equal(capped?.excerpt.length, 1_000);
-	assert.equal(capped?.excerpt, "😀".repeat(500));
+	for (const value of [
+		{ version: PROTOCOL_VERSION, taskId: terminal.taskId, resultPath: "/tmp/result.json", excerpt: "old field" },
+		{ version: 1, taskId: terminal.taskId, resultPath: "/tmp/result.json" },
+		{ version: PROTOCOL_VERSION, taskId: terminal.taskId, resultPath: "/tmp/bad\u0000path" },
+	]) {
+		assert.equal(parseCompletionNotice(`PI_HERDR_SUBAGENT_COMPLETION_V2 ${Buffer.from(JSON.stringify(value)).toString("base64url")}`), undefined);
+	}
 });
 
 test("Worker sole finish atomically stores Result, waits, then sends one notice", async () => {
 	const pending = await pendingFile();
 	await withEnvironment({
-		PI_HERDR_SUBAGENT_PROTOCOL: "1", PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
+		PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
 		PI_HERDR_SUBAGENT_RESULT_PATH: pending.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef",
 	}, async () => {
 		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }] });
 		await workerExtension(app.api);
 		assert.deepEqual([...app.tools.keys()], ["finish_task"]);
 		assert.equal(app.tools.get("finish_task")?.executionMode, "sequential");
+		assert.equal(app.tools.get("finish_task")?.parameters.properties.result.description, "Concise outcome with files changed, validation performed, and remaining risks.");
 		const result = await app.tools.get("finish_task")!.execute("finish-1", { result: "complete" }, undefined, undefined, app.ctx);
 		assert.equal(result.terminate, true);
 		assert.deepEqual(app.calls.map((args) => args.slice(0, 2)), [["agent", "wait"], ["agent", "prompt"]]);
 		const stored = parseTerminalResult(JSON.parse(await readFile(pending.path, "utf8")));
 		assert.equal(stored?.state, "finished");
 		assert.equal((await stat(pending.path)).mode & 0o777, 0o600);
-		assert.deepEqual(parseCompletionNotice(app.calls[1][3]), { version: 1, taskId: pending.taskId, resultPath: pending.path, excerpt: "complete" });
+		assert.deepEqual(parseCompletionNotice(app.calls[1][3]), { version: PROTOCOL_VERSION, taskId: pending.taskId, resultPath: pending.path });
 	});
 	await rm(pending.dir, { recursive: true, force: true });
 });
@@ -567,7 +567,7 @@ test("Worker sole finish atomically stores Result, waits, then sends one notice"
 test("Worker notifies Main after aborted settlement without reusing aborted signal", async () => {
 	const pending = await pendingFile();
 	await withEnvironment({
-		PI_HERDR_SUBAGENT_PROTOCOL: "1", PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
+		PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
 		PI_HERDR_SUBAGENT_RESULT_PATH: pending.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef",
 	}, async () => {
 		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", stopReason: "aborted", content: [] } }] });
@@ -584,7 +584,7 @@ test("Worker notifies Main after aborted settlement without reusing aborted sign
 test("Worker rejects mixed finish, latches duplicates, preserves failed delivery, and terminal-errors only", async () => {
 	const pending = await pendingFile();
 	await withEnvironment({
-		PI_HERDR_SUBAGENT_PROTOCOL: "1", PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
+		PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
 		PI_HERDR_SUBAGENT_RESULT_PATH: pending.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef",
 	}, async () => {
 		let releaseWait!: () => void;
@@ -606,7 +606,7 @@ test("Worker rejects mixed finish, latches duplicates, preserves failed delivery
 	await rm(pending.dir, { recursive: true, force: true });
 
 	const mixed = await pendingFile();
-	await withEnvironment({ PI_HERDR_SUBAGENT_PROTOCOL: "1", PI_HERDR_SUBAGENT_TASK_ID: mixed.taskId, PI_HERDR_SUBAGENT_RESULT_PATH: mixed.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef" }, async () => {
+	await withEnvironment({ PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: mixed.taskId, PI_HERDR_SUBAGENT_RESULT_PATH: mixed.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef" }, async () => {
 		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }, { type: "toolCall", id: "edit-1", name: "edit" }] } }] });
 		await workerExtension(app.api);
 		await assert.rejects(app.tools.get("finish_task")!.execute("finish-1", { result: "no" }, undefined, undefined, app.ctx), /sole tool/);
@@ -625,7 +625,7 @@ test("Worker rejects mixed finish, latches duplicates, preserves failed delivery
 	await rm(mixed.dir, { recursive: true, force: true });
 
 	const undelivered = await pendingFile();
-	await withEnvironment({ PI_HERDR_SUBAGENT_PROTOCOL: "1", PI_HERDR_SUBAGENT_TASK_ID: undelivered.taskId, PI_HERDR_SUBAGENT_RESULT_PATH: undelivered.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef" }, async () => {
+	await withEnvironment({ PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: undelivered.taskId, PI_HERDR_SUBAGENT_RESULT_PATH: undelivered.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef" }, async () => {
 		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }], promptFailure: true });
 		await workerExtension(app.api);
 		await assert.rejects(app.tools.get("finish_task")!.execute("finish-1", { result: "durable" }, undefined, undefined, app.ctx), /agent prompt failed/);
