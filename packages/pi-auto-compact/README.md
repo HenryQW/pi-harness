@@ -1,6 +1,6 @@
 # `@henryqw/pi-auto-compact`
 
-Pi extension that compacts context before it reaches 50% of current model context, then resumes current task.
+Pi extension that compacts context before it reaches 50% of current model context, then resumes current task. Requires Pi Coding Agent 0.80.7+.
 
 ## Install
 
@@ -28,21 +28,29 @@ pi remove npm:@henryqw/pi-auto-compact
 
 ## Configure
 
-Run `/auto-compact`, then enter threshold percentage. Config lives in `~/.pi/agent/config/pi-auto-compact.json`:
+Run `/auto-compact`, then choose:
+
+- `Model`: use current session model or select an available text model and its supported thinking level.
+- `Threshold`: set compaction percentage.
+
+Config lives in `~/.pi/agent/config/pi-auto-compact.json`:
 
 ```json
 {
-  "autoCompactThreshold": 50
+  "autoCompactThreshold": 50,
+  "compactionModel": "openai-codex/gpt-5.6-terra",
+  "compactionThinkingLevel": "max"
 }
 ```
 
-Threshold must be at least 25% and below 100%; lower values are not meaningful. Missing config defaults to 50%. Restart or `/reload` after manual edits; command changes apply immediately.
+`compactionModel` is optional and must name Pi-known `provider/model`; omit it to compact with current session model. `compactionThinkingLevel` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, requires a dedicated model, and defaults to `off` when omitted. Threshold must be at least 25% and below 100%; lower values are not meaningful. Missing config defaults to 50%. Restart or `/reload` after manual edits; menu changes apply immediately.
 
 ## Behavior
 
 - Refuses activation with an error when Pi's effective `compaction.enabled` setting is not `false`; competing automatic compactors can start duplicate summaries.
 - Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed/forked `session_start`.
-- Uses Pi's default `ctx.compact()` summary and session persistence.
+- Uses Pi's native summary and session persistence; optional `compactionModel` runs automatic summaries with selected model and thinking level. Manual `/compact` keeps using current session model.
+- Falls back to current session model when configured compaction model is unavailable, cannot authenticate, or fails.
 - Keeps newest 15% as temporary emergency context while compaction runs.
 - Sends a follow-up message after mid-task compaction so task execution continues; final-answer compaction stays idle.
 - Compacts above configured `autoCompactThreshold` percentage (50% by default).
