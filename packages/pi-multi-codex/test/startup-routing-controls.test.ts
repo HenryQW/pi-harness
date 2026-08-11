@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -87,6 +87,7 @@ async function withApp(
 		const sessionEntries: any[] = [];
 		const ctx = {
 			get model() { return activeModel; },
+			modelRegistry: { getProviderAuth: async (provider: string) => ({ auth: { apiKey: `token-${provider}` } }) },
 			scopedModels,
 			sessionManager: { getBranch() { return sessionEntries; } },
 			ui: {
@@ -129,6 +130,18 @@ test("routes once at first agent boundary from fresh seven-day cache", async () 
 	});
 });
 
+test("does not rank elapsed quota windows", async () => {
+	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+		const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
+		const state = JSON.parse(await readFile(cache, "utf8"));
+		state.slots.find((snapshot: { slot: number }) => snapshot.slot === 2).reset = Date.now() - 1;
+		await writeFile(cache, JSON.stringify(state));
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		assert.equal(setModels.length, 0);
+	});
+});
+
 test("keeps current slot when scope excludes fresher aliases", async () => {
 	await withApp({ 1: 40, 2: 90 }, [{ model: model("openai-codex") }], async ({ handlers, ctx, setModels, commands, notices }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
@@ -155,7 +168,17 @@ test("manual switch uses native selector and keeps active model id", async () =>
 	await withApp({ 1: 75, 2: 20 }, [], async ({ handlers, commands, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
 		await commands.get("codex-switch")?.("", ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
 		assert.deepEqual(setModels.map((selected) => [selected.provider, selected.id]), [["openai-codex-2", "gpt-5.3-codex"]]);
+	});
+});
+
+test("manual model selection before first turn closes automatic routing", async () => {
+	await withApp({ 1: 40, 2: 90 }, [], async ({ handlers, ctx, setModels }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		handlers.get("model_select")?.({ model: model("openai-codex-2") }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		assert.equal(setModels.length, 0);
 	});
 });
 

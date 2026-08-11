@@ -38,8 +38,9 @@ type CodexOAuthCredential = JsonRecord & {
 type SlotIdentity = {
 	accountId: string;
 	accountHash: string;
-	credential: CodexOAuthCredential;
 };
+
+type SlotAuthResolver = (slot: number) => Promise<string | undefined>;
 
 type UsageSnapshot = {
 	slot: number;
@@ -144,7 +145,6 @@ function identityFor(credential: CodexOAuthCredential | undefined): SlotIdentity
 	return {
 		accountId,
 		accountHash: createHash("sha256").update(accountId).digest("hex"),
-		credential,
 	};
 }
 
@@ -337,13 +337,21 @@ function isFresh(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, no
 		snapshot &&
 		snapshot.accountHash === identity.accountHash &&
 		validTime(snapshot.fetchedAt) &&
+		validTime(snapshot.reset) &&
 		snapshot.fetchedAt <= now &&
+		snapshot.reset > now &&
 		now - snapshot.fetchedAt < REFRESH_MS,
 	);
 }
 
 function checkedRecently(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, now: number): boolean {
-	return Boolean(snapshot && snapshot.accountHash === identity.accountHash && snapshot.checkedAt <= now && now - snapshot.checkedAt < REFRESH_MS);
+	return Boolean(
+		snapshot &&
+		snapshot.accountHash === identity.accountHash &&
+		snapshot.checkedAt <= now &&
+		now - snapshot.checkedAt < REFRESH_MS &&
+		(!validTime(snapshot.fetchedAt) || (validTime(snapshot.reset) && snapshot.reset > now)),
+	);
 }
 
 function owns(lock: UsageLock | undefined, slot: number, owner: string, accountHash: string): boolean {
@@ -372,7 +380,7 @@ export function parseCodexUsage(value: unknown, now = Date.now()): ParsedUsage |
 	const windows = Object.entries(rateLimit)
 		.flatMap(([name, entry]) => (isRecord(entry) && numberValue(entry.used_percent) !== undefined && resetTime(entry, now) !== undefined ? [{ name, value: entry }] : []));
 	const sevenDay = windows.find((window) => numberValue(window.value.limit_window_seconds) === 7 * 24 * 60 * 60)
-		?? (windows.length === 1 ? windows[0] : undefined);
+		?? (windows.length === 1 && numberValue(windows[0].value.limit_window_seconds) === undefined ? windows[0] : undefined);
 	if (!sevenDay) return undefined;
 	const used = numberValue(sevenDay.value.used_percent);
 	const reset = resetTime(sevenDay.value, now);
@@ -419,12 +427,7 @@ class CodexQuotaStatus {
 	private readonly heartbeats = new Map<number, { owner: string; timer: Timer }>();
 	private readonly active = new Map<number, Promise<void>>();
 	private writes: Promise<void> = Promise.resolve();
-	private readonly native: CodexProvider;
 	private onChange: () => void = () => undefined;
-
-	constructor(native: CodexProvider) {
-		this.native = native;
-	}
 
 	setOnChange(onChange: () => void): void {
 		this.onChange = onChange;
@@ -455,13 +458,13 @@ class CodexQuotaStatus {
 		return operation;
 	}
 
-	start(): void {
+	start(resolveSlotAuth: SlotAuthResolver): void {
 		this.stop();
 		const session = new AbortController();
 		this.session = session;
 		const generation = ++this.generation;
-		void this.refreshDue(generation, session);
-		this.timer = setInterval(() => void this.refreshDue(generation, session), REFRESH_MS);
+		void this.refreshDue(generation, session, resolveSlotAuth);
+		this.timer = setInterval(() => void this.refreshDue(generation, session, resolveSlotAuth), REFRESH_MS);
 		this.timer.unref?.();
 	}
 
@@ -479,7 +482,7 @@ class CodexQuotaStatus {
 		return this.generation === generation && this.session === session && !session.signal.aborted;
 	}
 
-	private async refreshDue(generation: number, session: AbortController): Promise<void> {
+	private async refreshDue(generation: number, session: AbortController, resolveSlotAuth: SlotAuthResolver): Promise<void> {
 		const credentials = readCodexCredentials();
 		await Promise.all([...credentials.entries()].map(async ([slot, credential]) => {
 			if (!this.alive(generation, session) || this.active.has(slot)) return;
@@ -487,13 +490,19 @@ class CodexQuotaStatus {
 			if (!identity) return;
 			const snapshot = (await this.state()).slots.get(slot);
 			if (isFresh(snapshot, identity, Date.now()) || checkedRecently(snapshot, identity, Date.now())) return;
-			this.launch(slot, identity, generation, session);
+			this.launch(slot, identity, generation, session, resolveSlotAuth);
 		})).catch(() => undefined);
 	}
 
-	private launch(slot: number, identity: SlotIdentity, generation: number, session: AbortController): void {
+	private launch(
+		slot: number,
+		identity: SlotIdentity,
+		generation: number,
+		session: AbortController,
+		resolveSlotAuth: SlotAuthResolver,
+	): void {
 		if (this.active.has(slot)) return;
-		const task = this.refreshSlot(slot, identity, generation, session);
+		const task = this.refreshSlot(slot, identity, generation, session, resolveSlotAuth);
 		this.active.set(slot, task);
 		void task.finally(() => {
 			if (this.active.get(slot) === task) this.active.delete(slot);
@@ -552,11 +561,8 @@ class CodexQuotaStatus {
 		return currentIdentity(slot)?.accountHash === accountHash;
 	}
 
-	private async resolveAuth(credential: CodexOAuthCredential, signal: AbortSignal): Promise<string | undefined> {
-		const oauth = this.native.auth.oauth;
-		if (!oauth) return undefined;
-		const auth = await raceWithSignal(oauth.toAuth(credential), signal);
-		return auth.apiKey;
+	private async resolveAuth(slot: number, resolveSlotAuth: SlotAuthResolver, signal: AbortSignal): Promise<string | undefined> {
+		return raceWithSignal(resolveSlotAuth(slot), signal);
 	}
 
 	private async finish(
@@ -607,7 +613,13 @@ class CodexQuotaStatus {
 		}, signal);
 	}
 
-	private async refreshSlot(slot: number, identity: SlotIdentity, generation: number, session: AbortController): Promise<void> {
+	private async refreshSlot(
+		slot: number,
+		identity: SlotIdentity,
+		generation: number,
+		session: AbortController,
+		resolveSlotAuth: SlotAuthResolver,
+	): Promise<void> {
 		let owner: string | undefined;
 		let discard = false;
 		try {
@@ -616,7 +628,7 @@ class CodexQuotaStatus {
 			this.startHeartbeat(slot, owner, identity.accountHash, session.signal);
 
 			const authSignal = AbortSignal.any([session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
-			const apiKey = await this.resolveAuth(identity.credential, authSignal);
+			const apiKey = await this.resolveAuth(slot, resolveSlotAuth, authSignal);
 			if (!apiKey) throw new Error("Codex OAuth auth did not provide a bearer token.");
 			if (!this.alive(generation, session) || !this.identityStillCurrent(slot, identity.accountHash) || !(await this.stillOwn(slot, owner, identity.accountHash))) {
 				discard = true;
@@ -794,7 +806,7 @@ function sessionHasAgentWork(ctx: ExtensionContext): boolean {
 export default function multiCodex(pi: ExtensionAPI): void {
 	const native = builtinProviders().find((provider) => provider.id === NATIVE_PROVIDER_ID) as CodexProvider | undefined;
 	if (!native) return;
-	const quota = new CodexQuotaStatus(native);
+	const quota = new CodexQuotaStatus();
 	const registered = new Map<number, CodexProvider>();
 	let sessionContext: ExtensionContext | undefined;
 	let automaticOpen = false;
@@ -887,7 +899,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		// Cache-only ranking happens before background refresh starts.
 		updatePendingCandidate(ctx);
 		updateFooter(ctx);
-		quota.start();
+		quota.start(async (slot) => (await ctx.modelRegistry.getProviderAuth(providerForSlot(slot)))?.auth.apiKey);
 		if (slots.size === 0) ctx.ui.notify(NO_ACCOUNTS_MESSAGE, "warning");
 	});
 
@@ -911,11 +923,9 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		sessionContext = undefined;
 		quota.stop();
 	});
-	pi.on("model_select", (event, ctx) => {
-		if (automaticOpen) {
-			automaticCandidate = event.model;
-			updatePendingCandidate(ctx);
-		}
+	pi.on("model_select", (_event, ctx) => {
+		// Explicit selector choice wins over startup routing.
+		automaticOpen = false;
 		updateFooter(ctx);
 	});
 
@@ -972,6 +982,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 			const selected = await ctx.ui.select("Switch Codex slot", choices);
 			const index = selected ? choices.indexOf(selected) : -1;
 			if (index < 0) return;
+			automaticOpen = false;
 			const provider = providerForSlot(slots[index]);
 			if (provider !== model.provider) await pi.setModel({ ...model, provider });
 			updateFooter(ctx);

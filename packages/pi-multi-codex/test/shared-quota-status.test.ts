@@ -23,12 +23,15 @@ const oauth = (accountId: string) => ({
 
 const hash = (accountId: string) => createHash("sha256").update(accountId).digest("hex");
 
-function context(notices: string[]): ExtensionContext {
-	return { ui: { notify: (message: string) => notices.push(message) } } as unknown as ExtensionContext;
+function context(notices: string[], apiKey = "access-token"): ExtensionContext {
+	return {
+		ui: { notify: (message: string) => notices.push(message) },
+		modelRegistry: { getProviderAuth: async () => ({ auth: { apiKey } }) },
+	} as unknown as ExtensionContext;
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
-	for (let attempt = 0; attempt < 100; attempt++) {
+	for (let attempt = 0; attempt < 500; attempt++) {
 		if (await condition()) return;
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
@@ -49,6 +52,10 @@ test("parses seven-day quota before sole usable fallback and clamps remaining", 
 	assert.deepEqual(
 		parseCodexUsage({ rate_limit: { primary_window: { used_percent: -4, reset_after_seconds: 60 } } }, 1_000),
 		{ remaining: 100, reset: 61_000 },
+	);
+	assert.equal(
+		parseCodexUsage({ rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18_000, reset_after_seconds: 60 } } }, 1_000),
+		undefined,
 	);
 });
 
@@ -126,7 +133,16 @@ async function runQuotaProcess(agentDir: string, fetchMock: string, countFile: s
 			registerCommand() {},
 			registerProvider() {},
 		});
-		const ctx = { ui: { notify() {} } };
+		import { readFileSync } from "node:fs";
+		const ctx = {
+			ui: { notify() {} },
+			modelRegistry: {
+				async getProviderAuth(provider) {
+					const credential = JSON.parse(readFileSync(process.env.PI_CODING_AGENT_DIR + "/auth.json", "utf8"))[provider];
+					return credential ? { auth: { apiKey: credential.access } } : undefined;
+				},
+			},
+		};
 		handlers.get("session_start")?.({}, ctx);
 		await new Promise((resolve) => setTimeout(resolve, ${lifetime}));
 		handlers.get("session_shutdown")?.({}, ctx);
@@ -141,6 +157,75 @@ async function runQuotaProcess(agentDir: string, fetchMock: string, countFile: s
 	const [code, signal] = await once(child, "exit") as [number | null, string | null];
 	if (code !== 0) throw new Error(`Quota child failed (${code ?? signal}): ${stderr}`);
 }
+
+test("quota request gets refreshed bearer from Pi auth store", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-auth-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldFetch = globalThis.fetch;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": { ...oauth("expired-account"), access: "expired-token", expires: 0 } }));
+		let authorization: string | null = null;
+		globalThis.fetch = async (_input, init) => {
+			authorization = new Headers(init?.headers).get("authorization");
+			return new Response(JSON.stringify({ rate_limit: {
+				secondary_window: { used_percent: 50, limit_window_seconds: 604_800, reset_after_seconds: 3600 },
+			} }));
+		};
+		const handlers = new Map<string, Handler>();
+		multiCodex({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerProvider() {},
+		} as unknown as ExtensionAPI);
+		handlers.get("session_start")?.({} as never, context([], "refreshed-token"));
+		await waitFor(() => authorization !== null);
+		assert.equal(authorization, "Bearer refreshed-token");
+		handlers.get("session_shutdown")?.({} as never, context([]));
+	} finally {
+		globalThis.fetch = oldFetch;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("elapsed quota window bypasses recent-check backoff", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-elapsed-window-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldFetch = globalThis.fetch;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("elapsed-account") }));
+		await mkdir(join(agentDir, "config", "pi-multi-codex"), { recursive: true });
+		const now = Date.now();
+		await writeFile(join(agentDir, "config", "pi-multi-codex", "usage.json"), JSON.stringify({
+			slots: [{ slot: 1, accountHash: hash("elapsed-account"), checkedAt: now, fetchedAt: now, remaining: 90, reset: now - 1 }],
+			locks: [],
+		}));
+		let requests = 0;
+		globalThis.fetch = async () => {
+			requests++;
+			return new Response(JSON.stringify({ rate_limit: {
+				secondary_window: { used_percent: 50, limit_window_seconds: 604_800, reset_after_seconds: 3600 },
+			} }));
+		};
+		const handlers = new Map<string, Handler>();
+		multiCodex({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerProvider() {},
+		} as unknown as ExtensionAPI);
+		handlers.get("session_start")?.({} as never, context([]));
+		await waitFor(() => requests === 1);
+		handlers.get("session_shutdown")?.({} as never, context([]));
+	} finally {
+		globalThis.fetch = oldFetch;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
 
 test("two Pi processes claim one shared quota refresh", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-lock-"));
