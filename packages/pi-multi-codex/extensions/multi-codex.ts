@@ -391,7 +391,7 @@ export function parseCodexUsage(value: unknown, now = Date.now()): ParsedUsage |
 	if (!sevenDay) return undefined;
 	const used = numberValue(sevenDay.value.used_percent);
 	const reset = resetTime(sevenDay.value, now);
-	if (used === undefined || reset === undefined) return undefined;
+	if (used === undefined || reset === undefined || reset <= now) return undefined;
 	const tier = validTier(value.plan_type) ? value.plan_type : validTier(value.tier) ? value.tier : undefined;
 	return { remaining: Math.max(0, Math.min(100, 100 - used)), reset, ...(tier ? { tier } : {}) };
 }
@@ -430,7 +430,7 @@ function formatDuration(ms: number): string {
 class CodexQuotaStatus {
 	private generation = 0;
 	private session: AbortController | undefined;
-	private refresh: QuotaRefresh | undefined;
+	private refreshContext: QuotaRefresh | undefined;
 	private timer: Timer | undefined;
 	private readonly heartbeats = new Map<number, { owner: string; timer: Timer }>();
 	private readonly active = new Map<number, Promise<void>>();
@@ -470,7 +470,7 @@ class CodexQuotaStatus {
 		this.stop();
 		const session = new AbortController();
 		this.session = session;
-		this.refresh = { generation: ++this.generation, session, resolveSlotAuth };
+		this.refreshContext = { generation: ++this.generation, session, resolveSlotAuth };
 		this.requestRefresh();
 	}
 
@@ -478,7 +478,7 @@ class CodexQuotaStatus {
 		this.generation++;
 		this.session?.abort();
 		this.session = undefined;
-		this.refresh = undefined;
+		this.refreshContext = undefined;
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
 		for (const heartbeat of this.heartbeats.values()) clearInterval(heartbeat.timer);
@@ -489,18 +489,22 @@ class CodexQuotaStatus {
 		return this.generation === generation && this.session === session && !session.signal.aborted;
 	}
 
+	refreshNow(): void {
+		this.requestRefresh();
+	}
+
 	private requestRefresh(): void {
-		const refresh = this.refresh;
+		const refresh = this.refreshContext;
 		if (!refresh || !this.alive(refresh.generation, refresh.session)) return;
 		void this.refreshDue(refresh.generation, refresh.session, refresh.resolveSlotAuth)
 			.catch(() => undefined)
 			.then(() => {
-				if (this.refresh === refresh) this.scheduleRefresh();
+				if (this.refreshContext === refresh) this.scheduleRefresh();
 			});
 	}
 
 	private scheduleRefresh(): void {
-		const refresh = this.refresh;
+		const refresh = this.refreshContext;
 		if (!refresh || !this.alive(refresh.generation, refresh.session)) return;
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
@@ -518,7 +522,7 @@ class CodexQuotaStatus {
 				? lock.heartbeatAt + LOCK_STALE_MS + 1
 				: undefined;
 			const snapshotDue = isFresh(snapshot, identity, now)
-				? snapshot!.fetchedAt! + REFRESH_MS + 1
+				? Math.min(snapshot!.fetchedAt! + REFRESH_MS, snapshot!.reset!) + 1
 				: checkedRecently(snapshot, identity, now)
 					? snapshot!.checkedAt + REFRESH_MS + 1
 					: now;
@@ -529,7 +533,7 @@ class CodexQuotaStatus {
 		const delay = Math.max(0, dueAt - now);
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
-			if (this.refresh === refresh) this.requestRefresh();
+			if (this.refreshContext === refresh) this.requestRefresh();
 		}, delay);
 		this.timer.unref?.();
 	}
@@ -559,7 +563,7 @@ class CodexQuotaStatus {
 		const cleanup = () => {
 			if (this.active.get(slot) !== task) return;
 			this.active.delete(slot);
-			if (this.refresh?.generation === generation) this.scheduleRefresh();
+			if (this.refreshContext?.generation === generation) this.scheduleRefresh();
 			else this.requestRefresh();
 		};
 		void task.then(cleanup, cleanup);
@@ -638,7 +642,7 @@ class CodexQuotaStatus {
 			if (!owns(lock, slot, owner, identity.accountHash)) return { value: false, write: false };
 			const previous = state.slots.get(slot);
 			const checkedAt = Date.now();
-			if (outcome) {
+			if (outcome && outcome.reset > checkedAt) {
 				state.slots.set(slot, {
 					slot,
 					accountHash: identity.accountHash,
@@ -649,7 +653,7 @@ class CodexQuotaStatus {
 					reset: outcome.reset,
 				});
 			} else {
-				state.slots.set(slot, previous?.accountHash === identity.accountHash
+				state.slots.set(slot, previous?.accountHash === identity.accountHash && (!validTime(previous.reset) || previous.reset > checkedAt)
 					? { ...previous, checkedAt }
 					: { slot, accountHash: identity.accountHash, checkedAt });
 			}
@@ -983,6 +987,8 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	pi.on("model_select", (_event, ctx) => {
 		// Explicit selector choice wins over startup routing.
 		automaticOpen = false;
+		syncSlots();
+		quota.refreshNow();
 		updateFooter(ctx);
 	});
 

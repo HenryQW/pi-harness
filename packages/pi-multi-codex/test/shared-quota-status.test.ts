@@ -57,6 +57,10 @@ test("parses seven-day quota before sole usable fallback and clamps remaining", 
 		parseCodexUsage({ rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18_000, reset_after_seconds: 60 } } }, 1_000),
 		undefined,
 	);
+	assert.equal(
+		parseCodexUsage({ rate_limit: { secondary_window: { used_percent: 10, limit_window_seconds: 604_800, reset_after_seconds: 0 } } }, 1_000),
+		undefined,
+	);
 });
 
 test("shares credential-free measured cache and status never fetches", async () => {
@@ -225,7 +229,7 @@ test("new session refreshes after aborted predecessor cleans up", async () => {
 	}
 });
 
-test("refreshes fresh cache at its expiry", async () => {
+test("refreshes fresh cache at its quota deadline", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-refresh-deadline-"));
 	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const oldFetch = globalThis.fetch;
@@ -235,7 +239,7 @@ test("refreshes fresh cache at its expiry", async () => {
 		await mkdir(join(agentDir, "config", "pi-multi-codex"), { recursive: true });
 		const now = Date.now();
 		await writeFile(join(agentDir, "config", "pi-multi-codex", "usage.json"), JSON.stringify({
-			slots: [{ slot: 1, accountHash: hash("deadline-account"), checkedAt: now - 299_970, fetchedAt: now - 299_970, remaining: 50, reset: now + 3_600_000 }],
+			slots: [{ slot: 1, accountHash: hash("deadline-account"), checkedAt: now, fetchedAt: now, remaining: 50, reset: now + 30 }],
 			locks: [],
 		}));
 		let requests = 0;
@@ -256,6 +260,76 @@ test("refreshes fresh cache at its expiry", async () => {
 		await waitFor(() => requests === 1);
 		assert.ok(Date.now() - started < 1_000);
 		handlers.get("session_shutdown")?.({} as never, context([]));
+	} finally {
+		globalThis.fetch = oldFetch;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("expired usage response uses measured backoff", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-expired-response-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldFetch = globalThis.fetch;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("expired-response-account") }));
+		let requests = 0;
+		globalThis.fetch = async () => {
+			requests++;
+			return new Response(JSON.stringify({ rate_limit: {
+				secondary_window: { used_percent: 50, limit_window_seconds: 604_800, reset_after_seconds: 0 },
+			} }));
+		};
+		const handlers = new Map<string, Handler>();
+		multiCodex({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerProvider() {},
+		} as unknown as ExtensionAPI);
+		handlers.get("session_start")?.({} as never, context([]));
+		await waitFor(() => requests === 1);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(requests, 1);
+		const state = JSON.parse(await readFile(join(agentDir, "config", "pi-multi-codex", "usage.json"), "utf8"));
+		assert.equal(state.slots[0].fetchedAt, undefined);
+		handlers.get("session_shutdown")?.({} as never, context([]));
+	} finally {
+		globalThis.fetch = oldFetch;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("starts quota refresh after model selection discovers first account slot", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-first-login-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldFetch = globalThis.fetch;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		let requests = 0;
+		globalThis.fetch = async () => {
+			requests++;
+			return new Response(JSON.stringify({ rate_limit: {
+				secondary_window: { used_percent: 50, limit_window_seconds: 604_800, reset_after_seconds: 3600 },
+			} }));
+		};
+		const handlers = new Map<string, Handler>();
+		multiCodex({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerProvider() {},
+		} as unknown as ExtensionAPI);
+		const ctx = context([]);
+		handlers.get("session_start")?.({} as never, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(requests, 0);
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("first-login-account") }));
+		handlers.get("model_select")?.({} as never, ctx);
+		await waitFor(() => requests === 1);
+		handlers.get("session_shutdown")?.({} as never, ctx);
 	} finally {
 		globalThis.fetch = oldFetch;
 		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
