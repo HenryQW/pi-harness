@@ -297,8 +297,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Subagent Limit must be a positive integer.", "warning");
 				return;
 			}
-			const next = { ...config, maxConcurrentSubagents: parsed };
 			try {
+				const latest = (await readConfig()).value;
+				const next = { ...latest, maxConcurrentSubagents: parsed };
 				await writeConfig(next);
 				config = next;
 				ctx.ui.notify(`Subagent Limit set to ${config.maxConcurrentSubagents}.`, "info");
@@ -332,8 +333,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				levels,
 			);
 			if (!isThinkingLevel(thinkingLevel) || !levels.includes(thinkingLevel)) return;
-			const next = { ...config, models: { ...config.models, [modelClass]: { model: selected, thinkingLevel } } };
 			try {
+				const latest = (await readConfig()).value;
+				const next = { ...latest, models: { ...latest.models, [modelClass]: { model: selected, thinkingLevel } } };
 				await writeConfig(next);
 				config = next;
 				ctx.ui.notify(`${modelClass} Subagent set to ${selected} with thinking ${thinkingLevel}.`, "info");
@@ -354,7 +356,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}),
 			modelClass: Type.Optional(Type.String({
 				enum: MODEL_CLASSES,
-				description: "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced is not configured.",
+				description: "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.",
 			})),
 		}),
 		executionMode: "sequential",
@@ -373,14 +375,17 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			const availableModel = configuredModel && availableTextModels(ctx)
 				.find((model) => modelReference(model) === configuredModel.model);
-			if (configuredModel && !availableModel) {
+			if (params.modelClass && configuredModel && !availableModel) {
 				throw new Error(`Configured ${modelClass} Subagent model is unavailable; run /subagent-model.`);
 			}
-			if (configuredModel && availableModel && !getSupportedThinkingLevels(availableModel).includes(configuredModel.thinkingLevel)) {
+			const thinkingAvailable = Boolean(configuredModel && availableModel
+				&& getSupportedThinkingLevels(availableModel).includes(configuredModel.thinkingLevel));
+			if (params.modelClass && configuredModel && availableModel && !thinkingAvailable) {
 				throw new Error(`Configured ${modelClass} Subagent thinking level is unavailable; run /subagent-model.`);
 			}
-			const selectedModel = configuredModel?.model ?? `${ctx.model.provider}/${ctx.model.id}`;
-			const selectedThinkingLevel = configuredModel?.thinkingLevel ?? ctx.thinkingLevel;
+			const configuredRoute = thinkingAvailable ? configuredModel : undefined;
+			const selectedModel = configuredRoute?.model ?? `${ctx.model.provider}/${ctx.model.id}`;
+			const selectedThinkingLevel = configuredRoute?.thinkingLevel ?? ctx.thinkingLevel;
 			const where = location();
 			const existingTabs = await reconcile(where, ctx, signal);
 			if (subagents.size >= config.maxConcurrentSubagents) throw new Error(`Subagent Limit reached (${config.maxConcurrentSubagents}); no task was queued.`);
@@ -435,7 +440,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				assertAgent(agent, { name: subagent.subagentName, pane: paneId, workspace: where.workspace, tab: tabId });
 				promptOutcomeUnknown = false;
 				return {
-					content: [{ type: "text", text: `Delegated Task ${taskId}\nSubagent: ${subagent.subagentName}\nModel: ${selectedModel} (${configuredModel ? modelClass : "Main"})\nThinking: ${selectedThinkingLevel ?? "Pi default"}\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
+					content: [{ type: "text", text: `Delegated Task ${taskId}\nSubagent: ${subagent.subagentName}\nModel: ${selectedModel} (${configuredRoute ? modelClass : "Main"})\nThinking: ${selectedThinkingLevel ?? "Pi default"}\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
 					details: {},
 					terminate: true,
 				};

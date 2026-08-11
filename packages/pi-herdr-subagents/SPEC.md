@@ -10,7 +10,7 @@ Create publish-ready `@henryqw/pi-herdr-subagents`, a Pi extension that lets Mai
 
 ### `delegate_task({ task, modelClass? })`
 
-Register one Main tool with one required, non-empty string parameter named `task` and one optional `modelClass` enum: `fast`, `balanced`, or `frontier`. Model-visible schema tells Main to provide a self-contained task with relevant context, exact paths, constraints, and success criteria, then choose Subagent Model Class from Delegated Task complexity. Omitted class defaults to configured `balanced`, then falls back to Main model and thinking level for compatibility. An explicit unconfigured class or configured class whose model or thinking level is unavailable rejects with direction to run `/subagent-model`. Set `executionMode: "sequential"`; Pi then serializes any tool batch containing delegation, so same-batch calls reserve capacity one at a time. Successful delegation returns `terminate: true`, avoiding post-delegation Main model turn when every tool result in batch terminates.
+Register one Main tool with one required, non-empty string parameter named `task` and one optional `modelClass` enum: `fast`, `balanced`, or `frontier`. Model-visible schema tells Main to provide a self-contained task with relevant context, exact paths, constraints, and success criteria, then choose Subagent Model Class from Delegated Task complexity. Omitted class defaults to configured `balanced` while its model and thinking level remain available, then falls back to Main model and thinking level for compatibility. An explicit unconfigured class or configured class whose model or thinking level is unavailable rejects with direction to run `/subagent-model`. Set `executionMode: "sequential"`; Pi then serializes any tool batch containing delegation, so same-batch calls reserve capacity one at a time. Successful delegation returns `terminate: true`, avoiding post-delegation Main model turn when every tool result in batch terminates.
 
 On success it returns:
 
@@ -48,7 +48,7 @@ Read and write `~/.pi/agent/config/pi-herdr-subagents.json` through `getAgentDir
 
 Subagent Limit must be positive integer. Missing file uses `10` and no model mappings. Malformed or invalid values warn at session start and use safe defaults without rewriting file. Legacy `maxConcurrentWorkers` is accepted as migration input; next command save writes canonical `maxConcurrentSubagents`. `/subagent-limit` prompts for value, writes formatted JSON, and updates current Main immediately. Lowering limit never stops live Subagents; later delegation remains blocked until live count falls below limit. Other Main sessions load changed value on next start/reload.
 
-`/subagent-model` first selects `fast`, `balanced`, or `frontier`, selects from authenticated text models returned by Pi's existing model registry, then selects from thinking levels supported by selected model's Pi metadata. It writes model-plus-thinking mapping and updates current Main immediately. Cancelling either selection leaves existing mapping unchanged. Package owns only three class names; it keeps no model or thinking-capability catalog.
+`/subagent-model` first selects `fast`, `balanced`, or `frontier`, selects from authenticated text models returned by Pi's existing model registry, then selects from thinking levels supported by selected model's Pi metadata. It writes model-plus-thinking mapping and updates current Main immediately. Before either command writes, it rereads config and merges only selected field so prior saves from other Main sessions survive. Cancelling either selection leaves existing mapping unchanged. Package owns only three class names; it keeps no model or thinking-capability catalog.
 
 ## Private protocol
 
@@ -95,7 +95,7 @@ For each accepted Delegated Task, Main:
 4. Passes only exact private protocol environment above through tab environment.
 5. Starts a named Pi Subagent through `herdr agent start ... --kind pi` in created root pane.
 6. Starts Pi with no session persistence or discovered extensions, explicitly loads package-internal Subagent extension, and enables built-in `read`, `bash`, `edit`, and `write` plus `finish_task`.
-7. Uses model and thinking level mapped to Main-selected Subagent Model Class, plus Main cwd and project trust (`--approve` or `--no-approve`). Omitted class uses configured `balanced`, then Main's exact model and effective thinking level when `balanced` is unset. Normal project context and skills remain available; arbitrary extension discovery does not.
+7. Uses model and thinking level mapped to Main-selected Subagent Model Class, plus Main cwd and project trust (`--approve` or `--no-approve`). Omitted class uses configured `balanced`, then Main's exact model and effective thinking level when `balanced` is unset or its model-thinking route becomes unavailable. Normal project context and skills remain available; arbitrary extension discovery does not.
 8. Submits self-contained task through `herdr agent prompt`.
 
 Subagent gets fresh conversation context, not Main transcript. Main must avoid concurrent Delegated Tasks that write overlapping files; package does not infer file ownership or create worktrees.
@@ -168,7 +168,7 @@ Use Node built-in test runner and assertions. Fake `pi.exec`, extension contexts
 At extension/tool boundary, verify:
 
 - Herdr/model/task preconditions, exact public surface, model-visible handoff guidance, successful delegation termination, and same-batch sequential capacity enforcement;
-- config defaults, validation, both command persistence paths, immediate updates, reduced-limit behavior, and malformed model mappings;
+- config defaults, validation, both command persistence paths, cross-session merge, immediate updates, reduced-limit behavior, and malformed model mappings;
 - per-Main Subagent Limit, strict missing-tab and provisioning reconciliation, and no queue;
 - tab label/cwd/env, complexity-selected model and thinking level, Main fallback thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
 - successful launch response, definitive pre-submission rollback, indeterminate creation reconciliation, failed-rollback retention, and indeterminate prompt preservation;

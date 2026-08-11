@@ -8,7 +8,7 @@ Delegate bounded work from Pi Main to one interactive Pi Subagent in one Herdr t
 pi install npm:@henryqw/pi-herdr-subagents
 ```
 
-Run Pi inside Herdr. `delegate_task({ task, modelClass? })` creates one no-focus tab and fresh Subagent context. Main chooses `fast`, `balanced`, or `frontier` from task complexity; Subagent uses configured model and thinking level, plus Main cwd and trust. Omitted `modelClass` uses configured `balanced`, falling back to Main model and thinking level for compatibility. Give Subagent self-contained task with relevant context, exact paths, constraints, and success criteria.
+Run Pi inside Herdr. `delegate_task({ task, modelClass? })` creates one no-focus tab and fresh Subagent context. Main chooses `fast`, `balanced`, or `frontier` from task complexity; Subagent uses configured model and thinking level, plus Main cwd and trust. Omitted `modelClass` uses configured `balanced` while its route remains available, otherwise Main model and thinking level for compatibility. Give Subagent self-contained task with relevant context, exact paths, constraints, and success criteria.
 
 Subagent may ask user questions in its own tab. It stays live until it calls `finish_task({ result })`. Main receives Completion Notice with Result path; read and verify Result before relying on it.
 
@@ -29,7 +29,7 @@ Subagent Limit defaults to 10 per Main session. Run `/subagent-limit` to set pos
 }
 ```
 
-Explicit model classes must be configured; configured model and thinking level must remain available. Lower limit does not stop live Subagents. New delegation rejects at limit; package never queues work.
+Explicit model classes must be configured and reject when configured model or thinking level becomes unavailable. Implicit `balanced` routing falls back to Main in either case. Lower limit does not stop live Subagents. New delegation rejects at limit; package never queues work.
 
 ## Behavior
 

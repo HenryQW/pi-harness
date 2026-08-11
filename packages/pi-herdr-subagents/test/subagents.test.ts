@@ -205,7 +205,7 @@ test("Main registers only bounded public surface and launches exact Subagent", a
 		assert.equal(app.tools.get("delegate_task")?.parameters.properties.task.description, "Self-contained task with relevant context, exact paths, constraints, and success criteria.");
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.required, ["task"]);
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.properties.modelClass.enum, ["fast", "balanced", "frontier"]);
-		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced is not configured.");
+		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.");
 		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model"]);
 
 		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, undefined, app.ctx);
@@ -333,30 +333,76 @@ test("/subagent-model maps all model classes from Pi's available model list and 
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("delegate_task rejects unconfigured or stale explicit model class routes before launch", async () => {
+test("config commands merge latest disk state before saving", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
+	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const availableModels: TestModel[] = [{ ...model, input: ["text"] }];
+		const first = mainHarness({
+			availableModels,
+			selectResults: [
+				"fast", "test-provider/test-model", "low",
+				"frontier", "test-provider/test-model", "high",
+			],
+		});
+		const second = mainHarness({
+			availableModels,
+			limitInput: "4",
+			selectResults: ["balanced", "test-provider/test-model", "medium"],
+		});
+		await first.handlers.get("session_start")?.({}, first.ctx);
+		await second.handlers.get("session_start")?.({}, second.ctx);
+
+		await first.commands.get("subagent-model")!.handler("", first.ctx);
+		await second.commands.get("subagent-limit")!.handler("", second.ctx);
+		await second.commands.get("subagent-model")!.handler("", second.ctx);
+		await first.commands.get("subagent-model")!.handler("", first.ctx);
+
+		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), {
+			maxConcurrentSubagents: 4,
+			models: {
+				fast: { model: "test-provider/test-model", thinkingLevel: "low" },
+				balanced: { model: "test-provider/test-model", thinkingLevel: "medium" },
+				frontier: { model: "test-provider/test-model", thinkingLevel: "high" },
+			},
+		});
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("delegate_task rejects stale explicit routes and falls back from stale implicit balanced route", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-models-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const availableModels: TestModel[] = [{ ...model, input: ["text"] }];
-		const app = mainHarness({ availableModels, selectResults: ["fast", "test-provider/test-model", "low"] });
+		const app = mainHarness({ availableModels, selectResults: ["balanced", "test-provider/test-model", "low"] });
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		await assert.rejects(
-			app.tools.get("delegate_task")!.execute("missing", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
-			/No fast Subagent model configured/,
+			app.tools.get("delegate_task")!.execute("missing", { task: "simple", modelClass: "balanced" }, undefined, undefined, app.ctx),
+			/No balanced Subagent model configured/,
 		);
 		assert.equal(app.calls.length, 0);
 
 		await app.commands.get("subagent-model")!.handler("", app.ctx);
 		availableModels[0].thinkingLevelMap = { low: null };
 		await assert.rejects(
-			app.tools.get("delegate_task")!.execute("stale-thinking", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
-			/Configured fast Subagent thinking level is unavailable/,
-		);
-		availableModels.length = 0;
-		await assert.rejects(
-			app.tools.get("delegate_task")!.execute("stale-model", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
-			/Configured fast Subagent model is unavailable/,
+			app.tools.get("delegate_task")!.execute("stale-thinking", { task: "simple", modelClass: "balanced" }, undefined, undefined, app.ctx),
+			/Configured balanced Subagent thinking level is unavailable/,
 		);
 		assert.equal(app.calls.length, 0);
+		const thinkingFallback = await app.tools.get("delegate_task")!.execute("thinking-fallback", { task: "simple" }, undefined, undefined, app.ctx);
+		assert.match(thinkingFallback.content[0].text, /^Model: test-provider\/test-model \(Main\)$/m);
+		assert.match(thinkingFallback.content[0].text, /^Thinking: high$/m);
+
+		availableModels.length = 0;
+		const reloaded = mainHarness({ availableModels });
+		await reloaded.handlers.get("session_start")?.({}, reloaded.ctx);
+		await assert.rejects(
+			reloaded.tools.get("delegate_task")!.execute("stale-model", { task: "simple", modelClass: "balanced" }, undefined, undefined, reloaded.ctx),
+			/Configured balanced Subagent model is unavailable/,
+		);
+		assert.equal(reloaded.calls.length, 0);
+		const modelFallback = await reloaded.tools.get("delegate_task")!.execute("model-fallback", { task: "simple" }, undefined, undefined, reloaded.ctx);
+		assert.match(modelFallback.content[0].text, /^Model: test-provider\/test-model \(Main\)$/m);
+		assert.match(modelFallback.content[0].text, /^Thinking: high$/m);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
