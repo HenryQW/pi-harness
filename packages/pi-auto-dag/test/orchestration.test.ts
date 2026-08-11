@@ -12,8 +12,8 @@ import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
-import { reviewId } from "../src/review-ticket.ts";
-import { runDirectory, writeRunState } from "../src/state.ts";
+import { eventReceiptPath, readWorkerReceipt, reviewId, writeWorkerReceipt } from "../src/review-ticket.ts";
+import { recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -275,6 +275,92 @@ test("cleanup retains a completed child changed after review", async (t) => {
 	assert.equal(await readFile(join(worktree!, "late.txt"), "utf8"), "late\n");
 });
 
+test("accepted worker receipts resume downstream work before returning", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	const message = requestReviewEvent(state, "alpha", commit);
+	const envelope = JSON.parse(message);
+	await writeRunState(project.root, {
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
+		tasks: {
+			...state.tasks,
+			alpha: {
+				...state.tasks.alpha,
+				status: "reviewing",
+				activity_started_at: "2026-08-09T00:00:00.000Z",
+				commit,
+				review_rounds: 1,
+				reviewer_provisioning_id: `auto-dag:${state.run_id}:alpha:reviewer`,
+			},
+		},
+	}, () => "recover-state");
+	await writeWorkerReceipt(envelope.receipt_path, { event_id: envelope.event_id, status: "accepted" }, () => "recover-receipt");
+	const prompts = herdr.count("agent prompt");
+
+	state = await lifecycle.resume(project.root, message);
+
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.ok(state.tasks.alpha.reviewer_pane);
+	assert.equal(herdr.count("agent prompt"), prompts + 1);
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+});
+
+test("accepted event IDs reject a changed envelope body", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	const state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	const envelope = JSON.parse(requestReviewEvent(state, "alpha", commit));
+	await writeRunState(project.root, {
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
+		tasks: {
+			...state.tasks,
+			alpha: {
+				...state.tasks.alpha,
+				status: "reviewing",
+				activity_started_at: "2026-08-09T00:00:00.000Z",
+				commit,
+				review_rounds: 1,
+				reviewer_provisioning_id: `auto-dag:${state.run_id}:alpha:reviewer`,
+			},
+		},
+	}, () => "accepted-state");
+	const changed = JSON.stringify({ ...envelope, payload: { summary: "different action" } });
+
+	await assert.rejects(lifecycle.resume(project.root, changed), /body changed after acceptance/);
+	assert.equal(await readWorkerReceipt(envelope.receipt_path), undefined);
+});
+
+test("approval receipt waits for durable automatic advancement", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	let crash = true;
+	const runner: CommandRunner = async (command, args, options) => {
+		if (crash && command === "git" && args[0] === "cherry-pick") {
+			crash = false;
+			throw new Error("simulated crash before integration");
+		}
+		return await herdr.runner(command, args, options);
+	};
+	const lifecycle = makeLifecycle(runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	const message = reviewEvent(state, "alpha", "approved", []);
+	const envelope = JSON.parse(message);
+
+	await assert.rejects(lifecycle.resume(project.root, message), /simulated crash before integration/);
+	assert.equal(await readWorkerReceipt(envelope.receipt_path), undefined);
+
+	state = await lifecycle.resume(project.root, message);
+	assert.equal(state.tasks.alpha.status, "completed");
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+});
+
 test("simultaneous worker envelopes preserve both durable updates", async (t) => {
 	const project = await makeProject(t, graph(["alpha", "beta"]), 2, 1);
 	const herdr = fakeHerdr();
@@ -379,22 +465,74 @@ test("review submissions contain only reviewer-owned verdict data", () => {
 	}
 });
 
-test("Auto DAG persists required-gate evidence and rejects nonzero approvals", async (t) => {
+test("nonzero required gate blocks before review and resolution reruns the same commit", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
-	const herdr = fakeHerdr({ gate: () => ({ code: 1, stdout: "failed output\n", stderr: "failure details\n" }) });
+	let failGate = true;
+	const herdr = fakeHerdr({ gate: () => failGate
+		? { code: 1, stdout: "failed output\n", stderr: "failure details\n" }
+		: { code: 0, stdout: "passed output\n", stderr: "" } });
 	const lifecycle = makeLifecycle(herdr.runner);
 	let state = await lifecycle.start(project.root, "main-pane");
 	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
 
+	assert.equal(state.phase, "blocked");
+	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.review_command, "npm test -- alpha");
 	assert.equal(state.tasks.alpha.review_commit, commit);
 	assert.equal(state.tasks.alpha.review_exit_code, 1);
 	assert.deepEqual(state.tasks.alpha.review_stdout, { excerpt: "failed output\n", bytes: 14, truncated: false });
 	assert.deepEqual(state.tasks.alpha.review_stderr, { excerpt: "failure details\n", bytes: 16, truncated: false });
-	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
-	assert.equal(state.tasks.alpha.status, "blocked");
-	assert.match(String(state.tasks.alpha.block_reason), /approval requires exit code 0/);
+	assert.equal(reviewPrompts(herdr).length, 0);
+
+	failGate = false;
+	state = await lifecycle.resolve(project.root, "alpha", "Required dependency is available; rerun gate.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(state.tasks.alpha.commit, commit);
+	assert.equal(state.tasks.alpha.review_commit, commit);
+	assert.equal(state.tasks.alpha.review_exit_code, 0);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, 2);
+	assert.equal(reviewPrompts(herdr).length, 1);
+});
+
+test("reviewer-profile deletion mid-review blocks, then resolution launches a fresh reviewer from durable evidence", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	let deleteReviewerProfile = false;
+	const runner: CommandRunner = async (command, args, options) => {
+		const result = await herdr.runner(command, args, options);
+		if (deleteReviewerProfile && command === "herdr" && args.slice(0, 2).join(" ") === "agent get" && args[2].endsWith("-r")) {
+			deleteReviewerProfile = false;
+			await rm(join(project.root, "profiles", "reviewer"), { recursive: true, force: true });
+		}
+		return result;
+	};
+	const lifecycle = makeLifecycle(runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.equal(reviewPrompts(herdr).length, 1);
+
+	deleteReviewerProfile = true;
+	await assert.rejects(lifecycle.resume(project.root), /Profile reviewer directory is missing/);
+	state = (await lifecycle.status(project.root))!;
+	assert.equal(state.phase, "blocked");
+	assert.match(String(state.block_reason), /Profile reviewer directory is missing/);
+	const stuckTab = state.tasks.alpha.tab_id;
+	const gateRuns = herdr.calls.filter((call) => call.command === "sh").length;
+	assert.equal(state.tasks.alpha.review_commit, commit);
+
+	await createTestProfiles(project.root);
+	state = await lifecycle.resolve(project.root, "alpha", "Reviewer profile restored; restart review.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks.alpha.status, "reviewing");
+	assert.notEqual(state.tasks.alpha.tab_id, stuckTab);
+	assert.equal(herdr.tabs.has(stuckTab!), false);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, gateRuns);
+	assert.equal(state.tasks.alpha.review_commit, commit);
+	assert.equal(reviewPrompts(herdr).length, 2);
 });
 
 test("Auto DAG restores gate-created worktree changes before review", async (t) => {
@@ -475,7 +613,10 @@ test("stale reviewer verdict cannot approve a later review round", async (t) => 
 	await git(state.tasks.alpha.worktree!, "commit", "--amend", "-m", "second");
 	const second = await git(state.tasks.alpha.worktree!, "rev-parse", "HEAD");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", second));
-	state = await lifecycle.resume(project.root, staleApproval);
+	await assert.rejects(lifecycle.resume(project.root, staleApproval), /body changed after acceptance/);
+	const retained = await lifecycle.status(project.root, RUN_ID);
+	assert.ok(retained);
+	state = retained;
 
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.commit, second);
@@ -776,14 +917,23 @@ function event(
 	type: string,
 	payload: Record<string, unknown>,
 	review_id = "review-id",
+	metadata: { attempt?: number; review_round?: number; receipt_path?: string; commit?: string } = {},
 ): string {
+	const attempt = metadata.attempt ?? 1;
+	const review_round = metadata.review_round ?? 1;
+	const event_id = `${type}-${issueId}-${attempt}-${review_round}${metadata.commit ? `-${metadata.commit.slice(0, 12)}` : ""}`;
 	return JSON.stringify({
 		version: 1,
 		type,
 		run_id: RUN_ID,
 		issue_id: issueId,
 		role,
+		event_id,
+		attempt,
+		review_round,
+		receipt_path: metadata.receipt_path ?? "test-receipt",
 		...(type === "submit_review" ? { review_id } : {}),
+		...(type === "request_review" ? { commit: metadata.commit } : {}),
 		payload,
 	});
 }
@@ -802,24 +952,31 @@ function reviewEvent(
 		commit: task.commit!,
 		attempt: task.attempts,
 		review_round: task.review_rounds!,
-	}));
+	}), {
+		attempt: task.attempts,
+		review_round: task.review_rounds!,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `submit_review-${issueId}-${task.attempts}-${task.review_rounds}`),
+	});
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {
 	const task = state.tasks[issueId];
-	return event(issueId, "implementer", "request_review", {
-		commit,
+	const review_round = (task.review_rounds ?? 0) + 1;
+	return event(issueId, "implementer", "request_review", { summary: "finished" }, "review-id", {
 		attempt: task.attempts,
-		review_round: (task.review_rounds ?? 0) + 1,
+		review_round,
+		commit,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `request_review-${issueId}-${task.attempts}-${review_round}-${commit.slice(0, 12)}`),
 	});
 }
 
 function blockTaskEvent(state: RunState, issueId: string, role: "implementer" | "reviewer", reason: string): string {
 	const task = state.tasks[issueId];
-	return event(issueId, role, "block_task", {
-		reason,
+	const review_round = role === "implementer" ? (task.review_rounds ?? 0) + 1 : task.review_rounds!;
+	return event(issueId, role, "block_task", { reason }, "review-id", {
 		attempt: task.attempts,
-		review_round: role === "implementer" ? (task.review_rounds ?? 0) + 1 : task.review_rounds,
+		review_round,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `block_task-${issueId}-${task.attempts}-${review_round}`),
 	});
 }
 

@@ -1,8 +1,11 @@
 import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
+import { executionIssues } from "./graph.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
+import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
 import type { RunState, WorkerEnvelope } from "./model.ts";
+import type { WorkerRole } from "./worker.ts";
 import { parseWorkerEnvelope } from "./orchestration.ts";
 import { registerPlanning } from "./planning.ts";
 import { listWorkerAgents } from "./worker-host.ts";
@@ -32,6 +35,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		registerPlanning(pi, runner);
 		let state: RunState | undefined;
 		let liveAgents: Map<string, string> | undefined;
+		let pendingHandoffs = new Set<string>();
 		let widgetVisible = true;
 		const dismissedWidgetEntries = new Set<string>();
 		let renderingTimer: ReturnType<typeof setInterval> | undefined;
@@ -49,7 +53,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			if (active.length !== next.length || active.some((name, index) => name !== next[index])) pi.setActiveTools(next);
 		};
 		const renderWorkerWidget = (ctx: ExtensionContext): void => {
-			updateWorkerWidget(ctx, widgetVisible ? state : undefined, liveAgents, dismissedWidgetEntries);
+			updateWorkerWidget(ctx, widgetVisible ? state : undefined, liveAgents, dismissedWidgetEntries, pendingHandoffs);
 		};
 		const refreshWorkerWidget = async (ctx: ExtensionContext): Promise<void> => {
 			try {
@@ -59,6 +63,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				if (errorMessage(error) !== "No active pi-auto-dag run") ctx.ui.notify(`Auto DAG status unavailable: ${errorMessage(error)}`, "warning");
 			}
 			syncActiveTools();
+			pendingHandoffs = state ? await pendingWorkerHandoffs(state) : new Set();
 			renderWorkerWidget(ctx);
 		};
 		const refreshHerdr = async (ctx: ExtensionContext): Promise<void> => {
@@ -72,9 +77,15 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			const generation = ++herdrGeneration;
 			try {
 				const agents = await listWorkerAgents(state, { runner });
-				if (generation === herdrGeneration) liveAgents = agents;
+				if (generation === herdrGeneration) {
+					liveAgents = agents;
+					pendingHandoffs = await pendingWorkerHandoffs(state);
+				}
 			} catch {
-				if (generation === herdrGeneration) liveAgents = undefined;
+				if (generation === herdrGeneration) {
+					liveAgents = undefined;
+					pendingHandoffs = await pendingWorkerHandoffs(state);
+				}
 			} finally {
 				readingHerdr = false;
 				if (generation === herdrGeneration) renderWorkerWidget(ctx);
@@ -158,6 +169,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				if (!envelope) return { action: "continue" as const };
 				const result = await lifecycle.resume(ctx.cwd, envelope);
 				state = runRemainsActive(result) ? result : undefined;
+				pendingHandoffs = state ? await pendingWorkerHandoffs(state) : new Set();
 				syncActiveTools();
 				renderWorkerWidget(ctx);
 				if (ctx.mode === "tui" && widgetVisible) void refreshHerdr(ctx);
@@ -236,6 +248,8 @@ interface WorkerWidgetEntry {
 	activity: string;
 	pane: string;
 	startedAt: string;
+	role: WorkerRole;
+	scope: ReviewTicketScope;
 	reason?: string;
 }
 
@@ -244,6 +258,7 @@ function updateWorkerWidget(
 	state: RunState | undefined,
 	liveAgents: Map<string, string> | undefined,
 	dismissed: Set<string>,
+	pendingHandoffs: Set<string>,
 ): void {
 	if (!state) {
 		ctx.ui.setWidget(WORKER_WIDGET, undefined);
@@ -256,11 +271,12 @@ function updateWorkerWidget(
 	const visible = active.filter((worker) => !dismissed.has(worker.key));
 	ctx.ui.setWidget(WORKER_WIDGET, visible.length ? [
 		ctx.ui.theme.fg("accent", "Auto DAG workers"),
-		...visible.map(({ issue, activity, pane, startedAt, reason }) => {
+		...visible.map(({ key, issue, activity, pane, startedAt, reason }) => {
 			if (activity === "blocked") return `${ctx.ui.theme.fg("error", "!")} ${issue} · blocked · ${elapsed(startedAt)}${reason ? ` · ${reason}` : ""}`;
 			const status = liveAgents ? liveAgents.get(pane) ?? "missing" : "unknown";
+			const pending = status === "idle" && pendingHandoffs.has(key);
 			const marker = status === "working" ? ctx.ui.theme.fg("success", "●") : status === "idle" ? ctx.ui.theme.fg("warning", "○") : status === "missing" ? ctx.ui.theme.fg("error", "!") : ctx.ui.theme.fg("muted", "?");
-			return `${marker} ${issue} · ${activity} · ${status} · ${elapsed(startedAt)}`;
+			return `${marker} ${issue} · ${activity} · ${status}${pending ? " · handoff pending" : ""} · ${elapsed(startedAt)}`;
 		}),
 	] : undefined);
 }
@@ -269,21 +285,24 @@ function workers(state: RunState): WorkerWidgetEntry[] {
 	const active: WorkerWidgetEntry[] = [];
 	for (const [issue, task] of Object.entries(state.tasks)) {
 		if (task.tab_cleanup_done) continue;
-		const role = task.status === "blocked" ? task.blocked_role : ["starting", "implementing", "repairing"].includes(task.status) ? "implementer" : ["reviewing", "repair_reviewing"].includes(task.status) ? "reviewer" : undefined;
+		const role: WorkerRole | undefined = task.status === "blocked" ? task.blocked_role : ["starting", "implementing", "repairing"].includes(task.status) ? "implementer" : ["reviewing", "repair_reviewing"].includes(task.status) ? "reviewer" : undefined;
+		const scope: ReviewTicketScope = executionIssues(state.graph).find((candidate) => candidate.role === "final_check")?.id === issue ? "lifecycle" : "implementation";
 		const pane = role === "implementer" ? task.implementer_pane : role === "reviewer" ? task.reviewer_pane : undefined;
 		const activity = task.status === "blocked" ? "blocked" : task.status === "starting" ? "starting" : task.status === "implementing" ? "coding" : task.status === "repairing" ? "repairing" : role === "reviewer" ? "reviewing" : undefined;
-		if (activity && pane && task.activity_started_at) active.push({
+		if (activity && pane && role && task.activity_started_at) active.push({
 			key: `${state.run_id}:${issue}:${activity}:${pane}:${task.activity_started_at}`,
 			issue,
 			activity,
 			pane,
 			startedAt: task.activity_started_at,
+			role,
+			scope,
 			reason: task.block_reason,
 		});
 	}
 	const health = state.health;
 	if (health) {
-		const role = health.status === "blocked" ? health.blocked_role : health.status === "repairing" ? "implementer" : ["triaging", "reviewing"].includes(health.status) ? "reviewer" : undefined;
+		const role: WorkerRole | undefined = health.status === "blocked" ? health.blocked_role : health.status === "repairing" ? "implementer" : ["triaging", "reviewing"].includes(health.status) ? "reviewer" : undefined;
 		const pane = role === "implementer" ? health.coder_pane : role === "reviewer" ? health.reviewer_pane : undefined;
 		const activity = health.status === "blocked" ? "blocked" : health.status;
 		if (role && pane && health.activity_started_at) active.push({
@@ -292,10 +311,31 @@ function workers(state: RunState): WorkerWidgetEntry[] {
 			activity,
 			pane,
 			startedAt: health.activity_started_at,
+			role,
+			scope: "pr_health",
 			reason: health.summary,
 		});
 	}
 	return active;
+}
+
+async function pendingWorkerHandoffs(state: RunState): Promise<Set<string>> {
+	const pending = new Set<string>();
+	for (const worker of workers(state)) {
+		if (worker.activity === "blocked") continue;
+		const issueId = worker.scope === "pr_health"
+			? executionIssues(state.graph).find((candidate) => candidate.role === "final_check")?.id
+			: worker.issue;
+		if (!issueId) continue;
+		try {
+			const ticket = await readActionTicket(actionTicketPath(state.main_worktree, state.run_id, issueId, worker.scope, worker.role));
+			const receipt = await readWorkerReceipt(ticket.receipt_path);
+			if (!receipt || receipt.status !== "accepted") pending.add(worker.key);
+		} catch {
+			// No ticket means no handoff to display.
+		}
+	}
+	return pending;
 }
 
 function elapsed(startedAt: string): string {
@@ -332,12 +372,13 @@ function workerEnvelopeInput(text: string): WorkerEnvelope | undefined {
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const input = value as Record<string, unknown>;
-	if (!["version", "type", "run_id", "issue_id", "role", "payload"].every((key) => key in input)) return undefined;
+	if (!["version", "type", "run_id", "issue_id", "role", "event_id", "attempt", "review_round", "receipt_path", "payload"].every((key) => key in input)) return undefined;
 	return parseWorkerEnvelope(input);
 }
 
 function hasBlockedTask(state: RunState): boolean {
-	return Object.values(state.tasks).some((task) => task.status === "blocked");
+	return Object.values(state.tasks).some((task) => task.status === "blocked"
+		|| (state.phase === "blocked" && ["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(task.status)));
 }
 
 function runRemainsActive(state: RunState): boolean {

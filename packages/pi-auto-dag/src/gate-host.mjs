@@ -1,8 +1,11 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createWriteStream, existsSync } from "node:fs";
 import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { finished } from "node:stream/promises";
 import { promisify } from "node:util";
 
+const OUTPUT_OVERFLOW_EXIT_CODE = 125;
 const [recordPath, launchId, command, ...arguments_] = process.argv.slice(2);
 if (!recordPath || !launchId || !command) throw new Error("Required gate host arguments are incomplete");
 
@@ -15,29 +18,91 @@ while (true) {
 await unlink(control.release);
 if (await exists(control.cancel)) await cancelLaunch(control.ready, control.cancel);
 
-const child = spawn(command, arguments_, { cwd: process.cwd(), stdio: "inherit" });
-child.once("error", (error) => {
-	console.error(error instanceof Error ? error.message : String(error));
-	process.exitCode = 1;
-});
-child.once("close", (code, signal) => {
-	if (signal) process.kill(process.pid, signal);
-	else process.exitCode = code ?? 1;
+const stdout = createWriteStream(control.output_files.stdout, { mode: 0o600 });
+const stderr = createWriteStream(control.output_files.stderr, { mode: 0o600 });
+const outputCompletion = Promise.all([finished(stdout), finished(stderr)]);
+let child;
+let outputBytes = 0;
+let overflowed = false;
+let timedOut = false;
+let commandCompleted = false;
+let completedBeforeCancellation = false;
+const terminate = () => {
+	if (timedOut) return;
+	if (!commandCompleted) timedOut = true;
+	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
+};
+process.once("SIGTERM", terminate);
+const timeout = control.timeout_ms === undefined ? undefined : setTimeout(terminate, control.timeout_ms);
+void outputCompletion.catch(() => {
+	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
 });
 
+try {
+	const running = spawn(command, arguments_, { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], detached: true });
+	child = running;
+	running.stdout.pipe(stdout);
+	running.stderr.pipe(stderr);
+	const collect = (chunk) => {
+		outputBytes += chunk.length;
+		if (outputBytes > control.max_output_bytes && !overflowed) {
+			overflowed = true;
+			if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
+		}
+	};
+	running.stdout.on("data", collect);
+	running.stderr.on("data", collect);
+	const outcome = await new Promise((resolve) => {
+		let settled = false;
+		const settle = (result) => {
+			if (settled) return;
+			settled = true;
+			commandCompleted = true;
+			completedBeforeCancellation = !existsSync(control.cancel);
+			resolve(result);
+		};
+		running.once("error", (error) => settle({ code: 1, signal: null, error }));
+		running.once("exit", (code, signal) => settle({ code, signal }));
+	});
+	if (outcome.error) stderr.write(`${outcome.error.message}\n`);
+	if (running.pid !== undefined) await terminateGroup(running.pid);
+	await outputCompletion;
+	const exitCode = overflowed ? OUTPUT_OVERFLOW_EXIT_CODE : timedOut ? 124 : outcome.signal ? 1 : outcome.code ?? 1;
+	await markCompleted(recordPath, launchId, exitCode, completedBeforeCancellation);
+	process.exitCode = exitCode;
+} catch (error) {
+	if (child?.pid !== undefined) signalGroup(child.pid, "SIGKILL");
+	stdout.destroy();
+	stderr.destroy();
+	await outputCompletion.catch(() => undefined);
+	throw error;
+} finally {
+	if (timeout) clearTimeout(timeout);
+	process.removeListener("SIGTERM", terminate);
+}
+
 async function markReady(path, expectedLaunchId) {
-	const record = JSON.parse(await readFile(path, "utf8"));
-	if (!record || typeof record !== "object" || Array.isArray(record)
-		|| record.phase !== "launching" || record.launch_id !== expectedLaunchId
-		|| typeof record.release !== "string" || !record.release) {
+	const record = await readRecord(path);
+	if (record.version !== 4 || record.phase !== "launching" || record.launch_id !== expectedLaunchId) {
 		throw new Error("Required gate launch intent does not match gate host");
+	}
+	const cancel = `${path}.${expectedLaunchId}.cancel`;
+	if (await exists(cancel)) throw new Error("Required gate launch was cancelled");
+	if (!record.output_files || typeof record.output_files.stdout !== "string" || !record.output_files.stdout
+		|| typeof record.output_files.stderr !== "string" || !record.output_files.stderr
+		|| !Number.isSafeInteger(record.max_output_bytes) || record.max_output_bytes <= 0
+		|| (record.timeout_ms !== undefined && (!Number.isSafeInteger(record.timeout_ms) || record.timeout_ms <= 0))) {
+		throw new Error("Required gate launch intent lacks host output settings");
 	}
 	const control = {
 		release: record.release,
-		cancel: `${path}.${expectedLaunchId}.cancel`,
+		cancel,
 		ready: `${path}.${expectedLaunchId}.host`,
+		output_files: record.output_files,
+		max_output_bytes: record.max_output_bytes,
+		...(record.timeout_ms === undefined ? {} : { timeout_ms: record.timeout_ms }),
 	};
-	if (await exists(control.cancel)) throw new Error("Required gate launch was cancelled");
+	if (typeof control.release !== "string" || !control.release) throw new Error("Required gate launch intent does not match gate host");
 	const identity = await processIdentity(process.pid);
 	if (!identity) throw new Error("Required gate host lacks a safe process identity");
 	if (await exists(control.cancel)) throw new Error("Required gate launch was cancelled");
@@ -47,6 +112,42 @@ async function markReady(path, expectedLaunchId) {
 		throw new Error("Required gate launch was cancelled");
 	}
 	return control;
+}
+
+async function markCompleted(path, expectedLaunchId, exitCode, completedBeforeCancellation) {
+	if (!completedBeforeCancellation && await exists(`${path}.${expectedLaunchId}.cancel`)) return;
+	const record = await readRecord(path);
+	if (record.version !== 4 || record.launch_id !== expectedLaunchId) {
+		throw new Error("Required gate completion does not match launch intent");
+	}
+	if (record.phase === "completed") {
+		if (record.exit_code !== exitCode) throw new Error("Required gate completion exit code changed");
+		return;
+	}
+	if (record.phase !== "launching") throw new Error("Required gate completion does not match launch intent");
+	await writeJson(path, { ...record, phase: "completed", exit_code: exitCode, cleanup_complete: false });
+}
+
+async function readRecord(path) {
+	const record = JSON.parse(await readFile(path, "utf8"));
+	if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Required gate process record must be an object");
+	return record;
+}
+
+async function terminateGroup(pid) {
+	if (!signalGroup(pid, "SIGTERM")) return;
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	signalGroup(pid, "SIGKILL");
+}
+
+function signalGroup(pid, signal) {
+	try {
+		process.kill(-pid, signal);
+		return true;
+	} catch (error) {
+		if (error.code === "ESRCH") return false;
+		throw error;
+	}
 }
 
 async function processIdentity(pid) {

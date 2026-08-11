@@ -1,11 +1,12 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { revalidateResolvedProfile } from "./config.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
 import type { LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
-import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
-import { persistGateOutput, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
+import { actionTicketPath, ensureActionTicket, reviewId } from "./review-ticket.ts";
+import { recordGateExecution, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
 import { createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, startWorkerAgent, workerAgentName, workerTabExists } from "./worker-host.ts";
 import { createWorkerLaunch, workerDeliveryContext, workerIssueContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
@@ -64,7 +65,7 @@ export async function ensureImplementer(
 		state = await save(replaceTask(state, issue.id, { ...current, implementer_provisioning_id: provisioningId }), options);
 		current = task(state, issue.id);
 	}
-	const launch = workerLaunch(state, issue, config, "implementer");
+	let launch = await workerLaunch(state, issue, config, "implementer");
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: current.tab_id,
 		pane_id: current.implementer_pane,
@@ -82,6 +83,7 @@ export async function ensureImplementer(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.implementer_agent, `Run Task ${issue.id} implementer_agent`);
+	launch = await workerLaunch(state, issue, config, "implementer");
 	const started = await startWorkerAgent(
 		state,
 		agent,
@@ -113,6 +115,14 @@ export async function ensureImplementer(
 	}
 	const promptMode = needsInstruction ? action : mode;
 	const fullPrompt = Boolean(mode === "initial" || mode === "replacement" || started !== "existing" || current.resolution_pending || (mode === "resume" && current.implementer_instruction_pending));
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", "implementer"),
+		{ attempt: current.attempts, review_round: (current.review_rounds ?? 0) + 1, role: "implementer" },
+		state.main_worktree,
+		state.run_id,
+		options.uuid,
+	);
+	await revalidateResolvedProfile(config, nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`));
 	await promptWorkerAgent(state, agent, implementerPrompt(state, issue, current, promptMode, fullPrompt), options);
 	if (task(state, issue.id).implementer_instruction_pending || task(state, issue.id).resolution_pending) {
 		state = await save(replaceTask(state, issue.id, {
@@ -135,32 +145,32 @@ export async function ensureReviewer(
 	config = await assertRunBoundary(state, options.runner);
 	state = await ensureTaskGate(state, issue, config.required_gate_timeout_ms, options);
 	let current = task(state, issue.id);
-	if (current.reviewer_pane) {
-		const tabId = nonEmptyString(current.tab_id, `Run Task ${issue.id} tab_id`);
-		if (!(await workerTabExists(state, tabId, options))) {
-			const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
-			current = {
-				...current,
-				tab_id: undefined,
-				implementer_pane: undefined,
-				reviewer_pane: undefined,
-				implementer_provisioning_id: provisioningId,
-			};
-			const created = await findWorkerTab(state, provisioningId, options)
-				?? await createWorkerTab(
-					state,
-					nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-					workerLaunch(state, issue, config, "implementer"),
-					provisioningId,
-					options,
-				);
-			state = await save(replaceTask(state, issue.id, {
-				...current,
-				tab_id: created.tab_id,
-				implementer_pane: created.pane_id,
-			}), options);
-			current = task(state, issue.id);
-		}
+	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
+	const gate = requiredTaskGate(current, commit, issue.id);
+	if (gate.exit_code !== 0) throw new Error(`Required gate exited with code ${gate.exit_code}; reviewer was not launched`);
+	if (!current.tab_id || !current.implementer_pane || (current.reviewer_pane && !(await workerTabExists(state, current.tab_id, options)))) {
+		const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
+		current = {
+			...current,
+			tab_id: undefined,
+			implementer_pane: undefined,
+			reviewer_pane: undefined,
+			implementer_provisioning_id: provisioningId,
+		};
+		const created = await findWorkerTab(state, provisioningId, options)
+			?? await createWorkerTab(
+				state,
+				nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+				await workerLaunch(state, issue, config, "implementer"),
+				provisioningId,
+				options,
+			);
+		state = await save(replaceTask(state, issue.id, {
+			...current,
+			tab_id: created.tab_id,
+			implementer_pane: created.pane_id,
+		}), options);
+		current = task(state, issue.id);
 	}
 	if (!current.reviewer_pane) {
 		const provisioningId = current.reviewer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "reviewer");
@@ -175,7 +185,7 @@ export async function ensureReviewer(
 			tabId,
 			implementerPane,
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-			workerLaunch(state, issue, config, "reviewer"),
+			await workerLaunch(state, issue, config, "reviewer"),
 			provisioningId,
 			options,
 		);
@@ -187,11 +197,12 @@ export async function ensureReviewer(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, `Run Task ${issue.id} reviewer_agent`);
+	const reviewerLaunch = await workerLaunch(state, issue, config, "reviewer");
 	const started = await startWorkerAgent(
 		state,
 		agent,
 		nonEmptyString(current.reviewer_pane, `Run Task ${issue.id} reviewer_pane`),
-		workerLaunch(state, issue, config, "reviewer"),
+		reviewerLaunch,
 		options,
 		{
 			beforeStart: async () => {
@@ -211,11 +222,14 @@ export async function ensureReviewer(
 		: started !== "existing" || current.review_rounds === 1
 			? "full"
 			: "update";
-	await writeReviewTicket(
-		reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation"),
-		taskReviewId(state, issue.id, current),
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", "reviewer"),
+		{ attempt: current.attempts, review_round: positiveInteger(current.review_rounds, `Run Task ${issue.id} review round`), role: "reviewer", review_id: taskReviewId(state, issue.id, current) },
+		state.main_worktree,
+		state.run_id,
 		options.uuid,
 	);
+	await revalidateResolvedProfile(config, config.reviewer_profile);
 	await promptWorkerAgent(state, agent, reviewerPrompt(state, issue, current, promptMode), options);
 	if (task(state, issue.id).reviewer_instruction_pending || task(state, issue.id).resolution_pending) {
 		state = await save(replaceTask(state, issue.id, {
@@ -231,7 +245,7 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 	const current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
 	await verifyReviewCommit(state, issue.id, commit, options);
-	let evidence = recordedGateEvidence(current, commit);
+	const evidence = recordedGateEvidence(current, commit);
 	if (!evidence) {
 		const execution = await runRequiredGate(
 			options.runner,
@@ -240,9 +254,9 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 			timeoutMs,
 			requiredGateProcessPath(state.main_worktree, state.run_id),
+			{ kind: "task", issue_id: issue.id },
 		);
-		evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
-		state = await save(replaceTask(state, issue.id, { ...current, ...gateEvidenceRecord(evidence) }), options);
+		state = await recordGateExecution(state, { kind: "task", issue_id: issue.id }, execution, options.uuid);
 	}
 	return state;
 }
@@ -284,15 +298,14 @@ function hasReviewFindings(current: RunTaskState): boolean {
 	return Array.isArray(current.review_findings) && current.review_findings.length > 0;
 }
 
-function workerLaunch(
+async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
-): WorkerLaunch {
+): Promise<WorkerLaunch> {
 	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = config.profiles[profileId];
-	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
+	const profile = await revalidateResolvedProfile(config, profileId);
 	return createWorkerLaunch({
 		role,
 		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
@@ -300,7 +313,8 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: issue.id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, issue.id, "implementation") } : {}),
+		action_ticket: actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", role),
+		required_gate_timeout_ms: config.required_gate_timeout_ms,
 	});
 }
 

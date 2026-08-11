@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { reconcileRequiredGateProcess, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
+import { acknowledgeRequiredGate, reconcileRequiredGateProcess, recordedGateEvidence, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
 import type { ProjectConfig, RunState, RunTaskState } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { runPrHealth } from "./pr-health.ts";
+import { recordGateExecution } from "./review.ts";
 import { claimActiveRun, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
-import { workerWorkspaceId } from "./worker-host.ts";
+import { findWorkerTab, retireWorkerTab, workerWorkspaceId } from "./worker-host.ts";
 
 export interface CoreLifecycleOptions {
 	runner?: CommandRunner;
@@ -51,8 +52,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 
 		async resume(mainWorktree, envelope) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
-				const state = await readActiveRun(root);
-				await reconcileGate(state, orchestration);
+				let state = await readActiveRun(root);
+				state = await reconcileGate(state, orchestration);
 				if (state.phase !== "aborted" && state.health) {
 					if (state.health.status === "completed") {
 						return await releaseCompletedHealth(state, uuid, orchestration);
@@ -71,8 +72,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 
 		async resolve(mainWorktree, issueId, resolution) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
-				const state = await readActiveRun(root);
-				await reconcileGate(state, orchestration);
+				let state = await readActiveRun(root);
+				state = await reconcileGate(state, orchestration);
 				if (state.phase === "aborted" || state.phase === "completed") {
 					throw new Error(`Cannot resolve a ${state.phase} run`);
 				}
@@ -81,9 +82,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
 				const prResolved = await resolveFinalRepair(state, id, resolution, config, orchestration);
 				if (prResolved) return await completeSuccessfulRun(prResolved, orchestration);
-				const current = state.tasks[id];
-				const { block_reason: _taskBlockReason, blocked_role, activity_started_at: _activityStartedAt, ...resolvedTask } = current;
-				const reviewerBlocked = current.status === "blocked" && blocked_role === "reviewer";
+				let current = state.tasks[id];
+				const reviewerBlocked = current.status === "blocked" && current.blocked_role === "reviewer";
 				const reviewRound = current.review_rounds ?? 0;
 				if (reviewerBlocked && reviewRound >= config.max_review_rounds) {
 					const reason = `Review rounds exceed configured maximum of ${config.max_review_rounds}`;
@@ -96,15 +96,21 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 					await writeRunState(state.main_worktree, next, uuid);
 					return next;
 				}
+				if (["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(current.status)) {
+					current = await retireActiveTaskWorker(state, current, orchestration);
+				}
+				current = clearFailedGateEvidence(current);
+				const { block_reason: _taskBlockReason, blocked_role, activity_started_at: _activityStartedAt, ...resolvedTask } = current;
 				const resolved: RunTaskState = current.status === "blocked"
 					? {
 						...resolvedTask,
 						status: blocked_role === "reviewer" ? "reviewing" : current.worktree ? "implementing" : "pending",
 						...((blocked_role || current.worktree) ? { activity_started_at: options.now?.() ?? new Date().toISOString() } : {}),
 						...(reviewerBlocked ? { review_rounds: reviewRound + 1 } : {}),
+						...(blocked_role === "implementer" ? { attempts: current.attempts + 1 } : {}),
 						resolution_pending: true,
 					}
-					: ["starting", "implementing", "reviewing"].includes(current.status)
+					: ["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(current.status)
 						? { ...current, resolution_pending: true }
 						: current;
 				const updated = replaceTask({
@@ -122,8 +128,8 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 
 		async abort(mainWorktree, reason) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
-				const state = await readActiveRun(root);
-				await reconcileGate(state, orchestration);
+				let state = await readActiveRun(root);
+				state = await reconcileGate(state, orchestration);
 				const next: RunState = {
 					...state,
 					phase: "aborted",
@@ -142,9 +148,9 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				const id = nonEmptyString(runId, "health run_id");
 				const active = await readActiveRunId(root);
 				if (active && active !== id) throw new Error(`Cannot run PR health for retained run ${id} while active run ${active} exists`);
-				const state = await readRunState(root, id);
+				let state = await readRunState(root, id);
 				if (!state) throw new Error(`No pi-auto-dag run found: ${runId}`);
-				if (active === id) await reconcileGate(state, orchestration);
+				if (active === id) state = await reconcileGate(state, orchestration);
 				if (active === id && state.health?.status === "completed") {
 					return await releaseCompletedHealth(state, uuid, orchestration);
 				}
@@ -179,12 +185,54 @@ async function withLifecycleMutation<T>(mainWorktree: string, runner: CommandRun
 	}
 }
 
-async function reconcileGate(state: RunState, options: OrchestrationOptions): Promise<void> {
-	await reconcileRequiredGateProcess(
-		options.runner,
-		requiredGateProcessPath(state.main_worktree, state.run_id),
-		options.delay,
-	);
+async function retireActiveTaskWorker(
+	state: RunState,
+	current: RunTaskState,
+	options: OrchestrationOptions,
+): Promise<RunTaskState> {
+	const tabId = current.tab_id ?? (current.implementer_provisioning_id
+		? (await findWorkerTab(state, current.implementer_provisioning_id, options))?.tab_id
+		: undefined);
+	if (tabId) await retireWorkerTab(state, tabId, options);
+	const {
+		tab_id: _tabId,
+		implementer_pane: _implementerPane,
+		reviewer_pane: _reviewerPane,
+		tab_cleanup_done: _tabCleanupDone,
+		...retired
+	} = current;
+	return retired;
+}
+
+function clearFailedGateEvidence(current: RunTaskState): RunTaskState {
+	if (current.review_exit_code === undefined || current.review_exit_code === 0) return current;
+	const {
+		review_command: _command,
+		review_commit: _commit,
+		review_exit_code: _exitCode,
+		review_stdout: _stdout,
+		review_stderr: _stderr,
+		...cleared
+	} = current;
+	return cleared;
+}
+
+async function reconcileGate(state: RunState, options: OrchestrationOptions): Promise<RunState> {
+	const path = requiredGateProcessPath(state.main_worktree, state.run_id);
+	const execution = await reconcileRequiredGateProcess(options.runner, path, options.delay);
+	if (!execution?.handoff) return state;
+	const target = execution.handoff.target;
+	const owner = target.kind === "task" ? state.tasks[target.issue_id] : state.health;
+	if (!owner) throw new Error(`Completed required gate target is missing: ${target.kind} ${target.issue_id}`);
+	const evidence = recordedGateEvidence(owner, execution.commit);
+	if (evidence) {
+		if (evidence.command !== execution.command || evidence.exit_code !== execution.exit_code) {
+			throw new Error("Completed required gate handoff conflicts with saved evidence");
+		}
+		await acknowledgeRequiredGate(path, execution);
+		return state;
+	}
+	return await recordGateExecution(state, target, execution, options.uuid);
 }
 
 async function guardBoundary(state: RunState, runner: CommandRunner, uuid: Uuid): Promise<ProjectConfig> {

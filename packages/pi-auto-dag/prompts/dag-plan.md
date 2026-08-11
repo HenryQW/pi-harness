@@ -43,12 +43,12 @@ Write exact JSON shape below. No extra or omitted keys:
   ],
   "final_check": {
     "acceptance": ["Integrated behavior passes"],
-    "testing": "npm test"
+    "testing": "npm ci && npm test && npm run typecheck"
   }
 }
 ```
 
-Keep implementation issues vertical and independently reviewable. Each issue must own one coherent outcome, acceptance evidence, realistic frozen test command, and only necessary dependencies. Avoid component-layer slices, fake ordering, overlapping file ownership, speculative work, and an issue per implementation detail. `final_check` is structural, runs after every implementation issue, and contains only integrated acceptance plus command.
+Keep implementation issues vertical and independently reviewable. Each issue must own one coherent outcome, acceptance evidence, realistic frozen test command, and only necessary dependencies. Avoid component-layer slices, fake ordering, overlapping file ownership, speculative work, and an issue per implementation detail. `final_check` is structural, runs after every implementation issue, and contains only integrated acceptance plus command. Its frozen command must prepare a fresh disposable checkout before verification; for npm projects, start with `npm ci &&`.
 
 Planning modes:
 

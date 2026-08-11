@@ -1,13 +1,14 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { commandFailure, commandOutput, errorMessage, gateEvidenceRecord, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { commandFailure, commandOutput, errorMessage, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
+import { revalidateResolvedProfile } from "./config.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RequiredGateEvidence, RunState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
-import { reviewId, reviewTicketPath, writeReviewTicket } from "./review-ticket.ts";
-import { persistGateOutput, reviewPrompt, type ReviewPromptMode } from "./review.ts";
-import { writeRunState, type Uuid } from "./state.ts";
+import { actionTicketPath, ensureActionTicket, eventReceiptPath, readWorkerReceipt, reviewId, writeWorkerReceipt } from "./review-ticket.ts";
+import { recordGateExecution, reviewPrompt, type ReviewPromptMode } from "./review.ts";
+import { hasAcceptedWorkerEvent, readRunState, recordAcceptedWorkerEvent, writeRunState, type Uuid } from "./state.ts";
 import { findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
 import { createWorkerLaunch, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -23,23 +24,76 @@ export async function runPrHealth(
 	envelope: WorkerEnvelope | undefined,
 	options: PrHealthOptions,
 ): Promise<RunState> {
+	const receiptPath = envelope ? eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id) : undefined;
+	let receiptAccepted = false;
+	if (envelope) {
+		if (envelope.receipt_path !== receiptPath) throw new Error("Worker receipt path does not belong to retained run");
+		const existing = await readWorkerReceipt(receiptPath!);
+		if (existing) {
+			if (existing.event_id !== envelope.event_id) throw new Error("Worker receipt belongs to another event");
+			if (existing.status === "rejected") throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+			receiptAccepted = true;
+		}
+	}
 	state = await resumePrHealth(state, options);
 	const config = await loadPrHealthConfig(state, options);
 	if (state.phase !== "completed" || !state.pr) {
 		throw new Error("PR health requires a completed retained run with an integration PR");
 	}
-	if (state.health?.status === "applying") return await applyHealthRepair(state, options);
-	if (state.health?.status === "pushing") return await continueHealthPush(state, options);
-	if (state.health?.status === "post_push_cleanup") return await completeHealthRepair(state, options);
+	const recoveringRepair = ["applying", "pushing", "post_push_cleanup"].includes(state.health?.status ?? "");
+	if (state.health?.status === "applying") state = await applyHealthRepair(state, options);
+	if (state.health?.status === "pushing") state = await continueHealthPush(state, options);
+	if (state.health?.status === "post_push_cleanup") state = await completeHealthRepair(state, options);
+	if (recoveringRepair && !envelope) return state;
 	state = await fastForwardToPrHead(state, options);
-	if (state.health?.status === "blocked") return state;
+	if (envelope) {
+		const accepted = hasAcceptedWorkerEvent(state, envelope);
+		if (receiptAccepted && !accepted) throw new Error(`Auto DAG event ${envelope.event_id} has an accepted receipt without matching state`);
+		if (accepted) {
+			const resumed = await resumePendingHealthWork(state, config, options);
+			state = resumed ?? state;
+			await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
+			return state;
+		}
+	}
+	if (state.health?.status === "blocked") {
+		if (envelope) {
+			const reason = state.health.summary ?? "PR health is blocked";
+			await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "rejected", reason }, options.uuid);
+			throw new Error(reason);
+		}
+		if (state.health.head !== state.integration_head && hasFailedHealthGate(state.health)) {
+			state = await completeHealthRepair(state, options);
+			return await startHealthTriage(state, config, options);
+		}
+		return await retryFailedHealthGate(state, config, options);
+	}
+	if (envelope) {
+		try {
+			state = await acceptHealthEnvelope(recordAcceptedWorkerEvent(state, envelope), envelope, config, options);
+		} catch (error) {
+			const persisted = await readRunState(state.main_worktree, state.run_id);
+			if (!persisted || !hasAcceptedWorkerEvent(persisted, envelope)) {
+				await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+			}
+			throw error;
+		}
+		await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
+		return state;
+	}
 	if (state.health?.status === "triaging" && state.health.actionable === false) return await completeHealthyTriage(state, options);
-	if (envelope) return await acceptHealthEnvelope(state, envelope, config, options);
 	if (!state.health || state.health.status === "completed") return await startHealthTriage(state, config, options);
-	if (state.health.status === "triaging") return await ensureHealthReviewer(state, config, options, "resume");
-	if (state.health.status === "repairing") return await ensureHealthCoder(state, config, options, "resume");
-	if (state.health.status === "reviewing") return await ensureHealthReviewer(state, config, options, "resume");
-	return state;
+	return await resumePendingHealthWork(state, config, options) ?? state;
+}
+
+async function resumePendingHealthWork(state: RunState, config: ProjectConfig, options: PrHealthOptions): Promise<RunState | undefined> {
+	const health = state.health;
+	if (health?.status === "triaging" && health.actionable === false) return await completeHealthyTriage(state, options);
+	if (health?.status === "triaging" && health.actionable === true) return await startHealthRepair(state, config, options);
+	if (health?.status === "triaging") return await ensureHealthReviewer(state, config, options, "resume");
+	if (health?.status === "repairing") return await ensureHealthCoder(state, config, options, "resume");
+	if (health?.status === "reviewing") return await ensureHealthReviewer(state, config, options, "resume");
+	return undefined;
 }
 
 async function loadPrHealthConfig(state: RunState, options: PrHealthOptions): Promise<ProjectConfig> {
@@ -155,7 +209,7 @@ async function ensureHealthReviewer(
 	if (health.status === "reviewing") {
 		const commit = nonEmptyString(health.commit, "PR-health repair commit");
 		await verifyHealthRepairCommit(state, commit, options);
-		let evidence = recordedGateEvidence(health, commit);
+		const evidence = recordedGateEvidence(health, commit);
 		if (!evidence) {
 			const execution = await runRequiredGate(
 				options.runner,
@@ -164,13 +218,15 @@ async function ensureHealthReviewer(
 				nonEmptyString(health.worktree, "PR-health repair worktree"),
 				config.required_gate_timeout_ms,
 				requiredGateProcessPath(state.main_worktree, state.run_id),
+				{ kind: "health", issue_id: issue.id },
 			);
-			evidence = await persistGateOutput(state, issue.id, execution, options.uuid);
-			state = await save({ ...state, health: { ...health, ...gateEvidenceRecord(evidence) } }, options);
+			state = await recordGateExecution(state, { kind: "health", issue_id: issue.id }, execution, options.uuid);
 			health = requiredHealth(state);
 		}
+		const gate = requiredHealthGate(health, nonEmptyString(health.commit, "PR-health repair commit"));
+		if (gate.exit_code !== 0) return await blockHealth(state, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options);
 	}
-	const launch = workerLaunch(state, issue, config, "reviewer");
+	let launch = await workerLaunch(state, issue, config, "reviewer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:reviewer`;
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: health.reviewer_tab_id,
@@ -184,6 +240,7 @@ async function ensureHealthReviewer(
 		state = await save({ ...state, health }, options);
 	}
 	const agent = nonEmptyString(health.reviewer_agent, "PR-health reviewer agent");
+	launch = await workerLaunch(state, issue, config, "reviewer");
 	const started = await startWorkerAgent(state, agent, nonEmptyString(health.reviewer_pane, "PR-health reviewer pane"), launch, options, {
 		beforeStart: async () => {
 			const latest = requiredHealth(state);
@@ -224,13 +281,19 @@ async function ensureHealthReviewer(
 			},
 		}, reviewMode);
 	}
-	if (health.status === "reviewing") {
-		await writeReviewTicket(
-			reviewTicketPath(state.main_worktree, state.run_id, issue.id, "pr_health"),
-			healthReviewId(state, health, issue.id),
-			options.uuid,
-		);
-	}
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "pr_health", "reviewer"),
+		{
+			attempt: positiveInteger(health.attempt, "PR-health attempt"),
+			review_round: positiveInteger(health.review_round, "PR-health review round"),
+			role: "reviewer",
+			...(health.status === "reviewing" ? { review_id: healthReviewId(state, health, issue.id) } : {}),
+		},
+		state.main_worktree,
+		state.run_id,
+		options.uuid,
+	);
+	await revalidateResolvedProfile(config, config.reviewer_profile);
 	await promptWorkerAgent(state, agent, prompt, options);
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);
 	return state;
@@ -248,16 +311,18 @@ async function acceptHealthEnvelope(
 	if (envelope.type === "submit_health") return await submitHealthTriage(state, envelope, config, options);
 	if (envelope.type === "request_review") {
 		if (envelope.role !== "implementer") throw new Error("Only the PR-health coder can request repair review");
-		return health.status === "repairing" ? await requestHealthRepairReview(state, envelope, config, options) : state;
+		if (health.status !== "repairing") throw new Error(`PR-health repair request is stale while health is ${health.status}`);
+		return await requestHealthRepairReview(state, envelope, config, options);
 	}
 	if (envelope.type === "submit_review") {
 		if (envelope.role !== "reviewer") throw new Error("Only the same PR-health reviewer can submit repair review");
-		return health.status === "reviewing" ? await submitHealthRepairReview(state, envelope, config, options) : state;
+		if (health.status !== "reviewing") throw new Error(`PR-health review submission is stale while health is ${health.status}`);
+		return await submitHealthRepairReview(state, envelope, config, options);
 	}
 	if (envelope.type === "block_task" && health.status === "triaging" && envelope.role === "reviewer" && matchesHealthBlock(health, envelope, false)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health triage block reason"), options);
 	if (envelope.type === "block_task" && health.status === "repairing" && envelope.role === "implementer" && matchesHealthBlock(health, envelope, true)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health repair block reason"), options);
 	if (envelope.type === "block_task" && health.status === "reviewing" && envelope.role === "reviewer" && matchesHealthBlock(health, envelope, false)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health review block reason"), options);
-	if (envelope.type === "block_task") return state;
+	if (envelope.type === "block_task") throw new Error(`PR-health block event is stale while health is ${health.status}`);
 	throw new Error(`Unexpected PR-health event ${envelope.type} while health is ${health.status}`);
 }
 
@@ -269,8 +334,8 @@ async function submitHealthTriage(
 ): Promise<RunState> {
 	if (envelope.role !== "reviewer") throw new Error("Only the PR-health reviewer can submit health triage");
 	const health = requiredHealth(state);
-	if (health.status !== "triaging") return state;
-	if (envelope.payload.attempt !== health.attempt || envelope.payload.review_round !== health.review_round) return state;
+	if (health.status !== "triaging") throw new Error(`PR-health triage is stale while health is ${health.status}`);
+	if (envelope.attempt !== health.attempt || envelope.review_round !== health.review_round) throw new Error("PR-health triage event is stale");
 	if (!(await activeHealthHeadMatches(state, health, options))) {
 		return await blockHealth(state, "PR head changed before health triage was accepted", options);
 	}
@@ -329,7 +394,8 @@ async function ensureHealthCoder(
 	let health = requiredHealth(state);
 	await ensureHealthWorktree(state, options);
 	const issue = finalCheck(state);
-	const launch = workerLaunch(state, { ...issue, profile: config.repair_profile, role: "implementation" }, config, "implementer");
+	const repairIssue = { ...issue, profile: config.repair_profile, role: "implementation" } as const;
+	let launch = await workerLaunch(state, repairIssue, config, "implementer");
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:coder`;
 	const resource = await reconcileWorkerTab(state, {
 		tab_id: health.coder_tab_id,
@@ -343,6 +409,7 @@ async function ensureHealthCoder(
 		state = await save({ ...state, health }, options);
 	}
 	const agent = nonEmptyString(health.coder_agent, "PR-health coder agent");
+	launch = await workerLaunch(state, repairIssue, config, "implementer");
 	const started = await startWorkerAgent(state, agent, nonEmptyString(health.coder_pane, "PR-health coder pane"), launch, options, {
 		beforeStart: async () => {
 			const latest = requiredHealth(state);
@@ -358,6 +425,14 @@ async function ensureHealthCoder(
 		: promptMode === "resume"
 			? "Resend your latest worker event through the worker tool."
 			: "Repair the actionable PR feedback in this fresh child worktree. Commit exactly one change over the current PR head, then request review.";
+	await ensureActionTicket(
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, "pr_health", "implementer"),
+		{ attempt: positiveInteger(health.attempt, "PR-health attempt"), review_round: (health.review_round ?? 0) + 1, role: "implementer" },
+		state.main_worktree,
+		state.run_id,
+		options.uuid,
+	);
+	await revalidateResolvedProfile(config, config.repair_profile);
 	await promptWorkerAgent(state, agent, fullPrompt ? {
 		type: "auto_dag_pr_health_repair",
 		run_id: state.run_id,
@@ -388,15 +463,15 @@ async function requestHealthRepairReview(
 	config: ProjectConfig,
 	options: PrHealthOptions,
 ): Promise<RunState> {
-	if (envelope.role !== "implementer") throw new Error("Only the PR-health coder can request repair review");
+	if (envelope.type !== "request_review" || envelope.role !== "implementer") throw new Error("Only the PR-health coder can request repair review");
 	const health = requiredHealth(state);
-	if (envelope.payload.attempt !== health.attempt || envelope.payload.review_round !== (health.review_round ?? 0) + 1) return state;
+	if (envelope.attempt !== health.attempt || envelope.review_round !== (health.review_round ?? 0) + 1) throw new Error("PR-health repair event is stale");
 	if (!(await activeHealthHeadMatches(state, health, options))) {
 		return await blockHealth(state, "PR head changed before health repair review", options);
 	}
 	const commit = await verifyHealthRepairCommit(
 		state,
-		nonEmptyString(envelope.payload.commit, "PR-health repair commit"),
+		nonEmptyString(envelope.commit, "PR-health repair commit"),
 		options,
 	);
 	if (Array.isArray(health.review_findings) && health.review_findings.length && health.commit === commit) {
@@ -415,7 +490,7 @@ async function submitHealthRepairReview(
 	if (envelope.role !== "reviewer") throw new Error("Only the same PR-health reviewer can submit repair review");
 	const health = requiredHealth(state);
 	const issue = finalCheck(state);
-	if (envelope.review_id !== healthReviewId(state, health, issue.id)) return state;
+	if (envelope.review_id !== healthReviewId(state, health, issue.id)) throw new Error("PR-health review submission is stale");
 	const commit = nonEmptyString(health.commit, "PR-health repair commit");
 	const gate = requiredHealthGate(health, commit);
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "PR-health repair verdict");
@@ -710,15 +785,14 @@ function finalCheck(state: RunState): LocalIssue {
 	return executionIssues(state.graph).at(-1)!;
 }
 
-function workerLaunch(
+async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
-): WorkerLaunch {
+): Promise<WorkerLaunch> {
 	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = config.profiles[profileId];
-	if (!profile) throw new Error(`Resolved Pi profile is missing: ${profileId}`);
+	const profile = await revalidateResolvedProfile(config, profileId);
 	return createWorkerLaunch({
 		role,
 		events: WORKER_ROLE_EVENTS[role],
@@ -726,13 +800,14 @@ function workerLaunch(
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		...(role === "reviewer" ? { review_ticket: reviewTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "pr_health") } : {}),
+		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "pr_health", role),
+		required_gate_timeout_ms: config.required_gate_timeout_ms,
 	});
 }
 
 function matchesHealthBlock(health: PrHealthState, envelope: WorkerEnvelope, implementer: boolean): boolean {
-	return envelope.payload.attempt === health.attempt
-		&& envelope.payload.review_round === (implementer ? (health.review_round ?? 0) + 1 : health.review_round);
+	return envelope.attempt === health.attempt
+		&& envelope.review_round === (implementer ? (health.review_round ?? 0) + 1 : health.review_round);
 }
 
 function healthWorktreePath(state: RunState, attempt: number): string {
@@ -758,6 +833,34 @@ function requiredHealthGate(health: PrHealthState, commit: string): RequiredGate
 	const evidence = recordedGateEvidence(health, commit);
 	if (!evidence) throw new Error("PR-health required-gate evidence is missing");
 	return evidence;
+}
+
+async function retryFailedHealthGate(
+	state: RunState,
+	config: ProjectConfig,
+	options: PrHealthOptions,
+): Promise<RunState> {
+	const health = requiredHealth(state);
+	if (!hasFailedHealthGate(health)) return state;
+	const {
+		summary: _summary,
+		blocked_role: _blockedRole,
+		review_command: _command,
+		review_commit: _commit,
+		review_exit_code: _exitCode,
+		review_stdout: _stdout,
+		review_stderr: _stderr,
+		...retry
+	} = health;
+	state = await save({
+		...state,
+		health: { ...retry, status: "reviewing", activity_started_at: timestamp(options), instruction_pending: true },
+	}, options);
+	return await ensureHealthReviewer(state, config, options, "resume");
+}
+
+function hasFailedHealthGate(health: PrHealthState): boolean {
+	return health.review_exit_code !== undefined && health.review_exit_code !== 0 && health.review_commit === health.commit;
 }
 
 async function blockHealth(state: RunState, reason: string, options: PrHealthOptions): Promise<RunState> {

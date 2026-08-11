@@ -12,21 +12,26 @@ import { type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
-import { reviewId } from "../src/review-ticket.ts";
-import { readActiveRunId, runDirectory } from "../src/state.ts";
+import { parseWorkerEnvelope } from "../src/orchestration.ts";
+import { eventReceiptPath, readWorkerReceipt, reviewId } from "../src/review-ticket.ts";
+import { readActiveRunId, recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "33333333-3333-4333-8333-333333333333";
 const ACTIVE_RUN_ID = "44444444-4444-4444-8444-444444444444";
+const FINAL_GATE_COMMAND = "npm ci && npm test -- final-check && npm run typecheck";
 
-test("the frozen final check opens one exact integration PR and cleans successful resources", async (t) => {
+test("the frozen final check prepares its disposable checkout and opens one exact integration PR", async (t) => {
 	const project = await makeProject(t);
 	await mkdir(join(project.root, ".local-tools"));
-	await writeFile(join(project.root, ".local-tools", "ready"), "available\n");
+	await writeFile(join(project.root, ".local-tools", "ready"), "mutable\n");
+	await mkdir(join(project.root, "node_modules"));
+	await writeFile(join(project.root, "node_modules", "stale"), "mutable\n");
 	const herdr = fakeHerdr({
 		gate: (command, cwd) => {
-			if (command === "npm test -- final-check") {
-				assert.equal(readFileSync(join(cwd!, ".local-tools", "ready"), "utf8"), "available\n");
+			if (command === FINAL_GATE_COMMAND) {
+				assert.throws(() => readFileSync(join(cwd!, ".local-tools", "ready"), "utf8"), /ENOENT/);
+				assert.throws(() => readFileSync(join(cwd!, "node_modules", "stale"), "utf8"), /ENOENT/);
 			}
 			return { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" };
 		},
@@ -46,10 +51,43 @@ test("the frozen final check opens one exact integration PR and cleans successfu
 	assert.doesNotMatch(gh.pr?.body ?? "", /close[sd]? #/i);
 	assert.equal(herdr.tabs.size, 0);
 	assert.equal(gh.count("pr create"), 1);
-	const finalGate = herdr.calls.find((call) => call.command === "sh" && call.args[1] === "npm test -- final-check");
+	const finalGate = herdr.calls.find((call) => call.command === "sh" && call.args[1] === FINAL_GATE_COMMAND);
 	assert.match(finalGate?.cwd ?? "", /\/final-gate$/);
 	assert.notEqual(finalGate?.cwd, project.root);
 	await assert.rejects(readFile(finalGate!.cwd!, "utf8"), /ENOENT/);
+});
+
+test("final gate cleans ignored resources recovered into its retained worktree", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr({
+		gate: (command, cwd) => {
+			if (command === FINAL_GATE_COMMAND) {
+				assert.throws(() => readFileSync(join(cwd!, ".local-tools", "ready"), "utf8"), /ENOENT/);
+				assert.throws(() => readFileSync(join(cwd!, ".local-tools", "obsolete"), "utf8"), /ENOENT/);
+			}
+			return { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" };
+		},
+	});
+	const base = combinedRunner(herdr, fakeGh(project.root));
+	let seeded = false;
+	const runner: CommandRunner = async (command, args, options) => {
+		const result = await base(command, args, options);
+		const finalWorktree = command === "git" && args[0] === "worktree" && args[1] === "add"
+			? args.find((argument) => argument.startsWith("/") && argument.endsWith("/final-gate"))
+			: undefined;
+		if (!seeded && finalWorktree) {
+			seeded = true;
+			await mkdir(join(finalWorktree, ".local-tools"));
+			await writeFile(join(finalWorktree, ".local-tools", "ready"), "recovered\n");
+			await writeFile(join(finalWorktree, ".local-tools", "obsolete"), "stale\n");
+		}
+		return result;
+	};
+
+	const state = await advanceToFinalReview(project.root, makeLifecycle(runner));
+
+	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(seeded, true);
 });
 
 test("final gate cannot erase changes created concurrently in main worktree", async (t) => {
@@ -57,7 +95,7 @@ test("final gate cannot erase changes created concurrently in main worktree", as
 	const herdr = fakeHerdr();
 	const base = combinedRunner(herdr, fakeGh(project.root));
 	const runner: CommandRunner = async (command, args, options) => {
-		if (command === "sh" && args[1] === "npm test -- final-check") {
+		if (command === "sh" && args[1] === FINAL_GATE_COMMAND) {
 			await writeFile(join(project.root, "user-during-final-gate.txt"), "keep\n");
 		}
 		return await base(command, args, options);
@@ -67,6 +105,36 @@ test("final gate cannot erase changes created concurrently in main worktree", as
 
 	assert.equal(state.tasks["final-check"].status, "reviewing");
 	assert.equal(await readFile(join(project.root, "user-during-final-gate.txt"), "utf8"), "keep\n");
+});
+
+test("nonzero final gate blocks before reviewer and resolution reruns the same integration commit", async (t) => {
+	const project = await makeProject(t, { maxReviews: 1 });
+	let failFinalGate = true;
+	const herdr = fakeHerdr({ gate: (command) => command === FINAL_GATE_COMMAND && failFinalGate
+		? { code: 1, stdout: "", stderr: "dependency unavailable\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await lifecycle.start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+
+	assert.equal(state.phase, "blocked");
+	assert.equal(state.tasks["final-check"].status, "blocked");
+	assert.equal(state.tasks["final-check"].review_exit_code, 1);
+	assert.equal(state.tasks["final-check"].reviewer_pane, undefined);
+	const finalCommit = state.tasks["final-check"].commit;
+	const reviewerStarts = herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length;
+
+	failFinalGate = false;
+	state = await lifecycle.resolve(project.root, "final-check", "Dependency restored; rerun frozen gate.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(state.tasks["final-check"].commit, finalCommit);
+	assert.equal(state.tasks["final-check"].review_commit, finalCommit);
+	assert.equal(state.tasks["final-check"].review_exit_code, 0);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.args[1] === FINAL_GATE_COMMAND).length, 2);
+	assert.equal(herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length, reviewerStarts + 1);
 });
 
 test("health refuses a retained historical run while another run is active without touching it", async (t) => {
@@ -104,6 +172,30 @@ test("health refuses a retained historical run while another run is active witho
 	assert.equal(await readFile(activePath, "utf8"), activeState);
 });
 
+test("a nonzero final gate remains recoverable through its completed owner", async (t) => {
+	const project = await makeProject(t);
+	let failFinalGate = true;
+	const herdr = fakeHerdr({ gate: (command) => failFinalGate && command === FINAL_GATE_COMMAND
+		? { code: 1, stdout: "", stderr: "final dependency unavailable\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await lifecycle.start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+
+	assert.equal(state.phase, "blocked");
+	assert.equal(state.tasks["final-check"].status, "blocked");
+	assert.equal(state.tasks["final-check"].review_exit_code, 1);
+	assert.equal(state.tasks["final-check"].final_gate_head, state.integration_head);
+
+	failFinalGate = false;
+	state = await lifecycle.resolve(project.root, "alpha", "Repair alpha or gate setup for final verification.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks["final-check"].status, "repairing");
+	assert.equal(state.tasks["final-check"].repair_issue_id, "alpha");
+});
+
 test("a failed final gate requires a completed owner resolution and a fresh reviewed repair", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();
@@ -130,11 +222,11 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	assert.deepEqual(Object.keys(repairReviewPrompt.context.owner_issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	assert.deepEqual(Object.keys(repairReviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	assert.deepEqual(repairReviewPrompt.gate, {
-		command: "npm test -- final-check",
+		command: FINAL_GATE_COMMAND,
 		commit: repair,
 		exit_code: 0,
 		output: {
-			stdout: { excerpt: "required gate passed: npm test -- final-check\n", bytes: Buffer.byteLength("required gate passed: npm test -- final-check\n"), truncated: false },
+			stdout: { excerpt: `required gate passed: ${FINAL_GATE_COMMAND}\n`, bytes: Buffer.byteLength(`required gate passed: ${FINAL_GATE_COMMAND}\n`), truncated: false },
 			stderr: { excerpt: "", bytes: 0, truncated: false },
 		},
 	});
@@ -147,7 +239,7 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === finalReviewer)
 		.map((call) => JSON.parse(call.args[3]));
 	const fullPrompt = prompts().find((value) => value.type === "auto_dag_review" && value.kind === "final_check");
-	assert.equal(fullPrompt.gate.command, "npm test -- final-check");
+	assert.equal(fullPrompt.gate.command, FINAL_GATE_COMMAND);
 	assert.equal(fullPrompt.gate.commit, state.integration_head);
 	assert.equal(fullPrompt.gate.exit_code, 0);
 	assert.equal(fullPrompt.worktree, project.root);
@@ -164,6 +256,42 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	const creates = herdr.calls.filter((call) => call.command === "herdr" && call.args[0] === "tab" && call.args[1] === "create");
 	assert.ok(creates.every((call) => call.args[call.args.indexOf("--workspace") + 1] === "main-workspace"));
 	await assert.rejects(git(project.root, "rev-parse", "--verify", "pi-auto-dag/33333333-3333-4333-8333-333333333333/final-repair/alpha/1"));
+});
+
+test("nonzero final-repair gate blocks its reviewer and resolution reruns the same repair commit", async (t) => {
+	const project = await makeProject(t);
+	let failRepairGate = true;
+	const herdr = fakeHerdr({ gate: (command, cwd) => failRepairGate && cwd?.includes("final-repair")
+		? { code: 1, stdout: "", stderr: "repair dependency unavailable\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	const repairReviewPrompts = () => herdr.calls
+		.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt")
+		.map((call) => JSON.parse(call.args[3]))
+		.filter((prompt) => prompt.type === "auto_dag_review" && prompt.kind === "final_repair");
+	let state = await advanceToFinalReview(project.root, lifecycle);
+	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "changes_requested", ["repair alpha"]));
+	state = await lifecycle.resolve(project.root, "alpha", "Repair alpha.");
+	const repair = await commit(state.tasks["final-check"].worktree!, "repair.txt", "fixed\n", "repair alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "final-check", repair));
+
+	assert.equal(state.phase, "blocked");
+	assert.equal(state.tasks["final-check"].status, "repair_reviewing");
+	assert.equal(state.tasks["final-check"].review_exit_code, 1);
+	assert.equal(repairReviewPrompts().length, 0);
+	const stuckTab = state.tasks["final-check"].tab_id;
+
+	failRepairGate = false;
+	state = await lifecycle.resolve(project.root, "final-check", "Dependency restored; rerun repair gate.");
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks["final-check"].status, "repair_reviewing");
+	assert.equal(state.tasks["final-check"].commit, repair);
+	assert.equal(state.tasks["final-check"].review_commit, repair);
+	assert.equal(state.tasks["final-check"].review_exit_code, 0);
+	assert.notEqual(state.tasks["final-check"].tab_id, stuckTab);
+	assert.equal(herdr.tabs.has(stuckTab!), false);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.cwd?.includes("final-repair")).length, 2);
+	assert.equal(repairReviewPrompts().length, 1);
 });
 
 test("resolving a blocked dirty final repair keeps its worktree and branch blocked", async (t) => {
@@ -218,6 +346,138 @@ test("PR health records non-actionable triage without a coder or push", async (t
 	assert.equal(await readActiveRunId(project.root), undefined);
 });
 
+test("PR health accepted triage resumes repair before recovering receipt", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const gh = fakeGh(project.root);
+	const lifecycle = makeLifecycle(combinedRunner(herdr, gh));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	const message = healthEvent(state, {
+		summary: "One unresolved review thread.",
+		actionable: true,
+		thread_ids: ["THREAD-1"],
+		checks: [],
+	});
+	const envelope = JSON.parse(message);
+	await writeRunState(project.root, {
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
+		health: {
+			...state.health!,
+			summary: "One unresolved review thread.",
+			actionable: true,
+			thread_ids: ["THREAD-1"],
+			checks: [],
+		},
+	}, () => "recover-health");
+	const prompts = herdr.count("agent prompt");
+
+	state = await lifecycle.health(project.root, RUN_ID, message);
+
+	assert.equal(state.health?.status, "repairing");
+	assert.ok(state.health?.coder_pane);
+	assert.equal(herdr.count("agent prompt"), prompts + 1);
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+});
+
+test("blocked PR health recovers accepted receipts and rejects fresh events", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	const message = event(state, "final-check", "reviewer", "block_task", { reason: "Reviewer dependency unavailable." }, undefined, {
+		attempt: state.health!.attempt,
+		review_round: state.health!.review_round,
+	});
+	const envelope = JSON.parse(message);
+	await writeRunState(project.root, {
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
+		health: { ...state.health!, status: "blocked", blocked_role: "reviewer", summary: "Reviewer dependency unavailable." },
+	}, () => "blocked-health");
+
+	state = await lifecycle.health(project.root, RUN_ID, message);
+	assert.equal(state.health?.status, "blocked");
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+
+	const fresh = {
+		...envelope,
+		event_id: "fresh-blocked-health-event",
+		receipt_path: eventReceiptPath(project.root, RUN_ID, "fresh-blocked-health-event"),
+	};
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(fresh)), /Reviewer dependency unavailable/);
+	assert.equal((await readWorkerReceipt(fresh.receipt_path))?.status, "rejected");
+});
+
+test("nonzero PR-health repair gate blocks before reviewer dispatch and reruns the same commit", async (t) => {
+	const project = await makeProject(t);
+	let failHealthGate = false;
+	const herdr = fakeHerdr({ gate: (command) => failHealthGate
+		? { code: 1, stdout: "", stderr: "health gate failed\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	state = await lifecycle.health(project.root, RUN_ID, healthEvent(state, {
+		summary: "Repair required.",
+		actionable: true,
+		thread_ids: ["THREAD-1"],
+		checks: [{ name: "integration", link: "https://ci.example/integration", output: "failed" }],
+	}));
+	const repair = await commit(state.health!.worktree!, "health.txt", "healthy\n", "health repair");
+	failHealthGate = true;
+	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
+
+	assert.equal(state.health?.status, "blocked");
+	assert.equal(state.health?.review_commit, repair);
+	assert.equal(state.health?.review_exit_code, 1);
+	const repairReviewPrompts = () => herdr.calls
+		.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt")
+		.map((call) => JSON.parse(call.args[3]))
+		.filter((prompt) => prompt.kind === "pr_health_repair");
+	assert.equal(repairReviewPrompts().length, 0);
+	const worktree = state.health?.worktree;
+	const gateRuns = herdr.calls.filter((call) => call.command === "sh" && call.cwd === worktree).length;
+
+	failHealthGate = false;
+	state = await lifecycle.health(project.root, RUN_ID);
+	assert.equal(state.health?.status, "reviewing");
+	assert.equal(state.health?.commit, repair);
+	assert.equal(state.health?.review_commit, repair);
+	assert.equal(state.health?.review_exit_code, 0);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.cwd === worktree).length, gateRuns + 1);
+	assert.equal(repairReviewPrompts().length, 1);
+});
+
+test("failed health gate restarts triage when PR head advances", async (t) => {
+	const project = await makeProject(t);
+	let failHealthGate = false;
+	const herdr = fakeHerdr({ gate: (command) => failHealthGate
+		? { code: 1, stdout: "", stderr: "health gate failed\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	state = await lifecycle.health(project.root, RUN_ID, healthEvent(state, {
+		summary: "Repair required.", actionable: true, thread_ids: ["THREAD-1"], checks: [],
+	}));
+	const oldWorktree = state.health!.worktree!;
+	const repair = await commit(oldWorktree, "health.txt", "healthy\n", "health repair");
+	failHealthGate = true;
+	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
+	const gateRuns = herdr.calls.filter((call) => call.command === "sh" && call.cwd === oldWorktree).length;
+	await advanceRemote(t, project.remote);
+
+	state = await lifecycle.health(project.root, RUN_ID);
+
+	assert.equal(state.health?.status, "triaging");
+	assert.equal(state.health?.attempt, 2);
+	assert.equal(state.health?.head, state.integration_head);
+	assert.equal(state.health_history?.at(-1)?.review_exit_code, 1);
+	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.cwd === oldWorktree).length, gateRuns);
+	await assert.rejects(readFile(join(oldWorktree, "health.txt")), /ENOENT/);
+});
+
 test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves only fixed triaged threads", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();
@@ -239,7 +499,7 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
 	assert.equal(state.health?.reviewer_agent, reviewer);
 	assert.equal(state.health?.review_commit, repair);
-	assert.equal(state.health?.review_command, "npm test -- final-check");
+	assert.equal(state.health?.review_command, FINAL_GATE_COMMAND);
 	assert.equal(state.health?.review_exit_code, 0);
 	const reviewPrompt = herdr.calls
 		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === reviewer)
@@ -259,6 +519,30 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	assert.deepEqual(gh.resolved, ["THREAD-1", "THREAD-2"]);
 	assert.equal(herdr.tabs.size, 0);
 	assert.equal(await git(project.root, "show", "HEAD:health.txt"), "healthy");
+});
+
+test("accepted final approval recovers after PR push failure", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const gh = fakeGh(project.root);
+	const base = combinedRunner(herdr, gh);
+	let failPush = true;
+	const runner: CommandRunner = async (command, args, options) => {
+		if (failPush && command === "git" && args[0] === "push") return { code: 1, stdout: "", stderr: "push unavailable" };
+		return await base(command, args, options);
+	};
+	const lifecycle = makeLifecycle(runner);
+	let state = await advanceToFinalReview(project.root, lifecycle);
+	const message = reviewEvent(state, "final-check", "approved", []);
+	const envelope = JSON.parse(message);
+
+	await assert.rejects(lifecycle.resume(project.root, message), /push unavailable/);
+	assert.equal(await readWorkerReceipt(envelope.receipt_path), undefined);
+
+	failPush = false;
+	state = await lifecycle.resume(project.root, message);
+	assert.equal(state.phase, "completed");
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 
 test("a pre-existing PR with mismatched identity blocks before push", async (t) => {
@@ -431,11 +715,11 @@ function graph() {
 				depends_on: [],
 			},
 		],
-		final_check: { acceptance: ["verified"], testing: "npm test -- final-check" },
+		final_check: { acceptance: ["verified"], testing: FINAL_GATE_COMMAND },
 	};
 }
 
-async function makeProject(t: TestContext): Promise<{ root: string; remote: string }> {
+async function makeProject(t: TestContext, options: { maxReviews?: number } = {}): Promise<{ root: string; remote: string }> {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-pr-lifecycle-"));
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 	await git(root, "init", "-b", "main");
@@ -445,9 +729,9 @@ async function makeProject(t: TestContext): Promise<{ root: string; remote: stri
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: 2 })));
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: options.maxReviews ?? 2 })));
 	useAgentDir(t, agentDir);
-	await writeFile(join(root, ".gitignore"), ".context/\n.local-tools/\n");
+	await writeFile(join(root, ".gitignore"), ".context/\n.local-tools/\nnode_modules/\n");
 	await writeFile(join(root, "conflict.txt"), "base\n");
 	await git(root, "add", ".");
 	await git(root, "commit", "-m", "initial");
@@ -485,7 +769,10 @@ function reviewEvent(
 		commit: task.commit!,
 		attempt: task.attempts,
 		review_round: task.review_rounds!,
-	}));
+	}), {
+		attempt: task.attempts,
+		review_round: task.review_rounds!,
+	});
 }
 
 function requestReviewEvent(state: RunState, issueId: string, commit: string): string {
@@ -520,7 +807,11 @@ function healthReviewEvent(
 		commit: health.commit!,
 		attempt: health.attempt!,
 		review_round: health.review_round!,
-	}));
+	}), {
+		attempt: health.attempt!,
+		review_round: health.review_round!,
+		commit: health.commit,
+	});
 }
 
 function event(
@@ -530,8 +821,31 @@ function event(
 	type: string,
 	payload: Record<string, unknown>,
 	review_id?: string,
+	metadata: { attempt?: number; review_round?: number; commit?: string } = {},
 ): string {
-	return JSON.stringify({ version: 1, type, run_id: state.run_id, issue_id: issueId, role, ...(review_id ? { review_id } : {}), payload });
+	const eventPayload = { ...payload };
+	const attempt = metadata.attempt ?? Number(eventPayload.attempt ?? 1);
+	const review_round = metadata.review_round ?? Number(eventPayload.review_round ?? 1);
+	const commit = metadata.commit ?? (typeof eventPayload.commit === "string" ? eventPayload.commit : undefined);
+	delete eventPayload.attempt;
+	delete eventPayload.review_round;
+	if (type === "request_review") delete eventPayload.commit;
+	const suffix = commit ? `-${commit.slice(0, 12).replace(/[^A-Za-z0-9_-]/g, "_")}` : "";
+	const event_id = `${type}-${issueId}-${attempt}-${review_round}${suffix}`;
+	return JSON.stringify({
+		version: 1,
+		type,
+		run_id: state.run_id,
+		issue_id: issueId,
+		role,
+		event_id,
+		attempt,
+		review_round,
+		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, event_id),
+		...(review_id ? { review_id } : {}),
+		...(type === "request_review" ? { commit } : {}),
+		payload: eventPayload,
+	});
 }
 
 async function commit(cwd: string, file: string, content: string, subject: string): Promise<string> {
