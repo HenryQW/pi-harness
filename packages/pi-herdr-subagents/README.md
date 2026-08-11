@@ -1,6 +1,6 @@
 # `@henryqw/pi-herdr-subagents`
 
-Delegate bounded work from Pi Main to one interactive Pi Subagent in one Herdr tab.
+Delegate bounded work from Pi Main to one interactive Pi Subagent in its own visible Herdr pane. Each task stays observable instead of hiding inside an opaque subagent session: inspect live work, answer questions, and see failures in its Herdr tab. Inspired by Codex Desktop's visible parallel-agent workflow.
 
 ## Install
 
@@ -24,6 +24,17 @@ Classify every Delegated Task and pass the lowest `modelClass` likely to finish 
 
 Do not delegate tiny work when handoff costs more context than doing it in Main. Do not use `frontier` by default; failed cheap attempts also waste tokens, so route by actual complexity rather than price alone.
 
+## Task recipes
+
+Copy a shape, replace brackets, then route by actual complexity. Ask every Subagent to call `finish_task` with concise outcome, files changed (or `none`), validation, and remaining risks. Main still reads and verifies Result.
+
+| Role | Start class | Task shape |
+| --- | --- | --- |
+| Scout | `fast` | `Read-only scout [paths] for [question]. Do not edit. Return findings with exact paths/lines, relevant constraints, and risks.` |
+| Plan | `balanced` | `Read-only plan [goal] in [paths]. Do not edit. Return ordered steps, expected files, validation commands, and assumptions.` |
+| Review | `balanced` | `Read-only review [diff or paths] against [acceptance criteria]. Do not edit. Return only actionable findings with severity and exact path/line; say no findings when none.` |
+| Implement | `balanced` | `Implement [goal] in [paths]. Do not change outside scope. Run [validation commands]. Return outcome and risks.` |
+
 ## Configure
 
 Run `/subagent-model`, select `fast`, `balanced`, or `frontier`, select from Pi's authenticated text-model list, then select one thinking level supported by that model. Run command once per model class; package keeps no model or thinking-level catalog.
@@ -42,6 +53,10 @@ Subagent Limit defaults to 10 per Main session. Run `/subagent-limit` to set pos
 ```
 
 Explicit model classes must be configured and reject when configured model or thinking level becomes unavailable. Implicit `balanced` routing falls back to Main in either case. Lower limit does not stop live Subagents. New delegation rejects at limit; package never queues work.
+
+## Why Herdr panes?
+
+Subagents run as separate Pi processes in Herdr panes, not opaque in-process sessions. Herdr keeps each Delegated Task visible and interactive while Main tracks completion through its Result file. Main still verifies all claimed work.
 
 ## Behavior
 
