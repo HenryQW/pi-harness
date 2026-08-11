@@ -16,7 +16,7 @@ import {
 } from "../internal/protocol.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => any;
-type Tool = { executionMode?: string; execute: (...args: any[]) => Promise<any>; parameters: any };
+type Tool = { description?: string; executionMode?: string; execute: (...args: any[]) => Promise<any>; parameters: any };
 type Command = { handler: (args: string, ctx: ExtensionContext) => Promise<void> };
 
 const success = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
@@ -206,10 +206,11 @@ test("Main registers only bounded public surface and launches exact Subagent", a
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		assert.deepEqual([...app.tools.keys()], ["delegate_task"]);
 		assert.equal(app.tools.get("delegate_task")?.executionMode, "sequential");
-		assert.equal(app.tools.get("delegate_task")?.parameters.properties.task.description, "Self-contained task with relevant context, exact paths, constraints, and success criteria.");
+		assert.equal(app.tools.get("delegate_task")?.description, "Delegate one bounded task to one interactive Herdr Pi Subagent. For token efficiency, split independent work, keep tightly coupled steps together, include only needed context, and choose the lowest model class likely to succeed. Never delegate overlapping writes.");
+		assert.equal(app.tools.get("delegate_task")?.parameters.properties.task.description, "Token-efficient, self-contained task with only relevant context, exact paths, constraints, and success criteria. Request a concise Result.");
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.required, ["task"]);
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.properties.modelClass.enum, ["fast", "balanced", "frontier"]);
-		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.");
+		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Classify each task by complexity: fast for lookups, single-file summaries, or mechanical edits; balanced for bounded bug fixes, focused reviews, or clear multi-file features; frontier for architecture, ambiguous cross-cutting changes, or subtle concurrency/security reasoning. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.");
 		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model"]);
 
 		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, undefined, app.ctx);

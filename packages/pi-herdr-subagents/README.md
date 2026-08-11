@@ -12,6 +12,18 @@ Run Pi inside Herdr. `delegate_task({ task, modelClass? })` creates one no-focus
 
 Subagent may ask user questions in its own tab. It stays live until it calls `finish_task({ result })`. Main receives Completion Notice with Result path; read and verify Result before relying on it.
 
+## Delegate efficiently
+
+Classify every Delegated Task and pass the lowest `modelClass` likely to finish correctly in one attempt. Split independent work between Subagents, but keep tightly coupled steps together and never delegate overlapping writes. Keep prompts self-contained but token-efficient: include only relevant context, exact paths, constraints, and success criteria; request a concise Result.
+
+| Model class | Use for | Examples |
+| --- | --- | --- |
+| `fast` | Low-ambiguity, narrow, mechanical, or read-only work | Find symbol references; summarize one file; apply a small repetitive edit |
+| `balanced` | Normal engineering work with clear scope and several steps | Fix a bounded bug and test it; review a focused diff; implement a clear multi-file feature |
+| `frontier` | High-ambiguity, high-risk, or system-wide reasoning | Diagnose a subtle concurrency bug; design a cross-package migration; analyze security-sensitive architecture |
+
+Do not delegate tiny work when handoff costs more context than doing it in Main. Do not use `frontier` by default; failed cheap attempts also waste tokens, so route by actual complexity rather than price alone.
+
 ## Configure
 
 Run `/subagent-model`, select `fast`, `balanced`, or `frontier`, select from Pi's authenticated text-model list, then select one thinking level supported by that model. Run command once per model class; package keeps no model or thinking-level catalog.
