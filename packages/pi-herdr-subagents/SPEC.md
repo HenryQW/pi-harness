@@ -48,7 +48,7 @@ Read and write `~/.pi/agent/config/pi-herdr-subagents.json` through `getAgentDir
 
 Subagent Limit must be positive integer. Missing file uses `10` and no model mappings. Malformed or invalid values warn at session start and use safe defaults without rewriting file. Legacy `maxConcurrentWorkers` is accepted as migration input; next command save writes canonical `maxConcurrentSubagents`. `/subagent-limit` prompts for value, writes formatted JSON, and updates current Main immediately. Lowering limit never stops live Subagents; later delegation remains blocked until live count falls below limit. Other Main sessions load changed value on next start/reload.
 
-`/subagent-model` first selects `fast`, `balanced`, or `frontier`, selects from authenticated text models returned by Pi's existing model registry, then selects from thinking levels supported by selected model's Pi metadata. It writes model-plus-thinking mapping and updates current Main immediately. Before either command writes, it rereads config and merges only selected field so prior saves from other Main sessions survive. Cancelling either selection leaves existing mapping unchanged. Package owns only three class names; it keeps no model or thinking-capability catalog.
+`/subagent-model` first selects `fast`, `balanced`, or `frontier`, selects from authenticated text models returned by Pi's existing model registry, then selects from thinking levels supported by selected model's Pi metadata. It writes model-plus-thinking mapping and updates current Main immediately. Before either command writes, it rereads config and merges only selected field so prior saves from other Main sessions survive; current Main applies only selected field, leaving unrelated live settings unchanged until next start/reload. Cancelling either selection leaves existing mapping unchanged. Package owns only three class names; it keeps no model or thinking-capability catalog.
 
 ## Private protocol
 
@@ -168,7 +168,7 @@ Use Node built-in test runner and assertions. Fake `pi.exec`, extension contexts
 At extension/tool boundary, verify:
 
 - Herdr/model/task preconditions, exact public surface, model-visible handoff guidance, successful delegation termination, and same-batch sequential capacity enforcement;
-- config defaults, validation, both command persistence paths, cross-session merge, immediate updates, reduced-limit behavior, and malformed model mappings;
+- config defaults, validation, both command persistence paths, cross-session disk merge and live-state isolation, immediate updates, reduced-limit behavior, and malformed model mappings;
 - per-Main Subagent Limit, strict missing-tab and provisioning reconciliation, and no queue;
 - tab label/cwd/env, complexity-selected model and thinking level, Main fallback thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
 - successful launch response, definitive pre-submission rollback, indeterminate creation reconciliation, failed-rollback retention, and indeterminate prompt preservation;

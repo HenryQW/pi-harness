@@ -14,7 +14,7 @@ Subagent may ask user questions in its own tab. It stays live until it calls `fi
 
 ## Configure
 
-Run `/subagent-model`, select `fast`, `balanced`, or `frontier`, select from Pi's authenticated text-model list, then select one thinking level supported by that model. Run command once per model class; package keeps no model catalog.
+Run `/subagent-model`, select `fast`, `balanced`, or `frontier`, select from Pi's authenticated text-model list, then select one thinking level supported by that model. Run command once per model class; package keeps no model or thinking-level catalog.
 
 Subagent Limit defaults to 10 per Main session. Run `/subagent-limit` to set positive integer limit. Both commands write `~/.pi/agent/config/pi-herdr-subagents.json`:
 

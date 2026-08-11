@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
-import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -14,7 +14,6 @@ import {
 
 const DEFAULT_LIMIT = 10;
 const MODEL_CLASSES = ["fast", "balanced", "frontier"] as const;
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const CONFIG_PATH = () => join(getAgentDir(), "config", "pi-herdr-subagents.json");
 const SUBAGENT_EXTENSION = fileURLToPath(new URL("../internal/subagent.ts", import.meta.url));
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -24,7 +23,7 @@ const DEFINITIVE_PROMPT_ERRORS = new Set([
 ]);
 
 type ModelClass = typeof MODEL_CLASSES[number];
-type ConfiguredModel = { model: string; thinkingLevel: ModelThinkingLevel };
+type ConfiguredModel = { model: string; thinkingLevel: string };
 type Config = {
 	maxConcurrentSubagents: number;
 	models: Partial<Record<ModelClass, ConfiguredModel>>;
@@ -73,8 +72,8 @@ const configLimit = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 const isModelClass = (value: unknown): value is ModelClass =>
 	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
-const isThinkingLevel = (value: unknown): value is ModelThinkingLevel =>
-	typeof value === "string" && THINKING_LEVELS.includes(value as ModelThinkingLevel);
+const isThinkingLevel = (value: unknown): value is string =>
+	typeof value === "string" && Boolean(value) && value === value.trim() && !value.includes("\0");
 const isModelReference = (value: unknown): value is string => {
 	if (typeof value !== "string" || value !== value.trim() || value.includes("\0")) return false;
 	const slash = value.indexOf("/");
@@ -255,7 +254,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		return name;
 	};
 
-	const startSubagent = async (name: string, tabId: string, paneId: string, model: string, thinkingLevel: ModelThinkingLevel | undefined, where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
+	const startSubagent = async (name: string, tabId: string, paneId: string, model: string, thinkingLevel: string | undefined, where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
 		const args = [
 			"agent", "start", name, "--kind", "pi", "--pane", paneId, "--",
 			"--no-session", "--no-extensions", "--extension", SUBAGENT_EXTENSION,
@@ -299,9 +298,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			try {
 				const latest = (await readConfig()).value;
-				const next = { ...latest, maxConcurrentSubagents: parsed };
-				await writeConfig(next);
-				config = next;
+				await writeConfig({ ...latest, maxConcurrentSubagents: parsed });
+				config = { ...config, maxConcurrentSubagents: parsed };
 				ctx.ui.notify(`Subagent Limit set to ${config.maxConcurrentSubagents}.`, "info");
 			} catch {
 				ctx.ui.notify("Couldn't save Subagent Limit config.", "warning");
@@ -332,12 +330,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				`${modelClass} Subagent thinking level · saved: ${saved?.thinkingLevel ?? "none"}`,
 				levels,
 			);
-			if (!isThinkingLevel(thinkingLevel) || !levels.includes(thinkingLevel)) return;
+			if (!isThinkingLevel(thinkingLevel) || !levels.some((level) => level === thinkingLevel)) return;
 			try {
+				const route = { model: selected, thinkingLevel };
 				const latest = (await readConfig()).value;
-				const next = { ...latest, models: { ...latest.models, [modelClass]: { model: selected, thinkingLevel } } };
-				await writeConfig(next);
-				config = next;
+				await writeConfig({ ...latest, models: { ...latest.models, [modelClass]: route } });
+				config = { ...config, models: { ...config.models, [modelClass]: route } };
 				ctx.ui.notify(`${modelClass} Subagent set to ${selected} with thinking ${thinkingLevel}.`, "info");
 			} catch {
 				ctx.ui.notify("Couldn't save Subagent model config.", "warning");
@@ -379,7 +377,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				throw new Error(`Configured ${modelClass} Subagent model is unavailable; run /subagent-model.`);
 			}
 			const thinkingAvailable = Boolean(configuredModel && availableModel
-				&& getSupportedThinkingLevels(availableModel).includes(configuredModel.thinkingLevel));
+				&& getSupportedThinkingLevels(availableModel).some((level) => level === configuredModel.thinkingLevel));
 			if (params.modelClass && configuredModel && availableModel && !thinkingAvailable) {
 				throw new Error(`Configured ${modelClass} Subagent thinking level is unavailable; run /subagent-model.`);
 			}

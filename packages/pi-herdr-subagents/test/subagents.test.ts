@@ -63,7 +63,7 @@ function mainHarness(options: {
 	tabCreateFailureAfterCreation?: boolean;
 	abortAfterStart?: AbortController;
 	mainName?: string | null;
-	selectResults?: string[];
+	selectResults?: Array<string | undefined>;
 	availableModels?: TestModel[];
 } = {}) {
 	const handlers = new Map<string, Handler>();
@@ -72,6 +72,7 @@ function mainHarness(options: {
 	const calls: string[][] = [];
 	const notices: string[] = [];
 	const closed: string[] = [];
+	const inputs: Array<{ title: string; value: string }> = [];
 	const selections: Array<{ title: string; options: string[] }> = [];
 	const selectResults = [...(options.selectResults ?? [])];
 	let limitInput = options.limitInput;
@@ -95,7 +96,10 @@ function mainHarness(options: {
 		sessionManager: { getBranch: () => [] },
 		ui: {
 			notify: (message: string) => notices.push(message),
-			input: async () => limitInput,
+			input: async (title: string, value: string) => {
+				inputs.push({ title, value });
+				return limitInput;
+			},
 			select: async (title: string, values: string[]) => {
 				selections.push({ title, options: [...values] });
 				return selectResults.shift();
@@ -156,7 +160,7 @@ function mainHarness(options: {
 		},
 	} as unknown as ExtensionAPI;
 	subagentsExtension(api);
-	return { api, ctx, handlers, tools, commands, calls, notices, closed, selections, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
+	return { api, ctx, handlers, tools, commands, calls, notices, closed, inputs, selections, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
 }
 
 function subagentHarness(options: { branch?: any[]; wait?: () => Promise<any>; promptFailure?: boolean } = {}) {
@@ -333,7 +337,7 @@ test("/subagent-model maps all model classes from Pi's available model list and 
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("config commands merge latest disk state before saving", async () => {
+test("config commands merge disk state without reloading unrelated session settings", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
 	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const availableModels: TestModel[] = [{ ...model, input: ["text"] }];
@@ -347,7 +351,7 @@ test("config commands merge latest disk state before saving", async () => {
 		const second = mainHarness({
 			availableModels,
 			limitInput: "4",
-			selectResults: ["balanced", "test-provider/test-model", "medium"],
+			selectResults: ["fast", undefined, "balanced", "test-provider/test-model", "medium"],
 		});
 		await first.handlers.get("session_start")?.({}, first.ctx);
 		await second.handlers.get("session_start")?.({}, second.ctx);
@@ -355,7 +359,11 @@ test("config commands merge latest disk state before saving", async () => {
 		await first.commands.get("subagent-model")!.handler("", first.ctx);
 		await second.commands.get("subagent-limit")!.handler("", second.ctx);
 		await second.commands.get("subagent-model")!.handler("", second.ctx);
+		assert.equal(second.selections[1].title, "fast Subagent model · saved: none");
+		await second.commands.get("subagent-model")!.handler("", second.ctx);
 		await first.commands.get("subagent-model")!.handler("", first.ctx);
+		await first.commands.get("subagent-limit")!.handler("", first.ctx);
+		assert.deepEqual(first.inputs.at(-1), { title: "Subagent Limit", value: "10" });
 
 		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), {
 			maxConcurrentSubagents: 4,
@@ -470,13 +478,15 @@ test("missing and invalid config use default Subagent Limit", async () => {
 		"{\"maxConcurrentSubagents\":10,\"models\":[]}",
 		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":\"test/model\"}}",
 		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"bad\",\"thinkingLevel\":\"high\"}}}",
-		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"turbo\"}}}",
+		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"\"}}}",
+		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\" high \"}}}",
 		"{\"maxConcurrentSubagents\":10,\"models\":{\"slow\":{\"model\":\"test/model\",\"thinkingLevel\":\"high\"}}}",
 	];
 	const cases = [
 		{ contents: undefined, warning: false },
 		{ contents: "{\"maxConcurrentSubagents\":10}", warning: false },
 		{ contents: "{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"high\"}}}", warning: false },
+		{ contents: "{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"future-level\"}}}", warning: false },
 		{ contents: "{\"maxConcurrentWorkers\":10}", warning: false },
 		...invalid.map((contents) => ({ contents, warning: true })),
 	];
