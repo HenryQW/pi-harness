@@ -55,6 +55,8 @@ function mainHarness(options: {
 	tabCreateFailureAfterCreation?: boolean;
 	abortAfterStart?: AbortController;
 	mainName?: string | null;
+	modelSelections?: string[];
+	availableModels?: Array<{ provider: string; id: string; input: string[] }>;
 } = {}) {
 	const handlers = new Map<string, Handler>();
 	const tools = new Map<string, Tool>();
@@ -62,6 +64,8 @@ function mainHarness(options: {
 	const calls: string[][] = [];
 	const notices: string[] = [];
 	const closed: string[] = [];
+	const selections: Array<{ title: string; options: string[] }> = [];
+	const modelSelections = [...(options.modelSelections ?? [])];
 	let limitInput = options.limitInput;
 	let mainName: string | null = options.mainName ?? null;
 	let tabPresent = !options.tabCreateFailureAfterCreation;
@@ -77,10 +81,17 @@ function mainHarness(options: {
 		model: options.noModel ? undefined : model,
 		thinkingLevel: Object.hasOwn(options, "thinkingLevel") ? options.thinkingLevel : "high",
 		isProjectTrusted: () => options.trusted ?? true,
+		modelRegistry: {
+			getAvailable: () => options.availableModels ?? [{ ...model, input: ["text"] }],
+		},
 		sessionManager: { getBranch: () => [] },
 		ui: {
 			notify: (message: string) => notices.push(message),
 			input: async () => limitInput,
+			select: async (title: string, values: string[]) => {
+				selections.push({ title, options: [...values] });
+				return modelSelections.shift();
+			},
 		},
 	} as unknown as ExtensionContext;
 	const api = {
@@ -137,7 +148,7 @@ function mainHarness(options: {
 		},
 	} as unknown as ExtensionAPI;
 	subagentsExtension(api);
-	return { api, ctx, handlers, tools, commands, calls, notices, closed, get workerName() { return workerName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
+	return { api, ctx, handlers, tools, commands, calls, notices, closed, selections, get workerName() { return workerName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
 }
 
 function workerHarness(options: { branch?: any[]; wait?: () => Promise<any>; promptFailure?: boolean } = {}) {
@@ -184,7 +195,9 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		assert.deepEqual([...app.tools.keys()], ["delegate_task"]);
 		assert.equal(app.tools.get("delegate_task")?.executionMode, "sequential");
 		assert.equal(app.tools.get("delegate_task")?.parameters.properties.task.description, "Self-contained task with relevant context, exact paths, constraints, and success criteria.");
-		assert.deepEqual([...app.commands.keys()], ["subagent-limit"]);
+		assert.deepEqual(app.tools.get("delegate_task")?.parameters.required, ["task"]);
+		assert.deepEqual(app.tools.get("delegate_task")?.parameters.properties.modelClass.enum, ["fast", "balanced", "frontier"]);
+		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model"]);
 
 		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, undefined, app.ctx);
 		assert.equal(delegated.terminate, true);
@@ -192,6 +205,7 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		const resultPath = output.match(/^Result: (.+)$/m)?.[1];
 		assert.ok(resultPath);
 		assert.match(output, /^Delegated Task [0-9a-f-]+/m);
+		assert.match(output, /^Model: test-provider\/test-model \(Main\)$/m);
 		assert.match(output, /^Stop: herdr tab close tab-1$/m);
 		assert.equal((await stat(resultPath!)).mode & 0o777, 0o600);
 		assert.deepEqual(parsePendingResult(JSON.parse(await readFile(resultPath!, "utf8"))), {
@@ -241,6 +255,83 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		assert.match(input.text, new RegExp(resultPath!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 		assert.equal(input.text.includes("done"), false);
 		assert.deepEqual(app.closed, ["tab-1"]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("/subagent-model maps all model classes from Pi's available model list and routes Worker", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-models-"));
+	const availableModels = [
+		{ provider: "test-provider", id: "frontier-model", input: ["text"] },
+		{ provider: "other-provider", id: "fast-model", input: ["text"] },
+		{ provider: "test-provider", id: "balanced-model", input: ["text"] },
+		{ provider: "other-provider", id: "image-only", input: ["image"] },
+	];
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({
+			availableModels,
+			modelSelections: [
+				"fast", "other-provider/fast-model",
+				"balanced", "test-provider/balanced-model",
+				"frontier", "test-provider/frontier-model",
+			],
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		for (let index = 0; index < 3; index++) await app.commands.get("subagent-model")!.handler("", app.ctx);
+
+		const modelOptions = [
+			"other-provider/fast-model",
+			"test-provider/balanced-model",
+			"test-provider/frontier-model",
+		];
+		assert.deepEqual(app.selections.filter((_, index) => index % 2 === 0).map(({ options }) => options), [
+			["fast", "balanced", "frontier"],
+			["fast", "balanced", "frontier"],
+			["fast", "balanced", "frontier"],
+		]);
+		assert.deepEqual(app.selections.filter((_, index) => index % 2 === 1).map(({ options }) => options), [modelOptions, modelOptions, modelOptions]);
+		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), {
+			maxConcurrentWorkers: 10,
+			models: {
+				fast: "other-provider/fast-model",
+				balanced: "test-provider/balanced-model",
+				frontier: "test-provider/frontier-model",
+			},
+		});
+
+		const delegated = await app.tools.get("delegate_task")!.execute(
+			"frontier",
+			{ task: "solve complex task", modelClass: "frontier" },
+			undefined,
+			undefined,
+			app.ctx,
+		);
+		const started = app.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
+		assert.equal(started[started.indexOf("--model") + 1], "test-provider/frontier-model");
+		assert.match(delegated.content[0].text, /^Model: test-provider\/frontier-model \(frontier\)$/m);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("delegate_task rejects unconfigured or unavailable explicit model classes before launch", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-models-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const availableModels = [{ ...model, input: ["text"] }];
+		const app = mainHarness({ availableModels, modelSelections: ["fast", "test-provider/test-model"] });
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("missing", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
+			/No fast Worker model configured/,
+		);
+		assert.equal(app.calls.length, 0);
+
+		await app.commands.get("subagent-model")!.handler("", app.ctx);
+		availableModels.length = 0;
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("stale", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
+			/Configured fast Worker model is unavailable/,
+		);
+		assert.equal(app.calls.length, 0);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -302,8 +393,18 @@ test("failed reconciliation preserves indeterminate tab provisioning", async () 
 });
 
 test("missing and invalid config use default Worker Limit", async () => {
-	const invalid = ["{broken", "[]", "{}", "{\"maxConcurrentWorkers\":0}", "{\"maxConcurrentWorkers\":-1}", "{\"maxConcurrentWorkers\":1.5}", "{\"maxConcurrentWorkers\":\"10\"}"];
-	const cases = [{ contents: undefined, warning: false }, ...invalid.map((contents) => ({ contents, warning: true }))];
+	const invalid = [
+		"{broken", "[]", "{}", "{\"maxConcurrentWorkers\":0}", "{\"maxConcurrentWorkers\":-1}",
+		"{\"maxConcurrentWorkers\":1.5}", "{\"maxConcurrentWorkers\":\"10\"}",
+		"{\"maxConcurrentWorkers\":10,\"models\":[]}",
+		"{\"maxConcurrentWorkers\":10,\"models\":{\"fast\":\"bad\"}}",
+		"{\"maxConcurrentWorkers\":10,\"models\":{\"slow\":\"test/model\"}}",
+	];
+	const cases = [
+		{ contents: undefined, warning: false },
+		{ contents: "{\"maxConcurrentWorkers\":10}", warning: false },
+		...invalid.map((contents) => ({ contents, warning: true })),
+	];
 	for (const item of cases) {
 		const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
 		await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
@@ -436,7 +537,7 @@ test("Main rejects preconditions, Worker Limit, stale notices, then reconciles c
 		const stale = await app.handlers.get("input")?.({ source: "interactive", text: "PI_HERDR_SUBAGENT_COMPLETION_V1 bad\n" }, app.ctx);
 		assert.deepEqual(stale, { action: "continue" });
 		assert.deepEqual(app.closed, []);
-		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentWorkers: 1 });
+		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentWorkers: 1, models: {} });
 		assert.ok(path);
 	});
 	await rm(agentDir, { recursive: true, force: true });
@@ -451,7 +552,7 @@ test("Worker Limit command persists immediately and pre-submission launch rolls 
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		assert.match(app.notices[0], /Invalid pi-herdr-subagents config/);
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentWorkers: 2 });
+		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentWorkers: 2, models: {} });
 		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "fails before submit" }, undefined, undefined, app.ctx), /agent prompt failed/);
 		assert.deepEqual(app.closed, ["tab-1"]);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);

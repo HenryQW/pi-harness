@@ -12,6 +12,7 @@ import {
 } from "../internal/protocol.ts";
 
 const DEFAULT_LIMIT = 10;
+const MODEL_CLASSES = ["fast", "balanced", "frontier"] as const;
 const CONFIG_PATH = () => join(getAgentDir(), "config", "pi-herdr-subagents.json");
 const WORKER_EXTENSION = fileURLToPath(new URL("../internal/worker.ts", import.meta.url));
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -19,6 +20,12 @@ const DEFINITIVE_PROMPT_ERRORS = new Set([
 	"agent_not_found", "agent_not_running", "agent_not_ready", "agent_not_idle",
 	"empty_agent_prompt", "invalid_agent_name", "agent_prompt_failed",
 ]);
+
+type ModelClass = typeof MODEL_CLASSES[number];
+type Config = {
+	maxConcurrentWorkers: number;
+	models: Partial<Record<ModelClass, string>>;
+};
 
 type OwnedWorker = {
 	taskId: string;
@@ -58,29 +65,61 @@ const parseJson = (value: string, label: string): Record<string, unknown> => {
 	}
 };
 
+const defaultConfig = (): Config => ({ maxConcurrentWorkers: DEFAULT_LIMIT, models: {} });
 const configLimit = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+const isModelClass = (value: unknown): value is ModelClass =>
+	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
+const isModelReference = (value: unknown): value is string => {
+	if (typeof value !== "string" || value !== value.trim() || value.includes("\0")) return false;
+	const slash = value.indexOf("/");
+	return slash > 0 && slash < value.length - 1;
+};
 
-async function readLimit(): Promise<{ value: number; invalid: boolean }> {
+function configModels(value: unknown): { value: Config["models"]; invalid: boolean } {
+	if (value === undefined) return { value: {}, invalid: false };
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { value: {}, invalid: true };
+	const record = value as Record<string, unknown>;
+	const models: Config["models"] = {};
+	let invalid = Object.keys(record).some((key) => !isModelClass(key));
+	for (const modelClass of MODEL_CLASSES) {
+		if (!Object.hasOwn(record, modelClass)) continue;
+		if (isModelReference(record[modelClass])) models[modelClass] = record[modelClass];
+		else invalid = true;
+	}
+	return { value: models, invalid };
+}
+
+async function readConfig(): Promise<{ value: Config; invalid: boolean }> {
 	try {
 		const value = JSON.parse(await readFile(CONFIG_PATH(), "utf8")) as unknown;
-		const limit = value && typeof value === "object" && !Array.isArray(value)
-			? configLimit((value as { maxConcurrentWorkers?: unknown }).maxConcurrentWorkers)
-			: undefined;
-		return limit ? { value: limit, invalid: false } : { value: DEFAULT_LIMIT, invalid: true };
+		if (!value || typeof value !== "object" || Array.isArray(value)) return { value: defaultConfig(), invalid: true };
+		const record = value as Record<string, unknown>;
+		const limit = configLimit(record.maxConcurrentWorkers);
+		const models = configModels(record.models);
+		return {
+			value: { maxConcurrentWorkers: limit ?? DEFAULT_LIMIT, models: models.value },
+			invalid: limit === undefined || models.invalid,
+		};
 	} catch (error: unknown) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-			return { value: DEFAULT_LIMIT, invalid: false };
+			return { value: defaultConfig(), invalid: false };
 		}
-		return { value: DEFAULT_LIMIT, invalid: true };
+		return { value: defaultConfig(), invalid: true };
 	}
 }
 
-async function writeLimit(limit: number): Promise<void> {
+async function writeConfig(config: Config): Promise<void> {
 	const path = CONFIG_PATH();
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify({ maxConcurrentWorkers: limit }, null, 2)}\n`, "utf8");
+	await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
+
+const availableModelReferences = (ctx: ExtensionContext): string[] => ctx.modelRegistry
+	.getAvailable()
+	.filter((model) => model.input.includes("text"))
+	.map((model) => `${model.provider}/${model.id}`)
+	.sort();
 
 const workerName = (taskId: string) => `worker_${taskId.replaceAll("-", "").slice(0, 8)}`;
 const mainName = () => `main_${randomBytes(4).toString("hex")}`;
@@ -159,7 +198,7 @@ async function closeTab(pi: ExtensionAPI, tabId: string, ctx: ExtensionContext):
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	const workers = new Map<string, OwnedWorker>();
-	let limit = DEFAULT_LIMIT;
+	let config = defaultConfig();
 	let cachedMainName: string | undefined;
 
 	const listTabs = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<HerdrTab[]> => {
@@ -205,13 +244,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		return name;
 	};
 
-	const startWorker = async (name: string, tabId: string, paneId: string, where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
-		if (!ctx.model) throw new Error("delegate_task requires an active Pi model.");
+	const startWorker = async (name: string, tabId: string, paneId: string, model: string, where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
 		const args = [
 			"agent", "start", name, "--kind", "pi", "--pane", paneId, "--",
 			"--no-session", "--no-extensions", "--extension", WORKER_EXTENSION,
 			"--tools", "read,bash,edit,write,finish_task",
-			"--model", `${ctx.model.provider}/${ctx.model.id}`,
+			"--model", model,
 			...(ctx.thinkingLevel ? ["--thinking", ctx.thinkingLevel] : []),
 			ctx.isProjectTrusted() ? "--approve" : "--no-approve",
 		];
@@ -233,27 +271,54 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		const config = await readLimit();
-		limit = config.value;
-		if (config.invalid) ctx.ui.notify(`Invalid pi-herdr-subagents config; using Worker Limit ${DEFAULT_LIMIT}.`, "warning");
+		const loaded = await readConfig();
+		config = loaded.value;
+		if (loaded.invalid) ctx.ui.notify("Invalid pi-herdr-subagents config values were ignored.", "warning");
 	});
 
 	pi.registerCommand("subagent-limit", {
 		description: "set maximum live Herdr Workers for this Main session",
 		handler: async (_args, ctx) => {
-			const selected = await ctx.ui.input("Worker Limit", String(limit));
+			const selected = await ctx.ui.input("Worker Limit", String(config.maxConcurrentWorkers));
 			if (selected === undefined) return;
 			const parsed = /^[1-9]\d*$/.test(selected.trim()) ? Number(selected.trim()) : NaN;
 			if (!Number.isSafeInteger(parsed)) {
 				ctx.ui.notify("Worker Limit must be a positive integer.", "warning");
 				return;
 			}
+			const next = { ...config, maxConcurrentWorkers: parsed };
 			try {
-				await writeLimit(parsed);
-				limit = parsed;
-				ctx.ui.notify(`Worker Limit set to ${limit}.`, "info");
+				await writeConfig(next);
+				config = next;
+				ctx.ui.notify(`Worker Limit set to ${config.maxConcurrentWorkers}.`, "info");
 			} catch {
 				ctx.ui.notify("Couldn't save Worker Limit config.", "warning");
+			}
+		},
+	});
+
+	pi.registerCommand("subagent-model", {
+		description: "map a Worker model class to an available Pi model",
+		handler: async (_args, ctx) => {
+			const modelClass = await ctx.ui.select("Worker model class", [...MODEL_CLASSES]);
+			if (!isModelClass(modelClass)) return;
+			const models = availableModelReferences(ctx);
+			if (!models.length) {
+				ctx.ui.notify("No authenticated text models are available.", "warning");
+				return;
+			}
+			const selected = await ctx.ui.select(
+				`${modelClass} Worker model · saved: ${config.models[modelClass] ?? "none"}`,
+				models,
+			);
+			if (!selected || !models.includes(selected)) return;
+			const next = { ...config, models: { ...config.models, [modelClass]: selected } };
+			try {
+				await writeConfig(next);
+				config = next;
+				ctx.ui.notify(`${modelClass} Worker model set to ${selected}.`, "info");
+			} catch {
+				ctx.ui.notify("Couldn't save Worker model config.", "warning");
 			}
 		},
 	});
@@ -261,12 +326,16 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
-		description: "Delegate one bounded, self-contained task to one interactive Herdr Pi Worker.",
+		description: "Delegate one bounded, self-contained task to one interactive Herdr Pi Worker. Choose fast for simple tasks, balanced for normal tasks, or frontier for complex tasks.",
 		parameters: Type.Object({
 			task: Type.String({
 				minLength: 1,
 				description: "Self-contained task with relevant context, exact paths, constraints, and success criteria.",
 			}),
+			modelClass: Type.Optional(Type.String({
+				enum: MODEL_CLASSES,
+				description: "Worker model class chosen from task complexity. Defaults to balanced; falls back to Main model when balanced is not configured.",
+			})),
 		}),
 		executionMode: "sequential",
 		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
@@ -274,9 +343,21 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (!task.trim()) throw new Error("delegate_task task must not be blank.");
 			if (task.includes("\0")) throw new Error("delegate_task task must not contain NUL bytes.");
 			if (!ctx.model) throw new Error("delegate_task requires an active Pi model.");
+			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
+				throw new Error("delegate_task modelClass must be fast, balanced, or frontier.");
+			}
+			const modelClass = params.modelClass ?? "balanced";
+			const configuredModel = config.models[modelClass];
+			if (params.modelClass && !configuredModel) {
+				throw new Error(`No ${modelClass} Worker model configured; run /subagent-model.`);
+			}
+			if (configuredModel && !availableModelReferences(ctx).includes(configuredModel)) {
+				throw new Error(`Configured ${modelClass} Worker model is unavailable; run /subagent-model.`);
+			}
+			const selectedModel = configuredModel ?? `${ctx.model.provider}/${ctx.model.id}`;
 			const where = location();
 			const existingTabs = await reconcile(where, ctx, signal);
-			if (workers.size >= limit) throw new Error(`Worker Limit reached (${limit}); no task was queued.`);
+			if (workers.size >= config.maxConcurrentWorkers) throw new Error(`Worker Limit reached (${config.maxConcurrentWorkers}); no task was queued.`);
 
 			const taskId = randomUUID();
 			const tempDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-"));
@@ -311,7 +392,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					tab.workspace_id !== where.workspace || pane.workspace_id !== where.workspace || pane.tab_id !== tabId
 					|| tab.focused !== false || pane.focused !== false || tab.pane_count !== 1 || pane.cwd !== ctx.cwd
 				) throw new Error("Herdr Worker tab identity is invalid.");
-				await startWorker(worker.workerName, tabId, paneId, where, ctx, signal);
+				await startWorker(worker.workerName, tabId, paneId, selectedModel, where, ctx, signal);
 				if (signal?.aborted) throw new Error("delegate_task was aborted before task submission.");
 				const promptArgs = ["agent", "prompt", worker.workerName, task];
 				promptOutcomeUnknown = true;
@@ -328,7 +409,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				assertAgent(agent, { name: worker.workerName, pane: paneId, workspace: where.workspace, tab: tabId });
 				promptOutcomeUnknown = false;
 				return {
-					content: [{ type: "text", text: `Delegated Task ${taskId}\nWorker: ${worker.workerName}\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
+					content: [{ type: "text", text: `Delegated Task ${taskId}\nWorker: ${worker.workerName}\nModel: ${selectedModel} (${configuredModel ? modelClass : "Main"})\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
 					details: {},
 					terminate: true,
 				};

@@ -8,13 +8,14 @@ Create publish-ready `@henryqw/pi-herdr-subagents`, a Pi extension that lets Mai
 
 ## User-visible contract
 
-### `delegate_task({ task })`
+### `delegate_task({ task, modelClass? })`
 
-Register one Main tool with one required, non-empty string parameter named `task`. Model-visible schema tells Main to provide self-contained task with relevant context, exact paths, constraints, and success criteria. Set `executionMode: "sequential"`; Pi then serializes any tool batch containing delegation, so same-batch calls reserve capacity one at a time. Successful delegation returns `terminate: true`, avoiding post-delegation Main model turn when every tool result in batch terminates.
+Register one Main tool with one required, non-empty string parameter named `task` and one optional `modelClass` enum: `fast`, `balanced`, or `frontier`. Model-visible schema tells Main to provide a self-contained task with relevant context, exact paths, constraints, and success criteria, then choose Worker Model Class from Delegated Task complexity. Omitted class defaults to configured `balanced`, then falls back to Main model for compatibility. An explicit unconfigured or unavailable class rejects with direction to run `/subagent-model`. Set `executionMode: "sequential"`; Pi then serializes any tool batch containing delegation, so same-batch calls reserve capacity one at a time. Successful delegation returns `terminate: true`, avoiding post-delegation Main model turn when every tool result in batch terminates.
 
 On success it returns:
 
 - stable Delegated Task ID;
+- selected model and Worker Model Class or Main fallback;
 - Worker Herdr name and tab ID;
 - full Result file path;
 - exact `herdr tab close <tab-id>` command Main can run with existing `bash` when work is no longer needed.
@@ -30,17 +31,24 @@ Reject delegation when:
 
 Before enforcing Worker Limit, query tracked Herdr tabs and prune missing tabs. Treat any malformed tab entry as reconciliation failure; invalid responses cannot release ownership. Do not queue work or poll in background.
 
-### `/subagent-limit`
+### `/subagent-limit` and `/subagent-model`
 
 Read and write `~/.pi/agent/config/pi-herdr-subagents.json` through `getAgentDir()`:
 
 ```json
 {
-  "maxConcurrentWorkers": 10
+  "maxConcurrentWorkers": 10,
+  "models": {
+    "fast": "provider/fast-model",
+    "balanced": "provider/balanced-model",
+    "frontier": "provider/frontier-model"
+  }
 }
 ```
 
-Value must be positive integer. Missing file uses `10`. Malformed or invalid config warns at session start and uses `10`. Command prompts for a value, writes formatted JSON, and updates current Main immediately. Lowering limit never stops live Workers; later delegation remains blocked until live count falls below limit. Other Main sessions load changed value on their next start/reload.
+Worker Limit must be positive integer. Missing file uses `10` and no model mappings. Malformed or invalid values warn at session start and use safe defaults without rewriting file. `/subagent-limit` prompts for value, writes formatted JSON, and updates current Main immediately. Lowering limit never stops live Workers; later delegation remains blocked until live count falls below limit. Other Main sessions load changed value on next start/reload.
+
+`/subagent-model` first selects `fast`, `balanced`, or `frontier`, then selects from authenticated text models returned by Pi's existing model registry. It writes mapping and updates current Main immediately. Package owns only three class names; it keeps no model catalog.
 
 ## Private protocol
 
@@ -87,7 +95,7 @@ For each accepted Delegated Task, Main:
 4. Passes only exact private protocol environment above through tab environment.
 5. Starts a named Pi Worker through `herdr agent start ... --kind pi` in created root pane.
 6. Starts Pi with no session persistence or discovered extensions, explicitly loads package-internal Worker extension, and enables built-in `read`, `bash`, `edit`, and `write` plus `finish_task`.
-7. Uses Main's exact model, thinking level when present, cwd, and project trust (`--approve` or `--no-approve`). Normal project context and skills remain available; arbitrary extension discovery does not.
+7. Uses model mapped to Main-selected Worker Model Class, Main thinking level when present, cwd, and project trust (`--approve` or `--no-approve`). Omitted class uses configured `balanced`, then Main's exact model when `balanced` is unset. Normal project context and skills remain available; arbitrary extension discovery does not.
 8. Submits self-contained task through `herdr agent prompt`.
 
 Worker gets fresh conversation context, not Main transcript. Main must avoid concurrent Delegated Tasks that write overlapping files; package does not infer file ownership or create worktrees.
@@ -160,9 +168,9 @@ Use Node built-in test runner and assertions. Fake `pi.exec`, extension contexts
 At extension/tool boundary, verify:
 
 - Herdr/model/task preconditions, exact public surface, model-visible handoff guidance, successful delegation termination, and same-batch sequential capacity enforcement;
-- config default, validation, command persistence, immediate update, and reduced-limit behavior;
+- config defaults, validation, both command persistence paths, immediate updates, reduced-limit behavior, and malformed model mappings;
 - per-Main Worker Limit, strict missing-tab and provisioning reconciliation, and no queue;
-- tab label/cwd/env, inherited model/thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
+- tab label/cwd/env, complexity-selected model, inherited thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
 - successful launch response, definitive pre-submission rollback, indeterminate creation reconciliation, failed-rollback retention, and indeterminate prompt preservation;
 - Completion Notice validation, capacity release, completed-tab close, and shutdown cleanup;
 - exact versioned Result/notice schemas, malformed/spoofed/path/state/control-text rejection, and fixed path-only Main transform;
@@ -176,7 +184,7 @@ One optional manual smoke may create a read-only Worker under Herdr and verify i
 ## Non-goals
 
 - In-process `AgentSession` orchestration or local subprocess fallback.
-- Foreground delegation, transcript inheritance, model/profile/tool overrides, or nested Workers.
+- Foreground delegation, transcript inheritance, arbitrary per-call model IDs, tool overrides, or nested Workers.
 - Queueing, scheduling, status/list/result/stop/resume tools, steering protocol, or dashboards.
 - Worktrees, file-overlap detection, automatic verification, or commit integration.
 - Structured Worker Question UI or separate `ask_question`/generic Herdr extension.

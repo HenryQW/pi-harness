@@ -20,6 +20,10 @@ _Avoid_: Subagent, child agent, peer, agent session
 Maximum number of concurrently live Workers that Main may own.
 _Avoid_: Max concurrency, pool size
 
+**Worker Model Class**:
+One of `fast`, `balanced`, or `frontier`, chosen by Main from Delegated Task complexity and mapped by user to one model from Pi's available model catalog.
+_Avoid_: Hardcoded model, model profile
+
 **Result**:
 Evidence produced by Worker for Delegated Task, including failure information when work does not succeed. Result does not establish that Main accepted or verified work.
 _Avoid_: Output, response
