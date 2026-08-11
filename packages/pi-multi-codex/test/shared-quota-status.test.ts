@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -223,6 +223,72 @@ test("elapsed quota window bypasses recent-check backoff", async () => {
 		globalThis.fetch = oldFetch;
 		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("retries when a foreign slot lock expires", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-foreign-lock-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldFetch = globalThis.fetch;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("locked-account") }));
+		await mkdir(join(agentDir, "config", "pi-multi-codex"), { recursive: true });
+		const now = Date.now();
+		await writeFile(join(agentDir, "config", "pi-multi-codex", "usage.json"), JSON.stringify({
+			slots: [],
+			locks: [{ slot: 1, owner: "foreign", accountHash: hash("locked-account"), heartbeatAt: now - 44_750 }],
+		}));
+		let requests = 0;
+		globalThis.fetch = async () => {
+			requests++;
+			return new Response(JSON.stringify({ rate_limit: {
+				secondary_window: { used_percent: 50, limit_window_seconds: 604_800, reset_after_seconds: 3600 },
+			} }));
+		};
+		const handlers = new Map<string, Handler>();
+		multiCodex({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerProvider() {},
+		} as unknown as ExtensionAPI);
+		handlers.get("session_start")?.({} as never, context([]));
+		await waitFor(() => requests === 1);
+		assert.ok(Date.now() - now < 2_000);
+		handlers.get("session_shutdown")?.({} as never, context([]));
+	} finally {
+		globalThis.fetch = oldFetch;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("two Pi processes reclaim one stale cache mutex", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-stale-mutex-"));
+	const countFile = join(agentDir, "requests");
+	const fetchMock = join(agentDir, "fetch-mock.mjs");
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("stale-mutex-account") }));
+		const mutex = join(agentDir, "config", "pi-multi-codex", "usage.json.lock");
+		await mkdir(mutex, { recursive: true });
+		await writeFile(join(mutex, "owner"), "dead-owner");
+		const staleAt = new Date(Date.now() - 45_000);
+		await utimes(mutex, staleAt, staleAt);
+		await writeFile(fetchMock, `
+			import { appendFileSync } from "node:fs";
+			globalThis.fetch = async () => {
+				appendFileSync(process.env.QUOTA_REQUESTS, "1\\n");
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				return new Response(JSON.stringify({ rate_limit: {
+					secondary_window: { used_percent: 50, limit_window_seconds: 604800, reset_after_seconds: 3600 }
+				} }));
+			};
+		`);
+		await Promise.all([runQuotaProcess(agentDir, fetchMock, countFile), runQuotaProcess(agentDir, fetchMock, countFile)]);
+		assert.equal((await readFile(countFile, "utf8")).trim(), "1");
+	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}
 });

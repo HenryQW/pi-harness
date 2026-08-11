@@ -302,7 +302,9 @@ async function acquireCacheMutex(signal?: AbortSignal): Promise<CacheMutex> {
 			if (errorCode(error) !== "EEXIST") throw error;
 			try {
 				if (Date.now() - (await stat(directory)).mtimeMs >= LOCK_STALE_MS) {
-					await rm(directory, { recursive: true, force: true });
+					const stale = `${directory}.${owner}.stale`;
+					await rename(directory, stale);
+					await rm(stale, { recursive: true, force: true });
 					continue;
 				}
 			} catch {
@@ -426,6 +428,7 @@ class CodexQuotaStatus {
 	private timer: Timer | undefined;
 	private readonly heartbeats = new Map<number, { owner: string; timer: Timer }>();
 	private readonly active = new Map<number, Promise<void>>();
+	private readonly retries = new Set<Timer>();
 	private writes: Promise<void> = Promise.resolve();
 	private onChange: () => void = () => undefined;
 
@@ -474,6 +477,8 @@ class CodexQuotaStatus {
 		this.session = undefined;
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
+		for (const retry of this.retries) clearTimeout(retry);
+		this.retries.clear();
 		for (const heartbeat of this.heartbeats.values()) clearInterval(heartbeat.timer);
 		this.heartbeats.clear();
 	}
@@ -504,31 +509,41 @@ class CodexQuotaStatus {
 		if (this.active.has(slot)) return;
 		const task = this.refreshSlot(slot, identity, generation, session, resolveSlotAuth);
 		this.active.set(slot, task);
-		void task.finally(() => {
+		const cleanup = () => {
 			if (this.active.get(slot) === task) this.active.delete(slot);
-		});
+		};
+		void task.then(cleanup, cleanup);
 	}
 
-	private async claim(slot: number, identity: SlotIdentity, signal: AbortSignal): Promise<string | undefined> {
+	private retryAfter(delay: number, generation: number, session: AbortController, resolveSlotAuth: SlotAuthResolver): void {
+		const timer = setTimeout(() => {
+			this.retries.delete(timer);
+			void this.refreshDue(generation, session, resolveSlotAuth);
+		}, delay);
+		timer.unref?.();
+		this.retries.add(timer);
+	}
+
+	private async claim(slot: number, identity: SlotIdentity, signal: AbortSignal): Promise<{ owner?: string; retryAfter?: number }> {
 		const owner = randomUUID();
-		const claimed = await this.change((state) => {
+		const claim = await this.change<{ owner?: string; retryAfter?: number }>((state) => {
 			const now = Date.now();
 			const snapshot = state.slots.get(slot);
 			if (isFresh(snapshot, identity, now) || checkedRecently(snapshot, identity, now)) {
-				return { value: false, write: false };
+				return { value: {}, write: false };
 			}
 			const lock = state.locks.get(slot);
 			if (lock && lock.accountHash === identity.accountHash && lock.heartbeatAt <= now && now - lock.heartbeatAt < LOCK_STALE_MS) {
-				return { value: false, write: false };
+				return { value: { retryAfter: LOCK_STALE_MS - (now - lock.heartbeatAt) }, write: false };
 			}
 			if (snapshot?.accountHash !== identity.accountHash) state.slots.delete(slot);
 			state.locks.set(slot, { slot, owner, accountHash: identity.accountHash, heartbeatAt: now });
-			return { value: true, write: true };
+			return { value: { owner }, write: true };
 		}, signal);
-		if (!claimed) return undefined;
+		if (!claim.owner) return claim;
 
 		const lock = (await this.state()).locks.get(slot);
-		return owns(lock, slot, owner, identity.accountHash) ? owner : undefined;
+		return owns(lock, slot, owner, identity.accountHash) ? claim : {};
 	}
 
 	private startHeartbeat(slot: number, owner: string, accountHash: string, signal: AbortSignal): void {
@@ -623,8 +638,14 @@ class CodexQuotaStatus {
 		let owner: string | undefined;
 		let discard = false;
 		try {
-			owner = await this.claim(slot, identity, session.signal);
-			if (!owner || !this.alive(generation, session)) return;
+			const claim = await this.claim(slot, identity, session.signal);
+			owner = claim.owner;
+			if (!owner || !this.alive(generation, session)) {
+				if (claim.retryAfter !== undefined && this.alive(generation, session)) {
+					this.retryAfter(claim.retryAfter, generation, session, resolveSlotAuth);
+				}
+				return;
+			}
 			this.startHeartbeat(slot, owner, identity.accountHash, session.signal);
 
 			const authSignal = AbortSignal.any([session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
