@@ -2,6 +2,7 @@ import { chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createHerdrClient } from "@henryqw/pi-herdr";
 import { Type } from "typebox";
 import {
 	PROTOCOL_VERSION,
@@ -92,31 +93,19 @@ async function atomicResult(protocol: SubagentProtocol, terminal: TerminalResult
 	}
 }
 
-async function herdr(pi: ExtensionAPI, args: string[], ctx: ExtensionContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
-	const response = await pi.exec("herdr", args, { cwd: ctx.cwd, signal });
-	if (response.code !== 0 || response.killed) {
-		throw new Error(`Herdr ${args.slice(0, 2).join(" ")} failed: ${response.stderr.trim() || `exit code ${response.code}`}`);
-	}
-	try {
-		const parsed = object(JSON.parse(response.stdout));
-		if (!parsed) throw new Error();
-		return parsed;
-	} catch {
-		throw new Error(`Herdr ${args.slice(0, 2).join(" ")} returned invalid JSON.`);
-	}
-}
-
-async function waitAndNotify(pi: ExtensionAPI, protocol: SubagentProtocol, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
-	const waited = object((await herdr(pi, ["agent", "wait", protocol.mainName, "--until", "idle", "--until", "done"], ctx, signal)).result);
-	if (!waited || waited.type !== "agent_info") throw new Error("Herdr Main wait did not return agent_info.");
-	const status = object(waited.agent)?.agent_status;
-	if (status !== "idle" && status !== "done") throw new Error("Herdr Main did not settle idle or done.");
-	const prompted = object((await herdr(pi, ["agent", "prompt", protocol.mainName, completionNotice(protocol.resultPath, protocol.taskId)], ctx, signal)).result);
-	if (!prompted || prompted.type !== "agent_prompted") throw new Error("Herdr Completion Notice was not accepted.");
-}
-
 export default async function subagentExtension(pi: ExtensionAPI): Promise<void> {
+	const herdr = createHerdrClient((command, args, options: { cwd: string; signal?: AbortSignal }) =>
+		pi.exec(command, [...args], options));
 	const protocol = await loadProtocol();
+
+	const waitAndNotify = async (ctx: ExtensionContext, signal?: AbortSignal): Promise<void> => {
+		const waited = object((await herdr.json(["agent", "wait", protocol.mainName, "--until", "idle", "--until", "done"], { cwd: ctx.cwd, signal })).result);
+		if (!waited || waited.type !== "agent_info") throw new Error("Herdr Main wait did not return agent_info.");
+		const status = object(waited.agent)?.agent_status;
+		if (status !== "idle" && status !== "done") throw new Error("Herdr Main did not settle idle or done.");
+		const prompted = object((await herdr.json(["agent", "prompt", protocol.mainName, completionNotice(protocol.resultPath, protocol.taskId)], { cwd: ctx.cwd, signal })).result);
+		if (!prompted || prompted.type !== "agent_prompted") throw new Error("Herdr Completion Notice was not accepted.");
+	};
 	let completionStarted = false;
 
 	const complete = async (terminal: TerminalResult, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> => {
@@ -128,7 +117,7 @@ export default async function subagentExtension(pi: ExtensionAPI): Promise<void>
 			completionStarted = false;
 			throw error;
 		}
-		await waitAndNotify(pi, protocol, ctx, signal);
+		await waitAndNotify(ctx, signal);
 	};
 
 	pi.registerTool({
