@@ -730,10 +730,12 @@ function nativeContext(context: Context, alias: string): Context {
 	return {
 		...context,
 		messages: context.messages.map((message) => {
-			if (message.role !== "assistant" || message.provider !== alias) return message;
-			const canonical = { ...message, provider: NATIVE_PROVIDER_ID };
-			if (message.deferred) canonical.deferred = { ...message.deferred, provider: NATIVE_PROVIDER_ID };
-			return canonical;
+			if (message.role !== "assistant") return message;
+			const provider = message.provider === alias ? NATIVE_PROVIDER_ID : message.provider === NATIVE_PROVIDER_ID ? alias : message.provider;
+			if (provider === message.provider) return message;
+			const rewritten = { ...message, provider };
+			if (message.deferred) rewritten.deferred = { ...message.deferred, provider };
+			return rewritten;
 		}),
 	};
 }
@@ -849,8 +851,6 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	let sessionContext: ExtensionContext | undefined;
 	let automaticOpen = false;
 	let automaticCandidate: Model<any> | undefined;
-	let scopedModelRefs = new Set<string>();
-	let hasScopedModels = false;
 
 	const registerSlot = (slot: number): void => {
 		if (slot === 1 || registered.has(slot)) return;
@@ -865,15 +865,17 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		return slots;
 	};
 
-	const allowsModel = (model: Model<any>, slot: number): boolean =>
-		!hasScopedModels || scopedModelRefs.has(`${providerForSlot(slot)}/${model.id}`);
+	const allowsModel = (ctx: ExtensionContext, model: Model<any>, slot: number): boolean => {
+		const scopedModels = ctx.scopedModels ?? [];
+		return scopedModels.length === 0 || scopedModels.some(({ model: scoped }) => scoped.provider === providerForSlot(slot) && scoped.id === model.id);
+	};
 
-	const freshSlots = (model: Model<any>): { slot: number; remaining: number }[] => {
+	const freshSlots = (ctx: ExtensionContext, model: Model<any>): { slot: number; remaining: number }[] => {
 		const state = loadStateSync();
 		const now = Date.now();
 		return [...readCodexCredentials().entries()]
 			.flatMap(([slot, credential]) => {
-				if ((slot !== 1 && !registered.has(slot)) || !allowsModel(model, slot)) return [];
+				if ((slot !== 1 && !registered.has(slot)) || !allowsModel(ctx, model, slot)) return [];
 				const identity = identityFor(credential);
 				const snapshot = state.slots.get(slot);
 				if (!identity || !isFresh(snapshot, identity, now) || typeof snapshot?.remaining !== "number") return [];
@@ -881,8 +883,8 @@ export default function multiCodex(pi: ExtensionAPI): void {
 			});
 	};
 
-	const selectFreshSlot = (model: Model<any>): number | undefined => {
-		const candidates = freshSlots(model);
+	const selectFreshSlot = (ctx: ExtensionContext, model: Model<any>): number | undefined => {
+		const candidates = freshSlots(ctx, model);
 		if (candidates.length === 0) return undefined;
 		const currentSlot = slotForProvider(model.provider);
 		const remaining = Math.max(...candidates.map((candidate) => candidate.remaining));
@@ -913,7 +915,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 
 	const updatePendingCandidate = (ctx: ExtensionContext): void => {
 		if (!automaticOpen || !ctx.model || !isManagedProvider(ctx.model.provider)) return;
-		const slot = selectFreshSlot(ctx.model);
+		const slot = selectFreshSlot(ctx, ctx.model);
 		automaticCandidate = slot ? { ...ctx.model, provider: providerForSlot(slot) } : ctx.model;
 	};
 
@@ -929,9 +931,6 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		const slots = syncSlots();
 		sessionContext = ctx;
-		const scopedModels = ctx.scopedModels ?? [];
-		hasScopedModels = scopedModels.length > 0;
-		scopedModelRefs = new Set(scopedModels.map(({ model }) => `${model.provider}/${model.id}`));
 		automaticOpen = isManagedProvider(ctx.model?.provider) && !sessionHasAgentWork(ctx);
 		automaticCandidate = ctx.model;
 		// Cache-only ranking happens before background refresh starts.
@@ -1007,11 +1006,12 @@ export default function multiCodex(pi: ExtensionAPI): void {
 			const authenticated = [...syncSlots()]
 				.filter((slot) => slot === 1 || registered.has(slot))
 				.sort((left, right) => left - right);
-			const slots = authenticated.filter((slot) => allowsModel(model, slot));
+			const scopedModels = ctx.scopedModels ?? [];
+			const slots = authenticated.filter((slot) => allowsModel(ctx, model, slot));
 			const currentSlot = slotForProvider(model.provider);
-			if (slots.length === 0 || (hasScopedModels && authenticated.some((slot) => !allowsModel(model, slot)) && slots.every((slot) => slot === currentSlot))) {
+			if (slots.length === 0 || (scopedModels.length > 0 && authenticated.some((slot) => !allowsModel(ctx, model, slot)) && slots.every((slot) => slot === currentSlot))) {
 				ctx.ui.notify(
-					hasScopedModels
+					scopedModels.length > 0
 						? "No authenticated Codex slot matches this session's model scope. Restart Pi or update scoped models."
 						: "No authenticated Codex slots found. Run /login and select OpenAI Codex.",
 					"warning",

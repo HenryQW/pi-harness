@@ -168,7 +168,7 @@ test("Pi extension loader registers Codex aliases", async () => {
 	}
 });
 
-test("alias keeps native request provider and rewrites response identity", async () => {
+test("alias keeps request context account-bound and rewrites response identity", async () => {
 	const model = {
 		id: "codex-model",
 		name: "Codex Model",
@@ -220,14 +220,14 @@ test("alias keeps native request provider and rewrites response identity", async
 	const alias = createCodexAliasProvider(native, 2);
 	const events = [];
 	const requestContext: Context = {
-		messages: [{ ...assistantMessage, provider: "openai-codex-2" }],
+		messages: [
+			{ ...assistantMessage, provider: "openai-codex-2" },
+			{ ...assistantMessage, provider: "openai-codex" },
+		],
 	};
 	for await (const event of alias.stream(alias.getModels()[0], requestContext)) events.push(event);
 	assert.equal(requestedProvider, "openai-codex");
-	assert.equal(requestedContext?.messages[0]?.role, "assistant");
-	if (requestedContext?.messages[0]?.role === "assistant") {
-		assert.equal(requestedContext.messages[0].provider, "openai-codex");
-	}
+	assert.deepEqual(requestedContext?.messages.map((message) => message.role === "assistant" ? message.provider : undefined), ["openai-codex", "openai-codex-2"]);
 
 	assert.equal(events[0].type, "start");
 	if (events[0].type === "start") assert.equal(events[0].partial.provider, "openai-codex-2");

@@ -155,6 +155,26 @@ test("keeps current slot when scope excludes fresher aliases", async () => {
 	});
 });
 
+test("uses live scope changes at agent boundary", async () => {
+	const scopedModels = [{ model: model() }];
+	await withApp({ 1: 40, 2: 90 }, scopedModels, async ({ handlers, ctx, setModels }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		scopedModels.push({ model: model("openai-codex-2") });
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		assert.deepEqual(setModels.map((selected) => selected.provider), ["openai-codex-2"]);
+	});
+});
+
+test("does not route to alias removed from live scope", async () => {
+	const scopedModels = [{ model: model() }, { model: model("openai-codex-2") }];
+	await withApp({ 1: 40, 2: 90 }, scopedModels, async ({ handlers, ctx, setModels }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		scopedModels.pop();
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		assert.equal(setModels.length, 0);
+	});
+});
+
 test("does not reopen automatic routing after session reload", async () => {
 	await withApp({ 1: 40, 2: 90 }, [], async ({ handlers, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start", reason: "new" }, ctx);
