@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
 import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
-import { type CommandRunner } from "../src/command.ts";
+import { recordedGateEvidence, type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
@@ -576,6 +576,71 @@ test("nonzero required gate blocks before review and resolution reruns the same 
 	assert.equal(state.tasks.alpha.review_exit_code, 0);
 	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, 2);
 	assert.equal(reviewPrompts(herdr).length, 1);
+});
+
+test("failed implementation gate accepts an exact command amendment before reviewer launch", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 2);
+	const replacement = "npm ci && npm test -- alpha";
+	const herdr = fakeHerdr({ gate: (command) => command === replacement
+		? { code: 0, stdout: "passed amended gate\n", stderr: "" }
+		: { code: 1, stdout: "", stderr: "dependencies missing\n" } });
+	const lifecycle = makeLifecycle(herdr.runner);
+	let state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
+
+	assert.equal(state.phase, "blocked");
+	assert.equal(state.tasks.alpha.review_command, "npm test -- alpha");
+	const failedEvidence = recordedGateEvidence(state.tasks.alpha, commit)!;
+	await assert.rejects(lifecycle.resolve(project.root, "alpha", "Bootstrap dependencies in clean gate worktree.", {
+		replacement_command: replacement,
+		expected_run_id: state.run_id,
+		expected_command: "npm test -- stale",
+		expected_commit: commit,
+		expected_evidence: failedEvidence,
+	}), /Required Gate changed during command amendment/);
+	await assert.rejects(lifecycle.resolve(project.root, "alpha", "Bootstrap dependencies in clean gate worktree.", {
+		replacement_command: replacement,
+		expected_run_id: "stale-run",
+		expected_command: "npm test -- alpha",
+		expected_commit: commit,
+		expected_evidence: failedEvidence,
+	}), /Required Gate changed during command amendment/);
+	await assert.rejects(lifecycle.resolve(project.root, "alpha", "Bootstrap dependencies in clean gate worktree.", {
+		replacement_command: replacement,
+		expected_run_id: state.run_id,
+		expected_command: "npm test -- alpha",
+		expected_commit: commit,
+		expected_evidence: { ...failedEvidence, output: { ...failedEvidence.output, stderr: { ...failedEvidence.output.stderr, excerpt: "new failure" } } },
+	}), /Required Gate changed during command amendment/);
+	assert.equal((await lifecycle.status(project.root))?.gate_command_amendments, undefined);
+	state = await lifecycle.resolve(project.root, "alpha", "Bootstrap dependencies in clean gate worktree.", {
+		replacement_command: replacement,
+		expected_run_id: state.run_id,
+		expected_command: "npm test -- alpha",
+		expected_commit: commit,
+		expected_evidence: failedEvidence,
+	});
+
+	assert.equal(state.phase, "execution");
+	assert.equal(state.graph.issues[0].testing, "npm test -- alpha");
+	assert.deepEqual(state.gate_command_amendments, [{
+		issue_id: "alpha",
+		previous_command: "npm test -- alpha",
+		replacement_command: replacement,
+		failed_commit: commit,
+		reason: "Bootstrap dependencies in clean gate worktree.",
+		approved_at: "2026-08-09T00:00:00.000Z",
+	}]);
+	assert.equal(state.tasks.alpha.review_command, replacement);
+	assert.equal(state.tasks.alpha.review_commit, commit);
+	assert.equal(state.tasks.alpha.review_exit_code, 0);
+	assert.deepEqual(herdr.calls.filter((call) => call.command === "sh").map((call) => call.args[1]), ["npm test -- alpha", replacement]);
+	assert.equal(reviewPrompts(herdr).length, 1);
+	assert.deepEqual(JSON.parse(reviewPrompts(herdr)[0]).context.gate_command_amendments, state.gate_command_amendments);
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "changes_requested", ["Fix it."]));
+	const revision = JSON.parse(implementerPrompts(herdr).at(-1)!);
+	assert.deepEqual(revision.required_gate, { command: replacement, amendments: state.gate_command_amendments });
 });
 
 test("reviewer-profile deletion mid-review blocks, then resolution launches a fresh reviewer from durable evidence", async (t) => {

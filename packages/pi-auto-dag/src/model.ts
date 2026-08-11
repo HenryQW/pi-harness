@@ -36,6 +36,15 @@ export interface RequiredGateInvalidation {
 	evidence: RequiredGateEvidence;
 }
 
+export interface GateCommandAmendment {
+	issue_id: string;
+	previous_command: string;
+	replacement_command: string;
+	failed_commit: string;
+	reason: string;
+	approved_at: string;
+}
+
 export interface ConfiguredProfile {
 	description: string;
 	agent_dir: string;
@@ -242,6 +251,7 @@ export interface RunState {
 	block_reason?: string;
 	tasks: Record<string, RunTaskState>;
 	resolutions: Record<string, string>;
+	gate_command_amendments?: GateCommandAmendment[];
 	main_pane: string;
 	workspace_id: string;
 	wave?: RunWave;

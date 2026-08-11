@@ -1,7 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandOutput, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
 import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
-import { ensureRecordedGate, failFinalGate, requiredTaskGate } from "./final-gate.ts";
+import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredTaskGate } from "./final-gate.ts";
 import { acceptFinalRepairEnvelope, advanceFinalRepair, isFinalRepairActive, recoverFinalRepairIntegration } from "./final-repair.ts";
 import { deleteExpectedBranch, ensureChildWorktree, retireChildWorktree } from "./git.ts";
 import { executionIssues } from "./graph.ts";
@@ -145,6 +145,7 @@ async function ensureFinalReviewer(
 		options.uuid,
 	);
 	await revalidateResolvedProfile(config, config.reviewer_profile);
+	const amendments = gateCommandAmendments(state, issue.id);
 	await promptWorkerAgent(state, agent, reviewPrompt({
 		kind: "final_check",
 		graph: state.graph,
@@ -152,6 +153,7 @@ async function ensureFinalReviewer(
 		worktree: state.main_worktree,
 		base: state.source_commit,
 		gate: requiredTaskGate(current, commit, "Final check"),
+		...(amendments.length ? { context: { gate_command_amendments: amendments } } : {}),
 	}, promptMode), options);
 	if (needsInstruction) {
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);

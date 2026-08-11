@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
+import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
@@ -229,7 +230,7 @@ async function ensureHealthReviewer(
 		if (!evidence) {
 			const execution = await runRequiredGate(
 				options.runner,
-				issue.testing,
+				requiredGateCommand(state, issue),
 				commit,
 				nonEmptyString(health.worktree, "PR-health repair worktree"),
 				config.required_gate_timeout_ms,
@@ -282,6 +283,7 @@ async function ensureHealthReviewer(
 		};
 	} else {
 		const reviewMode: ReviewPromptMode = started !== "existing" || health.review_round === 1 ? "full" : "update";
+		const amendments = gateCommandAmendments(state, issue.id);
 		prompt = reviewPrompt({
 			kind: "pr_health_repair",
 			graph: state.graph,
@@ -294,6 +296,7 @@ async function ensureHealthReviewer(
 				pr: state.pr,
 				triage: { summary: health.summary, thread_ids: health.thread_ids, checks: health.checks },
 				approval_findings: "Only triaged thread IDs fixed by this repair.",
+				...(amendments.length ? { gate_command_amendments: amendments } : {}),
 			},
 		}, reviewMode);
 	}
@@ -441,6 +444,8 @@ async function ensureHealthCoder(
 		: promptMode === "resume"
 			? "Resend your latest worker event through the worker tool."
 			: "Repair the actionable PR feedback in this fresh child worktree. Commit exactly one change over the current PR head, then request review.";
+	const amendments = gateCommandAmendments(state, issue.id);
+	const gate = amendments.length ? { required_gate: { command: requiredGateCommand(state, issue), amendments } } : {};
 	await ensureActionTicket(
 		actionTicketPath(state.main_worktree, state.run_id, issue.id, "pr_health", "implementer"),
 		{ attempt: positiveInteger(health.attempt, "PR-health attempt"), review_round: (health.review_round ?? 0) + 1, role: "implementer" },
@@ -459,6 +464,7 @@ async function ensureHealthCoder(
 		attempt: health.attempt,
 		review_round: (health.review_round ?? 0) + 1,
 		triage: { summary: health.summary, thread_ids: health.thread_ids, checks: health.checks },
+		...gate,
 		instruction,
 	} : {
 		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_pr_health_repair_update",
@@ -467,6 +473,7 @@ async function ensureHealthCoder(
 		attempt: health.attempt,
 		review_round: (health.review_round ?? 0) + 1,
 		review_findings: health.review_findings,
+		...gate,
 		instruction,
 	}, options);
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);

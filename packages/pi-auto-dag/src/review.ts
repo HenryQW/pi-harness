@@ -82,7 +82,7 @@ export function reviewPrompt(input: ReviewPromptInput, mode: ReviewPromptMode): 
 		...(input.prior_findings?.length ? { prior_findings: input.prior_findings } : {}),
 		...(input.resolution === undefined ? {} : { resolution: input.resolution }),
 		...(input.context ? { context: input.context } : {}),
-		instruction: "Inspect diff against acceptance and gate evidence. Auto DAG already verified worktree, base, and commit and ran frozen gate. Extra checks cannot replace gate. Submit only verdict and findings.",
+		instruction: "Inspect diff against acceptance and gate evidence. Auto DAG already verified worktree, base, and commit and ran exact approved gate. Extra checks cannot replace gate. Submit only verdict and findings.",
 	};
 }
 

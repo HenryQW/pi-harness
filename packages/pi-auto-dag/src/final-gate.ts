@@ -1,14 +1,90 @@
+import { isDeepStrictEqual } from "node:util";
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { executionIssues } from "./graph.ts";
-import type { LocalIssue, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
+import type { GateCommandAmendment, LocalIssue, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
 import { recordGateExecution } from "./review.ts";
-import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
+import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
+import { nonEmptyString } from "./validate.ts";
 
 export type FinalGateOptions = {
 	runner: CommandRunner;
 	uuid: Uuid;
 	now?: () => string;
 };
+
+export interface GateCommandAmendmentRequest {
+	replacement_command: string;
+	expected_run_id: string;
+	expected_command: string;
+	expected_commit: string;
+	expected_evidence: RequiredGateEvidence;
+}
+
+export function requiredGateCommand(state: RunState, issue: LocalIssue): string {
+	let command = issue.testing;
+	for (const amendment of state.gate_command_amendments ?? []) {
+		if (amendment.issue_id === issue.id) command = amendment.replacement_command;
+	}
+	return command;
+}
+
+export function gateCommandAmendments(state: RunState, issueId: string): GateCommandAmendment[] {
+	return (state.gate_command_amendments ?? []).filter((amendment) => amendment.issue_id === issueId);
+}
+
+export function requiredGateCommandAmendmentRequest(
+	state: RunState,
+	issueId: string,
+	replacementCommand: string,
+): GateCommandAmendmentRequest {
+	const issue = issueById(state, issueId);
+	const current = task(state, issueId);
+	const commit = current.review_commit;
+	const evidence = commit ? recordedGateEvidence(current, commit) : undefined;
+	if (state.phase !== "blocked" || !evidence || evidence.exit_code === 0) {
+		throw new Error(`Required Gate command amendment requires failed gate evidence for Local Issue ${issueId}`);
+	}
+	const command = requiredGateCommand(state, issue);
+	if (evidence.command !== command) {
+		throw new Error(`Failed Required Gate command for Local Issue ${issueId} no longer matches active command`);
+	}
+	const replacement = nonEmptyString(replacementCommand, "replacement Required Gate command");
+	if (replacement === command) throw new Error("Replacement Required Gate command must differ from current command");
+	return {
+		replacement_command: replacement,
+		expected_run_id: state.run_id,
+		expected_command: command,
+		expected_commit: evidence.commit,
+		expected_evidence: evidence,
+	};
+}
+
+export function amendRequiredGateCommand(
+	state: RunState,
+	issueId: string,
+	reason: string,
+	request: GateCommandAmendmentRequest,
+	approvedAt: string,
+): RunState {
+	const current = requiredGateCommandAmendmentRequest(state, issueId, request.replacement_command);
+	if (
+		request.expected_run_id !== current.expected_run_id
+		|| request.expected_command !== current.expected_command
+		|| request.expected_commit !== current.expected_commit
+		|| !isDeepStrictEqual(request.expected_evidence, current.expected_evidence)
+	) {
+		throw new Error("Required Gate changed during command amendment; inspect and confirm current failure again");
+	}
+	const amendment: GateCommandAmendment = {
+		issue_id: issueId,
+		previous_command: current.expected_command,
+		replacement_command: current.replacement_command,
+		failed_commit: current.expected_commit,
+		reason: nonEmptyString(reason, "resolution"),
+		approved_at: nonEmptyString(approvedAt, "gate command amendment approval time"),
+	};
+	return { ...state, gate_command_amendments: [...(state.gate_command_amendments ?? []), amendment] };
+}
 
 export async function failFinalGate(
 	state: RunState,
@@ -49,7 +125,7 @@ export async function ensureRecordedGate(
 	if (!evidence) {
 		const execution = await runRequiredGate(
 			options.runner,
-			issue.testing,
+			requiredGateCommand(state, issue),
 			commit,
 			cwd,
 			timeoutMs,
@@ -94,7 +170,9 @@ export function retryableFinalGate(state: RunState): { issue: LocalIssue; eviden
 	if (!evidence || evidence.exit_code === 0) {
 		throw new Error("Infrastructure retry requires failed Final Check Required Gate evidence for the current integration HEAD");
 	}
-	if (evidence.command !== issue.testing) throw new Error("Failed Final Check Required Gate command does not match the frozen command");
+	if (evidence.command !== requiredGateCommand(state, issue)) {
+		throw new Error("Failed Final Check Required Gate command does not match the active command");
+	}
 	return { issue, evidence };
 }
 

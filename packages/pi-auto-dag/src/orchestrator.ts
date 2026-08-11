@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import type { AvailableSkill } from "./config.ts";
-import { isRetryableFinalGate, retryableFinalGate } from "./final-gate.ts";
+import { isRetryableFinalGate, requiredGateCommandAmendmentRequest, retryableFinalGate } from "./final-gate.ts";
 import { executionIssues } from "./graph.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
@@ -30,6 +30,10 @@ export interface OrchestratorExtensionOptions {
 
 const WORKER_WIDGET = "auto-dag-workers";
 const ORCHESTRATOR_TOOL_NAMES = new Set<string>(Object.values(ORCHESTRATOR_TOOLS));
+
+function quotedConfirmationValue(value: string): string {
+	return JSON.stringify(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (character) => `\\u{${character.codePointAt(0)!.toString(16)}}`);
+}
 
 /** The main integration extension exposes the public lifecycle surface and nothing else. */
 export function createOrchestratorExtension(options: OrchestratorExtensionOptions = {}) {
@@ -253,10 +257,30 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		pi.registerTool(defineTool({
 			name: ORCHESTRATOR_TOOLS.resolve,
 			label: "Resolve Auto DAG task",
-			description: "Record a user-approved resolution for one Local Issue in the active run.",
-			parameters: Type.Object({ issue_id: Type.String(), resolution: Type.String() }),
+			description: "Record a user-approved resolution for one Local Issue; optionally confirm an exact replacement for its failed Required Gate command.",
+			parameters: Type.Object({
+				issue_id: Type.String(),
+				resolution: Type.String(),
+				replacement_command: Type.Optional(Type.String()),
+			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				return stateResult(await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution));
+				if (params.replacement_command === undefined) {
+					return stateResult(await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution));
+				}
+				if (ctx.mode !== "tui") throw new Error("Required Gate command amendment requires interactive TUI mode");
+				const current = await lifecycle.status(ctx.cwd);
+				if (!current) throw new Error("No active pi-auto-dag run");
+				const amendment = requiredGateCommandAmendmentRequest(current, params.issue_id, params.replacement_command);
+				const approved = await ctx.ui.confirm("Amend Required Gate command?", [
+					`Run: ${quotedConfirmationValue(current.run_id)}`,
+					`Local Issue: ${quotedConfirmationValue(params.issue_id)}`,
+					`Failed commit: ${quotedConfirmationValue(amendment.expected_commit)}`,
+					`Current command: ${quotedConfirmationValue(amendment.expected_command)}`,
+					`Replacement command: ${quotedConfirmationValue(amendment.replacement_command)}`,
+					`Reason: ${quotedConfirmationValue(params.resolution)}`,
+				].join("\n"));
+				if (!approved) return stateResult(current);
+				return stateResult(await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution, amendment));
 			},
 		}));
 

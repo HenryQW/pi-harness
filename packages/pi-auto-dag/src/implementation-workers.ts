@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
+import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
@@ -250,7 +251,7 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 	if (!evidence) {
 		const execution = await runRequiredGate(
 			options.runner,
-			issue.testing,
+			requiredGateCommand(state, issue),
 			commit,
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 			timeoutMs,
@@ -333,6 +334,8 @@ function implementerPrompt(
 			: mode === "replacement"
 				? "The previous commit conflicted. Produce one replacement commit on the new base, then request review again."
 				: "Implement this frozen Local Issue, commit exactly one change over the wave base, then request review through the worker tool.";
+	const amendments = gateCommandAmendments(state, issue.id);
+	const gate = amendments.length ? { required_gate: { command: requiredGateCommand(state, issue), amendments } } : {};
 	if (!full) return {
 		type: mode === "resume" ? "auto_dag_resend" : "auto_dag_task_update",
 		run_id: state.run_id,
@@ -340,6 +343,7 @@ function implementerPrompt(
 		attempt: current.attempts,
 		review_round: (current.review_rounds ?? 0) + 1,
 		review_findings: current.review_findings,
+		...gate,
 		instruction,
 	};
 	return {
@@ -353,6 +357,7 @@ function implementerPrompt(
 		worktree: current.worktree,
 		review_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
+		...gate,
 		instruction,
 	};
 }
@@ -363,6 +368,7 @@ function reviewerPrompt(
 	current: RunTaskState,
 	mode: ReviewPromptMode,
 ): Record<string, unknown> {
+	const amendments = gateCommandAmendments(state, issue.id);
 	return reviewWorkerPrompt({
 		kind: "implementation",
 		graph: state.graph,
@@ -372,6 +378,7 @@ function reviewerPrompt(
 		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id),
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
+		...(amendments.length ? { context: { gate_command_amendments: amendments } } : {}),
 	}, mode);
 }
 

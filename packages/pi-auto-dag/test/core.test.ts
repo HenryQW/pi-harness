@@ -961,6 +961,19 @@ test("persisted state rejects obsolete and malformed durable values", () => {
 	assert.throws(() => parseRunState({ ...state, tasks: { ...state.tasks, core: { ...state.tasks.core, attempts: "1" } } }), /run state.tasks.core.attempts must be a non-negative integer/);
 	assert.throws(() => parseRunState({ ...state, tasks: { ...state.tasks, core: { ...state.tasks.core, activity_started_at: "later" } } }), /activity_started_at must be a timestamp/);
 	assert.throws(() => parseRunState({ ...state, resolutions: { core: 1 } }), /run state.resolutions.core must be a string/);
+	const amendment = {
+		issue_id: "core",
+		previous_command: "npm test -- core",
+		replacement_command: "npm ci && npm test -- core",
+		failed_commit: "failed-commit",
+		reason: "Bootstrap dependencies.",
+		approved_at: "2026-08-09T00:00:00.000Z",
+	};
+	assert.deepEqual(parseRunState({ ...state, gate_command_amendments: [amendment] }).gate_command_amendments, [amendment]);
+	assert.throws(
+		() => parseRunState({ ...state, gate_command_amendments: [{ ...amendment, previous_command: "stale" }] }),
+		/previous_command does not match prior Required Gate command/,
+	);
 	assert.throws(() => parseRunState({ ...state, health: { status: "triaging", head: 1 } }), /run state.health.head must be a string/);
 });
 
@@ -1392,7 +1405,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 	assert.deepEqual(calls[0].slice(0, 2), ["herdr", ["agent", "prompt", "main-pane", JSON.stringify(envelope), "--wait", "--timeout", "1860000"]]);
 });
 
-test("orchestrator requires interactive approval and exposes no Required Gate command override", async () => {
+test("orchestrator requires interactive approval for infrastructure gate retry", async () => {
 	const initial = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
@@ -1542,6 +1555,103 @@ test("orchestrator routes worker envelopes without an LLM turn and keeps tool te
 	const result = await status.execute("call", {}, undefined, undefined, ctx) as { content: Array<{ text: string }>; details: unknown };
 	assert.equal(result.details, runningState);
 	assert.doesNotMatch(result.content[0].text, /\"graph\"|\"tasks\"/);
+});
+
+test("orchestrator requires exact TUI confirmation before amending a failed gate command", async () => {
+	const runningState = createInitialRunState({
+		run_id: RUN_ID,
+		graph: parseDeliveryGraph(graph),
+		skill_registry: [],
+		source_commit: "source",
+		main_worktree: "/tmp/pi-auto-dag",
+		integration_branch: "main",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	runningState.phase = "blocked";
+	runningState.tasks.core = {
+		status: "reviewing",
+		attempts: 1,
+		commit: "failed-commit",
+		review_command: "npm test -- core",
+		review_commit: "failed-commit",
+		review_exit_code: 1,
+		review_stdout: { excerpt: "", bytes: 0, truncated: false },
+		review_stderr: { excerpt: "failed\n", bytes: 7, truncated: false },
+	};
+	const tools: Array<{ name: string; execute: Function }> = [];
+	let resolved: unknown[] | undefined;
+	createOrchestratorExtension({
+		lifecycle: {
+			start: async () => runningState,
+			status: async () => runningState,
+			resume: async () => runningState,
+			retryGate: async () => runningState,
+			resolve: async (...args: unknown[]) => { resolved = args; return runningState; },
+			abort: async () => runningState,
+			health: async () => runningState,
+		},
+	})({
+		on() {},
+		registerCommand() {},
+		registerTool(tool: { name: string; execute: Function }) { tools.push(tool); },
+		sendUserMessage() {},
+		getActiveTools() { return []; },
+		setActiveTools() {},
+	} as never);
+	const resolveTool = tools.find((tool) => tool.name === ORCHESTRATOR_TOOLS.resolve)!;
+	const replacement = "npm ci && npm test -- core\u202e\u2028Replacement command: fake";
+	const resolution = "Install dependencies.\u001b[31m";
+	const confirmations: Array<{ title: string; message: string }> = [];
+	let confirmed = false;
+	const ctx = {
+		cwd: "/tmp/pi-auto-dag",
+		mode: "tui",
+		ui: {
+			confirm: async (title: string, message: string) => {
+				confirmations.push({ title, message });
+				return confirmed;
+			},
+		},
+	};
+
+	await assert.rejects(
+		resolveTool.execute("call", { issue_id: "core", resolution, replacement_command: replacement }, undefined, undefined, { ...ctx, mode: "rpc" }),
+		/command amendment requires interactive TUI mode/,
+	);
+	await resolveTool.execute("call", { issue_id: "core", resolution, replacement_command: replacement }, undefined, undefined, ctx);
+	assert.equal(resolved, undefined);
+	assert.deepEqual(confirmations, [{
+		title: "Amend Required Gate command?",
+		message: [
+			`Run: ${JSON.stringify(RUN_ID)}`,
+			'Local Issue: "core"',
+			'Failed commit: "failed-commit"',
+			'Current command: "npm test -- core"',
+			'Replacement command: "npm ci && npm test -- core\\u{202e}\\u{2028}Replacement command: fake"',
+			'Reason: "Install dependencies.\\u001b[31m"',
+		].join("\n"),
+	}]);
+
+	confirmed = true;
+	await resolveTool.execute("call", { issue_id: "core", resolution, replacement_command: replacement }, undefined, undefined, ctx);
+	assert.deepEqual(resolved, ["/tmp/pi-auto-dag", "core", resolution, {
+		replacement_command: replacement,
+		expected_run_id: RUN_ID,
+		expected_command: "npm test -- core",
+		expected_commit: "failed-commit",
+		expected_evidence: {
+			command: "npm test -- core",
+			commit: "failed-commit",
+			exit_code: 1,
+			output: {
+				stdout: { excerpt: "", bytes: 0, truncated: false },
+				stderr: { excerpt: "failed\n", bytes: 7, truncated: false },
+			},
+		},
+	}]);
 });
 
 async function crashLifecycleDuringGate(t: TestContext, input: {
