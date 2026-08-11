@@ -1,6 +1,5 @@
-export const CONFIG_VERSION = 2;
-export const RUN_STATE_VERSION = 2;
-export const PROFILE_RESOLUTION_VERSION = 1;
+export const CONFIG_VERSION = 3;
+export const RUN_STATE_VERSION = 3;
 export const DEFAULT_MAX_PARALLEL_TASKS = 5;
 export const DEFAULT_MAX_REVIEW_ROUNDS = 5;
 export const DEFAULT_REQUIRED_GATE_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -31,9 +30,16 @@ export interface RequiredGateEvidence {
 	};
 }
 
+export interface ConfiguredProfile {
+	description: string;
+	agent_dir: string;
+	skills: string[];
+	tools: string[];
+}
+
 export interface ProfileRoutingConfig {
 	version: typeof CONFIG_VERSION;
-	profile_resolver: string[];
+	profiles: Record<ProfileId, ConfiguredProfile>;
 	implementation_profiles: ProfileId[];
 	reviewer_profile: ProfileId;
 	repair_profile: ProfileId;
@@ -42,18 +48,19 @@ export interface ProfileRoutingConfig {
 	required_gate_timeout_ms: number;
 }
 
-export interface ResolvedProfile {
-	version: typeof PROFILE_RESOLUTION_VERSION;
+export interface ResolvedProfile extends ConfiguredProfile {
 	id: ProfileId;
-	description: string;
-	agent_dir: string;
-	skills: string[];
-	tools: string[];
 }
 
-export interface ProjectConfig extends ProfileRoutingConfig {
-	profiles: Record<ProfileId, ResolvedProfile>;
+export interface SkillRegistryEntry {
+	name: string;
+	file_path: string;
 }
+
+export type ProjectConfig = Omit<ProfileRoutingConfig, "profiles"> & {
+	profiles: Record<ProfileId, ResolvedProfile>;
+	skill_registry: SkillRegistryEntry[];
+};
 
 export interface LocalIssue {
 	id: string;
@@ -215,6 +222,7 @@ export interface RunState {
 	run_id: string;
 	graph_hash: string;
 	graph: DeliveryGraph;
+	skill_registry: SkillRegistryEntry[];
 	source_commit: string;
 	integration_head: string;
 	main_worktree: string;

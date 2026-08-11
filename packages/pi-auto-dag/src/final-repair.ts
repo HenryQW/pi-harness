@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile } from "./config.ts";
+import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
 import { ensureRecordedGate, failFinalGate, requiredTaskGate } from "./final-gate.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
@@ -17,6 +17,7 @@ export type FinalRepairOptions = {
 	runner: CommandRunner;
 	uuid: Uuid;
 	now?: () => string;
+	availableSkills?: () => readonly AvailableSkill[] | undefined;
 };
 
 export function isFinalRepairActive(state: RunState): boolean {
@@ -446,7 +447,7 @@ async function applyFinalRepair(state: RunState, issue: LocalIssue, options: Fin
 	const reviewed = nonEmptyString(current.repair_commit ?? current.commit, "final-gate repair commit");
 	const commit = current.integration_intent ?? reviewed;
 	if (current.integration_intent && current.integration_intent !== reviewed) throw new Error("Final-gate repair integration intent does not match its reviewed commit");
-	await assertRunBoundary(state, options.runner);
+	await assertRunBoundary(state, options.runner, options.availableSkills?.());
 	await verifyRepairCommit(state, issue, commit, options);
 	if (!current.integration_intent) {
 		state = await save(replaceTask(state, issue.id, { ...current, status: "repair_applying", integration_intent: commit }), options);
