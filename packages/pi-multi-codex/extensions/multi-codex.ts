@@ -225,15 +225,17 @@ function loadStateSync(): UsageState {
 	}
 }
 
-async function loadState(): Promise<UsageState> {
+async function loadState(signal?: AbortSignal): Promise<UsageState> {
 	try {
-		return parseState(JSON.parse(await readFile(cachePath(), "utf8")));
-	} catch {
+		return parseState(JSON.parse(await readFile(cachePath(), { encoding: "utf8", signal })));
+	} catch (error) {
+		signal?.throwIfAborted();
 		return emptyState();
 	}
 }
 
-async function saveState(state: UsageState): Promise<void> {
+async function saveState(state: UsageState, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
 	const file = cachePath();
 	const directory = join(getAgentDir(), "config", "pi-multi-codex");
 	await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -243,8 +245,10 @@ async function saveState(state: UsageState): Promise<void> {
 	})}\n`;
 	const temporary = `${file}.${randomUUID()}.tmp`;
 	try {
-		await writeFile(temporary, data, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		await writeFile(temporary, data, { encoding: "utf8", mode: 0o600, flag: "wx", signal });
+		signal?.throwIfAborted();
 		await rename(temporary, file);
+		signal?.throwIfAborted();
 		await chmod(file, 0o600);
 	} finally {
 		await rm(temporary, { force: true }).catch(() => undefined);
@@ -281,32 +285,35 @@ function cleanupSignal(): AbortSignal {
 	return controller.signal;
 }
 
-async function withCacheMutex<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 	signal?.throwIfAborted();
 	await mkdir(join(getAgentDir(), "config", "pi-multi-codex"), { recursive: true, mode: 0o700 });
 	let release: (() => Promise<void>) | undefined;
 	while (!release) {
 		signal?.throwIfAborted();
 		try {
+			const compromised = new AbortController();
 			release = await lock(cachePath(), {
 				lockfilePath: cacheMutexPath(),
 				realpath: false,
 				stale: LOCK_STALE_MS,
 				update: HEARTBEAT_MS,
 				retries: 0,
-				onCompromised: () => undefined,
+				onCompromised: (error) => compromised.abort(error),
 			});
+			const operationSignal = signal ? AbortSignal.any([signal, compromised.signal]) : compromised.signal;
+			try {
+				operationSignal.throwIfAborted();
+				return await raceWithSignal(operation(operationSignal), operationSignal);
+			} finally {
+				await release().catch(() => undefined);
+			}
 		} catch (error) {
 			if (errorCode(error) !== "ELOCKED") throw error;
 			await sleepUnref(CACHE_MUTEX_RETRY_MS, signal);
 		}
 	}
-	try {
-		signal?.throwIfAborted();
-		return await operation();
-	} finally {
-		await release().catch(() => undefined);
-	}
+	throw new Error("Cache mutex acquisition ended unexpectedly.");
 }
 
 function isFresh(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, now: number): boolean {
@@ -421,14 +428,14 @@ class CodexQuotaStatus {
 	}
 
 	private change<T>(change: (state: UsageState) => { value: T; write: boolean }, signal?: AbortSignal): Promise<T> {
-		const operation = this.writes.then(() => withCacheMutex(async () => {
-			signal?.throwIfAborted();
-			const state = await loadState();
-			signal?.throwIfAborted();
+		const operation = this.writes.then(() => withCacheMutex(async (operationSignal) => {
+			operationSignal.throwIfAborted();
+			const state = await loadState(operationSignal);
+			operationSignal.throwIfAborted();
 			const result = change(state);
 			if (result.write) {
-				signal?.throwIfAborted();
-				await saveState(state);
+				operationSignal.throwIfAborted();
+				await saveState(state, operationSignal);
 			}
 			return result.value;
 		}, signal));
