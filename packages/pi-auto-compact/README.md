@@ -28,7 +28,11 @@ pi remove npm:@henryqw/pi-auto-compact
 
 ## Configure
 
-Run `/auto-compact`, then enter threshold percentage. Config lives in `~/.pi/agent/config/pi-auto-compact.json`:
+- `/auto-compact` or `/auto-compact threshold`: set threshold percentage.
+- `/auto-compact model`: select dedicated compaction model from available text models.
+- `/auto-compact model current`: remove dedicated model and use current session model.
+
+Config lives in `~/.pi/agent/config/pi-auto-compact.json`:
 
 ```json
 {

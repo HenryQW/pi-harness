@@ -89,33 +89,53 @@ test("suppresses only empty abort caused by pending extension compaction", async
 	}
 });
 
-test("reads and writes autoCompactThreshold", async () => {
+test("configures threshold and compaction model", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-"));
 	const configFile = join(tempRoot, "config", "pi-auto-compact.json");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	const expectedConfig = {
-		autoCompactThreshold: 40,
-		compactionModel: "provider/model",
-	};
 
 	try {
 		await mkdir(join(tempRoot, "config"), { recursive: true });
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		await writeFile(configFile, JSON.stringify({ ...expectedConfig, autoCompactThreshold: 65 }));
+		await writeFile(configFile, JSON.stringify({
+			autoCompactThreshold: 65,
+			compactionModel: "provider/model",
+		}));
 
 		const commands = new Map<string, Command>();
 		const handlers = loadExtension(commands);
 		let compactions = 0;
 		let input = "40";
+		let autoInstructions: string | undefined;
 		const notices: string[] = [];
+		const modelLookups: unknown[][] = [];
+		const modelPrompts: Array<{ title: string; options: string[] }> = [];
+		const newModel = { provider: "provider", id: "new-model", input: ["text"] };
 		const ctx = {
 			cwd: tempRoot,
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
-			compact: () => { compactions++; },
+			compact: (options: { customInstructions?: string }) => {
+				compactions++;
+				autoInstructions = options.customInstructions;
+			},
+			modelRegistry: {
+				getAvailable: () => [
+					newModel,
+					{ provider: "provider", id: "image-model", input: ["image"] },
+				],
+				find: (...args: unknown[]) => {
+					modelLookups.push(args);
+					return undefined;
+				},
+			},
 			ui: {
 				input: async () => input,
+				select: async (title: string, options: string[]) => {
+					modelPrompts.push({ title, options });
+					return "provider/new-model";
+				},
 				notify: (message: string) => notices.push(message),
 			},
 		} as unknown as ExtensionContext;
@@ -128,15 +148,58 @@ test("reads and writes autoCompactThreshold", async () => {
 		assert.equal(compactions, 0);
 
 		await commands.get("auto-compact")?.("", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), expectedConfig);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
+			autoCompactThreshold: 40,
+			compactionModel: "provider/model",
+		});
 		handlers.get("turn_start")?.({} as never, ctx);
 		assert.equal(compactions, 1);
-		assert.deepEqual(notices, ["Auto-compact threshold set to 40%."]);
+		assert.equal(notices.at(-1), "Auto-compact threshold set to 40%.");
+
+		input = "45";
+		await commands.get("auto-compact")?.("threshold", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
+			autoCompactThreshold: 45,
+			compactionModel: "provider/model",
+		});
 
 		input = "20";
-		await commands.get("auto-compact")?.("", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), expectedConfig);
+		await commands.get("auto-compact")?.("threshold", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
+			autoCompactThreshold: 45,
+			compactionModel: "provider/model",
+		});
 		assert.equal(notices.at(-1), "Auto-compact threshold below 25% is not meaningful.");
+
+		await commands.get("auto-compact")?.("model", ctx);
+		assert.deepEqual(modelPrompts, [{
+			title: "Auto-compact model · current: provider/model",
+			options: ["provider/new-model"],
+		}]);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), {
+			autoCompactThreshold: 45,
+			compactionModel: "provider/new-model",
+		});
+		assert.equal(notices.at(-1), "Auto-compact model set to provider/new-model.");
+
+		const compactionEvent = {
+			type: "session_before_compact",
+			customInstructions: autoInstructions,
+			preparation: { fileOps: { read: new Set(), written: new Set(), edited: new Set() } },
+			branchEntries: [],
+		};
+		await handlers.get("session_before_compact")?.(compactionEvent as never, ctx);
+		assert.deepEqual(modelLookups, [["provider", "new-model"]]);
+
+		await commands.get("auto-compact")?.("model current", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 45 });
+		assert.equal(notices.at(-1), "Auto-compact model set to current session model.");
+		await handlers.get("session_before_compact")?.(compactionEvent as never, ctx);
+		assert.deepEqual(modelLookups, [["provider", "new-model"]]);
+
+		await commands.get("auto-compact")?.("unknown", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 45 });
+		assert.equal(notices.at(-1), "Usage: /auto-compact [threshold|model|model current]");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

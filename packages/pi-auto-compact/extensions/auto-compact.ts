@@ -243,8 +243,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("auto-compact", {
-		description: "set automatic compaction threshold",
-		handler: async (_args, ctx) => {
+		description: "configure automatic compaction",
+		handler: async (args, ctx) => {
+			const command = args.trim();
+			if (command && !["threshold", "model", "model current"].includes(command)) {
+				ctx.ui.notify("Usage: /auto-compact [threshold|model|model current]", "error");
+				return;
+			}
+
 			let config: Config;
 			try {
 				config = readConfig();
@@ -252,11 +258,50 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
 				return;
 			}
-			const current = config.autoCompactThreshold;
+			const save = (next: Config) => {
+				try {
+					writeConfig(next);
+					return true;
+				} catch {
+					ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
+					return false;
+				}
+			};
 
+			if (command === "model current") {
+				if (!save({ ...config, compactionModel: undefined })) return;
+				compactionModel = undefined;
+				ctx.ui.notify("Auto-compact model set to current session model.", "info");
+				return;
+			}
+
+			if (command === "model") {
+				const models = ctx.modelRegistry
+					.getAvailable()
+					.filter((model) => model.input.includes("text"))
+					.map((model) => `${model.provider}/${model.id}`)
+					.sort();
+				if (!models.length) {
+					ctx.ui.notify("No authenticated text models are available.", "error");
+					return;
+				}
+
+				const selected = await ctx.ui.select(
+					`Auto-compact model · current: ${config.compactionModel ?? "session model"}`,
+					models,
+				);
+				if (!selected) return;
+
+				if (!save({ ...config, compactionModel: selected })) return;
+				compactionModel = selected;
+				ctx.ui.notify(`Auto-compact model set to ${selected}.`, "info");
+				return;
+			}
+
+			const current = config.autoCompactThreshold;
 			const input = await ctx.ui.input(
 				`Auto-compact threshold (%) · current: ${current}`,
-				"Enter a number above 0 and below 100",
+				"Enter a number at least 25 and below 100",
 			);
 			if (input === undefined) return;
 
@@ -270,12 +315,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			try {
-				writeConfig({ ...config, autoCompactThreshold: threshold });
-			} catch {
-				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
-				return;
-			}
+			if (!save({ ...config, autoCompactThreshold: threshold })) return;
 			autoCompactThreshold = threshold;
 			ctx.ui.notify(`Auto-compact threshold set to ${threshold}%.`, "info");
 		},
