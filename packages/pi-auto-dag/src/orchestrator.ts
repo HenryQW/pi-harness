@@ -32,7 +32,7 @@ const WORKER_WIDGET = "auto-dag-workers";
 const ORCHESTRATOR_TOOL_NAMES = new Set<string>(Object.values(ORCHESTRATOR_TOOLS));
 
 function quotedConfirmationValue(value: string): string {
-	return JSON.stringify(value).replace(/[\p{Cc}\p{Cf}]/gu, (character) => `\\u{${character.codePointAt(0)!.toString(16)}}`);
+	return JSON.stringify(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (character) => `\\u{${character.codePointAt(0)!.toString(16)}}`);
 }
 
 /** The main integration extension exposes the public lifecycle surface and nothing else. */

@@ -1602,7 +1602,7 @@ test("orchestrator requires exact TUI confirmation before amending a failed gate
 		setActiveTools() {},
 	} as never);
 	const resolveTool = tools.find((tool) => tool.name === ORCHESTRATOR_TOOLS.resolve)!;
-	const replacement = "npm ci && npm test -- core\u202e";
+	const replacement = "npm ci && npm test -- core\u202e\u2028Replacement command: fake";
 	const resolution = "Install dependencies.\u001b[31m";
 	const confirmations: Array<{ title: string; message: string }> = [];
 	let confirmed = false;
@@ -1630,7 +1630,7 @@ test("orchestrator requires exact TUI confirmation before amending a failed gate
 			'Local Issue: "core"',
 			'Failed commit: "failed-commit"',
 			'Current command: "npm test -- core"',
-			'Replacement command: "npm ci && npm test -- core\\u{202e}"',
+			'Replacement command: "npm ci && npm test -- core\\u{202e}\\u{2028}Replacement command: fake"',
 			'Reason: "Install dependencies.\\u001b[31m"',
 		].join("\n"),
 	}]);
@@ -1642,6 +1642,15 @@ test("orchestrator requires exact TUI confirmation before amending a failed gate
 		expected_run_id: RUN_ID,
 		expected_command: "npm test -- core",
 		expected_commit: "failed-commit",
+		expected_evidence: {
+			command: "npm test -- core",
+			commit: "failed-commit",
+			exit_code: 1,
+			output: {
+				stdout: { excerpt: "", bytes: 0, truncated: false },
+				stderr: { excerpt: "failed\n", bytes: 7, truncated: false },
+			},
+		},
 	}]);
 });
 

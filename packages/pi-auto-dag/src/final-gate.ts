@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
 import { executionIssues } from "./graph.ts";
 import type { GateCommandAmendment, LocalIssue, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
@@ -16,6 +17,7 @@ export interface GateCommandAmendmentRequest {
 	expected_run_id: string;
 	expected_command: string;
 	expected_commit: string;
+	expected_evidence: RequiredGateEvidence;
 }
 
 export function requiredGateCommand(state: RunState, issue: LocalIssue): string {
@@ -53,6 +55,7 @@ export function requiredGateCommandAmendmentRequest(
 		expected_run_id: state.run_id,
 		expected_command: command,
 		expected_commit: evidence.commit,
+		expected_evidence: evidence,
 	};
 }
 
@@ -68,6 +71,7 @@ export function amendRequiredGateCommand(
 		request.expected_run_id !== current.expected_run_id
 		|| request.expected_command !== current.expected_command
 		|| request.expected_commit !== current.expected_commit
+		|| !isDeepStrictEqual(request.expected_evidence, current.expected_evidence)
 	) {
 		throw new Error("Required Gate changed during command amendment; inspect and confirm current failure again");
 	}

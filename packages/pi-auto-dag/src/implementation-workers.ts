@@ -334,6 +334,8 @@ function implementerPrompt(
 			: mode === "replacement"
 				? "The previous commit conflicted. Produce one replacement commit on the new base, then request review again."
 				: "Implement this frozen Local Issue, commit exactly one change over the wave base, then request review through the worker tool.";
+	const amendments = gateCommandAmendments(state, issue.id);
+	const gate = amendments.length ? { required_gate: { command: requiredGateCommand(state, issue), amendments } } : {};
 	if (!full) return {
 		type: mode === "resume" ? "auto_dag_resend" : "auto_dag_task_update",
 		run_id: state.run_id,
@@ -341,6 +343,7 @@ function implementerPrompt(
 		attempt: current.attempts,
 		review_round: (current.review_rounds ?? 0) + 1,
 		review_findings: current.review_findings,
+		...gate,
 		instruction,
 	};
 	return {
@@ -354,6 +357,7 @@ function implementerPrompt(
 		worktree: current.worktree,
 		review_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
+		...gate,
 		instruction,
 	};
 }

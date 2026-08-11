@@ -211,12 +211,14 @@ test("failed final gate accepts an exact command amendment on same integration c
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
 	const finalCommit = state.tasks["final-check"].commit!;
+	const failedEvidence = recordedGateEvidence(state.tasks["final-check"], finalCommit)!;
 
 	state = await lifecycle.resolve(project.root, "final-check", "Bootstrap dependencies in clean final worktree.", {
 		replacement_command: replacement,
 		expected_run_id: state.run_id,
 		expected_command: FINAL_GATE_COMMAND,
 		expected_commit: finalCommit,
+		expected_evidence: failedEvidence,
 	});
 
 	assert.equal(state.phase, "execution");
@@ -258,12 +260,14 @@ test("infrastructure retry reruns the amended final gate command", async (t) => 
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", implementation));
 	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
 	const finalCommit = state.integration_head;
+	const failedEvidence = recordedGateEvidence(state.tasks["final-check"], finalCommit)!;
 
 	state = await lifecycle.resolve(project.root, "final-check", "Use checkout bootstrap command.", {
 		replacement_command: replacement,
 		expected_run_id: state.run_id,
 		expected_command: FINAL_GATE_COMMAND,
 		expected_commit: finalCommit,
+		expected_evidence: failedEvidence,
 	});
 	const failedAmendedGate = recordedGateEvidence(state.tasks["final-check"], finalCommit)!;
 	assert.equal(state.phase, "blocked");
