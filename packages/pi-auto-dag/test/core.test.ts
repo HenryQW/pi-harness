@@ -127,10 +127,13 @@ test("packed package runs required gate through plain Node host", async (t) => {
 	const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 	const { stdout: packedJson } = await execFile("npm", ["pack", "--json", "--pack-destination", root], { cwd: packageRoot });
 	const tarball = join(root, (JSON.parse(packedJson) as Array<{ filename: string }>)[0].filename);
+	const herdrRoot = fileURLToPath(new URL("../../pi-herdr/", import.meta.url));
+	const { stdout: herdrPackedJson } = await execFile("npm", ["pack", "--json", "--pack-destination", root], { cwd: herdrRoot });
+	const herdrTarball = join(root, (JSON.parse(herdrPackedJson) as Array<{ filename: string }>)[0].filename);
 	const app = join(root, "app");
 	await mkdir(app);
 	await writeFile(join(app, "package.json"), "{\"type\":\"module\"}\n");
-	await execFile("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--legacy-peer-deps", tarball], { cwd: app });
+	await execFile("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--legacy-peer-deps", herdrTarball, tarball], { cwd: app });
 	const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
 	const jitiPath = piRequire.resolve("jiti");
 	const commandUrl = pathToFileURL(join(app, "node_modules", "@henryqw", "pi-auto-dag", "src", "command.ts")).href;

@@ -6,6 +6,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { createHerdrClient } from "@henryqw/pi-herdr";
 
 const WIDGET_KEY = "pi-herdr-rename";
 const WIDGET_RESULT_MS = 2_000;
@@ -134,15 +135,9 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 	return title;
 }
 
-async function herdr(pi: ExtensionAPI, args: string[], signal: AbortSignal): Promise<string> {
-	const result = await pi.exec("herdr", args, { signal });
-	if (result.code !== 0 || result.killed) {
-		throw new Error(`Herdr ${args[0]} failed: ${result.stderr.trim() || `exit code ${result.code}`}`);
-	}
-	return result.stdout;
-}
-
 export default function herdrRenameExtension(pi: ExtensionAPI): void {
+	const herdr = createHerdrClient<{ signal: AbortSignal }>((command, args, options) =>
+		pi.exec(command, [...args], options));
 	let latestUserText: string | undefined;
 	let automaticStarted = false;
 	let sequence = 0;
@@ -158,21 +153,19 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (!paneId) return;
 
 		if (!isCurrent(request, controller)) return;
-		await herdr(pi, ["pane", "rename", paneId, title], controller.signal);
+		await herdr.run(["pane", "rename", paneId, title], { signal: controller.signal });
 		if (!isCurrent(request, controller)) return;
 
-		const paneResponse: unknown = JSON.parse(
-			await herdr(pi, ["pane", "get", paneId], controller.signal),
-		);
+		const paneResponse: unknown = await herdr.json(["pane", "get", paneId], { signal: controller.signal });
 		const tabId = (paneResponse as { result?: { pane?: { tab_id?: unknown } } }).result?.pane?.tab_id;
 		if (typeof tabId !== "string" || !tabId) throw new Error("Herdr pane response omitted tab_id.");
 		if (!isCurrent(request, controller)) return;
 
-		const tabResponse: unknown = JSON.parse(await herdr(pi, ["tab", "get", tabId], controller.signal));
+		const tabResponse: unknown = await herdr.json(["tab", "get", tabId], { signal: controller.signal });
 		const paneCount = (tabResponse as { result?: { tab?: { pane_count?: unknown } } }).result?.tab?.pane_count;
 		if (typeof paneCount !== "number") throw new Error("Herdr tab response omitted pane_count.");
 		if (paneCount === 1 && isCurrent(request, controller)) {
-			await herdr(pi, ["tab", "rename", tabId, title], controller.signal);
+			await herdr.run(["tab", "rename", tabId, title], { signal: controller.signal });
 		}
 	};
 

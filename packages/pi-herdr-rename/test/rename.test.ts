@@ -381,7 +381,7 @@ test("later Herdr failure preserves the Pi name and pane rename", async () => {
 		await app.commands.get("rename")?.("", app.ctx);
 		assert.deepEqual(app.names, ["generated title"]);
 		assert.ok(app.execCalls.some((args) => args[0] === "pane" && args[1] === "rename" && args.at(-1) === "generated title"));
-		assert.match(app.notifications.at(-1) ?? "", /Herdr pane failed/);
+		assert.match(app.notifications.at(-1) ?? "", /herdr pane get failed/);
 		assert.equal(app.widgets.at(-1), undefined);
 	});
 });
