@@ -43,7 +43,7 @@ Run `/auto-compact`, then enter threshold percentage. Config lives in `~/.pi/age
 
 - Refuses activation with an error when Pi's effective `compaction.enabled` setting is not `false`; competing automatic compactors can start duplicate summaries.
 - Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed/forked `session_start`.
-- Uses Pi's native summary and session persistence; optional `compactionModel` runs that summary with selected model.
+- Uses Pi's native summary and session persistence; optional `compactionModel` runs automatic summaries with selected model. Manual `/compact` keeps using current session model.
 - Falls back to current session model when configured compaction model is unavailable, cannot authenticate, or fails.
 - Keeps newest 15% as temporary emergency context while compaction runs.
 - Sends a follow-up message after mid-task compaction so task execution continues; final-answer compaction stays idle.

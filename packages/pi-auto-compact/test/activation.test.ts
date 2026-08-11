@@ -144,7 +144,7 @@ test("reads and writes autoCompactThreshold", async () => {
 	}
 });
 
-test("falls back when configured compaction model cannot authenticate", async () => {
+test("routes only auto compaction through the configured model and falls back on auth failure", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-model-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
@@ -158,31 +158,59 @@ test("falls back when configured compaction model cannot authenticate", async ()
 		}));
 
 		const handlers = loadExtension();
-		const calls: unknown[][] = [];
+		const modelLookups: unknown[][] = [];
+		const notices: string[] = [];
+		let authAttempts = 0;
+		let compactions = 0;
+		let autoInstructions: string | undefined;
 		const ctx = {
 			cwd: tempRoot,
 			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+			compact: (options: { customInstructions?: string }) => {
+				compactions++;
+				autoInstructions = options.customInstructions;
+			},
 			modelRegistry: {
 				find: (...args: unknown[]) => {
-					calls.push(args);
+					modelLookups.push(args);
 					return {};
 				},
-				getApiKeyAndHeaders: async () => ({ ok: false, error: "missing" }),
+				getApiKeyAndHeaders: async () => {
+					authAttempts++;
+					return { ok: false, error: "missing" };
+				},
 			},
+			ui: { notify: (message: string) => notices.push(message) },
 		} as unknown as ExtensionContext;
 
 		handlers.get("session_start")?.(
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
-		const warn = console.warn;
-		console.warn = () => {};
-		try {
-			assert.equal(await handlers.get("session_before_compact")?.({} as never, ctx), undefined);
-		} finally {
-			console.warn = warn;
-		}
-		assert.deepEqual(calls, [["provider", "model"]]);
+		handlers.get("turn_start")?.({} as never, ctx);
+		assert.equal(compactions, 1);
+		assert.ok(autoInstructions);
+
+		const compactionEvent = {
+			type: "session_before_compact",
+			reason: "manual",
+			signal: new AbortController().signal,
+		};
+		// Manual /compact remains native even while auto compaction is pending.
+		assert.equal(await handlers.get("session_before_compact")?.(compactionEvent as never, ctx), undefined);
+		assert.deepEqual(modelLookups, []);
+		assert.equal(authAttempts, 0);
+
+		assert.equal(await handlers.get("session_before_compact")?.({
+			...compactionEvent,
+			customInstructions: autoInstructions,
+		} as never, ctx), undefined);
+		assert.deepEqual(modelLookups, [["provider", "model"]]);
+		assert.equal(authAttempts, 1);
+		assert.deepEqual(notices, [
+			"Couldn't authenticate configured compaction model; using current session model.",
+		]);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

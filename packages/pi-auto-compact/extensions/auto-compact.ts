@@ -87,30 +87,9 @@ function withoutDeletedHeaders(headers: Record<string, string | null> | undefine
 		: undefined;
 }
 
-// Pi does not trust file-operation details from extension compactions. Restore
-// its native details before generating next summary so file lists persist.
-function restorePreviousFileOperations(
-	preparation: { fileOps: { read: Set<string>; edited: Set<string> } },
-	branchEntries: Array<{ type: string; details?: unknown }>,
-): void {
-	const previous = [...branchEntries].reverse().find((entry) => entry.type === "compaction");
-	if (!previous || !previous.details || typeof previous.details !== "object") return;
-
-	const details = previous.details as { readFiles?: unknown; modifiedFiles?: unknown };
-	if (Array.isArray(details.readFiles)) {
-		for (const path of details.readFiles) {
-			if (typeof path === "string") preparation.fileOps.read.add(path);
-		}
-	}
-	if (Array.isArray(details.modifiedFiles)) {
-		for (const path of details.modifiedFiles) {
-			if (typeof path === "string") preparation.fileOps.edited.add(path);
-		}
-	}
-}
-
 // Emergency context guard keeps recent messages while default compaction runs.
 const KEEP_RECENT_PERCENT = 15;
+const COMPACTION_INSTRUCTIONS = "Preserve current task for automatic resumption.";
 const RESUME_MESSAGE = "Auto-compact ran. Continue the current task.";
 const COMPACTION_ABORT_ERROR = "This operation was aborted";
 const ACTIVATION_ERROR =
@@ -181,6 +160,7 @@ export default function (pi: ExtensionAPI) {
 	const runCompaction = (ctx: ExtensionContext, resumeTask = true) => {
 		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
 		ctx.compact({
+			customInstructions: COMPACTION_INSTRUCTIONS,
 			onComplete: () => {
 				compactionPending = false;
 				compactionAbortExpected = false;
@@ -324,24 +304,28 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
-		if (!active || !compactionModel) return;
+		if (
+			!active ||
+			!compactionPending ||
+			event.customInstructions !== COMPACTION_INSTRUCTIONS ||
+			!compactionModel
+		) return;
 
 		const reference = parseModelReference(compactionModel);
 		if (!reference) return;
 		const model = ctx.modelRegistry.find(reference.provider, reference.modelId);
 		if (!model) {
-			console.warn("[pi-auto-compact] Configured compaction model not found; using current session model.");
-			return;
-		}
-
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok) {
-			console.warn("[pi-auto-compact] Couldn't authenticate configured compaction model; using current session model.");
+			ctx.ui.notify("Configured compaction model not found; using current session model.", "error");
 			return;
 		}
 
 		try {
-			restorePreviousFileOperations(event.preparation, event.branchEntries);
+			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+			if (!auth.ok) {
+				ctx.ui.notify("Couldn't authenticate configured compaction model; using current session model.", "error");
+				return;
+			}
+
 			const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
 			return {
 				compaction: await compact(
@@ -358,7 +342,7 @@ export default function (pi: ExtensionAPI) {
 			};
 		} catch {
 			if (!event.signal.aborted) {
-				console.warn("[pi-auto-compact] Configured compaction model failed; using current session model.");
+				ctx.ui.notify("Configured compaction model failed; using current session model.", "error");
 			}
 		}
 	});
