@@ -190,6 +190,80 @@ test("quota request gets refreshed bearer from Pi auth store", async () => {
 	}
 });
 
+test("new session refreshes after aborted predecessor cleans up", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-restarted-session-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldFetch = globalThis.fetch;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("restart-account") }));
+		let requests = 0;
+		globalThis.fetch = (_input, init) => {
+			requests++;
+			if (requests === 1) return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+			return Promise.resolve(new Response(JSON.stringify({ rate_limit: {
+				secondary_window: { used_percent: 50, limit_window_seconds: 604_800, reset_after_seconds: 3600 },
+			} })));
+		};
+		const handlers = new Map<string, Handler>();
+		multiCodex({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerProvider() {},
+		} as unknown as ExtensionAPI);
+		const ctx = context([]);
+		handlers.get("session_start")?.({} as never, ctx);
+		await waitFor(() => requests === 1);
+		handlers.get("session_start")?.({} as never, ctx);
+		await waitFor(() => requests === 2);
+		handlers.get("session_shutdown")?.({} as never, ctx);
+	} finally {
+		globalThis.fetch = oldFetch;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("refreshes fresh cache at its expiry", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-refresh-deadline-"));
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldFetch = globalThis.fetch;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await writeFile(join(agentDir, "auth.json"), JSON.stringify({ "openai-codex": oauth("deadline-account") }));
+		await mkdir(join(agentDir, "config", "pi-multi-codex"), { recursive: true });
+		const now = Date.now();
+		await writeFile(join(agentDir, "config", "pi-multi-codex", "usage.json"), JSON.stringify({
+			slots: [{ slot: 1, accountHash: hash("deadline-account"), checkedAt: now - 299_970, fetchedAt: now - 299_970, remaining: 50, reset: now + 3_600_000 }],
+			locks: [],
+		}));
+		let requests = 0;
+		globalThis.fetch = async () => {
+			requests++;
+			return new Response(JSON.stringify({ rate_limit: {
+				secondary_window: { used_percent: 50, limit_window_seconds: 604_800, reset_after_seconds: 3600 },
+			} }));
+		};
+		const handlers = new Map<string, Handler>();
+		multiCodex({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerProvider() {},
+		} as unknown as ExtensionAPI);
+		const started = Date.now();
+		handlers.get("session_start")?.({} as never, context([]));
+		await waitFor(() => requests === 1);
+		assert.ok(Date.now() - started < 1_000);
+		handlers.get("session_shutdown")?.({} as never, context([]));
+	} finally {
+		globalThis.fetch = oldFetch;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
 test("elapsed quota window bypasses recent-check backoff", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-multi-codex-elapsed-window-"));
 	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -288,6 +362,8 @@ test("two Pi processes reclaim one stale cache mutex", async () => {
 		`);
 		await Promise.all([runQuotaProcess(agentDir, fetchMock, countFile), runQuotaProcess(agentDir, fetchMock, countFile)]);
 		assert.equal((await readFile(countFile, "utf8")).trim(), "1");
+		const tombstone = `${mutex}.${createHash("sha256").update("dead-owner").digest("hex")}.stale`;
+		assert.equal(await readFile(join(tombstone, "owner"), "utf8"), "dead-owner");
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}

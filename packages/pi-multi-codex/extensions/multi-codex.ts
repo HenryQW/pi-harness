@@ -41,6 +41,7 @@ type SlotIdentity = {
 };
 
 type SlotAuthResolver = (slot: number) => Promise<string | undefined>;
+type QuotaRefresh = { generation: number; session: AbortController; resolveSlotAuth: SlotAuthResolver };
 
 type UsageSnapshot = {
 	slot: number;
@@ -250,6 +251,10 @@ async function saveState(state: UsageState): Promise<void> {
 
 type CacheMutex = { directory: string; owner: string };
 
+function staleMutexPath(directory: string, owner: string): string {
+	return `${directory}.${createHash("sha256").update(owner).digest("hex")}.stale`;
+}
+
 function errorCode(error: unknown): string | undefined {
 	return error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
 }
@@ -301,14 +306,14 @@ async function acquireCacheMutex(signal?: AbortSignal): Promise<CacheMutex> {
 		} catch (error) {
 			if (errorCode(error) !== "EEXIST") throw error;
 			try {
+				const observedOwner = await readFile(ownerFile, "utf8");
 				if (Date.now() - (await stat(directory)).mtimeMs >= LOCK_STALE_MS) {
-					const stale = `${directory}.${owner}.stale`;
-					await rename(directory, stale);
-					await rm(stale, { recursive: true, force: true });
+					// Non-empty tombstone ties reclaim to observed owner. A delayed reclaimer cannot rename a replacement lock.
+					await rename(directory, staleMutexPath(directory, observedOwner));
 					continue;
 				}
-			} catch {
-				continue;
+			} catch (reclaimError) {
+				if (errorCode(reclaimError) === "ENOENT") continue;
 			}
 			await sleepUnref(CACHE_MUTEX_RETRY_MS, signal);
 		}
@@ -425,10 +430,10 @@ function formatDuration(ms: number): string {
 class CodexQuotaStatus {
 	private generation = 0;
 	private session: AbortController | undefined;
+	private refresh: QuotaRefresh | undefined;
 	private timer: Timer | undefined;
 	private readonly heartbeats = new Map<number, { owner: string; timer: Timer }>();
 	private readonly active = new Map<number, Promise<void>>();
-	private readonly retries = new Set<Timer>();
 	private writes: Promise<void> = Promise.resolve();
 	private onChange: () => void = () => undefined;
 
@@ -465,26 +470,68 @@ class CodexQuotaStatus {
 		this.stop();
 		const session = new AbortController();
 		this.session = session;
-		const generation = ++this.generation;
-		void this.refreshDue(generation, session, resolveSlotAuth);
-		this.timer = setInterval(() => void this.refreshDue(generation, session, resolveSlotAuth), REFRESH_MS);
-		this.timer.unref?.();
+		this.refresh = { generation: ++this.generation, session, resolveSlotAuth };
+		this.requestRefresh();
 	}
 
 	stop(): void {
 		this.generation++;
 		this.session?.abort();
 		this.session = undefined;
-		if (this.timer) clearInterval(this.timer);
+		this.refresh = undefined;
+		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
-		for (const retry of this.retries) clearTimeout(retry);
-		this.retries.clear();
 		for (const heartbeat of this.heartbeats.values()) clearInterval(heartbeat.timer);
 		this.heartbeats.clear();
 	}
 
 	private alive(generation: number, session: AbortController): boolean {
 		return this.generation === generation && this.session === session && !session.signal.aborted;
+	}
+
+	private requestRefresh(): void {
+		const refresh = this.refresh;
+		if (!refresh || !this.alive(refresh.generation, refresh.session)) return;
+		void this.refreshDue(refresh.generation, refresh.session, refresh.resolveSlotAuth)
+			.catch(() => undefined)
+			.then(() => {
+				if (this.refresh === refresh) this.scheduleRefresh();
+			});
+	}
+
+	private scheduleRefresh(): void {
+		const refresh = this.refresh;
+		if (!refresh || !this.alive(refresh.generation, refresh.session)) return;
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = undefined;
+
+		const now = Date.now();
+		const state = loadStateSync();
+		let dueAt: number | undefined;
+		for (const [slot, credential] of readCodexCredentials()) {
+			if (this.active.has(slot)) continue;
+			const identity = identityFor(credential);
+			if (!identity) continue;
+			const snapshot = state.slots.get(slot);
+			const lock = state.locks.get(slot);
+			const lockDue = lock && lock.accountHash === identity.accountHash && lock.heartbeatAt <= now && now - lock.heartbeatAt < LOCK_STALE_MS
+				? lock.heartbeatAt + LOCK_STALE_MS + 1
+				: undefined;
+			const snapshotDue = isFresh(snapshot, identity, now)
+				? snapshot!.fetchedAt! + REFRESH_MS + 1
+				: checkedRecently(snapshot, identity, now)
+					? snapshot!.checkedAt + REFRESH_MS + 1
+					: now;
+			const next = lockDue ?? snapshotDue;
+			dueAt = dueAt === undefined ? next : Math.min(dueAt, next);
+		}
+		if (dueAt === undefined) return;
+		const delay = Math.max(0, dueAt - now);
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			if (this.refresh === refresh) this.requestRefresh();
+		}, delay);
+		this.timer.unref?.();
 	}
 
 	private async refreshDue(generation: number, session: AbortController, resolveSlotAuth: SlotAuthResolver): Promise<void> {
@@ -510,40 +557,34 @@ class CodexQuotaStatus {
 		const task = this.refreshSlot(slot, identity, generation, session, resolveSlotAuth);
 		this.active.set(slot, task);
 		const cleanup = () => {
-			if (this.active.get(slot) === task) this.active.delete(slot);
+			if (this.active.get(slot) !== task) return;
+			this.active.delete(slot);
+			if (this.refresh?.generation === generation) this.scheduleRefresh();
+			else this.requestRefresh();
 		};
 		void task.then(cleanup, cleanup);
 	}
 
-	private retryAfter(delay: number, generation: number, session: AbortController, resolveSlotAuth: SlotAuthResolver): void {
-		const timer = setTimeout(() => {
-			this.retries.delete(timer);
-			void this.refreshDue(generation, session, resolveSlotAuth);
-		}, delay);
-		timer.unref?.();
-		this.retries.add(timer);
-	}
-
-	private async claim(slot: number, identity: SlotIdentity, signal: AbortSignal): Promise<{ owner?: string; retryAfter?: number }> {
+	private async claim(slot: number, identity: SlotIdentity, signal: AbortSignal): Promise<string | undefined> {
 		const owner = randomUUID();
-		const claim = await this.change<{ owner?: string; retryAfter?: number }>((state) => {
+		const claimed = await this.change((state) => {
 			const now = Date.now();
 			const snapshot = state.slots.get(slot);
 			if (isFresh(snapshot, identity, now) || checkedRecently(snapshot, identity, now)) {
-				return { value: {}, write: false };
+				return { value: false, write: false };
 			}
 			const lock = state.locks.get(slot);
 			if (lock && lock.accountHash === identity.accountHash && lock.heartbeatAt <= now && now - lock.heartbeatAt < LOCK_STALE_MS) {
-				return { value: { retryAfter: LOCK_STALE_MS - (now - lock.heartbeatAt) }, write: false };
+				return { value: false, write: false };
 			}
 			if (snapshot?.accountHash !== identity.accountHash) state.slots.delete(slot);
 			state.locks.set(slot, { slot, owner, accountHash: identity.accountHash, heartbeatAt: now });
-			return { value: { owner }, write: true };
+			return { value: true, write: true };
 		}, signal);
-		if (!claim.owner) return claim;
+		if (!claimed) return undefined;
 
 		const lock = (await this.state()).locks.get(slot);
-		return owns(lock, slot, owner, identity.accountHash) ? claim : {};
+		return owns(lock, slot, owner, identity.accountHash) ? owner : undefined;
 	}
 
 	private startHeartbeat(slot: number, owner: string, accountHash: string, signal: AbortSignal): void {
@@ -638,14 +679,8 @@ class CodexQuotaStatus {
 		let owner: string | undefined;
 		let discard = false;
 		try {
-			const claim = await this.claim(slot, identity, session.signal);
-			owner = claim.owner;
-			if (!owner || !this.alive(generation, session)) {
-				if (claim.retryAfter !== undefined && this.alive(generation, session)) {
-					this.retryAfter(claim.retryAfter, generation, session, resolveSlotAuth);
-				}
-				return;
-			}
+			owner = await this.claim(slot, identity, session.signal);
+			if (!owner || !this.alive(generation, session)) return;
 			this.startHeartbeat(slot, owner, identity.accountHash, session.signal);
 
 			const authSignal = AbortSignal.any([session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
@@ -897,7 +932,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	const updatePendingCandidate = (ctx: ExtensionContext): void => {
 		if (!automaticOpen || !ctx.model || !isManagedProvider(ctx.model.provider)) return;
 		const slot = selectFreshSlot(ctx.model);
-		if (slot) automaticCandidate = { ...ctx.model, provider: providerForSlot(slot) };
+		automaticCandidate = slot ? { ...ctx.model, provider: providerForSlot(slot) } : ctx.model;
 	};
 
 	quota.setOnChange(() => {
@@ -926,9 +961,10 @@ export default function multiCodex(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!automaticOpen) return;
+		const model = ctx.model;
+		updatePendingCandidate(ctx);
 		// Close before await: no timer, refresh, queued turn, or provider event can route later.
 		automaticOpen = false;
-		const model = ctx.model;
 		const candidate = automaticCandidate;
 		if (!model || !candidate || !isManagedProvider(model.provider) || candidate.id !== model.id || candidate.provider === model.provider) return;
 		await pi.setModel(candidate);

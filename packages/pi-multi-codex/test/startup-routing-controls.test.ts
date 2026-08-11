@@ -130,13 +130,13 @@ test("routes once at first agent boundary from fresh seven-day cache", async () 
 	});
 });
 
-test("does not rank elapsed quota windows", async () => {
+test("revalidates cached candidate at agent boundary", async () => {
 	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
 		const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
 		const state = JSON.parse(await readFile(cache, "utf8"));
 		state.slots.find((snapshot: { slot: number }) => snapshot.slot === 2).reset = Date.now() - 1;
 		await writeFile(cache, JSON.stringify(state));
-		handlers.get("session_start")?.({ type: "session_start" }, ctx);
 		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
 		assert.equal(setModels.length, 0);
 	});
