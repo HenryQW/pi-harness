@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
+import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -13,8 +14,9 @@ import {
 
 const DEFAULT_LIMIT = 10;
 const MODEL_CLASSES = ["fast", "balanced", "frontier"] as const;
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 const CONFIG_PATH = () => join(getAgentDir(), "config", "pi-herdr-subagents.json");
-const WORKER_EXTENSION = fileURLToPath(new URL("../internal/worker.ts", import.meta.url));
+const SUBAGENT_EXTENSION = fileURLToPath(new URL("../internal/subagent.ts", import.meta.url));
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const DEFINITIVE_PROMPT_ERRORS = new Set([
 	"agent_not_found", "agent_not_running", "agent_not_ready", "agent_not_idle",
@@ -22,15 +24,16 @@ const DEFINITIVE_PROMPT_ERRORS = new Set([
 ]);
 
 type ModelClass = typeof MODEL_CLASSES[number];
+type ConfiguredModel = { model: string; thinkingLevel: ModelThinkingLevel };
 type Config = {
-	maxConcurrentWorkers: number;
-	models: Partial<Record<ModelClass, string>>;
+	maxConcurrentSubagents: number;
+	models: Partial<Record<ModelClass, ConfiguredModel>>;
 };
 
-type OwnedWorker = {
+type OwnedSubagent = {
 	taskId: string;
 	task: string;
-	workerName: string;
+	subagentName: string;
 	resultPath: string;
 	tempDir: string;
 	label: string;
@@ -65,11 +68,13 @@ const parseJson = (value: string, label: string): Record<string, unknown> => {
 	}
 };
 
-const defaultConfig = (): Config => ({ maxConcurrentWorkers: DEFAULT_LIMIT, models: {} });
+const defaultConfig = (): Config => ({ maxConcurrentSubagents: DEFAULT_LIMIT, models: {} });
 const configLimit = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 const isModelClass = (value: unknown): value is ModelClass =>
 	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
+const isThinkingLevel = (value: unknown): value is ModelThinkingLevel =>
+	typeof value === "string" && THINKING_LEVELS.includes(value as ModelThinkingLevel);
 const isModelReference = (value: unknown): value is string => {
 	if (typeof value !== "string" || value !== value.trim() || value.includes("\0")) return false;
 	const slash = value.indexOf("/");
@@ -84,8 +89,15 @@ function configModels(value: unknown): { value: Config["models"]; invalid: boole
 	let invalid = Object.keys(record).some((key) => !isModelClass(key));
 	for (const modelClass of MODEL_CLASSES) {
 		if (!Object.hasOwn(record, modelClass)) continue;
-		if (isModelReference(record[modelClass])) models[modelClass] = record[modelClass];
-		else invalid = true;
+		const candidate = record[modelClass];
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+			invalid = true;
+			continue;
+		}
+		const configured = candidate as Record<string, unknown>;
+		if (isModelReference(configured.model) && isThinkingLevel(configured.thinkingLevel)) {
+			models[modelClass] = { model: configured.model, thinkingLevel: configured.thinkingLevel };
+		} else invalid = true;
 	}
 	return { value: models, invalid };
 }
@@ -95,10 +107,10 @@ async function readConfig(): Promise<{ value: Config; invalid: boolean }> {
 		const value = JSON.parse(await readFile(CONFIG_PATH(), "utf8")) as unknown;
 		if (!value || typeof value !== "object" || Array.isArray(value)) return { value: defaultConfig(), invalid: true };
 		const record = value as Record<string, unknown>;
-		const limit = configLimit(record.maxConcurrentWorkers);
+		const limit = configLimit(record.maxConcurrentSubagents ?? record.maxConcurrentWorkers);
 		const models = configModels(record.models);
 		return {
-			value: { maxConcurrentWorkers: limit ?? DEFAULT_LIMIT, models: models.value },
+			value: { maxConcurrentSubagents: limit ?? DEFAULT_LIMIT, models: models.value },
 			invalid: limit === undefined || models.invalid,
 		};
 	} catch (error: unknown) {
@@ -115,19 +127,18 @@ async function writeConfig(config: Config): Promise<void> {
 	await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
-const availableModelReferences = (ctx: ExtensionContext): string[] => ctx.modelRegistry
+const availableTextModels = (ctx: ExtensionContext) => ctx.modelRegistry
 	.getAvailable()
-	.filter((model) => model.input.includes("text"))
-	.map((model) => `${model.provider}/${model.id}`)
-	.sort();
+	.filter((model) => model.input.includes("text"));
+const modelReference = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;
 
-const workerName = (taskId: string) => `worker_${taskId.replaceAll("-", "").slice(0, 8)}`;
+const subagentName = (taskId: string) => `subagent_${taskId.replaceAll("-", "").slice(0, 8)}`;
 const mainName = () => `main_${randomBytes(4).toString("hex")}`;
 
-function workerLabel(task: string, taskId: string): string {
+function subagentLabel(task: string, taskId: string): string {
 	const suffix = ` · ${taskId.replaceAll("-", "").slice(0, 8)}`;
 	const words = task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ");
-	return `${words.slice(0, 40 - suffix.length).trim() || "worker"}${suffix}`;
+	return `${words.slice(0, 40 - suffix.length).trim() || "subagent"}${suffix}`;
 }
 
 function location(): HerdrLocation {
@@ -142,16 +153,16 @@ function commandError(args: string[], stderr: string, code: number): Error {
 	return new Error(`Herdr ${args.slice(0, 2).join(" ")} failed: ${stderr.trim() || `exit code ${code}`}`);
 }
 
-function rollbackCleanupError(worker: OwnedWorker, tabId: string, launchError: unknown, cleanupError: unknown): Error {
+function rollbackCleanupError(subagent: OwnedSubagent, tabId: string, launchError: unknown, cleanupError: unknown): Error {
 	const launch = launchError instanceof Error ? launchError.message : String(launchError);
 	const cleanup = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-	return new Error(`Delegated Task ${worker.taskId} launch failed and Worker tab cleanup also failed; Worker remains owned.\nWorker: ${worker.workerName}\nTab: ${tabId}\nResult: ${worker.resultPath}\nStop: herdr tab close ${tabId}\nLaunch error: ${launch}\nCleanup error: ${cleanup}`);
+	return new Error(`Delegated Task ${subagent.taskId} launch failed and Subagent tab cleanup also failed; Subagent remains owned.\nSubagent: ${subagent.subagentName}\nTab: ${tabId}\nResult: ${subagent.resultPath}\nStop: herdr tab close ${tabId}\nLaunch error: ${launch}\nCleanup error: ${cleanup}`);
 }
 
-function provisioningReconciliationError(worker: OwnedWorker, where: HerdrLocation, launchError: unknown, reconciliationError: unknown): Error {
+function provisioningReconciliationError(subagent: OwnedSubagent, where: HerdrLocation, launchError: unknown, reconciliationError: unknown): Error {
 	const launch = launchError instanceof Error ? launchError.message : String(launchError);
 	const reconciliation = reconciliationError instanceof Error ? reconciliationError.message : String(reconciliationError);
-	return new Error(`Delegated Task ${worker.taskId} tab creation outcome and reconciliation also failed; provisioning remains owned.\nWorker: ${worker.workerName}\nLabel: ${worker.label}\nResult: ${worker.resultPath}\nInspect: herdr tab list --workspace ${where.workspace}\nClose matching tab: herdr tab close <tab-id>\nLaunch error: ${launch}\nReconciliation error: ${reconciliation}`);
+	return new Error(`Delegated Task ${subagent.taskId} tab creation outcome and reconciliation also failed; provisioning remains owned.\nSubagent: ${subagent.subagentName}\nLabel: ${subagent.label}\nResult: ${subagent.resultPath}\nInspect: herdr tab list --workspace ${where.workspace}\nClose matching tab: herdr tab close <tab-id>\nLaunch error: ${launch}\nReconciliation error: ${reconciliation}`);
 }
 
 function herdrErrorCode(stderr: string): string | undefined {
@@ -197,7 +208,7 @@ async function closeTab(pi: ExtensionAPI, tabId: string, ctx: ExtensionContext):
 }
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
-	const workers = new Map<string, OwnedWorker>();
+	const subagents = new Map<string, OwnedSubagent>();
 	let config = defaultConfig();
 	let cachedMainName: string | undefined;
 
@@ -216,14 +227,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<Set<string>> => {
 		const tabs = await listTabs(where, ctx, signal);
 		const present = new Set(tabs.map((tab) => tab.id));
-		for (const [taskId, worker] of workers) {
-			if (worker.tabId) {
-				if (!present.has(worker.tabId)) workers.delete(taskId);
+		for (const [taskId, subagent] of subagents) {
+			if (subagent.tabId) {
+				if (!present.has(subagent.tabId)) subagents.delete(taskId);
 				continue;
 			}
-			const provisioned = tabs.filter((tab) => !worker.existingTabs.has(tab.id) && tab.label === worker.label);
-			if (provisioned.length === 1) worker.tabId = provisioned[0].id;
-			else if (provisioned.length === 0) workers.delete(taskId);
+			const provisioned = tabs.filter((tab) => !subagent.existingTabs.has(tab.id) && tab.label === subagent.label);
+			if (provisioned.length === 1) subagent.tabId = provisioned[0].id;
+			else if (provisioned.length === 0) subagents.delete(taskId);
 		}
 		return present;
 	};
@@ -244,23 +255,23 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		return name;
 	};
 
-	const startWorker = async (name: string, tabId: string, paneId: string, model: string, where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
+	const startSubagent = async (name: string, tabId: string, paneId: string, model: string, thinkingLevel: ModelThinkingLevel | undefined, where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
 		const args = [
 			"agent", "start", name, "--kind", "pi", "--pane", paneId, "--",
-			"--no-session", "--no-extensions", "--extension", WORKER_EXTENSION,
+			"--no-session", "--no-extensions", "--extension", SUBAGENT_EXTENSION,
 			"--tools", "read,bash,edit,write,finish_task",
 			"--model", model,
-			...(ctx.thinkingLevel ? ["--thinking", ctx.thinkingLevel] : []),
+			...(thinkingLevel ? ["--thinking", thinkingLevel] : []),
 			ctx.isProjectTrusted() ? "--approve" : "--no-approve",
 		];
 		for (let attempt = 0; attempt < 5; attempt++) {
 			const result = await pi.exec("herdr", args, { cwd: ctx.cwd, signal });
 			if (result.code === 0 && !result.killed) {
-				const started = resultOf(result.stdout, "Herdr Worker start");
-				if (started.type !== "agent_started") throw new Error("Herdr Worker start did not return agent_started.");
-				const agent = object(started.agent, "Herdr Worker agent");
+				const started = resultOf(result.stdout, "Herdr Subagent start");
+				if (started.type !== "agent_started") throw new Error("Herdr Subagent start did not return agent_started.");
+				const agent = object(started.agent, "Herdr Subagent agent");
 				assertAgent(agent, { name, pane: paneId, workspace: where.workspace, tab: tabId });
-				if (agent.interactive_ready !== true) throw new Error("Herdr Worker is not interactive.");
+				if (agent.interactive_ready !== true) throw new Error("Herdr Subagent is not interactive.");
 				return;
 			}
 			if (!hasHerdrError(result.stderr, "agent_pane_busy") || attempt === 4) {
@@ -277,48 +288,57 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("subagent-limit", {
-		description: "set maximum live Herdr Workers for this Main session",
+		description: "set maximum live Herdr Subagents for this Main session",
 		handler: async (_args, ctx) => {
-			const selected = await ctx.ui.input("Worker Limit", String(config.maxConcurrentWorkers));
+			const selected = await ctx.ui.input("Subagent Limit", String(config.maxConcurrentSubagents));
 			if (selected === undefined) return;
 			const parsed = /^[1-9]\d*$/.test(selected.trim()) ? Number(selected.trim()) : NaN;
 			if (!Number.isSafeInteger(parsed)) {
-				ctx.ui.notify("Worker Limit must be a positive integer.", "warning");
+				ctx.ui.notify("Subagent Limit must be a positive integer.", "warning");
 				return;
 			}
-			const next = { ...config, maxConcurrentWorkers: parsed };
+			const next = { ...config, maxConcurrentSubagents: parsed };
 			try {
 				await writeConfig(next);
 				config = next;
-				ctx.ui.notify(`Worker Limit set to ${config.maxConcurrentWorkers}.`, "info");
+				ctx.ui.notify(`Subagent Limit set to ${config.maxConcurrentSubagents}.`, "info");
 			} catch {
-				ctx.ui.notify("Couldn't save Worker Limit config.", "warning");
+				ctx.ui.notify("Couldn't save Subagent Limit config.", "warning");
 			}
 		},
 	});
 
 	pi.registerCommand("subagent-model", {
-		description: "map a Worker model class to an available Pi model",
+		description: "map a Subagent model class to an available Pi model and thinking level",
 		handler: async (_args, ctx) => {
-			const modelClass = await ctx.ui.select("Worker model class", [...MODEL_CLASSES]);
+			const modelClass = await ctx.ui.select("Subagent model class", [...MODEL_CLASSES]);
 			if (!isModelClass(modelClass)) return;
-			const models = availableModelReferences(ctx);
+			const models = availableTextModels(ctx);
 			if (!models.length) {
 				ctx.ui.notify("No authenticated text models are available.", "warning");
 				return;
 			}
+			const saved = config.models[modelClass];
+			const references = models.map(modelReference).sort();
 			const selected = await ctx.ui.select(
-				`${modelClass} Worker model · saved: ${config.models[modelClass] ?? "none"}`,
-				models,
+				`${modelClass} Subagent model · saved: ${saved?.model ?? "none"}`,
+				references,
 			);
-			if (!selected || !models.includes(selected)) return;
-			const next = { ...config, models: { ...config.models, [modelClass]: selected } };
+			const selectedModel = models.find((model) => modelReference(model) === selected);
+			if (!selectedModel) return;
+			const levels = getSupportedThinkingLevels(selectedModel);
+			const thinkingLevel = await ctx.ui.select(
+				`${modelClass} Subagent thinking level · saved: ${saved?.thinkingLevel ?? "none"}`,
+				levels,
+			);
+			if (!isThinkingLevel(thinkingLevel) || !levels.includes(thinkingLevel)) return;
+			const next = { ...config, models: { ...config.models, [modelClass]: { model: selected, thinkingLevel } } };
 			try {
 				await writeConfig(next);
 				config = next;
-				ctx.ui.notify(`${modelClass} Worker model set to ${selected}.`, "info");
+				ctx.ui.notify(`${modelClass} Subagent set to ${selected} with thinking ${thinkingLevel}.`, "info");
 			} catch {
-				ctx.ui.notify("Couldn't save Worker model config.", "warning");
+				ctx.ui.notify("Couldn't save Subagent model config.", "warning");
 			}
 		},
 	});
@@ -326,7 +346,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
-		description: "Delegate one bounded, self-contained task to one interactive Herdr Pi Worker. Choose fast for simple tasks, balanced for normal tasks, or frontier for complex tasks.",
+		description: "Delegate one bounded, self-contained task to one interactive Herdr Pi Subagent. Choose fast for simple tasks, balanced for normal tasks, or frontier for complex tasks.",
 		parameters: Type.Object({
 			task: Type.String({
 				minLength: 1,
@@ -334,7 +354,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}),
 			modelClass: Type.Optional(Type.String({
 				enum: MODEL_CLASSES,
-				description: "Worker model class chosen from task complexity. Defaults to balanced; falls back to Main model when balanced is not configured.",
+				description: "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced is not configured.",
 			})),
 		}),
 		executionMode: "sequential",
@@ -349,25 +369,31 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const modelClass = params.modelClass ?? "balanced";
 			const configuredModel = config.models[modelClass];
 			if (params.modelClass && !configuredModel) {
-				throw new Error(`No ${modelClass} Worker model configured; run /subagent-model.`);
+				throw new Error(`No ${modelClass} Subagent model configured; run /subagent-model.`);
 			}
-			if (configuredModel && !availableModelReferences(ctx).includes(configuredModel)) {
-				throw new Error(`Configured ${modelClass} Worker model is unavailable; run /subagent-model.`);
+			const availableModel = configuredModel && availableTextModels(ctx)
+				.find((model) => modelReference(model) === configuredModel.model);
+			if (configuredModel && !availableModel) {
+				throw new Error(`Configured ${modelClass} Subagent model is unavailable; run /subagent-model.`);
 			}
-			const selectedModel = configuredModel ?? `${ctx.model.provider}/${ctx.model.id}`;
+			if (configuredModel && availableModel && !getSupportedThinkingLevels(availableModel).includes(configuredModel.thinkingLevel)) {
+				throw new Error(`Configured ${modelClass} Subagent thinking level is unavailable; run /subagent-model.`);
+			}
+			const selectedModel = configuredModel?.model ?? `${ctx.model.provider}/${ctx.model.id}`;
+			const selectedThinkingLevel = configuredModel?.thinkingLevel ?? ctx.thinkingLevel;
 			const where = location();
 			const existingTabs = await reconcile(where, ctx, signal);
-			if (workers.size >= config.maxConcurrentWorkers) throw new Error(`Worker Limit reached (${config.maxConcurrentWorkers}); no task was queued.`);
+			if (subagents.size >= config.maxConcurrentSubagents) throw new Error(`Subagent Limit reached (${config.maxConcurrentSubagents}); no task was queued.`);
 
 			const taskId = randomUUID();
 			const tempDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-"));
 			await chmod(tempDir, 0o700);
 			const resultPath = join(tempDir, "result.json");
-			const label = workerLabel(task, taskId);
-			const worker: OwnedWorker = { taskId, task, workerName: workerName(taskId), resultPath, tempDir, label, existingTabs };
+			const label = subagentLabel(task, taskId);
+			const subagent: OwnedSubagent = { taskId, task, subagentName: subagentName(taskId), resultPath, tempDir, label, existingTabs };
 			let tabCreationAttempted = false;
 			let promptOutcomeUnknown = false;
-			workers.set(taskId, worker);
+			subagents.set(taskId, subagent);
 			try {
 				const createdAt = new Date().toISOString();
 				await writeFile(resultPath, `${JSON.stringify({ version: PROTOCOL_VERSION, taskId, state: "pending", task, createdAt })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -383,18 +409,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					"--env", `PI_HERDR_SUBAGENT_MAIN=${main}`,
 				], ctx, signal), "Herdr tab create");
 				if (created.type !== "tab_created") throw new Error("Herdr tab create did not return tab_created.");
-				const tab = object(created.tab, "Herdr Worker tab");
-				const pane = object(created.root_pane, "Herdr Worker root pane");
-				const tabId = text(tab.tab_id, "Herdr Worker tab ID");
-				worker.tabId = tabId;
-				const paneId = text(pane.pane_id, "Herdr Worker pane ID");
+				const tab = object(created.tab, "Herdr Subagent tab");
+				const pane = object(created.root_pane, "Herdr Subagent root pane");
+				const tabId = text(tab.tab_id, "Herdr Subagent tab ID");
+				subagent.tabId = tabId;
+				const paneId = text(pane.pane_id, "Herdr Subagent pane ID");
 				if (
 					tab.workspace_id !== where.workspace || pane.workspace_id !== where.workspace || pane.tab_id !== tabId
 					|| tab.focused !== false || pane.focused !== false || tab.pane_count !== 1 || pane.cwd !== ctx.cwd
-				) throw new Error("Herdr Worker tab identity is invalid.");
-				await startWorker(worker.workerName, tabId, paneId, selectedModel, where, ctx, signal);
+				) throw new Error("Herdr Subagent tab identity is invalid.");
+				await startSubagent(subagent.subagentName, tabId, paneId, selectedModel, selectedThinkingLevel, where, ctx, signal);
 				if (signal?.aborted) throw new Error("delegate_task was aborted before task submission.");
-				const promptArgs = ["agent", "prompt", worker.workerName, task];
+				const promptArgs = ["agent", "prompt", subagent.subagentName, task];
 				promptOutcomeUnknown = true;
 				const response = await pi.exec("herdr", promptArgs, { cwd: ctx.cwd, signal });
 				if (response.code !== 0 || response.killed) {
@@ -403,44 +429,44 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					}
 					throw commandError(promptArgs, response.stderr, response.code);
 				}
-				const prompted = resultOf(response.stdout, "Herdr Worker prompt");
-				if (prompted.type !== "agent_prompted") throw new Error("Herdr Worker prompt was not accepted.");
-				const agent = object(prompted.agent, "Herdr prompted Worker");
-				assertAgent(agent, { name: worker.workerName, pane: paneId, workspace: where.workspace, tab: tabId });
+				const prompted = resultOf(response.stdout, "Herdr Subagent prompt");
+				if (prompted.type !== "agent_prompted") throw new Error("Herdr Subagent prompt was not accepted.");
+				const agent = object(prompted.agent, "Herdr prompted Subagent");
+				assertAgent(agent, { name: subagent.subagentName, pane: paneId, workspace: where.workspace, tab: tabId });
 				promptOutcomeUnknown = false;
 				return {
-					content: [{ type: "text", text: `Delegated Task ${taskId}\nWorker: ${worker.workerName}\nModel: ${selectedModel} (${configuredModel ? modelClass : "Main"})\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
+					content: [{ type: "text", text: `Delegated Task ${taskId}\nSubagent: ${subagent.subagentName}\nModel: ${selectedModel} (${configuredModel ? modelClass : "Main"})\nThinking: ${selectedThinkingLevel ?? "Pi default"}\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
 					details: {},
 					terminate: true,
 				};
 			} catch (error) {
 				if (promptOutcomeUnknown) {
 					const message = error instanceof Error ? error.message : String(error);
-					throw new Error(`Delegated Task ${taskId} prompt outcome is unknown; Worker may be running and remains owned.\nWorker: ${worker.workerName}\nTab: ${worker.tabId}\nResult: ${worker.resultPath}\nStop: herdr tab close ${worker.tabId}\n${message}`);
+					throw new Error(`Delegated Task ${taskId} prompt outcome is unknown; Subagent may be running and remains owned.\nSubagent: ${subagent.subagentName}\nTab: ${subagent.tabId}\nResult: ${subagent.resultPath}\nStop: herdr tab close ${subagent.tabId}\n${message}`);
 				}
-				if (worker.tabId) {
+				if (subagent.tabId) {
 					try {
-						await closeTab(pi, worker.tabId, ctx);
+						await closeTab(pi, subagent.tabId, ctx);
 					} catch (cleanupError) {
-						throw rollbackCleanupError(worker, worker.tabId, error, cleanupError);
+						throw rollbackCleanupError(subagent, subagent.tabId, error, cleanupError);
 					}
 				} else if (tabCreationAttempted) {
 					let tabs: HerdrTab[];
 					try {
 						tabs = await listTabs(where, ctx);
 					} catch (reconciliationError) {
-						throw provisioningReconciliationError(worker, where, error, reconciliationError);
+						throw provisioningReconciliationError(subagent, where, error, reconciliationError);
 					}
 					for (const tab of tabs.filter((candidate) => !existingTabs.has(candidate.id) && candidate.label === label)) {
 						try {
 							await closeTab(pi, tab.id, ctx);
 						} catch (cleanupError) {
-							worker.tabId = tab.id;
-							throw rollbackCleanupError(worker, tab.id, error, cleanupError);
+							subagent.tabId = tab.id;
+							throw rollbackCleanupError(subagent, tab.id, error, cleanupError);
 						}
 					}
 				}
-				workers.delete(taskId);
+				subagents.delete(taskId);
 				await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 				throw error;
 			}
@@ -456,29 +482,29 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		for (const notice of notices) {
 			if (seen.has(notice.taskId)) return { action: "continue" } as const;
 			seen.add(notice.taskId);
-			const worker = workers.get(notice.taskId);
-			if (!worker || worker.resultPath !== notice.resultPath || !isAbsolute(notice.resultPath)) return { action: "continue" } as const;
-			owned.push({ notice, worker });
+			const subagent = subagents.get(notice.taskId);
+			if (!subagent || subagent.resultPath !== notice.resultPath || !isAbsolute(notice.resultPath)) return { action: "continue" } as const;
+			owned.push({ notice, subagent });
 		}
 		let validated;
 		try {
-			validated = await Promise.all(owned.map(async ({ notice, worker }) => {
-				const terminal = parseTerminalResult(JSON.parse(await readFile(worker.resultPath, "utf8")) as unknown);
-				if (!terminal || terminal.taskId !== worker.taskId || terminal.task !== worker.task) return;
-				return { notice, worker, terminal };
+			validated = await Promise.all(owned.map(async ({ notice, subagent }) => {
+				const terminal = parseTerminalResult(JSON.parse(await readFile(subagent.resultPath, "utf8")) as unknown);
+				if (!terminal || terminal.taskId !== subagent.taskId || terminal.task !== subagent.task) return;
+				return { notice, subagent, terminal };
 			}));
 		} catch {
 			return { action: "continue" } as const;
 		}
 		const completed = validated.flatMap((entry) => entry ? [entry] : []);
-		if (completed.length !== notices.length || completed.some(({ notice, worker }) => workers.get(notice.taskId) !== worker)) {
+		if (completed.length !== notices.length || completed.some(({ notice, subagent }) => subagents.get(notice.taskId) !== subagent)) {
 			return { action: "continue" } as const;
 		}
-		for (const { worker } of completed) workers.delete(worker.taskId);
-		for (const { worker } of completed) if (worker.tabId) void closeTab(pi, worker.tabId, ctx).catch(() => undefined);
+		for (const { subagent } of completed) subagents.delete(subagent.taskId);
+		for (const { subagent } of completed) if (subagent.tabId) void closeTab(pi, subagent.tabId, ctx).catch(() => undefined);
 		return {
 			action: "transform",
-			text: completed.map(({ worker, terminal }) => `Worker ${worker.workerName} completed Delegated Task ${worker.taskId} (${terminal.state}). Read Result before relying on it: ${worker.resultPath}`).join("\n\n"),
+			text: completed.map(({ subagent, terminal }) => `Subagent ${subagent.subagentName} completed Delegated Task ${subagent.taskId} (${terminal.state}). Read Result before relying on it: ${subagent.resultPath}`).join("\n\n"),
 		};
 	});
 
@@ -486,8 +512,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		try {
 			await reconcile(location(), ctx);
 		} catch {}
-		const owned = [...workers.values()];
-		workers.clear();
-		await Promise.all(owned.flatMap((worker) => worker.tabId ? [closeTab(pi, worker.tabId, ctx).catch(() => undefined)] : []));
+		const owned = [...subagents.values()];
+		subagents.clear();
+		await Promise.all(owned.flatMap((subagent) => subagent.tabId ? [closeTab(pi, subagent.tabId, ctx).catch(() => undefined)] : []));
 	});
 }

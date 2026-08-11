@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import subagentsExtension from "../extensions/subagents.ts";
-import workerExtension from "../internal/worker.ts";
+import subagentExtension from "../internal/subagent.ts";
 import {
 	completionNotice,
 	parseCompletionNotice,
@@ -21,7 +21,15 @@ type Command = { handler: (args: string, ctx: ExtensionContext) => Promise<void>
 
 const success = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
 const failure = (code: string) => ({ stdout: "", stderr: JSON.stringify({ error: { code, message: code } }), code: 1, killed: false });
-const model = { provider: "test-provider", id: "test-model" };
+type TestModel = {
+	provider: string;
+	id: string;
+	input: string[];
+	reasoning?: boolean;
+	thinkingLevelMap?: Partial<Record<string, string | null>>;
+};
+
+const model = { provider: "test-provider", id: "test-model", reasoning: true };
 
 async function withEnvironment(values: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
 	const before = new Map(Object.keys(values).map((key) => [key, process.env[key]]));
@@ -55,8 +63,8 @@ function mainHarness(options: {
 	tabCreateFailureAfterCreation?: boolean;
 	abortAfterStart?: AbortController;
 	mainName?: string | null;
-	modelSelections?: string[];
-	availableModels?: Array<{ provider: string; id: string; input: string[] }>;
+	selectResults?: string[];
+	availableModels?: TestModel[];
 } = {}) {
 	const handlers = new Map<string, Handler>();
 	const tools = new Map<string, Tool>();
@@ -65,7 +73,7 @@ function mainHarness(options: {
 	const notices: string[] = [];
 	const closed: string[] = [];
 	const selections: Array<{ title: string; options: string[] }> = [];
-	const modelSelections = [...(options.modelSelections ?? [])];
+	const selectResults = [...(options.selectResults ?? [])];
 	let limitInput = options.limitInput;
 	let mainName: string | null = options.mainName ?? null;
 	let tabPresent = !options.tabCreateFailureAfterCreation;
@@ -74,7 +82,7 @@ function mainHarness(options: {
 	let listFailuresAfterCreate = options.listFailuresAfterCreate ?? 0;
 	let tabId = "tab-1";
 	let paneId = "pane-1";
-	let workerName = "";
+	let subagentName = "";
 	const cwd = "/work/project";
 	const ctx = {
 		cwd,
@@ -90,7 +98,7 @@ function mainHarness(options: {
 			input: async () => limitInput,
 			select: async (title: string, values: string[]) => {
 				selections.push({ title, options: [...values] });
-				return modelSelections.shift();
+				return selectResults.shift();
 			},
 		},
 	} as unknown as ExtensionContext;
@@ -126,9 +134,9 @@ function mainHarness(options: {
 				return success(JSON.stringify({ result: { type: "tab_created", tab: { tab_id: tabId, workspace_id: "workspace-1", focused: false, pane_count: 1 }, root_pane: { pane_id: paneId, tab_id: tabId, workspace_id: options.malformedCreatedIdentity ? "wrong-workspace" : "workspace-1", focused: false, cwd } } }));
 			}
 			if (args[0] === "agent" && args[1] === "start") {
-				workerName = args[2];
+				subagentName = args[2];
 				options.abortAfterStart?.abort();
-				return success(JSON.stringify({ result: { type: "agent_started", agent: { name: workerName, pane_id: paneId, tab_id: tabId, workspace_id: "workspace-1", interactive_ready: true } } }));
+				return success(JSON.stringify({ result: { type: "agent_started", agent: { name: subagentName, pane_id: paneId, tab_id: tabId, workspace_id: "workspace-1", interactive_ready: true } } }));
 			}
 			if (args[0] === "agent" && args[1] === "prompt") {
 				if (options.promptFailure) return failure("agent_prompt_failed");
@@ -148,10 +156,10 @@ function mainHarness(options: {
 		},
 	} as unknown as ExtensionAPI;
 	subagentsExtension(api);
-	return { api, ctx, handlers, tools, commands, calls, notices, closed, selections, get workerName() { return workerName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
+	return { api, ctx, handlers, tools, commands, calls, notices, closed, selections, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
 }
 
-function workerHarness(options: { branch?: any[]; wait?: () => Promise<any>; promptFailure?: boolean } = {}) {
+function subagentHarness(options: { branch?: any[]; wait?: () => Promise<any>; promptFailure?: boolean } = {}) {
 	const handlers = new Map<string, Handler>();
 	const tools = new Map<string, Tool>();
 	const calls: string[][] = [];
@@ -187,7 +195,7 @@ async function pendingFile(task = "write test file") {
 	return { dir, path, taskId, task, createdAt };
 }
 
-test("Main registers only bounded public surface and launches exact Worker", async () => {
+test("Main registers only bounded public surface and launches exact Subagent", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness();
@@ -197,6 +205,7 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		assert.equal(app.tools.get("delegate_task")?.parameters.properties.task.description, "Self-contained task with relevant context, exact paths, constraints, and success criteria.");
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.required, ["task"]);
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.properties.modelClass.enum, ["fast", "balanced", "frontier"]);
+		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Subagent model class chosen from task complexity. Defaults to balanced; falls back to Main model and thinking level when balanced is not configured.");
 		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model"]);
 
 		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, undefined, app.ctx);
@@ -205,7 +214,9 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 		const resultPath = output.match(/^Result: (.+)$/m)?.[1];
 		assert.ok(resultPath);
 		assert.match(output, /^Delegated Task [0-9a-f-]+/m);
+		assert.match(output, /^Subagent: subagent_[0-9a-f]{8}$/m);
 		assert.match(output, /^Model: test-provider\/test-model \(Main\)$/m);
+		assert.match(output, /^Thinking: high$/m);
 		assert.match(output, /^Stop: herdr tab close tab-1$/m);
 		assert.equal((await stat(resultPath!)).mode & 0o777, 0o600);
 		assert.deepEqual(parsePendingResult(JSON.parse(await readFile(resultPath!, "utf8"))), {
@@ -259,21 +270,21 @@ test("Main registers only bounded public surface and launches exact Worker", asy
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("/subagent-model maps all model classes from Pi's available model list and routes Worker", async () => {
+test("/subagent-model maps all model classes from Pi's available model list and routes Subagent", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-models-"));
-	const availableModels = [
-		{ provider: "test-provider", id: "frontier-model", input: ["text"] },
-		{ provider: "other-provider", id: "fast-model", input: ["text"] },
-		{ provider: "test-provider", id: "balanced-model", input: ["text"] },
-		{ provider: "other-provider", id: "image-only", input: ["image"] },
+	const availableModels: TestModel[] = [
+		{ provider: "test-provider", id: "frontier-model", input: ["text"], reasoning: true, thinkingLevelMap: { max: "max" } },
+		{ provider: "other-provider", id: "fast-model", input: ["text"], reasoning: false },
+		{ provider: "test-provider", id: "balanced-model", input: ["text"], reasoning: true },
+		{ provider: "other-provider", id: "image-only", input: ["image"], reasoning: false },
 	];
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({
 			availableModels,
-			modelSelections: [
-				"fast", "other-provider/fast-model",
-				"balanced", "test-provider/balanced-model",
-				"frontier", "test-provider/frontier-model",
+			selectResults: [
+				"fast", "other-provider/fast-model", "off",
+				"balanced", "test-provider/balanced-model", "medium",
+				"frontier", "test-provider/frontier-model", "max",
 			],
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -284,59 +295,73 @@ test("/subagent-model maps all model classes from Pi's available model list and 
 			"test-provider/balanced-model",
 			"test-provider/frontier-model",
 		];
-		assert.deepEqual(app.selections.filter((_, index) => index % 2 === 0).map(({ options }) => options), [
+		assert.deepEqual(app.selections.filter((_, index) => index % 3 === 0).map(({ options }) => options), [
 			["fast", "balanced", "frontier"],
 			["fast", "balanced", "frontier"],
 			["fast", "balanced", "frontier"],
 		]);
-		assert.deepEqual(app.selections.filter((_, index) => index % 2 === 1).map(({ options }) => options), [modelOptions, modelOptions, modelOptions]);
+		assert.deepEqual(app.selections.filter((_, index) => index % 3 === 1).map(({ options }) => options), [modelOptions, modelOptions, modelOptions]);
+		assert.deepEqual(app.selections.filter((_, index) => index % 3 === 2).map(({ options }) => options), [
+			["off"],
+			["off", "minimal", "low", "medium", "high"],
+			["off", "minimal", "low", "medium", "high", "max"],
+		]);
 		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), {
-			maxConcurrentWorkers: 10,
+			maxConcurrentSubagents: 10,
 			models: {
-				fast: "other-provider/fast-model",
-				balanced: "test-provider/balanced-model",
-				frontier: "test-provider/frontier-model",
+				fast: { model: "other-provider/fast-model", thinkingLevel: "off" },
+				balanced: { model: "test-provider/balanced-model", thinkingLevel: "medium" },
+				frontier: { model: "test-provider/frontier-model", thinkingLevel: "max" },
 			},
 		});
 
-		const delegated = await app.tools.get("delegate_task")!.execute(
+		const reloaded = mainHarness({ availableModels });
+		await reloaded.handlers.get("session_start")?.({}, reloaded.ctx);
+		const delegated = await reloaded.tools.get("delegate_task")!.execute(
 			"frontier",
 			{ task: "solve complex task", modelClass: "frontier" },
 			undefined,
 			undefined,
-			app.ctx,
+			reloaded.ctx,
 		);
-		const started = app.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
+		const started = reloaded.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
 		assert.equal(started[started.indexOf("--model") + 1], "test-provider/frontier-model");
+		assert.equal(started[started.indexOf("--thinking") + 1], "max");
 		assert.match(delegated.content[0].text, /^Model: test-provider\/frontier-model \(frontier\)$/m);
+		assert.match(delegated.content[0].text, /^Thinking: max$/m);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("delegate_task rejects unconfigured or unavailable explicit model classes before launch", async () => {
+test("delegate_task rejects unconfigured or stale explicit model class routes before launch", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-models-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
-		const availableModels = [{ ...model, input: ["text"] }];
-		const app = mainHarness({ availableModels, modelSelections: ["fast", "test-provider/test-model"] });
+		const availableModels: TestModel[] = [{ ...model, input: ["text"] }];
+		const app = mainHarness({ availableModels, selectResults: ["fast", "test-provider/test-model", "low"] });
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		await assert.rejects(
 			app.tools.get("delegate_task")!.execute("missing", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
-			/No fast Worker model configured/,
+			/No fast Subagent model configured/,
 		);
 		assert.equal(app.calls.length, 0);
 
 		await app.commands.get("subagent-model")!.handler("", app.ctx);
+		availableModels[0].thinkingLevelMap = { low: null };
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("stale-thinking", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
+			/Configured fast Subagent thinking level is unavailable/,
+		);
 		availableModels.length = 0;
 		await assert.rejects(
-			app.tools.get("delegate_task")!.execute("stale", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
-			/Configured fast Worker model is unavailable/,
+			app.tools.get("delegate_task")!.execute("stale-model", { task: "simple", modelClass: "fast" }, undefined, undefined, app.ctx),
+			/Configured fast Subagent model is unavailable/,
 		);
 		assert.equal(app.calls.length, 0);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("launch preserves Main name and passes untrusted no-thinking Worker exactly", async () => {
+test("launch preserves Main name and passes untrusted no-thinking Subagent exactly", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ mainName: "main_existing", thinkingLevel: undefined, trusted: false });
@@ -392,16 +417,20 @@ test("failed reconciliation preserves indeterminate tab provisioning", async () 
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("missing and invalid config use default Worker Limit", async () => {
+test("missing and invalid config use default Subagent Limit", async () => {
 	const invalid = [
-		"{broken", "[]", "{}", "{\"maxConcurrentWorkers\":0}", "{\"maxConcurrentWorkers\":-1}",
-		"{\"maxConcurrentWorkers\":1.5}", "{\"maxConcurrentWorkers\":\"10\"}",
-		"{\"maxConcurrentWorkers\":10,\"models\":[]}",
-		"{\"maxConcurrentWorkers\":10,\"models\":{\"fast\":\"bad\"}}",
-		"{\"maxConcurrentWorkers\":10,\"models\":{\"slow\":\"test/model\"}}",
+		"{broken", "[]", "{}", "{\"maxConcurrentSubagents\":0}", "{\"maxConcurrentSubagents\":-1}",
+		"{\"maxConcurrentSubagents\":1.5}", "{\"maxConcurrentSubagents\":\"10\"}",
+		"{\"maxConcurrentSubagents\":10,\"models\":[]}",
+		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":\"test/model\"}}",
+		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"bad\",\"thinkingLevel\":\"high\"}}}",
+		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"turbo\"}}}",
+		"{\"maxConcurrentSubagents\":10,\"models\":{\"slow\":{\"model\":\"test/model\",\"thinkingLevel\":\"high\"}}}",
 	];
 	const cases = [
 		{ contents: undefined, warning: false },
+		{ contents: "{\"maxConcurrentSubagents\":10}", warning: false },
+		{ contents: "{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"high\"}}}", warning: false },
 		{ contents: "{\"maxConcurrentWorkers\":10}", warning: false },
 		...invalid.map((contents) => ({ contents, warning: true })),
 	];
@@ -416,13 +445,13 @@ test("missing and invalid config use default Worker Limit", async () => {
 			await app.handlers.get("session_start")?.({}, app.ctx);
 			assert.equal(app.notices.length, item.warning ? 1 : 0);
 			for (let index = 0; index < 10; index++) await app.tools.get("delegate_task")!.execute(String(index), { task: `task ${index}` }, undefined, undefined, app.ctx);
-			await assert.rejects(app.tools.get("delegate_task")!.execute("limit", { task: "blocked" }, undefined, undefined, app.ctx), /Worker Limit reached \(10\)/);
+			await assert.rejects(app.tools.get("delegate_task")!.execute("limit", { task: "blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached \(10\)/);
 		});
 		await rm(agentDir, { recursive: true, force: true });
 	}
 });
 
-test("lowered limit leaves live Workers, then reconciliation frees capacity", async () => {
+test("lowered limit leaves live Subagents, then reconciliation frees capacity", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-limit-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ limitInput: "2" });
@@ -432,14 +461,14 @@ test("lowered limit leaves live Workers, then reconciliation frees capacity", as
 		app.setLimitInput("1");
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 		assert.deepEqual(app.closed, []);
-		await assert.rejects(app.tools.get("delegate_task")!.execute("3", { task: "blocked" }, undefined, undefined, app.ctx), /Worker Limit reached \(1\)/);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("3", { task: "blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached \(1\)/);
 		app.setTabPresent(false);
 		await app.tools.get("delegate_task")!.execute("4", { task: "after reconciliation" }, undefined, undefined, app.ctx);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("malformed tab entries cannot prune Worker ownership", async () => {
+test("malformed tab entries cannot prune Subagent ownership", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	let malformed = false;
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
@@ -449,14 +478,14 @@ test("malformed tab entries cannot prune Worker ownership", async () => {
 		malformed = true;
 		await assert.rejects(app.tools.get("delegate_task")!.execute("malformed", { task: "must not start" }, undefined, undefined, app.ctx), /Herdr tab list entry 1 workspace is invalid/);
 		malformed = false;
-		await assert.rejects(app.tools.get("delegate_task")!.execute("capacity", { task: "still blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("capacity", { task: "still blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached/);
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		assert.deepEqual(app.closed, ["tab-1"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("completion releases capacity once and shutdown closes remaining Worker", async () => {
+test("completion releases capacity once and shutdown closes remaining Subagent", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-cleanup-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ limitInput: "1" });
@@ -515,7 +544,7 @@ test("Main accepts merged parallel Completion Notices atomically", async () => {
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("Main rejects preconditions, Worker Limit, stale notices, then reconciles closed tabs", async () => {
+test("Main rejects preconditions, Subagent Limit, stale notices, then reconciles closed tabs", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: undefined, HERDR_WORKSPACE_ID: undefined, HERDR_PANE_ID: undefined, PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const unavailable = mainHarness();
@@ -530,20 +559,20 @@ test("Main rejects preconditions, Worker Limit, stale notices, then reconciles c
 		assert.equal(app.calls.length, 0);
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 		const first = await app.tools.get("delegate_task")!.execute("x", { task: "first" }, undefined, undefined, app.ctx);
-		await assert.rejects(app.tools.get("delegate_task")!.execute("y", { task: "second" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("y", { task: "second" }, undefined, undefined, app.ctx), /Subagent Limit reached/);
 		app.setTabPresent(false);
 		await app.tools.get("delegate_task")!.execute("z", { task: "reconciled" }, undefined, undefined, app.ctx);
 		const path = (first.content[0].text as string).match(/^Result: (.+)$/m)![1];
 		const stale = await app.handlers.get("input")?.({ source: "interactive", text: "PI_HERDR_SUBAGENT_COMPLETION_V1 bad\n" }, app.ctx);
 		assert.deepEqual(stale, { action: "continue" });
 		assert.deepEqual(app.closed, []);
-		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentWorkers: 1, models: {} });
+		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentSubagents: 1, models: {} });
 		assert.ok(path);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("Worker Limit command persists immediately and pre-submission launch rolls back", async () => {
+test("Subagent Limit command persists immediately and pre-submission launch rolls back", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ limitInput: "2", promptFailure: true });
@@ -552,7 +581,7 @@ test("Worker Limit command persists immediately and pre-submission launch rolls 
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		assert.match(app.notices[0], /Invalid pi-herdr-subagents config/);
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentWorkers: 2, models: {} });
+		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentSubagents: 2, models: {} });
 		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "fails before submit" }, undefined, undefined, app.ctx), /agent prompt failed/);
 		assert.deepEqual(app.closed, ["tab-1"]);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
@@ -561,7 +590,7 @@ test("Worker Limit command persists immediately and pre-submission launch rolls 
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("rollback close failures preserve owned Worker and Result details", async () => {
+test("rollback close failures preserve owned Subagent and Result details", async () => {
 	for (const closeKilled of [false, true]) {
 		const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 		await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
@@ -569,11 +598,11 @@ test("rollback close failures preserve owned Worker and Result details", async (
 			await app.commands.get("subagent-limit")!.handler("", app.ctx);
 			await assert.rejects(
 				app.tools.get("delegate_task")!.execute("call", { task: "definitive prompt failure" }, undefined, undefined, app.ctx),
-				/launch failed and Worker tab cleanup also failed; Worker remains owned[\s\S]*Tab: tab-1[\s\S]*Stop: herdr tab close tab-1/,
+				/launch failed and Subagent tab cleanup also failed; Subagent remains owned[\s\S]*Tab: tab-1[\s\S]*Stop: herdr tab close tab-1/,
 			);
 			const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
 			assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
-			await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+			await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached/);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 			assert.deepEqual(app.closed, ["tab-1"]);
 		});
@@ -581,7 +610,7 @@ test("rollback close failures preserve owned Worker and Result details", async (
 	}
 });
 
-test("pre-aborted task submission rolls back Worker and Result", async () => {
+test("pre-aborted task submission rolls back Subagent and Result", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const controller = new AbortController();
@@ -598,20 +627,20 @@ test("pre-aborted task submission rolls back Worker and Result", async () => {
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("indeterminate task submission preserves owned Worker and Result", async () => {
+test("indeterminate task submission preserves owned Subagent and Result", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ limitInput: "1", promptIndeterminate: true });
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 		await assert.rejects(
 			app.tools.get("delegate_task")!.execute("call", { task: "possibly accepted" }, undefined, undefined, app.ctx),
-			/prompt outcome is unknown; Worker may be running and remains owned[\s\S]*Tab: tab-1/,
+			/prompt outcome is unknown; Subagent may be running and remains owned[\s\S]*Tab: tab-1/,
 		);
 		assert.deepEqual(app.closed, []);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
 		const pending = parsePendingResult(JSON.parse(await readFile(path, "utf8")));
 		assert.ok(pending);
-		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must not duplicate" }, undefined, undefined, app.ctx), /Worker Limit reached/);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must not duplicate" }, undefined, undefined, app.ctx), /Subagent Limit reached/);
 
 		const terminal = { version: PROTOCOL_VERSION, taskId: pending.taskId, state: "finished", task: pending.task, result: "completed", error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
 		await writeFile(path, JSON.stringify(terminal));
@@ -643,14 +672,14 @@ test("Protocol rejects malformed, extra, old-version, and control input", () => 
 	}
 });
 
-test("Worker sole finish atomically stores Result, waits, then sends one notice", async () => {
+test("Subagent sole finish atomically stores Result, waits, then sends one notice", async () => {
 	const pending = await pendingFile();
 	await withEnvironment({
 		PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
 		PI_HERDR_SUBAGENT_RESULT_PATH: pending.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef",
 	}, async () => {
-		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }] });
-		await workerExtension(app.api);
+		const app = subagentHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }] });
+		await subagentExtension(app.api);
 		assert.deepEqual([...app.tools.keys()], ["finish_task"]);
 		assert.equal(app.tools.get("finish_task")?.executionMode, "sequential");
 		assert.equal(app.tools.get("finish_task")?.parameters.properties.result.description, "Concise outcome with files changed, validation performed, and remaining risks.");
@@ -665,14 +694,14 @@ test("Worker sole finish atomically stores Result, waits, then sends one notice"
 	await rm(pending.dir, { recursive: true, force: true });
 });
 
-test("Worker notifies Main after aborted settlement without reusing aborted signal", async () => {
+test("Subagent notifies Main after aborted settlement without reusing aborted signal", async () => {
 	const pending = await pendingFile();
 	await withEnvironment({
 		PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
 		PI_HERDR_SUBAGENT_RESULT_PATH: pending.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef",
 	}, async () => {
-		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", stopReason: "aborted", content: [] } }] });
-		await workerExtension(app.api);
+		const app = subagentHarness({ branch: [{ type: "message", message: { role: "assistant", stopReason: "aborted", content: [] } }] });
+		await subagentExtension(app.api);
 		(app.ctx as any).signal = AbortSignal.abort();
 		await app.handlers.get("agent_settled")?.({}, app.ctx);
 		assert.deepEqual(app.calls.map((args) => args.slice(0, 2)), [["agent", "wait"], ["agent", "prompt"]]);
@@ -682,7 +711,7 @@ test("Worker notifies Main after aborted settlement without reusing aborted sign
 	await rm(pending.dir, { recursive: true, force: true });
 });
 
-test("Worker rejects mixed finish, latches duplicates, preserves failed delivery, and terminal-errors only", async () => {
+test("Subagent rejects mixed finish, latches duplicates, preserves failed delivery, and terminal-errors only", async () => {
 	const pending = await pendingFile();
 	await withEnvironment({
 		PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: pending.taskId,
@@ -692,11 +721,11 @@ test("Worker rejects mixed finish, latches duplicates, preserves failed delivery
 		let waitStarted!: () => void;
 		const waiting = new Promise<void>((resolve) => { releaseWait = resolve; });
 		const started = new Promise<void>((resolve) => { waitStarted = resolve; });
-		const app = workerHarness({
+		const app = subagentHarness({
 			branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }],
 			wait: async () => { waitStarted(); await waiting; return success(JSON.stringify({ result: { type: "agent_info", agent: { agent_status: "idle" } } })); },
 		});
-		await workerExtension(app.api);
+		await subagentExtension(app.api);
 		const first = app.tools.get("finish_task")!.execute("finish-1", { result: "complete" }, undefined, undefined, app.ctx);
 		await started;
 		await assert.rejects(app.tools.get("finish_task")!.execute("finish-1", { result: "again" }, undefined, undefined, app.ctx), /already terminal/);
@@ -708,8 +737,8 @@ test("Worker rejects mixed finish, latches duplicates, preserves failed delivery
 
 	const mixed = await pendingFile();
 	await withEnvironment({ PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: mixed.taskId, PI_HERDR_SUBAGENT_RESULT_PATH: mixed.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef" }, async () => {
-		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }, { type: "toolCall", id: "edit-1", name: "edit" }] } }] });
-		await workerExtension(app.api);
+		const app = subagentHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }, { type: "toolCall", id: "edit-1", name: "edit" }] } }] });
+		await subagentExtension(app.api);
 		await assert.rejects(app.tools.get("finish_task")!.execute("finish-1", { result: "no" }, undefined, undefined, app.ctx), /sole tool/);
 		assert.ok(parsePendingResult(JSON.parse(await readFile(mixed.path, "utf8"))));
 		app.setBranch([{ type: "message", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Need user answer" }] } }]);
@@ -727,8 +756,8 @@ test("Worker rejects mixed finish, latches duplicates, preserves failed delivery
 
 	const undelivered = await pendingFile();
 	await withEnvironment({ PI_HERDR_SUBAGENT_PROTOCOL: String(PROTOCOL_VERSION), PI_HERDR_SUBAGENT_TASK_ID: undelivered.taskId, PI_HERDR_SUBAGENT_RESULT_PATH: undelivered.path, PI_HERDR_SUBAGENT_MAIN: "main_deadbeef" }, async () => {
-		const app = workerHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }], promptFailure: true });
-		await workerExtension(app.api);
+		const app = subagentHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }], promptFailure: true });
+		await subagentExtension(app.api);
 		await assert.rejects(app.tools.get("finish_task")!.execute("finish-1", { result: "durable" }, undefined, undefined, app.ctx), /agent prompt failed/);
 		assert.equal(parseTerminalResult(JSON.parse(await readFile(undelivered.path, "utf8")))?.state, "finished");
 		await assert.rejects(app.tools.get("finish_task")!.execute("finish-1", { result: "again" }, undefined, undefined, app.ctx), /already terminal/);

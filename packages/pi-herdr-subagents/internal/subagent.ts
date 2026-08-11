@@ -13,7 +13,7 @@ import {
 
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 
-type WorkerProtocol = {
+type SubagentProtocol = {
 	taskId: string;
 	resultPath: string;
 	mainName: string;
@@ -24,7 +24,7 @@ type WorkerProtocol = {
 const object = (value: unknown): Record<string, unknown> | undefined =>
 	value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
-function protocolFromEnvironment(): Omit<WorkerProtocol, "task" | "createdAt"> {
+function protocolFromEnvironment(): Omit<SubagentProtocol, "task" | "createdAt"> {
 	if (process.env.PI_HERDR_SUBAGENT_PROTOCOL !== String(PROTOCOL_VERSION)) {
 		throw new Error(`Missing PI_HERDR_SUBAGENT_PROTOCOL=${PROTOCOL_VERSION}.`);
 	}
@@ -37,15 +37,15 @@ function protocolFromEnvironment(): Omit<WorkerProtocol, "task" | "createdAt"> {
 	return { taskId, resultPath, mainName };
 }
 
-async function loadProtocol(): Promise<WorkerProtocol> {
+async function loadProtocol(): Promise<SubagentProtocol> {
 	const base = protocolFromEnvironment();
 	let pending;
 	try {
 		pending = parsePendingResult(JSON.parse(await readFile(base.resultPath, "utf8")) as unknown);
 	} catch {
-		throw new Error("Worker Result file is unreadable.");
+		throw new Error("Subagent Result file is unreadable.");
 	}
-	if (!pending || pending.taskId !== base.taskId) throw new Error("Worker Result file is not this pending task.");
+	if (!pending || pending.taskId !== base.taskId) throw new Error("Subagent Result file is not this pending task.");
 	return { ...base, task: pending.task, createdAt: pending.createdAt };
 }
 
@@ -71,15 +71,15 @@ function soleFinishCall(ctx: ExtensionContext, toolCallId: string): boolean {
 	return calls.length === 1 && object(calls[0])?.id === toolCallId && object(calls[0])?.name === "finish_task";
 }
 
-async function atomicResult(protocol: WorkerProtocol, terminal: TerminalResult): Promise<void> {
+async function atomicResult(protocol: SubagentProtocol, terminal: TerminalResult): Promise<void> {
 	let pending;
 	try {
 		pending = parsePendingResult(JSON.parse(await readFile(protocol.resultPath, "utf8")) as unknown);
 	} catch {
-		throw new Error("Worker Result file is unreadable.");
+		throw new Error("Subagent Result file is unreadable.");
 	}
 	if (!pending || pending.taskId !== protocol.taskId || pending.task !== protocol.task || pending.createdAt !== protocol.createdAt) {
-		throw new Error("Worker Result file is no longer pending for this Worker.");
+		throw new Error("Subagent Result file is no longer pending for this Subagent.");
 	}
 	const temporary = join(dirname(protocol.resultPath), `.result-${randomUUID()}.json`);
 	try {
@@ -106,7 +106,7 @@ async function herdr(pi: ExtensionAPI, args: string[], ctx: ExtensionContext, si
 	}
 }
 
-async function waitAndNotify(pi: ExtensionAPI, protocol: WorkerProtocol, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
+async function waitAndNotify(pi: ExtensionAPI, protocol: SubagentProtocol, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
 	const waited = object((await herdr(pi, ["agent", "wait", protocol.mainName, "--until", "idle", "--until", "done"], ctx, signal)).result);
 	if (!waited || waited.type !== "agent_info") throw new Error("Herdr Main wait did not return agent_info.");
 	const status = object(waited.agent)?.agent_status;
@@ -115,12 +115,12 @@ async function waitAndNotify(pi: ExtensionAPI, protocol: WorkerProtocol, ctx: Ex
 	if (!prompted || prompted.type !== "agent_prompted") throw new Error("Herdr Completion Notice was not accepted.");
 }
 
-export default async function workerExtension(pi: ExtensionAPI): Promise<void> {
+export default async function subagentExtension(pi: ExtensionAPI): Promise<void> {
 	const protocol = await loadProtocol();
 	let completionStarted = false;
 
 	const complete = async (terminal: TerminalResult, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> => {
-		if (completionStarted) throw new Error("Worker Result is already terminal.");
+		if (completionStarted) throw new Error("Subagent Result is already terminal.");
 		completionStarted = true;
 		try {
 			await atomicResult(protocol, terminal);
