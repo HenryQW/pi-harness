@@ -1,11 +1,10 @@
 import { Buffer } from "node:buffer";
 
-export const PROTOCOL_VERSION = 1;
-export const NOTICE_PREFIX = "PI_HERDR_SUBAGENT_COMPLETION_V1 ";
-export const MAX_EXCERPT_CHARS = 1_000;
+export const PROTOCOL_VERSION = 2;
+export const NOTICE_PREFIX = "PI_HERDR_SUBAGENT_COMPLETION_V2 ";
 
 export type PendingResult = {
-	version: 1;
+	version: 2;
 	taskId: string;
 	state: "pending";
 	task: string;
@@ -13,7 +12,7 @@ export type PendingResult = {
 };
 
 export type TerminalResult = {
-	version: 1;
+	version: 2;
 	taskId: string;
 	state: "finished";
 	task: string;
@@ -22,7 +21,7 @@ export type TerminalResult = {
 	createdAt: string;
 	finishedAt: string;
 } | {
-	version: 1;
+	version: 2;
 	taskId: string;
 	state: "failed";
 	task: string;
@@ -33,13 +32,13 @@ export type TerminalResult = {
 };
 
 export type CompletionNotice = {
-	version: 1;
+	version: 2;
 	taskId: string;
 	resultPath: string;
-	excerpt: string;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
 	Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -54,9 +53,6 @@ const timestamp = (value: unknown): value is string =>
 	&& new Date(value).toISOString() === value;
 
 export const isTaskId = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
-
-export const sanitizeExcerpt = (value: string) =>
-	value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "").slice(0, MAX_EXCERPT_CHARS);
 
 export function parsePendingResult(value: unknown): PendingResult | undefined {
 	if (!isObject(value) || !hasExactly(value, ["version", "taskId", "state", "task", "createdAt"])) return;
@@ -85,21 +81,13 @@ export function parseTerminalResult(value: unknown): TerminalResult | undefined 
 	}
 }
 
-export const resultExcerpt = (result: TerminalResult) =>
-	sanitizeExcerpt(result.state === "finished" ? result.result : result.error.message);
-
-export function completionNotice(resultPath: string, result: TerminalResult): string {
-	const notice: CompletionNotice = {
-		version: PROTOCOL_VERSION,
-		taskId: result.taskId,
-		resultPath,
-		excerpt: resultExcerpt(result),
-	};
+export function completionNotice(resultPath: string, taskId: string): string {
+	const notice: CompletionNotice = { version: PROTOCOL_VERSION, taskId, resultPath };
 	return `${NOTICE_PREFIX}${Buffer.from(JSON.stringify(notice), "utf8").toString("base64url")}`;
 }
 
 export function parseCompletionNotice(text: string): CompletionNotice | undefined {
-	if (!text.startsWith(NOTICE_PREFIX) || /[\u0000-\u001f\u007f-\u009f]/.test(text)) return;
+	if (!text.startsWith(NOTICE_PREFIX) || CONTROL.test(text)) return;
 	const encoded = text.slice(NOTICE_PREFIX.length);
 	if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return;
 	let value: unknown;
@@ -110,10 +98,9 @@ export function parseCompletionNotice(text: string): CompletionNotice | undefine
 	} catch {
 		return;
 	}
-	if (!isObject(value) || !hasExactly(value, ["version", "taskId", "resultPath", "excerpt"])) return;
+	if (!isObject(value) || !hasExactly(value, ["version", "taskId", "resultPath"])) return;
 	if (value.version !== PROTOCOL_VERSION || !isTaskId(value.taskId)) return;
-	if (typeof value.resultPath !== "string" || !value.resultPath || typeof value.excerpt !== "string") return;
-	if (value.excerpt !== sanitizeExcerpt(value.excerpt)) return;
+	if (typeof value.resultPath !== "string" || !value.resultPath || CONTROL.test(value.resultPath)) return;
 	return value as CompletionNotice;
 }
 

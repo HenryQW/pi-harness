@@ -8,9 +8,9 @@ Delegate bounded work from Pi Main to one interactive Pi Worker in one Herdr tab
 pi install npm:@henryqw/pi-herdr-subagents
 ```
 
-Run Pi inside Herdr. `delegate_task({ task })` creates one no-focus tab, starts fresh Worker context with Main model, thinking level, cwd, and trust, then returns Worker name, tab ID, Result path, and `herdr tab close` command.
+Run Pi inside Herdr. `delegate_task({ task })` creates one no-focus tab, starts fresh Worker context with Main model, thinking level, cwd, and trust, then returns Worker name, tab ID, Result path, and `herdr tab close` command. Give Worker self-contained task with relevant context, exact paths, constraints, and success criteria.
 
-Worker may ask user questions in its own tab. It stays live until it calls `finish_task({ result })`. Main receives a Completion Notice with Result path and 1,000-character excerpt; inspect and verify full Result before relying on it.
+Worker may ask user questions in its own tab. It stays live until it calls `finish_task({ result })`. Main receives Completion Notice with Result path; read and verify Result before relying on it.
 
 ## Configure
 

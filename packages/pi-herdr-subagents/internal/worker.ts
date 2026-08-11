@@ -26,7 +26,7 @@ const object = (value: unknown): Record<string, unknown> | undefined =>
 
 function protocolFromEnvironment(): Omit<WorkerProtocol, "task" | "createdAt"> {
 	if (process.env.PI_HERDR_SUBAGENT_PROTOCOL !== String(PROTOCOL_VERSION)) {
-		throw new Error("Missing PI_HERDR_SUBAGENT_PROTOCOL=1.");
+		throw new Error(`Missing PI_HERDR_SUBAGENT_PROTOCOL=${PROTOCOL_VERSION}.`);
 	}
 	const taskId = process.env.PI_HERDR_SUBAGENT_TASK_ID;
 	const resultPath = process.env.PI_HERDR_SUBAGENT_RESULT_PATH;
@@ -106,12 +106,12 @@ async function herdr(pi: ExtensionAPI, args: string[], ctx: ExtensionContext, si
 	}
 }
 
-async function waitAndNotify(pi: ExtensionAPI, protocol: WorkerProtocol, terminal: TerminalResult, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
+async function waitAndNotify(pi: ExtensionAPI, protocol: WorkerProtocol, ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
 	const waited = object((await herdr(pi, ["agent", "wait", protocol.mainName, "--until", "idle", "--until", "done"], ctx, signal)).result);
 	if (!waited || waited.type !== "agent_info") throw new Error("Herdr Main wait did not return agent_info.");
 	const status = object(waited.agent)?.agent_status;
 	if (status !== "idle" && status !== "done") throw new Error("Herdr Main did not settle idle or done.");
-	const prompted = object((await herdr(pi, ["agent", "prompt", protocol.mainName, completionNotice(protocol.resultPath, terminal)], ctx, signal)).result);
+	const prompted = object((await herdr(pi, ["agent", "prompt", protocol.mainName, completionNotice(protocol.resultPath, protocol.taskId)], ctx, signal)).result);
 	if (!prompted || prompted.type !== "agent_prompted") throw new Error("Herdr Completion Notice was not accepted.");
 }
 
@@ -128,14 +128,19 @@ export default async function workerExtension(pi: ExtensionAPI): Promise<void> {
 			completionStarted = false;
 			throw error;
 		}
-		await waitAndNotify(pi, protocol, terminal, ctx, signal);
+		await waitAndNotify(pi, protocol, ctx, signal);
 	};
 
 	pi.registerTool({
 		name: "finish_task",
 		label: "Finish Task",
-		description: "Store final Result and notify Main. Call alone after task is complete.",
-		parameters: Type.Object({ result: Type.String({ minLength: 1 }) }),
+		description: "Store concise, decision-ready final Result and notify Main. Call alone after task is complete.",
+		parameters: Type.Object({
+			result: Type.String({
+				minLength: 1,
+				description: "Concise outcome with files changed, validation performed, and remaining risks.",
+			}),
+		}),
 		executionMode: "sequential",
 		execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
 			if (!params.result.trim()) throw new Error("finish_task result must not be blank.");
