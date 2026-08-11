@@ -444,6 +444,8 @@ async function ensureHealthCoder(
 		: promptMode === "resume"
 			? "Resend your latest worker event through the worker tool."
 			: "Repair the actionable PR feedback in this fresh child worktree. Commit exactly one change over the current PR head, then request review.";
+	const amendments = gateCommandAmendments(state, issue.id);
+	const gate = amendments.length ? { required_gate: { command: requiredGateCommand(state, issue), amendments } } : {};
 	await ensureActionTicket(
 		actionTicketPath(state.main_worktree, state.run_id, issue.id, "pr_health", "implementer"),
 		{ attempt: positiveInteger(health.attempt, "PR-health attempt"), review_round: (health.review_round ?? 0) + 1, role: "implementer" },
@@ -462,6 +464,7 @@ async function ensureHealthCoder(
 		attempt: health.attempt,
 		review_round: (health.review_round ?? 0) + 1,
 		triage: { summary: health.summary, thread_ids: health.thread_ids, checks: health.checks },
+		...gate,
 		instruction,
 	} : {
 		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_pr_health_repair_update",
@@ -470,6 +473,7 @@ async function ensureHealthCoder(
 		attempt: health.attempt,
 		review_round: (health.review_round ?? 0) + 1,
 		review_findings: health.review_findings,
+		...gate,
 		instruction,
 	}, options);
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);

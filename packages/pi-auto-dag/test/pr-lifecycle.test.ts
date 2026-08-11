@@ -241,6 +241,14 @@ test("failed final gate accepts an exact command amendment on same integration c
 		.map((call) => JSON.parse(call.args[3]))
 		.find((value) => value.kind === "final_check");
 	assert.deepEqual(prompt.context.gate_command_amendments, state.gate_command_amendments);
+	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "changes_requested", ["Repair it."]));
+	state = await lifecycle.resolve(project.root, "alpha", "Repair alpha for final check.");
+	const repairPrompt = herdr.calls
+		.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt")
+		.map((call) => JSON.parse(call.args[3]))
+		.reverse()
+		.find((value) => value.type === "auto_dag_final_repair");
+	assert.deepEqual(repairPrompt.required_gate, { command: replacement, amendments: state.gate_command_amendments });
 });
 
 test("infrastructure retry reruns the amended final gate command", async (t) => {
@@ -697,6 +705,12 @@ test("PR health fast-forwards, uses amended final gate, pushes once, and resolve
 		checks: [{ name: "integration", link: "https://ci.example/integration", output: "fails: expected repair" }],
 	}));
 	assert.equal(state.health?.status, "repairing");
+	const repairPrompt = herdr.calls
+		.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt")
+		.map((call) => JSON.parse(call.args[3]))
+		.reverse()
+		.find((value) => value.type === "auto_dag_pr_health_repair");
+	assert.deepEqual(repairPrompt.required_gate, { command: replacement, amendments: state.gate_command_amendments });
 	const repair = await commit(state.health!.worktree!, "health.txt", "healthy\n", "health repair");
 	state = await lifecycle.health(project.root, RUN_ID, requestReviewEvent(state, "final-check", repair));
 	assert.equal(state.health?.reviewer_agent, reviewer);

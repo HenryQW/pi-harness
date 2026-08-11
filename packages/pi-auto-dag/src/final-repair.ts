@@ -1,7 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
 import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
-import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredTaskGate } from "./final-gate.ts";
+import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredGateCommand, requiredTaskGate } from "./final-gate.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
@@ -283,6 +283,8 @@ async function ensureFinalRepairCoder(
 		: promptMode === "revision"
 			? "Address the reviewer findings by amending the sole repair commit, then request review again."
 			: "Implement the named final-gate repair in this fresh child worktree, commit exactly one change over the repair base, then request review.";
+	const amendments = gateCommandAmendments(state, issue.id);
+	const gate = amendments.length ? { required_gate: { command: requiredGateCommand(state, issue), amendments } } : {};
 	await ensureActionTicket(
 		actionTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle", "implementer"),
 		{ attempt: current.attempts, review_round: (current.review_rounds ?? 0) + 1, role: "implementer" },
@@ -301,6 +303,7 @@ async function ensureFinalRepairCoder(
 		wave_base: current.repair_base,
 		attempt: current.attempts,
 		review_round: (current.review_rounds ?? 0) + 1,
+		...gate,
 		instruction,
 	} : {
 		type: promptMode === "resume" ? "auto_dag_resend" : "auto_dag_final_repair_update",
@@ -309,6 +312,7 @@ async function ensureFinalRepairCoder(
 		attempt: current.attempts,
 		review_round: (current.review_rounds ?? 0) + 1,
 		review_findings: current.review_findings,
+		...gate,
 		instruction,
 	}, options);
 	if (needsInstruction) {
