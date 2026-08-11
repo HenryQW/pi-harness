@@ -329,11 +329,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
-		description: "Delegate one bounded task to one interactive Herdr Pi Subagent. For token efficiency, split independent work, keep tightly coupled steps together, include only needed context, and choose the lowest model class likely to succeed. Never delegate overlapping writes.",
+		description: "Delegate one bounded task to one interactive Herdr Pi Subagent. Split independent work, keep tightly coupled steps together, include only needed context, and choose the lowest model class likely to succeed. Never delegate overlapping writes.",
 		parameters: Type.Object({
 			task: Type.String({
 				minLength: 1,
-				description: "Token-efficient, self-contained task with only relevant context, exact paths, constraints, and success criteria. Request a concise Result.",
+				description: "Self-contained task with only relevant context, exact paths, constraints, and success criteria. Request a concise Result.",
 			}),
 			modelClass: Type.Optional(Type.String({
 				enum: MODEL_CLASSES,
