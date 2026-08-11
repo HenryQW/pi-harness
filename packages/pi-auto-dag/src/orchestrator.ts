@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import type { AvailableSkill } from "./config.ts";
+import { retryableFinalGate } from "./final-gate.ts";
 import { executionIssues } from "./graph.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
@@ -9,12 +10,14 @@ import type { RunState, WorkerEnvelope } from "./model.ts";
 import type { WorkerRole } from "./worker.ts";
 import { parseWorkerEnvelope } from "./orchestration.ts";
 import { registerPlanning } from "./planning.ts";
+import { nonEmptyString } from "./validate.ts";
 import { listWorkerAgents } from "./worker-host.ts";
 
 export const ORCHESTRATOR_TOOLS = {
 	start: "auto_dag_start",
 	status: "auto_dag_status",
 	resume: "auto_dag_resume",
+	retryGate: "auto_dag_retry_gate",
 	resolve: "auto_dag_resolve",
 	abort: "auto_dag_abort",
 	health: "auto_dag_health",
@@ -53,7 +56,9 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		let herdrGeneration = 0;
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
-				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume, ORCHESTRATOR_TOOLS.abort,
+				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume,
+					...(hasRetryableFinalGate(state) ? [ORCHESTRATOR_TOOLS.retryGate] : []),
+					ORCHESTRATOR_TOOLS.abort,
 					...(hasBlockedTask(state) ? [ORCHESTRATOR_TOOLS.resolve] : []),
 					...(state.health ? [ORCHESTRATOR_TOOLS.health] : [])]
 				: [ORCHESTRATOR_TOOLS.start, ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.health];
@@ -216,6 +221,32 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			parameters: Type.Object({ envelope: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				return stateResult(await lifecycle.resume(ctx.cwd, params.envelope));
+			},
+		}));
+
+		pi.registerTool(defineTool({
+			name: ORCHESTRATOR_TOOLS.retryGate,
+			label: "Retry Auto DAG gate",
+			description: "Interactively archive failed Final Check Required Gate evidence and rerun its exact frozen command and commit in a fresh environment.",
+			parameters: Type.Object({ reason: Type.String() }),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				if (ctx.mode !== "tui") throw new Error("Required Gate infrastructure retry requires interactive TUI mode");
+				const reason = nonEmptyString(params.reason, "infrastructure retry reason");
+				const candidate = await lifecycle.status(ctx.cwd);
+				if (!candidate) throw new Error("No active pi-auto-dag run");
+				const { evidence } = retryableFinalGate(candidate);
+				const approved = await ctx.ui.confirm("Retry failed Final Check Required Gate?", [
+					`Commit: ${evidence.commit}`,
+					`Command: ${evidence.command}`,
+					`Failed exit: ${evidence.exit_code}`,
+					`Invalidation reason: ${reason}`,
+					"Old evidence will remain archived. Command and commit cannot be changed.",
+				].join("\n"));
+				if (!approved) return {
+					content: [{ type: "text" as const, text: "Required Gate infrastructure retry cancelled." }],
+					details: candidate,
+				};
+				return stateResult(await lifecycle.retryGate(ctx.cwd, reason, evidence));
 			},
 		}));
 
@@ -383,6 +414,15 @@ function workerEnvelopeInput(text: string): WorkerEnvelope | undefined {
 	const input = value as Record<string, unknown>;
 	if (!["version", "type", "run_id", "issue_id", "role", "event_id", "attempt", "review_round", "receipt_path", "payload"].every((key) => key in input)) return undefined;
 	return parseWorkerEnvelope(input);
+}
+
+function hasRetryableFinalGate(state: RunState): boolean {
+	try {
+		retryableFinalGate(state);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function hasBlockedTask(state: RunState): boolean {

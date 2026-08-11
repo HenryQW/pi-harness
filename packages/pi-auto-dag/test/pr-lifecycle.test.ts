@@ -8,7 +8,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
 import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
-import { type CommandRunner, runCommand } from "../src/command.ts";
+import { recordedGateEvidence, type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
@@ -135,6 +135,61 @@ test("nonzero final gate blocks before reviewer and resolution reruns the same i
 	assert.equal(state.tasks["final-check"].review_exit_code, 0);
 	assert.equal(herdr.calls.filter((call) => call.command === "sh" && call.args[1] === FINAL_GATE_COMMAND).length, 2);
 	assert.equal(herdr.calls.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent start" && call.args[2].endsWith("-r")).length, reviewerStarts + 1);
+});
+
+test("user-approved infrastructure retry archives persisted final-gate evidence after runtime reload", async (t) => {
+	const project = await makeProject(t);
+	let dependenciesProvisioned = false;
+	const herdr = fakeHerdr({ gate: (command) => command === FINAL_GATE_COMMAND && !dependenciesProvisioned
+		? { code: 1, stdout: "", stderr: "ERR_MODULE_NOT_FOUND: dependency provisioning failed\n" }
+		: { code: 0, stdout: `required gate passed: ${command}\n`, stderr: "" } });
+	const baseRunner = combinedRunner(herdr, fakeGh(project.root));
+	const runnerCalls: Array<{ command: string; args: readonly string[] }> = [];
+	const runner: CommandRunner = async (command, args, options) => {
+		runnerCalls.push({ command, args: [...args] });
+		return await baseRunner(command, args, options);
+	};
+	let state = await makeLifecycle(runner).start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	state = await makeLifecycle(runner).resume(project.root, requestReviewEvent(state, "alpha", implementation));
+	state = await makeLifecycle(runner).resume(project.root, reviewEvent(state, "alpha", "approved", []));
+	const finalCommit = state.integration_head;
+	const oldEvidence = recordedGateEvidence(state.tasks["final-check"], finalCommit)!;
+	const persisted = {
+		...state,
+		tasks: { ...state.tasks, "final-check": { ...state.tasks["final-check"], commit: undefined } },
+	};
+	await writeRunState(project.root, persisted, () => "persisted-failure");
+	await assert.rejects(
+		makeLifecycle(runner).resolve(project.root, "final-check", "Infrastructure failure; retry exact gate."),
+		/must be resolved against/,
+	);
+
+	dependenciesProvisioned = true;
+	const updatedRuntime = makeLifecycle(runner);
+	await assert.rejects(
+		updatedRuntime.retryGate(project.root, "Runtime dependency provisioning restored.", { ...oldEvidence, commit: "replacement" }),
+		/evidence changed during infrastructure retry approval/,
+	);
+	assert.equal((await updatedRuntime.status(project.root))?.tasks["final-check"].review_exit_code, 1);
+	state = await updatedRuntime.retryGate(project.root, "Runtime dependency provisioning restored.", oldEvidence);
+
+	assert.equal(state.phase, "execution");
+	assert.equal(state.tasks["final-check"].status, "reviewing");
+	assert.equal(state.tasks["final-check"].review_command, FINAL_GATE_COMMAND);
+	assert.equal(state.tasks["final-check"].review_commit, finalCommit);
+	assert.equal(state.tasks["final-check"].review_exit_code, 0);
+	assert.deepEqual(state.tasks["final-check"].required_gate_invalidations, [{
+		invalidated_at: "2026-08-09T00:00:00.000Z",
+		reason: "Runtime dependency provisioning restored.",
+		evidence: oldEvidence,
+	}]);
+	const gateCalls = herdr.calls.filter((call) => call.command === "sh" && call.args[0] === "-c" && call.args[1] === FINAL_GATE_COMMAND);
+	assert.equal(gateCalls.length, 2);
+	assert.ok(gateCalls.every((call) => call.cwd?.endsWith("/final-gate")));
+	const finalWorktreeBuilds = runnerCalls.filter((call) => call.command === "git"
+		&& call.args[0] === "worktree" && call.args[1] === "add" && call.args.some((arg) => arg.endsWith("/final-gate")));
+	assert.equal(finalWorktreeBuilds.length, 2);
 });
 
 test("health refuses a retained historical run while another run is active without touching it", async (t) => {

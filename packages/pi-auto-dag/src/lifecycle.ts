@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { acknowledgeRequiredGate, reconcileRequiredGateProcess, recordedGateEvidence, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
 import type { AvailableSkill } from "./config.ts";
+import { retryableFinalGate } from "./final-gate.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
-import type { ProjectConfig, RunState, RunTaskState } from "./model.ts";
+import type { ProjectConfig, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { runPrHealth } from "./pr-health.ts";
 import { recordGateExecution } from "./review.ts";
@@ -25,6 +27,7 @@ export interface CoreLifecycle {
 	start(mainWorktree: string, mainPane?: string): Promise<RunState>;
 	status(mainWorktree: string, runId?: string): Promise<RunState | undefined>;
 	resume(mainWorktree: string, envelope?: unknown): Promise<RunState>;
+	retryGate(mainWorktree: string, reason: string, expectedEvidence: RequiredGateEvidence): Promise<RunState>;
 	resolve(mainWorktree: string, issueId: string, resolution: string): Promise<RunState>;
 	abort(mainWorktree: string, reason?: string): Promise<RunState>;
 	health(mainWorktree: string, runId: string, envelope?: unknown): Promise<RunState>;
@@ -83,6 +86,42 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 					await releaseActiveRun(next.main_worktree, next.run_id);
 				}
 				return await completeSuccessfulRun(next, orchestration);
+			});
+		},
+
+		async retryGate(mainWorktree, reason, expectedEvidence) {
+			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
+				let state = await readActiveRun(root);
+				state = await reconcileGate(state, orchestration);
+				await guardBoundary(state, runner, uuid, options.availableSkills?.());
+				const { issue, evidence } = retryableFinalGate(state);
+				if (!isDeepStrictEqual(evidence, expectedEvidence)) {
+					throw new Error("Final Check Required Gate evidence changed during infrastructure retry approval");
+				}
+				const invalidation = {
+					invalidated_at: options.now?.() ?? new Date().toISOString(),
+					reason: nonEmptyString(reason, "infrastructure retry reason"),
+					evidence,
+				};
+				const current = clearFailedGateEvidence(state.tasks[issue.id]);
+				const {
+					block_reason: _taskBlockReason,
+					blocked_role: _blockedRole,
+					activity_started_at: _activityStartedAt,
+					resolution_pending: _resolutionPending,
+					...pending
+				} = current;
+				const { block_reason: _runBlockReason, ...unblocked } = state;
+				const next = replaceTask({ ...unblocked, phase: "execution" }, issue.id, {
+					...pending,
+					status: "pending",
+					required_gate_invalidations: [...(current.required_gate_invalidations ?? []), invalidation],
+				});
+				await writeRunState(state.main_worktree, next, uuid);
+				return await completeSuccessfulRun(
+					await blockOnFailure(next, uuid, async () => await resumeRun(next, undefined, orchestration)),
+					orchestration,
+				);
 			});
 		},
 

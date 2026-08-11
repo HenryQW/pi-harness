@@ -13,6 +13,8 @@ import {
 	type LocalIssue,
 	type PrHealthState,
 	type PullRequestIdentity,
+	type RequiredGateEvidence,
+	type RequiredGateInvalidation,
 	type RunState,
 	type RunTaskState,
 	type RunWave,
@@ -43,7 +45,7 @@ const TASK_BOOLEAN_FIELDS = [
 ] as const;
 const RUN_TASK_KEYS = [
 	"status", "attempts", ...TASK_STRING_FIELDS, ...TASK_BOOLEAN_FIELDS,
-	"review_rounds", "pending_action", "blocked_role", "review_exit_code", "review_stdout", "review_stderr", "review_findings", "final_gate_findings", "repair_attempt",
+	"review_rounds", "pending_action", "blocked_role", "review_exit_code", "review_stdout", "review_stderr", "required_gate_invalidations", "review_findings", "final_gate_findings", "repair_attempt",
 ] as const;
 
 const HEALTH_STRING_FIELDS = [
@@ -310,6 +312,10 @@ function parseRunTaskState(value: unknown, label: string): RunTaskState {
 	if (input.review_commit !== undefined) task.review_commit = nonEmptyString(input.review_commit, `${label}.review_commit`);
 	if (input.review_stdout !== undefined) task.review_stdout = parseGateOutputEvidence(input.review_stdout, `${label}.review_stdout`);
 	if (input.review_stderr !== undefined) task.review_stderr = parseGateOutputEvidence(input.review_stderr, `${label}.review_stderr`);
+	if (input.required_gate_invalidations !== undefined) {
+		task.required_gate_invalidations = array(input.required_gate_invalidations, `${label}.required_gate_invalidations`)
+			.map((entry, index) => parseRequiredGateInvalidation(entry, `${label}.required_gate_invalidations[${index}]`));
+	}
 	if (input.conflict_base !== undefined) task.conflict_base = nonEmptyString(input.conflict_base, `${label}.conflict_base`);
 	if (input.final_gate_head !== undefined) task.final_gate_head = nonEmptyString(input.final_gate_head, `${label}.final_gate_head`);
 	if (input.repair_issue_id !== undefined) task.repair_issue_id = nonEmptyString(input.repair_issue_id, `${label}.repair_issue_id`);
@@ -405,6 +411,34 @@ function timestamp(value: unknown, label: string): string {
 	const text = nonEmptyString(value, label);
 	if (Number.isNaN(Date.parse(text))) throw new Error(`${label} must be a timestamp`);
 	return text;
+}
+
+function parseRequiredGateInvalidation(value: unknown, label: string): RequiredGateInvalidation {
+	const input = object(value, label);
+	exactKeys(input, ["invalidated_at", "reason", "evidence"], label);
+	const evidence = parseRequiredGateEvidence(input.evidence, `${label}.evidence`);
+	if (evidence.exit_code === 0) throw new Error(`${label}.evidence.exit_code must be nonzero`);
+	return {
+		invalidated_at: timestamp(input.invalidated_at, `${label}.invalidated_at`),
+		reason: nonEmptyString(input.reason, `${label}.reason`),
+		evidence,
+	};
+}
+
+function parseRequiredGateEvidence(value: unknown, label: string): RequiredGateEvidence {
+	const input = object(value, label);
+	exactKeys(input, ["command", "commit", "exit_code", "output"], label);
+	const output = object(input.output, `${label}.output`);
+	exactKeys(output, ["stdout", "stderr"], `${label}.output`);
+	return {
+		command: nonEmptyString(input.command, `${label}.command`),
+		commit: nonEmptyString(input.commit, `${label}.commit`),
+		exit_code: nonNegativeInteger(input.exit_code, `${label}.exit_code`),
+		output: {
+			stdout: parseGateOutputEvidence(output.stdout, `${label}.output.stdout`),
+			stderr: parseGateOutputEvidence(output.stderr, `${label}.output.stderr`),
+		},
+	};
 }
 
 function parseGateOutputEvidence(value: unknown, label: string): GateOutputEvidence {
