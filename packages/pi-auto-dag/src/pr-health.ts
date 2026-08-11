@@ -8,7 +8,7 @@ import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealth
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { actionTicketPath, ensureActionTicket, eventReceiptPath, readWorkerReceipt, reviewId, writeWorkerReceipt } from "./review-ticket.ts";
 import { recordGateExecution, reviewPrompt, type ReviewPromptMode } from "./review.ts";
-import { hasAcceptedWorkerEvent, recordAcceptedWorkerEvent, writeRunState, type Uuid } from "./state.ts";
+import { hasAcceptedWorkerEvent, readRunState, recordAcceptedWorkerEvent, writeRunState, type Uuid } from "./state.ts";
 import { findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
 import { createWorkerLaunch, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -24,14 +24,15 @@ export async function runPrHealth(
 	envelope: WorkerEnvelope | undefined,
 	options: PrHealthOptions,
 ): Promise<RunState> {
+	const receiptPath = envelope ? eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id) : undefined;
+	let receiptAccepted = false;
 	if (envelope) {
-		const receiptPath = eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id);
 		if (envelope.receipt_path !== receiptPath) throw new Error("Worker receipt path does not belong to retained run");
-		const existing = await readWorkerReceipt(receiptPath);
+		const existing = await readWorkerReceipt(receiptPath!);
 		if (existing) {
 			if (existing.event_id !== envelope.event_id) throw new Error("Worker receipt belongs to another event");
-			if (existing.status === "accepted") return state;
-			throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+			if (existing.status === "rejected") throw new Error(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+			receiptAccepted = true;
 		}
 	}
 	state = await resumePrHealth(state, options);
@@ -39,32 +40,41 @@ export async function runPrHealth(
 	if (state.phase !== "completed" || !state.pr) {
 		throw new Error("PR health requires a completed retained run with an integration PR");
 	}
-	if (state.health?.status === "applying") return await applyHealthRepair(state, options);
-	if (state.health?.status === "pushing") return await continueHealthPush(state, options);
-	if (state.health?.status === "post_push_cleanup") return await completeHealthRepair(state, options);
+	const recoveringRepair = ["applying", "pushing", "post_push_cleanup"].includes(state.health?.status ?? "");
+	if (state.health?.status === "applying") state = await applyHealthRepair(state, options);
+	if (state.health?.status === "pushing") state = await continueHealthPush(state, options);
+	if (state.health?.status === "post_push_cleanup") state = await completeHealthRepair(state, options);
+	if (recoveringRepair && !envelope) return state;
 	state = await fastForwardToPrHead(state, options);
+	if (envelope && (receiptAccepted || hasAcceptedWorkerEvent(state, envelope.event_id))) {
+		const resumed = await resumePendingHealthWork(state, config, options);
+		state = resumed ?? state;
+		await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
+		return state;
+	}
 	if (state.health?.status === "blocked") {
+		if (envelope) {
+			const reason = state.health.summary ?? "PR health is blocked";
+			await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "rejected", reason }, options.uuid);
+			throw new Error(reason);
+		}
 		if (state.health.head !== state.integration_head && hasFailedHealthGate(state.health)) {
 			state = await completeHealthRepair(state, options);
 			return await startHealthTriage(state, config, options);
 		}
 		return await retryFailedHealthGate(state, config, options);
 	}
-	if (envelope && hasAcceptedWorkerEvent(state, envelope.event_id)) {
-		const resumed = await resumePendingHealthWork(state, config, options);
-		state = resumed ?? state;
-		await writeWorkerReceipt(eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id), { event_id: envelope.event_id, status: "accepted" }, options.uuid);
-		return state;
-	}
 	if (envelope) {
-		const receiptPath = eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id);
 		try {
 			state = await acceptHealthEnvelope(recordAcceptedWorkerEvent(state, envelope.event_id), envelope, config, options);
 		} catch (error) {
-			await writeWorkerReceipt(receiptPath, { event_id: envelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+			const persisted = await readRunState(state.main_worktree, state.run_id);
+			if (!persisted || !hasAcceptedWorkerEvent(persisted, envelope.event_id)) {
+				await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+			}
 			throw error;
 		}
-		await writeWorkerReceipt(receiptPath, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
+		await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
 		return state;
 	}
 	if (state.health?.status === "triaging" && state.health.actionable === false) return await completeHealthyTriage(state, options);
@@ -787,6 +797,7 @@ async function workerLaunch(
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
 		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "pr_health", role),
+		required_gate_timeout_ms: config.required_gate_timeout_ms,
 	});
 }
 

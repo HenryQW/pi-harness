@@ -242,9 +242,14 @@ export async function reconcileRequiredGateProcess(
 	const host = await readGateHost(gateHostReadyPath(path, record.launch_id));
 	if (host && await processIdentity(host.pid) === host.identity) {
 		if (signalProcess(host.pid, record.grouped, "SIGTERM")) {
-			await delay(100);
-			signalProcess(host.pid, record.grouped, "SIGKILL");
-			await delay(100);
+			for (let attempt = 0; attempt < 50; attempt += 1) {
+				await delay(10);
+				if ((await readGateProcess(path))?.phase === "completed") break;
+			}
+			if ((await readGateProcess(path))?.phase !== "completed" && await processIdentity(host.pid) === host.identity) {
+				signalProcess(host.pid, record.grouped, "SIGKILL");
+				await delay(100);
+			}
 		}
 	}
 	const latest = await readGateProcess(path);

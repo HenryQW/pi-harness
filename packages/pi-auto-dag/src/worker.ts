@@ -5,7 +5,7 @@ import { commandOutput, runCommand, type CommandRunner } from "./command.ts";
 import { DEFAULT_REQUIRED_GATE_TIMEOUT_MS, type DeliveryGraph, type LocalIssue, type ResolvedProfile, type WorkerEnvelope } from "./model.ts";
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
 import { readActionTicket, readWorkerReceipt, type ActionTicket } from "./review-ticket.ts";
-import { nonEmptyString, oneOf } from "./validate.ts";
+import { nonEmptyString, oneOf, positiveInteger } from "./validate.ts";
 
 export type WorkerRole = "implementer" | "reviewer";
 
@@ -31,6 +31,7 @@ export interface WorkerLaunchInput {
 	issue_id: string;
 	main_pane: string;
 	action_ticket: string;
+	required_gate_timeout_ms: number;
 }
 
 export interface WorkerLaunch {
@@ -39,6 +40,7 @@ export interface WorkerLaunch {
 }
 
 export const WORKER_EXTENSION_PATH = fileURLToPath(new URL("../extensions/worker.ts", import.meta.url));
+const WORKER_DELIVERY_MARGIN_MS = 60_000;
 
 /** Profile owns baseline Pi resources; Auto DAG adds only its worker adapter and phase tools. */
 export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
@@ -53,6 +55,7 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 			PI_AUTO_DAG_ISSUE_ID: nonEmptyString(input.issue_id, "worker issue_id"),
 			PI_AUTO_DAG_MAIN_PANE: nonEmptyString(input.main_pane, "worker main_pane"),
 			PI_AUTO_DAG_ACTION_TICKET: nonEmptyString(input.action_ticket, "worker action ticket"),
+			PI_AUTO_DAG_DELIVERY_TIMEOUT_MS: String(positiveInteger(input.required_gate_timeout_ms, "worker required gate timeout") + WORKER_DELIVERY_MARGIN_MS),
 		},
 		args: profileLaunchArgs(input.profile, events.map((event) => WORKER_TOOLS[event])),
 	};
@@ -88,6 +91,7 @@ interface WorkerEnvironment {
 	issue_id: string;
 	main_pane: string;
 	action_ticket: string;
+	delivery_timeout_ms: number;
 }
 
 export function workerEnvironment(environment: NodeJS.ProcessEnv): WorkerEnvironment {
@@ -100,6 +104,9 @@ export function workerEnvironment(environment: NodeJS.ProcessEnv): WorkerEnviron
 		issue_id: nonEmptyString(environment.PI_AUTO_DAG_ISSUE_ID, "PI_AUTO_DAG_ISSUE_ID"),
 		main_pane: nonEmptyString(environment.PI_AUTO_DAG_MAIN_PANE, "PI_AUTO_DAG_MAIN_PANE"),
 		action_ticket: nonEmptyString(environment.PI_AUTO_DAG_ACTION_TICKET, "worker action ticket"),
+		delivery_timeout_ms: environment.PI_AUTO_DAG_DELIVERY_TIMEOUT_MS === undefined
+			? DEFAULT_DELIVERY_TIMEOUT_MS
+			: positiveInteger(Number(environment.PI_AUTO_DAG_DELIVERY_TIMEOUT_MS), "worker delivery timeout"),
 	};
 }
 
@@ -110,7 +117,7 @@ export interface WorkerDeliveryOptions {
 	ticket?: ActionTicket | Promise<ActionTicket>;
 }
 
-const DEFAULT_DELIVERY_TIMEOUT_MS = DEFAULT_REQUIRED_GATE_TIMEOUT_MS + 60_000;
+const DEFAULT_DELIVERY_TIMEOUT_MS = DEFAULT_REQUIRED_GATE_TIMEOUT_MS + WORKER_DELIVERY_MARGIN_MS;
 const COMPACT_RESUME_MESSAGE = "Auto-compact completed. Retry worker event submission now.";
 
 export async function sendWorkerEnvelope(
@@ -129,7 +136,7 @@ export async function sendWorkerEnvelope(
 	if (existing) return requireReceipt(envelope, existing);
 
 	const attempts = delivery.deliveryAttempts ?? 3;
-	const timeoutMs = delivery.deliveryTimeoutMs ?? DEFAULT_DELIVERY_TIMEOUT_MS;
+	const timeoutMs = delivery.deliveryTimeoutMs ?? worker.delivery_timeout_ms;
 	if (!Number.isInteger(attempts) || attempts < 1) throw new Error("worker deliveryAttempts must be a positive integer");
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error("worker deliveryTimeoutMs must be a positive integer");
 	let lastError: unknown;

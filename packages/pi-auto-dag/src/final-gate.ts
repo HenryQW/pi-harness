@@ -15,12 +15,14 @@ export async function failFinalGate(
 	reason: string,
 	options: FinalGateOptions,
 	findings: string[] = [],
+	beforeReviewer = false,
 ): Promise<RunState> {
 	const current = task(state, issue.id);
-	const blockedRole = current.status === "repairing" ? "implementer" : ["reviewing", "repair_reviewing"].includes(current.status) ? "reviewer" : undefined;
+	const { blocked_role: _blockedRole, ...unblocked } = current;
+	const blockedRole = beforeReviewer ? undefined : current.status === "repairing" ? "implementer" : ["reviewing", "repair_reviewing"].includes(current.status) ? "reviewer" : undefined;
 	return await save({
 		...replaceTask(state, issue.id, {
-			...current,
+			...unblocked,
 			status: "blocked",
 			block_reason: reason,
 			activity_started_at: timestamp(options),

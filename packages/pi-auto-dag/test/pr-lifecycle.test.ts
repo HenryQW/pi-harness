@@ -107,7 +107,7 @@ test("final gate cannot erase changes created concurrently in main worktree", as
 });
 
 test("nonzero final gate blocks before reviewer and resolution reruns the same integration commit", async (t) => {
-	const project = await makeProject(t);
+	const project = await makeProject(t, { maxReviews: 1 });
 	let failFinalGate = true;
 	const herdr = fakeHerdr({ gate: (command) => command === FINAL_GATE_COMMAND && failFinalGate
 		? { code: 1, stdout: "", stderr: "dependency unavailable\n" }
@@ -380,6 +380,36 @@ test("PR health accepted triage resumes repair before recovering receipt", async
 	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 
+test("blocked PR health recovers accepted receipts and rejects fresh events", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await finishInitialRun(project.root, lifecycle);
+	state = await lifecycle.health(project.root, RUN_ID);
+	const message = event(state, "final-check", "reviewer", "block_task", { reason: "Reviewer dependency unavailable." }, undefined, {
+		attempt: state.health!.attempt,
+		review_round: state.health!.review_round,
+	});
+	const envelope = JSON.parse(message);
+	await writeRunState(project.root, {
+		...state,
+		accepted_events: [...(state.accepted_events ?? []), envelope.event_id],
+		health: { ...state.health!, status: "blocked", blocked_role: "reviewer", summary: "Reviewer dependency unavailable." },
+	}, () => "blocked-health");
+
+	state = await lifecycle.health(project.root, RUN_ID, message);
+	assert.equal(state.health?.status, "blocked");
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+
+	const fresh = {
+		...envelope,
+		event_id: "fresh-blocked-health-event",
+		receipt_path: eventReceiptPath(project.root, RUN_ID, "fresh-blocked-health-event"),
+	};
+	await assert.rejects(lifecycle.health(project.root, RUN_ID, JSON.stringify(fresh)), /Reviewer dependency unavailable/);
+	assert.equal((await readWorkerReceipt(fresh.receipt_path))?.status, "rejected");
+});
+
 test("nonzero PR-health repair gate blocks before reviewer dispatch and reruns the same commit", async (t) => {
 	const project = await makeProject(t);
 	let failHealthGate = false;
@@ -490,6 +520,30 @@ test("PR health fast-forwards, uses the same reviewer, pushes once, and resolves
 	assert.deepEqual(gh.resolved, ["THREAD-1", "THREAD-2"]);
 	assert.equal(herdr.tabs.size, 0);
 	assert.equal(await git(project.root, "show", "HEAD:health.txt"), "healthy");
+});
+
+test("accepted final approval recovers after PR push failure", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const gh = fakeGh(project.root);
+	const base = combinedRunner(herdr, gh);
+	let failPush = true;
+	const runner: CommandRunner = async (command, args, options) => {
+		if (failPush && command === "git" && args[0] === "push") return { code: 1, stdout: "", stderr: "push unavailable" };
+		return await base(command, args, options);
+	};
+	const lifecycle = makeLifecycle(runner);
+	let state = await advanceToFinalReview(project.root, lifecycle);
+	const message = reviewEvent(state, "final-check", "approved", []);
+	const envelope = JSON.parse(message);
+
+	await assert.rejects(lifecycle.resume(project.root, message), /push unavailable/);
+	assert.equal(await readWorkerReceipt(envelope.receipt_path), undefined);
+
+	failPush = false;
+	state = await lifecycle.resume(project.root, message);
+	assert.equal(state.phase, "completed");
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 
 test("a pre-existing PR with mismatched identity blocks before push", async (t) => {
@@ -666,7 +720,7 @@ function graph() {
 	};
 }
 
-async function makeProject(t: TestContext): Promise<{ root: string; remote: string }> {
+async function makeProject(t: TestContext, options: { maxReviews?: number } = {}): Promise<{ root: string; remote: string }> {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-pr-lifecycle-"));
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 	await git(root, "init", "-b", "main");
@@ -676,7 +730,7 @@ async function makeProject(t: TestContext): Promise<{ root: string; remote: stri
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: 2 })));
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: options.maxReviews ?? 2 })));
 	useAgentDir(t, agentDir);
 	await writeFile(join(root, ".gitignore"), ".context/\n.local-tools/\nnode_modules/\n");
 	await writeFile(join(root, "conflict.txt"), "base\n");

@@ -101,7 +101,7 @@ async function ensureFinalReviewer(
 	current = task(state, issue.id);
 	const gate = requiredTaskGate(current, commit, "Final check");
 	if (gate.exit_code !== 0) {
-		return await failFinalGate(state, issue, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options);
+		return await failFinalGate(state, issue, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options, [], true);
 	}
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
 	let launch = await workerLaunch(state, issue, config, "reviewer");
@@ -273,6 +273,7 @@ async function workerLaunch(
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
 		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle", role),
+		required_gate_timeout_ms: config.required_gate_timeout_ms,
 	});
 }
 

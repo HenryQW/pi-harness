@@ -676,8 +676,8 @@ test("gate host preserves a command result completed before late cancellation", 
 	}
 	assert.equal(JSON.parse(await readFile(processPath, "utf8")).phase, "launching");
 
-	const recovered = await reconcileRequiredGateProcess(runCommand, processPath, async (milliseconds) => {
-		await new Promise((resolve) => setTimeout(resolve, milliseconds + 75));
+	const recovered = await reconcileRequiredGateProcess(runCommand, processPath, async () => {
+		await new Promise((resolve) => setTimeout(resolve, 10));
 	});
 	await hostExit;
 
@@ -1109,7 +1109,9 @@ test("extensions separate public lifecycle tools and show active workers", async
 		issue_id: "core",
 		main_pane: "main-pane",
 		action_ticket: requestTicket,
+		required_gate_timeout_ms: 7_200_000,
 	});
+	assert.equal(launch.env.PI_AUTO_DAG_DELIVERY_TIMEOUT_MS, "7260000");
 	assert.deepEqual(launch.args, [
 		"--offline", "--no-session", "--no-skills", "--skill", "/tmp/coder-skills", "--skill", "/Users/test/.pi/shared-skills/.agents/skills",
 		"--extension", WORKER_EXTENSION_PATH, "--tools",
@@ -1123,6 +1125,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		issue_id: "core",
 		main_pane: "main-pane",
 		action_ticket: reviewTicket,
+		required_gate_timeout_ms: DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
 	});
 	assert.equal(reviewerLaunch.args.at(-1), "read,bash,web_search,auto_dag_submit_review,auto_dag_block_task");
 	const healthReviewerLaunch = createWorkerLaunch({
@@ -1133,6 +1136,7 @@ test("extensions separate public lifecycle tools and show active workers", async
 		issue_id: "core",
 		main_pane: "main-pane",
 		action_ticket: reviewTicket,
+		required_gate_timeout_ms: DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
 	});
 	assert.match(healthReviewerLaunch.args.at(-1)!, /auto_dag_submit_health/);
 

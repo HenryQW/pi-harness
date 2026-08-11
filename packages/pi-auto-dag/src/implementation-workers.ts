@@ -314,6 +314,7 @@ async function workerLaunch(
 		issue_id: issue.id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
 		action_ticket: actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", role),
+		required_gate_timeout_ms: config.required_gate_timeout_ms,
 	});
 }
 

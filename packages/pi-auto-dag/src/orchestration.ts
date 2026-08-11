@@ -113,7 +113,10 @@ export async function resumeRun(
 		try {
 			state = await acceptEnvelope(recordAcceptedWorkerEvent(state, workerEnvelope.event_id), workerEnvelope, config, options);
 		} catch (error) {
-			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+			const persisted = await readRunState(state.main_worktree, state.run_id);
+			if (!persisted || !hasAcceptedWorkerEvent(persisted, workerEnvelope.event_id)) {
+				await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+			}
 			throw error;
 		}
 		if (state.phase !== "blocked") state = await advanceWithConfig(state, config, options);
