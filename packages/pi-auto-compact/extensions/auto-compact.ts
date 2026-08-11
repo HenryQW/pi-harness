@@ -307,10 +307,26 @@ export default function (pi: ExtensionAPI) {
 		if (
 			!active ||
 			!compactionPending ||
-			event.customInstructions !== COMPACTION_INSTRUCTIONS ||
-			!compactionModel
+			event.customInstructions !== COMPACTION_INSTRUCTIONS
 		) return;
 
+		// Pi omits details from prior extension compactions when preparing next run.
+		const previous = [...event.branchEntries].reverse().find((entry) => entry.type === "compaction");
+		if (previous?.details && typeof previous.details === "object") {
+			const details = previous.details as { readFiles?: unknown; modifiedFiles?: unknown };
+			if (Array.isArray(details.readFiles)) {
+				for (const path of details.readFiles) {
+					if (typeof path === "string") event.preparation.fileOps.read.add(path);
+				}
+			}
+			if (Array.isArray(details.modifiedFiles)) {
+				for (const path of details.modifiedFiles) {
+					if (typeof path === "string") event.preparation.fileOps.edited.add(path);
+				}
+			}
+		}
+
+		if (!compactionModel) return;
 		const reference = parseModelReference(compactionModel);
 		if (!reference) return;
 		const model = ctx.modelRegistry.find(reference.provider, reference.modelId);

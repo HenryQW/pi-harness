@@ -144,7 +144,7 @@ test("reads and writes autoCompactThreshold", async () => {
 	}
 });
 
-test("routes only auto compaction through the configured model and falls back on auth failure", async () => {
+test("routes only auto compaction, carries file operations, and falls back on auth failure", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-model-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
@@ -192,15 +192,28 @@ test("routes only auto compaction through the configured model and falls back on
 		assert.equal(compactions, 1);
 		assert.ok(autoInstructions);
 
+		const fileOps = {
+			read: new Set(["current-read.ts"]),
+			written: new Set<string>(),
+			edited: new Set(["current-edit.ts"]),
+		};
 		const compactionEvent = {
 			type: "session_before_compact",
 			reason: "manual",
 			signal: new AbortController().signal,
+			preparation: { fileOps },
+			branchEntries: [
+				{ type: "compaction", details: { readFiles: ["stale-read.ts"], modifiedFiles: ["stale-edit.ts"] } },
+				{ type: "message" },
+				{ type: "compaction", details: { readFiles: ["prior-read.ts"], modifiedFiles: ["prior-edit.ts"] } },
+			],
 		};
 		// Manual /compact remains native even while auto compaction is pending.
 		assert.equal(await handlers.get("session_before_compact")?.(compactionEvent as never, ctx), undefined);
 		assert.deepEqual(modelLookups, []);
 		assert.equal(authAttempts, 0);
+		assert.deepEqual([...fileOps.read], ["current-read.ts"]);
+		assert.deepEqual([...fileOps.edited], ["current-edit.ts"]);
 
 		assert.equal(await handlers.get("session_before_compact")?.({
 			...compactionEvent,
@@ -208,6 +221,8 @@ test("routes only auto compaction through the configured model and falls back on
 		} as never, ctx), undefined);
 		assert.deepEqual(modelLookups, [["provider", "model"]]);
 		assert.equal(authAttempts, 1);
+		assert.deepEqual([...fileOps.read], ["current-read.ts", "prior-read.ts"]);
+		assert.deepEqual([...fileOps.edited], ["current-edit.ts", "prior-edit.ts"]);
 		assert.deepEqual(notices, [
 			"Couldn't authenticate configured compaction model; using current session model.",
 		]);
