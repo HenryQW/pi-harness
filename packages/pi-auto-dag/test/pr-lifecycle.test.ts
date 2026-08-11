@@ -12,8 +12,9 @@ import { type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
+import { parseWorkerEnvelope } from "../src/orchestration.ts";
 import { eventReceiptPath, readWorkerReceipt, reviewId } from "../src/review-ticket.ts";
-import { readActiveRunId, runDirectory, writeRunState } from "../src/state.ts";
+import { readActiveRunId, recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "33333333-3333-4333-8333-333333333333";
@@ -360,8 +361,7 @@ test("PR health accepted triage resumes repair before recovering receipt", async
 	});
 	const envelope = JSON.parse(message);
 	await writeRunState(project.root, {
-		...state,
-		accepted_events: [envelope.event_id],
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
 		health: {
 			...state.health!,
 			summary: "One unresolved review thread.",
@@ -392,8 +392,7 @@ test("blocked PR health recovers accepted receipts and rejects fresh events", as
 	});
 	const envelope = JSON.parse(message);
 	await writeRunState(project.root, {
-		...state,
-		accepted_events: [...(state.accepted_events ?? []), envelope.event_id],
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
 		health: { ...state.health!, status: "blocked", blocked_role: "reviewer", summary: "Reviewer dependency unavailable." },
 	}, () => "blocked-health");
 

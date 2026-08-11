@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { executionIssues, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
@@ -16,6 +16,7 @@ import {
 	type RunState,
 	type RunTaskState,
 	type RunWave,
+	type WorkerEnvelope,
 } from "./model.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
@@ -171,13 +172,23 @@ export async function readActiveRun(mainWorktree: string): Promise<RunState> {
 	return state;
 }
 
-export function hasAcceptedWorkerEvent(state: RunState, eventId: string): boolean {
-	return Boolean(state.accepted_events?.includes(nonEmptyString(eventId, "worker event_id")));
+export function hasAcceptedWorkerEvent(state: RunState, envelope: WorkerEnvelope): boolean {
+	const id = nonEmptyString(envelope.event_id, "worker event_id");
+	if (!state.accepted_events || !Object.hasOwn(state.accepted_events, id)) return false;
+	const accepted = state.accepted_events[id];
+	if (accepted !== workerEnvelopeHash(envelope)) throw new Error(`Auto DAG event ${id} body changed after acceptance`);
+	return true;
 }
 
-export function recordAcceptedWorkerEvent(state: RunState, eventId: string): RunState {
-	const id = nonEmptyString(eventId, "worker event_id");
-	return hasAcceptedWorkerEvent(state, id) ? state : { ...state, accepted_events: [...(state.accepted_events ?? []), id] };
+export function recordAcceptedWorkerEvent(state: RunState, envelope: WorkerEnvelope): RunState {
+	const id = nonEmptyString(envelope.event_id, "worker event_id");
+	return hasAcceptedWorkerEvent(state, envelope)
+		? state
+		: { ...state, accepted_events: { ...(state.accepted_events ?? {}), [id]: workerEnvelopeHash(envelope) } };
+}
+
+function workerEnvelopeHash(envelope: WorkerEnvelope): string {
+	return createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
 }
 
 /** Call only after all owned worker/worktree cleanup has succeeded. */
@@ -225,8 +236,18 @@ export function parseRunState(value: unknown): RunState {
 	if (input.health_fast_forward_intent !== undefined) {
 		state.health_fast_forward_intent = parseHealthFastForwardIntent(input.health_fast_forward_intent, "run state.health_fast_forward_intent");
 	}
-	if (input.accepted_events !== undefined) state.accepted_events = [...new Set(stringArray(input.accepted_events, "run state.accepted_events"))];
+	if (input.accepted_events !== undefined) state.accepted_events = parseAcceptedEvents(input.accepted_events);
 	return state;
+}
+
+function parseAcceptedEvents(value: unknown): Record<string, string> {
+	const input = object(value, "run state.accepted_events");
+	return Object.fromEntries(Object.entries(input).map(([eventId, hash]) => {
+		if (!/^[A-Za-z0-9_-]+$/.test(eventId)) throw new Error("run state.accepted_events has unsafe event ID");
+		const digest = nonEmptyString(hash, `run state.accepted_events.${eventId}`);
+		if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error(`run state.accepted_events.${eventId} must be a SHA-256 hash`);
+		return [eventId, digest];
+	}));
 }
 
 function parseTasks(value: unknown, graph: DeliveryGraph): Record<string, RunTaskState> {

@@ -46,11 +46,15 @@ export async function runPrHealth(
 	if (state.health?.status === "post_push_cleanup") state = await completeHealthRepair(state, options);
 	if (recoveringRepair && !envelope) return state;
 	state = await fastForwardToPrHead(state, options);
-	if (envelope && (receiptAccepted || hasAcceptedWorkerEvent(state, envelope.event_id))) {
-		const resumed = await resumePendingHealthWork(state, config, options);
-		state = resumed ?? state;
-		await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
-		return state;
+	if (envelope) {
+		const accepted = hasAcceptedWorkerEvent(state, envelope);
+		if (receiptAccepted && !accepted) throw new Error(`Auto DAG event ${envelope.event_id} has an accepted receipt without matching state`);
+		if (accepted) {
+			const resumed = await resumePendingHealthWork(state, config, options);
+			state = resumed ?? state;
+			await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "accepted" }, options.uuid);
+			return state;
+		}
 	}
 	if (state.health?.status === "blocked") {
 		if (envelope) {
@@ -66,10 +70,10 @@ export async function runPrHealth(
 	}
 	if (envelope) {
 		try {
-			state = await acceptHealthEnvelope(recordAcceptedWorkerEvent(state, envelope.event_id), envelope, config, options);
+			state = await acceptHealthEnvelope(recordAcceptedWorkerEvent(state, envelope), envelope, config, options);
 		} catch (error) {
 			const persisted = await readRunState(state.main_worktree, state.run_id);
-			if (!persisted || !hasAcceptedWorkerEvent(persisted, envelope.event_id)) {
+			if (!persisted || !hasAcceptedWorkerEvent(persisted, envelope)) {
 				await writeWorkerReceipt(receiptPath!, { event_id: envelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
 			}
 			throw error;

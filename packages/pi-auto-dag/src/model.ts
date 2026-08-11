@@ -235,8 +235,8 @@ export interface RunState {
 	health_history?: PrHealthState[];
 	/** A verified PR-head fast-forward persisted before its local merge starts. */
 	health_fast_forward_intent?: HealthFastForwardIntent;
-	/** Worker event IDs whose lifecycle transition was persisted before its receipt write. */
-	accepted_events?: string[];
+	/** Worker event IDs bound to SHA-256 hashes of envelopes whose lifecycle transition was persisted. */
+	accepted_events?: Record<string, string>;
 }
 
 interface WorkerEnvelopeBase {

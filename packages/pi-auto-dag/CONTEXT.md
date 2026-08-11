@@ -25,7 +25,7 @@ Durable system-owned handoff containing event ID, attempt, review round, role, r
 _Avoid_: Model correlation field, worker-supplied attempt, review token
 
 **Acceptance Receipt**:
-Durable lifecycle-owned accepted or rejected result for one action ticket. Delivery alone never reports success; retries reuse ticket identity and poll receipt. Run State records accepted event IDs so missing receipts can be recovered. Stale tickets are rejected explicitly.
+Durable lifecycle-owned accepted or rejected result for one action ticket. Delivery alone never reports success; retries reuse ticket identity and poll receipt. Run State binds each accepted event ID to exact parsed-envelope SHA-256 so missing receipts can be recovered without letting retries change action, payload, or Git HEAD. Stale tickets are rejected explicitly.
 _Avoid_: Sent message, transport success
 
 **Review Dispatch ID**:

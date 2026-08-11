@@ -82,7 +82,11 @@ export async function resumeRun(
 		}
 	}
 	if (state.phase === "aborted") {
-		if (receiptAccepted) return state;
+		if (workerEnvelope && hasAcceptedWorkerEvent(state, workerEnvelope)) {
+			if (!receiptAccepted) await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
+			return state;
+		}
+		if (receiptAccepted) throw new Error(`Auto DAG event ${workerEnvelope!.event_id} has an accepted receipt without matching state`);
 		if (workerEnvelope) {
 			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: "Run is aborted" }, options.uuid);
 			throw new Error("Run is aborted");
@@ -102,19 +106,21 @@ export async function resumeRun(
 		const { block_reason: _blockReason, ...recovered } = state;
 		state = await save({ ...recovered, phase: "execution" }, options);
 	}
-	if (workerEnvelope && (receiptAccepted || hasAcceptedWorkerEvent(state, workerEnvelope.event_id))) {
-		state = await retryCleanup(state, options);
-		if (!state.cleanup_blocks?.length && !hasBlockedTask(state)) state = await reconcileWorkers(state, config, options);
-		if (!state.cleanup_blocks?.length && state.phase !== "blocked") state = await advanceWithConfig(state, config, options);
-		await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
-		return state;
-	}
 	if (workerEnvelope) {
+		const accepted = hasAcceptedWorkerEvent(state, workerEnvelope);
+		if (receiptAccepted && !accepted) throw new Error(`Auto DAG event ${workerEnvelope.event_id} has an accepted receipt without matching state`);
+		if (accepted) {
+			state = await retryCleanup(state, options);
+			if (!state.cleanup_blocks?.length && !hasBlockedTask(state)) state = await reconcileWorkers(state, config, options);
+			if (!state.cleanup_blocks?.length && state.phase !== "blocked") state = await advanceWithConfig(state, config, options);
+			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
+			return state;
+		}
 		try {
-			state = await acceptEnvelope(recordAcceptedWorkerEvent(state, workerEnvelope.event_id), workerEnvelope, config, options);
+			state = await acceptEnvelope(recordAcceptedWorkerEvent(state, workerEnvelope), workerEnvelope, config, options);
 		} catch (error) {
 			const persisted = await readRunState(state.main_worktree, state.run_id);
-			if (!persisted || !hasAcceptedWorkerEvent(persisted, workerEnvelope.event_id)) {
+			if (!persisted || !hasAcceptedWorkerEvent(persisted, workerEnvelope)) {
 				await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
 			}
 			throw error;

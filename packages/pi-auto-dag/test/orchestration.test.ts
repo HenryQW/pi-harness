@@ -13,7 +13,7 @@ import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
 import { eventReceiptPath, readWorkerReceipt, reviewId, writeWorkerReceipt } from "../src/review-ticket.ts";
-import { runDirectory, writeRunState } from "../src/state.ts";
+import { recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -284,8 +284,7 @@ test("accepted worker receipts resume downstream work before returning", async (
 	const message = requestReviewEvent(state, "alpha", commit);
 	const envelope = JSON.parse(message);
 	await writeRunState(project.root, {
-		...state,
-		accepted_events: [envelope.event_id],
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
 		tasks: {
 			...state.tasks,
 			alpha: {
@@ -307,6 +306,33 @@ test("accepted worker receipts resume downstream work before returning", async (
 	assert.ok(state.tasks.alpha.reviewer_pane);
 	assert.equal(herdr.count("agent prompt"), prompts + 1);
 	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+});
+
+test("accepted event IDs reject a changed envelope body", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(herdr.runner);
+	const state = await lifecycle.start(project.root, "main-pane");
+	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+	const envelope = JSON.parse(requestReviewEvent(state, "alpha", commit));
+	await writeRunState(project.root, {
+		...recordAcceptedWorkerEvent(state, parseWorkerEnvelope(envelope)),
+		tasks: {
+			...state.tasks,
+			alpha: {
+				...state.tasks.alpha,
+				status: "reviewing",
+				activity_started_at: "2026-08-09T00:00:00.000Z",
+				commit,
+				review_rounds: 1,
+				reviewer_provisioning_id: `auto-dag:${state.run_id}:alpha:reviewer`,
+			},
+		},
+	}, () => "accepted-state");
+	const changed = JSON.stringify({ ...envelope, payload: { summary: "different action" } });
+
+	await assert.rejects(lifecycle.resume(project.root, changed), /body changed after acceptance/);
+	assert.equal(await readWorkerReceipt(envelope.receipt_path), undefined);
 });
 
 test("approval receipt waits for durable automatic advancement", async (t) => {
@@ -587,7 +613,10 @@ test("stale reviewer verdict cannot approve a later review round", async (t) => 
 	await git(state.tasks.alpha.worktree!, "commit", "--amend", "-m", "second");
 	const second = await git(state.tasks.alpha.worktree!, "rev-parse", "HEAD");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", second));
-	state = await lifecycle.resume(project.root, staleApproval);
+	await assert.rejects(lifecycle.resume(project.root, staleApproval), /body changed after acceptance/);
+	const retained = await lifecycle.status(project.root, RUN_ID);
+	assert.ok(retained);
+	state = retained;
 
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.commit, second);
