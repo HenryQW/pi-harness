@@ -1,7 +1,7 @@
-import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -34,6 +34,7 @@ type Config = {
 	maxConcurrentSubagents: number;
 	models: Partial<Record<ModelClass, ConfiguredModel>>;
 };
+type ConfigLockOwner = { raw: string; pid: number; token: string };
 
 type OwnedSubagent = {
 	taskId: string;
@@ -126,10 +127,179 @@ async function readConfig(path = CONFIG_PATH()): Promise<{ value: Config; invali
 	}
 }
 
-async function removeConfigLock(lock: string): Promise<void> {
+function parseConfigLockOwner(raw: string): ConfigLockOwner | undefined {
+	try {
+		const value = JSON.parse(raw) as unknown;
+		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+		const record = value as Record<string, unknown>;
+		if (Object.keys(record).length !== 2 || !Number.isSafeInteger(record.pid) || Number(record.pid) <= 0) return undefined;
+		if (typeof record.token !== "string" || !/^[a-f0-9]{32}$/.test(record.token)) return undefined;
+		return { raw, pid: Number(record.pid), token: record.token };
+	} catch {
+		return undefined;
+	}
+}
+
+type ConfigReclaim = { path: string; token: string };
+
+async function configReclaims(lock: string): Promise<ConfigReclaim[]> {
+	const prefix = `${basename(lock)}.`;
+	return (await readdir(dirname(lock)))
+		.filter((name) => name.startsWith(prefix) && name.endsWith(".reclaim"))
+		.map((name) => ({ path: join(dirname(lock), name), token: name.slice(prefix.length, -".reclaim".length) }))
+		.filter(({ token }) => /^[a-f0-9]{32}$/.test(token));
+}
+
+async function removeEmptyConfigReclaim(path: string): Promise<boolean> {
+	try {
+		await rmdir(path);
+		return true;
+	} catch (error: unknown) {
+		if (error && typeof error === "object" && "code" in error) {
+			if (error.code === "ENOENT") return true;
+			if (error.code === "ENOTEMPTY" || error.code === "EEXIST") return false;
+		}
+		throw error;
+	}
+}
+
+async function cleanupConfigReclaim(reclaim: ConfigReclaim): Promise<boolean> {
+	let entries: string[];
+	try {
+		if (!(await lstat(reclaim.path)).isDirectory()) return false;
+		entries = await readdir(reclaim.path);
+	} catch (error: unknown) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return true;
+		throw error;
+	}
+	if (entries.length === 0) return await removeEmptyConfigReclaim(reclaim.path);
+	if (!entries.includes(CONFIG_LOCK_OWNER)) return false;
+	const owner = await readFile(join(reclaim.path, CONFIG_LOCK_OWNER), "utf8")
+		.then(parseConfigLockOwner)
+		.catch((error: unknown) => {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+			throw error;
+		});
+	if (!owner) return await removeEmptyConfigReclaim(reclaim.path);
+	if (owner.token !== reclaim.token) return false;
+	const reclaimers: Array<{ name: string; pid: number }> = [];
+	for (const name of entries) {
+		if (name === CONFIG_LOCK_OWNER) continue;
+		const match = /^\.reclaimer\.([1-9]\d*)\.[a-f0-9]{32}$/.exec(name);
+		const pid = Number(match?.[1]);
+		if (!match || !Number.isSafeInteger(pid)) return false;
+		reclaimers.push({ name, pid });
+	}
+	for (const reclaimer of reclaimers) {
+		try {
+			process.kill(reclaimer.pid, 0);
+			return false;
+		} catch (error: unknown) {
+			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ESRCH") return false;
+		}
+		try {
+			await rmdir(join(reclaim.path, reclaimer.name));
+		} catch (error: unknown) {
+			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+		}
+	}
+	try {
+		entries = await readdir(reclaim.path);
+	} catch (error: unknown) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return true;
+		throw error;
+	}
+	if (entries.length !== 1 || entries[0] !== CONFIG_LOCK_OWNER) return false;
+	try {
+		await unlink(join(reclaim.path, CONFIG_LOCK_OWNER));
+	} catch (error: unknown) {
+		if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+	}
+	return await removeEmptyConfigReclaim(reclaim.path);
+}
+
+async function cleanupConfigReclaims(lock: string): Promise<boolean> {
+	for (const reclaim of await configReclaims(lock)) {
+		if (!(await cleanupConfigReclaim(reclaim))) return false;
+	}
+	return true;
+}
+
+async function removeConfigReclaimer(lock: string, reclaim: string, name: string): Promise<void> {
+	for (const parent of [lock, reclaim]) {
+		try {
+			await rmdir(join(parent, name));
+		} catch (error: unknown) {
+			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+		}
+	}
+}
+
+// Rename carries every pre-handoff reclaimer registration into the tombstone.
+// The base path is reusable only after those reclaimers have finished or reached ESRCH.
+async function reclaimConfigLock(lock: string, stale: ConfigLockOwner): Promise<boolean> {
+	const reclaim = `${lock}.${stale.token}.reclaim`;
+	const reclaimer = `.reclaimer.${process.pid}.${randomBytes(16).toString("hex")}`;
+	let registered = false;
+	let moved = false;
+	try {
+		try {
+			await mkdir(join(lock, reclaimer));
+			registered = true;
+		} catch (error: unknown) {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+			throw error;
+		}
+		const current = await readFile(join(lock, CONFIG_LOCK_OWNER), "utf8").catch((error: unknown) => {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return "";
+			throw error;
+		});
+		if (current !== stale.raw) return false;
+		try {
+			process.kill(stale.pid, 0);
+			return false;
+		} catch (error: unknown) {
+			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ESRCH") return false;
+		}
+		try {
+			await rename(lock, reclaim);
+			moved = true;
+			return true;
+		} catch (error: unknown) {
+			if (error && typeof error === "object" && "code" in error && ["ENOENT", "EEXIST", "ENOTEMPTY"].includes(String(error.code))) return false;
+			throw error;
+		}
+	} finally {
+		if (registered) await removeConfigReclaimer(lock, reclaim, reclaimer);
+		if (moved) await cleanupConfigReclaim({ path: reclaim, token: stale.token });
+	}
+}
+
+async function removeConfigLock(lock: string, owner: string): Promise<void> {
+	if (await readFile(join(lock, CONFIG_LOCK_OWNER), "utf8") !== owner) {
+		throw new Error("Subagent config lock ownership changed.");
+	}
 	const tombstone = `${lock}.${randomUUID()}.tombstone`;
 	await rename(lock, tombstone);
 	await rm(tombstone, { recursive: true, force: true });
+}
+
+async function configWritePath(path: string): Promise<string> {
+	const links = new Set<string>();
+	for (;;) {
+		try {
+			if (!(await lstat(path)).isSymbolicLink()) return path;
+			const parent = await realpath(dirname(path));
+			const link = join(parent, basename(path));
+			if (links.has(link)) throw new Error("Cyclic config symlink.");
+			links.add(link);
+			const target = await readlink(path);
+			path = isAbsolute(target) ? target : resolve(parent, target);
+		} catch (error: unknown) {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return path;
+			throw error;
+		}
+	}
 }
 
 async function mutateConfig(mutate: (config: Config) => Config): Promise<void> {
@@ -137,59 +307,76 @@ async function mutateConfig(mutate: (config: Config) => Config): Promise<void> {
 	const lock = `${path}.lock`;
 	await mkdir(dirname(path), { recursive: true });
 	const deadline = Date.now() + CONFIG_LOCK_TIMEOUT_MS;
+	let lockOwner = "";
 	for (;;) {
+		if (!(await cleanupConfigReclaims(lock))) {
+			if (Date.now() >= deadline) throw new Error(CONFIG_LOCK_FAILURE);
+			await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
+			continue;
+		}
+		let lockExists = true;
 		try {
-			await mkdir(lock);
+			await lstat(lock);
 		} catch (error: unknown) {
-			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") throw error;
-			const owner = await readFile(join(lock, CONFIG_LOCK_OWNER), "utf8").catch(() => "");
-			const pid = /^[1-9]\d*$/.test(owner) ? Number(owner) : NaN;
-			if (Number.isSafeInteger(pid)) {
+			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+			lockExists = false;
+		}
+		if (lockExists) {
+			const owner = parseConfigLockOwner(await readFile(join(lock, CONFIG_LOCK_OWNER), "utf8").catch(() => ""));
+			if (owner) {
 				try {
-					process.kill(pid, 0);
+					process.kill(owner.pid, 0);
 				} catch (error: unknown) {
-					if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") {
-						try {
-							await removeConfigLock(lock);
-						} catch (error: unknown) {
-							if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
-						}
-						continue;
-					}
+					if (error && typeof error === "object" && "code" in error && error.code === "ESRCH" && await reclaimConfigLock(lock, owner)) continue;
 				}
 			}
 			if (Date.now() >= deadline) throw new Error(CONFIG_LOCK_FAILURE);
 			await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
 			continue;
 		}
+		const temporaryLock = await mkdtemp(`${lock}.tmp-`);
+		lockOwner = JSON.stringify({ pid: process.pid, token: randomBytes(16).toString("hex") });
 		try {
-			await writeFile(join(lock, CONFIG_LOCK_OWNER), String(process.pid), { encoding: "utf8", flag: "wx" });
+			await writeFile(join(temporaryLock, CONFIG_LOCK_OWNER), lockOwner, { encoding: "utf8", flag: "wx", mode: 0o600 });
 		} catch (error) {
-			await removeConfigLock(lock);
+			await rm(temporaryLock, { recursive: true, force: true });
 			throw error;
 		}
-		break;
+		try {
+			await rename(temporaryLock, lock);
+		} catch (error: unknown) {
+			await rm(temporaryLock, { recursive: true, force: true });
+			lockOwner = "";
+			if (error && typeof error === "object" && "code" in error && ["EEXIST", "ENOTEMPTY"].includes(String(error.code))) continue;
+			throw error;
+		}
+		if (await cleanupConfigReclaims(lock)) break;
+		await removeConfigLock(lock, lockOwner);
+		lockOwner = "";
+		if (Date.now() >= deadline) throw new Error(CONFIG_LOCK_FAILURE);
+		await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
 	}
 	try {
-		await access(path, constants.W_OK).catch((error: unknown) => {
+		const writePath = await configWritePath(path);
+		await access(writePath, constants.W_OK).catch((error: unknown) => {
 			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
 			throw error;
 		});
-		const mode = await stat(path).then(({ mode }) => mode & 0o777).catch((error: unknown) => {
+		const mode = await stat(writePath).then(({ mode }) => mode & 0o777).catch((error: unknown) => {
 			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
 			throw error;
 		});
-		const config = mutate((await readConfig(path)).value);
-		const temporary = `${path}.${randomUUID()}.tmp`;
+		const config = mutate((await readConfig(writePath)).value);
+		const temporary = `${writePath}.${randomUUID()}.tmp`;
 		try {
-			await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+			await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: mode ?? 0o600 });
 			if (mode !== undefined) await chmod(temporary, mode);
-			await rename(temporary, path);
+			await rename(temporary, writePath);
 		} finally {
 			await rm(temporary, { force: true });
 		}
 	} finally {
-		await removeConfigLock(lock);
+		await removeConfigLock(lock, lockOwner);
 	}
 }
 

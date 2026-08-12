@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -393,10 +395,66 @@ test("config mutation preserves existing POSIX file permissions", async (t) => {
 		await writeFile(path, JSON.stringify({ maxConcurrentSubagents: 10, models: {} }));
 		await chmod(path, 0o600);
 		const app = mainHarness({ limitInput: "4" });
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		const originalWriteFile = fs.promises.writeFile;
+		const temporaryModes: Array<number | undefined> = [];
+		fs.promises.writeFile = async (candidate, data, options) => {
+			if (typeof candidate === "string" && candidate.startsWith(`${path}.`) && candidate.endsWith(".tmp")) {
+				temporaryModes.push((options as { mode?: number }).mode);
+			}
+			return await originalWriteFile(candidate, data, options);
+		};
+		syncBuiltinESMExports();
+		try {
+			await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		} finally {
+			fs.promises.writeFile = originalWriteFile;
+			syncBuiltinESMExports();
+		}
 
 		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 4);
 		assert.equal((await stat(path)).mode & 0o777, 0o600);
+		assert.deepEqual(temporaryModes, [0o600]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("config mutation resolves a relative config symlink chain through its symlinked parent", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX symlink and file mode behavior is unavailable");
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
+	const path = join(agentDir, "config", "pi-herdr-subagents.json");
+	const intermediate = join(agentDir, "storage", "shared", "subagents-link.json");
+	const target = join(agentDir, "storage", "data", "subagents.json");
+	const linkTarget = "../shared/subagents-link.json";
+	const intermediateTarget = "../data/subagents.json";
+	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
+		await mkdir(join(agentDir, "storage", "config"), { recursive: true });
+		await mkdir(join(agentDir, "storage", "shared"));
+		await mkdir(join(agentDir, "storage", "data"));
+		await writeFile(target, JSON.stringify({ maxConcurrentSubagents: 10, models: {} }));
+		await chmod(target, 0o600);
+		await symlink("storage/config", join(agentDir, "config"));
+		await symlink(linkTarget, path);
+		await symlink(intermediateTarget, intermediate);
+		const app = mainHarness({ limitInput: "4" });
+
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+
+		assert.equal((await lstat(join(agentDir, "config"))).isSymbolicLink(), true);
+		assert.equal((await lstat(path)).isSymbolicLink(), true);
+		assert.equal(await readlink(path), linkTarget);
+		assert.equal((await lstat(intermediate)).isSymbolicLink(), true);
+		assert.equal(await readlink(intermediate), intermediateTarget);
+		assert.equal(JSON.parse(await readFile(target, "utf8")).maxConcurrentSubagents, 4);
+		assert.equal((await stat(target)).mode & 0o777, 0o600);
+
+		await chmod(target, 0o444);
+		app.setLimitInput("5");
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		assert.equal(JSON.parse(await readFile(target, "utf8")).maxConcurrentSubagents, 4);
+		assert.equal((await stat(target)).mode & 0o777, 0o444);
+		assert.equal((await lstat(path)).isSymbolicLink(), true);
+		assert.equal((await lstat(intermediate)).isSymbolicLink(), true);
+		assert.equal(app.notices.at(-1), "Couldn't save Subagent Limit config.");
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -436,15 +494,106 @@ test("Subagent Limit shows a busy notification for a held config lock", async (t
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("Subagent Limit recovers a config lock owned by a dead process", async (t) => {
+test("config acquisition leaves no base lock when temporary owner initialization fails", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
+	const configDir = join(agentDir, "config");
+	const path = join(configDir, "pi-herdr-subagents.json");
+	const lock = `${path}.lock`;
+	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ limitInput: "4" });
+		const originalWriteFile = fs.promises.writeFile;
+		fs.promises.writeFile = async (candidate, data, options) => {
+			if (typeof candidate === "string" && candidate.startsWith(`${lock}.tmp-`) && candidate.endsWith("owner")) {
+				throw Object.assign(new Error("owner write failed"), { code: "EIO" });
+			}
+			return await originalWriteFile(candidate, data, options);
+		};
+		syncBuiltinESMExports();
+		try {
+			await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		} finally {
+			fs.promises.writeFile = originalWriteFile;
+			syncBuiltinESMExports();
+		}
+
+		assert.deepEqual(app.notices, ["Couldn't save Subagent Limit config."]);
+		assert.deepEqual(await readdir(configDir), []);
+		app.setLimitInput("5");
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 5);
+		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("Subagent Limit recovers a config lock after a reclaimer crashes before rename", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
+	const configDir = join(agentDir, "config");
+	const path = join(configDir, "pi-herdr-subagents.json");
+	const lock = `${path}.lock`;
+	let checkedCrashedReclaimer = false;
+	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
+		await mkdir(join(lock, `.reclaimer.23456.${"b".repeat(32)}`), { recursive: true });
+		await writeFile(join(lock, "owner"), JSON.stringify({ pid: 12345, token: "a".repeat(32) }));
+		t.mock.method(process, "kill", (pid: number, signal?: number | NodeJS.Signals) => {
+			assert.ok(pid === 12345 || pid === 23456);
+			assert.equal(signal, 0);
+			if (pid === 23456) checkedCrashedReclaimer = true;
+			throw Object.assign(new Error("dead"), { code: "ESRCH" });
+		});
+		const app = mainHarness({ limitInput: "4" });
+
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+
+		assert.equal(checkedCrashedReclaimer, true);
+		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 4);
+		assert.deepEqual(app.notices, ["Subagent Limit set to 4."]);
+		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("Subagent Limit fails busy for malformed, live, and EPERM config-lock owners", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
 	const path = join(agentDir, "config", "pi-herdr-subagents.json");
 	const lock = `${path}.lock`;
+	let now = 0;
+	t.mock.method(Date, "now", () => now += 1_000);
+	t.mock.method(process, "kill", (pid: number, signal?: number | NodeJS.Signals) => {
+		assert.equal(signal, 0);
+		if (pid === 23456) throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+		assert.equal(pid, 12345);
+	});
 	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
-		await mkdir(lock, { recursive: true });
-		await writeFile(join(lock, "owner"), "12345");
+		for (const owner of [
+			"12345",
+			JSON.stringify({ pid: 12345, token: "a".repeat(32) }),
+			JSON.stringify({ pid: 23456, token: "b".repeat(32) }),
+		]) {
+			await mkdir(lock, { recursive: true });
+			await writeFile(join(lock, "owner"), owner);
+			const app = mainHarness({ limitInput: "4" });
+
+			await app.commands.get("subagent-limit")!.handler("", app.ctx);
+
+			assert.deepEqual(app.notices, ["Subagent config is busy; try again."]);
+			await rm(lock, { recursive: true, force: true });
+		}
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("config acquisition cleans a reclaim tombstone after its reclaimer crashes", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
+	const configDir = join(agentDir, "config");
+	const path = join(configDir, "pi-herdr-subagents.json");
+	const staleToken = "a".repeat(32);
+	const reclaim = `${path}.lock.${staleToken}.reclaim`;
+	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
+		await mkdir(join(reclaim, `.reclaimer.23456.${"b".repeat(32)}`), { recursive: true });
+		await writeFile(join(reclaim, "owner"), JSON.stringify({ pid: 12345, token: staleToken }));
 		t.mock.method(process, "kill", (pid: number, signal?: number | NodeJS.Signals) => {
-			assert.equal(pid, 12345);
+			assert.equal(pid, 23456);
 			assert.equal(signal, 0);
 			throw Object.assign(new Error("dead"), { code: "ESRCH" });
 		});
@@ -454,6 +603,77 @@ test("Subagent Limit recovers a config lock owned by a dead process", async (t) 
 
 		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 4);
 		assert.deepEqual(app.notices, ["Subagent Limit set to 4."]);
+		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("stale config reclaim drains late contenders before reusing the lock path", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
+	const configDir = join(agentDir, "config");
+	const path = join(configDir, "pi-herdr-subagents.json");
+	const lock = `${path}.lock`;
+	const staleToken = "a".repeat(32);
+	const reclaim = `${lock}.${staleToken}.reclaim`;
+	const stale = JSON.stringify({ pid: 12345, token: staleToken });
+	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
+		await mkdir(lock, { recursive: true });
+		await writeFile(join(lock, "owner"), stale);
+		let releaseSecondAttempt!: () => void;
+		const secondAttempt = new Promise<void>((resolve) => { releaseSecondAttempt = resolve; });
+		let releaseFirstMove!: () => void;
+		const firstMove = new Promise<void>((resolve) => { releaseFirstMove = resolve; });
+		let reclaimAttempts = 0;
+		let lateAttemptFinished = false;
+		t.mock.method(process, "kill", (pid: number, signal?: number | NodeJS.Signals) => {
+			assert.equal(signal, 0);
+			if (pid === 12345) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+			assert.equal(pid, process.pid);
+		});
+		const originalRename = fs.promises.rename;
+		const originalWriteFile = fs.promises.writeFile;
+		fs.promises.rename = async (from, to) => {
+			if (from === lock && to === reclaim) {
+				reclaimAttempts += 1;
+				if (reclaimAttempts === 1) {
+					await secondAttempt;
+					const result = await originalRename(from, to);
+					releaseFirstMove();
+					return result;
+				}
+				releaseSecondAttempt();
+				await firstMove;
+				try {
+					return await originalRename(from, to);
+				} finally {
+					lateAttemptFinished = true;
+				}
+			}
+			return await originalRename(from, to);
+		};
+		fs.promises.writeFile = async (candidate, data, options) => {
+			if (typeof candidate === "string" && candidate.startsWith(`${lock}.tmp-`) && candidate.endsWith("owner")) assert.equal(lateAttemptFinished, true);
+			return await originalWriteFile(candidate, data, options);
+		};
+		syncBuiltinESMExports();
+		const first = mainHarness({ limitInput: "4" });
+		const second = mainHarness({ limitInput: "5" });
+		try {
+			await Promise.all([
+				first.commands.get("subagent-limit")!.handler("", first.ctx),
+				second.commands.get("subagent-limit")!.handler("", second.ctx),
+			]);
+		} finally {
+			fs.promises.rename = originalRename;
+			fs.promises.writeFile = originalWriteFile;
+			syncBuiltinESMExports();
+		}
+
+		assert.equal(reclaimAttempts, 2);
+		assert.deepEqual(first.notices, ["Subagent Limit set to 4."]);
+		assert.deepEqual(second.notices, ["Subagent Limit set to 5."]);
+		assert.ok([4, 5].includes(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents));
+		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });

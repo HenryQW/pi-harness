@@ -484,6 +484,32 @@ test("resolving a blocked dirty final repair keeps its worktree and branch block
 	assert.equal(herdr.tabs.size, 0);
 });
 
+test("resume recovers an accepted implementation receipt during retained PR health without changing state", async (t) => {
+	const project = await makeProject(t);
+	const herdr = fakeHerdr();
+	const lifecycle = makeLifecycle(combinedRunner(herdr, fakeGh(project.root)));
+	let state = await lifecycle.start(project.root, "main-pane");
+	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
+	const message = requestReviewEvent(state, "alpha", implementation);
+	const envelope = parseWorkerEnvelope(JSON.parse(message));
+	state = await lifecycle.resume(project.root, message);
+	await rm(envelope.receipt_path);
+	state = await lifecycle.resume(project.root, reviewEvent(state, "alpha", "approved", []));
+	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
+	state = await lifecycle.health(project.root, RUN_ID);
+	const before = (await lifecycle.status(project.root, RUN_ID))!;
+	const forged = JSON.stringify({ ...JSON.parse(message), payload: { summary: "forged replay" } });
+
+	await assert.rejects(lifecycle.resume(project.root, forged), /body changed after acceptance/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+	assert.equal(await readWorkerReceipt(envelope.receipt_path), undefined);
+	const recovered = await lifecycle.resume(project.root, message);
+
+	assert.deepEqual(recovered, before);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
+});
+
 test("PR health records non-actionable triage without a coder or push", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();
@@ -631,7 +657,7 @@ test("completed PR health recovers an accepted event receipt before releasing", 
 	}
 });
 
-test("PR health accepted triage resumes repair before recovering receipt", async (t) => {
+test("resume routes an accepted PR-health final-check event before recovering its receipt", async (t) => {
 	const project = await makeProject(t);
 	const herdr = fakeHerdr();
 	const gh = fakeGh(project.root);
@@ -664,7 +690,7 @@ test("PR health accepted triage resumes repair before recovering receipt", async
 	})}\n`);
 	const prompts = herdr.count("agent prompt");
 
-	state = await lifecycle.health(project.root, RUN_ID, message);
+	state = await lifecycle.resume(project.root, message);
 
 	assert.equal(state.health?.status, "repairing");
 	assert.ok(state.health?.coder_pane);

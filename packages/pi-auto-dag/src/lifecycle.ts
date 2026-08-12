@@ -9,9 +9,9 @@ import { assertRunBoundary, startLocalRun } from "./intake.ts";
 import type { ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, preflightRunEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { preflightPrHealthEnvelope, runPrHealth } from "./pr-health.ts";
-import { WorkerEnvelopeRejectedError } from "./review-ticket.ts";
+import { WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
 import { recordGateExecution } from "./review.ts";
-import { claimActiveRun, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
+import { claimActiveRun, hasAcceptedWorkerEvent, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 import { findWorkerTab, retireWorkerTab, workerWorkspaceId } from "./worker-host.ts";
 
@@ -77,8 +77,19 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				if (state.phase !== "aborted" && envelope !== undefined) {
 					await blockOnFailure(state, uuid, async () => {
 						workerEnvelope = parseWorkerEnvelope(parseEnvelope(envelope));
-						if (state.health) await preflightPrHealthEnvelope(state, workerEnvelope, orchestration);
-						else await preflightRunEnvelope(state, workerEnvelope, orchestration);
+						return state;
+					});
+					if (state.health && hasAcceptedWorkerEvent(state, workerEnvelope!)
+						&& state.graph.issues.some((issue) => issue.id === workerEnvelope!.issue_id)) {
+						const { receiptPath } = await preflightRunEnvelope(state, workerEnvelope!, orchestration);
+						await writeWorkerReceipt(receiptPath, { event_id: workerEnvelope!.event_id, status: "accepted" }, uuid);
+						return state.health.status === "completed"
+							? await releaseCompletedHealth(state, uuid, orchestration)
+							: state;
+					}
+					await blockOnFailure(state, uuid, async () => {
+						if (state.health) await preflightPrHealthEnvelope(state, workerEnvelope!, orchestration);
+						else await preflightRunEnvelope(state, workerEnvelope!, orchestration);
 						return state;
 					});
 				}
