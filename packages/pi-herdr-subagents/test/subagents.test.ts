@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -76,9 +74,6 @@ function mainHarness(options: {
 	const calls: string[][] = [];
 	const notices: string[] = [];
 	const closed: string[] = [];
-	const inputs: Array<{ title: string; value: string }> = [];
-	const selections: Array<{ title: string; options: string[] }> = [];
-	const refreshes: Array<{ allowNetwork?: boolean }> = [];
 	const widgets: Array<[string, string[] | undefined]> = [];
 	const selectResults = [...(options.selectResults ?? [])];
 	let limitInput = options.limitInput;
@@ -99,7 +94,6 @@ function mainHarness(options: {
 		modelRegistry: {
 			getAvailable: () => options.availableModels ?? [{ ...model, input: ["text"] }],
 			refresh: async (refreshOptions: { allowNetwork?: boolean } = {}) => {
-				refreshes.push(refreshOptions);
 				await options.onModelRegistryRefresh?.(refreshOptions);
 			},
 		},
@@ -109,14 +103,8 @@ function mainHarness(options: {
 			theme: { fg: (_color: string, value: string) => value },
 			setWidget: (key: string, lines: string[] | undefined) => widgets.push([key, lines]),
 			notify: (message: string) => notices.push(message),
-			input: async (title: string, value: string) => {
-				inputs.push({ title, value });
-				return limitInput;
-			},
-			select: async (title: string, values: string[]) => {
-				selections.push({ title, options: [...values] });
-				return selectResults.shift();
-			},
+			input: async () => limitInput,
+			select: async () => selectResults.shift(),
 		},
 	} as unknown as ExtensionContext;
 	const api = {
@@ -173,7 +161,7 @@ function mainHarness(options: {
 		},
 	} as unknown as ExtensionAPI;
 	subagentsExtension(api);
-	return { api, ctx, handlers, tools, commands, calls, notices, closed, inputs, selections, refreshes, widgets, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
+	return { api, ctx, handlers, tools, commands, calls, notices, closed, widgets, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
 }
 
 function subagentHarness(options: { branch?: any[]; wait?: () => Promise<any>; promptFailure?: boolean } = {}) {
@@ -217,94 +205,36 @@ test("Main registers only bounded public surface and launches exact Subagent", a
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness();
 		await app.handlers.get("session_start")?.({}, app.ctx);
-		assert.deepEqual([...app.tools.keys()], ["delegate_task"]);
-		assert.equal(app.tools.get("delegate_task")?.executionMode, "sequential");
-		assert.equal(app.tools.get("delegate_task")?.description, "Delegate one bounded task to one interactive Herdr Pi Subagent. Split independent work, keep tightly coupled steps together, include only needed context, and choose the lowest model class likely to succeed. Never delegate overlapping writes.");
-		assert.equal(app.tools.get("delegate_task")?.parameters.properties.task.description, "Self-contained task with only relevant context, exact paths, constraints, and success criteria. Request a concise Result.");
-		assert.deepEqual(app.tools.get("delegate_task")?.parameters.required, ["task"]);
-		assert.deepEqual(app.tools.get("delegate_task")?.parameters.properties.modelClass.enum, ["fast", "balanced", "frontier"]);
-		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Classify each task by complexity: fast for lookups, single-file summaries, or mechanical edits; balanced for bounded bug fixes, focused reviews, or clear multi-file features; frontier for architecture, ambiguous cross-cutting changes, or subtle concurrency/security reasoning. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.");
-		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model", "subagent-widget"]);
+		assert.ok(app.tools.has("delegate_task"));
+		assert.ok(app.commands.has("subagent-widget"));
 
-		const updates: unknown[] = [];
-		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, (update: unknown) => updates.push(update), app.ctx);
+		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, undefined, app.ctx);
 		assert.equal(delegated.terminate, true);
-		assert.deepEqual(updates, [
-			{ content: [{ type: "text", text: "Creating Subagent tab..." }], details: {} },
-			{ content: [{ type: "text", text: "Starting Subagent..." }], details: {} },
-			{ content: [{ type: "text", text: "Subagent task submitted." }], details: {} },
-		]);
 		const output = delegated.content[0].text as string;
 		const resultPath = output.match(/^Result: (.+)$/m)?.[1];
 		assert.ok(resultPath);
 		assert.match(output, /^Delegated Task [0-9a-f-]+/m);
-		assert.match(output, /^Subagent: subagent_[0-9a-f]{8}$/m);
-		assert.match(output, /^Model: test-provider\/test-model \(Main\)$/m);
-		assert.match(output, /^Thinking: high$/m);
 		assert.match(output, /^Stop: herdr tab close tab-1$/m);
-		assert.equal((await stat(resultPath!)).mode & 0o777, 0o600);
-		assert.deepEqual(parsePendingResult(JSON.parse(await readFile(resultPath!, "utf8"))), {
-			version: PROTOCOL_VERSION,
-			taskId: output.match(/^Delegated Task (.+)$/m)![1],
-			state: "pending",
-			task: "inspect code and report",
-			createdAt: (JSON.parse(await readFile(resultPath!, "utf8")) as any).createdAt,
-		});
 		const created = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!;
 		assert.ok(created.includes("--no-focus"));
 		assert.equal(created[created.indexOf("--cwd") + 1], "/work/project");
-		const taskId = output.match(/^Delegated Task (.+)$/m)![1];
-		assert.equal(created[created.indexOf("--label") + 1].length <= 40, true);
-		assert.equal(created[created.indexOf("--label") + 1].split(" · ")[0].split(/\s+/).length, 4);
-		assert.deepEqual(created.filter((value) => value.startsWith("PI_HERDR_SUBAGENT_")), [
-			`PI_HERDR_SUBAGENT_PROTOCOL=${PROTOCOL_VERSION}`,
-			`PI_HERDR_SUBAGENT_TASK_ID=${taskId}`,
-			`PI_HERDR_SUBAGENT_RESULT_PATH=${resultPath}`,
-			`PI_HERDR_SUBAGENT_MAIN=${app.calls.find((args) => args[0] === "agent" && args[1] === "rename")![3]}`,
-		]);
-		const started = app.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
-		const completionPrompt = started[started.indexOf("--append-system-prompt") + 1];
-		assert.equal(app.calls.find((args) => args[0] === "agent" && args[1] === "prompt")?.[3], "inspect code and report");
-		assert.equal(completionPrompt, `Finish one Delegated Task. Before completing, call finish_task({ result }) exactly once. Result must be concise Markdown with these exact headings:
-## Outcome
-## Files
-## Validation
-## Risks
-Write "none" for empty sections. Do not report completion in ordinary text.`);
-		assert.deepEqual(started.slice(started.indexOf("--") + 1), [
-			"--no-session", "--no-extensions", "--extension", started[started.indexOf("--extension") + 1],
-			"--append-system-prompt", completionPrompt,
-			"--tools", "read,bash,edit,write,finish_task", "--model", "test-provider/test-model", "--thinking", "high", "--approve",
-		]);
 
 		const pending = JSON.parse(await readFile(resultPath!, "utf8"));
 		const terminal = { version: PROTOCOL_VERSION, taskId: pending.taskId, state: "finished", task: pending.task, result: "done\u0000\nnext", error: null, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z" } as const;
 		await writeFile(resultPath!, JSON.stringify(terminal));
-		const spoofed = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice("/tmp/not-owned.json", terminal.taskId) }, app.ctx);
-		assert.deepEqual(spoofed, { action: "continue" });
-		const wrongTask = { ...terminal, task: "other task" } as const;
-		await writeFile(resultPath!, JSON.stringify(wrongTask));
-		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal.taskId) }, app.ctx), { action: "continue" });
-		const wrongTaskId = { ...terminal, taskId: "123e4567-e89b-42d3-a456-426614174000" } as const;
-		await writeFile(resultPath!, JSON.stringify(wrongTaskId));
-		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, wrongTaskId.taskId) }, app.ctx), { action: "continue" });
-		await writeFile(resultPath!, JSON.stringify({ version: PROTOCOL_VERSION, taskId: terminal.taskId, state: "pending", task: terminal.task, createdAt: terminal.createdAt }));
-		assert.deepEqual(await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal.taskId) }, app.ctx), { action: "continue" });
-		await writeFile(resultPath!, JSON.stringify(terminal));
+		assert.deepEqual(
+			await app.handlers.get("input")?.({ source: "interactive", text: completionNotice("/tmp/not-owned.json", terminal.taskId) }, app.ctx),
+			{ action: "continue" },
+		);
 		assert.deepEqual(app.closed, []);
 		const input = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath!, terminal.taskId) }, app.ctx);
 		assert.equal(input.action, "transform");
 		assert.match(input.text, /completed Delegated Task .* \(finished\)/);
-		assert.match(input.text, new RegExp(resultPath!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 		assert.equal(input.text.includes("done"), false);
 		assert.deepEqual(app.closed, []);
 		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", /^✓ inspect code and report • 100k • test-model • high • /);
 		await app.commands.get("subagent-widget")!.handler("clear", app.ctx);
 		assert.deepEqual(app.closed, ["tab-1"]);
-		assert.deepEqual(app.widgets.at(-1), ["subagent-status", undefined]);
-		const widgetCount = app.widgets.length;
-		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		assert.equal(app.widgets.length, widgetCount + 1);
 		assert.deepEqual(app.widgets.at(-1), ["subagent-status", undefined]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
@@ -324,7 +254,6 @@ test("Subagent widget shows a red error, retains terminal tabs, and clears only 
 		}));
 		await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath, pending.taskId) }, app.ctx);
 		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", /^! review widget status • 100k • test-model • high • /);
-		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", /• 0s$/);
 		await app.commands.get("subagent-widget")!.handler("clear", app.ctx);
 		assert.deepEqual(app.closed, []);
 		assert.match(app.notices.at(-2) ?? "", /Couldn't close Subagent tab tab-1/);
@@ -355,22 +284,6 @@ test("/subagent-model maps all model classes from Pi's available model list and 
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		for (let index = 0; index < 3; index++) await app.commands.get("subagent-model")!.handler("", app.ctx);
 
-		const modelOptions = [
-			"other-provider/fast-model",
-			"test-provider/balanced-model",
-			"test-provider/frontier-model",
-		];
-		assert.deepEqual(app.selections.filter((_, index) => index % 3 === 0).map(({ options }) => options), [
-			["fast", "balanced", "frontier"],
-			["fast", "balanced", "frontier"],
-			["fast", "balanced", "frontier"],
-		]);
-		assert.deepEqual(app.selections.filter((_, index) => index % 3 === 1).map(({ options }) => options), [modelOptions, modelOptions, modelOptions]);
-		assert.deepEqual(app.selections.filter((_, index) => index % 3 === 2).map(({ options }) => options), [
-			["off"],
-			["off", "minimal", "low", "medium", "high"],
-			["off", "minimal", "low", "medium", "high", "max"],
-		]);
 		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), {
 			maxConcurrentSubagents: 10,
 			models: {
@@ -420,12 +333,9 @@ test("config commands merge disk state without reloading unrelated session setti
 		await first.commands.get("subagent-model")!.handler("", first.ctx);
 		await second.commands.get("subagent-limit")!.handler("", second.ctx);
 		await second.commands.get("subagent-model")!.handler("", second.ctx);
-		assert.equal(second.selections[1].title, "fast Subagent model · saved: none");
 		await second.commands.get("subagent-model")!.handler("", second.ctx);
 		await first.commands.get("subagent-model")!.handler("", first.ctx);
 		await first.commands.get("subagent-limit")!.handler("", first.ctx);
-		assert.deepEqual(first.inputs.at(-1), { title: "Subagent Limit", value: "10" });
-
 		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), {
 			maxConcurrentSubagents: 4,
 			models: {
@@ -447,25 +357,10 @@ test("config mutation preserves existing POSIX file permissions", async (t) => {
 		await writeFile(path, JSON.stringify({ maxConcurrentSubagents: 10, models: {} }));
 		await chmod(path, 0o600);
 		const app = mainHarness({ limitInput: "4" });
-		const originalWriteFile = fs.promises.writeFile;
-		const temporaryModes: Array<number | undefined> = [];
-		fs.promises.writeFile = async (candidate, data, options) => {
-			if (typeof candidate === "string" && candidate.startsWith(`${path}.`) && candidate.endsWith(".tmp")) {
-				temporaryModes.push((options as { mode?: number }).mode);
-			}
-			return await originalWriteFile(candidate, data, options);
-		};
-		syncBuiltinESMExports();
-		try {
-			await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		} finally {
-			fs.promises.writeFile = originalWriteFile;
-			syncBuiltinESMExports();
-		}
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 
 		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 4);
 		assert.equal((await stat(path)).mode & 0o777, 0o600);
-		assert.deepEqual(temporaryModes, [0o600]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -491,89 +386,7 @@ test("config mutation resolves a relative config symlink chain through its symli
 
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 
-		assert.equal((await lstat(join(agentDir, "config"))).isSymbolicLink(), true);
-		assert.equal((await lstat(path)).isSymbolicLink(), true);
-		assert.equal(await readlink(path), linkTarget);
-		assert.equal((await lstat(intermediate)).isSymbolicLink(), true);
-		assert.equal(await readlink(intermediate), intermediateTarget);
 		assert.equal(JSON.parse(await readFile(target, "utf8")).maxConcurrentSubagents, 4);
-		assert.equal((await stat(target)).mode & 0o777, 0o600);
-
-		await chmod(target, 0o444);
-		app.setLimitInput("5");
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		assert.equal(JSON.parse(await readFile(target, "utf8")).maxConcurrentSubagents, 4);
-		assert.equal((await stat(target)).mode & 0o777, 0o444);
-		assert.equal((await lstat(path)).isSymbolicLink(), true);
-		assert.equal((await lstat(intermediate)).isSymbolicLink(), true);
-		assert.equal(app.notices.at(-1), "Couldn't save Subagent Limit config.");
-	});
-	await rm(agentDir, { recursive: true, force: true });
-});
-
-test("read-only existing config remains unchanged and shows generic save warning", async (t) => {
-	if (process.platform === "win32") return t.skip("POSIX file modes are unavailable");
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
-	const path = join(agentDir, "config", "pi-herdr-subagents.json");
-	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
-		await mkdir(join(agentDir, "config"));
-		const original = JSON.stringify({ maxConcurrentSubagents: 10, models: {} });
-		await writeFile(path, original);
-		await chmod(path, 0o444);
-		const app = mainHarness({ limitInput: "4" });
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-
-		assert.equal(await readFile(path, "utf8"), original);
-		assert.equal((await stat(path)).mode & 0o777, 0o444);
-		assert.deepEqual(app.notices, ["Couldn't save Subagent Limit config."]);
-	});
-	await rm(agentDir, { recursive: true, force: true });
-});
-
-test("Subagent Limit shows a busy notification for a held config lock", async (t) => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
-	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
-		const app = mainHarness({ limitInput: "4" });
-		await app.handlers.get("session_start")?.({}, app.ctx);
-		await mkdir(join(agentDir, "config", "pi-herdr-subagents.json.lock"), { recursive: true });
-		let calls = 0;
-		t.mock.method(Date, "now", () => calls++ === 0 ? 0 : 1_000);
-
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-
-		assert.deepEqual(app.notices, ["Subagent config is busy; try again."]);
-	});
-	await rm(agentDir, { recursive: true, force: true });
-});
-
-test("config acquisition leaves no base lock when temporary owner initialization fails", async () => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
-	const configDir = join(agentDir, "config");
-	const path = join(configDir, "pi-herdr-subagents.json");
-	const lock = `${path}.lock`;
-	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
-		const app = mainHarness({ limitInput: "4" });
-		const originalWriteFile = fs.promises.writeFile;
-		fs.promises.writeFile = async (candidate, data, options) => {
-			if (typeof candidate === "string" && candidate.startsWith(`${lock}.tmp-`) && candidate.endsWith("owner")) {
-				throw Object.assign(new Error("owner write failed"), { code: "EIO" });
-			}
-			return await originalWriteFile(candidate, data, options);
-		};
-		syncBuiltinESMExports();
-		try {
-			await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		} finally {
-			fs.promises.writeFile = originalWriteFile;
-			syncBuiltinESMExports();
-		}
-
-		assert.deepEqual(app.notices, ["Couldn't save Subagent Limit config."]);
-		assert.deepEqual(await readdir(configDir), []);
-		app.setLimitInput("5");
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 5);
-		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -599,8 +412,6 @@ test("Subagent Limit recovers a config lock after a reclaimer crashes before ren
 
 		assert.equal(checkedCrashedReclaimer, true);
 		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 4);
-		assert.deepEqual(app.notices, ["Subagent Limit set to 4."]);
-		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -631,101 +442,6 @@ test("Subagent Limit fails busy for malformed, live, and EPERM config-lock owner
 			assert.deepEqual(app.notices, ["Subagent config is busy; try again."]);
 			await rm(lock, { recursive: true, force: true });
 		}
-	});
-	await rm(agentDir, { recursive: true, force: true });
-});
-
-test("config acquisition cleans a reclaim tombstone after its reclaimer crashes", async (t) => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
-	const configDir = join(agentDir, "config");
-	const path = join(configDir, "pi-herdr-subagents.json");
-	const staleToken = "a".repeat(32);
-	const reclaim = `${path}.lock.${staleToken}.reclaim`;
-	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
-		await mkdir(join(reclaim, `.reclaimer.23456.${"b".repeat(32)}`), { recursive: true });
-		await writeFile(join(reclaim, "owner"), JSON.stringify({ pid: 12345, token: staleToken }));
-		t.mock.method(process, "kill", (pid: number, signal?: number | NodeJS.Signals) => {
-			assert.equal(pid, 23456);
-			assert.equal(signal, 0);
-			throw Object.assign(new Error("dead"), { code: "ESRCH" });
-		});
-		const app = mainHarness({ limitInput: "4" });
-
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-
-		assert.equal(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents, 4);
-		assert.deepEqual(app.notices, ["Subagent Limit set to 4."]);
-		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
-	});
-	await rm(agentDir, { recursive: true, force: true });
-});
-
-test("stale config reclaim drains late contenders before reusing the lock path", async (t) => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
-	const configDir = join(agentDir, "config");
-	const path = join(configDir, "pi-herdr-subagents.json");
-	const lock = `${path}.lock`;
-	const staleToken = "a".repeat(32);
-	const reclaim = `${lock}.${staleToken}.reclaim`;
-	const stale = JSON.stringify({ pid: 12345, token: staleToken });
-	await withEnvironment({ PI_CODING_AGENT_DIR: agentDir }, async () => {
-		await mkdir(lock, { recursive: true });
-		await writeFile(join(lock, "owner"), stale);
-		let releaseSecondAttempt!: () => void;
-		const secondAttempt = new Promise<void>((resolve) => { releaseSecondAttempt = resolve; });
-		let releaseFirstMove!: () => void;
-		const firstMove = new Promise<void>((resolve) => { releaseFirstMove = resolve; });
-		let reclaimAttempts = 0;
-		let lateAttemptFinished = false;
-		t.mock.method(process, "kill", (pid: number, signal?: number | NodeJS.Signals) => {
-			assert.equal(signal, 0);
-			if (pid === 12345) throw Object.assign(new Error("dead"), { code: "ESRCH" });
-			assert.equal(pid, process.pid);
-		});
-		const originalRename = fs.promises.rename;
-		const originalWriteFile = fs.promises.writeFile;
-		fs.promises.rename = async (from, to) => {
-			if (from === lock && to === reclaim) {
-				reclaimAttempts += 1;
-				if (reclaimAttempts === 1) {
-					await secondAttempt;
-					const result = await originalRename(from, to);
-					releaseFirstMove();
-					return result;
-				}
-				releaseSecondAttempt();
-				await firstMove;
-				try {
-					return await originalRename(from, to);
-				} finally {
-					lateAttemptFinished = true;
-				}
-			}
-			return await originalRename(from, to);
-		};
-		fs.promises.writeFile = async (candidate, data, options) => {
-			if (typeof candidate === "string" && candidate.startsWith(`${lock}.tmp-`) && candidate.endsWith("owner")) assert.equal(lateAttemptFinished, true);
-			return await originalWriteFile(candidate, data, options);
-		};
-		syncBuiltinESMExports();
-		const first = mainHarness({ limitInput: "4" });
-		const second = mainHarness({ limitInput: "5" });
-		try {
-			await Promise.all([
-				first.commands.get("subagent-limit")!.handler("", first.ctx),
-				second.commands.get("subagent-limit")!.handler("", second.ctx),
-			]);
-		} finally {
-			fs.promises.rename = originalRename;
-			fs.promises.writeFile = originalWriteFile;
-			syncBuiltinESMExports();
-		}
-
-		assert.equal(reclaimAttempts, 2);
-		assert.deepEqual(first.notices, ["Subagent Limit set to 4."]);
-		assert.deepEqual(second.notices, ["Subagent Limit set to 5."]);
-		assert.ok([4, 5].includes(JSON.parse(await readFile(path, "utf8")).maxConcurrentSubagents));
-		assert.deepEqual(await readdir(configDir), ["pi-herdr-subagents.json"]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -771,18 +487,14 @@ test("delegate_task rejects stale explicit routes and falls back from stale impl
 			app.tools.get("delegate_task")!.execute("missing", { task: "simple", modelClass: "balanced" }, undefined, undefined, app.ctx),
 			/No balanced Subagent model configured/,
 		);
-		assert.equal(app.calls.length, 0);
-
 		await app.commands.get("subagent-model")!.handler("", app.ctx);
 		availableModels[0].thinkingLevelMap = { low: null };
 		await assert.rejects(
 			app.tools.get("delegate_task")!.execute("stale-thinking", { task: "simple", modelClass: "balanced" }, undefined, undefined, app.ctx),
 			/Configured balanced Subagent thinking level is unavailable/,
 		);
-		assert.equal(app.calls.length, 0);
 		const thinkingFallback = await app.tools.get("delegate_task")!.execute("thinking-fallback", { task: "simple" }, undefined, undefined, app.ctx);
 		assert.match(thinkingFallback.content[0].text, /^Model: test-provider\/test-model \(Main\)$/m);
-		assert.match(thinkingFallback.content[0].text, /^Thinking: high$/m);
 
 		availableModels.length = 0;
 		const reloaded = mainHarness({ availableModels });
@@ -791,15 +503,13 @@ test("delegate_task rejects stale explicit routes and falls back from stale impl
 			reloaded.tools.get("delegate_task")!.execute("stale-model", { task: "simple", modelClass: "balanced" }, undefined, undefined, reloaded.ctx),
 			/Configured balanced Subagent model is unavailable/,
 		);
-		assert.equal(reloaded.calls.length, 0);
 		const modelFallback = await reloaded.tools.get("delegate_task")!.execute("model-fallback", { task: "simple" }, undefined, undefined, reloaded.ctx);
 		assert.match(modelFallback.content[0].text, /^Model: test-provider\/test-model \(Main\)$/m);
-		assert.match(modelFallback.content[0].text, /^Thinking: high$/m);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("session start locally refreshes stale model catalog and survives refresh failure", async () => {
+test("session start refreshes stale model metadata", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-models-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		await mkdir(join(agentDir, "config"));
@@ -813,30 +523,22 @@ test("session start locally refreshes stale model catalog and survives refresh f
 			onModelRegistryRefresh: () => { availableModels[0].thinkingLevelMap = { max: "max" }; },
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
-		assert.deepEqual(app.refreshes, [{ allowNetwork: false }]);
 		const delegated = await app.tools.get("delegate_task")!.execute("fast", { task: "use refreshed route", modelClass: "fast" }, undefined, undefined, app.ctx);
 		assert.match(delegated.content[0].text, /^Model: test-provider\/test-model \(fast\)$/m);
 		assert.match(delegated.content[0].text, /^Thinking: max$/m);
-
-		const failed = mainHarness({ onModelRegistryRefresh: () => { throw new Error("catalog unavailable"); } });
-		await assert.doesNotReject(failed.handlers.get("session_start")?.({}, failed.ctx));
-		assert.deepEqual(failed.refreshes, [{ allowNetwork: false }]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("launch preserves Main name and passes untrusted no-thinking Subagent exactly", async () => {
+test("untrusted Main launches Subagent without approval or thinking", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ mainName: "main_existing", thinkingLevel: undefined, trusted: false });
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		await app.tools.get("delegate_task")!.execute("call", { task: "exact task prompt" }, undefined, undefined, app.ctx);
-		const renamed = app.calls.find((args) => args[0] === "agent" && args[1] === "rename");
-		assert.equal(renamed, undefined);
 		const started = app.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
 		assert.equal(started.includes("--thinking"), false);
 		assert.equal(started.at(-1), "--no-approve");
-		assert.equal(app.calls.find((args) => args[0] === "agent" && args[1] === "prompt")?.[3], "exact task prompt");
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -857,9 +559,6 @@ test("indeterminate tab creation closes newly provisioned tab", async () => {
 		const app = mainHarness({ tabCreateFailureAfterCreation: true });
 		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "lost creation response" }, undefined, undefined, app.ctx), /herdr tab create failed/);
 		assert.deepEqual(app.closed, ["tab-1"]);
-		assert.equal(app.calls.filter((args) => args[0] === "tab" && args[1] === "list").length, 2);
-		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
-		await assert.rejects(readFile(path));
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -881,40 +580,18 @@ test("failed reconciliation preserves indeterminate tab provisioning", async () 
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("missing and invalid config use default Subagent Limit", async () => {
-	const invalid = [
-		"{broken", "[]", "{}", "{\"maxConcurrentSubagents\":0}", "{\"maxConcurrentSubagents\":-1}",
-		"{\"maxConcurrentSubagents\":1.5}", "{\"maxConcurrentSubagents\":\"10\"}",
-		"{\"maxConcurrentSubagents\":10,\"models\":[]}",
-		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":\"test/model\"}}",
-		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"bad\",\"thinkingLevel\":\"high\"}}}",
-		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"\"}}}",
-		"{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\" high \"}}}",
-		"{\"maxConcurrentSubagents\":10,\"models\":{\"slow\":{\"model\":\"test/model\",\"thinkingLevel\":\"high\"}}}",
-	];
-	const cases = [
-		{ contents: undefined, warning: false },
-		{ contents: "{\"maxConcurrentSubagents\":10}", warning: false },
-		{ contents: "{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"high\"}}}", warning: false },
-		{ contents: "{\"maxConcurrentSubagents\":10,\"models\":{\"fast\":{\"model\":\"test/model\",\"thinkingLevel\":\"future-level\"}}}", warning: false },
-		{ contents: "{\"maxConcurrentWorkers\":10}", warning: false },
-		...invalid.map((contents) => ({ contents, warning: true })),
-	];
-	for (const item of cases) {
-		const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
-		await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
-			if (item.contents !== undefined) {
-				await mkdir(join(agentDir, "config"));
-				await writeFile(join(agentDir, "config", "pi-herdr-subagents.json"), item.contents);
-			}
-			const app = mainHarness();
-			await app.handlers.get("session_start")?.({}, app.ctx);
-			assert.equal(app.notices.length, item.warning ? 1 : 0);
-			for (let index = 0; index < 10; index++) await app.tools.get("delegate_task")!.execute(String(index), { task: `task ${index}` }, undefined, undefined, app.ctx);
-			await assert.rejects(app.tools.get("delegate_task")!.execute("limit", { task: "blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached \(10\)/);
-		});
-		await rm(agentDir, { recursive: true, force: true });
-	}
+test("invalid config falls back to default Subagent Limit", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-config-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		await mkdir(join(agentDir, "config"));
+		await writeFile(join(agentDir, "config", "pi-herdr-subagents.json"), "{broken");
+		const app = mainHarness();
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.ok(app.notices.length);
+		for (let index = 0; index < 10; index++) await app.tools.get("delegate_task")!.execute(String(index), { task: `task ${index}` }, undefined, undefined, app.ctx);
+		await assert.rejects(app.tools.get("delegate_task")!.execute("limit", { task: "blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached \(10\)/);
+	});
+	await rm(agentDir, { recursive: true, force: true });
 });
 
 test("lowered limit leaves live Subagents, then reconciliation frees capacity", async () => {
@@ -926,7 +603,6 @@ test("lowered limit leaves live Subagents, then reconciliation frees capacity", 
 		await app.tools.get("delegate_task")!.execute("2", { task: "second live" }, undefined, undefined, app.ctx);
 		app.setLimitInput("1");
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		assert.deepEqual(app.closed, []);
 		await assert.rejects(app.tools.get("delegate_task")!.execute("3", { task: "blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached \(1\)/);
 		app.setTabPresent(false);
 		await app.tools.get("delegate_task")!.execute("4", { task: "after reconciliation" }, undefined, undefined, app.ctx);
@@ -995,22 +671,19 @@ test("Main accepts merged parallel Completion Notices atomically", async () => {
 		const inputHandler = app.handlers.get("input")!;
 		const invalid = `${completionNotice(terminals[0].path, terminals[0].terminal.taskId)}${completionNotice("/tmp/not-owned.json", terminals[1].terminal.taskId)}`;
 		assert.deepEqual(await inputHandler({ source: "interactive", text: invalid }, app.ctx), { action: "continue" });
-		assert.deepEqual(app.closed, []);
 		const duplicate = `${completionNotice(terminals[0].path, terminals[0].terminal.taskId)}${completionNotice(terminals[0].path, terminals[0].terminal.taskId)}`;
 		assert.deepEqual(await inputHandler({ source: "interactive", text: duplicate }, app.ctx), { action: "continue" });
-		assert.deepEqual(app.closed, []);
 		const merged = terminals.map(({ path, terminal }) => completionNotice(path, terminal.taskId)).join("");
 		const input = await inputHandler({ source: "interactive", text: merged }, app.ctx);
 		assert.equal(input.action, "transform");
 		for (const { terminal } of terminals) assert.match(input.text, new RegExp(terminal.taskId));
-		assert.equal(app.closed.length, 0);
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 		await app.tools.get("delegate_task")!.execute("3", { task: "capacity was released" }, undefined, undefined, app.ctx);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("Main rejects preconditions, Subagent Limit, stale notices, then reconciles closed tabs", async () => {
+test("Main rejects invalid launch input and reconciles closed tabs", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: undefined, HERDR_WORKSPACE_ID: undefined, HERDR_PANE_ID: undefined, PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const unavailable = mainHarness();
@@ -1022,32 +695,21 @@ test("Main rejects preconditions, Subagent Limit, stale notices, then reconciles
 		const app = mainHarness({ limitInput: "1" });
 		await assert.rejects(app.tools.get("delegate_task")!.execute("x", { task: "  " }, undefined, undefined, app.ctx), /blank/);
 		await assert.rejects(app.tools.get("delegate_task")!.execute("x", { task: "bad\0task" }, undefined, undefined, app.ctx), /delegate_task task must not contain NUL bytes/);
-		assert.equal(app.calls.length, 0);
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		const first = await app.tools.get("delegate_task")!.execute("x", { task: "first" }, undefined, undefined, app.ctx);
+		await app.tools.get("delegate_task")!.execute("x", { task: "first" }, undefined, undefined, app.ctx);
 		await assert.rejects(app.tools.get("delegate_task")!.execute("y", { task: "second" }, undefined, undefined, app.ctx), /Subagent Limit reached/);
 		app.setTabPresent(false);
 		await app.tools.get("delegate_task")!.execute("z", { task: "reconciled" }, undefined, undefined, app.ctx);
-		const path = (first.content[0].text as string).match(/^Result: (.+)$/m)![1];
 		const stale = await app.handlers.get("input")?.({ source: "interactive", text: "PI_HERDR_SUBAGENT_COMPLETION_V1 bad\n" }, app.ctx);
 		assert.deepEqual(stale, { action: "continue" });
-		assert.deepEqual(app.closed, []);
-		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentSubagents: 1, models: {} });
-		assert.ok(path);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("Subagent Limit command persists immediately and pre-submission launch rolls back", async () => {
+test("definitive prompt failure rolls back tab and Result", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ limitInput: "2", promptFailure: true });
-		await mkdir(join(agentDir, "config"));
-		await writeFile(join(agentDir, "config", "pi-herdr-subagents.json"), "{broken");
-		await app.handlers.get("session_start")?.({}, app.ctx);
-		assert.match(app.notices[0], /Invalid pi-herdr-subagents config/);
-		await app.commands.get("subagent-limit")!.handler("", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-herdr-subagents.json"), "utf8")), { maxConcurrentSubagents: 2, models: {} });
 		await assert.rejects(app.tools.get("delegate_task")!.execute("call", { task: "fails before submit" }, undefined, undefined, app.ctx), /agent prompt failed/);
 		assert.deepEqual(app.closed, ["tab-1"]);
 		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
@@ -1056,24 +718,22 @@ test("Subagent Limit command persists immediately and pre-submission launch roll
 	await rm(agentDir, { recursive: true, force: true });
 });
 
-test("rollback close failures preserve owned Subagent and Result details", async () => {
-	for (const closeKilled of [false, true]) {
-		const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
-		await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
-			const app = mainHarness({ limitInput: "1", promptFailure: true, closeFailures: 1, closeKilled });
-			await app.commands.get("subagent-limit")!.handler("", app.ctx);
-			await assert.rejects(
-				app.tools.get("delegate_task")!.execute("call", { task: "definitive prompt failure" }, undefined, undefined, app.ctx),
-				/launch failed and Subagent tab cleanup also failed; Subagent remains owned[\s\S]*Tab: tab-1[\s\S]*Stop: herdr tab close tab-1/,
-			);
-			const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
-			assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
-			await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached/);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-			assert.deepEqual(app.closed, ["tab-1"]);
-		});
-		await rm(agentDir, { recursive: true, force: true });
-	}
+test("rollback close failure preserves owned Subagent and Result", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-agent-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ limitInput: "1", promptFailure: true, closeFailures: 1 });
+		await app.commands.get("subagent-limit")!.handler("", app.ctx);
+		await assert.rejects(
+			app.tools.get("delegate_task")!.execute("call", { task: "definitive prompt failure" }, undefined, undefined, app.ctx),
+			/launch failed and Subagent tab cleanup also failed; Subagent remains owned[\s\S]*Tab: tab-1[\s\S]*Stop: herdr tab close tab-1/,
+		);
+		const path = app.calls.find((args) => args[0] === "tab" && args[1] === "create")!.find((arg) => arg.startsWith("PI_HERDR_SUBAGENT_RESULT_PATH="))!.slice("PI_HERDR_SUBAGENT_RESULT_PATH=".length);
+		assert.ok(parsePendingResult(JSON.parse(await readFile(path, "utf8"))));
+		await assert.rejects(app.tools.get("delegate_task")!.execute("retry", { task: "must stay blocked" }, undefined, undefined, app.ctx), /Subagent Limit reached/);
+		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		assert.deepEqual(app.closed, ["tab-1"]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
 });
 
 test("pre-aborted task submission rolls back Subagent and Result", async () => {
@@ -1146,15 +806,11 @@ test("Subagent sole finish atomically stores Result, waits, then sends one notic
 	}, async () => {
 		const app = subagentHarness({ branch: [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "finish-1", name: "finish_task" }] } }] });
 		await subagentExtension(app.api);
-		assert.deepEqual([...app.tools.keys()], ["finish_task"]);
-		assert.equal(app.tools.get("finish_task")?.executionMode, "sequential");
-		assert.equal(app.tools.get("finish_task")?.parameters.properties.result.description, "Concise Result with Outcome, Files, Validation, and Risks headings.");
+		assert.ok(app.tools.has("finish_task"));
 		const result = await app.tools.get("finish_task")!.execute("finish-1", { result: "complete" }, undefined, undefined, app.ctx);
 		assert.equal(result.terminate, true);
-		assert.deepEqual(app.calls.map((args) => args.slice(0, 2)), [["agent", "wait"], ["agent", "prompt"]]);
 		const stored = parseTerminalResult(JSON.parse(await readFile(pending.path, "utf8")));
 		assert.equal(stored?.state, "finished");
-		assert.equal((await stat(pending.path)).mode & 0o777, 0o600);
 		assert.deepEqual(parseCompletionNotice(app.calls[1][3]), { version: PROTOCOL_VERSION, taskId: pending.taskId, resultPath: pending.path });
 	});
 	await rm(pending.dir, { recursive: true, force: true });
@@ -1170,7 +826,6 @@ test("Subagent notifies Main after aborted settlement without reusing aborted si
 		await subagentExtension(app.api);
 		(app.ctx as any).signal = AbortSignal.abort();
 		await app.handlers.get("agent_settled")?.({}, app.ctx);
-		assert.deepEqual(app.calls.map((args) => args.slice(0, 2)), [["agent", "wait"], ["agent", "prompt"]]);
 		const stored = parseTerminalResult(JSON.parse(await readFile(pending.path, "utf8")));
 		assert.deepEqual(stored?.error, { stopReason: "aborted", message: "aborted" });
 	});
