@@ -94,9 +94,11 @@ For each accepted Delegated Task, Main:
 3. Creates one no-focus Herdr tab in caller workspace and `ctx.cwd`. Label uses first four task words, capped at 40 characters, plus short task ID.
 4. Passes only exact private protocol environment above through tab environment.
 5. Starts a named Pi Subagent through `herdr agent start ... --kind pi` in created root pane.
-6. Starts Pi with no session persistence or discovered extensions, explicitly loads package-internal Subagent extension, and enables built-in `read`, `bash`, `edit`, and `write` plus `finish_task`.
+6. Starts Pi with no session persistence or discovered extensions, explicitly loads package-internal Subagent extension, appends fixed package-owned completion instructions, and enables built-in `read`, `bash`, `edit`, and `write` plus `finish_task`.
 7. Uses model and thinking level mapped to Main-selected Subagent Model Class, plus Main cwd and project trust (`--approve` or `--no-approve`). Omitted class uses configured `balanced`, then Main's exact model and effective thinking level when `balanced` is unset or its model-thinking route becomes unavailable. Normal project context and skills remain available; arbitrary extension discovery does not.
 8. Submits self-contained task through `herdr agent prompt`.
+
+During provisioning only, `delegate_task` emits partial updates for creating tab, starting Subagent, and task submission. It does not claim runtime task progress after submission.
 
 Subagent gets fresh conversation context, not Main transcript. Main must avoid concurrent Delegated Tasks that write overlapping files; package does not infer file ownership or create worktrees.
 
@@ -110,7 +112,7 @@ Package-internal Subagent extension exposes only:
 finish_task({ result: string })
 ```
 
-`result` must be non-empty. Model-visible schema asks for concise outcome with files changed, validation performed, and remaining risks. Set `executionMode: "sequential"`. A call is valid only when `finish_task` is sole tool call in current assistant message; inspect persisted current assistant message by tool-call ID and reject mixed or repeated finish batches before writing. This makes `terminate: true` effective for complete batch and prevents tools running after accepted completion.
+`result` must be non-empty. Package completion instructions and model-visible schema require concise Markdown with exact `Outcome`, `Files`, `Validation`, and `Risks` headings; use `none` for empty sections. Set `executionMode: "sequential"`. A call is valid only when `finish_task` is sole tool call in current assistant message; inspect persisted current assistant message by tool-call ID and reject mixed or repeated finish batches before writing. This makes `terminate: true` effective for complete batch and prevents tools running after accepted completion.
 
 First valid call claims an in-process completion latch synchronously before any await, then:
 
