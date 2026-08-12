@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
-import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, writeWorkerReceipt } from "../src/review-ticket.ts";
+import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, type ActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "../src/review-ticket.ts";
 import { recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
@@ -298,6 +299,13 @@ test("accepted worker receipts resume downstream work before returning", async (
 		},
 	}, () => "recover-state");
 	await writeWorkerReceipt(envelope.receipt_path, { event_id: envelope.event_id, status: "accepted" }, () => "recover-receipt");
+	const ticketPath = actionTicketPath(project.root, RUN_ID, "alpha", "implementation", "implementer");
+	const active = await readActionTicket(ticketPath);
+	await writeFile(ticketPath, `${JSON.stringify({
+		...active,
+		event_id: "replacement-after-acceptance",
+		receipt_path: eventReceiptPath(project.root, RUN_ID, "replacement-after-acceptance"),
+	})}\n`);
 	const prompts = herdr.count("agent prompt");
 
 	state = await lifecycle.resume(project.root, message);
@@ -326,7 +334,31 @@ test("same-commit no-op persists accepted event before receipt", async (t) => {
 	assert.equal((await readWorkerReceipt(envelope.receipt_path))?.status, "accepted");
 });
 
-test("rejected active action rotates ticket for corrected retry", async (t) => {
+test("normal worker preflight rejects wrong run and issue scopes without blocking", async (t) => {
+	for (const [name, forge] of [
+		["run", (envelope: Record<string, unknown>) => ({ ...envelope, run_id: "99999999-9999-4999-8999-999999999999" })],
+		["issue", (envelope: Record<string, unknown>) => ({ ...envelope, issue_id: "forged-issue" })],
+	] as const) {
+		await t.test(name, async (t) => {
+			const project = await makeProject(t, graph(["alpha"]), 1, 1);
+			const herdr = fakeHerdr();
+			const lifecycle = makeLifecycle(herdr.runner);
+			const state = await lifecycle.start(project.root, "main-pane");
+			const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
+			const envelope: Record<string, unknown> = forge(JSON.parse(requestReviewEvent(state, "alpha", commit)));
+			const before = (await lifecycle.status(project.root, RUN_ID))!;
+
+			await assert.rejects(lifecycle.resume(project.root, JSON.stringify(envelope)), (error: unknown) => {
+				assert.ok(error instanceof WorkerEnvelopeRejectedError);
+				return true;
+			});
+			assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+			assert.equal((await readWorkerReceipt(String(envelope.receipt_path)))?.status, "rejected");
+		});
+	}
+});
+
+test("fresh review envelopes require the active action ticket before acceptance", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
 	const lifecycle = makeLifecycle(herdr.runner);
@@ -335,19 +367,29 @@ test("rejected active action rotates ticket for corrected retry", async (t) => {
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
 	const ticketPath = actionTicketPath(project.root, RUN_ID, "alpha", "implementation", "reviewer");
 	const current = await readActionTicket(ticketPath);
+	const before = (await lifecycle.status(project.root, RUN_ID))!;
 	const invalid = {
 		...JSON.parse(reviewEvent(state, "alpha", "approved", [])),
-		event_id: current.event_id,
-		receipt_path: current.receipt_path,
 		review_id: "wrong-review",
 	};
 
-	await assert.rejects(lifecycle.resume(project.root, JSON.stringify(invalid)), /Review submission is stale/);
+	await assert.rejects(lifecycle.resume(project.root, JSON.stringify(invalid)), /active action ticket/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
 	const replacement = await readActionTicket(ticketPath);
 	assert.notEqual(replacement.event_id, current.event_id);
-	state = (await lifecycle.status(project.root, RUN_ID))!;
+	await rm(ticketPath);
+	const invented = {
+		...invalid,
+		event_id: "invented-fresh-review",
+		receipt_path: eventReceiptPath(project.root, RUN_ID, "invented-fresh-review"),
+		review_id: current.review_id,
+	};
+	await assert.rejects(lifecycle.resume(project.root, JSON.stringify(invented)), /active action ticket/);
+	assert.deepEqual(await lifecycle.status(project.root, RUN_ID), before);
+	assert.equal((await readWorkerReceipt(invented.receipt_path))?.status, "rejected");
+	await writeFile(ticketPath, `${JSON.stringify(replacement)}\n`);
 	const corrected = {
-		...JSON.parse(reviewEvent(state, "alpha", "approved", [])),
+		...JSON.parse(reviewEvent(before, "alpha", "approved", [])),
 		event_id: replacement.event_id,
 		receipt_path: replacement.receipt_path,
 		review_id: replacement.review_id,
@@ -799,6 +841,7 @@ test("review revisions need a new SHA after changes requested", async (t) => {
 	state = await lifecycle.resume(project.root, rejected);
 	assert.equal(state.tasks.alpha.status, "implementing");
 	assert.equal(state.tasks.alpha.review_rounds, 1);
+	state = await lifecycle.resume(project.root);
 
 	await writeFile(join(state.tasks.alpha.worktree!, "alpha.txt"), "second\n");
 	await git(state.tasks.alpha.worktree!, "add", "alpha.txt");
@@ -1064,11 +1107,11 @@ function event(
 	type: string,
 	payload: Record<string, unknown>,
 	review_id = "review-id",
-	metadata: { attempt?: number; review_round?: number; receipt_path?: string; commit?: string } = {},
+	metadata: { attempt?: number; review_round?: number; receipt_path?: string; commit?: string; ticket?: ActionTicket } = {},
 ): string {
-	const attempt = metadata.attempt ?? 1;
-	const review_round = metadata.review_round ?? 1;
-	const event_id = `${type}-${issueId}-${attempt}-${review_round}${metadata.commit ? `-${metadata.commit.slice(0, 12)}` : ""}`;
+	const attempt = metadata.ticket?.attempt ?? metadata.attempt ?? 1;
+	const review_round = metadata.ticket?.review_round ?? metadata.review_round ?? 1;
+	const event_id = metadata.ticket?.event_id ?? `${type}-${issueId}-${attempt}-${review_round}${metadata.commit ? `-${metadata.commit.slice(0, 12)}` : ""}`;
 	return JSON.stringify({
 		version: 1,
 		type,
@@ -1078,8 +1121,8 @@ function event(
 		event_id,
 		attempt,
 		review_round,
-		receipt_path: metadata.receipt_path ?? "test-receipt",
-		...(type === "submit_review" ? { review_id } : {}),
+		receipt_path: metadata.ticket?.receipt_path ?? metadata.receipt_path ?? "test-receipt",
+		...(type === "submit_review" ? { review_id: metadata.ticket?.review_id ?? review_id } : {}),
 		...(type === "request_review" ? { commit: metadata.commit } : {}),
 		payload,
 	});
@@ -1103,6 +1146,7 @@ function reviewEvent(
 		attempt: task.attempts,
 		review_round: task.review_rounds!,
 		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `submit_review-${issueId}-${task.attempts}-${task.review_rounds}`),
+		ticket: activeActionTicket(state, issueId, "reviewer"),
 	});
 }
 
@@ -1114,6 +1158,7 @@ function requestReviewEvent(state: RunState, issueId: string, commit: string): s
 		review_round,
 		commit,
 		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `request_review-${issueId}-${task.attempts}-${review_round}-${commit.slice(0, 12)}`),
+		ticket: activeActionTicket(state, issueId, "implementer"),
 	});
 }
 
@@ -1124,7 +1169,12 @@ function blockTaskEvent(state: RunState, issueId: string, role: "implementer" | 
 		attempt: task.attempts,
 		review_round,
 		receipt_path: eventReceiptPath(state.main_worktree, state.run_id, `block_task-${issueId}-${task.attempts}-${review_round}`),
+		ticket: activeActionTicket(state, issueId, role),
 	});
+}
+
+function activeActionTicket(state: RunState, issueId: string, role: "implementer" | "reviewer"): ActionTicket {
+	return JSON.parse(readFileSync(actionTicketPath(state.main_worktree, state.run_id, issueId, "implementation", role), "utf8")) as ActionTicket;
 }
 
 function reviewPrompts(herdr: ReturnType<typeof fakeHerdr>): string[] {

@@ -116,6 +116,134 @@ test("worker binds action ticket to the prompted turn", async (t) => {
 	await assert.rejects(readFile(replacement.receipt_path), /ENOENT/);
 });
 
+test("concurrent worker tools allow only one terminal report per prompted turn", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const action = await ticket(root);
+	const tools: Array<{ name: string; execute: Function }> = [];
+	let input: ((event: unknown, ctx: unknown) => unknown) | undefined;
+	let deliveries = 0;
+	createWorkerExtension({
+		environment: environment(action.path),
+		deliveryAttempts: 1,
+		delay: async () => {},
+		runner: async (command, args) => {
+			if (command === "git") return { code: 0, stdout: `${HEAD}\n`, stderr: "" };
+			deliveries += 1;
+			await writeWorkerReceipt(action.value.receipt_path, { event_id: action.value.event_id, status: "accepted" });
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	})({
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			if (event === "input") input = handler;
+		},
+		registerTool(tool: { name: string; execute: Function }) { tools.push(tool); },
+	} as never);
+	await input!({ type: "input", text: "finish", source: "rpc" }, {});
+	const request = tools.find((tool) => tool.name === WORKER_TOOLS.request_review)!;
+	const block = tools.find((tool) => tool.name === WORKER_TOOLS.block_task)!;
+
+	const [first, second] = await Promise.allSettled([
+		request.execute("request", { summary: "finished" }),
+		block.execute("block", { reason: "late duplicate" }),
+	]);
+
+	assert.equal(first.status, "fulfilled");
+	assert.equal(second.status, "rejected");
+	assert.match(String((second as PromiseRejectedResult).reason), /already submitted a terminal report/);
+	await assert.rejects(request.execute("third", { summary: "duplicate after acceptance" }), /already submitted a terminal report/);
+	assert.equal(deliveries, 1);
+});
+
+test("failed terminal delivery releases the prompted-turn latch for retry", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const action = await ticket(root);
+	const tools: Array<{ name: string; execute: Function }> = [];
+	let deliveries = 0;
+	createWorkerExtension({
+		environment: environment(action.path),
+		deliveryAttempts: 1,
+		delay: async () => {},
+		runner: async (command) => {
+			if (command === "git") return { code: 0, stdout: `${HEAD}\n`, stderr: "" };
+			deliveries += 1;
+			if (deliveries === 2) await writeWorkerReceipt(action.value.receipt_path, { event_id: action.value.event_id, status: "accepted" });
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	})({ on() {}, registerTool(tool: { name: string; execute: Function }) { tools.push(tool); } } as never);
+	const tool = tools.find((candidate) => candidate.name === WORKER_TOOLS.request_review)!;
+
+	await assert.rejects(tool.execute("first", { summary: "finished" }), /acceptance receipt/);
+	const result = await tool.execute("retry", { summary: "finished" });
+
+	assert.equal(result.details.status, "accepted");
+	assert.equal(deliveries, 2);
+});
+
+test("an old-turn failure cannot clear the newer turn terminal latch", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const action = await ticket(root);
+	const replacement: ActionTicket = {
+		...action.value,
+		event_id: "77777777-7777-4777-8777-777777777777",
+		receipt_path: join(root, "replacement-receipt.json"),
+	};
+	const tools: Array<{ name: string; execute: Function }> = [];
+	let input: ((event: unknown, ctx: unknown) => unknown) | undefined;
+	let oldStarted!: () => void;
+	let newStarted!: () => void;
+	let releaseOld!: () => void;
+	let releaseNew!: () => void;
+	const oldDeliveryStarted = new Promise<void>((done) => { oldStarted = done; });
+	const newDeliveryStarted = new Promise<void>((done) => { newStarted = done; });
+	const oldDeliveryRelease = new Promise<void>((done) => { releaseOld = done; });
+	const newDeliveryRelease = new Promise<void>((done) => { releaseNew = done; });
+	let deliveries = 0;
+	createWorkerExtension({
+		environment: environment(action.path),
+		deliveryAttempts: 1,
+		delay: async () => {},
+		runner: async (command, args) => {
+			if (command === "git") return { code: 0, stdout: `${HEAD}\n`, stderr: "" };
+			const delivery = ++deliveries;
+			const envelope = JSON.parse(args[3]);
+			if (delivery === 1) {
+				oldStarted();
+				await oldDeliveryRelease;
+			} else if (delivery === 2) {
+				newStarted();
+				await newDeliveryRelease;
+				await writeWorkerReceipt(replacement.receipt_path, { event_id: replacement.event_id, status: "accepted" });
+			}
+			assert.equal(envelope.event_id, delivery === 1 ? action.value.event_id : replacement.event_id);
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	})({
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			if (event === "input") input = handler;
+		},
+		registerTool(tool: { name: string; execute: Function }) { tools.push(tool); },
+	} as never);
+	const request = tools.find((tool) => tool.name === WORKER_TOOLS.request_review)!;
+	const block = tools.find((tool) => tool.name === WORKER_TOOLS.block_task)!;
+	await input!({ type: "input", text: "old turn", source: "rpc" }, {});
+	const oldReport = request.execute("old", { summary: "old" });
+	await oldDeliveryStarted;
+	await writeFile(action.path, `${JSON.stringify(replacement)}\n`);
+	await input!({ type: "input", text: "new turn", source: "rpc" }, {});
+	const newReport = request.execute("new", { summary: "new" });
+	await newDeliveryStarted;
+
+	releaseOld();
+	await assert.rejects(oldReport, /acceptance receipt/);
+	await assert.rejects(block.execute("duplicate", { reason: "duplicate" }), /already submitted a terminal report/);
+	releaseNew();
+	assert.equal((await newReport).details.status, "accepted");
+	assert.equal(deliveries, 2);
+});
+
 test("failed delivery still accepts a durable lifecycle receipt", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
 	t.after(async () => await rm(root, { recursive: true, force: true }));

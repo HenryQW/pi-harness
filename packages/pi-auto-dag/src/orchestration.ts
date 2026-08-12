@@ -21,7 +21,7 @@ import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, S
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
 import { hasAcceptedWorkerEvent, issueById, readRunState, recordAcceptedWorkerEvent, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
-import { actionTicketPath, eventReceiptPath, readWorkerReceipt, rotateRejectedActionTicket, writeWorkerReceipt } from "./review-ticket.ts";
+import { actionTicketPath, assertActiveActionTicket, eventReceiptPath, readWorkerReceipt, rejectWorkerEnvelope, rotateRejectedActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
 import { findWorkerTab, retireWorkerTab, workerAgentName } from "./worker-host.ts";
 import { WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerRole } from "./worker.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -65,6 +65,48 @@ export async function advanceRun(state: RunState, options: OrchestrationOptions)
 	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner, options.availableSkills?.()), options);
 }
 
+/** Validate a fresh event before recovery while allowing durable receipt/state replay first. */
+export async function preflightRunEnvelope(
+	state: RunState,
+	envelope: WorkerEnvelope,
+	options: OrchestrationOptions,
+): Promise<{ receiptPath: string; receiptAccepted: boolean }> {
+	const receiptPath = eventReceiptPath(state.main_worktree, state.run_id, envelope.event_id);
+	const safeReceiptPath = envelope.receipt_path === receiptPath ? receiptPath : undefined;
+	if (envelope.run_id !== state.run_id) {
+		return await rejectWorkerEnvelope(safeReceiptPath, envelope.event_id, `Worker event belongs to another run: ${envelope.run_id}`, options.uuid);
+	}
+	const issue = executionIssues(state.graph).find((candidate) => candidate.id === envelope.issue_id);
+	if (!issue) {
+		return await rejectWorkerEnvelope(safeReceiptPath, envelope.event_id, `Run does not contain Local Issue: ${envelope.issue_id}`, options.uuid);
+	}
+	if (!safeReceiptPath) throw new Error("Worker receipt path does not belong to retained run");
+	const existing = await readWorkerReceipt(receiptPath);
+	if (existing && existing.event_id !== envelope.event_id) throw new Error("Worker receipt belongs to another event");
+	if (existing?.status === "rejected") {
+		await rotateEnvelopeActionTicket(state, envelope, options);
+		throw new WorkerEnvelopeRejectedError(`Auto DAG event ${envelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+	}
+	const receiptAccepted = existing?.status === "accepted";
+	const accepted = hasAcceptedWorkerEvent(state, envelope);
+	if (receiptAccepted && !accepted) throw new Error(`Auto DAG event ${envelope.event_id} has an accepted receipt without matching state`);
+	if (!accepted) {
+		try {
+			await assertActiveActionTicket(
+				actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.role === "final_check" ? "lifecycle" : "implementation", envelope.role),
+				envelope,
+			);
+		} catch (error) {
+			if (error instanceof WorkerEnvelopeRejectedError) {
+				await writeWorkerReceipt(receiptPath, { event_id: envelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+				await rotateEnvelopeActionTicket(state, envelope, options);
+			}
+			throw error;
+		}
+	}
+	return { receiptPath, receiptAccepted };
+}
+
 /** Resume is the only ingress for worker events, so workers never write Run State. */
 export async function resumeRun(
 	state: RunState,
@@ -72,21 +114,16 @@ export async function resumeRun(
 	options: OrchestrationOptions,
 ): Promise<RunState> {
 	const workerEnvelope = envelope === undefined ? undefined : parseWorkerEnvelope(envelope);
-	const receiptPath = workerEnvelope ? eventReceiptPath(state.main_worktree, state.run_id, workerEnvelope.event_id) : undefined;
-	if (workerEnvelope && workerEnvelope.receipt_path !== receiptPath) throw new Error("Worker receipt path does not belong to retained run");
-	let receiptAccepted = false;
-	if (workerEnvelope) {
-		const existing = await readWorkerReceipt(receiptPath!);
-		if (existing) {
-			if (existing.event_id !== workerEnvelope.event_id) throw new Error("Worker receipt belongs to another event");
-			if (existing.status === "rejected") {
-				await rotateEnvelopeActionTicket(state, workerEnvelope, options);
-				throw new Error(`Auto DAG event ${workerEnvelope.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
-			}
-			receiptAccepted = true;
-		}
-	}
 	if (state.phase === "aborted") {
+		const receiptPath = workerEnvelope ? eventReceiptPath(state.main_worktree, state.run_id, workerEnvelope.event_id) : undefined;
+		if (workerEnvelope && workerEnvelope.receipt_path !== receiptPath) throw new Error("Worker receipt path does not belong to retained run");
+		const existing = receiptPath ? await readWorkerReceipt(receiptPath) : undefined;
+		if (existing && existing.event_id !== workerEnvelope!.event_id) throw new Error("Worker receipt belongs to another event");
+		if (existing?.status === "rejected") {
+			await rotateEnvelopeActionTicket(state, workerEnvelope!, options);
+			throw new WorkerEnvelopeRejectedError(`Auto DAG event ${workerEnvelope!.event_id} rejected: ${existing.reason ?? "lifecycle rejected event"}`);
+		}
+		const receiptAccepted = existing?.status === "accepted";
 		if (workerEnvelope && hasAcceptedWorkerEvent(state, workerEnvelope)) {
 			if (!receiptAccepted) await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
 			return state;
@@ -98,6 +135,7 @@ export async function resumeRun(
 		}
 		return await abortRun(state, options);
 	}
+	const preflight = workerEnvelope ? await preflightRunEnvelope(state, workerEnvelope, options) : undefined;
 	state = await resumeFinalRepair(state, options);
 	if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
@@ -113,12 +151,12 @@ export async function resumeRun(
 	}
 	if (workerEnvelope) {
 		const accepted = hasAcceptedWorkerEvent(state, workerEnvelope);
-		if (receiptAccepted && !accepted) throw new Error(`Auto DAG event ${workerEnvelope.event_id} has an accepted receipt without matching state`);
+		if (preflight!.receiptAccepted && !accepted) throw new Error(`Auto DAG event ${workerEnvelope.event_id} has an accepted receipt without matching state`);
 		if (accepted) {
 			state = await retryCleanup(state, options);
 			if (!state.cleanup_blocks?.length && !hasBlockedTask(state)) state = await reconcileWorkers(state, config, options);
 			if (!state.cleanup_blocks?.length && state.phase !== "blocked") state = await advanceWithConfig(state, config, options);
-			await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
+			await writeWorkerReceipt(preflight!.receiptPath, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
 			return state;
 		}
 		try {
@@ -126,14 +164,14 @@ export async function resumeRun(
 		} catch (error) {
 			const persisted = await readRunState(state.main_worktree, state.run_id);
 			if (!persisted || !hasAcceptedWorkerEvent(persisted, workerEnvelope)) {
-				await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
+				await writeWorkerReceipt(preflight!.receiptPath, { event_id: workerEnvelope.event_id, status: "rejected", reason: errorMessage(error) }, options.uuid);
 				await rotateEnvelopeActionTicket(state, workerEnvelope, options);
 			}
 			throw error;
 		}
 		if (state.phase !== "blocked") state = await advanceWithConfig(state, config, options);
 		state = await save(state, options);
-		await writeWorkerReceipt(receiptPath!, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
+		await writeWorkerReceipt(preflight!.receiptPath, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
 		return state;
 	}
 	state = await retryCleanup(state, options);
