@@ -221,8 +221,14 @@ test("Main registers only bounded public surface and launches exact Subagent", a
 		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Classify each task by complexity: fast for lookups, single-file summaries, or mechanical edits; balanced for bounded bug fixes, focused reviews, or clear multi-file features; frontier for architecture, ambiguous cross-cutting changes, or subtle concurrency/security reasoning. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.");
 		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model"]);
 
-		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, undefined, app.ctx);
+		const updates: unknown[] = [];
+		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, (update: unknown) => updates.push(update), app.ctx);
 		assert.equal(delegated.terminate, true);
+		assert.deepEqual(updates, [
+			{ content: [{ type: "text", text: "Creating Subagent tab..." }], details: {} },
+			{ content: [{ type: "text", text: "Starting Subagent..." }], details: {} },
+			{ content: [{ type: "text", text: "Subagent task submitted." }], details: {} },
+		]);
 		const output = delegated.content[0].text as string;
 		const resultPath = output.match(/^Result: (.+)$/m)?.[1];
 		assert.ok(resultPath);
@@ -252,9 +258,17 @@ test("Main registers only bounded public surface and launches exact Subagent", a
 			`PI_HERDR_SUBAGENT_MAIN=${app.calls.find((args) => args[0] === "agent" && args[1] === "rename")![3]}`,
 		]);
 		const started = app.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
+		const completionPrompt = started[started.indexOf("--append-system-prompt") + 1];
 		assert.equal(app.calls.find((args) => args[0] === "agent" && args[1] === "prompt")?.[3], "inspect code and report");
+		assert.equal(completionPrompt, `Finish one Delegated Task. Before completing, call finish_task({ result }) exactly once. Result must be concise Markdown with these exact headings:
+## Outcome
+## Files
+## Validation
+## Risks
+Write "none" for empty sections. Do not report completion in ordinary text.`);
 		assert.deepEqual(started.slice(started.indexOf("--") + 1), [
 			"--no-session", "--no-extensions", "--extension", started[started.indexOf("--extension") + 1],
+			"--append-system-prompt", completionPrompt,
 			"--tools", "read,bash,edit,write,finish_task", "--model", "test-provider/test-model", "--thinking", "high", "--approve",
 		]);
 
@@ -1096,7 +1110,7 @@ test("Subagent sole finish atomically stores Result, waits, then sends one notic
 		await subagentExtension(app.api);
 		assert.deepEqual([...app.tools.keys()], ["finish_task"]);
 		assert.equal(app.tools.get("finish_task")?.executionMode, "sequential");
-		assert.equal(app.tools.get("finish_task")?.parameters.properties.result.description, "Concise outcome with files changed, validation performed, and remaining risks.");
+		assert.equal(app.tools.get("finish_task")?.parameters.properties.result.description, "Concise Result with Outcome, Files, Validation, and Risks headings.");
 		const result = await app.tools.get("finish_task")!.execute("finish-1", { result: "complete" }, undefined, undefined, app.ctx);
 		assert.equal(result.terminate, true);
 		assert.deepEqual(app.calls.map((args) => args.slice(0, 2)), [["agent", "wait"], ["agent", "prompt"]]);

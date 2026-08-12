@@ -27,6 +27,12 @@ const DEFINITIVE_PROMPT_ERRORS = new Set([
 	"agent_not_found", "agent_not_running", "agent_not_ready", "agent_not_idle",
 	"empty_agent_prompt", "invalid_agent_name", "agent_prompt_failed",
 ]);
+const COMPLETION_PROMPT = `Finish one Delegated Task. Before completing, call finish_task({ result }) exactly once. Result must be concise Markdown with these exact headings:
+## Outcome
+## Files
+## Validation
+## Risks
+Write "none" for empty sections. Do not report completion in ordinary text.`;
 
 type ModelClass = typeof MODEL_CLASSES[number];
 type ConfiguredModel = { model: string; thinkingLevel: string };
@@ -496,6 +502,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		const args = [
 			"agent", "start", name, "--kind", "pi", "--pane", paneId, "--",
 			"--no-session", "--no-extensions", "--extension", SUBAGENT_EXTENSION,
+			"--append-system-prompt", COMPLETION_PROMPT,
 			"--tools", "read,bash,edit,write,finish_task",
 			"--model", model,
 			...(thinkingLevel ? ["--thinking", thinkingLevel] : []),
@@ -599,7 +606,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			})),
 		}),
 		executionMode: "sequential",
-		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
+			const reportProvisioning = (text: string) => onUpdate?.({ content: [{ type: "text", text }], details: {} });
 			const task = params.task;
 			if (!task.trim()) throw new Error("delegate_task task must not be blank.");
 			if (task.includes("\0")) throw new Error("delegate_task task must not contain NUL bytes.");
@@ -644,6 +652,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				const createdAt = new Date().toISOString();
 				await writeFile(resultPath, `${JSON.stringify({ version: PROTOCOL_VERSION, taskId, state: "pending", task, createdAt })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
 				await chmod(resultPath, 0o600);
+				reportProvisioning("Creating Subagent tab...");
 				const main = await ensureMainName(where, ctx, signal);
 				tabCreationAttempted = true;
 				const created = resultOf(await herdr.json([
@@ -664,6 +673,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					tab.workspace_id !== where.workspace || pane.workspace_id !== where.workspace || pane.tab_id !== tabId
 					|| tab.focused !== false || pane.focused !== false || tab.pane_count !== 1 || pane.cwd !== ctx.cwd
 				) throw new Error("Herdr Subagent tab identity is invalid.");
+				reportProvisioning("Starting Subagent...");
 				await startSubagent(subagent.subagentName, tabId, paneId, selectedModel, selectedThinkingLevel, where, ctx, signal);
 				if (signal?.aborted) throw new Error("delegate_task was aborted before task submission.");
 				const promptArgs = ["agent", "prompt", subagent.subagentName, task];
@@ -681,6 +691,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				const agent = object(prompted.agent, "Herdr prompted Subagent");
 				assertAgent(agent, { name: subagent.subagentName, pane: paneId, workspace: where.workspace, tab: tabId });
 				promptOutcomeUnknown = false;
+				reportProvisioning("Subagent task submitted.");
 				return {
 					content: [{ type: "text", text: `Delegated Task ${taskId}\nSubagent: ${subagent.subagentName}\nModel: ${selectedModel} (${configuredRoute ? modelClass : "Main"})\nThinking: ${selectedThinkingLevel ?? "Pi default"}\nTab: ${tabId}\nResult: ${resultPath}\nStop: herdr tab close ${tabId}` }],
 					details: {},

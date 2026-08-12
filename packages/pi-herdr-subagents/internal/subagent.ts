@@ -123,11 +123,11 @@ export default async function subagentExtension(pi: ExtensionAPI): Promise<void>
 	pi.registerTool({
 		name: "finish_task",
 		label: "Finish Task",
-		description: "Store concise, decision-ready final Result and notify Main. Call alone after task is complete.",
+		description: "Store concise Result with Outcome, Files, Validation, and Risks headings and notify Main. Call alone after task is complete.",
 		parameters: Type.Object({
 			result: Type.String({
 				minLength: 1,
-				description: "Concise outcome with files changed, validation performed, and remaining risks.",
+				description: "Concise Result with Outcome, Files, Validation, and Risks headings.",
 			}),
 		}),
 		executionMode: "sequential",

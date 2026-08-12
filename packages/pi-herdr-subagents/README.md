@@ -24,9 +24,27 @@ Classify every Delegated Task and pass the lowest `modelClass` likely to finish 
 
 Do not delegate tiny work when handoff costs more context than doing it in Main. Do not use `frontier` by default; failed cheap attempts also waste tokens, so route by actual complexity rather than price alone.
 
+## Result format
+
+For normal completion, package prompt requires `finish_task({ result })` once. `result` must be concise Markdown with exact headings; use `none` for empty sections:
+
+```md
+## Outcome
+Added Result-format contract.
+
+## Files
+- `packages/pi-herdr-subagents/README.md`
+
+## Validation
+- `npm test --workspace @henryqw/pi-herdr-subagents`
+
+## Risks
+- None.
+```
+
 ## Task recipes
 
-Copy a shape, replace brackets, then route by actual complexity. Ask every Subagent to call `finish_task` with concise outcome, files changed (or `none`), validation, and remaining risks. Main still reads and verifies Result.
+Copy a shape, replace brackets, then route by actual complexity. Completion contract handles Result format; Main still reads and verifies Result.
 
 | Role | Start class | Task shape |
 | --- | --- | --- |
