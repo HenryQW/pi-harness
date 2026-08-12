@@ -12,6 +12,18 @@ Run Pi inside Herdr. `delegate_task({ task, modelClass? })` creates one no-focus
 
 Subagent may ask user questions in its own tab. It stays live until it calls `finish_task({ result })`. Main receives Completion Notice with Result path; read and verify Result before relying on it.
 
+## Status widget
+
+Pi TUI shows live Subagents above editor. Name is first task word:
+
+```text
+⠸ coder • 100k • gpt-5.6-sol • max • 1m 5s
+✓ coder • 100k • gpt-5.6-sol • max • 1m 8s
+! reviewer • 100k • gpt-5.6-terra • xhigh • 5m 27s
+```
+
+Spinner marks live work. Green `✓` marks completed Result. Red `!` marks terminal error or abort. Terminal tabs stay open for inspection and do not count against Subagent Limit. Run `/subagent-widget clear` to close terminal tabs and remove rows; failed tab close keeps row visible.
+
 ## Delegate efficiently
 
 Classify every Delegated Task and pass the lowest `modelClass` likely to finish correctly in one attempt. Split independent work between Subagents, but keep tightly coupled steps together and never delegate overlapping writes. Keep prompts self-contained but token-efficient: include only relevant context, exact paths, constraints, and success criteria; request a concise Result.
@@ -83,6 +95,7 @@ Subagents run as separate Pi processes in Herdr panes, not opaque in-process ses
 - Subagent starts with configured class model and thinking level, `read`, `bash`, `edit`, `write`, and internal `finish_task`; discovered extensions stay disabled.
 - Result files live in system temp storage. Completed files are mode `0600`; package leaves them for OS cleanup.
 - Completion Notices are versioned and validated against tracked Result file. Bad, stale, spoofed, or duplicate framing remains ordinary input.
+- Valid Completion Notice releases Subagent Limit capacity and leaves terminal tab open for inspection; `/subagent-widget clear` closes terminal tabs.
 - Main shutdown closes owned Subagent tabs best-effort. Main crashes leave tabs and pending Results for manual inspection.
 - No queue, timeout, cancellation Result, status tool, transcript sharing, orphan adoption, or automatic retry exists.
 

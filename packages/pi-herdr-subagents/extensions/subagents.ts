@@ -23,6 +23,10 @@ const CONFIG_LOCK_FAILURE = "Subagent config is busy; try again.";
 const CONFIG_LOCK_OWNER = "owner";
 const SUBAGENT_EXTENSION = fileURLToPath(new URL("../internal/subagent.ts", import.meta.url));
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+const WIDGET_KEY = "subagent-status";
+const WIDGET_INTERVAL_MS = 80;
+// Keep in sync with Pi's examples/extensions/working-indicator.ts.
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DEFINITIVE_PROMPT_ERRORS = new Set([
 	"agent_not_found", "agent_not_running", "agent_not_ready", "agent_not_idle",
 	"empty_agent_prompt", "invalid_agent_name", "agent_prompt_failed",
@@ -50,6 +54,12 @@ type OwnedSubagent = {
 	tempDir: string;
 	label: string;
 	existingTabs: Set<string>;
+	model: string;
+	contextWindow?: number;
+	thinkingLevel?: string;
+	startedAt: number;
+	finishedAt?: number;
+	state?: "finished" | "failed";
 	tabId?: string;
 };
 
@@ -401,6 +411,22 @@ function subagentLabel(task: string, taskId: string): string {
 	return `${words.slice(0, 40 - suffix.length).trim() || "subagent"}${suffix}`;
 }
 
+const widgetName = (label: string) => label.replace(/ · [0-9a-f]{8}$/i, "");
+
+function tokenCount(tokens: number | undefined): string {
+	if (!tokens || !Number.isFinite(tokens)) return "?";
+	const [unit, suffix] = tokens >= 1_000_000 ? [1_000_000, "m"] : [1_000, "k"];
+	const value = tokens / unit;
+	return `${Number.isInteger(value) ? value : value.toFixed(1)}${suffix}`;
+}
+
+function elapsed(startedAt: number, finishedAt = Date.now()): string {
+	const seconds = Math.max(0, Math.floor((finishedAt - startedAt) / 1_000));
+	const hours = Math.floor(seconds / 3_600);
+	const minutes = Math.floor(seconds % 3_600 / 60);
+	return hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
 function location(): HerdrLocation {
 	if (process.env.HERDR_ENV !== "1") throw new Error("delegate_task requires Herdr (HERDR_ENV=1).");
 	const workspace = process.env.HERDR_WORKSPACE_ID;
@@ -443,8 +469,39 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	const herdr = createHerdrClient((command, args, options: { cwd: string; signal?: AbortSignal }) =>
 		pi.exec(command, [...args], options));
 	const subagents = new Map<string, OwnedSubagent>();
+	const terminalSubagents = new Map<string, OwnedSubagent>();
 	let config = defaultConfig();
 	let cachedMainName: string | undefined;
+	let widgetTimer: ReturnType<typeof setInterval> | undefined;
+
+	const renderWidget = (ctx: ExtensionContext): void => {
+		if (ctx.mode !== "tui") return;
+		if (subagents.size && !widgetTimer) {
+			widgetTimer = setInterval(() => renderWidget(ctx), WIDGET_INTERVAL_MS);
+			widgetTimer.unref();
+		} else if (!subagents.size && widgetTimer) {
+			clearInterval(widgetTimer);
+			widgetTimer = undefined;
+		}
+		const agents = [...subagents.values(), ...terminalSubagents.values()];
+		if (!agents.length) {
+			ctx.ui.setWidget(WIDGET_KEY, undefined);
+			return;
+		}
+		const frame = SPINNER_FRAMES[Math.floor(Date.now() / WIDGET_INTERVAL_MS) % SPINNER_FRAMES.length]!;
+		const visible = agents.slice(0, 9);
+		ctx.ui.setWidget(WIDGET_KEY, [
+			...visible.map((agent) => {
+				const marker = agent.state === "finished"
+					? ctx.ui.theme.fg("success", "✓")
+					: agent.state === "failed"
+						? ctx.ui.theme.fg("error", "!")
+						: ctx.ui.theme.fg("accent", frame);
+				return `${marker} ${widgetName(agent.label)} • ${tokenCount(agent.contextWindow)} • ${agent.model} • ${agent.thinkingLevel ?? "off"} • ${elapsed(agent.startedAt, agent.finishedAt)}`;
+			}),
+			...(agents.length > visible.length ? [`… ${agents.length - visible.length} more`] : []),
+		]);
+	};
 
 	const closeTab = async (tabId: string, ctx: ExtensionContext): Promise<void> => {
 		const args = ["tab", "close", tabId];
@@ -532,6 +589,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		const loaded = await readConfig();
 		config = loaded.value;
 		if (loaded.invalid) ctx.ui.notify("Invalid pi-herdr-subagents config values were ignored.", "warning");
+		renderWidget(ctx);
 	});
 
 	pi.registerCommand("subagent-limit", {
@@ -591,6 +649,32 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerCommand("subagent-widget", {
+		description: "close terminal Subagent tabs and remove their widget rows",
+		handler: async (args, ctx) => {
+			if (args.trim() !== "clear") {
+				ctx.ui.notify("Usage: /subagent-widget clear", "warning");
+				return;
+			}
+			let removed = 0;
+			for (const [taskId, subagent] of terminalSubagents) {
+				if (!subagent.tabId) {
+					ctx.ui.notify(`Couldn't identify terminal Subagent tab ${subagent.subagentName}.`, "warning");
+					continue;
+				}
+				try {
+					await closeTab(subagent.tabId, ctx);
+					terminalSubagents.delete(taskId);
+					removed++;
+				} catch {
+					ctx.ui.notify(`Couldn't close Subagent tab ${subagent.tabId}.`, "warning");
+				}
+			}
+			renderWidget(ctx);
+			ctx.ui.notify(`Removed ${removed} terminal Subagent ${removed === 1 ? "tab" : "tabs"}.`, "info");
+		},
+	});
+
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
@@ -634,8 +718,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const configuredRoute = thinkingAvailable ? configuredModel : undefined;
 			const selectedModel = configuredRoute?.model ?? `${ctx.model.provider}/${ctx.model.id}`;
 			const selectedThinkingLevel = configuredRoute?.thinkingLevel ?? ctx.thinkingLevel;
+			const selectedModelInfo = configuredRoute ? availableModel : ctx.model;
+			if (!selectedModelInfo) throw new Error("delegate_task selected model metadata is unavailable.");
 			const where = location();
 			const existingTabs = await reconcile(where, ctx, signal);
+			renderWidget(ctx);
 			if (subagents.size >= config.maxConcurrentSubagents) throw new Error(`Subagent Limit reached (${config.maxConcurrentSubagents}); no task was queued.`);
 
 			const taskId = randomUUID();
@@ -643,11 +730,16 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			await chmod(tempDir, 0o700);
 			const resultPath = join(tempDir, "result.json");
 			const label = subagentLabel(task, taskId);
-			const subagent: OwnedSubagent = { taskId, task, subagentName: subagentName(taskId), resultPath, tempDir, label, existingTabs };
+			const subagent: OwnedSubagent = {
+				taskId, task, subagentName: subagentName(taskId), resultPath, tempDir, label, existingTabs,
+				model: selectedModelInfo.id, contextWindow: selectedModelInfo.contextWindow,
+				thinkingLevel: selectedThinkingLevel, startedAt: Date.now(),
+			};
 			let tabCreationAttempted = false;
 			let promptOutcomeUnknown = false;
 			// Claim ownership before side effects; indeterminate tab creation still needs reconciliation and cleanup.
 			subagents.set(taskId, subagent);
+			renderWidget(ctx);
 			try {
 				const createdAt = new Date().toISOString();
 				await writeFile(resultPath, `${JSON.stringify({ version: PROTOCOL_VERSION, taskId, state: "pending", task, createdAt })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -726,6 +818,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					}
 				}
 				subagents.delete(taskId);
+				renderWidget(ctx);
 				await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 				throw error;
 			}
@@ -756,26 +849,35 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		} catch {
 			return { action: "continue" } as const;
 		}
-		const completed = validated.flatMap((entry) => entry ? [entry] : []);
-		if (completed.length !== notices.length || completed.some(({ notice, subagent }) => subagents.get(notice.taskId) !== subagent)) {
+		const terminalEntries = validated.flatMap((entry) => entry ? [entry] : []);
+		if (terminalEntries.length !== notices.length || terminalEntries.some(({ notice, subagent }) => subagents.get(notice.taskId) !== subagent)) {
 			return { action: "continue" } as const;
 		}
-		// Result is durable; free capacity even if best-effort tab cleanup later fails.
-		for (const { subagent } of completed) subagents.delete(subagent.taskId);
-		for (const { subagent } of completed) if (subagent.tabId) void closeTab(subagent.tabId, ctx).catch(() => undefined);
+		// Result is durable; free capacity while keeping terminal tab visible until user clears it.
+		for (const { subagent, terminal } of terminalEntries) {
+			subagents.delete(subagent.taskId);
+			subagent.state = terminal.state;
+			subagent.finishedAt = Date.parse(terminal.finishedAt);
+			terminalSubagents.set(subagent.taskId, subagent);
+		}
+		renderWidget(ctx);
 		return {
 			action: "transform",
-			text: completed.map(({ subagent, terminal }) => `Subagent ${subagent.subagentName} completed Delegated Task ${subagent.taskId} (${terminal.state}). Read Result before relying on it: ${subagent.resultPath}`).join("\n\n"),
+			text: terminalEntries.map(({ subagent, terminal }) => `Subagent ${subagent.subagentName} completed Delegated Task ${subagent.taskId} (${terminal.state}). Read Result before relying on it: ${subagent.resultPath}`).join("\n\n"),
 		};
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		if (widgetTimer) clearInterval(widgetTimer);
+		widgetTimer = undefined;
 		// No persistent registry: cleanup applies only to tabs this Main session recorded.
 		try {
 			await reconcile(location(), ctx);
 		} catch { }
-		const owned = [...subagents.values()];
+		const owned = [...subagents.values(), ...terminalSubagents.values()];
 		subagents.clear();
+		terminalSubagents.clear();
+		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined);
 		await Promise.all(owned.flatMap((subagent) => subagent.tabId ? [closeTab(subagent.tabId, ctx).catch(() => undefined)] : []));
 	});
 }

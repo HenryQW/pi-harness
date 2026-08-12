@@ -35,3 +35,7 @@ _Avoid_: Escalation, question routing, Main question
 **Completion Notice**:
 Message sent by Subagent to Main after Result becomes available.
 _Avoid_: Nudge, notification, callback
+
+**Subagent Status Widget**:
+Session-local Pi TUI rows showing live and terminal Subagent state. `/subagent-widget clear` closes terminal tabs and removes their rows.
+_Avoid_: Dashboard, monitor

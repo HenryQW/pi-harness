@@ -29,9 +29,10 @@ type TestModel = {
 	input: string[];
 	reasoning?: boolean;
 	thinkingLevelMap?: Partial<Record<string, string | null>>;
+	contextWindow?: number;
 };
 
-const model = { provider: "test-provider", id: "test-model", reasoning: true };
+const model = { provider: "test-provider", id: "test-model", reasoning: true, contextWindow: 100_000 };
 
 async function withEnvironment(values: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
 	const before = new Map(Object.keys(values).map((key) => [key, process.env[key]]));
@@ -78,6 +79,7 @@ function mainHarness(options: {
 	const inputs: Array<{ title: string; value: string }> = [];
 	const selections: Array<{ title: string; options: string[] }> = [];
 	const refreshes: Array<{ allowNetwork?: boolean }> = [];
+	const widgets: Array<[string, string[] | undefined]> = [];
 	const selectResults = [...(options.selectResults ?? [])];
 	let limitInput = options.limitInput;
 	let mainName: string | null = options.mainName ?? null;
@@ -102,7 +104,10 @@ function mainHarness(options: {
 			},
 		},
 		sessionManager: { getBranch: () => [] },
+		mode: "tui",
 		ui: {
+			theme: { fg: (_color: string, value: string) => value },
+			setWidget: (key: string, lines: string[] | undefined) => widgets.push([key, lines]),
 			notify: (message: string) => notices.push(message),
 			input: async (title: string, value: string) => {
 				inputs.push({ title, value });
@@ -168,7 +173,7 @@ function mainHarness(options: {
 		},
 	} as unknown as ExtensionAPI;
 	subagentsExtension(api);
-	return { api, ctx, handlers, tools, commands, calls, notices, closed, inputs, selections, refreshes, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
+	return { api, ctx, handlers, tools, commands, calls, notices, closed, inputs, selections, refreshes, widgets, get subagentName() { return subagentName; }, setLimitInput: (value: string) => { limitInput = value; }, setTabPresent: (value: boolean) => { tabPresent = value; }, set tab(id: string) { tabId = id; }, set pane(id: string) { paneId = id; } };
 }
 
 function subagentHarness(options: { branch?: any[]; wait?: () => Promise<any>; promptFailure?: boolean } = {}) {
@@ -219,7 +224,7 @@ test("Main registers only bounded public surface and launches exact Subagent", a
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.required, ["task"]);
 		assert.deepEqual(app.tools.get("delegate_task")?.parameters.properties.modelClass.enum, ["fast", "balanced", "frontier"]);
 		assert.equal(app.tools.get("delegate_task")?.parameters.properties.modelClass.description, "Classify each task by complexity: fast for lookups, single-file summaries, or mechanical edits; balanced for bounded bug fixes, focused reviews, or clear multi-file features; frontier for architecture, ambiguous cross-cutting changes, or subtle concurrency/security reasoning. Defaults to balanced; falls back to Main model and thinking level when balanced route is unavailable.");
-		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model"]);
+		assert.deepEqual([...app.commands.keys()], ["subagent-limit", "subagent-model", "subagent-widget"]);
 
 		const updates: unknown[] = [];
 		const delegated = await app.tools.get("delegate_task")!.execute("call-1", { task: "inspect code and report" }, undefined, (update: unknown) => updates.push(update), app.ctx);
@@ -292,7 +297,40 @@ Write "none" for empty sections. Do not report completion in ordinary text.`);
 		assert.match(input.text, /completed Delegated Task .* \(finished\)/);
 		assert.match(input.text, new RegExp(resultPath!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 		assert.equal(input.text.includes("done"), false);
+		assert.deepEqual(app.closed, []);
+		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", /^✓ inspect code and report • 100k • test-model • high • /);
+		await app.commands.get("subagent-widget")!.handler("clear", app.ctx);
 		assert.deepEqual(app.closed, ["tab-1"]);
+		assert.deepEqual(app.widgets.at(-1), ["subagent-status", undefined]);
+		const widgetCount = app.widgets.length;
+		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		assert.equal(app.widgets.length, widgetCount + 1);
+		assert.deepEqual(app.widgets.at(-1), ["subagent-status", undefined]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("Subagent widget shows a red error, retains terminal tabs, and clears only terminal tabs", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-widget-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({ closeFailures: 1 });
+		const delegated = await app.tools.get("delegate_task")!.execute("call", { task: "review widget status" }, undefined, undefined, app.ctx);
+		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] review widget status • 100k • test-model • high • /);
+		const resultPath = (delegated.content[0].text as string).match(/^Result: (.+)$/m)![1];
+		const pending = JSON.parse(await readFile(resultPath, "utf8"));
+		await writeFile(resultPath, JSON.stringify({
+			version: PROTOCOL_VERSION, taskId: pending.taskId, state: "failed", task: pending.task, result: null,
+			error: { stopReason: "error", message: "broken" }, createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z",
+		}));
+		await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath, pending.taskId) }, app.ctx);
+		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", /^! review widget status • 100k • test-model • high • /);
+		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", /• 0s$/);
+		await app.commands.get("subagent-widget")!.handler("clear", app.ctx);
+		assert.deepEqual(app.closed, []);
+		assert.match(app.notices.at(-2) ?? "", /Couldn't close Subagent tab tab-1/);
+		await app.commands.get("subagent-widget")!.handler("clear", app.ctx);
+		assert.deepEqual(app.closed, ["tab-1"]);
+		assert.deepEqual(app.widgets.at(-1), ["subagent-status", undefined]);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -931,7 +969,7 @@ test("completion releases capacity once and shutdown closes remaining Subagent",
 		]);
 		assert.equal(results.filter((result) => result.action === "transform").length, 1);
 		assert.equal(results.filter((result) => result.action === "continue").length, 1);
-		assert.equal(app.closed.length, 1);
+		assert.equal(app.closed.length, 0);
 		await app.tools.get("delegate_task")!.execute("2", { task: "second" }, undefined, undefined, app.ctx);
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		assert.deepEqual(app.closed, ["tab-1", "tab-1"]);
@@ -965,7 +1003,7 @@ test("Main accepts merged parallel Completion Notices atomically", async () => {
 		const input = await inputHandler({ source: "interactive", text: merged }, app.ctx);
 		assert.equal(input.action, "transform");
 		for (const { terminal } of terminals) assert.match(input.text, new RegExp(terminal.taskId));
-		assert.equal(app.closed.length, 2);
+		assert.equal(app.closed.length, 0);
 		await app.commands.get("subagent-limit")!.handler("", app.ctx);
 		await app.tools.get("delegate_task")!.execute("3", { task: "capacity was released" }, undefined, undefined, app.ctx);
 	});
@@ -1074,7 +1112,7 @@ test("indeterminate task submission preserves owned Subagent and Result", async 
 		await writeFile(path, JSON.stringify(terminal));
 		const input = await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(path, terminal.taskId) }, app.ctx);
 		assert.equal(input.action, "transform");
-		assert.deepEqual(app.closed, ["tab-1"]);
+		assert.deepEqual(app.closed, []);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });

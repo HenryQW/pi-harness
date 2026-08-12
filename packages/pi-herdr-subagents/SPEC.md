@@ -85,6 +85,12 @@ Decoded JSON has exactly `version: 2`, `taskId`, and `resultPath`.
 
 Main accepts raw notice only when prefix/encoding/schema are valid, task ID is actively owned, path exactly equals tracked Result path, and final Result file parses with matching version/task ID and terminal state. Malformed, stale, duplicate, mismatched, or control-text input is ordinary user input and cannot release ownership or close a tab. Valid input is transformed before model delivery to fixed prose containing Subagent/task ID, terminal state, tracked Result path, and instruction to read Result before relying on it; raw framing and Result content never reach model context.
 
+### Status widget
+
+In Pi TUI, show one session-local row per accepted Subagent above editor: animated `SPINNER_FRAMES` glyph for live work, task-label display name, model context window, model ID, thinking level, and elapsed time. A terminal `finished` Result changes marker to green `✓`; terminal error or abort changes marker to red `!`. Terminal rows freeze elapsed time. Keep at most nine rows plus one `… N more` row because Pi allows ten widget lines. No widget is rendered outside TUI.
+
+Register `/subagent-widget clear`. It closes every terminal Subagent tab and removes a row only after successful close. Live rows stay untouched. A close failure retains row and shows warning. Widget state is session-local and timer stops at session shutdown.
+
 ## Subagent launch
 
 For each accepted Delegated Task, Main:
@@ -127,7 +133,7 @@ Reset latch only when Result persistence itself fails. Once Result is durable, f
 
 Herdr cannot atomically reserve Main's idle state. Notice is best-effort idle delivery: rare state-change race may make it steering input. Do not add mailbox, polling, or replay infrastructure.
 
-Validated Completion Notice releases Subagent Limit capacity, best-effort closes Subagent tab, and exposes fixed Result-path text to Main's model. Full Result stays on disk and Main reads it with existing `read`. Result is evidence; Main must verify claimed repository changes and validation before reporting completion.
+Validated Completion Notice releases Subagent Limit capacity, retains terminal Subagent tab for inspection, updates status widget, and exposes fixed Result-path text to Main's model. `/subagent-widget clear` closes terminal tabs. Full Result stays on disk and Main reads it with existing `read`. Result is evidence; Main must verify claimed repository changes and validation before reporting completion.
 
 If final settled assistant message has terminal Pi/model `error` or `aborted` stop reason before `finish_task`, Subagent atomically stores failure information and sends same Completion Notice. Ordinary tool errors remain recoverable and do not auto-finish. Normal successful settlement without `finish_task` leaves Subagent live. Hard process crash leaves tab and pending Result for inspection.
 
@@ -137,8 +143,8 @@ If Completion Notice cannot reach Main, preserve Result and Subagent tab. A late
 
 Main keeps only in-memory ownership for Subagents it created.
 
-- Valid Completion Notice: release ownership and best-effort close completed Subagent tab.
-- Main session shutdown or switch: reconcile any label-only provisioning record, then best-effort close every identified owned Subagent tab.
+- Valid Completion Notice: release live ownership and retain terminal Subagent tab until `/subagent-widget clear` or session shutdown.
+- Main session shutdown or switch: reconcile any label-only provisioning record, then best-effort close every identified live and terminal Subagent tab.
 - Main decides task is no longer needed: run returned `herdr tab close` command through existing `bash`.
 - Abrupt Main crash: leave Subagent tabs and Result files for user inspection or manual cleanup.
 - Result files remain for operating-system temporary cleanup; package has no persistent registry or janitor.
@@ -174,7 +180,7 @@ At extension/tool boundary, verify:
 - per-Main Subagent Limit, strict missing-tab and provisioning reconciliation, and no queue;
 - tab label/cwd/env, complexity-selected model and thinking level, Main fallback thinking/trust, explicit internal extension, disabled extension discovery, and fresh task submission;
 - successful launch response, definitive pre-submission rollback, indeterminate creation reconciliation, failed-rollback retention, and indeterminate prompt preservation;
-- Completion Notice validation, capacity release, completed-tab close, and shutdown cleanup;
+- Completion Notice validation, capacity release, terminal-widget transition, explicit completed-tab close, and shutdown cleanup;
 - exact versioned Result/notice schemas, malformed/spoofed/path/state/control-text rejection, and fixed path-only Main transform;
 - natural Subagent Question settlement remains live;
 - `finish_task` sole-call enforcement, synchronous latch, atomic Result write and mode without post-commit failure, wait-before-notice order, batch termination, duplicate suppression, and failed-delivery preservation;
@@ -187,7 +193,7 @@ One optional manual smoke may create a read-only Subagent under Herdr and verify
 
 - In-process `AgentSession` orchestration or local subprocess fallback.
 - Foreground delegation, transcript inheritance, arbitrary per-call model IDs, tool overrides, or nested Subagents.
-- Queueing, scheduling, status/list/result/stop/resume tools, steering protocol, or dashboards.
+- Queueing, scheduling, status/list/result/stop/resume tools, steering protocol, or persistent dashboards.
 - Worktrees, file-overlap detection, automatic verification, or commit integration.
 - Structured Subagent Question UI or separate `ask_question`/generic Herdr extension.
 - Timeout, cancellation outcome, retry mailbox, persistent registry, orphan adoption, or crash recovery.
