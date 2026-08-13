@@ -10,7 +10,7 @@ type Params = {
 
 type Result = {
 	content: Array<{ type: string; text: string }>;
-	details: { question: string; options: string[]; answer: string | null; wasCustom?: boolean; selectedIndex?: number };
+	details: { question: string; options: string[]; answer: string | null; wasCustom?: boolean; selectedIndex?: number; error?: string };
 };
 
 type RegisteredTool = {
@@ -19,6 +19,7 @@ type RegisteredTool = {
 	promptSnippet?: string;
 	promptGuidelines?: string[];
 	execute(toolCallId: string, params: Params, signal: AbortSignal, onUpdate: () => void, ctx: unknown): Promise<Result>;
+	renderResult(result: Result, options: unknown, theme: unknown, context: unknown): { render(width: number): string[] };
 };
 
 function loadTool(): RegisteredTool {
@@ -66,7 +67,7 @@ test("ask_question validates context and options", async () => {
 	assert.equal(tool.executionMode, "sequential");
 	assert.match(tool.promptSnippet ?? "", /up to three options/);
 	assert.deepEqual(tool.promptGuidelines, [
-		"Use ask_question instead of plain assistant text whenever user input is needed to proceed.",
+		"In interactive TUI sessions, use ask_question instead of plain assistant text whenever user input is needed to proceed; in non-interactive sessions, ask in plain assistant text.",
 		"Give ask_question one to three concise, meaningful options without inventing filler, put recommended option first, and omit '(Recommended)' from its label.",
 		"Give ask_question option descriptions only when they explain meaningful tradeoffs; never repeat option labels.",
 	]);
@@ -75,9 +76,16 @@ test("ask_question validates context and options", async () => {
 	assert.match((await execute(tool, params, { mode: "rpc" })).content[0]!.text, /UI not available/);
 	assert.match((await execute(tool, { question: "Continue?", options: [] }, tuiContext([]))).content[0]!.text, /1 to 3 options required/);
 	assert.match((await execute(tool, { question: "Continue?", options: [...params.options, { label: "Never" }] }, tuiContext([]))).content[0]!.text, /1 to 3 options required/);
-	assert.match((await execute(tool, { question: "   ", options: params.options }, tuiContext([]))).content[0]!.text, /Question must not be blank/);
+	const invalid = await execute(tool, { question: "   ", options: params.options }, tuiContext([]));
+	assert.match(invalid.content[0]!.text, /Question must not be blank/);
+	assert.equal(invalid.details.error, "Question must not be blank");
+	const renderedError = tool.renderResult(invalid, {}, {
+		fg(_color: string, text: string) { return text; },
+	}, {}).render(80).join("\n");
+	assert.equal(renderedError.trimEnd(), "Error: Question must not be blank");
 	assert.match((await execute(tool, { question: "Continue?", options: [{ label: "   " }] }, tuiContext([]))).content[0]!.text, /Option labels must not be blank/);
 	assert.match((await execute(tool, { question: "Continue?", options: [{ label: "Yes" }, { label: " yes " }] }, tuiContext([]))).content[0]!.text, /Option labels must be unique/);
+	assert.match((await execute(tool, { question: "Continue?", options: [{ label: " something ELSE. " }] }, tuiContext([]))).content[0]!.text, /is reserved/);
 });
 
 test("ask_question closes pending UI when tool call aborts", async () => {

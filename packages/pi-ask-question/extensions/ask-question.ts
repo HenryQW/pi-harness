@@ -17,6 +17,7 @@ interface QuestionOption {
 
 type DisplayOption = QuestionOption & { isOther?: boolean };
 
+const CUSTOM_OPTION_LABEL = "Something else.";
 const NUMBER_KEYS = ["1", "2", "3", "4"] as const;
 
 interface QuestionDetails {
@@ -25,6 +26,7 @@ interface QuestionDetails {
 	answer: string | null;
 	wasCustom?: boolean;
 	selectedIndex?: number;
+	error?: string;
 }
 
 const QuestionOptionSchema = Type.Object({
@@ -45,10 +47,10 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ask_question",
 		label: "Ask Question",
-		description: "Ask user one question with up to three options or a custom answer. First option is shown as recommended. Use when user input is needed to proceed.",
-		promptSnippet: "Ask user one interactive question with up to three options or a custom answer",
+		description: "In interactive TUI sessions, ask user one question with up to three options or a custom answer. First option is shown as recommended.",
+		promptSnippet: "In interactive TUI sessions, ask user one question with up to three options or a custom answer",
 		promptGuidelines: [
-			"Use ask_question instead of plain assistant text whenever user input is needed to proceed.",
+			"In interactive TUI sessions, use ask_question instead of plain assistant text whenever user input is needed to proceed; in non-interactive sessions, ask in plain assistant text.",
 			"Give ask_question one to three concise, meaningful options without inventing filler, put recommended option first, and omit '(Recommended)' from its label.",
 			"Give ask_question option descriptions only when they explain meaningful tradeoffs; never repeat option labels.",
 		],
@@ -63,9 +65,10 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 			}));
 			const options = suppliedOptions.map((option) => option.label);
 			if (ctx.mode !== "tui") {
+				const error = "UI not available (running in non-interactive mode)";
 				return {
-					content: [{ type: "text" as const, text: "Error: UI not available (running in non-interactive mode)" }],
-					details: { question, options, answer: null } satisfies QuestionDetails,
+					content: [{ type: "text" as const, text: `Error: ${error}` }],
+					details: { question, options, answer: null, error } satisfies QuestionDetails,
 				};
 			}
 			let validationError: string | undefined;
@@ -73,14 +76,15 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 			else if (!question) validationError = "Question must not be blank";
 			else if (suppliedOptions.some((option) => !option.label)) validationError = "Option labels must not be blank";
 			else if (new Set(options.map((option) => option.toLowerCase())).size !== options.length) validationError = "Option labels must be unique";
+			else if (options.some((option) => option.toLowerCase() === CUSTOM_OPTION_LABEL.toLowerCase())) validationError = `Option label "${CUSTOM_OPTION_LABEL}" is reserved`;
 			if (validationError) {
 				return {
 					content: [{ type: "text" as const, text: `Error: ${validationError}` }],
-					details: { question, options, answer: null } satisfies QuestionDetails,
+					details: { question, options, answer: null, error: validationError } satisfies QuestionDetails,
 				};
 			}
 
-			const allOptions: DisplayOption[] = [...suppliedOptions, { label: "Something else.", isOther: true }];
+			const allOptions: DisplayOption[] = [...suppliedOptions, { label: CUSTOM_OPTION_LABEL, isOther: true }];
 			const result = await ctx.ui.custom<{ answer: string; wasCustom: boolean; index?: number } | null>(
 				(tui, theme, _kb, done) => {
 					let optionIndex = 0;
@@ -226,7 +230,7 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 			const options = Array.isArray(args.options) ? args.options : [];
 			if (options.length) {
 				const labels = options.map((option: QuestionOption) => option.label);
-				const numbered = [...labels, "Something else."].map((option, index) => `${index + 1}. ${option}${index === 0 ? " (Recommended)" : ""}`);
+				const numbered = [...labels, CUSTOM_OPTION_LABEL].map((option, index) => `${index + 1}. ${option}${index === 0 ? " (Recommended)" : ""}`);
 				text += `\n${theme.fg("dim", `  Options: ${numbered.join(", ")}`)}`;
 			}
 			return new Text(text, 0, 0);
@@ -238,6 +242,7 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 				const content = result.content[0];
 				return new Text(content?.type === "text" ? content.text : "", 0, 0);
 			}
+			if (details.error) return new Text(theme.fg("error", `Error: ${details.error}`), 0, 0);
 			if (details.answer === null) return new Text(theme.fg("warning", "Cancelled"), 0, 0);
 			if (details.wasCustom) {
 				return new Text(theme.fg("success", "✓ ") + theme.fg("muted", "(wrote) ") + theme.fg("accent", details.answer), 0, 0);
