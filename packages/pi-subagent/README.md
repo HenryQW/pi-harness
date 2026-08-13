@@ -62,7 +62,7 @@ Each call starts isolated child process. Ambient extensions and skills are disab
 
 Model and thinking overrides must exist in Main model registry. Invalid role config, model, or thinking level fails before child starts.
 
-Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. Error collection stays bounded while child runs. Truncated output ends with exact omitted-byte count.
+Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. Error collection stays bounded while child runs; malformed JSON events above 1 MiB fail delegation. Truncated output ends with exact omitted-byte count.
 
 ## Widget
 

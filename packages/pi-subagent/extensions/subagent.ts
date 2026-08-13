@@ -10,6 +10,7 @@ import { Type } from "typebox";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const MAX_OUTPUT_BYTES = 50 * 1024;
+const MAX_JSON_EVENT_BYTES = 1024 * 1024;
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const TERMINAL_DISPLAY_MS = 1_000;
@@ -270,7 +271,8 @@ async function runPi(
 		});
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
-		let buffer = "";
+		let lineParts: string[] = [];
+		let lineBytes = 0;
 		let output = "";
 		const stderr = { prefix: "", totalBytes: 0 };
 		const partial = { prefix: "", totalBytes: 0 };
@@ -278,6 +280,7 @@ async function runPi(
 		let stopReason: string | undefined;
 		let errorMessage: string | undefined;
 		let spawnError: Error | undefined;
+		let protocolError: Error | undefined;
 		let aborted = false;
 		let completedTokens = 0;
 		let currentTokens = 0;
@@ -337,15 +340,6 @@ async function runPi(
 			}
 		};
 
-		child.stdout.on("data", (data: string) => {
-			buffer += data;
-			const lines = buffer.split("\n");
-			buffer = lines.pop() ?? "";
-			for (const line of lines) processLine(line);
-		});
-		child.stderr.on("data", (data: string) => appendBounded(stderr, data));
-		child.on("error", (error) => { spawnError = error; });
-
 		const killTree = (force: boolean) => {
 			if (!child.pid) return;
 			if (process.platform === "win32") {
@@ -362,6 +356,30 @@ async function runPi(
 			}
 		};
 
+		child.stdout.on("data", (data: string) => {
+			if (protocolError) return;
+			let offset = 0;
+			while (offset < data.length) {
+				const newline = data.indexOf("\n", offset);
+				const end = newline === -1 ? data.length : newline;
+				const part = data.slice(offset, end);
+				lineBytes += Buffer.byteLength(part, "utf8");
+				if (lineBytes > MAX_JSON_EVENT_BYTES) {
+					protocolError = new Error(`Subagent JSON event exceeds ${MAX_JSON_EVENT_BYTES} bytes.`);
+					killTree(true);
+					return;
+				}
+				if (part) lineParts.push(part);
+				if (newline === -1) return;
+				processLine(lineParts.join(""));
+				lineParts = [];
+				lineBytes = 0;
+				offset = newline + 1;
+			}
+		});
+		child.stderr.on("data", (data: string) => appendBounded(stderr, data));
+		child.on("error", (error) => { spawnError = error; });
+
 		const abort = () => {
 			aborted = true;
 			killTree(false);
@@ -371,10 +389,12 @@ async function runPi(
 		signal?.addEventListener("abort", abort, { once: true });
 
 		child.on("close", (code) => {
-			if (buffer.trim()) processLine(buffer);
+			if (!protocolError && lineBytes) processLine(lineParts.join(""));
+			if (aborted) killTree(true);
 			if (killTimer) clearTimeout(killTimer);
 			signal?.removeEventListener("abort", abort);
 			if (aborted) reject(new Error("Subagent was aborted."));
+			else if (protocolError) reject(protocolError);
 			else if (spawnError) reject(spawnError);
 			else resolve({ exitCode: code ?? 1, output, stderr: boundedText(stderr), stopReason, errorMessage });
 		});

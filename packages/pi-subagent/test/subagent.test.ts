@@ -333,9 +333,7 @@ Do bounded work.
 		const started = join(agentDir, "descendant-started");
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300)`)}], { stdio: "inherit" });
-writeFileSync(${JSON.stringify(started)}, "started");
+spawn(process.execPath, ["-e", ${JSON.stringify(`process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300); setInterval(() => {}, 1000)`)}], { stdio: "ignore" });
 setInterval(() => {}, 1_000);
 `);
 		process.argv[1] = runner;
@@ -352,6 +350,27 @@ setInterval(() => {}, 1_000);
 		await new Promise((resolve) => setTimeout(resolve, 400));
 		await assert.rejects(readFile(marker), /ENOENT/);
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+	});
+});
+
+test("oversized unterminated stdout protocol line fails bounded", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Do bounded work.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `process.stdout.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1_000);\n`);
+		process.argv[1] = runner;
+		const app = harness();
+		await assert.rejects(
+			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			/Subagent JSON event exceeds/,
+		);
 	});
 });
 
