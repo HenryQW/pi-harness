@@ -9,6 +9,7 @@
 | `pi-herdr-subagents` | [`packages/pi-herdr-subagents/CONTEXT.md`](packages/pi-herdr-subagents/CONTEXT.md) | One-shot Pi subagents coordinated through Herdr |
 | `pi-model-thinking` | [`packages/pi-model-thinking/CONTEXT.md`](packages/pi-model-thinking/CONTEXT.md) | Per-model Pi thinking-level config |
 | `pi-multi-codex` | [`packages/pi-multi-codex/CONTEXT.md`](packages/pi-multi-codex/CONTEXT.md) | Multiple ChatGPT Codex subscription accounts |
+| `pi-subagent` | [`packages/pi-subagent/CONTEXT.md`](packages/pi-subagent/CONTEXT.md) | Role-configured isolated Pi subagents |
 | `pi-open-in` | [`packages/pi-open-in/CONTEXT.md`](packages/pi-open-in/CONTEXT.md) | Open current Pi working directory with configurable command |
 
 Context glossaries are created lazily when domain terms are resolved.

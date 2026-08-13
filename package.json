@@ -20,8 +20,8 @@
       "./packages/pi-model-thinking/extensions",
       "./packages/pi-open-in/extensions",
       "./packages/pi-herdr-rename/extensions",
-      "./packages/pi-herdr-subagents/extensions/subagents.ts",
-      "./packages/pi-multi-codex/extensions"
+      "./packages/pi-multi-codex/extensions",
+      "./packages/pi-subagent/extensions/subagent.ts"
     ]
   },
   "scripts": {

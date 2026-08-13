@@ -12,6 +12,7 @@ Public Pi packages under `@henryqw` scope.
 | [`@henryqw/pi-herdr-subagents`](./packages/pi-herdr-subagents) | `pi install npm:@henryqw/pi-herdr-subagents` | Delegate bounded work to interactive Pi Subagents in Herdr tabs. |
 | [`@henryqw/pi-model-thinking`](./packages/pi-model-thinking) | `pi install npm:@henryqw/pi-model-thinking` | Remember chosen thinking level per model. |
 | [`@henryqw/pi-open-in`](./packages/pi-open-in) | `pi install npm:@henryqw/pi-open-in` | Open current working directory with configurable command. |
+| [`@henryqw/pi-subagent`](./packages/pi-subagent) | `pi install npm:@henryqw/pi-subagent` | Delegate one task to an isolated role with explicit extensions and skills. |
 
 ## Development
 
