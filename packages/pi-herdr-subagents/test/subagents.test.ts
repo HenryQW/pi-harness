@@ -240,6 +240,20 @@ test("Main registers only bounded public surface and launches exact Subagent", a
 	await rm(agentDir, { recursive: true, force: true });
 });
 
+test("widget removes manually closed live Subagent", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-widget-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness();
+		await app.tools.get("delegate_task")!.execute("call", { task: "stop this live task" }, undefined, undefined, app.ctx);
+		app.setTabPresent(false);
+		t.mock.timers.tick(1_000);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(app.widgets.at(-1), ["subagent-status", undefined]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
 test("Subagent widget shows a red error, retains terminal tabs, and clears only terminal tabs", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-widget-"));
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {

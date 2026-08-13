@@ -37,5 +37,5 @@ Message sent by Subagent to Main after Result becomes available.
 _Avoid_: Nudge, notification, callback
 
 **Subagent Status Widget**:
-Session-local Pi TUI rows showing live and terminal Subagent state. `/subagent-widget clear` closes terminal tabs and removes their rows.
+Session-local Pi TUI rows showing live and terminal Subagent state. Live rows reconcile started tabs once per second; `/subagent-widget clear` closes terminal tabs and removes their rows.
 _Avoid_: Dashboard, monitor

@@ -25,6 +25,7 @@ const SUBAGENT_EXTENSION = fileURLToPath(new URL("../internal/subagent.ts", impo
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
+const WIDGET_RECONCILE_INTERVAL_MS = 1_000;
 // Keep in sync with Pi's examples/extensions/working-indicator.ts.
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DEFINITIVE_PROMPT_ERRORS = new Set([
@@ -58,6 +59,7 @@ type OwnedSubagent = {
 	contextWindow?: number;
 	thinkingLevel?: string;
 	startedAt: number;
+	started?: true;
 	finishedAt?: number;
 	state?: "finished" | "failed";
 	tabId?: string;
@@ -473,15 +475,29 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	let config = defaultConfig();
 	let cachedMainName: string | undefined;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
+	let widgetReconcileAt = 0;
+	let widgetReconciling = false;
+
+	const reconcileWidget = (ctx: ExtensionContext): void => {
+		if (widgetReconciling || Date.now() < widgetReconcileAt) return;
+		widgetReconciling = true;
+		widgetReconcileAt = Date.now() + WIDGET_RECONCILE_INTERVAL_MS;
+		void reconcile(location(), ctx, undefined, true).then(() => renderWidget(ctx)).catch(() => undefined).finally(() => { widgetReconciling = false; });
+	};
 
 	const renderWidget = (ctx: ExtensionContext): void => {
 		if (ctx.mode !== "tui") return;
 		if (subagents.size && !widgetTimer) {
-			widgetTimer = setInterval(() => renderWidget(ctx), WIDGET_INTERVAL_MS);
+			widgetTimer = setInterval(() => {
+				renderWidget(ctx);
+				reconcileWidget(ctx);
+			}, WIDGET_INTERVAL_MS);
 			widgetTimer.unref();
+			widgetReconcileAt = Date.now() + WIDGET_RECONCILE_INTERVAL_MS;
 		} else if (!subagents.size && widgetTimer) {
 			clearInterval(widgetTimer);
 			widgetTimer = undefined;
+			widgetReconcileAt = 0;
 		}
 		const agents = [...subagents.values(), ...terminalSubagents.values()];
 		if (!agents.length) {
@@ -523,11 +539,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		});
 	};
 
-	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal): Promise<Set<string>> => {
+	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal, startedOnly = false): Promise<Set<string>> => {
 		const tabs = await listTabs(where, ctx, signal);
 		const present = new Set(tabs.map((tab) => tab.id));
 		// Missing tab ID means create response was indeterminate. Adopt only one matching new label; ambiguity stays owned.
 		for (const [taskId, subagent] of subagents) {
+			// Widget ticks must not prune a tab while delegate_task is still provisioning it.
+			if (startedOnly && !subagent.started) continue;
 			if (subagent.tabId) {
 				if (!present.has(subagent.tabId)) subagents.delete(taskId);
 				continue;
@@ -767,6 +785,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				) throw new Error("Herdr Subagent tab identity is invalid.");
 				reportProvisioning("Starting Subagent...");
 				await startSubagent(subagent.subagentName, tabId, paneId, selectedModel, selectedThinkingLevel, where, ctx, signal);
+				subagent.started = true;
 				if (signal?.aborted) throw new Error("delegate_task was aborted before task submission.");
 				const promptArgs = ["agent", "prompt", subagent.subagentName, task];
 				// Lost prompt response can still mean Herdr accepted task, so retain ownership until outcome is known.
@@ -870,6 +889,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (widgetTimer) clearInterval(widgetTimer);
 		widgetTimer = undefined;
+		widgetReconcileAt = 0;
 		// No persistent registry: cleanup applies only to tabs this Main session recorded.
 		try {
 			await reconcile(location(), ctx);

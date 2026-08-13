@@ -29,7 +29,7 @@ Reject delegation when:
 - `task` is blank or contains a NUL byte;
 - live owned Subagents equal or exceed Subagent Limit.
 
-Before enforcing Subagent Limit, query tracked Herdr tabs and prune missing tabs. Treat any malformed tab entry as reconciliation failure; invalid responses cannot release ownership. Do not queue work or poll in background.
+Before enforcing Subagent Limit, query tracked Herdr tabs and prune missing tabs. While live Subagents exist, widget refresh reconciles started tabs once per second so manually closed tabs disappear and free capacity. Treat any malformed tab entry as reconciliation failure; invalid responses cannot release ownership. Do not queue work.
 
 ### `/subagent-limit` and `/subagent-model`
 
@@ -89,7 +89,7 @@ Main accepts raw notice only when prefix/encoding/schema are valid, task ID is a
 
 In Pi TUI, show one session-local row per accepted Subagent above editor: animated `SPINNER_FRAMES` glyph for live work, task-label display name, model context window, model ID, thinking level, and elapsed time. A terminal `finished` Result changes marker to green `✓`; terminal error or abort changes marker to red `!`. Terminal rows freeze elapsed time. Keep at most nine rows plus one `… N more` row because Pi allows ten widget lines. No widget is rendered outside TUI.
 
-Register `/subagent-widget clear`. It closes every terminal Subagent tab and removes a row only after successful close. Live rows stay untouched. A close failure retains row and shows warning. Widget state is session-local and timer stops at session shutdown.
+Register `/subagent-widget clear`. It closes every terminal Subagent tab and removes a row only after successful close. Live rows stay untouched. A close failure retains row and shows warning. While live rows exist, reconcile started tabs once per second; a manually closed tab removes its row. Widget state is session-local and timer stops at session shutdown.
 
 ## Subagent launch
 
@@ -145,7 +145,7 @@ Main keeps only in-memory ownership for Subagents it created.
 
 - Valid Completion Notice: release live ownership and retain terminal Subagent tab until `/subagent-widget clear` or session shutdown.
 - Main session shutdown or switch: reconcile any label-only provisioning record, then best-effort close every identified live and terminal Subagent tab.
-- Main decides task is no longer needed: run returned `herdr tab close` command through existing `bash`.
+- Main decides task is no longer needed: run returned `herdr tab close` command through existing `bash`; widget removes its live row within one second.
 - Abrupt Main crash: leave Subagent tabs and Result files for user inspection or manual cleanup.
 - Result files remain for operating-system temporary cleanup; package has no persistent registry or janitor.
 

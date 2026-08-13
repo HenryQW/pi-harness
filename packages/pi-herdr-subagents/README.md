@@ -22,7 +22,7 @@ Pi TUI shows live Subagents above editor. Name is first task word:
 ! reviewer • 100k • gpt-5.6-terra • xhigh • 5m 27s
 ```
 
-Spinner marks live work. Green `✓` marks completed Result. Red `!` marks terminal error or abort. Terminal tabs stay open for inspection and do not count against Subagent Limit. Run `/subagent-widget clear` to close terminal tabs and remove rows; failed tab close keeps row visible.
+Spinner marks live work. Green `✓` marks completed Result. Red `!` marks terminal error or abort. Manually closing live tab removes its row within one second. Terminal tabs stay open for inspection and do not count against Subagent Limit. Run `/subagent-widget clear` to close terminal tabs and remove rows; failed tab close keeps row visible.
 
 ## Delegate efficiently
 
@@ -96,6 +96,7 @@ Subagents run as separate Pi processes in Herdr panes, not opaque in-process ses
 - Result files live in system temp storage. Completed files are mode `0600`; package leaves them for OS cleanup.
 - Completion Notices are versioned and validated against tracked Result file. Bad, stale, spoofed, or duplicate framing remains ordinary input.
 - Valid Completion Notice releases Subagent Limit capacity and leaves terminal tab open for inspection; `/subagent-widget clear` closes terminal tabs.
+- Manually closing live Subagent tab removes its widget row and frees capacity within one second.
 - Main shutdown closes owned Subagent tabs best-effort. Main crashes leave tabs and pending Results for manual inspection.
 - No queue, timeout, cancellation Result, status tool, transcript sharing, orphan adoption, or automatic retry exists.
 
