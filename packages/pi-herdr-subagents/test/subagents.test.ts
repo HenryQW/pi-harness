@@ -57,6 +57,7 @@ function mainHarness(options: {
 	listFailuresAfterCreate?: number;
 	malformedTabs?: () => boolean;
 	tabs?: () => boolean;
+	tabList?: () => Promise<Array<{ tab_id: string; workspace_id: string; label?: string }>> | Array<{ tab_id: string; workspace_id: string; label?: string }>;
 	noModel?: boolean;
 	thinkingLevel?: string;
 	trusted?: boolean;
@@ -116,6 +117,7 @@ function mainHarness(options: {
 			if (execOptions?.signal?.aborted) return { stdout: "", stderr: "", code: 0, killed: true };
 			if (args.some((value) => value.includes("\0"))) throw new TypeError("spawn arguments cannot contain NUL bytes");
 			if (args[0] === "tab" && args[1] === "list") {
+				if (options.tabList) return success(JSON.stringify({ result: { type: "tab_list", tabs: await options.tabList() } }));
 				if (tabPresent && listFailuresAfterCreate > 0) {
 					listFailuresAfterCreate--;
 					return failure("tab_list_failed");
@@ -250,6 +252,45 @@ test("widget removes manually closed live Subagent", async (t) => {
 		t.mock.timers.tick(1_000);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.deepEqual(app.widgets.at(-1), ["subagent-status", undefined]);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("widget reconciliation keeps Subagents created after its tab snapshot", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-widget-"));
+	let blockNextList = false;
+	let startedSnapshot!: () => void;
+	const snapshotStarted = new Promise<void>((resolve) => { startedSnapshot = resolve; });
+	let releaseSnapshot!: () => void;
+	const snapshotReleased = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		const app = mainHarness({
+			tabList: async () => {
+				if (blockNextList) {
+					blockNextList = false;
+					startedSnapshot();
+					await snapshotReleased;
+				}
+				return [{ tab_id: "tab-1", workspace_id: "workspace-1", label: "existing" }];
+			},
+		});
+		await app.tools.get("delegate_task")!.execute("first", { task: "first live task" }, undefined, undefined, app.ctx);
+		blockNextList = true;
+		t.mock.timers.tick(1_100);
+		await snapshotStarted;
+		const second = app.tools.get("delegate_task")!.execute("second", { task: "second live task" }, undefined, undefined, app.ctx);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		releaseSnapshot();
+		const delegated = await second;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		const resultPath = (delegated.content[0].text as string).match(/^Result: (.+)$/m)![1];
+		const pending = JSON.parse(await readFile(resultPath, "utf8"));
+		await writeFile(resultPath, JSON.stringify({
+			version: PROTOCOL_VERSION, taskId: pending.taskId, state: "finished", task: pending.task, result: "done", error: null,
+			createdAt: pending.createdAt, finishedAt: "2026-08-10T00:01:00.000Z",
+		}));
+		assert.equal((await app.handlers.get("input")?.({ source: "interactive", text: completionNotice(resultPath, pending.taskId) }, app.ctx)).action, "transform");
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });
@@ -549,10 +590,12 @@ test("untrusted Main launches Subagent without approval or thinking", async () =
 	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
 		const app = mainHarness({ mainName: "main_existing", thinkingLevel: undefined, trusted: false });
 		await app.handlers.get("session_start")?.({}, app.ctx);
-		await app.tools.get("delegate_task")!.execute("call", { task: "exact task prompt" }, undefined, undefined, app.ctx);
+		const delegated = await app.tools.get("delegate_task")!.execute("call", { task: "exact task prompt" }, undefined, undefined, app.ctx);
 		const started = app.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
 		assert.equal(started.includes("--thinking"), false);
 		assert.equal(started.at(-1), "--no-approve");
+		assert.match(delegated.content[0].text, /^Thinking: Pi default$/m);
+		assert.match(app.widgets.at(-1)?.[1]?.[0] ?? "", / • Pi default • /);
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });

@@ -513,7 +513,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 					: agent.state === "failed"
 						? ctx.ui.theme.fg("error", "!")
 						: ctx.ui.theme.fg("accent", frame);
-				return `${marker} ${widgetName(agent.label)} • ${tokenCount(agent.contextWindow)} • ${agent.model} • ${agent.thinkingLevel ?? "off"} • ${elapsed(agent.startedAt, agent.finishedAt)}`;
+				return `${marker} ${widgetName(agent.label)} • ${tokenCount(agent.contextWindow)} • ${agent.model} • ${agent.thinkingLevel ?? "Pi default"} • ${elapsed(agent.startedAt, agent.finishedAt)}`;
 			}),
 			...(agents.length > visible.length ? [`… ${agents.length - visible.length} more`] : []),
 		]);
@@ -540,12 +540,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	};
 
 	const reconcile = async (where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal, startedOnly = false): Promise<Set<string>> => {
+		// Later provisioning cannot exist in this tab-list snapshot.
+		const owned = startedOnly ? [...subagents].filter(([, subagent]) => subagent.started) : subagents;
 		const tabs = await listTabs(where, ctx, signal);
 		const present = new Set(tabs.map((tab) => tab.id));
 		// Missing tab ID means create response was indeterminate. Adopt only one matching new label; ambiguity stays owned.
-		for (const [taskId, subagent] of subagents) {
-			// Widget ticks must not prune a tab while delegate_task is still provisioning it.
-			if (startedOnly && !subagent.started) continue;
+		for (const [taskId, subagent] of owned) {
+			if (subagents.get(taskId) !== subagent) continue;
 			if (subagent.tabId) {
 				if (!present.has(subagent.tabId)) subagents.delete(taskId);
 				continue;
