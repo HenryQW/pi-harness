@@ -20,6 +20,18 @@ Do not consider migrations or backward compatibility. Both add unnecessary code.
   join(getAgentDir(), "config", "pi-multi-codex", "usage.json");
   ```
 
+## Extension config safety
+
+- Treat extension config JSON as untrusted user data.
+- Validate reads; preserve malformed files; never rewrite config during startup.
+- Write only after explicit user action. Fail fast for correctness-critical config; use explicit defaults only for optional config.
+
+## Pi registry as authority
+
+- Use Pi's effective skill/model registries and model metadata as resource authority.
+- Resolve skills and models at launch; configs use names or classes, not arbitrary paths or copied catalogs.
+- Avoid duplicate discovery logic and package-owned capability catalogs.
+
 ## Package release policy
 
 This repository is npm workspace monorepo. Each public package under `packages/*` releases independently.
