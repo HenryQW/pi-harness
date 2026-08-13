@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -45,7 +46,7 @@ const model = {
 	thinkingLevelMap: { off: "none", low: "low", high: "high" },
 } as const;
 
-function harness(options: { ui?: boolean; skills?: Array<{ name: string; path: string }> } = {}) {
+function harness(options: { ui?: boolean; skills?: Array<{ name: string; path: string }>; trusted?: boolean } = {}) {
 	let tool: Tool | undefined;
 	let widget: { render: (width: number) => string[] } | undefined;
 	let renders = 0;
@@ -71,6 +72,7 @@ function harness(options: { ui?: boolean; skills?: Array<{ name: string; path: s
 		model,
 		thinkingLevel: "low",
 		hasUI: options.ui ?? false,
+		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: { getAvailable: () => [model] },
 		ui: {
 			notify: (message: string, type: string) => notifications.push({ message, type }),
@@ -97,7 +99,22 @@ async function waitFor(check: () => boolean): Promise<void> {
 	}
 }
 
-test("role profile resolves skill names and selects exact extensions, tools, model, and thinking", async () => {
+test("role config rejects repository-relative extension sources", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "unsafe.md"), `---
+name: unsafe
+description: Loads repository code
+extensions: [./extensions/review.ts]
+tools: []
+---
+Review code.
+`);
+		assert.throws(() => loadRoles(agentDir), /extension.*absolute|extension.*source/i);
+	});
+});
+
+test("role profile resolves skill names and selects exact extensions, tools, model, thinking, and trust", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "reviewer.md"), `---
@@ -105,7 +122,7 @@ name: reviewer
 description: Reviews focused changes
 tools: read, grep
 extensions:
-  - ./extensions/review.ts
+  - /user/extensions/review.ts
 skills:
   - security
   - unavailable-skill
@@ -121,7 +138,10 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		process.argv[1] = runner;
 
 		assert.deepEqual(loadRoles(agentDir).map(({ name }) => name), ["reviewer"]);
-		const app = harness({ skills: [{ name: "security", path: "/effective/skills/security/SKILL.md" }] });
+		const app = harness({
+			skills: [{ name: "security", path: "/effective/skills/security/SKILL.md" }],
+			trusted: false,
+		});
 		assert.match(app.tool.description, /reviewer: Reviews focused changes/);
 		const updates: any[] = [];
 		const result = await app.tool.execute(
@@ -136,11 +156,12 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(child.prompt, "Review only requested change.");
 		assert.deepEqual(child.args, [
 			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
-			"--extension", "./extensions/review.ts",
+			"--extension", "/user/extensions/review.ts",
 			"--skill", "/effective/skills/security/SKILL.md",
 			"--tools", "read,grep",
 			"--model", "test/text-model",
 			"--thinking", "high",
+			"--no-approve",
 			"--append-system-prompt", child.args.at(-2),
 			"Task: inspect auth",
 		]);
@@ -197,6 +218,56 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 	});
 });
 
+test("streams assistant text deltas before final message", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
+name: scout
+description: Finds relevant code
+tools: [read]
+---
+Return concise findings.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "message_update", usage: { totalTokens: 1 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "partial 🙂" } });
+setTimeout(() => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "partial 🙂 done" }], stopReason: "end" } }), 100);
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const updates: any[] = [];
+		const running = app.tool.execute("call-1", { role: "scout", task: "find auth" }, undefined, (update: any) => updates.push(update), app.ctx);
+		await waitFor(() => updates.length === 1);
+		assert.equal(updates[0].content[0].text, "partial 🙂");
+		const result = await running;
+		assert.equal(result.content[0].text, "partial 🙂 done");
+		assert.equal(updates.at(-1).content[0].text, "partial 🙂 done");
+	});
+});
+
+test("decodes JSON output across UTF-8 chunk boundaries", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
+name: scout
+description: Finds relevant code
+tools: [read]
+---
+Return concise findings.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const line = Buffer.from(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok 🙂" }], stopReason: "end" } }) + "\\n");
+const split = line.indexOf(Buffer.from("🙂")) + 2;
+process.stdout.write(line.subarray(0, split));
+setTimeout(() => process.stdout.write(line.subarray(split)), 20);
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "scout", task: "find auth" }, undefined, undefined, app.ctx);
+		assert.equal(result.content[0].text, "ok 🙂");
+	});
+});
+
 test("large child output bounds final result and streaming update", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
@@ -247,7 +318,8 @@ Do work.
 	});
 });
 
-test("abort stops child process", async () => {
+test("abort stops child process tree", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -257,17 +329,28 @@ tools: [read]
 ---
 Do bounded work.
 `);
+		const marker = join(agentDir, "descendant-survived");
+		const started = join(agentDir, "descendant-started");
 		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `setInterval(() => {}, 1_000);\n`);
+		await writeFile(runner, `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300)`)}], { stdio: "inherit" });
+writeFileSync(${JSON.stringify(started)}, "started");
+setInterval(() => {}, 1_000);
+`);
 		process.argv[1] = runner;
 		const app = harness({ ui: true });
 		const abort = new AbortController();
-		setTimeout(() => abort.abort(), 20);
+		const running = app.tool.execute("call-1", { role: "worker", task: "work" }, abort.signal, undefined, app.ctx);
+		await waitFor(() => existsSync(started));
+		abort.abort();
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "work" }, abort.signal, undefined, app.ctx),
+			running,
 			/Subagent was aborted/,
 		);
 		assert.ok(app.widget!.render(80)[0].startsWith("■"));
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		await assert.rejects(readFile(marker), /ENOENT/);
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
 });

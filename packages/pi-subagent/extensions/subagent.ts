@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { getSupportedThinkingLevels, StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir, parseFrontmatter, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
@@ -62,6 +62,18 @@ const stringList = (value: unknown, field: string, file: string, required = fals
 	return values.map((item) => item.trim());
 };
 
+const extensionList = (value: unknown, file: string): string[] => {
+	const extensions = stringList(value, "extensions", file);
+	for (const extension of extensions) {
+		const packageSource = /^(?:npm|git|github|https?|ssh):/.test(extension);
+		const userPath = isAbsolute(extension) || extension.startsWith("~/") || extension.startsWith("~\\") || extension.startsWith("file://");
+		if (!packageSource && !userPath) {
+			throw new Error(`${file}: extensions entries must be absolute paths or package sources.`);
+		}
+	}
+	return extensions;
+};
+
 export function loadRoles(agentDir = getAgentDir()): Role[] {
 	const dir = join(agentDir, "config", "pi-subagent");
 	let entries;
@@ -88,7 +100,7 @@ export function loadRoles(agentDir = getAgentDir()): Role[] {
 				name: cleanText(frontmatter.name, "name", file),
 				description: cleanText(frontmatter.description, "description", file),
 				tools: stringList(frontmatter.tools, "tools", file, true),
-				extensions: stringList(frontmatter.extensions, "extensions", file),
+				extensions: extensionList(frontmatter.extensions, file),
 				skills: stringList(frontmatter.skills, "skills", file),
 				systemPrompt: cleanText(parsed.body, "system prompt", file),
 			};
@@ -139,13 +151,28 @@ function utf8Prefix(text: string, maxBytes: number): string {
 	return text.slice(0, low);
 }
 
-export function capOutput(text: string): string {
-	const totalBytes = Buffer.byteLength(text, "utf8");
+function cappedPrefix(text: string, totalBytes: number): string {
 	if (totalBytes <= MAX_OUTPUT_BYTES) return text;
 	const worstCaseMarker = `\n\n[Output truncated: ${totalBytes} bytes omitted]`;
 	const prefix = utf8Prefix(text, MAX_OUTPUT_BYTES - Buffer.byteLength(worstCaseMarker, "utf8"));
 	const omittedBytes = totalBytes - Buffer.byteLength(prefix, "utf8");
 	return `${prefix}\n\n[Output truncated: ${omittedBytes} bytes omitted]`;
+}
+
+export function capOutput(text: string): string {
+	return cappedPrefix(text, Buffer.byteLength(text, "utf8"));
+}
+
+type BoundedText = { prefix: string; totalBytes: number };
+
+function appendBounded(target: BoundedText, text: string): void {
+	target.totalBytes += Buffer.byteLength(text, "utf8");
+	const remaining = MAX_OUTPUT_BYTES - Buffer.byteLength(target.prefix, "utf8");
+	if (remaining > 0) target.prefix += utf8Prefix(text, remaining);
+}
+
+function boundedText(target: BoundedText): string {
+	return cappedPrefix(target.prefix, target.totalBytes);
 }
 
 function taskSummary(task: string): string {
@@ -235,10 +262,19 @@ async function runPi(
 	if (signal?.aborted) throw new Error("Subagent was aborted.");
 	return await new Promise<ChildResult>((resolve, reject) => {
 		const invocation = piInvocation(args);
-		const child = spawn(invocation.command, invocation.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(invocation.command, invocation.args, {
+			cwd,
+			shell: false,
+			stdio: ["ignore", "pipe", "pipe"],
+			detached: process.platform !== "win32",
+		});
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
 		let buffer = "";
 		let output = "";
-		let stderr = "";
+		const stderr = { prefix: "", totalBytes: 0 };
+		const partial = { prefix: "", totalBytes: 0 };
+		let hasPartialText = false;
 		let stopReason: string | undefined;
 		let errorMessage: string | undefined;
 		let spawnError: Error | undefined;
@@ -257,11 +293,29 @@ async function runPi(
 			}
 			if (!event || typeof event !== "object" || Array.isArray(event)) return;
 			const record = event as Record<string, unknown>;
+			if (record.type === "message_start") {
+				partial.prefix = "";
+				partial.totalBytes = 0;
+				hasPartialText = false;
+				return;
+			}
 			if (record.type === "message_update") {
 				const tokens = usageTokens(record.usage);
 				if (tokens !== undefined) {
 					currentTokens = tokens;
 					onTokens?.(completedTokens + currentTokens);
+				}
+				const update = record.assistantMessageEvent;
+				if (update && typeof update === "object" && !Array.isArray(update)) {
+					const assistantEvent = update as Record<string, unknown>;
+					if (assistantEvent.type === "text_start" && hasPartialText) appendBounded(partial, "\n");
+					if (assistantEvent.type === "text_start") hasPartialText = true;
+					if (assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") {
+						hasPartialText = true;
+						appendBounded(partial, assistantEvent.delta);
+						output = boundedText(partial);
+						onUpdate?.(output);
+					}
 				}
 				return;
 			}
@@ -283,21 +337,35 @@ async function runPi(
 			}
 		};
 
-		child.stdout.on("data", (data) => {
-			buffer += data.toString();
+		child.stdout.on("data", (data: string) => {
+			buffer += data;
 			const lines = buffer.split("\n");
 			buffer = lines.pop() ?? "";
 			for (const line of lines) processLine(line);
 		});
-		child.stderr.on("data", (data) => { stderr += data.toString(); });
+		child.stderr.on("data", (data: string) => appendBounded(stderr, data));
 		child.on("error", (error) => { spawnError = error; });
+
+		const killTree = (force: boolean) => {
+			if (!child.pid) return;
+			if (process.platform === "win32") {
+				spawn("taskkill", [...(force ? ["/F"] : []), "/T", "/PID", String(child.pid)], {
+					stdio: "ignore",
+					windowsHide: true,
+				});
+				return;
+			}
+			try {
+				process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
+			} catch {
+				child.kill(force ? "SIGKILL" : "SIGTERM");
+			}
+		};
 
 		const abort = () => {
 			aborted = true;
-			child.kill("SIGTERM");
-			killTimer = setTimeout(() => {
-				if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-			}, 5_000);
+			killTree(false);
+			killTimer = setTimeout(() => killTree(true), 5_000);
 			killTimer.unref();
 		};
 		signal?.addEventListener("abort", abort, { once: true });
@@ -308,7 +376,7 @@ async function runPi(
 			signal?.removeEventListener("abort", abort);
 			if (aborted) reject(new Error("Subagent was aborted."));
 			else if (spawnError) reject(spawnError);
-			else resolve({ exitCode: code ?? 1, output, stderr, stopReason, errorMessage });
+			else resolve({ exitCode: code ?? 1, output, stderr: boundedText(stderr), stopReason, errorMessage });
 		});
 	});
 }
@@ -478,6 +546,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				else args.push("--no-tools");
 				args.push("--model", modelReference);
 				if (thinkingLevel) args.push("--thinking", thinkingLevel);
+				args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
 				args.push("--append-system-prompt", promptPath, `Task: ${task}`);
 
 				startWidgetItem(toolCallId, role.name, model.id, thinkingLevel, task, ctx);

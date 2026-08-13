@@ -37,11 +37,11 @@ Fields:
 | `name` | yes | Role selected by Main |
 | `description` | yes | Tells Main when to use role |
 | `tools` | yes | Exact built-in and extension tool allowlist; use `[]` for none |
-| `extensions` | no | Pi `--extension` sources loaded for role |
+| `extensions` | no | Absolute/user-home paths or package sources passed to Pi `--extension` |
 | `skills` | no | Effective Pi Skill names loaded for role |
 | Markdown body | yes | Role system instructions |
 
-String lists may also use comma-separated text, matching Pi's example role files.
+String lists may also use comma-separated text, matching Pi's example role files. Repository-relative extension paths are rejected: child working directory is delegated project, so relative paths could load untrusted project code. Use absolute paths, `~/...`, or explicit package sources such as `npm:...`.
 
 Skill entries use Pi Skill names, normally Skill directory names, not filesystem paths. At delegation time, package resolves names from Main's effective Pi Skill registry and passes matching files to child. Missing or unavailable Skills produce warning and are skipped; they do not block delegation. This preserves Main's trust and Skill collision decisions.
 
@@ -58,11 +58,11 @@ Main calls `delegate_task` with:
 - `model`: optional exact `provider/model`; defaults to Main model
 - `thinkingLevel`: optional; defaults to Main thinking level
 
-Each call starts isolated child process. Ambient extensions and skills are disabled. Only role resources load. Child uses delegated working directory and normal Pi project context files.
+Each call starts isolated child process. Ambient extensions and skills are disabled. Only role resources load. Child uses delegated working directory and normal Pi project context files, inheriting Main's project approval decision. Abort terminates child process group.
 
 Model and thinking overrides must exist in Main model registry. Invalid role config, model, or thinking level fails before child starts.
 
-Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. Truncated output ends with exact omitted-byte count.
+Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. Error collection stays bounded while child runs. Truncated output ends with exact omitted-byte count.
 
 ## Widget
 
