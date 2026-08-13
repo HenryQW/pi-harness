@@ -2,6 +2,10 @@
 
 OBSIDIAN_PROJECT=`${OBSIDIAN_ROOT}/projects/Pi/Packages`
 
+## Compatibility
+
+Do not consider migrations or backward compatibility. Both add unnecessary code.
+
 ## Package release policy
 
 This repository is npm workspace monorepo. Each public package under `packages/*` releases independently.
