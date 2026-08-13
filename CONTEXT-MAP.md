@@ -2,6 +2,7 @@
 
 | Context | Domain glossary | Scope |
 | --- | --- | --- |
+| `pi-ask-question` | [`packages/pi-ask-question/CONTEXT.md`](packages/pi-ask-question/CONTEXT.md) | Interactive user questions with predefined or custom answers |
 | `pi-auto-compact` | [`packages/pi-auto-compact/CONTEXT.md`](packages/pi-auto-compact/CONTEXT.md) | Proactive Pi context compaction and task resumption |
 | `pi-auto-dag` | [`packages/pi-auto-dag/CONTEXT.md`](packages/pi-auto-dag/CONTEXT.md) | Dependency-aware local delivery work and worker execution |
 | `pi-herdr` | [`packages/pi-herdr/CONTEXT.md`](packages/pi-herdr/CONTEXT.md) | Shared Herdr CLI execution for Pi packages |
