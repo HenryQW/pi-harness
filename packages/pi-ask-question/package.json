@@ -1,0 +1,48 @@
+{
+  "name": "@henryqw/pi-ask-question",
+  "version": "0.1.0",
+  "description": "Ask Pi users one interactive question with choices or a custom answer.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "question",
+    "interactive"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "test:manual": "pi --no-extensions -e ./extensions/ask-question.ts --tools ask_question --no-session \"We need storage for a small team app. Before making changes, ask me to choose storage.\"",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/ask-question.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
+    "typebox": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-packages.git",
+    "directory": "packages/pi-ask-question"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-packages/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/ask-question.ts"
+    ]
+  }
+}
