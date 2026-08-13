@@ -6,6 +6,20 @@ OBSIDIAN_PROJECT=`${OBSIDIAN_ROOT}/projects/Pi/Packages`
 
 Do not consider migrations or backward compatibility. Both add unnecessary code.
 
+## Extension config paths
+
+- Single extension config must use:
+
+  ```ts
+  const configPath = () => join(getAgentDir(), "config", "extension-name.json");
+  ```
+
+- Multiple configs must use an extension-named directory, for example:
+
+  ```ts
+  join(getAgentDir(), "config", "pi-multi-codex", "usage.json");
+  ```
+
 ## Package release policy
 
 This repository is npm workspace monorepo. Each public package under `packages/*` releases independently.
