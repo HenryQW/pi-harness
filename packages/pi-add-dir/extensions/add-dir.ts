@@ -341,7 +341,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 			let totalFound = 0;
 
 			for (const dir of addedDirs) {
-				if (signal?.aborted) break;
+				signal?.throwIfAborted();
 				if (!dirExists(dir.absolutePath)) continue;
 				const remaining = limit - totalFound;
 				if (remaining <= 0) break;
@@ -353,6 +353,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 				}
 			}
 
+			signal?.throwIfAborted();
 			if (totalFound === 0) {
 				return {
 					content: [

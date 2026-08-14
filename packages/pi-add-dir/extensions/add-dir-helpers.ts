@@ -23,7 +23,7 @@ const SKIPPED_SEARCH_DIRS = new Set([".git", "node_modules"]);
 
 export function expandUserPath(input: string): string {
 	if (input === "~") return homedir();
-	if (input.startsWith("~/")) return path.join(homedir(), input.slice(2));
+	if (input.startsWith("~/") || input.startsWith(`~${path.sep}`)) return path.join(homedir(), input.slice(2));
 	return input;
 }
 
@@ -62,16 +62,20 @@ function readContextFile(dir: string, name: (typeof CONTEXT_FILES)[number]): str
 
 function skillFiles(dir: string): Array<{ name: string; path: string }> {
 	const files: Array<{ name: string; path: string }> = [];
+	const names = new Set<string>();
 
 	for (const skillDir of SKILL_DIRS) {
 		const fullSkillDir = path.join(dir, skillDir);
 		if (!dirExists(fullSkillDir)) continue;
 		try {
 			for (const entry of readdirSync(fullSkillDir, { withFileTypes: true })) {
-				if (!entry.isDirectory()) continue;
+				if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 				const skillPath = path.join(fullSkillDir, entry.name, "SKILL.md");
 				try {
-					if (statSync(skillPath).isFile()) files.push({ name: entry.name, path: skillPath });
+					if (statSync(skillPath).isFile() && !names.has(entry.name)) {
+						names.add(entry.name);
+						files.push({ name: entry.name, path: skillPath });
+					}
 				} catch {
 					// Skill may disappear while resources are being discovered.
 				}
@@ -105,9 +109,14 @@ export function scanDirContext(dir: string): DirContext {
 
 export function collectSkillPaths(dirs: AddedDir[]): string[] {
 	const paths: string[] = [];
+	const names = new Set<string>();
 	for (const dir of dirs) {
 		if (!dirExists(dir.absolutePath)) continue;
-		paths.push(...skillFiles(dir.absolutePath).map((skill) => skill.path));
+		for (const skill of skillFiles(dir.absolutePath)) {
+			if (names.has(skill.name)) continue;
+			names.add(skill.name);
+			paths.push(skill.path);
+		}
 	}
 	return paths;
 }
@@ -127,16 +136,22 @@ export function buildContextInjection(dirs: AddedDir[]): string {
 		`\nThe following ${dirs.length} external director${dirs.length === 1 ? "y is" : "ies are"} included in this session. You can read, edit, and write files in these directories using absolute paths.\n`,
 	];
 
+	const registeredSkills = new Set<string>();
 	for (const dir of dirs) {
 		const ctx = scanDirContext(dir.absolutePath);
+		const skills = [...ctx.skills].filter(([name]) => {
+			if (registeredSkills.has(name)) return false;
+			registeredSkills.add(name);
+			return true;
+		});
 		sections.push(`### ${dir.label} - \`${dir.absolutePath}\``);
 
 		if (ctx.agentsMd) sections.push(`\n#### AGENTS.md (from ${dir.label})\n${ctx.agentsMd}`);
 		if (ctx.claudeMd) sections.push(`\n#### CLAUDE.md (from ${dir.label})\n${ctx.claudeMd}`);
 
-		if (ctx.skills.size > 0) {
+		if (skills.length > 0) {
 			sections.push(`\n#### Skills from ${dir.label} (registered as /skill:name commands):`);
-			for (const [name, content] of ctx.skills) {
+			for (const [name, content] of skills) {
 				sections.push(
 					`- **${name}**: ${skillDescription(content)} - use \`/skill:${name}\` or read \`${ctx.skillPaths.get(name)}\``,
 				);
@@ -168,7 +183,9 @@ export async function findFiles(
 	const results: string[] = [];
 	const pending = [root];
 
-	while (pending.length > 0 && !signal?.aborted) {
+	signal?.throwIfAborted();
+	while (pending.length > 0) {
+		signal?.throwIfAborted();
 		const current = pending.pop()!;
 		let entries;
 		try {
@@ -178,7 +195,7 @@ export async function findFiles(
 		}
 
 		for (const entry of entries) {
-			if (signal?.aborted) break;
+			signal?.throwIfAborted();
 			const fullPath = path.join(current, entry.name);
 			if (entry.isDirectory()) {
 				if (!SKIPPED_SEARCH_DIRS.has(entry.name)) pending.push(fullPath);
