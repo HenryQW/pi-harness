@@ -184,7 +184,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 				throw new Error(`git branch --show-current failed: ${branchResult.stderr.trim() || branchResult.stdout.trim() || (branchResult.killed ? "killed" : `exit ${branchResult.code}`)}`);
 			}
 			const branch = branchResult.stdout.trim();
-			if (branch && isCurrent(request, controller)) {
+			if (branch && !branch.startsWith("worktree/") && isCurrent(request, controller)) {
 				await herdr.run(["workspace", "rename", workspaceId, branch], { signal: controller.signal });
 			}
 		}

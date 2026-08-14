@@ -146,12 +146,13 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 	});
 });
 
-test("saved names skip the model, rename sole-pane tabs, and replace only default Herdr worktree names with their Git branch", async () => {
+test("saved names skip the model, rename sole-pane tabs, and replace only default Herdr worktree names with non-generated Git branches", async () => {
 	await withAgentDir(async () => {
 		process.env.HERDR_PANE_ID = "pane-1";
 		for (const [paneCount, workspaceName, isLinkedWorktree, branch, expectedTabRenames, expectedWorkspaceRenames, expectedBranchLookups] of [
 			[1, "worktree-brave-meadow-4aa8", true, "fix/title-length", 1, 1, 1],
 			[2, "lucky-field-f694", true, "feat/new-loader", 0, 1, 1],
+			[1, "worktree/brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", 1, 0, 1],
 			[1, "chosen workspace", true, "pref/subquery", 1, 0, 0],
 			[1, "worktree-clear-field-8512", false, "pref/subquery", 1, 0, 0],
 			[1, "worktree-quiet-river-1234", true, "", 1, 0, 1],

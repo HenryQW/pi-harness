@@ -9,7 +9,7 @@ Short model-generated task label stored as Pi session display name and applied t
 _Avoid_: session rename, terminal name
 
 **Generated worktree label**:
-Herdr linked-worktree label matching its `worktree-<adjective>-<noun>-<hex>` default. It is replaced with current Git branch; custom workspace labels remain unchanged.
+Herdr linked-worktree label matching its `worktree-<adjective>-<noun>-<hex>` default. It is replaced with current non-generated Git branch; generated `worktree/...` and custom workspace labels remain unchanged.
 _Avoid_: chat title, custom workspace name
 
 **Sole-pane tab**:
