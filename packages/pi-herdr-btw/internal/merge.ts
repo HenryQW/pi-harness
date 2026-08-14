@@ -5,7 +5,6 @@ export const MERGE_PROTOCOL_VERSION = 2 as const;
 export const MERGE_REQUEST_FILE = "merge-request.json";
 export const MERGE_ACK_FILE = "merge-ack.json";
 export const MERGE_CUSTOM_TYPE = "pi-herdr-btw.merge";
-export const MERGE_SUBMISSION_CUSTOM_TYPE = "pi-herdr-btw.merge-submitted";
 export const MAX_SUMMARY_BYTES = 64 * 1024;
 export const MAX_PROMPT_BYTES = 16 * 1024;
 /** Transcript budget stays well under MAX_SUMMARY_BYTES for JSON overhead. */
@@ -111,7 +110,7 @@ type EntryLike = {
 	type: string;
 	customType?: string;
 	details?: unknown;
-	data?: unknown;
+	message?: { role?: unknown; content?: unknown };
 };
 
 /** Deduplicate against an already-persisted merge custom message by requestId. */
@@ -126,15 +125,23 @@ export function hasMergedRequestId(entries: EntryLike[], requestId: string): boo
 	);
 }
 
-/** Detect durable evidence that parent prompt submission was accepted by Pi. */
-export function hasSubmittedPromptRequestId(entries: EntryLike[], requestId: string): boolean {
-	return entries.some(
+/** Detect durable evidence that this merge's user prompt was persisted. */
+export function hasSubmittedPromptRequestId(
+	entries: EntryLike[],
+	requestId: string,
+	prompt: string,
+): boolean {
+	const mergeIndex = entries.findIndex(
 		(entry) =>
-			entry.type === "custom" &&
-			entry.customType === MERGE_SUBMISSION_CUSTOM_TYPE &&
-			!!entry.data &&
-			typeof entry.data === "object" &&
-			(entry.data as { requestId?: unknown }).requestId === requestId,
+			entry.type === "custom_message" &&
+			entry.customType === MERGE_CUSTOM_TYPE &&
+			!!entry.details &&
+			typeof entry.details === "object" &&
+			(entry.details as { requestId?: unknown; prompt?: unknown }).requestId === requestId &&
+			(entry.details as { requestId?: unknown; prompt?: unknown }).prompt === prompt,
+	);
+	return mergeIndex >= 0 && entries.slice(mergeIndex + 1).some(
+		(entry) => entry.type === "message" && entry.message?.role === "user" && textOfTurn(entry.message.content) === prompt.trim(),
 	);
 }
 
@@ -213,11 +220,9 @@ export type ParentSessionPort = {
 	getEntries(): EntryLike[];
 	/** Check model and authentication before consuming a merge request. */
 	canSubmitPrompt(): Promise<boolean>;
-	sendMergeMessage(content: string, details: { requestId: string; launchId: string }): void;
+	sendMergeMessage(content: string, details: { requestId: string; launchId: string; prompt: string }): void;
 	/** Submit the merge prompt as a user message that triggers a model turn. */
 	submitPrompt(prompt: string): void;
-	/** Persist evidence that Pi accepted the merge prompt submission. */
-	markPromptSubmitted(requestId: string, launchId: string): void;
 	notify(message: string, type: "info" | "warning" | "error"): void;
 };
 
@@ -299,7 +304,7 @@ export class MergeCoordinator {
 		}
 
 		const entries = this.session.getEntries();
-		if (hasSubmittedPromptRequestId(entries, rawRequest.requestId)) {
+		if (hasSubmittedPromptRequestId(entries, rawRequest.requestId, rawRequest.prompt)) {
 			// Prompt submission succeeded earlier but the ack write crashed. Re-ack
 			// without re-submitting to avoid double-triggering a paid model turn.
 			await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
@@ -330,10 +335,10 @@ export class MergeCoordinator {
 			this.session.sendMergeMessage(buildMergeMessageContent(rawRequest.summary), {
 				requestId: rawRequest.requestId,
 				launchId: rawRequest.launchId,
+				prompt: rawRequest.prompt,
 			});
 		}
 		this.session.submitPrompt(rawRequest.prompt);
-		this.session.markPromptSubmitted(rawRequest.requestId, rawRequest.launchId);
 		await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
 		this.session.notify("Merged a /btw side thread into this session; continuing with its prompt.", "info");
 		result.delivered += 1;

@@ -6,7 +6,6 @@ import type { BtwPayload } from "../internal/core.ts";
 import {
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
-	MERGE_SUBMISSION_CUSTOM_TYPE,
 	type MergeAck,
 	type MergeRequest,
 } from "../internal/merge.ts";
@@ -136,6 +135,13 @@ class FakeConfigStore implements ConfigStorePort {
 
 function createCommandContext() {
 	const notifications: Array<{ message: string; type: string }> = [];
+	const modelInfo = (provider: string, id: string) => ({
+		provider,
+		id,
+		input: ["text"],
+		reasoning: true,
+		thinkingLevelMap: { off: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+	});
 	const entries: any[] = [
 		{
 			type: "message",
@@ -156,6 +162,12 @@ function createCommandContext() {
 		model: { provider: "test-provider", id: "test-model" },
 		scopedModels: [],
 		modelRegistry: {
+			getAvailable: () => [
+				modelInfo("test-provider", "test-model"),
+				modelInfo("anthropic", "claude-haiku"),
+				modelInfo("openai-codex", "gpt-5.6-luna"),
+				modelInfo("anthropic", "claude-sonnet"),
+			],
 			getApiKeyAndHeaders: async () => ({ ok: true }),
 		},
 		isIdle: () => true,
@@ -185,7 +197,6 @@ async function createHarness(
 	const execCalls: Array<{ command: string; args: string[] }> = [];
 	const sentUserMessages: string[] = [];
 	const sentMessages: Array<{ message: any; options: any }> = [];
-	const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 	const timers: Array<ReturnType<typeof setInterval>> = [];
 	const originalSetInterval = globalThis.setInterval;
 	const pi = {
@@ -205,7 +216,6 @@ async function createHarness(
 		getActiveTools: () => ["read", "bash"],
 		sendUserMessage: (message: string) => sentUserMessages.push(message),
 		sendMessage: (message: any, options: any) => sentMessages.push({ message, options }),
-		appendEntry: (customType: string, data: unknown) => appendedEntries.push({ customType, data }),
 	} as unknown as ExtensionAPI;
 
 	// Capture timers created during registration/handlers so tests can clear them.
@@ -230,7 +240,7 @@ async function createHarness(
 		for (const timer of timers) clearInterval(timer);
 	}
 
-	return { commands, handlers, execCalls, sentUserMessages, sentMessages, appendedEntries, configStore, emit, cleanup, timers };
+	return { commands, handlers, execCalls, sentUserMessages, sentMessages, configStore, emit, cleanup, timers };
 }
 
 async function withParentEnvironment(run: () => Promise<void>): Promise<void> {
@@ -517,6 +527,53 @@ test("parent retries agent start on the transient pane-busy error", async () => 
 	});
 });
 
+test("parent rejects unavailable or unauthenticated BTW models before splitting", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const configStore = new FakeConfigStore();
+		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku" };
+		const harness = await createHarness(store, herdrExec(), configStore);
+		const scopedCtx = createCommandContext();
+		scopedCtx.scopedModels = [
+			{ model: { provider: "test-provider", id: "test-model", input: ["text"] } },
+		];
+		await harness.commands.get("btw")?.handler("question", scopedCtx);
+		assert.equal(harness.execCalls.length, 0);
+		assert.equal(store.created.length, 0);
+		assert.match(scopedCtx.notifications.at(-1)?.message ?? "", /model unavailable/);
+
+		const authCtx = createCommandContext();
+		const savedModel = {
+			provider: "anthropic",
+			id: "claude-haiku",
+			input: ["text"],
+			reasoning: true,
+			thinkingLevelMap: { high: "high" },
+		};
+		authCtx.modelRegistry = {
+			getAvailable: () => [savedModel],
+			getApiKeyAndHeaders: async () => ({ ok: false }),
+		};
+		await harness.commands.get("btw")?.handler("question", authCtx);
+		harness.cleanup();
+		assert.equal(harness.execCalls.length, 0);
+		assert.equal(store.created.length, 0);
+		assert.match(authCtx.notifications.at(-1)?.message ?? "", /authenticate/);
+
+		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: "max" };
+		const thinkingCtx = createCommandContext();
+		thinkingCtx.modelRegistry = {
+			getAvailable: () => [savedModel],
+			getApiKeyAndHeaders: async () => ({ ok: true }),
+		};
+		await harness.commands.get("btw")?.handler("question", thinkingCtx);
+		harness.cleanup();
+		assert.equal(harness.execCalls.length, 0);
+		assert.equal(store.created.length, 0);
+		assert.match(thinkingCtx.notifications.at(-1)?.message ?? "", /thinking level/);
+	});
+});
+
 test("parent command removes sensitive payload after a definite nonzero split failure", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
@@ -556,6 +613,27 @@ test("parent command closes the split pane and removes payload when agent start 
 			message: "/btw failed: pi not found",
 			type: "error",
 		});
+	});
+});
+
+test("parent closes split pane when agent start throws", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			if (args[0] === "pane" && args[1] === "close") return { code: 0, stdout: "", stderr: "" };
+			throw new Error("spawn failed");
+		});
+		const ctx = createCommandContext();
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
+
+		assert.equal(harness.execCalls.length, 3);
+		assert.deepEqual(harness.execCalls[0]?.args.slice(0, 2), ["pane", "split"]);
+		assert.deepEqual(harness.execCalls[1]?.args.slice(0, 2), ["agent", "start"]);
+		assert.deepEqual(harness.execCalls[2]?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
+		assert.match(ctx.notifications.at(-1)?.message ?? "", /spawn failed/);
 	});
 });
 
@@ -673,7 +751,13 @@ test("parent honors scoped thinking pin for saved BTW model", async () => {
 		const ctx = createCommandContext();
 		ctx.scopedModels = [
 			{
-				model: { provider: "anthropic", id: "claude-haiku", input: ["text"] },
+				model: {
+					provider: "anthropic",
+					id: "claude-haiku",
+					input: ["text"],
+					reasoning: true,
+					thinkingLevelMap: { low: "low", max: "max" },
+				},
 				thinkingLevel: "low",
 			},
 		];
@@ -741,12 +825,6 @@ test("parent merge scan appends the transcript passively and auto-submits the pr
 		assert.deepEqual(sent?.options, { triggerTurn: false });
 		// The transcript itself never triggers a turn; the prompt does.
 		assert.deepEqual(harness.sentUserMessages, ["apply the side-thread findings"]);
-		assert.deepEqual(harness.appendedEntries, [
-			{
-				customType: MERGE_SUBMISSION_CUSTOM_TYPE,
-				data: { requestId: "req-42", launchId: payload.launchId },
-			},
-		]);
 		assert.equal(store.mergeAck?.status, "accepted");
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /delivered 1/);
 	});
@@ -1028,6 +1106,15 @@ test("decideCacheMode explains every fallback reason", () => {
 		thinkingLevel: "high",
 	};
 	assert.deepEqual(decideCacheMode(payload, matching), { mode: "native" });
+	assert.deepEqual(
+		decideCacheMode(
+			fixturePayload({
+				config: { ...DEFAULT_CONFIG, model: matching.model, thinkingLevel: "high" },
+			}),
+			matching,
+		),
+		{ mode: "native" },
+	);
 	const noPrompt = decideCacheMode(fixturePayload({ parentSystemPrompt: null }), matching);
 	assert.match(noPrompt.reason ?? "", /system prompt/);
 	assert.match(

@@ -39,7 +39,6 @@ import {
 	MAX_PROMPT_BYTES,
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
-	MERGE_SUBMISSION_CUSTOM_TYPE,
 	MergeCoordinator,
 	type MergeRequest,
 } from "../internal/merge.ts";
@@ -97,6 +96,18 @@ function supportedThinkingLevels(model: AvailableModel): BtwThinkingLevel[] {
 	});
 }
 
+type ModelOption = { model: AvailableModel; pinnedThinkingLevel?: BtwThinkingLevel };
+
+function availableTextModelOptions(ctx: ExtensionContext): ModelOption[] {
+	const options: ModelOption[] = ctx.scopedModels.length
+		? ctx.scopedModels.map(({ model, thinkingLevel }) => ({
+				model,
+				pinnedThinkingLevel: thinkingLevel as BtwThinkingLevel | undefined,
+			}))
+		: ctx.modelRegistry.getAvailable().map((model) => ({ model }));
+	return options.filter(({ model }) => model.input.includes("text"));
+}
+
 /**
  * Decide whether the child can replay the parent's exact request prefix
  * (system prompt, tools, model, thinking) for provider prompt-cache reuse.
@@ -108,13 +119,15 @@ export function decideCacheMode(
 	if (payload.parentSystemPrompt === null) {
 		return { mode: "fallback", reason: "parent system prompt unavailable" };
 	}
-	if (payload.config.model !== null || actual.model !== payload.metadata.model) {
-		return { mode: "fallback", reason: "model differs from parent (configured override breaks the cache prefix)" };
+	const effectiveModel = payload.config.model ?? actual.model;
+	if (effectiveModel !== payload.metadata.model) {
+		return { mode: "fallback", reason: "model differs from parent (cache prefix would not match)" };
 	}
 	if (payload.config.tools !== "inherit" || !sameStringArray(actual.activeTools, payload.parentActiveTools)) {
 		return { mode: "fallback", reason: "tool set differs from parent (tool prefix would not match)" };
 	}
-	if (payload.config.thinkingLevel !== null || actual.thinkingLevel !== payload.parentThinkingLevel) {
+	const effectiveThinkingLevel = payload.config.thinkingLevel ?? actual.thinkingLevel;
+	if (effectiveThinkingLevel !== payload.parentThinkingLevel) {
 		return { mode: "fallback", reason: "thinking level differs from parent" };
 	}
 	return { mode: "native" };
@@ -443,8 +456,6 @@ export async function registerBtwExtension(
 		// The merge prompt is user-authored in the child pane; submitting it
 		// starts the parent turn that "closes the loop".
 		submitPrompt: (prompt) => pi.sendUserMessage(prompt),
-		markPromptSubmitted: (requestId, launchId) =>
-			pi.appendEntry(MERGE_SUBMISSION_CUSTOM_TYPE, { requestId, launchId }),
 		notify: (message, type) => notifyFn?.(message, type),
 	});
 
@@ -510,16 +521,9 @@ export async function registerBtwExtension(
 				ctx.ui.notify("Couldn't read pi-herdr-btw config.", "error");
 				return;
 			}
-			type ModelOption = { model: AvailableModel; pinnedThinkingLevel?: BtwThinkingLevel };
-			const modelOptions: ModelOption[] = ctx.scopedModels.length
-				? ctx.scopedModels.map(({ model, thinkingLevel }) => ({
-						model,
-						pinnedThinkingLevel: thinkingLevel as BtwThinkingLevel | undefined,
-					}))
-				: ctx.modelRegistry.getAvailable().map((model) => ({ model }));
-			const models = modelOptions
-				.filter(({ model }) => model.input.includes("text"))
-				.sort((a, b) => `${a.model.provider}/${a.model.id}`.localeCompare(`${b.model.provider}/${b.model.id}`));
+			const models = availableTextModelOptions(ctx).sort((a, b) =>
+				`${a.model.provider}/${a.model.id}`.localeCompare(`${b.model.provider}/${b.model.id}`),
+			);
 			if (!models.length) {
 				ctx.ui.notify("No authenticated text models are available.", "warning");
 				return;
@@ -644,13 +648,30 @@ export async function registerBtwExtension(
 					ctx.ui.notify("/btw requires a saved model or an active model", "error");
 					return;
 				}
-				const model = currentModel ?? configuredModel;
-				const scopedModel = ctx.scopedModels.find(
+				const modelOption = availableTextModelOptions(ctx).find(
 					({ model: candidate }) => `${candidate.provider}/${candidate.id}` === configuredModel,
 				);
+				if (!modelOption) {
+					ctx.ui.notify(`BTW model unavailable: ${configuredModel}`, "error");
+					return;
+				}
+				try {
+					if (!(await ctx.modelRegistry.getApiKeyAndHeaders(modelOption.model)).ok) {
+						ctx.ui.notify(`Couldn't authenticate BTW model: ${configuredModel}`, "error");
+						return;
+					}
+				} catch {
+					ctx.ui.notify(`Couldn't authenticate BTW model: ${configuredModel}`, "error");
+					return;
+				}
+				const model = currentModel ?? configuredModel;
 				const activeTools = pi.getActiveTools();
 				const thinkingLevel = pi.getThinkingLevel();
-				const launchThinkingLevel = scopedModel?.thinkingLevel ?? config.thinkingLevel ?? thinkingLevel;
+				const launchThinkingLevel = modelOption.pinnedThinkingLevel ?? config.thinkingLevel ?? thinkingLevel;
+				if (!supportedThinkingLevels(modelOption.model).includes(launchThinkingLevel as BtwThinkingLevel)) {
+					ctx.ui.notify(`BTW thinking level unavailable for ${configuredModel}: ${launchThinkingLevel}`, "error");
+					return;
+				}
 				let parentSystemPrompt: string | null = null;
 				try {
 					parentSystemPrompt = ctx.getSystemPrompt();
@@ -728,11 +749,17 @@ export async function registerBtwExtension(
 
 				// Step 2: adopt pi into the new pane; herdr waits for readiness.
 				const agentStartArgs = buildAgentStartArgs(launchOptions, paneId);
-				let result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
-				for (let attempt = 1; attempt < AGENT_START_BUSY_RETRIES; attempt += 1) {
-					if (result.killed || !hasHerdrErrorCode(result, "agent_pane_busy")) break;
-					await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
+				let result;
+				try {
 					result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
+					for (let attempt = 1; attempt < AGENT_START_BUSY_RETRIES; attempt += 1) {
+						if (result.killed || !hasHerdrErrorCode(result, "agent_pane_busy")) break;
+						await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
+						result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
+					}
+				} catch (error) {
+					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
+					throw error;
 				}
 				const outcome = classifyLaunchResult(result);
 				if (outcome === "success") {
