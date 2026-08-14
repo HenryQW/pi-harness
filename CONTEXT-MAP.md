@@ -6,6 +6,7 @@
 | `pi-auto-compact` | [`packages/pi-auto-compact/CONTEXT.md`](packages/pi-auto-compact/CONTEXT.md) | Proactive Pi context compaction and task resumption |
 | `pi-auto-dag` | [`packages/pi-auto-dag/CONTEXT.md`](packages/pi-auto-dag/CONTEXT.md) | Dependency-aware local delivery work and worker execution |
 | `pi-herdr` | [`packages/pi-herdr/CONTEXT.md`](packages/pi-herdr/CONTEXT.md) | Shared Herdr CLI execution for Pi packages |
+| `pi-herdr-btw` | [`packages/pi-herdr-btw/CONTEXT.md`](packages/pi-herdr-btw/CONTEXT.md) | Pi side threads opened and merged through Herdr |
 | `pi-herdr-rename` | [`packages/pi-herdr-rename/CONTEXT.md`](packages/pi-herdr-rename/CONTEXT.md) | Model-generated Pi and Herdr conversation titles |
 | `pi-herdr-subagents` | [`packages/pi-herdr-subagents/CONTEXT.md`](packages/pi-herdr-subagents/CONTEXT.md) | One-shot Pi subagents coordinated through Herdr |
 | `pi-model-thinking` | [`packages/pi-model-thinking/CONTEXT.md`](packages/pi-model-thinking/CONTEXT.md) | Per-model Pi thinking-level config |

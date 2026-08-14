@@ -1,0 +1,51 @@
+{
+  "name": "@henryqw/pi-herdr-btw",
+  "version": "0.1.4",
+  "description": "Open and merge tool-enabled Pi side threads in Herdr panes.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "herdr",
+    "side-thread",
+    "btw"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "internal",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/btw.ts internal/*.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-packages.git",
+    "directory": "packages/pi-herdr-btw"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-packages/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/btw.ts"
+    ]
+  },
+  "dependencies": {
+    "@henryqw/pi-herdr": "^0.1.1"
+  }
+}
