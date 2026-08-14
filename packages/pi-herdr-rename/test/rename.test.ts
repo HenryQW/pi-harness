@@ -139,6 +139,8 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 		assert.equal(app.completionCalls[0].context.messages[0].content.length, 1_000);
 		assert.equal(app.completionCalls[0].options.maxRetries, 0);
 		assert.match(app.completionCalls[0].context.systemPrompt, /Format: type: subject/);
+		assert.match(app.completionCalls[0].context.systemPrompt, /lowercase type.*alphanumeric subject words.*No other punctuation/);
+		assert.ok(app.completionCalls[0].context.systemPrompt.length <= 240);
 
 		resolveCompletion(response("  Fix:\nUseful Chat TITLE  "));
 		await eventually(() => app.names.length === 1);
@@ -234,7 +236,7 @@ test("manual rename warns without text and the latest overlapping request wins",
 	});
 });
 
-test("manual rename uses the latest three text rounds within a 4,000 character budget", async () => {
+test("manual rename uses the latest three text rounds within a 2,000 character budget", async () => {
 	await withAgentDir(async () => {
 		const branch = [
 			{ type: "message", message: { role: "user", content: "oldest ignored request" } },
@@ -262,7 +264,7 @@ test("manual rename uses the latest three text rounds within a 4,000 character b
 		await app.commands.get("rename")?.("", app.ctx);
 
 		const context = app.completionCalls[0].context.messages[0].content as string;
-		assert.ok(context.length <= 4_000);
+		assert.ok(context.length <= 2_000);
 		assert.doesNotMatch(context, /oldest ignored|oldest answer|private reasoning|secret tool|tool output/);
 		assert.match(context, /user: first included request/);
 		assert.match(context, /user: second included request/);

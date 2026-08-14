@@ -23,7 +23,7 @@ pi remove npm:@henryqw/pi-herdr-rename
 
 ## Manual rename
 
-Run `/rename` to generate a semantic title from up to three most recent user/assistant rounds. It uses text only, caps each message at 1,000 characters and complete context at 4,000 characters, and applies same Pi, Git, and Herdr rules. Animated widget shows `renaming...`, briefly changes to `renamed to <title>`, then disappears. Command warns without changing anything when no user text exists or generation fails. If title-generation requests overlap, latest title request wins.
+Run `/rename` to generate a semantic title from up to three most recent user/assistant rounds. It uses text only, caps each message at 1,000 characters and complete context at 2,000 characters, and applies same Pi, Git, and Herdr rules. Animated widget shows `renaming...`, briefly changes to `renamed to <title>`, then disappears. Command warns without changing anything when no user text exists or generation fails. If title-generation requests overlap, latest title request wins.
 
 ## Rename model
 

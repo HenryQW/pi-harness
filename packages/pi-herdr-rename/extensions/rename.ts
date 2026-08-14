@@ -11,7 +11,7 @@ import { createHerdrClient } from "@henryqw/pi-herdr";
 const WIDGET_KEY = "pi-herdr-rename";
 const WIDGET_RESULT_MS = 2_000;
 const MAX_MESSAGE_CHARS = 1_000;
-const MAX_CONTEXT_CHARS = 4_000;
+const MAX_CONTEXT_CHARS = 2_000;
 const DEFAULT_MAX_WORDS = 4;
 const DEFAULT_MAX_CHARS = 40;
 const HERDR_DEFAULT_WORKTREE_NAME = /^(?:worktree[-/])?(?:brave|calm|clear|green|lucky|quiet|rapid|silver)-(?:river|cloud|field|forest|harbor|meadow|stone|valley)-[0-9a-f]{4}$/;
@@ -135,7 +135,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 	if (!model) throw new Error(`Rename model unavailable: ${key}. Run /rename-model.`);
 
 	const completionContext = {
-		systemPrompt: `Return only a semantic chat title for the current conversation topic, prioritizing the most recent user intent. Format: type: subject. Use a lowercase type such as feat, fix, docs, refactor, test, or chore; use lowercase alphanumeric subject words separated by spaces; use no other punctuation; at most ${maxWords} words and at most ${maxChars} characters.`,
+		systemPrompt: `Return only a semantic title for latest user intent. Format: type: subject. Use lowercase type and lowercase alphanumeric subject words separated by spaces. No other punctuation; at most ${maxWords} words and at most ${maxChars} characters.`,
 		messages: [{ role: "user" as const, content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
 	};
 	const complete = async (target: NonNullable<ExtensionContext["model"]>) => {
