@@ -150,20 +150,22 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 test("saved names keep semantic branches, replace generated branches, and preserve custom workspace names", async () => {
 	await withAgentDir(async () => {
 		process.env.HERDR_PANE_ID = "pane-1";
-		for (const [paneCount, workspaceName, isLinkedWorktree, branch, workspaceBranch, gitMutation] of [
-			[1, "worktree-brave-meadow-4aa8", true, "fix/title-length", "fix/title-length", undefined],
-			[2, "lucky-field-f694", true, "feat/new-loader", "feat/new-loader", undefined],
-			[1, "worktree/brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", "fix/saved-title", ["branch", "-m", "fix/saved-title"]],
-			[1, "chosen workspace", true, "worktree/brave-meadow-4aa8", undefined, ["branch", "-m", "fix/saved-title"]],
-			[1, "worktree-clear-field-8512", false, "worktree/clear-field-8512", undefined, undefined],
-			[1, "worktree-quiet-river-1234", true, "", "fix/saved-title", ["switch", "-c", "fix/saved-title"]],
+		for (const [paneCount, workspaceName, isLinkedWorktree, branch, existingBranches, workspaceBranch, gitMutation] of [
+			[1, "worktree-brave-meadow-4aa8", true, "fix/title-length", [], "fix/title-length", undefined],
+			[2, "lucky-field-f694", true, "feat/new-loader", [], "feat/new-loader", undefined],
+			[1, "worktree/brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", [], "fix/saved-title", ["branch", "-m", "fix/saved-title"]],
+			[1, "worktree-brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", ["fix/saved-title"], "fix/saved-title-2", ["branch", "-m", "fix/saved-title-2"]],
+			[1, "chosen workspace", true, "worktree/brave-meadow-4aa8", [], undefined, ["branch", "-m", "fix/saved-title"]],
+			[1, "worktree-clear-field-8512", false, "worktree/clear-field-8512", [], undefined, undefined],
+			[1, "worktree-quiet-river-1234", true, "", ["fix"], "fix-2/saved-title", ["switch", "-c", "fix-2/saved-title"]],
 		] as const) {
 			const gitCwds: Array<string | undefined> = [];
 			const app = harness({
 				sessionName: "fix: saved title",
 				exec: async (args, options) => {
-					if (args[0] === "branch" || args[0] === "switch") gitCwds.push(options?.cwd);
+					if (args[0] === "branch" || args[0] === "switch" || args[0] === "for-each-ref") gitCwds.push(options?.cwd);
 					if (args.join("\0") === "branch\0--show-current") return success(`${branch}\n`);
+					if (args[0] === "for-each-ref") return success(existingBranches.join("\n"));
 					if (args[0] === "pane" && args[1] === "get") {
 						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
 					}
@@ -187,7 +189,11 @@ test("saved names keep semantic branches, replace generated branches, and preser
 				app.execCalls.filter((args) => (args[0] === "branch" && args[1] === "-m") || args[0] === "switch"),
 				gitMutation ? [gitMutation] : [],
 			);
-			assert.deepEqual(gitCwds, Array(isLinkedWorktree ? 1 + Number(Boolean(gitMutation)) : 0).fill("/repo/worktree"));
+			assert.deepEqual(gitCwds, Array(isLinkedWorktree ? 1 + Number(Boolean(gitMutation)) * 2 : 0).fill("/repo/worktree"));
+			assert.equal(app.execCalls.filter((args) => args[0] === "for-each-ref").length, Number(Boolean(gitMutation)));
+			if (gitMutation) {
+				assert.ok(app.execCalls.some((args) => args.join("\0") === "for-each-ref\0--format=%(refname:short)\0refs/heads"));
+			}
 			assert.equal(app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "rename").length, Number(Boolean(workspaceBranch)));
 			if (workspaceBranch) {
 				assert.ok(app.execCalls.some((args) => args.join("\0") === `workspace\0rename\0workspace-1\0${workspaceBranch}`));

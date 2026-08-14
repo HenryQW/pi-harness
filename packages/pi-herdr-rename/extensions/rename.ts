@@ -29,6 +29,23 @@ function branchFromTitle(title: string): string | undefined {
 	return match ? `${match[1]}/${match[2].replaceAll(" ", "-")}` : undefined;
 }
 
+function branchAvailable(candidate: string, branches: string[]): boolean {
+	return branches.every((branch) => branch !== candidate && !branch.startsWith(`${candidate}/`) && !candidate.startsWith(`${branch}/`));
+}
+
+function availableBranch(branch: string, branches: string[]): string {
+	const [type, subject] = branch.split("/");
+	for (let suffix = 1; suffix <= branches.length + 1; suffix++) {
+		const candidate = suffix === 1 ? branch : `${type}/${subject}-${suffix}`;
+		if (branchAvailable(candidate, branches)) return candidate;
+	}
+	for (let suffix = 2; suffix <= branches.length + 2; suffix++) {
+		const candidate = `${type}-${suffix}/${subject}`;
+		if (branchAvailable(candidate, branches)) return candidate;
+	}
+	throw new Error("Could not choose an available semantic branch.");
+}
+
 async function configured(): Promise<RenameConfig> {
 	try {
 		const config: unknown = JSON.parse(await readFile(configPath(), "utf8"));
@@ -198,8 +215,12 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (!branch || branch.startsWith("worktree/")) {
 			const generatedBranch = branchFromTitle(title);
 			if (!generatedBranch || !isCurrent(request, controller)) return;
-			await runGit(branch ? ["branch", "-m", generatedBranch] : ["switch", "-c", generatedBranch]);
-			branch = generatedBranch;
+			const branches = (await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
+				.split("\n")
+				.filter(Boolean);
+			const semanticBranch = availableBranch(generatedBranch, branches);
+			await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
+			branch = semanticBranch;
 		}
 		if (HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) && isCurrent(request, controller)) {
 			await herdr.run(["workspace", "rename", workspaceId, branch], { signal: controller.signal });
