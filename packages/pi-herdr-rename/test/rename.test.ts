@@ -289,9 +289,12 @@ test("manual rename widget shows progress, result, then disappears", async (t) =
 	});
 });
 
-test("automatic rename warns when the rename model errors", async () => {
+test("automatic rename warns without fallback after non-transport model error", async () => {
 	await withAgentDir(async () => {
+		const mainModel: Model = { provider: "main", id: "reliable", input: ["text"] };
 		const app = harness({
+			models: [defaultModel, mainModel],
+			currentModel: mainModel,
 			complete: async () => ({ ...response("", "error"), errorMessage: "Provider failed" }),
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -300,7 +303,35 @@ test("automatic rename warns when the rename model errors", async () => {
 
 		assert.equal(app.notifications.at(-1), "Provider failed");
 		assert.equal(app.notificationTypes.at(-1), "warning");
+		assert.deepEqual(app.completionCalls.map((call) => call.model), [defaultModel]);
 		assert.deepEqual(app.names, []);
+	});
+});
+
+test("rename falls back to current main model after configured model transport failure", async () => {
+	await withAgentDir(async () => {
+		const mainModel: Model = { provider: "main", id: "reliable", input: ["text"] };
+		for (const configuredFailure of [
+			async () => ({ ...response("", "error"), errorMessage: "fetch failed" }),
+			async () => {
+				throw new TypeError("fetch failed");
+			},
+		]) {
+			const app = harness({
+				sessionName: "saved",
+				branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
+				models: [defaultModel, mainModel],
+				currentModel: mainModel,
+				complete: async (call) => call.model === defaultModel ? configuredFailure() : response("fix: fallback title"),
+			});
+			await app.handlers.get("session_start")?.({}, app.ctx);
+			await app.commands.get("rename")?.("", app.ctx);
+
+			assert.deepEqual(app.completionCalls.map((call) => call.model), [defaultModel, mainModel]);
+			assert.deepEqual(app.completionCalls.map((call) => call.options.maxRetries), [0, 0]);
+			assert.deepEqual(app.names, ["fix: fallback title"]);
+			assert.doesNotMatch(app.notifications.join("\n"), /fetch failed/);
+		}
 	});
 });
 

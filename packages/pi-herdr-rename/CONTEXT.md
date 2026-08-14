@@ -21,5 +21,5 @@ Herdr tab containing current pane and no sibling panes. Only this tab receives c
 _Avoid_: single-pane session, empty tab
 
 **Rename model**:
-User-selected Pi text model used to generate semantic chat titles and Git branch names, with built-in default until user selects another.
+User-selected Pi text model used to generate semantic chat titles and Git branch names. On its transport/fetch failure, current text-capable main model runs once.
 _Avoid_: title model, active model

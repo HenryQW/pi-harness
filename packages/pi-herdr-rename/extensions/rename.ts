@@ -19,6 +19,8 @@ const configPath = () => join(getAgentDir(), "config", "pi-herdr-rename.json");
 
 type RenameConfig = { model?: string; maxWords: number; maxChars: number };
 
+const isTransportFailure = (message: string) => /\b(?:fetch failed|network[- ]error|connection[- ]error|timed? out|timeout)\b/i.test(message);
+
 class RenameModelError extends Error {}
 
 const positiveInteger = (value: unknown, fallback: number, minimum = 1) =>
@@ -132,18 +134,38 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 		.find((candidate) => candidate.provider === provider && candidate.id === id && candidate.input.includes("text"));
 	if (!model) throw new Error(`Rename model unavailable: ${key}. Run /rename-model.`);
 
-	const response = await ctx.modelRegistry.complete(
-		model,
-		{
-			systemPrompt: `Return only a semantic chat title for the current conversation topic, prioritizing the most recent user intent. Format: type: subject. Use a lowercase type such as feat, fix, docs, refactor, test, or chore; use lowercase alphanumeric subject words separated by spaces; use no other punctuation; at most ${maxWords} words and at most ${maxChars} characters.`,
-			messages: [{ role: "user", content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
-		},
-		{ signal, maxRetries: 0, maxTokens: 64 },
-	);
-	if (response.stopReason === "error") {
-		throw new RenameModelError(response.errorMessage || "Rename model failed.");
+	const completionContext = {
+		systemPrompt: `Return only a semantic chat title for the current conversation topic, prioritizing the most recent user intent. Format: type: subject. Use a lowercase type such as feat, fix, docs, refactor, test, or chore; use lowercase alphanumeric subject words separated by spaces; use no other punctuation; at most ${maxWords} words and at most ${maxChars} characters.`,
+		messages: [{ role: "user" as const, content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
+	};
+	const complete = async (target: NonNullable<ExtensionContext["model"]>) => {
+		let response;
+		try {
+			response = await ctx.modelRegistry.complete(target, completionContext, { signal, maxRetries: 0, maxTokens: 64 });
+		} catch (error) {
+			if (signal.aborted) throw error;
+			throw new RenameModelError(error instanceof Error ? error.message : "Rename model failed.");
+		}
+		if (response.stopReason === "error") throw new RenameModelError(response.errorMessage || "Rename model failed.");
+		if (response.stopReason !== "stop") throw new Error("Rename model did not return a complete title.");
+		return response;
+	};
+
+	let response: Awaited<ReturnType<typeof complete>>;
+	try {
+		response = await complete(model);
+	} catch (error) {
+		const fallback = ctx.model;
+		if (
+			!(error instanceof RenameModelError && isTransportFailure(error.message)) ||
+			signal.aborted ||
+			!fallback?.input.includes("text") ||
+			(fallback.provider === model.provider && fallback.id === model.id)
+		) {
+			throw error;
+		}
+		response = await complete(fallback);
 	}
-	if (response.stopReason !== "stop") throw new Error("Rename model did not return a complete title.");
 
 	const title = response.content
 		.filter((part) => part.type === "text")
