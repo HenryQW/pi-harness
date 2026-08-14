@@ -7,7 +7,6 @@ import {
 	collectSkillPaths,
 	dirExists,
 	findFiles,
-	invalidateContextCache,
 	resolveDir,
 	scanDirContext,
 	type AddedDir,
@@ -142,7 +141,6 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 			.reverse()
 			.find((entry) => entry.type === "custom" && entry.customType === STATE_TYPE);
 		addedDirs = stateEntry?.type === "custom" ? readState(stateEntry.data) : [];
-		invalidateContextCache();
 		updateWidget(ctx);
 	}
 
@@ -176,7 +174,6 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		const context = scanDirContext(absolutePath);
 		const label = basename(absolutePath) || absolutePath;
 		addedDirs.push({ absolutePath, label, addedAt: Date.now() });
-		invalidateContextCache();
 		persistState();
 		updateWidget(ctx);
 
@@ -195,7 +192,6 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		if (index < 0) return { ok: false, message: `Not found: ${absolutePath}` };
 
 		const [removed] = addedDirs.splice(index, 1);
-		invalidateContextCache();
 		persistState();
 		updateWidget(ctx);
 		return { ok: true, message: `Removed ${removed!.label} (${removed!.absolutePath}). Reloading resources...` };

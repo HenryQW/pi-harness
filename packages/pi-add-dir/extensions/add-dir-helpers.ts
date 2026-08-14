@@ -119,17 +119,8 @@ function skillDescription(content: string): string {
 	return value.replace(/^("|')|("|')$/g, "").trim() || "No description";
 }
 
-let contextCache: { key: string; injection: string } | undefined;
-
-export function invalidateContextCache(): void {
-	contextCache = undefined;
-}
-
 export function buildContextInjection(dirs: AddedDir[]): string {
 	if (dirs.length === 0) return "";
-
-	const key = dirs.map((dir) => `${dir.absolutePath}\0${dir.label}`).join("\0");
-	if (contextCache?.key === key) return contextCache.injection;
 
 	const sections = [
 		"\n\n## External Directories (added via pi-add-dir)",
@@ -153,9 +144,7 @@ export function buildContextInjection(dirs: AddedDir[]): string {
 		}
 	}
 
-	const injection = sections.join("\n");
-	contextCache = { key, injection };
-	return injection;
+	return sections.join("\n");
 }
 
 function normalizePattern(pattern: string): string {

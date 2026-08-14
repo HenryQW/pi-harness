@@ -11,7 +11,6 @@ import {
 	buildContextInjection,
 	collectSkillPaths,
 	findFiles,
-	invalidateContextCache,
 	resolveDir,
 	scanDirContext,
 } from "../extensions/add-dir-helpers.ts";
@@ -54,11 +53,12 @@ test("context scanning and native glob search cover external directory", async (
 		assert.deepEqual([...context.skills.keys()], ["plan", "review"]);
 		assert.deepEqual(collectSkillPaths([{ absolutePath: external, label: "external", addedAt: 1 }]).length, 2);
 
-		invalidateContextCache();
 		const injection = buildContextInjection([{ absolutePath: external, label: "external", addedAt: 1 }]);
 		assert.match(injection, /root instructions/);
 		assert.match(injection, /\/skill:review/);
 		assert.match(injection, /Plan work/);
+		await writeFile(join(external, "AGENTS.md"), "updated instructions");
+		assert.match(buildContextInjection([{ absolutePath: external, label: "external", addedAt: 1 }]), /updated instructions/);
 
 		const nested = await findFiles(external, "src/**/*.ts", 50);
 		assert.deepEqual(
@@ -72,7 +72,6 @@ test("context scanning and native glob search cover external directory", async (
 		await assert.rejects(findFiles(external, "", 50), /pattern must not be blank/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
-		invalidateContextCache();
 	}
 });
 
@@ -224,6 +223,5 @@ test("commands and tools persist state, inject context, register skills, and sea
 		assert.equal(await readFile(join(external, "AGENTS.md"), "utf8"), "root instructions");
 	} finally {
 		await rm(root, { recursive: true, force: true });
-		invalidateContextCache();
 	}
 });
