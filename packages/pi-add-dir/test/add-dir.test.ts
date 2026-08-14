@@ -20,9 +20,11 @@ async function tempDirectory(): Promise<string> {
 	return mkdtemp(join(tmpdir(), "pi-add-dir-test-"));
 }
 
-async function makeFixture(): Promise<{ root: string; external: string }> {
+async function makeFixture(): Promise<{ root: string; cwd: string; external: string }> {
 	const root = await tempDirectory();
+	const cwd = join(root, "cwd");
 	const external = join(root, "external");
+	await mkdir(join(cwd, "nested"), { recursive: true });
 	await mkdir(join(external, ".agents", "skills", "review"), { recursive: true });
 	await mkdir(join(external, ".pi", "skills", "plan"), { recursive: true });
 	await mkdir(join(external, "src", "nested"), { recursive: true });
@@ -34,11 +36,12 @@ async function makeFixture(): Promise<{ root: string; external: string }> {
 	await writeFile(join(external, ".agents", "skills", "review", "SKILL.md"), "---\ndescription: Review code\n---\nbody");
 	await writeFile(join(external, ".pi", "skills", "plan", "SKILL.md"), "---\ndescription: Plan work\n---\nbody");
 	await writeFile(join(external, "root.ts"), "root");
+	await writeFile(join(external, "@root.md"), "at root");
 	await writeFile(join(external, "src", "index.ts"), "index");
 	await writeFile(join(external, "src", "nested", "case.test.ts"), "test");
 	await writeFile(join(external, "node_modules", "ignored", "bad.ts"), "ignored");
 	await writeFile(join(external, ".git", "ignored", "bad.ts"), "ignored");
-	return { root, external };
+	return { root, cwd, external };
 }
 
 test("context scanning and native glob search cover external directory", async () => {
@@ -99,7 +102,7 @@ function loadExtension(stateBranch: any[] = []) {
 	return { commands, entries, handlers, tools };
 }
 
-function context(cwd: string, branch: any[] = [], selected?: string): ExtensionContext {
+function context(cwd: string, branch: any[] = [], selected?: string, onReload?: () => void): ExtensionContext {
 	return {
 		cwd,
 		hasUI: false,
@@ -110,7 +113,9 @@ function context(cwd: string, branch: any[] = [], selected?: string): ExtensionC
 			select: async () => selected,
 			setWidget() {},
 		},
-		reload: async () => {},
+		reload: async () => {
+			onReload?.();
+		},
 	} as unknown as ExtensionContext;
 }
 
@@ -139,10 +144,10 @@ test("package manifest loads only factory extensions", async () => {
 });
 
 test("commands and tools persist state, inject context, register skills, and search", async () => {
-	const { root, external } = await makeFixture();
+	const { root, cwd, external } = await makeFixture();
 	try {
 		const loaded = loadExtension();
-		const ctx = context(root);
+		const ctx = context(cwd);
 		await loaded.handlers.get("session_start")!({ type: "session_start" }, ctx);
 
 		assert.equal(loaded.commands.has("dir-add"), true);
@@ -153,12 +158,14 @@ test("commands and tools persist state, inject context, register skills, and sea
 
 		const addTool = loaded.tools.get("add_directory")!;
 		const added = await addTool.execute("call-1", { path: external }, undefined, undefined, ctx);
-		assert.equal(added.details.directory, resolveDir(external, root));
+		assert.equal(added.details.directory, resolveDir(external, cwd));
 		assert.equal(added.details.skillCount, 2);
 		assert.equal(loaded.entries.length, 1);
-		assert.match(added.content[0].text, /AGENTS\.md content has been injected/);
+		assert.match(added.content[0].text, /root instructions/);
+		assert.match(added.content[0].text, /claude instructions/);
+		assert.doesNotMatch(added.content[0].text, /Reloading/);
 
-		const resources = await loaded.handlers.get("resources_discover")!({ cwd: root }, ctx);
+		const resources = await loaded.handlers.get("resources_discover")!({ cwd }, ctx);
 		assert.equal(resources.skillPaths.length, 2);
 		const prompt = await loaded.handlers.get("before_agent_start")!({ systemPrompt: "base" }, ctx);
 		assert.match(prompt.systemPrompt, /root instructions/);
@@ -173,9 +180,19 @@ test("commands and tools persist state, inject context, register skills, and sea
 		);
 		assert.equal(search.details.totalFound, 1);
 		assert.match(search.content[0].text, /case\.test\.ts/);
+		const atSearch = await loaded.tools.get("search_external_files")!.execute(
+			"call-at",
+			{ pattern: "@root.md" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		assert.equal(atSearch.details.totalFound, 1);
+		await assert.rejects(
+			addTool.execute("call-inside", { path: join(cwd, "nested") }, undefined, undefined, ctx),
+			/current working directory scope/,
+		);
 		await assert.rejects(addTool.execute("call-3", { path: external }, undefined, undefined, ctx), /Already added/);
-		await loaded.commands.get("dir-ls")!.handler("", context(root, [], `external - ${added.details.directory}`));
-		assert.equal(await loaded.handlers.get("resources_discover")!({ cwd: root }, ctx), undefined);
 
 		const persisted = (loaded.entries[0] as { data: unknown }).data;
 		const resumed = loadExtension([
@@ -185,7 +202,7 @@ test("commands and tools persist state, inject context, register skills, and sea
 				data: persisted,
 			},
 		]);
-		const resumedContext = context(root, [
+		const resumedContext = context(cwd, [
 			{
 				type: "custom",
 				customType: "add-dir:state",
@@ -193,8 +210,17 @@ test("commands and tools persist state, inject context, register skills, and sea
 			},
 		]);
 		await resumed.handlers.get("session_start")!({ type: "session_start" }, resumedContext);
-		const resumedResources = await resumed.handlers.get("resources_discover")!({ cwd: root }, resumedContext);
+		const resumedResources = await resumed.handlers.get("resources_discover")!({ cwd }, resumedContext);
 		assert.equal(resumedResources.skillPaths.length, 2);
+
+		await rm(join(external, ".agents", "skills"), { recursive: true, force: true });
+		await rm(join(external, ".pi", "skills"), { recursive: true, force: true });
+		let reloads = 0;
+		await loaded.commands
+			.get("dir-ls")!
+			.handler("", context(cwd, [], `external - ${added.details.directory}`, () => (reloads += 1)));
+		assert.equal(reloads, 1);
+		assert.equal(await loaded.handlers.get("resources_discover")!({ cwd }, ctx), undefined);
 		assert.equal(await readFile(join(external, "AGENTS.md"), "utf8"), "root instructions");
 	} finally {
 		await rm(root, { recursive: true, force: true });

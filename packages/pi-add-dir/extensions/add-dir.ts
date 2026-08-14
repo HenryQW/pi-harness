@@ -1,4 +1,4 @@
-import { basename, isAbsolute } from "node:path";
+import { basename, isAbsolute, relative, sep } from "node:path";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -70,7 +70,12 @@ function readState(data: unknown): AddedDir[] {
 }
 
 function cleanPath(input: string): string {
-	return input.trim().replace(/^@/, "").trim();
+	return input.trim();
+}
+
+function isWithinDir(dir: string, candidate: string): boolean {
+	const relativePath = relative(dir, candidate);
+	return relativePath === "" || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !isAbsolute(relativePath));
 }
 
 function maxResults(value: number | undefined): number {
@@ -160,10 +165,10 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		if (addedDirs.some((dir) => dir.absolutePath === absolutePath)) {
 			return { ok: false, message: `Already added: ${absolutePath}`, hasNewSkills: false };
 		}
-		if (absolutePath === resolveDir(cwd, cwd)) {
+		if (isWithinDir(resolveDir(cwd, cwd), absolutePath)) {
 			return {
 				ok: false,
-				message: "That's the current working directory - already in scope.",
+				message: "Directory is already in current working directory scope.",
 				hasNewSkills: false,
 			};
 		}
@@ -176,27 +181,24 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		updateWidget(ctx);
 
 		const hasNewSkills = context.skills.size > 0;
-		let message = `Added ${label} (${absolutePath}).${contextSummary(context)}`;
-		if (hasNewSkills) message += " Reloading to register skills as /skill:name commands...";
-		return { ok: true, message, hasNewSkills, absolutePath, context };
+		return {
+			ok: true,
+			message: `Added ${label} (${absolutePath}).${contextSummary(context)}`,
+			hasNewSkills,
+			absolutePath,
+			context,
+		};
 	}
 
-	function removeDir(
-		absolutePath: string,
-		ctx: ExtensionContext,
-	): { ok: boolean; message: string; hadSkills: boolean } {
+	function removeDir(absolutePath: string, ctx: ExtensionContext): { ok: boolean; message: string } {
 		const index = addedDirs.findIndex((dir) => dir.absolutePath === absolutePath);
-		if (index < 0) return { ok: false, message: `Not found: ${absolutePath}`, hadSkills: false };
+		if (index < 0) return { ok: false, message: `Not found: ${absolutePath}` };
 
-		const hadSkills = scanDirContext(absolutePath).skills.size > 0;
 		const [removed] = addedDirs.splice(index, 1);
 		invalidateContextCache();
 		persistState();
 		updateWidget(ctx);
-
-		let message = `Removed ${removed!.label} (${removed!.absolutePath}).`;
-		if (hadSkills) message += " Reloading to unregister skills...";
-		return { ok: true, message, hadSkills };
+		return { ok: true, message: `Removed ${removed!.label} (${removed!.absolutePath}). Reloading resources...` };
 	}
 
 	pi.on("resources_discover", (event) => {
@@ -224,7 +226,8 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 			}
 
 			const result = addDir(inputPath, ctx.cwd, ctx);
-			ctx.ui.notify(result.message, result.ok ? "info" : "error");
+			const message = result.ok && result.hasNewSkills ? `${result.message} Reloading to register skills...` : result.message;
+			ctx.ui.notify(message, result.ok ? "info" : "error");
 			if (result.ok && result.hasNewSkills) await ctx.reload();
 		},
 	});
@@ -245,7 +248,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 
 			const result = removeDir(absolutePath, ctx);
 			ctx.ui.notify(result.message, result.ok ? "info" : "error");
-			if (result.ok && result.hadSkills) await ctx.reload();
+			if (result.ok) await ctx.reload();
 		},
 	});
 
@@ -258,7 +261,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Add an external directory to this session (loads its AGENTS.md, skills, etc.)",
 		promptGuidelines: [
 			"Use add_directory when you need context from another project or directory outside cwd.",
-			"The directory's AGENTS.md and CLAUDE.md are injected into the system prompt automatically.",
+			"The directory's AGENTS.md and CLAUDE.md are returned now and injected into future system prompts.",
 			"After adding, you can read/edit/write files in the external directory using absolute paths.",
 		],
 		parameters: AddDirectoryParams,
@@ -271,8 +274,12 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 			const absolutePath = result.absolutePath!;
 			const context = result.context!;
 			const response: string[] = [result.message];
-			if (context.agentsMd !== null) response.push("\nAGENTS.md content has been injected into system context.");
-			if (context.claudeMd !== null) response.push("CLAUDE.md content has been injected into system context.");
+			if (context.agentsMd !== null) {
+				response.push(`\nAGENTS.md instructions from ${absolutePath}:\n${context.agentsMd}`);
+			}
+			if (context.claudeMd !== null) {
+				response.push(`\nCLAUDE.md instructions from ${absolutePath}:\n${context.claudeMd}`);
+			}
 			if (context.skills.size > 0) {
 				response.push(`\nDiscovered skills: ${[...context.skills.keys()].join(", ")}`);
 				response.push("Run /reload to register skills as /skill:name commands.");
