@@ -1,8 +1,6 @@
 # `@henryqw/pi-add-dir`
 
-Pi extension for adding external directories to current session. It injects `AGENTS.md` / `CLAUDE.md`, discovers skills, persists directory state in session history, and searches external files.
-
-This is a fork from https://github.com/shelken/pi-extensions/tree/main/extensions/pi-add-dir.
+Pi extension for adding external directories to current session, based on [shelken's pi-add-dir](https://github.com/shelken/pi-extensions/tree/main/extensions/pi-add-dir). It injects `AGENTS.md` / `CLAUDE.md`, discovers skills, persists directory state in session history, and searches external files.
 
 ## Install
 
