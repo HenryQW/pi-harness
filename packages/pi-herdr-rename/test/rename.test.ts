@@ -24,7 +24,7 @@ function harness(options: {
 	currentModel?: Model;
 	branch?: any[];
 	complete?: (call: CompletionCall) => Promise<any>;
-	exec?: (args: string[], signal?: AbortSignal) => Promise<ReturnType<typeof success>>;
+	exec?: (args: string[], options?: { signal?: AbortSignal; cwd?: string }) => Promise<ReturnType<typeof success>>;
 	select?: string;
 } = {}) {
 	const handlers = new Map<string, Handler>();
@@ -48,11 +48,11 @@ function harness(options: {
 		setSessionName(name: string) {
 			names.push(name);
 		},
-		exec: async (_command: string, args: string[], execOptions?: { signal?: AbortSignal }) => {
+		exec: async (_command: string, args: string[], execOptions?: { signal?: AbortSignal; cwd?: string }) => {
 			execCalls.push(args);
-			if (options.exec) return options.exec(args, execOptions?.signal);
+			if (options.exec) return options.exec(args, execOptions);
 			if (args[0] === "pane" && args[1] === "get") {
-				return success(JSON.stringify({ result: { pane: { tab_id: "tab-1" } } }));
+				return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
 			}
 			if (args[0] === "tab" && args[1] === "get") {
 				return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
@@ -146,28 +146,49 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 	});
 });
 
-test("saved names skip the model and Herdr tabs rename only when they have one pane", async () => {
+test("saved names skip the model, rename sole-pane tabs, and replace only default Herdr worktree names with their Git branch", async () => {
 	await withAgentDir(async () => {
 		process.env.HERDR_PANE_ID = "pane-1";
-		for (const [paneCount, expectedTabRenames] of [[1, 1], [2, 0]] as const) {
+		for (const [paneCount, workspaceName, isLinkedWorktree, branch, expectedTabRenames, expectedWorkspaceRenames, expectedBranchLookups] of [
+			[1, "worktree-brave-meadow-4aa8", true, "fix/title-length", 1, 1, 1],
+			[2, "lucky-field-f694", true, "feat/new-loader", 0, 1, 1],
+			[1, "chosen workspace", true, "pref/subquery", 1, 0, 0],
+			[1, "worktree-clear-field-8512", false, "pref/subquery", 1, 0, 0],
+			[1, "worktree-quiet-river-1234", true, "", 1, 0, 1],
+		] as const) {
+			const branchCwds: Array<string | undefined> = [];
 			const app = harness({
 				sessionName: "saved title",
-				exec: async (args) => {
+				exec: async (args, options) => {
+					if (args.join("\0") === "branch\0--show-current") {
+						branchCwds.push(options?.cwd);
+						return success(`${branch}\n`);
+					}
 					if (args[0] === "pane" && args[1] === "get") {
-						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1" } } }));
+						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
 					}
 					if (args[0] === "tab" && args[1] === "get") {
 						return success(JSON.stringify({ result: { tab: { pane_count: paneCount } } }));
+					}
+					if (args[0] === "workspace" && args[1] === "get") {
+						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: "/repo/worktree", is_linked_worktree: isLinkedWorktree } } } }));
 					}
 					return success("{}");
 				},
 			});
 			await app.handlers.get("session_start")?.({}, app.ctx);
-			await eventually(() => app.execCalls.some((args) => args[1] === "get" && args[0] === "tab"));
+			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
+			await new Promise((resolve) => setTimeout(resolve, 0));
 			assert.equal(app.completionCalls.length, 0);
 			assert.equal(app.names.length, 0);
 			assert.equal(app.execCalls.filter((args) => args[0] === "pane" && args[1] === "rename").length, 1);
 			assert.equal(app.execCalls.filter((args) => args[0] === "tab" && args[1] === "rename").length, expectedTabRenames);
+			assert.equal(app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "rename").length, expectedWorkspaceRenames);
+			assert.equal(branchCwds.length, expectedBranchLookups);
+			assert.deepEqual(branchCwds, Array(expectedBranchLookups).fill("/repo/worktree"));
+			if (expectedWorkspaceRenames) {
+				assert.ok(app.execCalls.some((args) => args.join("\0") === `workspace\0rename\0workspace-1\0${branch}`));
+			}
 		}
 	});
 });

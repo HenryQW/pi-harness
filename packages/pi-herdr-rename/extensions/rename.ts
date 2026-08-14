@@ -14,6 +14,7 @@ const MAX_MESSAGE_CHARS = 1_000;
 const MAX_CONTEXT_CHARS = 4_000;
 const DEFAULT_MAX_WORDS = 4;
 const DEFAULT_MAX_CHARS = 40;
+const HERDR_DEFAULT_WORKTREE_NAME = /^(?:worktree[-/])?(?:brave|calm|clear|green|lucky|quiet|rapid|silver)-(?:river|cloud|field|forest|harbor|meadow|stone|valley)-[0-9a-f]{4}$/;
 const configPath = () => join(getAgentDir(), "config", "pi-herdr-rename.json");
 
 type RenameConfig = { model?: string; maxWords: number; maxChars: number };
@@ -157,7 +158,8 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (!isCurrent(request, controller)) return;
 
 		const paneResponse: unknown = await herdr.json(["pane", "get", paneId], { signal: controller.signal });
-		const tabId = (paneResponse as { result?: { pane?: { tab_id?: unknown } } }).result?.pane?.tab_id;
+		const pane = (paneResponse as { result?: { pane?: { tab_id?: unknown; workspace_id?: unknown } } }).result?.pane;
+		const tabId = pane?.tab_id;
 		if (typeof tabId !== "string" || !tabId) throw new Error("Herdr pane response omitted tab_id.");
 		if (!isCurrent(request, controller)) return;
 
@@ -166,6 +168,25 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (typeof paneCount !== "number") throw new Error("Herdr tab response omitted pane_count.");
 		if (paneCount === 1 && isCurrent(request, controller)) {
 			await herdr.run(["tab", "rename", tabId, title], { signal: controller.signal });
+		}
+		if (!isCurrent(request, controller)) return;
+
+		const workspaceId = pane?.workspace_id;
+		if (typeof workspaceId !== "string" || !workspaceId) throw new Error("Herdr pane response omitted workspace_id.");
+		const workspaceResponse: unknown = await herdr.json(["workspace", "get", workspaceId], { signal: controller.signal });
+		const workspace = (workspaceResponse as { result?: { workspace?: { label?: unknown; worktree?: { checkout_path?: unknown; is_linked_worktree?: unknown } } } }).result?.workspace;
+		const workspaceName = workspace?.label;
+		if (typeof workspaceName !== "string") throw new Error("Herdr workspace response omitted label.");
+		const worktree = workspace?.worktree;
+		if (HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) && worktree?.is_linked_worktree === true && typeof worktree.checkout_path === "string" && worktree.checkout_path && isCurrent(request, controller)) {
+			const branchResult = await pi.exec("git", ["branch", "--show-current"], { cwd: worktree.checkout_path, signal: controller.signal });
+			if (branchResult.code !== 0 || branchResult.killed) {
+				throw new Error(`git branch --show-current failed: ${branchResult.stderr.trim() || branchResult.stdout.trim() || (branchResult.killed ? "killed" : `exit ${branchResult.code}`)}`);
+			}
+			const branch = branchResult.stdout.trim();
+			if (branch && isCurrent(request, controller)) {
+				await herdr.run(["workspace", "rename", workspaceId, branch], { signal: controller.signal });
+			}
 		}
 	};
 
