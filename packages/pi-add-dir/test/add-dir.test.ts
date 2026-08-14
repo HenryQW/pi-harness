@@ -99,7 +99,7 @@ function loadExtension(stateBranch: any[] = []) {
 	return { commands, entries, handlers, tools };
 }
 
-function context(cwd: string, branch: any[] = []): ExtensionContext {
+function context(cwd: string, branch: any[] = [], selected?: string): ExtensionContext {
 	return {
 		cwd,
 		hasUI: false,
@@ -107,7 +107,7 @@ function context(cwd: string, branch: any[] = []): ExtensionContext {
 		ui: {
 			notify() {},
 			input: async () => undefined,
-			select: async () => undefined,
+			select: async () => selected,
 			setWidget() {},
 		},
 		reload: async () => {},
@@ -145,6 +145,12 @@ test("commands and tools persist state, inject context, register skills, and sea
 		const ctx = context(root);
 		await loaded.handlers.get("session_start")!({ type: "session_start" }, ctx);
 
+		assert.equal(loaded.commands.has("dir-add"), true);
+		assert.equal(loaded.commands.has("dir-ls"), true);
+		assert.equal(loaded.commands.has("add-dir"), false);
+		assert.equal(loaded.commands.has("remove-dir"), false);
+		assert.equal(loaded.commands.has("dirs"), false);
+
 		const addTool = loaded.tools.get("add_directory")!;
 		const added = await addTool.execute("call-1", { path: external }, undefined, undefined, ctx);
 		assert.equal(added.details.directory, resolveDir(external, root));
@@ -168,7 +174,7 @@ test("commands and tools persist state, inject context, register skills, and sea
 		assert.equal(search.details.totalFound, 1);
 		assert.match(search.content[0].text, /case\.test\.ts/);
 		await assert.rejects(addTool.execute("call-3", { path: external }, undefined, undefined, ctx), /Already added/);
-		await loaded.commands.get("remove-dir")!.handler("external", ctx);
+		await loaded.commands.get("dir-ls")!.handler("", context(root, [], `external - ${added.details.directory}`));
 		assert.equal(await loaded.handlers.get("resources_discover")!({ cwd: root }, ctx), undefined);
 
 		const persisted = (loaded.entries[0] as { data: unknown }).data;

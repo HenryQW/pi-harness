@@ -118,7 +118,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 				const prefix = theme.fg("accent", "📂");
 				const count = theme.fg("muted", ` ${addedDirs.length} external dir${addedDirs.length === 1 ? "" : "s"}`);
 				const separator = theme.fg("dim", " | ");
-				const suffix = theme.fg("dim", "  (/dirs to manage)");
+				const suffix = theme.fg("dim", "  (/dir-ls to manage)");
 				const labels = addedDirs.map((dir) => theme.fg("text", dir.label)).join(theme.fg("dim", ", "));
 				const fullLine = ` ${prefix}${count}${separator}${labels}${suffix}`;
 
@@ -213,7 +213,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		return { systemPrompt: event.systemPrompt + buildContextInjection(addedDirs) };
 	});
 
-	pi.registerCommand("add-dir", {
+	pi.registerCommand("dir-add", {
 		description: "Add an external directory to this session",
 		handler: async (args, ctx) => {
 			let inputPath = args?.trim();
@@ -229,67 +229,23 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("remove-dir", {
-		description: "Remove an external directory from this session",
-		getArgumentCompletions(prefix: string) {
-			if (addedDirs.length === 0) return null;
-			const lower = prefix.toLowerCase();
-			return addedDirs
-				.filter(
-					(dir) =>
-						dir.label.toLowerCase().startsWith(lower) || dir.absolutePath.toLowerCase().startsWith(lower),
-				)
-				.map((dir) => ({ label: dir.label, value: dir.absolutePath, description: dir.absolutePath }));
-		},
-		handler: async (args, ctx) => {
+	pi.registerCommand("dir-ls", {
+		description: "List external directories and select one to remove",
+		handler: async (_args, ctx) => {
 			if (addedDirs.length === 0) {
-				ctx.ui.notify("No external directories added.", "info");
+				ctx.ui.notify("No external directories added. Use /dir-add <path> to add one.", "info");
 				return;
 			}
 
-			let absolutePath: string | undefined;
-			if (args?.trim()) {
-				const input = args.trim();
-				absolutePath = addedDirs.find((dir) => dir.label === input)?.absolutePath ?? resolveDir(input, ctx.cwd);
-			} else {
-				const choices = addedDirs.map((dir) => `${dir.label} - ${dir.absolutePath}`);
-				const selected = await ctx.ui.select("Remove which directory?", choices);
-				if (selected === undefined) return;
-				const selectedIndex = choices.indexOf(selected);
-				absolutePath = selectedIndex >= 0 ? addedDirs[selectedIndex]?.absolutePath : undefined;
-			}
-
+			const choices = addedDirs.map((dir) => `${dir.label} - ${dir.absolutePath}`);
+			const selected = await ctx.ui.select("External directories — select one to remove:", choices);
+			const selectedIndex = selected === undefined ? -1 : choices.indexOf(selected);
+			const absolutePath = selectedIndex >= 0 ? addedDirs[selectedIndex]?.absolutePath : undefined;
 			if (!absolutePath) return;
+
 			const result = removeDir(absolutePath, ctx);
 			ctx.ui.notify(result.message, result.ok ? "info" : "error");
 			if (result.ok && result.hadSkills) await ctx.reload();
-		},
-	});
-
-	pi.registerCommand("dirs", {
-		description: "List all external directories in this session",
-		handler: async (_args, ctx) => {
-			if (addedDirs.length === 0) {
-				ctx.ui.notify("No external directories added. Use /add-dir <path> to add one.", "info");
-				return;
-			}
-
-			const lines: string[] = [`External directories (${addedDirs.length}):\n`];
-			for (const dir of addedDirs) {
-				const context = scanDirContext(dir.absolutePath);
-				const badges: string[] = [];
-				if (context.agentsMd !== null) badges.push("AGENTS.md");
-				if (context.claudeMd !== null) badges.push("CLAUDE.md");
-				if (context.skills.size > 0) badges.push(`${context.skills.size} skill(s)`);
-
-				lines.push(`  📂 ${dir.label}`, `     ${dir.absolutePath}`);
-				if (badges.length > 0) lines.push(`     Found: ${badges.join(", ")}`);
-				if (context.skills.size > 0) {
-					lines.push(`     Skills: ${[...context.skills.keys()].map((name) => `/skill:${name}`).join(", ")}`);
-				}
-				lines.push("");
-			}
-			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 
@@ -373,7 +329,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 
 		async execute(_toolCallId, params, signal) {
 			if (addedDirs.length === 0) {
-				throw new Error("No external directories added. Use /add-dir or add_directory first.");
+				throw new Error("No external directories added. Use /dir-add or add_directory first.");
 			}
 
 			const pattern = cleanPath(params.pattern);
