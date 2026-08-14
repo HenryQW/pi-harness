@@ -46,17 +46,26 @@ const model = {
 	thinkingLevelMap: { off: "none", low: "low", high: "high" },
 } as const;
 
-function harness(options: { ui?: boolean; skills?: Array<{ name: string; path: string }>; trusted?: boolean } = {}) {
+function harness(options: {
+	ui?: boolean;
+	skills?: Array<{ name: string; path: string }>;
+	trusted?: boolean;
+	selectResults?: Array<string | undefined>;
+	availableModels?: any[];
+} = {}) {
 	let tool: Tool | undefined;
 	let widget: { render: (width: number) => string[] } | undefined;
 	let renders = 0;
 	const notifications: Array<{ message: string; type: string }> = [];
 	const handlers = new Map<string, (...args: any[]) => any>();
+	const commands = new Map<string, { handler: (...args: any[]) => any }>();
+	const selectResults = [...(options.selectResults ?? [])];
 	const tui = { requestRender: () => { renders++; } };
 	const theme = { fg: (_color: string, value: string) => value };
 	const api = {
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 		registerTool(candidate: Tool) { tool = candidate; },
+		registerCommand(name: string, candidate: { handler: (...args: any[]) => any }) { commands.set(name, candidate); },
 		getCommands() {
 			return (options.skills ?? []).map((skill) => ({
 				name: `skill:${skill.name}`,
@@ -73,8 +82,9 @@ function harness(options: { ui?: boolean; skills?: Array<{ name: string; path: s
 		thinkingLevel: "low",
 		hasUI: options.ui ?? false,
 		isProjectTrusted: () => options.trusted ?? true,
-		modelRegistry: { getAvailable: () => [model] },
+		modelRegistry: { getAvailable: () => options.availableModels ?? [model] },
 		ui: {
+			select: async () => selectResults.shift(),
 			notify: (message: string, type: string) => notifications.push({ message, type }),
 			setWidget: (_key: string, content: any) => {
 				widget = typeof content === "function" ? content(tui, theme) : undefined;
@@ -88,6 +98,7 @@ function harness(options: { ui?: boolean; skills?: Array<{ name: string; path: s
 		notifications,
 		ctx,
 		handlers,
+		commands,
 	};
 }
 
@@ -129,6 +140,10 @@ skills:
 ---
 Review only requested change.
 `);
+		await mkdir(join(agentDir, "config"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent.json"), JSON.stringify({
+			models: { frontier: { model: "test/text-model", thinkingLevel: "high" } },
+		}));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `import { readFileSync } from "node:fs";
 const args = process.argv.slice(2);
@@ -146,7 +161,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const updates: any[] = [];
 		const result = await app.tool.execute(
 			"call-1",
-			{ role: "reviewer", task: "inspect auth", model: "test/text-model", thinkingLevel: "high" },
+			{ role: "reviewer", task: "inspect auth", modelClass: "frontier" },
 			undefined,
 			(update: any) => updates.push(update),
 			app.ctx,
@@ -170,6 +185,66 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			message: "Subagent role reviewer skipped unavailable Pi skills: unavailable-skill.",
 			type: "warning",
 		}]);
+	});
+});
+
+test("/subagent configures all model classes and routes explicit class", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Return concise findings.
+`);
+		const availableModels = [
+			{ provider: "provider", id: "fast-model", input: ["text"], reasoning: false },
+			{ provider: "provider", id: "balanced-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
+			{ provider: "provider", id: "frontier-model", input: ["text"], reasoning: true, thinkingLevelMap: { max: "max" } },
+		];
+		const app = harness({
+			availableModels,
+			selectResults: [
+				"fast", "provider/fast-model", "off",
+				"balanced", "provider/balanced-model", "medium",
+				"frontier", "provider/frontier-model", "max",
+			],
+		});
+		for (let index = 0; index < 3; index++) await app.commands.get("subagent")!.handler("", app.ctx);
+		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-subagent.json"), "utf8")), {
+			models: {
+				fast: { model: "provider/fast-model", thinkingLevel: "off" },
+				balanced: { model: "provider/balanced-model", thinkingLevel: "medium" },
+				frontier: { model: "provider/frontier-model", thinkingLevel: "max" },
+			},
+		});
+
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
+		process.argv[1] = runner;
+		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text);
+		assert.equal(args[args.indexOf("--model") + 1], "provider/frontier-model");
+		assert.equal(args[args.indexOf("--thinking") + 1], "max");
+	});
+});
+
+test("explicit unconfigured model class rejects before child start", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Return concise findings.
+`);
+		const app = harness();
+		await assert.rejects(
+			app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx),
+			/No frontier Subagent model configured/,
+		);
 	});
 });
 

@@ -1,6 +1,6 @@
 # @henryqw/pi-subagent
 
-Delegate one bounded task to one isolated Pi process. Main chooses role and may override model and thinking level per task.
+Delegate one bounded task to one isolated Pi process. Main chooses role and model class per task.
 
 Based on Pi's authoritative [`examples/extensions/subagent`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions/subagent): child processes use `pi --mode json -p --no-session`.
 
@@ -12,7 +12,7 @@ pi install npm:@henryqw/pi-subagent
 
 ## Configure roles
 
-Use Pi's existing role Markdown format in package-owned `~/.pi/agent/config/pi-subagent/*.md`. No JSON config or profile layer.
+Use Pi's existing role Markdown format in package-owned `~/.pi/agent/config/pi-subagent/*.md`. Configure `fast`, `balanced`, and `frontier` model routes with `/subagent`.
 
 ```markdown
 ---
@@ -45,9 +45,9 @@ String lists may also use comma-separated text, matching Pi's example role files
 
 Skill entries use Pi Skill names, normally Skill directory names, not filesystem paths. At delegation time, package resolves names from Main's effective Pi Skill registry and passes matching files to child. Missing or unavailable Skills produce warning and are skipped; they do not block delegation. This preserves Main's trust and Skill collision decisions.
 
-Pi's example `agents/` directory contains sample Role files, not another runtime mechanism. This package reuses that Markdown format but ships no presets: model choice and capabilities stay explicit in user config. No nested `agents/` directory is needed because `pi-subagent` config contains only Roles.
+Pi's example `agents/` directory contains sample Role files, not another runtime mechanism. This package reuses that Markdown format but ships no presets: role capabilities and model routes stay explicit in user config. No nested `agents/` directory is needed because Roles remain Markdown files.
 
-Reload Pi after adding or changing role files so tool description exposes current roles.
+Reload Pi after adding or changing role files or manually editing model config. `/subagent` applies changes immediately.
 
 ## Execution
 
@@ -55,12 +55,25 @@ Main calls `delegate_task` with:
 
 - `role`: configured role name
 - `task`: one bounded task
-- `model`: optional exact `provider/model`; defaults to Main model
-- `thinkingLevel`: optional; defaults to Main thinking level
+- `modelClass`: optional `fast`, `balanced`, or `frontier`; defaults to configured `balanced`, then Main route
+
+Run `/subagent` once per class. Select class, authenticated text model, and supported thinking level. Config lives in `~/.pi/agent/config/pi-subagent.json`:
+
+```json
+{
+  "models": {
+    "fast": { "model": "provider/fast-model", "thinkingLevel": "off" },
+    "balanced": { "model": "provider/balanced-model", "thinkingLevel": "medium" },
+    "frontier": { "model": "provider/frontier-model", "thinkingLevel": "max" }
+  }
+}
+```
+
+Explicit class routes must be configured and available. Omitted `modelClass` falls back to Main when `balanced` route is missing or stale.
 
 Each call starts isolated child process. Ambient extensions and skills are disabled. Only role resources load. Child uses delegated working directory and normal Pi project context files, inheriting Main's project approval decision. Abort terminates child process group.
 
-Model and thinking overrides must exist in Main model registry. Invalid role config, model, or thinking level fails before child starts.
+Configured model and thinking level must exist in Main model registry. Invalid role config or explicit model class fails before child starts.
 
 Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. Error collection stays bounded while child runs; malformed JSON events above 1 MiB fail delegation. Truncated output ends with exact omitted-byte count.
 

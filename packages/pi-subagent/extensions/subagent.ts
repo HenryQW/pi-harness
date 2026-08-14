@@ -1,14 +1,16 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { getSupportedThinkingLevels, StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir, parseFrontmatter, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const MODEL_CLASSES = ["fast", "balanced", "frontier"] as const;
+const configPath = () => join(getAgentDir(), "config", "pi-subagent.json");
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
 const WIDGET_KEY = "subagent-status";
@@ -18,6 +20,9 @@ const MAX_WIDGET_ROWS = 8;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+type ModelClass = (typeof MODEL_CLASSES)[number];
+type ConfiguredModel = { model: string; thinkingLevel: ThinkingLevel };
+type Config = { models: Partial<Record<ModelClass, ConfiguredModel>> };
 type Role = {
 	name: string;
 	description: string;
@@ -43,6 +48,62 @@ type WidgetItem = {
 	finishedAt?: number;
 	removeAt?: number;
 };
+
+const defaultConfig = (): Config => ({ models: {} });
+const isModelClass = (value: unknown): value is ModelClass =>
+	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
+const isThinkingLevel = (value: unknown): value is ThinkingLevel =>
+	typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
+const isModelReference = (value: unknown): value is string => {
+	if (typeof value !== "string" || value !== value.trim() || value.includes("\0")) return false;
+	const separator = value.indexOf("/");
+	return separator > 0 && separator < value.length - 1;
+};
+
+function readConfig(): { value: Config; invalid: boolean } {
+	try {
+		const value = JSON.parse(readFileSync(configPath(), "utf8")) as unknown;
+		if (!value || typeof value !== "object" || Array.isArray(value)) return { value: defaultConfig(), invalid: true };
+		const record = value as Record<string, unknown>;
+		if (Object.keys(record).some((key) => key !== "models")) return { value: defaultConfig(), invalid: true };
+		if (record.models === undefined) return { value: defaultConfig(), invalid: false };
+		if (!record.models || typeof record.models !== "object" || Array.isArray(record.models)) {
+			return { value: defaultConfig(), invalid: true };
+		}
+		const modelRecord = record.models as Record<string, unknown>;
+		const models: Config["models"] = {};
+		let invalid = Object.keys(modelRecord).some((key) => !isModelClass(key));
+		for (const modelClass of MODEL_CLASSES) {
+			if (!Object.hasOwn(modelRecord, modelClass)) continue;
+			const candidate = modelRecord[modelClass];
+			if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+				invalid = true;
+				continue;
+			}
+			const route = candidate as Record<string, unknown>;
+			if (isModelReference(route.model) && isThinkingLevel(route.thinkingLevel)) {
+				models[modelClass] = { model: route.model, thinkingLevel: route.thinkingLevel };
+			} else invalid = true;
+		}
+		return { value: { models }, invalid };
+	} catch (error: unknown) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+			return { value: defaultConfig(), invalid: false };
+		}
+		return { value: defaultConfig(), invalid: true };
+	}
+}
+
+function writeConfig(config: Config): void {
+	const file = configPath();
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+const modelReference = (model: { provider: string; id: string }): string => `${model.provider}/${model.id}`;
+const availableTextModels = (ctx: ExtensionContext) => ctx.modelRegistry
+	.getAvailable()
+	.filter((model) => model.input.includes("text"));
 
 const cleanText = (value: unknown, field: string, file: string): string => {
 	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -404,9 +465,8 @@ async function runPi(
 const Parameters = Type.Object({
 	role: Type.String({ description: "Configured Subagent role name" }),
 	task: Type.String({ description: "One bounded task with needed context and expected result" }),
-	model: Type.Optional(Type.String({ description: "Exact provider/model; defaults to Main model" })),
-	thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS, {
-		description: "Thinking level; defaults to Main thinking level",
+	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
+		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning. Defaults to configured balanced, then Main route.",
 	})),
 });
 
@@ -439,6 +499,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
 	let activeTui: TUI | undefined;
+	let config = defaultConfig();
 
 	const stopWidgetTimer = () => {
 		if (!widgetTimer) return;
@@ -512,7 +573,16 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		requestWidgetRender();
 	};
 
-	pi.on("session_start", (_event, ctx) => ensureWidget(ctx));
+	const refreshConfig = (ctx: ExtensionContext) => {
+		const loaded = readConfig();
+		config = loaded.value;
+		if (loaded.invalid) ctx.ui.notify("Invalid pi-subagent config values were ignored.", "warning");
+	};
+
+	pi.on("session_start", (_event, ctx) => {
+		ensureWidget(ctx);
+		refreshConfig(ctx);
+	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		stopWidgetTimer();
 		widgetItems.clear();
@@ -521,10 +591,52 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
 	});
 
+	pi.registerCommand("subagent", {
+		description: "configure fast, balanced, and frontier Subagent model routes",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /subagent", "warning");
+				return;
+			}
+			refreshConfig(ctx);
+			const modelClass = await ctx.ui.select("Subagent model class", [...MODEL_CLASSES]);
+			if (!isModelClass(modelClass)) return;
+			const models = availableTextModels(ctx);
+			if (!models.length) {
+				ctx.ui.notify("No authenticated text models are available.", "warning");
+				return;
+			}
+			const saved = config.models[modelClass];
+			const references = models.map(modelReference).sort();
+			const selected = await ctx.ui.select(
+				`${modelClass} Subagent model · saved: ${saved?.model ?? "none"}`,
+				references,
+			);
+			const selectedModel = models.find((model) => modelReference(model) === selected);
+			if (!selectedModel) return;
+			const levels = getSupportedThinkingLevels(selectedModel);
+			const thinkingLevel = await ctx.ui.select(
+				`${modelClass} Subagent thinking level · saved: ${saved?.thinkingLevel ?? "none"}`,
+				levels,
+			);
+			if (!isThinkingLevel(thinkingLevel) || !levels.some((level) => level === thinkingLevel)) return;
+			try {
+				const latest = readConfig();
+				const route = { model: modelReference(selectedModel), thinkingLevel };
+				const next = { ...latest.value, models: { ...latest.value.models, [modelClass]: route } };
+				writeConfig(next);
+				config = next;
+				ctx.ui.notify(`${modelClass} Subagent set to ${route.model} with thinking ${thinkingLevel}.`, "info");
+			} catch {
+				ctx.ui.notify("Couldn't save pi-subagent model config.", "warning");
+			}
+		},
+	});
+
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded task to one isolated Pi Subagent. Roles: ${roleSummary()}. Select model and thinking level only when task needs a different route. Request concise conclusions and file/line references; split broad scouting work.`,
+		description: `Delegate one bounded task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, or frontier for ambiguous and high-risk work. Request concise conclusions and file/line references; split broad scouting work.`,
 		parameters: Parameters,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const task = cleanText(params.task, "task", "delegate_task");
@@ -534,16 +646,33 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				throw new Error(`Unknown Subagent role: ${params.role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
 			}
 
-			const modelReference = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
-			if (!modelReference || modelReference.includes("\0")) throw new Error("Subagent model is missing.");
-			const model = ctx.modelRegistry.getAvailable().find(
-				(candidate) => `${candidate.provider}/${candidate.id}` === modelReference && candidate.input.includes("text"),
-			);
-			if (!model) throw new Error(`Subagent model is unavailable: ${modelReference}.`);
-
-			const thinkingLevel = params.thinkingLevel ?? ctx.thinkingLevel;
+			refreshConfig(ctx);
+			if (!ctx.model) throw new Error("delegate_task requires an active Pi model.");
+			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
+				throw new Error("delegate_task modelClass must be fast, balanced, or frontier.");
+			}
+			const modelClass = params.modelClass ?? "balanced";
+			const configuredModel = config.models[modelClass];
+			if (params.modelClass && !configuredModel) {
+				throw new Error(`No ${modelClass} Subagent model configured; run /subagent.`);
+			}
+			const selectedModelInfo = configuredModel && availableTextModels(ctx)
+				.find((model) => modelReference(model) === configuredModel.model);
+			if (params.modelClass && configuredModel && !selectedModelInfo) {
+				throw new Error(`Configured ${modelClass} Subagent model is unavailable; run /subagent.`);
+			}
+			const thinkingAvailable = Boolean(configuredModel && selectedModelInfo
+				&& getSupportedThinkingLevels(selectedModelInfo).some((level) => level === configuredModel.thinkingLevel));
+			if (params.modelClass && configuredModel && selectedModelInfo && !thinkingAvailable) {
+				throw new Error(`Configured ${modelClass} Subagent thinking level is unavailable; run /subagent.`);
+			}
+			const configuredRoute = thinkingAvailable ? configuredModel : undefined;
+			const modelReferenceValue = configuredRoute?.model ?? modelReference(ctx.model);
+			const model = configuredRoute ? selectedModelInfo : ctx.model;
+			if (!model) throw new Error("Subagent model metadata is unavailable.");
+			const thinkingLevel = configuredRoute?.thinkingLevel ?? ctx.thinkingLevel;
 			if (thinkingLevel && !getSupportedThinkingLevels(model).includes(thinkingLevel)) {
-				throw new Error(`Subagent thinking level ${thinkingLevel} is unavailable for ${modelReference}.`);
+				throw new Error(`Subagent thinking level ${thinkingLevel} is unavailable for ${modelReferenceValue}.`);
 			}
 
 			const resolvedSkills = resolveSkillPaths(pi, role.skills);
@@ -564,13 +693,13 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				for (const skill of resolvedSkills.paths) args.push("--skill", skill);
 				if (role.tools.length) args.push("--tools", role.tools.join(","));
 				else args.push("--no-tools");
-				args.push("--model", modelReference);
+				args.push("--model", modelReferenceValue);
 				if (thinkingLevel) args.push("--thinking", thinkingLevel);
 				args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
 				args.push("--append-system-prompt", promptPath, `Task: ${task}`);
 
 				startWidgetItem(toolCallId, role.name, model.id, thinkingLevel, task, ctx);
-				const details = { role: role.name, model: modelReference, thinkingLevel };
+				const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
 				const result = await runPi(
 					args,
 					ctx.cwd,
