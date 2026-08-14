@@ -21,8 +21,13 @@ type RenameConfig = { model?: string; maxWords: number; maxChars: number };
 
 class RenameModelError extends Error {}
 
-const positiveInteger = (value: unknown, fallback: number) =>
-	typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+const positiveInteger = (value: unknown, fallback: number, minimum = 1) =>
+	typeof value === "number" && Number.isInteger(value) && value >= minimum ? value : fallback;
+
+function branchFromTitle(title: string): string | undefined {
+	const match = /^([a-z][a-z0-9-]*): ([a-z0-9]+(?: [a-z0-9]+)*)$/.exec(title);
+	return match ? `${match[1]}/${match[2].replaceAll(" ", "-")}` : undefined;
+}
 
 async function configured(): Promise<RenameConfig> {
 	try {
@@ -31,8 +36,8 @@ async function configured(): Promise<RenameConfig> {
 			const values = config as { model?: unknown; maxWords?: unknown; maxChars?: unknown };
 			return {
 				model: typeof values.model === "string" && /^[^\s/]+\/\S+$/.test(values.model) ? values.model : undefined,
-				maxWords: positiveInteger(values.maxWords, DEFAULT_MAX_WORDS),
-				maxChars: positiveInteger(values.maxChars, DEFAULT_MAX_CHARS),
+				maxWords: positiveInteger(values.maxWords, DEFAULT_MAX_WORDS, 2),
+				maxChars: positiveInteger(values.maxChars, DEFAULT_MAX_CHARS, 6),
 			};
 		}
 	} catch {}
@@ -113,7 +118,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 	const response = await ctx.modelRegistry.complete(
 		model,
 		{
-			systemPrompt: `Return only a short chat title for the current conversation topic, prioritizing the most recent user intent: lowercase, at most ${maxWords} words, and at most ${maxChars} characters.`,
+			systemPrompt: `Return only a semantic chat title for the current conversation topic, prioritizing the most recent user intent. Format: type: subject. Use a lowercase type such as feat, fix, docs, refactor, test, or chore; use lowercase alphanumeric subject words separated by spaces; use no other punctuation; at most ${maxWords} words and at most ${maxChars} characters.`,
 			messages: [{ role: "user", content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
 		},
 		{ signal, maxRetries: 0, maxTokens: 64 },
@@ -130,7 +135,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 		.trim()
 		.toLowerCase()
 		.replace(/\s+/g, " ");
-	if (!title || title.length > maxChars || title.split(" ").length > maxWords) {
+	if (!title || title.length > maxChars || title.split(" ").length > maxWords || !branchFromTitle(title)) {
 		throw new Error("Rename model returned an invalid title.");
 	}
 	return title;
@@ -178,15 +183,26 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		const workspaceName = workspace?.label;
 		if (typeof workspaceName !== "string") throw new Error("Herdr workspace response omitted label.");
 		const worktree = workspace?.worktree;
-		if (HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) && worktree?.is_linked_worktree === true && typeof worktree.checkout_path === "string" && worktree.checkout_path && isCurrent(request, controller)) {
-			const branchResult = await pi.exec("git", ["branch", "--show-current"], { cwd: worktree.checkout_path, signal: controller.signal });
-			if (branchResult.code !== 0 || branchResult.killed) {
-				throw new Error(`git branch --show-current failed: ${branchResult.stderr.trim() || branchResult.stdout.trim() || (branchResult.killed ? "killed" : `exit ${branchResult.code}`)}`);
+		const checkoutPath = worktree?.checkout_path;
+		if (worktree?.is_linked_worktree !== true || typeof checkoutPath !== "string" || !checkoutPath) return;
+
+		const runGit = async (args: string[]) => {
+			const result = await pi.exec("git", args, { cwd: checkoutPath, signal: controller.signal });
+			if (result.code !== 0 || result.killed) {
+				throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim() || (result.killed ? "killed" : `exit ${result.code}`)}`);
 			}
-			const branch = branchResult.stdout.trim();
-			if (branch && !branch.startsWith("worktree/") && isCurrent(request, controller)) {
-				await herdr.run(["workspace", "rename", workspaceId, branch], { signal: controller.signal });
-			}
+			return result.stdout.trim();
+		};
+
+		let branch = await runGit(["branch", "--show-current"]);
+		if (!branch || branch.startsWith("worktree/")) {
+			const generatedBranch = branchFromTitle(title);
+			if (!generatedBranch || !isCurrent(request, controller)) return;
+			await runGit(branch ? ["branch", "-m", generatedBranch] : ["switch", "-c", generatedBranch]);
+			branch = generatedBranch;
+		}
+		if (HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) && isCurrent(request, controller)) {
+			await herdr.run(["workspace", "rename", workspaceId, branch], { signal: controller.signal });
 		}
 	};
 
