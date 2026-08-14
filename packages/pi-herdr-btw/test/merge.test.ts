@@ -175,13 +175,14 @@ function fakeSession(sessionId: string) {
 		details?: unknown;
 		message?: { role: string; content: unknown };
 	}> = [];
+	let branchEntries = entries;
 	let idle = true;
 	let promptReady = true;
 	let submitError: Error | undefined;
 	const session: ParentSessionPort = {
 		getSessionId: () => sessionId,
 		isIdle: () => idle,
-		getEntries: () => entries,
+		getBranch: () => branchEntries,
 		canSubmitPrompt: async () => promptReady,
 		sendMergeMessage: (content, details) => {
 			sent.push({ content, details });
@@ -202,6 +203,7 @@ function fakeSession(sessionId: string) {
 		setIdle: (value: boolean) => (idle = value),
 		setPromptReady: (value: boolean) => (promptReady = value),
 		setSubmitError: (value: Error | undefined) => (submitError = value),
+		setBranch: (value: typeof entries) => (branchEntries = value),
 	};
 }
 
@@ -366,4 +368,27 @@ test("coordinator re-acks after the submitted user message is persisted", async 
 	assert.equal(store.launches.get("/launch/payload.json")?.ack?.status, "accepted");
 	assert.equal(hasMergedRequestId(entries, request.requestId), true);
 	assert.equal(hasSubmittedPromptRequestId(entries, request.requestId, request.prompt), true);
+});
+
+test("coordinator ignores merge evidence on a sibling branch", async () => {
+	const payload = fixturePayload();
+	const request = fixtureRequest(payload);
+	const store = new FakeMergeStore();
+	store.launches.set("/launch/payload.json", { payload, request });
+	const { session, sent, submitted, entries, setBranch } = fakeSession(payload.parentSessionId);
+	entries.push(
+		{
+			type: "custom_message",
+			customType: MERGE_CUSTOM_TYPE,
+			details: { requestId: request.requestId, prompt: request.prompt },
+		},
+		{ type: "message", message: { role: "user", content: request.prompt } },
+	);
+	setBranch([]);
+	const coordinator = new MergeCoordinator(store, session);
+
+	assert.deepEqual(await coordinator.scan(), { delivered: 1, deferred: 0, rejected: 0 });
+	assert.equal(sent.length, 1);
+	assert.deepEqual(submitted, [request.prompt]);
+	assert.equal(store.launches.get("/launch/payload.json")?.ack?.status, "accepted");
 });

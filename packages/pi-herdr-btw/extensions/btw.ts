@@ -119,8 +119,7 @@ export function decideCacheMode(
 	if (payload.parentSystemPrompt === null) {
 		return { mode: "fallback", reason: "parent system prompt unavailable" };
 	}
-	const effectiveModel = payload.config.model ?? actual.model;
-	if (effectiveModel !== payload.metadata.model) {
+	if (actual.model !== payload.metadata.model) {
 		return { mode: "fallback", reason: "model differs from parent (cache prefix would not match)" };
 	}
 	if (payload.config.tools !== "inherit" || !sameStringArray(actual.activeTools, payload.parentActiveTools)) {
@@ -438,7 +437,7 @@ export async function registerBtwExtension(
 	const coordinator = new MergeCoordinator(store, {
 		getSessionId: () => sessionCtx?.sessionManager.getSessionId() ?? "",
 		isIdle: () => sessionCtx?.isIdle() ?? false,
-		getEntries: () => sessionCtx?.sessionManager.getEntries() ?? [],
+		getBranch: () => sessionCtx?.sessionManager.getBranch() ?? [],
 		canSubmitPrompt: async () => {
 			const model = sessionCtx?.model;
 			if (!model || !sessionCtx) return false;

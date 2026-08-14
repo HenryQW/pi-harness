@@ -217,7 +217,7 @@ export type MergeStorePort = {
 export type ParentSessionPort = {
 	getSessionId(): string;
 	isIdle(): boolean;
-	getEntries(): EntryLike[];
+	getBranch(): EntryLike[];
 	/** Check model and authentication before consuming a merge request. */
 	canSubmitPrompt(): Promise<boolean>;
 	sendMergeMessage(content: string, details: { requestId: string; launchId: string; prompt: string }): void;
@@ -303,7 +303,7 @@ export class MergeCoordinator {
 			return;
 		}
 
-		const entries = this.session.getEntries();
+		const entries = this.session.getBranch();
 		if (hasSubmittedPromptRequestId(entries, rawRequest.requestId, rawRequest.prompt)) {
 			// Prompt submission succeeded earlier but the ack write crashed. Re-ack
 			// without re-submitting to avoid double-triggering a paid model turn.

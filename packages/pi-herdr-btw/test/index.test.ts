@@ -174,6 +174,7 @@ function createCommandContext() {
 		getSystemPrompt: () => "parent system prompt",
 		sessionManager: {
 			getEntries: () => entries,
+			getBranch: () => entries,
 			getLeafId: () => "a1b2c3d4",
 			getSessionId: () => "12345678-1234-1234-1234-123456789abc",
 			getSessionFile: () => "/tmp/session.jsonl",
@@ -1129,12 +1130,12 @@ test("decideCacheMode explains every fallback reason", () => {
 		decideCacheMode(payload, { ...matching, thinkingLevel: "low" }).reason ?? "",
 		/thinking/,
 	);
-	assert.match(
+	assert.deepEqual(
 		decideCacheMode(
-			fixturePayload({ config: { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku" } }),
+			fixturePayload({ config: { ...DEFAULT_CONFIG, model: "other/model" } }),
 			matching,
-		).reason ?? "",
-		/model/,
+		),
+		{ mode: "native" },
 	);
 });
 
