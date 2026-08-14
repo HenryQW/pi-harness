@@ -5,10 +5,12 @@ import {
 	buildMergeMessageContent,
 	buildMergeTranscript,
 	hasMergedRequestId,
+	hasSubmittedPromptRequestId,
 	isMergeAck,
 	isMergeRequest,
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
+	MERGE_SUBMISSION_CUSTOM_TYPE,
 	MergeCoordinator,
 	validateRequestAgainstPayload,
 	type MergeAck,
@@ -92,6 +94,10 @@ test("buildMergeTranscript packages text turns and skips tool payloads", () => {
 		buildMergeTranscript(messages),
 		"User:\nside question\n\nAssistant:\nthe finding",
 	);
+	assert.equal(
+		buildMergeTranscript([{ role: "user", content: "plain question", timestamp: 1 }] as never[]),
+		"User:\nplain question",
+	);
 });
 
 test("buildMergeTranscript drops whole turns from the head when over budget", () => {
@@ -164,9 +170,10 @@ function fakeSession(sessionId: string) {
 	const sent: Array<{ content: string; details: { requestId: string; launchId: string } }> = [];
 	const submitted: string[] = [];
 	const notifications: Array<{ message: string; type: string }> = [];
-	const entries: Array<{ type: string; customType?: string; details?: unknown }> = [];
+	const entries: Array<{ type: string; customType?: string; details?: unknown; data?: unknown }> = [];
 	let idle = true;
 	let promptReady = true;
+	let submitError: Error | undefined;
 	const session: ParentSessionPort = {
 		getSessionId: () => sessionId,
 		isIdle: () => idle,
@@ -176,7 +183,16 @@ function fakeSession(sessionId: string) {
 			sent.push({ content, details });
 			entries.push({ type: "custom_message", customType: MERGE_CUSTOM_TYPE, details });
 		},
-		submitPrompt: (prompt) => submitted.push(prompt),
+		submitPrompt: (prompt) => {
+			if (submitError) throw submitError;
+			submitted.push(prompt);
+		},
+		markPromptSubmitted: (requestId, launchId) =>
+			entries.push({
+				type: "custom",
+				customType: MERGE_SUBMISSION_CUSTOM_TYPE,
+				data: { requestId, launchId },
+			}),
 		notify: (message, type) => notifications.push({ message, type }),
 	};
 	return {
@@ -187,6 +203,7 @@ function fakeSession(sessionId: string) {
 		entries,
 		setIdle: (value: boolean) => (idle = value),
 		setPromptReady: (value: boolean) => (promptReady = value),
+		setSubmitError: (value: Error | undefined) => (submitError = value),
 	};
 }
 
@@ -302,20 +319,50 @@ test("coordinator rejects forged or malformed merge requests", async () => {
 	assert.equal(notifications.filter((n) => n.type === "warning").length, 2);
 });
 
-test("coordinator re-acks without re-appending after an append-succeeded/ack-failed crash", async () => {
+test("coordinator retries prompt after a persisted merge message when submission failed", async () => {
+	const payload = fixturePayload();
+	const request = fixtureRequest(payload);
+	const store = new FakeMergeStore();
+	store.launches.set("/launch/payload.json", { payload, request });
+	const { session, sent, submitted, entries, setSubmitError } = fakeSession(payload.parentSessionId);
+	const coordinator = new MergeCoordinator(store, session);
+
+	setSubmitError(new Error("prompt failed"));
+	assert.deepEqual(await coordinator.scan(), { delivered: 0, deferred: 0, rejected: 0 });
+	assert.equal(sent.length, 1);
+	assert.deepEqual(submitted, []);
+	assert.equal(store.launches.get("/launch/payload.json")?.ack, undefined);
+	assert.equal(hasSubmittedPromptRequestId(entries, request.requestId), false);
+
+	setSubmitError(undefined);
+	assert.deepEqual(await coordinator.scan(), { delivered: 1, deferred: 0, rejected: 0 });
+	assert.equal(sent.length, 1);
+	assert.deepEqual(submitted, [request.prompt]);
+	assert.equal(store.launches.get("/launch/payload.json")?.ack?.status, "accepted");
+});
+
+test("coordinator re-acks after a durable prompt-submission marker", async () => {
 	const payload = fixturePayload();
 	const request = fixtureRequest(payload);
 	const store = new FakeMergeStore();
 	store.launches.set("/launch/payload.json", { payload, request });
 	const { session, sent, submitted, entries } = fakeSession(payload.parentSessionId);
-	// Simulate a previous append that persisted before the ack write crashed.
-	entries.push({ type: "custom_message", customType: MERGE_CUSTOM_TYPE, details: { requestId: request.requestId } });
+	entries.push({
+		type: "custom_message",
+		customType: MERGE_CUSTOM_TYPE,
+		details: { requestId: request.requestId },
+	});
+	entries.push({
+		type: "custom",
+		customType: MERGE_SUBMISSION_CUSTOM_TYPE,
+		data: { requestId: request.requestId, launchId: request.launchId },
+	});
 	const coordinator = new MergeCoordinator(store, session);
 
 	assert.deepEqual(await coordinator.scan(), { delivered: 0, deferred: 0, rejected: 0 });
 	assert.equal(sent.length, 0);
-	// The prompt is never re-submitted; that would double-trigger a paid turn.
 	assert.deepEqual(submitted, []);
 	assert.equal(store.launches.get("/launch/payload.json")?.ack?.status, "accepted");
 	assert.equal(hasMergedRequestId(entries, request.requestId), true);
+	assert.equal(hasSubmittedPromptRequestId(entries, request.requestId), true);
 });

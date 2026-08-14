@@ -8,6 +8,7 @@ import {
 	realpath,
 	rename,
 	rm,
+	utimes,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -146,6 +147,15 @@ export class ContextStore {
 	async remove(payloadPath: string): Promise<void> {
 		const launchDir = await this.validateLaunchDir(payloadPath, true);
 		if (launchDir) await rm(launchDir, { recursive: true, force: true });
+	}
+
+	/** Refresh launch liveness without modifying mailbox contents. */
+	async touch(payloadPath: string): Promise<void> {
+		const launchDir = await this.validateLaunchDir(payloadPath, true);
+		if (launchDir) {
+			const now = new Date();
+			await utimes(launchDir, now, now);
+		}
 	}
 
 	async removeStale(

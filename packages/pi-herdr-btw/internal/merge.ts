@@ -5,6 +5,7 @@ export const MERGE_PROTOCOL_VERSION = 2 as const;
 export const MERGE_REQUEST_FILE = "merge-request.json";
 export const MERGE_ACK_FILE = "merge-ack.json";
 export const MERGE_CUSTOM_TYPE = "pi-herdr-btw.merge";
+export const MERGE_SUBMISSION_CUSTOM_TYPE = "pi-herdr-btw.merge-submitted";
 export const MAX_SUMMARY_BYTES = 64 * 1024;
 export const MAX_PROMPT_BYTES = 16 * 1024;
 /** Transcript budget stays well under MAX_SUMMARY_BYTES for JSON overhead. */
@@ -110,9 +111,10 @@ type EntryLike = {
 	type: string;
 	customType?: string;
 	details?: unknown;
+	data?: unknown;
 };
 
-/** Deduplicate against already-persisted merge custom messages by requestId. */
+/** Deduplicate against an already-persisted merge custom message by requestId. */
 export function hasMergedRequestId(entries: EntryLike[], requestId: string): boolean {
 	return entries.some(
 		(entry) =>
@@ -124,7 +126,20 @@ export function hasMergedRequestId(entries: EntryLike[], requestId: string): boo
 	);
 }
 
+/** Detect durable evidence that parent prompt submission was accepted by Pi. */
+export function hasSubmittedPromptRequestId(entries: EntryLike[], requestId: string): boolean {
+	return entries.some(
+		(entry) =>
+			entry.type === "custom" &&
+			entry.customType === MERGE_SUBMISSION_CUSTOM_TYPE &&
+			!!entry.data &&
+			typeof entry.data === "object" &&
+			(entry.data as { requestId?: unknown }).requestId === requestId,
+	);
+}
+
 function textOfTurn(content: unknown): string {
+	if (typeof content === "string") return content.trim();
 	if (!Array.isArray(content)) return "";
 	return content
 		.filter(
@@ -201,6 +216,8 @@ export type ParentSessionPort = {
 	sendMergeMessage(content: string, details: { requestId: string; launchId: string }): void;
 	/** Submit the merge prompt as a user message that triggers a model turn. */
 	submitPrompt(prompt: string): void;
+	/** Persist evidence that Pi accepted the merge prompt submission. */
+	markPromptSubmitted(requestId: string, launchId: string): void;
 	notify(message: string, type: "info" | "warning" | "error"): void;
 };
 
@@ -281,6 +298,14 @@ export class MergeCoordinator {
 			return;
 		}
 
+		const entries = this.session.getEntries();
+		if (hasSubmittedPromptRequestId(entries, rawRequest.requestId)) {
+			// Prompt submission succeeded earlier but the ack write crashed. Re-ack
+			// without re-submitting to avoid double-triggering a paid model turn.
+			await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
+			return;
+		}
+
 		// pi.sendUserMessage() is fire-and-forget. Avoid acknowledging a request
 		// when current model/auth state would reject its prompt.
 		try {
@@ -293,13 +318,6 @@ export class MergeCoordinator {
 			return;
 		}
 
-		if (hasMergedRequestId(this.session.getEntries(), rawRequest.requestId)) {
-			// Append succeeded earlier but the ack write crashed. Re-ack without
-			// re-submitting to avoid double-triggering a paid model turn.
-			await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
-			return;
-		}
-
 		if (!this.session.isIdle()) {
 			// Never steer or queue a model turn mid-stream; retry on agent_settled.
 			result.deferred += 1;
@@ -308,11 +326,14 @@ export class MergeCoordinator {
 
 		// Re-check the session binding immediately before appending.
 		if (payload.parentSessionId !== this.session.getSessionId()) return;
-		this.session.sendMergeMessage(buildMergeMessageContent(rawRequest.summary), {
-			requestId: rawRequest.requestId,
-			launchId: rawRequest.launchId,
-		});
+		if (!hasMergedRequestId(entries, rawRequest.requestId)) {
+			this.session.sendMergeMessage(buildMergeMessageContent(rawRequest.summary), {
+				requestId: rawRequest.requestId,
+				launchId: rawRequest.launchId,
+			});
+		}
 		this.session.submitPrompt(rawRequest.prompt);
+		this.session.markPromptSubmitted(rawRequest.requestId, rawRequest.launchId);
 		await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
 		this.session.notify("Merged a /btw side thread into this session; continuing with its prompt.", "info");
 		result.delivered += 1;

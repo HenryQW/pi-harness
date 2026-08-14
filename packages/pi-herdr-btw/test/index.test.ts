@@ -6,6 +6,7 @@ import type { BtwPayload } from "../internal/core.ts";
 import {
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
+	MERGE_SUBMISSION_CUSTOM_TYPE,
 	type MergeAck,
 	type MergeRequest,
 } from "../internal/merge.ts";
@@ -50,6 +51,7 @@ class FakeStore implements ContextStorePort {
 	readonly created: BtwPayload[] = [];
 	readonly removed: string[] = [];
 	staleRuns = 0;
+	touchRuns = 0;
 	readValue: BtwPayload = fixturePayload({ draftQuestion: "draft" });
 	readError: Error | undefined;
 	mergeRequest: unknown;
@@ -68,6 +70,10 @@ class FakeStore implements ContextStorePort {
 
 	async remove(payloadPath: string): Promise<void> {
 		this.removed.push(payloadPath);
+	}
+
+	async touch(): Promise<void> {
+		this.touchRuns += 1;
 	}
 
 	async removeStale(): Promise<void> {
@@ -179,6 +185,7 @@ async function createHarness(
 	const execCalls: Array<{ command: string; args: string[] }> = [];
 	const sentUserMessages: string[] = [];
 	const sentMessages: Array<{ message: any; options: any }> = [];
+	const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 	const timers: Array<ReturnType<typeof setInterval>> = [];
 	const originalSetInterval = globalThis.setInterval;
 	const pi = {
@@ -198,6 +205,7 @@ async function createHarness(
 		getActiveTools: () => ["read", "bash"],
 		sendUserMessage: (message: string) => sentUserMessages.push(message),
 		sendMessage: (message: any, options: any) => sentMessages.push({ message, options }),
+		appendEntry: (customType: string, data: unknown) => appendedEntries.push({ customType, data }),
 	} as unknown as ExtensionAPI;
 
 	// Capture timers created during registration/handlers so tests can clear them.
@@ -222,7 +230,7 @@ async function createHarness(
 		for (const timer of timers) clearInterval(timer);
 	}
 
-	return { commands, handlers, execCalls, sentUserMessages, sentMessages, configStore, emit, cleanup, timers };
+	return { commands, handlers, execCalls, sentUserMessages, sentMessages, appendedEntries, configStore, emit, cleanup, timers };
 }
 
 async function withParentEnvironment(run: () => Promise<void>): Promise<void> {
@@ -437,6 +445,38 @@ test("btw-model saves a selected text model while preserving other settings", as
 	harness.cleanup();
 });
 
+test("btw-model restricts a scoped model to its pinned thinking level", async () => {
+	const store = new FakeStore();
+	const configStore = new FakeConfigStore();
+	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }), configStore);
+	const ctx = createCommandContext();
+	ctx.scopedModels = [
+		{
+			model: {
+				provider: "test-provider",
+				id: "pinned-model",
+				input: ["text"],
+				reasoning: true,
+				thinkingLevelMap: { low: "low", max: "max" },
+			},
+			thinkingLevel: "low",
+		},
+	];
+	let pickerCalls = 0;
+	ctx.ui.select = async (title: string, choices: string[]) => {
+		pickerCalls += 1;
+		assert.equal(title, "BTW model");
+		assert.deepEqual(choices, ["Current session model", "test-provider/pinned-model"]);
+		return "test-provider/pinned-model";
+	};
+
+	await harness.commands.get("btw-model")?.handler("", ctx);
+	assert.equal(pickerCalls, 1);
+	assert.equal(configStore.config.model, "test-provider/pinned-model");
+	assert.equal(configStore.config.thinkingLevel, "low");
+	harness.cleanup();
+});
+
 test("btw-model refuses non-UI mode without opening a picker", async () => {
 	const store = new FakeStore();
 	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -453,6 +493,28 @@ test("btw-model refuses non-UI mode without opening a picker", async () => {
 
 	assert.equal(selected, false);
 	assert.match(ctx.notifications.at(-1)?.message ?? "", /interactive UI/);
+});
+
+test("parent retries agent start on the transient pane-busy error", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		let startCalls = 0;
+		const busy = JSON.stringify({ error: { code: "agent_pane_busy", message: "pane is busy" } });
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			startCalls += 1;
+			return startCalls === 1
+				? { code: 1, stdout: "", stderr: busy }
+				: { code: 0, stdout: "ok", stderr: "" };
+		});
+		await harness.commands.get("btw")?.handler("question", createCommandContext());
+		harness.cleanup();
+
+		assert.equal(startCalls, 2);
+		assert.deepEqual(store.removed, []);
+	});
 });
 
 test("parent command removes sensitive payload after a definite nonzero split failure", async () => {
@@ -606,7 +668,7 @@ test("parent honors scoped thinking pin for saved BTW model", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const configStore = new FakeConfigStore();
-		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku" };
+		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: "max" };
 		const harness = await createHarness(store, herdrExec(), configStore);
 		const ctx = createCommandContext();
 		ctx.scopedModels = [
@@ -679,6 +741,12 @@ test("parent merge scan appends the transcript passively and auto-submits the pr
 		assert.deepEqual(sent?.options, { triggerTurn: false });
 		// The transcript itself never triggers a turn; the prompt does.
 		assert.deepEqual(harness.sentUserMessages, ["apply the side-thread findings"]);
+		assert.deepEqual(harness.appendedEntries, [
+			{
+				customType: MERGE_SUBMISSION_CUSTOM_TYPE,
+				data: { requestId: "req-42", launchId: payload.launchId },
+			},
+		]);
 		assert.equal(store.mergeAck?.status, "accepted");
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /delivered 1/);
 	});
@@ -873,14 +941,18 @@ test("child submits the auto-submit draft via the launch-draft sentinel, not ses
 test("child prefills the editor for non-auto-submit drafts and ignores a stray sentinel", async () => {
 	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
 		const store = new FakeStore();
-		store.readValue = fixturePayload({ draftQuestion: "draft only" });
+		store.readValue = fixturePayload({ draftQuestion: "/foo behavior" });
 		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
 		harness.cleanup();
 		const { ctx, editorText } = createChildStartContext();
 		await harness.emit("session_start", { reason: "startup" }, ctx);
 
-		assert.deepEqual(editorText, ["draft only"]);
+		assert.equal(editorText[0]?.startsWith("\u200b/foo behavior"), true);
 		assert.deepEqual(harness.sentUserMessages, []);
+		assert.deepEqual(
+			await harness.emit("input", { text: "\u200b/foo behavior", source: "interactive" }, {}),
+			[{ action: "transform", text: "/foo behavior", images: undefined }],
+		);
 
 		// A sentinel against a non-auto-submit payload submits nothing.
 		const notifications: Array<{ message: string; type: string }> = [];

@@ -137,6 +137,17 @@ test("ContextStore removes stale launches and preserves fresh launches", async (
 	await access(freshPath);
 });
 
+test("ContextStore touch keeps a live launch out of stale cleanup", async (t) => {
+	const { store } = await createFixture(t);
+	const payloadPath = await store.create(fixturePayload("live"));
+	const now = Date.now();
+	await utimes(dirname(payloadPath), new Date(now - 10_000), new Date(now - 10_000));
+
+	await store.touch(payloadPath);
+	await store.removeStale(5_000, now);
+	await access(payloadPath);
+});
+
 test("ContextStore round-trips merge requests and acks with private modes", async (t) => {
 	const { store } = await createFixture(t);
 	const payload = fixturePayload();

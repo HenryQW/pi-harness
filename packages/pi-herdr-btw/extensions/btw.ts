@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient } from "@henryqw/pi-herdr";
+import { createHerdrClient, hasHerdrErrorCode } from "@henryqw/pi-herdr";
 import {
 	buildSessionContext,
 	convertToLlm,
@@ -39,15 +39,20 @@ import {
 	MAX_PROMPT_BYTES,
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
+	MERGE_SUBMISSION_CUSTOM_TYPE,
 	MergeCoordinator,
 	type MergeRequest,
 } from "../internal/merge.ts";
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
 
 const CHILD_PAYLOAD_ENV = "PI_HERDR_BTW_PAYLOAD";
+const CHILD_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000;
+const LITERAL_DRAFT_PREFIX = "\u200b";
 const MERGE_POLL_INTERVAL_MS = 3_000;
 const ACK_POLL_INTERVAL_MS = 2_000;
 const ACK_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+const AGENT_START_BUSY_RETRIES = 5;
+const AGENT_START_RETRY_DELAY_MS = 250;
 
 type HerdrOptions = { timeout?: number };
 
@@ -56,6 +61,7 @@ export type ContextStorePort = Pick<
 	| "create"
 	| "read"
 	| "remove"
+	| "touch"
 	| "removeStale"
 	| "listLaunchPayloadPaths"
 	| "writeMergeRequest"
@@ -188,12 +194,32 @@ async function configureChild(
 		};
 	});
 
+	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+	if (payload) {
+		void store.touch(payloadPath).catch(() => undefined);
+		heartbeatTimer = setInterval(() => {
+			void store.touch(payloadPath).catch(() => undefined);
+		}, CHILD_HEARTBEAT_INTERVAL_MS);
+		heartbeatTimer.unref?.();
+	}
+
 	if (payloadError) {
 		pi.on("input", (_event, ctx) => {
 			ctx.ui.notify(`/btw is blocked: ${payloadError}`, "error");
 			return { action: "handled" };
 		});
 	}
+
+	let literalDraftPending = false;
+	pi.on("input", (event) => {
+		if (!literalDraftPending || !event.text.startsWith(LITERAL_DRAFT_PREFIX)) return;
+		literalDraftPending = false;
+		return {
+			action: "transform",
+			text: event.text.slice(LITERAL_DRAFT_PREFIX.length),
+			images: event.images,
+		};
+	});
 
 	// One-shot launch-draft submit, armed only for auto-submit payloads. The
 	// parent delivers `/btw --launch-draft` as pi's initial message, which pi
@@ -348,11 +374,21 @@ async function configureChild(
 		// here: session_start fires before pi's initial render, and a message
 		// sent from it is painted twice.
 		if (event.reason === "startup" && payload?.draftQuestion.trim() && !payload.config.autoSubmit) {
-			ctx.ui.setEditorText(payload.draftQuestion);
+			const draft = payload.draftQuestion.trim();
+			if (draft.startsWith("/")) {
+				literalDraftPending = true;
+				ctx.ui.setEditorText(`${LITERAL_DRAFT_PREFIX}${draft}`);
+			} else {
+				ctx.ui.setEditorText(payload.draftQuestion);
+			}
 		}
 	});
 
 	pi.on("session_shutdown", async (event) => {
+		if (heartbeatTimer) {
+			clearInterval(heartbeatTimer);
+			heartbeatTimer = undefined;
+		}
 		if (ackTimer) {
 			clearInterval(ackTimer);
 			ackTimer = undefined;
@@ -407,6 +443,8 @@ export async function registerBtwExtension(
 		// The merge prompt is user-authored in the child pane; submitting it
 		// starts the parent turn that "closes the loop".
 		submitPrompt: (prompt) => pi.sendUserMessage(prompt),
+		markPromptSubmitted: (requestId, launchId) =>
+			pi.appendEntry(MERGE_SUBMISSION_CUSTOM_TYPE, { requestId, launchId }),
 		notify: (message, type) => notifyFn?.(message, type),
 	});
 
@@ -434,7 +472,13 @@ export async function registerBtwExtension(
 			void coordinator.scan();
 		});
 	});
-	pi.on("agent_settled", async () => {
+	pi.on("model_select", (event, ctx) => {
+		if (sessionCtx) sessionCtx = { ...sessionCtx, model: event.model };
+		notifyFn = (message, type) => ctx.ui.notify(message, type);
+	});
+	pi.on("agent_settled", async (_event, ctx) => {
+		sessionCtx = ctx;
+		notifyFn = (message, type) => ctx.ui.notify(message, type);
 		await coordinator.scan();
 	});
 	pi.on("session_shutdown", () => {
@@ -466,12 +510,16 @@ export async function registerBtwExtension(
 				ctx.ui.notify("Couldn't read pi-herdr-btw config.", "error");
 				return;
 			}
-			const availableModels = ctx.scopedModels.length
-				? ctx.scopedModels.map(({ model }) => model)
-				: ctx.modelRegistry.getAvailable();
-			const models = availableModels
-				.filter((model) => model.input.includes("text"))
-				.sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
+			type ModelOption = { model: AvailableModel; pinnedThinkingLevel?: BtwThinkingLevel };
+			const modelOptions: ModelOption[] = ctx.scopedModels.length
+				? ctx.scopedModels.map(({ model, thinkingLevel }) => ({
+						model,
+						pinnedThinkingLevel: thinkingLevel as BtwThinkingLevel | undefined,
+					}))
+				: ctx.modelRegistry.getAvailable().map((model) => ({ model }));
+			const models = modelOptions
+				.filter(({ model }) => model.input.includes("text"))
+				.sort((a, b) => `${a.model.provider}/${a.model.id}`.localeCompare(`${b.model.provider}/${b.model.id}`));
 			if (!models.length) {
 				ctx.ui.notify("No authenticated text models are available.", "warning");
 				return;
@@ -479,7 +527,7 @@ export async function registerBtwExtension(
 			const inherit = "Current session model";
 			const selected = await ctx.ui.select(
 				"BTW model",
-				[inherit, ...models.map((model) => `${model.provider}/${model.id}`)],
+				[inherit, ...models.map(({ model }) => `${model.provider}/${model.id}`)],
 			);
 			if (!selected) return;
 			if (selected === inherit) {
@@ -493,9 +541,11 @@ export async function registerBtwExtension(
 				return;
 			}
 
-			const model = models.find((candidate) => `${candidate.provider}/${candidate.id}` === selected);
-			if (!model) return;
-			const thinkingLevels = supportedThinkingLevels(model);
+			const selectedOption = models.find(({ model }) => `${model.provider}/${model.id}` === selected);
+			if (!selectedOption) return;
+			const thinkingLevels = selectedOption.pinnedThinkingLevel
+				? [selectedOption.pinnedThinkingLevel]
+				: supportedThinkingLevels(selectedOption.model);
 			const thinkingLevel = thinkingLevels.length === 1
 				? thinkingLevels[0]
 				: await ctx.ui.select(`Thinking level · ${selected}`, thinkingLevels);
@@ -600,7 +650,7 @@ export async function registerBtwExtension(
 				);
 				const activeTools = pi.getActiveTools();
 				const thinkingLevel = pi.getThinkingLevel();
-				const launchThinkingLevel = config.thinkingLevel ?? scopedModel?.thinkingLevel ?? thinkingLevel;
+				const launchThinkingLevel = scopedModel?.thinkingLevel ?? config.thinkingLevel ?? thinkingLevel;
 				let parentSystemPrompt: string | null = null;
 				try {
 					parentSystemPrompt = ctx.getSystemPrompt();
@@ -677,9 +727,13 @@ export async function registerBtwExtension(
 				}
 
 				// Step 2: adopt pi into the new pane; herdr waits for readiness.
-				const result = await herdr.exec(buildAgentStartArgs(launchOptions, paneId), {
-					timeout: 45_000,
-				});
+				const agentStartArgs = buildAgentStartArgs(launchOptions, paneId);
+				let result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
+				for (let attempt = 1; attempt < AGENT_START_BUSY_RETRIES; attempt += 1) {
+					if (result.killed || !hasHerdrErrorCode(result, "agent_pane_busy")) break;
+					await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
+					result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
+				}
 				const outcome = classifyLaunchResult(result);
 				if (outcome === "success") {
 					ensurePolling();
