@@ -132,8 +132,7 @@ export function decideCacheMode(
 	if (payload.config.tools !== "inherit" || !sameStringArray(actual.activeTools, payload.parentActiveTools)) {
 		return { mode: "fallback", reason: "tool set differs from parent (tool prefix would not match)" };
 	}
-	const effectiveThinkingLevel = payload.config.thinkingLevel ?? actual.thinkingLevel;
-	if (effectiveThinkingLevel !== payload.parentThinkingLevel) {
+	if (actual.thinkingLevel !== payload.parentThinkingLevel) {
 		return { mode: "fallback", reason: "thinking level differs from parent" };
 	}
 	return { mode: "native" };

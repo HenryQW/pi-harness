@@ -1122,6 +1122,15 @@ test("decideCacheMode explains every fallback reason", () => {
 		),
 		{ mode: "native" },
 	);
+	assert.deepEqual(
+		decideCacheMode(
+			fixturePayload({
+				config: { ...DEFAULT_CONFIG, model: matching.model, thinkingLevel: "high" },
+			}),
+			{ ...matching, thinkingLevel: "low" },
+		),
+		{ mode: "fallback", reason: "thinking level differs from parent" },
+	);
 	const noPrompt = decideCacheMode(fixturePayload({ parentSystemPrompt: null }), matching);
 	assert.match(noPrompt.reason ?? "", /system prompt/);
 	assert.match(
