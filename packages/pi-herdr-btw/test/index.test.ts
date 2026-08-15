@@ -50,6 +50,7 @@ class FakeStore implements ContextStorePort {
 	readonly created: BtwPayload[] = [];
 	readonly removed: string[] = [];
 	staleRuns = 0;
+	readonly operations: string[] = [];
 	touchRuns = 0;
 	readValue: BtwPayload = fixturePayload({ draftQuestion: "draft" });
 	readError: Error | undefined;
@@ -76,10 +77,12 @@ class FakeStore implements ContextStorePort {
 	}
 
 	async removeStale(): Promise<void> {
+		this.operations.push("removeStale");
 		this.staleRuns += 1;
 	}
 
 	async listLaunchPayloadPaths(): Promise<string[]> {
+		this.operations.push("listLaunchPayloadPaths");
 		return [this.payloadPath];
 	}
 
@@ -635,19 +638,24 @@ test("parent closes split pane when agent start throws", async () => {
 	});
 });
 
-test("parent command removes payload when pane split output has no pane ID", async () => {
+test("parent command closes the focused split pane when split output has no pane ID", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
-		const harness = await createHarness(store, async () => ({
-			code: 0,
-			stdout: "not json",
-			stderr: "",
-		}));
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: "not json", stderr: "" };
+			}
+			if (args[0] === "pane" && args[1] === "current") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
 		const ctx = createCommandContext();
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.execCalls.length, 1);
+		assert.equal(harness.execCalls.length, 3);
+		assert.deepEqual(harness.execCalls[2]?.args, ["pane", "close", "w1:p9"]);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.equal(ctx.notifications.at(-1)?.type, "error");
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /pane ID/);
@@ -851,6 +859,7 @@ test("parent defers startup merge recovery until after initial rendering", async
 
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		harness.cleanup();
+		assert.deepEqual(store.operations.slice(0, 2), ["removeStale", "listLaunchPayloadPaths"]);
 		assert.equal(harness.sentMessages.length, 1);
 		assert.deepEqual(harness.sentUserMessages, ["startup prompt"]);
 	});

@@ -473,10 +473,14 @@ export async function registerBtwExtension(
 
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let startupScan: ReturnType<typeof setImmediate> | undefined;
+	async function scanMerges() {
+		await store.removeStale().catch(() => undefined);
+		return coordinator.scan();
+	}
 	function ensurePolling(): void {
 		if (pollTimer) return;
 		pollTimer = setInterval(() => {
-			void coordinator.scan();
+			void scanMerges();
 		}, MERGE_POLL_INTERVAL_MS);
 		// Never keep the process alive just to poll the merge mailbox.
 		pollTimer.unref?.();
@@ -492,7 +496,7 @@ export async function registerBtwExtension(
 		if (startupScan) clearImmediate(startupScan);
 		startupScan = setImmediate(() => {
 			startupScan = undefined;
-			void coordinator.scan();
+			void scanMerges();
 		});
 	});
 	pi.on("model_select", (event, ctx) => {
@@ -502,7 +506,7 @@ export async function registerBtwExtension(
 	pi.on("agent_settled", async (_event, ctx) => {
 		sessionCtx = ctx;
 		notifyFn = (message, type) => ctx.ui.notify(message, type);
-		await coordinator.scan();
+		await scanMerges();
 	});
 	pi.on("session_shutdown", () => {
 		if (startupScan) {
@@ -617,7 +621,7 @@ export async function registerBtwExtension(
 
 			if (route.kind === "merge") {
 				// Parent-side recovery: scan for pending requests now.
-				const result = await coordinator.scan();
+				const result = await scanMerges();
 				ctx.ui.notify(
 					result.delivered > 0 || result.rejected > 0
 						? `BTW merge scan — delivered ${result.delivered}, rejected ${result.rejected}, deferred ${result.deferred}`
@@ -751,6 +755,18 @@ export async function registerBtwExtension(
 
 				const paneId = parsePaneSplitPaneId(splitResult.stdout);
 				if (!paneId) {
+					// Split focuses the new pane. Recover its ID from current-pane state
+					// before cleanup when split's response body is malformed.
+					const currentResult = await herdr
+						.exec(["pane", "current", "--current"], { timeout: 5_000 })
+						.catch(() => undefined);
+					const currentPaneId =
+						currentResult?.code === 0 && !currentResult.killed
+							? parsePaneSplitPaneId(currentResult.stdout)
+							: null;
+					if (currentPaneId && currentPaneId !== launchOptions.parentPaneId) {
+						await herdr.run(["pane", "close", currentPaneId], { timeout: 5_000 }).catch(() => undefined);
+					}
 					await store.remove(payloadPath);
 					ctx.ui.notify(
 						"/btw failed: could not determine the new pane ID from `herdr pane split` output",
