@@ -19,6 +19,8 @@ import { ContextStore } from "../internal/context-store.ts";
 import {
 	buildAgentStartArgs,
 	buildContextDocument,
+	CHILD_PAYLOAD_ARG,
+	CHILD_PAYLOAD_FLAG,
 	buildNativeBridgeMessage,
 	buildParentContextMessage,
 	classifyLaunchResult,
@@ -44,7 +46,6 @@ import {
 } from "../internal/merge.ts";
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
 
-const CHILD_PAYLOAD_ENV = "PI_HERDR_BTW_PAYLOAD";
 const CHILD_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000;
 const LITERAL_DRAFT_PREFIX = "\u200b";
 const MERGE_POLL_INTERVAL_MS = 3_000;
@@ -52,6 +53,12 @@ const ACK_POLL_INTERVAL_MS = 2_000;
 const ACK_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const AGENT_START_BUSY_RETRIES = 5;
 const AGENT_START_RETRY_DELAY_MS = 250;
+
+function childPayloadPathFromArgv(): string | undefined {
+	const index = process.argv.indexOf(CHILD_PAYLOAD_ARG);
+	const value = index >= 0 ? process.argv[index + 1] : undefined;
+	return value && !value.startsWith("-") ? value : undefined;
+}
 
 type HerdrOptions = { timeout?: number };
 
@@ -418,7 +425,13 @@ export async function registerBtwExtension(
 	options: { store?: ContextStorePort; configStore?: ConfigStorePort } = {},
 ): Promise<void> {
 	const store = options.store ?? new ContextStore();
-	const childPayloadPath = process.env[CHILD_PAYLOAD_ENV];
+	// Pi applies extension flag values after factories load, so inspect argv here
+	// while registering the same flag keeps Pi's CLI validation and help intact.
+	pi.registerFlag(CHILD_PAYLOAD_FLAG, {
+		description: "Internal /btw child payload path",
+		type: "string",
+	});
+	const childPayloadPath = childPayloadPathFromArgv();
 	if (childPayloadPath) {
 		await configureChild(pi, store, childPayloadPath);
 		return;
@@ -714,7 +727,7 @@ export async function registerBtwExtension(
 						config.autoSubmit && draftQuestion.trim() ? LAUNCH_DRAFT_COMMAND : undefined,
 				};
 
-				// Step 1: create the side pane (carries cwd + payload env var).
+				// Step 1: create the side pane with the parent's cwd.
 				const splitResult = await herdr.exec(buildPaneSplitArgs(launchOptions), {
 					timeout: 10_000,
 				});

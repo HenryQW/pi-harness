@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { createReadOnlyTools } from "@earendil-works/pi-coding-agent";
 import {
 	isModelName,
 	THINKING_LEVELS,
@@ -23,6 +24,9 @@ export const PAYLOAD_VERSION = 4 as const;
  */
 export const LAUNCH_DRAFT_ARG = "--launch-draft";
 export const LAUNCH_DRAFT_COMMAND = `/btw ${LAUNCH_DRAFT_ARG}`;
+/** Process-scoped child marker; unlike pane environment, it is not inherited by reopened shells. */
+export const CHILD_PAYLOAD_FLAG = "pi-herdr-btw-payload";
+export const CHILD_PAYLOAD_ARG = `--${CHILD_PAYLOAD_FLAG}`;
 
 export type BtwPayload = {
 	version: typeof PAYLOAD_VERSION;
@@ -220,8 +224,6 @@ export function buildPaneSplitArgs(options: HerdrLaunchOptions): string[] {
 		options.split,
 		"--cwd",
 		options.cwd,
-		"--env",
-		`PI_HERDR_BTW_PAYLOAD=${options.payloadPath}`,
 		"--focus",
 	];
 }
@@ -258,12 +260,14 @@ export function buildAgentStartArgs(options: HerdrLaunchOptions, paneId: string)
 		options.model,
 		"--thinking",
 		options.thinkingLevel,
+		CHILD_PAYLOAD_ARG,
+		options.payloadPath,
 		...(options.toolMode === "inherit"
 			? options.activeTools.length > 0
 				? ["--tools", options.activeTools.join(",")]
 				: ["--no-tools"]
 			: options.toolMode === "read-only"
-				? ["--tools", "read,grep,find,ls"]
+				? ["--tools", createReadOnlyTools(options.cwd).map((tool) => tool.name).join(",")]
 				: options.toolMode === "none"
 					? ["--no-tools"]
 					: []),

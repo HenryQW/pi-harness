@@ -201,6 +201,7 @@ async function createHarness(
 	const timers: Array<ReturnType<typeof setInterval>> = [];
 	const originalSetInterval = globalThis.setInterval;
 	const pi = {
+		registerFlag() {},
 		registerCommand(name: string, command: Command) {
 			commands.set(name, command);
 		},
@@ -246,13 +247,11 @@ async function createHarness(
 
 async function withParentEnvironment(run: () => Promise<void>): Promise<void> {
 	const previous = {
-		payload: process.env.PI_HERDR_BTW_PAYLOAD,
 		herdr: process.env.HERDR_ENV,
 		pane: process.env.HERDR_PANE_ID,
 		workspace: process.env.HERDR_WORKSPACE_ID,
 		tab: process.env.HERDR_TAB_ID,
 	};
-	delete process.env.PI_HERDR_BTW_PAYLOAD;
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_PANE_ID = "w1:p1";
 	process.env.HERDR_WORKSPACE_ID = "w1";
@@ -261,7 +260,6 @@ async function withParentEnvironment(run: () => Promise<void>): Promise<void> {
 		await run();
 	} finally {
 		for (const [key, value] of Object.entries({
-			PI_HERDR_BTW_PAYLOAD: previous.payload,
 			HERDR_ENV: previous.herdr,
 			HERDR_PANE_ID: previous.pane,
 			HERDR_WORKSPACE_ID: previous.workspace,
@@ -274,13 +272,12 @@ async function withParentEnvironment(run: () => Promise<void>): Promise<void> {
 }
 
 async function withChildEnvironment(payloadPath: string, run: () => Promise<void>): Promise<void> {
-	const previous = process.env.PI_HERDR_BTW_PAYLOAD;
-	process.env.PI_HERDR_BTW_PAYLOAD = payloadPath;
+	const previousArgv = process.argv;
+	process.argv = [...previousArgv, "--pi-herdr-btw-payload", payloadPath];
 	try {
 		await run();
 	} finally {
-		if (previous === undefined) delete process.env.PI_HERDR_BTW_PAYLOAD;
-		else process.env.PI_HERDR_BTW_PAYLOAD = previous;
+		process.argv = previousArgv;
 	}
 }
 
@@ -331,9 +328,11 @@ test("parent command captures native context and launches Herdr without leaking 
 		]);
 		assert.equal(allArgs.some((arg) => arg.includes("secret question")), false);
 		assert.equal(allArgs.some((arg) => arg.includes(payload?.capability ?? "!")), false);
-		assert.ok(
-			splitArgs.includes("PI_HERDR_BTW_PAYLOAD=/tmp/pi-herdr-btw-test/launch-123/payload.json"),
-		);
+		assert.equal(splitArgs.includes("--env"), false);
+		assert.deepEqual(startArgs.slice(startArgs.indexOf("--pi-herdr-btw-payload"), startArgs.indexOf("--pi-herdr-btw-payload") + 2), [
+			"--pi-herdr-btw-payload",
+			"/tmp/pi-herdr-btw-test/launch-123/payload.json",
+		]);
 		// tools inherit (default) passes the exact active parent tool set
 		assert.deepEqual(startArgs.slice(-2), ["--tools", "read,bash"]);
 	});
@@ -360,8 +359,7 @@ test("parent command routes ask, help, and unknown words by exact first word", a
 });
 
 test("config routes before Herdr and model launch checks", async () => {
-	const previous = { payload: process.env.PI_HERDR_BTW_PAYLOAD, herdr: process.env.HERDR_ENV };
-	delete process.env.PI_HERDR_BTW_PAYLOAD;
+	const previous = { herdr: process.env.HERDR_ENV };
 	delete process.env.HERDR_ENV; // not inside Herdr at all
 	try {
 		const store = new FakeStore();
@@ -375,7 +373,6 @@ test("config routes before Herdr and model launch checks", async () => {
 		assert.equal(ctx.notifications.at(-1)?.type, "info");
 		assert.equal(harness.execCalls.length, 0);
 	} finally {
-		if (previous.payload !== undefined) process.env.PI_HERDR_BTW_PAYLOAD = previous.payload;
 		if (previous.herdr !== undefined) process.env.HERDR_ENV = previous.herdr;
 	}
 });

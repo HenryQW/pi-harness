@@ -43,7 +43,7 @@ test("buildParentContextMessage creates one reference user message", () => {
 	]);
 });
 
-test("buildPaneSplitArgs splits the parent pane with cwd and payload env only", () => {
+test("buildPaneSplitArgs splits the parent pane with cwd only", () => {
 	const args = buildPaneSplitArgs({
 		paneName: "btw-abc123",
 		cwd: "/tmp/project with spaces",
@@ -65,8 +65,6 @@ test("buildPaneSplitArgs splits the parent pane with cwd and payload env only", 
 		"right",
 		"--cwd",
 		"/tmp/project with spaces",
-		"--env",
-		"PI_HERDR_BTW_PAYLOAD=/tmp/pi-herdr-btw-1000/launch-abc/payload.json",
 		"--focus",
 	]);
 	assert.equal(args.some((arg) => arg.includes("secret question")), false);
@@ -131,6 +129,8 @@ test("buildAgentStartArgs adopts pi into the split pane with launch flags", () =
 		"provider/model",
 		"--thinking",
 		"high",
+		"--pi-herdr-btw-payload",
+		"/tmp/payload.json",
 		"--tools",
 		"read,grep,find,ls",
 	]);
@@ -152,6 +152,10 @@ test("buildAgentStartArgs appends the launch-draft sentinel as the child's initi
 	const args = buildAgentStartArgs({ ...options, initialMessage: "/btw --launch-draft" }, "w1:p2");
 	assert.equal(args.at(-1), "/btw --launch-draft");
 	assert.equal(args.at(-2), "--no-tools");
+	assert.deepEqual(args.slice(args.indexOf("--pi-herdr-btw-payload"), args.indexOf("--pi-herdr-btw-payload") + 2), [
+		"--pi-herdr-btw-payload",
+		"/tmp/payload.json",
+	]);
 	// Without an initial message nothing is appended.
 	assert.equal(buildAgentStartArgs(options, "w1:p2").at(-1), "--no-tools");
 });
@@ -170,6 +174,10 @@ test("buildAgentStartArgs passes the exact parent tool set for inherit mode", ()
 	const args = buildAgentStartArgs(options, "w1:p2");
 	assert.deepEqual(args.slice(-2), ["--tools", "read,bash,edit"]);
 	assert.equal(buildAgentStartArgs({ ...options, activeTools: [] }, "w1:p2").at(-1), "--no-tools");
+	assert.deepEqual(args.slice(args.indexOf("--pi-herdr-btw-payload"), args.indexOf("--pi-herdr-btw-payload") + 2), [
+		"--pi-herdr-btw-payload",
+		"/tmp/payload.json",
+	]);
 });
 
 test("buildNativeBridgeMessage keeps side-pane policy in the suffix", () => {
