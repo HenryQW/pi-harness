@@ -1,13 +1,13 @@
 {
-  "name": "@henryqw/pi-herdr-rename",
-  "version": "0.4.0",
-  "description": "Generate short Pi chat titles and rename the current Herdr location.",
+  "name": "@henryqw/pi-add-dir",
+  "version": "0.1.0",
+  "description": "Add external directories to a Pi session with context, skills, and file search.",
   "keywords": [
     "pi-package",
     "pi",
-    "chat",
-    "title",
-    "herdr"
+    "external-directory",
+    "context",
+    "skills"
   ],
   "type": "module",
   "engines": {
@@ -21,16 +21,18 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/rename.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
+    "typebox": "*"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-herdr-rename"
+    "directory": "packages/pi-add-dir"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"
@@ -40,10 +42,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/add-dir.ts"
     ]
-  },
-  "dependencies": {
-    "@henryqw/pi-herdr": "^0.1.0"
   }
 }

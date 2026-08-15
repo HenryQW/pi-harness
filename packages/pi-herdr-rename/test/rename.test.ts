@@ -24,7 +24,7 @@ function harness(options: {
 	currentModel?: Model;
 	branch?: any[];
 	complete?: (call: CompletionCall) => Promise<any>;
-	exec?: (args: string[], signal?: AbortSignal) => Promise<ReturnType<typeof success>>;
+	exec?: (args: string[], options?: { signal?: AbortSignal; cwd?: string }) => Promise<ReturnType<typeof success>>;
 	select?: string;
 } = {}) {
 	const handlers = new Map<string, Handler>();
@@ -48,11 +48,11 @@ function harness(options: {
 		setSessionName(name: string) {
 			names.push(name);
 		},
-		exec: async (_command: string, args: string[], execOptions?: { signal?: AbortSignal }) => {
+		exec: async (_command: string, args: string[], execOptions?: { signal?: AbortSignal; cwd?: string }) => {
 			execCalls.push(args);
-			if (options.exec) return options.exec(args, execOptions?.signal);
+			if (options.exec) return options.exec(args, execOptions);
 			if (args[0] === "pane" && args[1] === "get") {
-				return success(JSON.stringify({ result: { pane: { tab_id: "tab-1" } } }));
+				return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
 			}
 			if (args[0] === "tab" && args[1] === "get") {
 				return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
@@ -68,7 +68,7 @@ function harness(options: {
 			complete: async (model: Model, context: any, completionOptions: any) => {
 				const call = { model, context, options: completionOptions };
 				completionCalls.push(call);
-				return options.complete ? options.complete(call) : response("generated title");
+				return options.complete ? options.complete(call) : response("feat: generated title");
 			},
 		},
 		sessionManager: { getBranch: () => options.branch ?? [] },
@@ -138,36 +138,68 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 		assert.equal(app.completionCalls.length, 1);
 		assert.equal(app.completionCalls[0].context.messages[0].content.length, 1_000);
 		assert.equal(app.completionCalls[0].options.maxRetries, 0);
+		assert.match(app.completionCalls[0].context.systemPrompt, /Format: type: subject/);
+		assert.match(app.completionCalls[0].context.systemPrompt, /lowercase type.*alphanumeric subject words.*No other punctuation/);
+		assert.ok(app.completionCalls[0].context.systemPrompt.length <= 240);
 
-		resolveCompletion(response("  Useful\nChat TITLE  "));
+		resolveCompletion(response("  Fix:\nUseful Chat TITLE  "));
 		await eventually(() => app.names.length === 1);
-		assert.deepEqual(app.names, ["useful chat title"]);
+		assert.deepEqual(app.names, ["fix: useful chat title"]);
 		assert.deepEqual(app.execCalls, []);
 	});
 });
 
-test("saved names skip the model and Herdr tabs rename only when they have one pane", async () => {
+test("saved names keep semantic branches, replace generated branches, and preserve custom workspace names", async () => {
 	await withAgentDir(async () => {
 		process.env.HERDR_PANE_ID = "pane-1";
-		for (const [paneCount, expectedTabRenames] of [[1, 1], [2, 0]] as const) {
+		for (const [paneCount, workspaceName, isLinkedWorktree, branch, existingBranches, workspaceBranch, gitMutation] of [
+			[1, "worktree-brave-meadow-4aa8", true, "fix/title-length", [], "fix/title-length", undefined],
+			[2, "lucky-field-f694", true, "feat/new-loader", [], "feat/new-loader", undefined],
+			[1, "worktree/brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", [], "fix/saved-title", ["branch", "-m", "fix/saved-title"]],
+			[1, "worktree-brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", ["fix/saved-title"], "fix/saved-title-2", ["branch", "-m", "fix/saved-title-2"]],
+			[1, "chosen workspace", true, "worktree/brave-meadow-4aa8", [], undefined, ["branch", "-m", "fix/saved-title"]],
+			[1, "worktree-clear-field-8512", false, "worktree/clear-field-8512", [], undefined, undefined],
+			[1, "worktree-quiet-river-1234", true, "", ["fix"], "fix-2/saved-title", ["switch", "-c", "fix-2/saved-title"]],
+		] as const) {
+			const gitCwds: Array<string | undefined> = [];
 			const app = harness({
-				sessionName: "saved title",
-				exec: async (args) => {
+				sessionName: "fix: saved title",
+				exec: async (args, options) => {
+					if (args[0] === "branch" || args[0] === "switch" || args[0] === "for-each-ref") gitCwds.push(options?.cwd);
+					if (args.join("\0") === "branch\0--show-current") return success(`${branch}\n`);
+					if (args[0] === "for-each-ref") return success(existingBranches.join("\n"));
 					if (args[0] === "pane" && args[1] === "get") {
-						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1" } } }));
+						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
 					}
 					if (args[0] === "tab" && args[1] === "get") {
 						return success(JSON.stringify({ result: { tab: { pane_count: paneCount } } }));
+					}
+					if (args[0] === "workspace" && args[1] === "get") {
+						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: "/repo/worktree", is_linked_worktree: isLinkedWorktree } } } }));
 					}
 					return success("{}");
 				},
 			});
 			await app.handlers.get("session_start")?.({}, app.ctx);
-			await eventually(() => app.execCalls.some((args) => args[1] === "get" && args[0] === "tab"));
+			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
+			await new Promise((resolve) => setTimeout(resolve, 0));
 			assert.equal(app.completionCalls.length, 0);
 			assert.equal(app.names.length, 0);
 			assert.equal(app.execCalls.filter((args) => args[0] === "pane" && args[1] === "rename").length, 1);
-			assert.equal(app.execCalls.filter((args) => args[0] === "tab" && args[1] === "rename").length, expectedTabRenames);
+			assert.equal(app.execCalls.filter((args) => args[0] === "tab" && args[1] === "rename").length, paneCount === 1 ? 1 : 0);
+			assert.deepEqual(
+				app.execCalls.filter((args) => (args[0] === "branch" && args[1] === "-m") || args[0] === "switch"),
+				gitMutation ? [gitMutation] : [],
+			);
+			assert.deepEqual(gitCwds, Array(isLinkedWorktree ? 1 + Number(Boolean(gitMutation)) * 2 : 0).fill("/repo/worktree"));
+			assert.equal(app.execCalls.filter((args) => args[0] === "for-each-ref").length, Number(Boolean(gitMutation)));
+			if (gitMutation) {
+				assert.ok(app.execCalls.some((args) => args.join("\0") === "for-each-ref\0--format=%(refname:short)\0refs/heads"));
+			}
+			assert.equal(app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "rename").length, Number(Boolean(workspaceBranch)));
+			if (workspaceBranch) {
+				assert.ok(app.execCalls.some((args) => args.join("\0") === `workspace\0rename\0workspace-1\0${workspaceBranch}`));
+			}
 		}
 	});
 });
@@ -196,15 +228,15 @@ test("manual rename warns without text and the latest overlapping request wins",
 		const second = app.commands.get("rename")!("", app.ctx);
 		await eventually(() => resolvers.length === 2);
 		assert.equal(signals[0].aborted, true);
-		resolvers[1](response("second title"));
+		resolvers[1](response("feat: second title"));
 		await second;
-		resolvers[0](response("first title"));
+		resolvers[0](response("fix: first title"));
 		await first;
-		assert.deepEqual(app.names, ["second title"]);
+		assert.deepEqual(app.names, ["feat: second title"]);
 	});
 });
 
-test("manual rename uses the latest three text rounds within a 4,000 character budget", async () => {
+test("manual rename uses the latest three text rounds within a 2,000 character budget", async () => {
 	await withAgentDir(async () => {
 		const branch = [
 			{ type: "message", message: { role: "user", content: "oldest ignored request" } },
@@ -232,7 +264,7 @@ test("manual rename uses the latest three text rounds within a 4,000 character b
 		await app.commands.get("rename")?.("", app.ctx);
 
 		const context = app.completionCalls[0].context.messages[0].content as string;
-		assert.ok(context.length <= 4_000);
+		assert.ok(context.length <= 2_000);
 		assert.doesNotMatch(context, /oldest ignored|oldest answer|private reasoning|secret tool|tool output/);
 		assert.match(context, /user: first included request/);
 		assert.match(context, /user: second included request/);
@@ -253,15 +285,18 @@ test("manual rename widget shows progress, result, then disappears", async (t) =
 		await app.commands.get("rename")?.("", app.ctx);
 
 		assert.equal(typeof app.widgets.at(-2), "function");
-		assert.deepEqual(app.widgets.at(-1), ["renamed to generated title"]);
+		assert.deepEqual(app.widgets.at(-1), ["renamed to feat: generated title"]);
 		t.mock.timers.tick(2_000);
 		assert.equal(app.widgets.at(-1), undefined);
 	});
 });
 
-test("automatic rename warns when the rename model errors", async () => {
+test("automatic rename warns without fallback after non-transport model error", async () => {
 	await withAgentDir(async () => {
+		const mainModel: Model = { provider: "main", id: "reliable", input: ["text"] };
 		const app = harness({
+			models: [defaultModel, mainModel],
+			currentModel: mainModel,
 			complete: async () => ({ ...response("", "error"), errorMessage: "Provider failed" }),
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -270,7 +305,35 @@ test("automatic rename warns when the rename model errors", async () => {
 
 		assert.equal(app.notifications.at(-1), "Provider failed");
 		assert.equal(app.notificationTypes.at(-1), "warning");
+		assert.deepEqual(app.completionCalls.map((call) => call.model), [defaultModel]);
 		assert.deepEqual(app.names, []);
+	});
+});
+
+test("rename falls back to current main model after configured model transport failure", async () => {
+	await withAgentDir(async () => {
+		const mainModel: Model = { provider: "main", id: "reliable", input: ["text"] };
+		for (const configuredFailure of [
+			async () => ({ ...response("", "error"), errorMessage: "fetch failed" }),
+			async () => {
+				throw new TypeError("fetch failed");
+			},
+		]) {
+			const app = harness({
+				sessionName: "saved",
+				branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
+				models: [defaultModel, mainModel],
+				currentModel: mainModel,
+				complete: async (call) => call.model === defaultModel ? configuredFailure() : response("fix: fallback title"),
+			});
+			await app.handlers.get("session_start")?.({}, app.ctx);
+			await app.commands.get("rename")?.("", app.ctx);
+
+			assert.deepEqual(app.completionCalls.map((call) => call.model), [defaultModel, mainModel]);
+			assert.deepEqual(app.completionCalls.map((call) => call.options.maxRetries), [0, 0]);
+			assert.deepEqual(app.names, ["fix: fallback title"]);
+			assert.doesNotMatch(app.notifications.join("\n"), /fetch failed/);
+		}
 	});
 });
 
@@ -295,7 +358,7 @@ test("shutdown aborts automatic generation and invalid titles make no change", a
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		assert.deepEqual(app.names, []);
 
-		const invalid = harness({ complete: async () => response("one two three four five six") });
+		const invalid = harness({ complete: async () => response("plain title") });
 		await invalid.handlers.get("session_start")?.({}, invalid.ctx);
 		invalid.handlers.get("input")?.({ source: "interactive", text: "prompt" }, invalid.ctx);
 		await eventually(() => invalid.completionCalls.length === 1);
@@ -310,7 +373,7 @@ test("configured word and character limits control generation and validation", a
 			join(dir, "config", "pi-herdr-rename.json"),
 			JSON.stringify({ model: `${defaultModel.provider}/${defaultModel.id}`, maxWords: 2, maxChars: 12 }),
 		);
-		const titles = ["a b c", "abcdefghijklm", "tiny title"];
+		const titles = ["feat: a b", "fix: abcdefgh", "fix: tiny"];
 		const app = harness({ sessionName: "saved", complete: async () => response(titles.shift() ?? "") });
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
@@ -321,7 +384,19 @@ test("configured word and character limits control generation and validation", a
 
 		assert.match(app.completionCalls[0].context.systemPrompt, /at most 2 words.*at most 12 characters/);
 		assert.equal(app.notifications.filter((message) => message.includes("invalid title")).length, 2);
-		assert.deepEqual(app.names, ["tiny title"]);
+		assert.deepEqual(app.names, ["fix: tiny"]);
+
+		await writeFile(
+			join(dir, "config", "pi-herdr-rename.json"),
+			JSON.stringify({ model: `${defaultModel.provider}/${defaultModel.id}`, maxWords: 1, maxChars: 5 }),
+		);
+		const fallback = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
+		});
+		await fallback.handlers.get("session_start")?.({}, fallback.ctx);
+		await fallback.commands.get("rename")?.("", fallback.ctx);
+		assert.match(fallback.completionCalls[0].context.systemPrompt, /at most 4 words.*at most 40 characters/);
 	});
 });
 
@@ -379,8 +454,8 @@ test("later Herdr failure preserves the Pi name and pane rename", async () => {
 		await eventually(() => app.execCalls.some((args) => args[0] === "pane" && args[1] === "get"));
 		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
 		await app.commands.get("rename")?.("", app.ctx);
-		assert.deepEqual(app.names, ["generated title"]);
-		assert.ok(app.execCalls.some((args) => args[0] === "pane" && args[1] === "rename" && args.at(-1) === "generated title"));
+		assert.deepEqual(app.names, ["feat: generated title"]);
+		assert.ok(app.execCalls.some((args) => args[0] === "pane" && args[1] === "rename" && args.at(-1) === "feat: generated title"));
 		assert.match(app.notifications.at(-1) ?? "", /herdr pane get failed/);
 		assert.equal(app.widgets.at(-1), undefined);
 	});

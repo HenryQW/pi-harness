@@ -2,6 +2,7 @@
 
 | Context | Domain glossary | Scope |
 | --- | --- | --- |
+| `pi-add-dir` | [`packages/pi-add-dir/CONTEXT.md`](packages/pi-add-dir/CONTEXT.md) | External directories, context files, skills, and file search |
 | `pi-ask-question` | [`packages/pi-ask-question/CONTEXT.md`](packages/pi-ask-question/CONTEXT.md) | Interactive user questions with predefined or custom answers |
 | `pi-auto-compact` | [`packages/pi-auto-compact/CONTEXT.md`](packages/pi-auto-compact/CONTEXT.md) | Proactive Pi context compaction and task resumption |
 | `pi-auto-dag` | [`packages/pi-auto-dag/CONTEXT.md`](packages/pi-auto-dag/CONTEXT.md) | Dependency-aware local delivery work and worker execution |

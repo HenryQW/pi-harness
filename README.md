@@ -7,6 +7,7 @@ Public Pi packages under `@henryqw` scope.
 | Package | Install | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | `pi install npm:@henryqw/pi-ask-question` | Ask user one interactive multiple-choice or free-text question. |
+| [`@henryqw/pi-add-dir`](./packages/pi-add-dir) | `pi install npm:@henryqw/pi-add-dir` | Add external directories with context, skills, and file search. |
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | `pi install npm:@henryqw/pi-auto-compact` | Compact context at the set threshold and resume current task. |
 | [`@henryqw/pi-auto-dag`](./packages/pi-auto-dag) | `pi install npm:@henryqw/pi-auto-dag` | Execute an approved local Delivery Graph through Pi workers. |
 | [`@henryqw/pi-herdr`](./packages/pi-herdr) | `npm install @henryqw/pi-herdr` | Run Herdr CLI commands through a shared thin client. |
