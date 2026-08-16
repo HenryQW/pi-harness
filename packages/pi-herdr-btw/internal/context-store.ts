@@ -27,7 +27,7 @@ import {
 const PAYLOAD_FILE = "payload.json";
 const LAUNCH_PREFIX = "launch-";
 const MAX_MAILBOX_FILE_BYTES = 128 * 1024;
-const MAX_PAYLOAD_FILE_BYTES = 64 * 1024 * 1024;
+export const MAX_PAYLOAD_FILE_BYTES = 64 * 1024 * 1024;
 
 export const DEFAULT_STALE_CONTEXT_MS = 24 * 60 * 60 * 1000;
 
@@ -72,12 +72,16 @@ export class ContextStore {
 
 	async create(payload: BtwPayload): Promise<string> {
 		const root = await this.ensureRoot();
+		const serialized = `${JSON.stringify(payload)}\n`;
+		if (Buffer.byteLength(serialized, "utf8") > MAX_PAYLOAD_FILE_BYTES) {
+			throw new Error("Refusing oversized /btw context payload");
+		}
 		const launchDir = await mkdtemp(join(root, LAUNCH_PREFIX));
 		try {
 			await chmod(launchDir, 0o700);
 
 			const payloadPath = join(launchDir, PAYLOAD_FILE);
-			await writeFile(payloadPath, `${JSON.stringify(payload)}\n`, {
+			await writeFile(payloadPath, serialized, {
 				encoding: "utf8",
 				flag: "wx",
 				mode: 0o600,

@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { ContextStore } from "../internal/context-store.ts";
+import { ContextStore, MAX_PAYLOAD_FILE_BYTES } from "../internal/context-store.ts";
 import {
 	MERGE_PROTOCOL_VERSION,
 	type MergeAck,
@@ -70,6 +70,15 @@ test("ContextStore creates, reads, and removes a private launch payload", async 
 		return true;
 	});
 	await store.remove(payloadPath);
+});
+
+test("ContextStore rejects oversized payloads before creating a launch", async (t) => {
+	const { root, store } = await createFixture(t);
+	const oversized = fixturePayload();
+	oversized.parentSystemPrompt = "x".repeat(MAX_PAYLOAD_FILE_BYTES);
+
+	await assert.rejects(store.create(oversized), /oversized/);
+	assert.deepEqual(await readdir(root), []);
 });
 
 test("ContextStore removes the launch directory when payload creation fails", async (t) => {

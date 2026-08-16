@@ -1,4 +1,5 @@
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
@@ -15,6 +16,10 @@ export type BtwConfig = {
 	tools: BtwToolMode;
 	split: BtwSplit;
 };
+
+const CONFIG_LOCK_STALE_MS = 30_000;
+const CONFIG_LOCK_WAIT_MS = 10_000;
+const CONFIG_LOCK_RETRY_MS = 25;
 
 export const DEFAULT_CONFIG: Readonly<BtwConfig> = Object.freeze({
 	autoSubmit: false,
@@ -146,6 +151,25 @@ export class ConfigStore {
 
 	async save(config: BtwConfig): Promise<void> {
 		const validated = parseConfig(config);
+		await this.withLock(() => this.saveUnlocked(validated));
+	}
+
+	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
+		return this.withLock(async () => {
+			const next = parseConfig(mutator(await this.load()));
+			await this.saveUnlocked(next);
+			return next;
+		});
+	}
+
+	async reset(): Promise<BtwConfig> {
+		return this.withLock(async () => {
+			await rm(this.path, { force: true });
+			return { ...DEFAULT_CONFIG };
+		});
+	}
+
+	private async saveUnlocked(validated: BtwConfig): Promise<void> {
 		const directory = dirname(this.path);
 		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const temporaryPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
@@ -163,8 +187,48 @@ export class ConfigStore {
 		}
 	}
 
-	async reset(): Promise<BtwConfig> {
-		await rm(this.path, { force: true });
-		return { ...DEFAULT_CONFIG };
+	private async withLock<T>(operation: () => Promise<T>): Promise<T> {
+		const release = await this.acquireLock();
+		try {
+			return await operation();
+		} finally {
+			await release();
+		}
+	}
+
+	private async acquireLock(): Promise<() => Promise<void>> {
+		const lockPath = `${this.path}.lock`;
+		const ownerPath = join(lockPath, "owner");
+		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+		const token = randomUUID();
+		const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
+
+		while (true) {
+			try {
+				await mkdir(lockPath, { mode: 0o700 });
+				try {
+					await writeFile(ownerPath, token, { encoding: "utf8", flag: "wx", mode: 0o600 });
+				} catch (error) {
+					await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+					throw error;
+				}
+				return async () => {
+					if ((await readFile(ownerPath, "utf8").catch(() => undefined)) === token) {
+						await rm(lockPath, { recursive: true, force: true });
+					}
+				};
+			} catch (error) {
+				if (!error || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "EEXIST") {
+					throw error;
+				}
+				const info = await lstat(lockPath).catch(() => undefined);
+				if (!info || Date.now() - info.mtimeMs > CONFIG_LOCK_STALE_MS) {
+					await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+					continue;
+				}
+				if (Date.now() >= deadline) throw new Error(`Timed out waiting for config lock: ${this.path}`);
+				await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
+			}
+		}
 	}
 }

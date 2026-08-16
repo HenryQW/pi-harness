@@ -44,6 +44,7 @@ import {
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
 	MergeCoordinator,
+	isMergeRequest,
 	type MergeRequest,
 } from "../internal/merge.ts";
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
@@ -78,7 +79,7 @@ export type ContextStorePort = Pick<
 	| "readMergeAck"
 	| "removeIfNoPendingMerge"
 >;
-export type ConfigStorePort = Pick<ConfigStore, "load" | "save" | "reset">;
+export type ConfigStorePort = Pick<ConfigStore, "load" | "save" | "update" | "reset">;
 
 const SIDE_PANE_INSTRUCTIONS = `You are running in a focused /btw side pane spawned from another Pi session.
 
@@ -252,6 +253,64 @@ async function configureChild(
 
 	// Child-side /btw: reviewed merge back to the parent, plus help.
 	let ackTimer: ReturnType<typeof setInterval> | undefined;
+	let pendingAckRequestId: string | undefined;
+	let pendingAckStartedAt: number | undefined;
+	let notifyAck: (message: string, type: "info" | "warning" | "error") => void = () => undefined;
+
+	const stopAckPolling = (): void => {
+		if (ackTimer) {
+			clearInterval(ackTimer);
+			ackTimer = undefined;
+		}
+	};
+
+	const startAckPolling = (requestId: string, startedAt: number): void => {
+		stopAckPolling();
+		ackTimer = setInterval(async () => {
+			const ack = await store.readMergeAck(payloadPath).catch(() => undefined);
+			if (ack !== undefined && isMergeAck(ack) && ack.requestId === requestId) {
+				stopAckPolling();
+				pendingAckRequestId = undefined;
+				pendingAckStartedAt = undefined;
+				notifyAck(
+					ack.status === "accepted"
+						? "Merge accepted: the parent has the side thread and is continuing with your prompt."
+						: `Merge rejected by the parent: ${ack.reason ?? "unknown reason"}`,
+					ack.status === "accepted" ? "info" : "error",
+				);
+			} else if (Date.now() - startedAt > ACK_POLL_TIMEOUT_MS) {
+				stopAckPolling();
+				pendingAckRequestId = undefined;
+				pendingAckStartedAt = undefined;
+				notifyAck(
+					"Merge still unacknowledged; it stays pending until the parent picks it up or it expires.",
+					"warning",
+				);
+			}
+		}, ACK_POLL_INTERVAL_MS);
+		ackTimer.unref?.();
+	};
+
+	const resumeAckPolling = async (): Promise<void> => {
+		if (!payload) return;
+		const request = await store.readMergeRequest(payloadPath).catch(() => undefined);
+		if (!isMergeRequest(request)) return;
+		const ack = await store.readMergeAck(payloadPath).catch(() => undefined);
+		if (ackMatchesRequest(ack, request)) {
+			pendingAckRequestId = undefined;
+			pendingAckStartedAt = undefined;
+			stopAckPolling();
+			return;
+		}
+		const sameRequest = pendingAckRequestId === request.requestId;
+		pendingAckRequestId = request.requestId;
+		if (!sameRequest || pendingAckStartedAt === undefined) {
+			const createdAt = Date.parse(request.createdAt);
+			pendingAckStartedAt = Number.isFinite(createdAt) ? createdAt : Date.now();
+		}
+		startAckPolling(request.requestId, pendingAckStartedAt ?? Date.now());
+	};
+
 	pi.registerCommand("btw", {
 		description:
 			"Side-thread /btw: fold this side thread into the parent and continue there (/btw merge <prompt...>)",
@@ -349,35 +408,16 @@ async function configureChild(
 			// Fallback (not in a Herdr pane, or the close failed): stay open and
 			// watch for the acknowledgement instead.
 			ctx.ui.notify("Merge pending: waiting for the parent session to accept it.", "info");
-
-			if (ackTimer) clearInterval(ackTimer);
-			const startedAt = Date.now();
-			ackTimer = setInterval(async () => {
-
-				const ack = await store.readMergeAck(payloadPath).catch(() => undefined);
-				if (ack !== undefined && isMergeAck(ack) && ack.requestId === request.requestId) {
-					clearInterval(ackTimer);
-					ackTimer = undefined;
-					ctx.ui.notify(
-						ack.status === "accepted"
-							? "Merge accepted: the parent has the side thread and is continuing with your prompt."
-							: `Merge rejected by the parent: ${ack.reason ?? "unknown reason"}`,
-						ack.status === "accepted" ? "info" : "error",
-					);
-				} else if (Date.now() - startedAt > ACK_POLL_TIMEOUT_MS) {
-					clearInterval(ackTimer);
-					ackTimer = undefined;
-					ctx.ui.notify(
-						"Merge still unacknowledged; it stays pending until the parent picks it up or it expires.",
-						"warning",
-					);
-				}
-			}, ACK_POLL_INTERVAL_MS);
-			ackTimer.unref?.();
+			notifyAck = (message, type) => ctx.ui.notify(message, type);
+			pendingAckRequestId = request.requestId;
+			pendingAckStartedAt = Date.now();
+			startAckPolling(request.requestId, pendingAckStartedAt);
 		},
 	});
 
-	pi.on("session_start", (event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		notifyAck = (message, type) => ctx.ui.notify(message, type);
+		await resumeAckPolling();
 		if (ctx.mode !== "tui") return;
 		ctx.ui.setTitle("pi /btw — Herdr side thread");
 
@@ -412,11 +452,10 @@ async function configureChild(
 			clearInterval(heartbeatTimer);
 			heartbeatTimer = undefined;
 		}
-		if (ackTimer) {
-			clearInterval(ackTimer);
-			ackTimer = undefined;
-		}
+		stopAckPolling();
 		if (event.reason === "quit") {
+			pendingAckRequestId = undefined;
+			pendingAckStartedAt = undefined;
 			// Acknowledgement-aware cleanup: an unacknowledged merge outlives the
 			// child (until ack or the stale TTL), so the parent can still import it.
 			await store.removeIfNoPendingMerge(payloadPath).catch(() => undefined);
@@ -534,9 +573,8 @@ export async function registerBtwExtension(
 				ctx.ui.notify("/btw-model requires interactive UI", "error");
 				return;
 			}
-			let current: BtwConfig;
 			try {
-				current = await configStore.load();
+				await configStore.load();
 			} catch {
 				ctx.ui.notify("Couldn't read pi-herdr-btw config.", "error");
 				return;
@@ -556,7 +594,7 @@ export async function registerBtwExtension(
 			if (!selected) return;
 			if (selected === inherit) {
 				try {
-					await configStore.save({ ...current, model: null, thinkingLevel: null });
+					await configStore.update((latest) => ({ ...latest, model: null, thinkingLevel: null }));
 				} catch {
 					ctx.ui.notify("Couldn't save pi-herdr-btw config.", "error");
 					return;
@@ -575,7 +613,11 @@ export async function registerBtwExtension(
 				: await ctx.ui.select(`Thinking level · ${selected}`, thinkingLevels);
 			if (!thinkingLevel || !thinkingLevels.includes(thinkingLevel as BtwThinkingLevel)) return;
 			try {
-				await configStore.save({ ...current, model: selected, thinkingLevel: thinkingLevel as BtwThinkingLevel });
+				await configStore.update((latest) => ({
+					...latest,
+					model: selected,
+					thinkingLevel: thinkingLevel as BtwThinkingLevel,
+				}));
 			} catch {
 				ctx.ui.notify("Couldn't save pi-herdr-btw config.", "error");
 				return;

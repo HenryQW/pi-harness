@@ -59,6 +59,29 @@ test("ConfigStore defaults to Pi's private config directory", async (t) => {
 	}
 });
 
+test("ConfigStore serializes read-modify-write updates", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-herdr-btw-config-lock-test-"));
+	t.after(async () => {
+		const { rm } = await import("node:fs/promises");
+		await rm(directory, { recursive: true, force: true });
+	});
+	const path = join(directory, "config.json");
+	const first = new ConfigStore(path);
+	const second = new ConfigStore(path);
+	await first.save(DEFAULT_CONFIG);
+
+	await Promise.all([
+		first.update((config) => ({ ...config, model: "anthropic/claude-sonnet" })),
+		second.update((config) => ({ ...config, tools: "none" })),
+	]);
+
+	assert.deepEqual(await first.load(), {
+		...DEFAULT_CONFIG,
+		model: "anthropic/claude-sonnet",
+		tools: "none",
+	});
+});
+
 test("ConfigStore persists private config and resets it", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-herdr-btw-config-test-"));
 	t.after(async () => {

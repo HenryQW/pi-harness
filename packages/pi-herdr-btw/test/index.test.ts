@@ -148,6 +148,12 @@ class FakeConfigStore implements ConfigStorePort {
 		this.saved.push({ ...config });
 	}
 
+	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
+		const next = mutator({ ...this.config });
+		await this.save(next);
+		return { ...this.config };
+	}
+
 	async reset(): Promise<BtwConfig> {
 		this.config = { ...DEFAULT_CONFIG };
 		this.loadError = undefined;
@@ -1094,6 +1100,7 @@ test("child quit keeps the launch directory while a merge is unacknowledged", as
 function createChildStartContext() {
 	const editorText: string[] = [];
 	const widgets: string[][] = [];
+	const notifications: Array<{ message: string; type: string }> = [];
 	return {
 		ctx: {
 			mode: "tui",
@@ -1101,10 +1108,12 @@ function createChildStartContext() {
 				setTitle: () => undefined,
 				setWidget: (_name: string, lines: string[]) => widgets.push(lines),
 				setEditorText: (text: string) => editorText.push(text),
+				notify: (message: string, type: string) => notifications.push({ message, type }),
 				theme: { fg: (_color: string, text: string) => text },
 			},
 		},
 		editorText,
+		notifications,
 		widgets,
 	};
 }
@@ -1390,6 +1399,12 @@ test("child merge stays open and polls for the ack when it is not in a Herdr pan
 			};
 			try {
 				await harness.commands.get("btw")?.handler("merge apply the findings", ctx);
+				assert.equal(timers.length, 1);
+
+				await harness.emit("session_shutdown", { reason: "reload" }, {});
+				const start = createChildStartContext();
+				await harness.emit("session_start", { reason: "reload" }, start.ctx);
+				assert.equal(timers.length, 3);
 			} finally {
 				(globalThis as any).setInterval = originalSetInterval;
 				for (const timer of timers) clearInterval(timer);
