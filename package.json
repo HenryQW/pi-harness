@@ -33,7 +33,7 @@
     "pack:check": "npm run pack:check --workspaces --if-present"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
   }
 }
