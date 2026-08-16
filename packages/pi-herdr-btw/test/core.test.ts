@@ -31,6 +31,13 @@ test("buildContextDocument preserves metadata and serialized conversation", () =
 	assert.match(document, /Parent cwd: \/tmp\/project with spaces/);
 	assert.match(document, /Parent model: provider\/model/);
 	assert.match(document, /<parent-conversation>\nUser: hello\nAssistant: hi\n<\/parent-conversation>/);
+	assert.match(
+		buildContextDocument(
+			{ generatedAt: "now", cwd: "/tmp", session: "session", model: null },
+			"",
+		),
+		/Parent model: unavailable/,
+	);
 });
 
 test("buildParentContextMessage creates one reference user message", () => {
@@ -241,6 +248,7 @@ test("payload creation and validation are versioned", () => {
 	assert.equal(isBtwPayload({ ...payload, version: 2 }), false);
 	assert.equal(isBtwPayload({ ...payload, parentPaneId: 5 }), false);
 	assert.equal(isBtwPayload({ ...payload, parentPaneId: null }), true);
+	assert.equal(isBtwPayload({ ...payload, metadata: { ...payload.metadata, model: null } }), true);
 	assert.equal(isBtwPayload({ ...payload, draftQuestion: null }), false);
 	assert.equal(isBtwPayload({ ...payload, capability: "short" }), false);
 	assert.equal(isBtwPayload({ ...payload, messages: [{ notRole: true }] }), false);

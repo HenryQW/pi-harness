@@ -649,9 +649,13 @@ export async function registerBtwExtension(
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");
 						return;
 					}
-					const current = await configStore.load();
-					const result = applyConfigCommand(current, route.args);
-					if (result.action === "save") await configStore.save(result.config);
+					const trimmedArgs = route.args.trim();
+					const result = !trimmedArgs || trimmedArgs === "show"
+						? applyConfigCommand(await configStore.load(), route.args)
+						: {
+							action: "save" as const,
+							config: await configStore.update((latest) => applyConfigCommand(latest, route.args).config),
+						};
 					ctx.ui.notify(
 						result.action === "show"
 							? `BTW config — ${formatConfig(result.config)}\n${CONFIG_COMMAND_USAGE}`
@@ -726,7 +730,7 @@ export async function registerBtwExtension(
 					ctx.ui.notify(`Couldn't authenticate BTW model: ${configuredModel}`, "error");
 					return;
 				}
-				const model = currentModel ?? configuredModel;
+				const model = currentModel ?? null;
 				const activeTools = pi.getActiveTools();
 				const thinkingLevel = pi.getThinkingLevel();
 				const launchThinkingLevel = modelOption.pinnedThinkingLevel ?? config.thinkingLevel ?? thinkingLevel;

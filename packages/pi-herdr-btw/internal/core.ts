@@ -71,7 +71,7 @@ export type ParentContextMetadata = {
 	generatedAt: string;
 	cwd: string;
 	session: string;
-	model: string;
+	model: string | null;
 };
 
 export type HerdrLaunchOptions = {
@@ -135,7 +135,7 @@ export function isBtwPayload(value: unknown): value is BtwPayload {
 		typeof payload.metadata.generatedAt === "string" &&
 		typeof payload.metadata.cwd === "string" &&
 		typeof payload.metadata.session === "string" &&
-		typeof payload.metadata.model === "string" &&
+		(payload.metadata.model === null || typeof payload.metadata.model === "string") &&
 		(payload.parentSystemPrompt === null || typeof payload.parentSystemPrompt === "string") &&
 		Array.isArray(payload.parentActiveTools) &&
 		payload.parentActiveTools.every((tool) => typeof tool === "string") &&
@@ -167,7 +167,7 @@ export function buildContextDocument(
 - Generated: ${metadata.generatedAt}
 - Parent cwd: ${metadata.cwd}
 - Parent session: ${metadata.session}
-- Parent model: ${metadata.model}
+- Parent model: ${metadata.model ?? "unavailable"}
 
 ## Effective parent conversation
 

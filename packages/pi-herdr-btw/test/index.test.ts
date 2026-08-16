@@ -864,6 +864,7 @@ test("parent uses saved BTW model without a current model", async () => {
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
+		assert.equal(store.created[0]?.metadata.model, null);
 		const args = harness.execCalls[2]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), [
 			"--model",
