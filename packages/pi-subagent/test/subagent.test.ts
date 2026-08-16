@@ -188,6 +188,54 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	});
 });
 
+test("role without tools leaves Pi tool policy unoverridden", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Uses Pi default tools
+extensions:
+  - /user/extensions/company-tools.ts
+---
+Do bounded work.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text);
+		assert.equal(args.includes("--tools"), false);
+		assert.equal(args.includes("--no-tools"), false);
+		assert.equal(args[args.indexOf("--extension") + 1], "/user/extensions/company-tools.ts");
+	});
+});
+
+test("empty role tools disable all child tools", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "thinker.md"), `---
+name: thinker
+description: Reasons without tools
+tools: []
+---
+Return a plan.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "thinker", task: "plan" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text);
+		assert.equal(args.includes("--tools"), false);
+		assert.ok(args.includes("--no-tools"));
+	});
+});
+
 test("/subagent configures all model classes and routes explicit class", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
@@ -380,7 +428,8 @@ test("invalid role config blocks delegation without blocking extension load", as
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "broken.md"), `---
 name: broken
-description: Missing bounded tool list
+description: Has malformed tool list
+tools: [read, 1]
 ---
 Do work.
 `);

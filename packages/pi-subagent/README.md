@@ -36,10 +36,12 @@ Fields:
 | --- | --- | --- |
 | `name` | yes | Role selected by Main |
 | `description` | yes | Tells Main when to use role |
-| `tools` | yes | Exact built-in and extension tool allowlist; use `[]` for none |
+| `tools` | no | Omit for Pi effective `defaultTools`; a non-empty list is an exact built-in and extension tool allowlist; use `[]` for none |
 | `extensions` | no | Absolute/user-home paths or package sources passed to Pi `--extension` |
 | `skills` | no | Effective Pi Skill names loaded for role |
 | Markdown body | yes | Role system instructions |
+
+Omitted `tools` uses Pi's effective `defaultTools` for built-ins. Tools registered by Role extensions stay active without listing their names. A non-empty `tools` list strictly allowlists both built-in and extension tools; `tools: []` sends `--no-tools`.
 
 String lists may also use comma-separated text, matching Pi's example role files. Repository-relative extension paths are rejected: child working directory is delegated project, so relative paths could load untrusted project code. Use absolute paths, `~/...`, or explicit package sources such as `npm:...`.
 

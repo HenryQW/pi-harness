@@ -26,7 +26,7 @@ type Config = { models: Partial<Record<ModelClass, ConfiguredModel>> };
 type Role = {
 	name: string;
 	description: string;
-	tools: string[];
+	tools?: string[];
 	extensions: string[];
 	skills: string[];
 	systemPrompt: string;
@@ -161,7 +161,7 @@ export function loadRoles(agentDir = getAgentDir()): Role[] {
 			return {
 				name: cleanText(frontmatter.name, "name", file),
 				description: cleanText(frontmatter.description, "description", file),
-				tools: stringList(frontmatter.tools, "tools", file, true),
+				tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
 				extensions: extensionList(frontmatter.extensions, file),
 				skills: stringList(frontmatter.skills, "skills", file),
 				systemPrompt: cleanText(parsed.body, "system prompt", file),
@@ -691,8 +691,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				const args = ["--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills"];
 				for (const extension of role.extensions) args.push("--extension", extension);
 				for (const skill of resolvedSkills.paths) args.push("--skill", skill);
-				if (role.tools.length) args.push("--tools", role.tools.join(","));
-				else args.push("--no-tools");
+				if (role.tools !== undefined) {
+					if (role.tools.length) args.push("--tools", role.tools.join(","));
+					else args.push("--no-tools");
+				}
 				args.push("--model", modelReferenceValue);
 				if (thinkingLevel) args.push("--thinking", thinkingLevel);
 				args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
