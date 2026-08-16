@@ -19,6 +19,7 @@ import { ContextStore } from "../internal/context-store.ts";
 import {
 	buildAgentStartArgs,
 	buildContextDocument,
+	isAgentStartReady,
 	CHILD_PAYLOAD_ARG,
 	CHILD_PAYLOAD_FLAG,
 	buildNativeBridgeMessage,
@@ -723,11 +724,25 @@ export async function registerBtwExtension(
 					toolMode: config.tools,
 					activeTools,
 					split: config.split,
+					projectTrusted: ctx.isProjectTrusted(),
 					// Auto-submitted drafts go through pi's initial-message path
 					// (processed after initial render) to avoid the double-paint
 					// startup race; only this sentinel hits argv, never the question.
 					initialMessage:
 						config.autoSubmit && draftQuestion.trim() ? LAUNCH_DRAFT_COMMAND : undefined,
+				};
+
+				const closeFocusedSplitPane = async (): Promise<void> => {
+					const currentResult = await herdr
+						.exec(["pane", "current", "--current"], { timeout: 5_000 })
+						.catch(() => undefined);
+					const currentPaneId =
+						currentResult?.code === 0 && !currentResult.killed
+							? parsePaneSplitPaneId(currentResult.stdout)
+							: null;
+					if (currentPaneId && currentPaneId !== launchOptions.parentPaneId) {
+						await herdr.run(["pane", "close", currentPaneId], { timeout: 5_000 }).catch(() => undefined);
+					}
 				};
 
 				// Step 1: create the side pane with the parent's cwd.
@@ -744,10 +759,11 @@ export async function registerBtwExtension(
 					return;
 				}
 				if (splitOutcome === "ambiguous") {
-					ensurePolling();
+					await closeFocusedSplitPane();
+					await store.remove(payloadPath);
 					ctx.ui.notify(
-						"/btw launch timed out or was killed after it may have reached Herdr. Context cleanup is deferred in case the child pane is still starting.",
-						"warning",
+						`/btw failed: ${safeErrorText(splitResult.stdout, splitResult.stderr)}`,
+						"error",
 					);
 					return;
 				}
@@ -756,16 +772,7 @@ export async function registerBtwExtension(
 				if (!paneId) {
 					// Split focuses the new pane. Recover its ID from current-pane state
 					// before cleanup when split's response body is malformed.
-					const currentResult = await herdr
-						.exec(["pane", "current", "--current"], { timeout: 5_000 })
-						.catch(() => undefined);
-					const currentPaneId =
-						currentResult?.code === 0 && !currentResult.killed
-							? parsePaneSplitPaneId(currentResult.stdout)
-							: null;
-					if (currentPaneId && currentPaneId !== launchOptions.parentPaneId) {
-						await herdr.run(["pane", "close", currentPaneId], { timeout: 5_000 }).catch(() => undefined);
-					}
+					await closeFocusedSplitPane();
 					await store.remove(payloadPath);
 					ctx.ui.notify(
 						"/btw failed: could not determine the new pane ID from `herdr pane split` output",
@@ -789,6 +796,12 @@ export async function registerBtwExtension(
 					throw error;
 				}
 				const outcome = classifyLaunchResult(result);
+				if (outcome === "success" && !isAgentStartReady(result.stdout, { name: launchOptions.paneName, paneId })) {
+					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
+					await store.remove(payloadPath);
+					ctx.ui.notify("/btw failed: `herdr agent start` returned an invalid or non-interactive result", "error");
+					return;
+				}
 				if (outcome === "success") {
 					ensurePolling();
 					return;

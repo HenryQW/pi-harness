@@ -228,6 +228,28 @@ test("coordinator delivers a valid merge exactly once, submits its prompt, and a
 	assert.deepEqual(submitted, ["continue with the findings"]);
 });
 
+test("coordinator submits at most one merge prompt per scan", async () => {
+	const payload = fixturePayload();
+	const store = new FakeMergeStore();
+	const secondPayload = fixturePayload({ launchId: "second-launch" });
+	store.launches.set("/launch/one/payload.json", { payload, request: fixtureRequest(payload, { requestId: "req-1" }) });
+	store.launches.set("/launch/two/payload.json", {
+		payload: secondPayload,
+		request: fixtureRequest(secondPayload, { requestId: "req-2", summary: "second summary" }),
+	});
+	const { session, submitted } = fakeSession(payload.parentSessionId);
+	const coordinator = new MergeCoordinator(store, session);
+
+	assert.deepEqual(await coordinator.scan(), { delivered: 1, deferred: 0, rejected: 0 });
+	assert.deepEqual(submitted, ["continue with the findings"]);
+	assert.equal(store.launches.get("/launch/one/payload.json")?.ack?.status, "accepted");
+	assert.equal(store.launches.get("/launch/two/payload.json")?.ack, undefined);
+
+	assert.deepEqual(await coordinator.scan(), { delivered: 1, deferred: 0, rejected: 0 });
+	assert.deepEqual(submitted, ["continue with the findings", "continue with the findings"]);
+	assert.equal(store.launches.get("/launch/two/payload.json")?.ack?.status, "accepted");
+});
+
 test("a second merge is delivered even when a stale ack from the first remains", async () => {
 	const payload = fixturePayload();
 	const store = new FakeMergeStore();

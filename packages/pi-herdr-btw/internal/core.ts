@@ -86,6 +86,8 @@ export type HerdrLaunchOptions = {
 	/** Exact active parent tool names, used when toolMode is "inherit". */
 	activeTools: string[];
 	split: BtwSplit;
+	/** Preserve Main's project trust decision in the child Pi process. */
+	projectTrusted: boolean;
 	/** Optional initial message for the child pi, processed after initial render. */
 	initialMessage?: string;
 };
@@ -241,6 +243,29 @@ export function parsePaneSplitPaneId(stdout: string): string | null {
 	}
 }
 
+export function isAgentStartReady(
+	stdout: string,
+	expected: { name: string; paneId: string },
+): boolean {
+	try {
+		const parsed = JSON.parse(stdout) as {
+			result?: {
+				type?: unknown;
+				agent?: { name?: unknown; pane_id?: unknown; interactive_ready?: unknown };
+			};
+		};
+		const agent = parsed.result?.agent;
+		return (
+			parsed.result?.type === "agent_started" &&
+			agent?.name === expected.name &&
+			agent.pane_id === expected.paneId &&
+			agent.interactive_ready === true
+		);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Step 2 of the launch: start pi in the freshly split pane. Herdr prepends
  * the canonical executable for `--kind pi`, so only pi's own args follow `--`.
@@ -260,6 +285,7 @@ export function buildAgentStartArgs(options: HerdrLaunchOptions, paneId: string)
 		options.model,
 		"--thinking",
 		options.thinkingLevel,
+		options.projectTrusted ? "--approve" : "--no-approve",
 		CHILD_PAYLOAD_ARG,
 		options.payloadPath,
 		...(options.toolMode === "inherit"

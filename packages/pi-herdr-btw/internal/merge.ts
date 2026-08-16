@@ -269,6 +269,7 @@ export class MergeCoordinator {
 		}
 
 		for (const payloadPath of payloadPaths) {
+			if (result.delivered > 0) break;
 			try {
 				await this.processLaunch(payloadPath, result);
 			} catch {
@@ -339,9 +340,9 @@ export class MergeCoordinator {
 			});
 		}
 		this.session.submitPrompt(rawRequest.prompt);
+		result.delivered += 1;
 		await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
 		this.session.notify("Merged a /btw side thread into this session; continuing with its prompt.", "info");
-		result.delivered += 1;
 	}
 
 	private async reject(payloadPath: string, rawRequest: unknown, reason: string): Promise<void> {

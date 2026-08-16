@@ -11,6 +11,7 @@ import {
 	createPayload,
 	isBtwPayload,
 	parsePaneSplitPaneId,
+	isAgentStartReady,
 	safeErrorText,
 } from "../internal/core.ts";
 import { fixturePayloadOptions } from "./fixtures.ts";
@@ -54,6 +55,7 @@ test("buildPaneSplitArgs splits the parent pane with cwd only", () => {
 		toolMode: "read-only",
 		activeTools: ["read", "bash"],
 		split: "right",
+		projectTrusted: true,
 	});
 
 	assert.deepEqual(args, [
@@ -80,6 +82,7 @@ test("buildPaneSplitArgs falls back to the current pane without a parent pane ID
 		toolMode: "none",
 		activeTools: [],
 		split: "down",
+		projectTrusted: true,
 	});
 	assert.equal(args.includes("--pane"), false);
 	assert.equal(args.includes("--current"), true);
@@ -100,6 +103,24 @@ test("parsePaneSplitPaneId reads the pane ID from pane split JSON output", () =>
 	assert.equal(parsePaneSplitPaneId(JSON.stringify({ result: { pane: { pane_id: "" } } })), null);
 });
 
+test("isAgentStartReady validates Herdr agent identity and readiness", () => {
+	const stdout = JSON.stringify({
+		result: {
+			type: "agent_started",
+			agent: { name: "btw-abc123", pane_id: "w29:p2", interactive_ready: true },
+		},
+	});
+	assert.equal(isAgentStartReady(stdout, { name: "btw-abc123", paneId: "w29:p2" }), true);
+	assert.equal(isAgentStartReady(stdout, { name: "other", paneId: "w29:p2" }), false);
+	assert.equal(
+		isAgentStartReady(JSON.stringify({ result: { type: "agent_info", agent: {} } }), {
+			name: "btw-abc123",
+			paneId: "w29:p2",
+		}),
+		false,
+	);
+});
+
 test("buildAgentStartArgs adopts pi into the split pane with launch flags", () => {
 	const args = buildAgentStartArgs(
 		{
@@ -111,6 +132,7 @@ test("buildAgentStartArgs adopts pi into the split pane with launch flags", () =
 			toolMode: "read-only",
 			activeTools: ["read", "bash"],
 			split: "right",
+			projectTrusted: true,
 		},
 		"w29:p2",
 	);
@@ -129,11 +151,23 @@ test("buildAgentStartArgs adopts pi into the split pane with launch flags", () =
 		"provider/model",
 		"--thinking",
 		"high",
+		"--approve",
 		"--pi-herdr-btw-payload",
 		"/tmp/payload.json",
 		"--tools",
 		"read,grep,find,ls",
 	]);
+	assert.equal(buildAgentStartArgs({
+		paneName: "btw-abc123",
+		cwd: "/tmp/project",
+		payloadPath: "/tmp/payload.json",
+		model: "provider/model",
+		thinkingLevel: "high",
+		toolMode: "none",
+		activeTools: [],
+		split: "right",
+		projectTrusted: false,
+	}, "w29:p2").includes("--no-approve"), true);
 });
 
 test("buildAgentStartArgs appends the launch-draft sentinel as the child's initial message", () => {
@@ -146,6 +180,7 @@ test("buildAgentStartArgs appends the launch-draft sentinel as the child's initi
 		toolMode: "none" as const,
 		activeTools: [],
 		split: "right" as const,
+		projectTrusted: true,
 	};
 	// The sentinel must be the final positional argument, after every flag,
 	// so pi treats it as the initial message processed after initial render.
@@ -170,6 +205,7 @@ test("buildAgentStartArgs passes the exact parent tool set for inherit mode", ()
 		toolMode: "inherit" as const,
 		activeTools: ["read", "bash", "edit"],
 		split: "right" as const,
+		projectTrusted: true,
 	};
 	const args = buildAgentStartArgs(options, "w1:p2");
 	assert.deepEqual(args.slice(-2), ["--tools", "read,bash,edit"]);

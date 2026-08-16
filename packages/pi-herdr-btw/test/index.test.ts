@@ -35,13 +35,25 @@ const PANE_SPLIT_STDOUT = JSON.stringify({
 	result: { pane: { pane_id: "w1:p9", tab_id: "w1:t1", workspace_id: "w1" }, type: "pane_info" },
 });
 
-/** Herdr exec stub: pane split succeeds with a pane ID; agent start uses the given result. */
-function herdrExec(agentStart: ExecResult = { code: 0, stdout: "ok", stderr: "" }) {
+/** Herdr exec stub: pane split succeeds with a pane ID; agent start returns a ready agent. */
+function herdrExec(agentStart?: ExecResult) {
 	return async (_command: string, args: string[]): Promise<ExecResult> => {
 		if (args[0] === "pane" && args[1] === "split") {
 			return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 		}
-		return agentStart;
+		if (agentStart) return agentStart;
+		const paneIndex = args.indexOf("--pane");
+		const paneId = paneIndex >= 0 ? args[paneIndex + 1] : undefined;
+		return {
+			code: 0,
+			stdout: JSON.stringify({
+				result: {
+					type: "agent_started",
+					agent: { name: args[2], pane_id: paneId, interactive_ready: true },
+				},
+			}),
+			stderr: "",
+		};
 	};
 }
 
@@ -163,6 +175,7 @@ function createCommandContext() {
 		hasUI: true,
 		cwd: "/tmp/project",
 		model: { provider: "test-provider", id: "test-model" },
+		isProjectTrusted: () => true,
 		scopedModels: [],
 		modelRegistry: {
 			getAvailable: () => [
@@ -317,6 +330,7 @@ test("parent command captures native context and launches Herdr without leaking 
 			"--thinking",
 			"high",
 		]);
+		assert.equal(startArgs.includes("--approve"), true);
 		const allArgs = [...splitArgs, ...startArgs];
 		assert.deepEqual(splitArgs.slice(0, 2), ["pane", "split"]);
 		assert.deepEqual(splitArgs.slice(splitArgs.indexOf("--pane"), splitArgs.indexOf("--pane") + 2), [
@@ -515,10 +529,20 @@ test("parent retries agent start on the transient pane-busy error", async () => 
 			if (args[0] === "pane" && args[1] === "split") {
 				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 			}
+			if (args[0] !== "agent" || args[1] !== "start") return { code: 0, stdout: "", stderr: "" };
 			startCalls += 1;
 			return startCalls === 1
 				? { code: 1, stdout: "", stderr: busy }
-				: { code: 0, stdout: "ok", stderr: "" };
+				: {
+						code: 0,
+						stdout: JSON.stringify({
+							result: {
+								type: "agent_started",
+								agent: { name: args[2], pane_id: args[args.indexOf("--pane") + 1], interactive_ready: true },
+							},
+						}),
+						stderr: "",
+					};
 		});
 		await harness.commands.get("btw")?.handler("question", createCommandContext());
 		harness.cleanup();
@@ -638,6 +662,56 @@ test("parent closes split pane when agent start throws", async () => {
 	});
 });
 
+test("parent reconciles a timed-out split before removing its payload", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 1, stdout: "", stderr: "timeout", killed: true };
+			}
+			if (args[0] === "pane" && args[1] === "current") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
+		const ctx = createCommandContext();
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
+
+		assert.deepEqual(harness.execCalls.map(({ args }) => args), [
+			["pane", "split", "--pane", "w1:p1", "--direction", "right", "--cwd", "/tmp/project", "--focus"],
+			["pane", "current", "--current"],
+			["pane", "close", "w1:p9"],
+		]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
+		assert.equal(ctx.notifications.at(-1)?.type, "error");
+		assert.match(ctx.notifications.at(-1)?.message ?? "", /timeout/);
+	});
+});
+
+test("parent rejects a malformed successful agent start response", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			if (args[0] === "agent" && args[1] === "start") {
+				return { code: 0, stdout: "not json", stderr: "" };
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
+		const ctx = createCommandContext();
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
+
+		assert.deepEqual(harness.execCalls.at(-1)?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
+		assert.equal(ctx.notifications.at(-1)?.type, "error");
+		assert.match(ctx.notifications.at(-1)?.message ?? "", /invalid or non-interactive/);
+	});
+});
+
 test("parent command closes the focused split pane when split output has no pane ID", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
@@ -662,7 +736,7 @@ test("parent command closes the focused split pane when split output has no pane
 	});
 });
 
-test("parent command retains payload for an ambiguous killed launch", async () => {
+test("parent retains payload for an ambiguous killed agent start", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const harness = await createHarness(
