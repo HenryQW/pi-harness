@@ -330,9 +330,17 @@ export class MergeCoordinator {
 			return;
 		}
 
+		// Refresh branch evidence after authentication; branch can change while the
+		// asynchronous model check is pending.
+		const currentEntries = this.session.getBranch();
+		if (hasSubmittedPromptRequestId(currentEntries, rawRequest.requestId, rawRequest.prompt)) {
+			await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
+			return;
+		}
+
 		// Re-check the session binding immediately before appending.
 		if (payload.parentSessionId !== this.session.getSessionId()) return;
-		if (!hasMergedRequestId(entries, rawRequest.requestId)) {
+		if (!hasMergedRequestId(currentEntries, rawRequest.requestId)) {
 			this.session.sendMergeMessage(buildMergeMessageContent(rawRequest.summary), {
 				requestId: rawRequest.requestId,
 				launchId: rawRequest.launchId,

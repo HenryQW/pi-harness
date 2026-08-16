@@ -179,11 +179,16 @@ function fakeSession(sessionId: string) {
 	let idle = true;
 	let promptReady = true;
 	let submitError: Error | undefined;
+	let beforeCanSubmit: (() => void) | undefined;
 	const session: ParentSessionPort = {
 		getSessionId: () => sessionId,
 		isIdle: () => idle,
 		getBranch: () => branchEntries,
-		canSubmitPrompt: async () => promptReady,
+		canSubmitPrompt: async () => {
+			beforeCanSubmit?.();
+			beforeCanSubmit = undefined;
+			return promptReady;
+		},
 		sendMergeMessage: (content, details) => {
 			sent.push({ content, details });
 			entries.push({ type: "custom_message", customType: MERGE_CUSTOM_TYPE, details });
@@ -203,6 +208,7 @@ function fakeSession(sessionId: string) {
 		setIdle: (value: boolean) => (idle = value),
 		setPromptReady: (value: boolean) => (promptReady = value),
 		setSubmitError: (value: Error | undefined) => (submitError = value),
+		setBeforeCanSubmit: (value: (() => void) | undefined) => (beforeCanSubmit = value),
 		setBranch: (value: typeof entries) => (branchEntries = value),
 	};
 }
@@ -339,6 +345,29 @@ test("coordinator rejects forged or malformed merge requests", async () => {
 	assert.equal(store.launches.get("/forged/payload.json")?.ack?.status, "rejected");
 	assert.equal(store.launches.get("/malformed/payload.json")?.ack?.status, "rejected");
 	assert.equal(notifications.filter((n) => n.type === "warning").length, 2);
+});
+
+test("coordinator refreshes branch evidence after authentication", async () => {
+	const payload = fixturePayload();
+	const request = fixtureRequest(payload);
+	const store = new FakeMergeStore();
+	store.launches.set("/launch/payload.json", { payload, request });
+	const { session, sent, submitted, setBeforeCanSubmit, setBranch } = fakeSession(payload.parentSessionId);
+	const currentBranch = [
+		{
+			type: "custom_message",
+			customType: MERGE_CUSTOM_TYPE,
+			details: { requestId: request.requestId, launchId: request.launchId, prompt: request.prompt },
+		},
+		{ type: "message", message: { role: "user", content: request.prompt } },
+	];
+	setBeforeCanSubmit(() => setBranch(currentBranch));
+	const coordinator = new MergeCoordinator(store, session);
+
+	assert.deepEqual(await coordinator.scan(), { delivered: 0, deferred: 0, rejected: 0 });
+	assert.deepEqual(sent, []);
+	assert.deepEqual(submitted, []);
+	assert.equal(store.launches.get("/launch/payload.json")?.ack?.status, "accepted");
 });
 
 test("coordinator retries prompt after a persisted merge message when submission failed", async () => {
