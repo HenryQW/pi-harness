@@ -29,6 +29,7 @@ import {
 	LAUNCH_DRAFT_ARG,
 	LAUNCH_DRAFT_COMMAND,
 	buildPaneSplitArgs,
+	parsePaneListPaneIds,
 	parsePaneSplitPaneId,
 	safeErrorText,
 	type BtwPayload,
@@ -214,13 +215,16 @@ async function configureChild(
 	});
 
 	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-	if (payload) {
+	const startHeartbeat = (): void => {
+		if (!payload || heartbeatTimer) return;
 		void store.touch(payloadPath).catch(() => undefined);
 		heartbeatTimer = setInterval(() => {
 			void store.touch(payloadPath).catch(() => undefined);
 		}, CHILD_HEARTBEAT_INTERVAL_MS);
 		heartbeatTimer.unref?.();
-	}
+	};
+	startHeartbeat();
+	pi.on("session_start", () => startHeartbeat());
 
 	if (payloadError) {
 		pi.on("input", (_event, ctx) => {
@@ -732,6 +736,14 @@ export async function registerBtwExtension(
 						config.autoSubmit && draftQuestion.trim() ? LAUNCH_DRAFT_COMMAND : undefined,
 				};
 
+				const preSplitList = await herdr
+					.exec(["pane", "list"], { timeout: 5_000 })
+					.catch(() => undefined);
+				const existingPaneIds =
+					preSplitList?.code === 0 && !preSplitList.killed
+						? new Set(parsePaneListPaneIds(preSplitList.stdout) ?? [])
+						: undefined;
+
 				const closeFocusedSplitPane = async (): Promise<void> => {
 					const currentResult = await herdr
 						.exec(["pane", "current", "--current"], { timeout: 5_000 })
@@ -740,7 +752,12 @@ export async function registerBtwExtension(
 						currentResult?.code === 0 && !currentResult.killed
 							? parsePaneSplitPaneId(currentResult.stdout)
 							: null;
-					if (currentPaneId && currentPaneId !== launchOptions.parentPaneId) {
+					if (
+						currentPaneId &&
+						existingPaneIds &&
+						!existingPaneIds.has(currentPaneId) &&
+						currentPaneId !== launchOptions.parentPaneId
+					) {
 						await herdr.run(["pane", "close", currentPaneId], { timeout: 5_000 }).catch(() => undefined);
 					}
 				};
