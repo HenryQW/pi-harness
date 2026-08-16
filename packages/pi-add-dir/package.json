@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-add-dir",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Add external directories to a Pi session with context, skills, and file search.",
   "keywords": [
     "pi-package",

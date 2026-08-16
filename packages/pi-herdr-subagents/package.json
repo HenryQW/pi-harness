@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-subagents",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Delegate bounded tasks to interactive Pi Subagents in Herdr tabs.",
   "keywords": [
     "pi-package",
