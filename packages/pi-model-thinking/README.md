@@ -8,11 +8,17 @@ Remember the thinking level for each model and restore it when that model become
 pi install npm:@henryqw/pi-model-thinking
 ```
 
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots share one thinking level. |
+
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| `/model-thinking` | Choose the level to remember for the current model. `Use current level` clears the saved choice. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/model-thinking` | command | Choose the level to remember for the current model. `Use current level` clears the saved choice. |
 
 Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Applied on session start and model change. Numbered `pi-multi-codex` providers share canonical `openai-codex/model`, so account switches keep the same level.
 

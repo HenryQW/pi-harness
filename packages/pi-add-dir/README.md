@@ -10,14 +10,14 @@ pi install npm:@henryqw/pi-add-dir
 
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| `/dir-add [path]` | Add directory; no path opens input. Supports `~`. |
-| `/dir-ls` | List directories; select one to remove. |
-| `add_directory` | Agent tool for adding a directory. |
-| `search_external_files` | Agent tool for glob-searching added directories. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/dir-add` | command | Add directory; no path opens input. Supports `~`. |
+| `/dir-ls` | command | List directories; select one to remove. |
+| `add_directory` | tool | Add a directory. |
+| `search_external_files` | tool | Glob-search added directories. |
 
-Added directories return root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md`, and inject them into later prompts. Skills load from `.pi/skills`, `.agents/skills`, and `.claude/skills` as `/skill:<name>`. `/dir-add` reloads when it finds skills; `add_directory` reports when `/reload` is needed.
+Added directories return root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md`, and inject them into later prompts. Skills load from `.pi/skills`, `.agents/skills`, and `.claude/skills`. `/dir-add` reloads when it finds skills; `add_directory` reports when a reload is needed.
 
 Search uses Node filesystem traversal, skips `.git` and `node_modules`, supports basename and relative-path globs, and caps results at 1,000 per call.
 

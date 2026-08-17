@@ -10,10 +10,10 @@ pi install npm:@henryqw/pi-open-in
 
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| `/open` | Run `<command> <current-working-directory>`. Works while the agent is busy. |
-| `/set-open-in <command>` | Set the command used by `/open`. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/open` | command | Run `<command> <current-working-directory>`. Works while the agent is busy. |
+| `/set-open-in` | command | Set the command used by `/open`. |
 
 ## Config
 

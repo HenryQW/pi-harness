@@ -9,15 +9,21 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-rename
 ```
 
-`pi-task-models` provides `/task-models` for the rename routes. Requires Pi Coding Agent 0.84.2+.
+Requires Pi Coding Agent 0.84.2+.
+
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-task-models` | Required. Shared model profiles for title generation. |
 
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| first real user prompt | Generate a title in the background. Does not delay the main reply. |
-| `/rename` | Generate a title from up to three recent user/assistant rounds. |
-| `/task-models` | Configure the `pi-herdr-rename/rename` profile (default `fast`). |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/rename` | command | Generate a title from up to three recent user/assistant rounds. |
+
+First real user prompt also generates a title in the background and does not delay the main reply.
 
 Successful titles use `type: subject`, lowercase words, and by default at most four words and 40 characters. Example: `fix: extension name` → Git branch `fix/extension-name`.
 
