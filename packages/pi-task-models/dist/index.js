@@ -6,7 +6,8 @@ export const PROFILE_NAMES = ["fast", "balanced", "frontier"];
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const DEFAULT_TASK_ASSIGNMENTS = {
     "pi-herdr-rename/rename": "fast",
-    "pi-auto-compact/autoCompact": "balanced",
+    "pi-auto-compact/autoCompact": "fast",
+    "pi-subagent/delegateTask": "balanced",
 };
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";

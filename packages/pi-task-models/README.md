@@ -12,9 +12,9 @@ pi install npm:@henryqw/pi-task-models
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-auto-compact` | Consumer. Compaction uses the `balanced` profile. |
+| `@henryqw/pi-auto-compact` | Consumer. Compaction defaults to the `fast` profile. |
 | `@henryqw/pi-herdr-rename` | Consumer. Rename uses the `fast` profile. |
-| `@henryqw/pi-subagent` | Consumer. Caller picks `fast`, `balanced`, or `frontier`. |
+| `@henryqw/pi-subagent` | Consumer. Delegation defaults to `balanced`; caller may override it. |
 | `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots dedupe to one route. |
 
 ## Use
@@ -49,7 +49,8 @@ Package also exports config and route-resolution helpers for consumers.
   },
   "tasks": {
     "pi-herdr-rename/rename": "fast",
-    "pi-auto-compact/autoCompact": "balanced"
+    "pi-auto-compact/autoCompact": "fast",
+    "pi-subagent/delegateTask": "balanced"
   }
 }
 ```

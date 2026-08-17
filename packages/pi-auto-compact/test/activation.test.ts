@@ -198,7 +198,7 @@ test("reports malformed shared task-model config without rewriting it", async ()
 			preparation: { fileOps: { read: new Set(), written: new Set(), edited: new Set() } },
 			branchEntries: [],
 		} as never, ctx);
-		assert.deepEqual(notices, ["Task model profile balanced is not configured; using current session model."]);
+		assert.deepEqual(notices, ["Task model profile fast is not configured; using current session model."]);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -217,7 +217,7 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 		await writeFile(join(tempRoot, "config", "pi-auto-compact.json"), JSON.stringify({ autoCompactThreshold: 50 }));
 		await writeFile(join(tempRoot, "config", "pi-task-models.json"), JSON.stringify({
 			profiles: {
-				balanced: {
+				fast: {
 					primary: { model: "primary/model", thinkingLevel: "off" },
 					fallback: { model: "fallback/model", thinkingLevel: "off" },
 				},
@@ -326,7 +326,7 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 		await writeFile(join(tempRoot, "config", "pi-auto-compact.json"), JSON.stringify({ autoCompactThreshold: 50 }));
 		await writeFile(join(tempRoot, "config", "pi-task-models.json"), JSON.stringify({
 			profiles: {
-				balanced: {
+				fast: {
 					primary: { model: "primary/model", thinkingLevel: "off" },
 					fallback: { model: "provider/model", thinkingLevel: "max" },
 				},
