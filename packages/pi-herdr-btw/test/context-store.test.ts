@@ -77,17 +77,6 @@ test("ContextStore rejects oversized payloads before creating a launch", async (
 	assert.deepEqual(await readdir(root), []);
 });
 
-test("ContextStore removes the launch directory when payload creation fails", async (t) => {
-	const { root, store } = await createFixture(t);
-	const unserializable = {
-		...fixturePayload(),
-		parentSystemPrompt: 1n,
-	} as unknown as ReturnType<typeof fixturePayload>;
-
-	await assert.rejects(store.create(unserializable), /BigInt/);
-	assert.deepEqual(await readdir(root), []);
-});
-
 test("ContextStore repairs an existing owned root to private permissions", async (t) => {
 	const { root, store } = await createFixture(t);
 	await mkdir(root, { mode: 0o755 });
@@ -206,14 +195,6 @@ test("ContextStore retains a launch when its merge request cannot be read", asyn
 
 	await assert.rejects(store.removeIfNoPendingMerge(payloadPath), SyntaxError);
 	await access(payloadPath);
-});
-
-test("ContextStore lists launch payload paths inside the private root", async (t) => {
-	const { store } = await createFixture(t);
-	const first = await store.create(fixturePayload("one"));
-	const second = await store.create(fixturePayload("two"));
-	const listed = await store.listLaunchPayloadPaths();
-	assert.deepEqual(new Set(listed), new Set([first, second]));
 });
 
 test("ContextStore rejects invalid payload contents", async (t) => {

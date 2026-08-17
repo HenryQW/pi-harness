@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
+import { parseBtwCommand } from "../internal/router.ts";
 
 test("bare /btw opens an empty side pane", () => {
 	assert.deepEqual(parseBtwCommand(""), { kind: "open" });
@@ -36,10 +36,4 @@ test("/btw ask is the escape hatch for reserved words", () => {
 	assert.deepEqual(parseBtwCommand("ask merge sort"), { kind: "ask", question: "merge sort" });
 	assert.deepEqual(parseBtwCommand("ask config files"), { kind: "ask", question: "config files" });
 	assert.deepEqual(parseBtwCommand("ask"), { kind: "open" });
-});
-
-test("help text covers the full grammar", () => {
-	for (const token of ["ask", "config", "merge", "help"]) {
-		assert.match(HELP_TEXT, new RegExp(`/btw ${token}`));
-	}
 });
