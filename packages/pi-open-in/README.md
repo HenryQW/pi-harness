@@ -1,6 +1,6 @@
 # `@henryqw/pi-open-in`
 
-Pi extension that adds `/open` and `/set-open-in <command>` for opening current working directory. Default command is `code` (VS Code CLI). You may set it to any command you want.
+Open the current working directory with a configurable command. Default is `code`.
 
 ## Install
 
@@ -8,9 +8,16 @@ Pi extension that adds `/open` and `/set-open-in <command>` for opening current 
 pi install npm:@henryqw/pi-open-in
 ```
 
-Run `/set-open-in XYZ` to configure `/open`. Then `/open` runs `XYZ <current-working-directory>`. You can invoke `/open` anytime, even while the agent is working.
+## Use
 
-Command saves to `~/.pi/agent/config/pi-open-in.json`:
+| Surface | Purpose |
+| --- | --- |
+| `/open` | Run `<command> <current-working-directory>`. Works while the agent is busy. |
+| `/set-open-in <command>` | Set the command used by `/open`. |
+
+## Config
+
+`~/.pi/agent/config/pi-open-in.json`
 
 ```json
 {
@@ -18,7 +25,7 @@ Command saves to `~/.pi/agent/config/pi-open-in.json`:
 }
 ```
 
-Remove with:
+## Remove
 
 ```bash
 pi remove npm:@henryqw/pi-open-in
@@ -27,7 +34,7 @@ pi remove npm:@henryqw/pi-open-in
 ## Development
 
 ```bash
-npm test
-npm run typecheck
-npm run pack:check
+npm test --workspace @henryqw/pi-open-in
+npm run typecheck --workspace @henryqw/pi-open-in
+npm run pack:check --workspace @henryqw/pi-open-in
 ```
