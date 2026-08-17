@@ -1,8 +1,14 @@
 # `@henryqw/pi-herdr`
 
-Shared client for interacting with Herdr from Node.js tools and Pi packages.
+Run Herdr CLI commands from Node through one thin client. Callers keep orchestration and command-specific checks.
 
-This solves common Herdr interaction plumbing: running commands through an injected executor, handling failures consistently, and parsing JSON responses without taking command orchestration away from callers.
+## Install
+
+```bash
+npm install @henryqw/pi-herdr
+```
+
+## Use
 
 ```ts
 import { createHerdrClient } from "@henryqw/pi-herdr";
@@ -12,9 +18,9 @@ const herdr = createHerdrClient((command, args, options) =>
 const response = await herdr.json(["agent", "list"], { cwd: ctx.cwd });
 ```
 
-`exec` validates string argv and returns raw process result, `run` requires successful exit and returns stdout, and `json` also parses JSON object response. `hasHerdrErrorCode` detects structured CLI errors in stdout or stderr.
+`exec` validates string argv and returns the raw process result. `run` requires a successful exit and returns stdout. `json` also parses a JSON object. `hasHerdrErrorCode` detects structured CLI errors in stdout or stderr.
 
-Client does not mirror Herdr command catalog or validate command-specific response fields. Callers keep domain checks; Herdr remains source of truth for supported commands and response shapes.
+Client does not mirror the Herdr command catalog. Herdr remains the source of truth for supported commands and response shapes.
 
 ## Development
 

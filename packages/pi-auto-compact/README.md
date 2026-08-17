@@ -1,6 +1,6 @@
 # `@henryqw/pi-auto-compact`
 
-Pi extension that compacts context before it reaches 50% of current model context, then resumes current task. Requires Pi Coding Agent 0.84.2+.
+Compact context before it hits the configured threshold, then resume the current task.
 
 ## Install
 
@@ -9,7 +9,13 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-`pi-task-models` loads `/task-models`, which configures the shared model profiles used by automatic compaction.
+Requires Pi Coding Agent 0.84.2+.
+
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-task-models` | Required. Shared model profiles for compaction routes. |
 
 Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 
@@ -21,19 +27,19 @@ Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 }
 ```
 
-Restart Pi after installation or settings changes. Trusted project settings in `.pi/settings.json` must not override `compaction.enabled` back to `true`. Manual `/compact` remains available.
+Restart Pi after install or settings changes. Trusted project settings in `.pi/settings.json` must not set `compaction.enabled` back to `true`.
 
-Remove with:
+## Use
 
-```bash
-pi remove npm:@henryqw/pi-auto-compact
-```
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/auto-compact` | command | Set the compaction threshold. |
 
-## Configure
+Refuses to activate unless effective `compaction.enabled` is `false`. Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`. Tries the assigned profile primary, then fallback; if neither route works, the current session model still compacts. After mid-task compaction, a follow-up message continues the current task.
 
-Run `/auto-compact` to set the compaction threshold. Run `/task-models` to configure the shared primary and optional fallback routes. The `pi-auto-compact/autoCompact` task defaults to the `balanced` profile.
+## Config
 
-Threshold config lives in `~/.pi/agent/config/pi-auto-compact.json`:
+`~/.pi/agent/config/pi-auto-compact.json`
 
 ```json
 {
@@ -41,25 +47,24 @@ Threshold config lives in `~/.pi/agent/config/pi-auto-compact.json`:
 }
 ```
 
-Threshold must be at least 25% and below 100%; lower values are not meaningful. Missing config defaults to 50%. Model routes belong in `~/.pi/agent/config/pi-task-models.json`; menu changes apply immediately.
+Threshold must be at least 25 and below 100. Missing config defaults to 50. Model routes live in `~/.pi/agent/config/pi-task-models.json`. Malformed shared task-model config is reported and left unchanged.
 
-## Behavior
+## Remove
 
-- Refuses activation with an error when Pi's effective `compaction.enabled` setting is not `false`; competing automatic compactors can start duplicate summaries.
-- Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed/forked `session_start`.
-- Uses the assigned `balanced` task profile's primary route, then its configured fallback when a route is outside current model scope, unavailable, cannot authenticate, or its summary request fails. Scoped thinking pins are enforced. If neither route works, Pi's current session model still performs automatic compaction. Malformed shared task-model config is reported and left unchanged. Manual `/compact` always stays native.
-- Keeps newest 15% as temporary emergency context while compaction runs.
-- Sends a follow-up message after mid-task compaction so task execution continues; final-answer compaction stays idle.
-- Compacts above configured `autoCompactThreshold` percentage (50% by default).
-
-`ctx.compact()` aborts current low-level run. Extension hides that empty internal abort message, then starts new run with current task resume message. Other aborts and provider errors remain visible.
+```bash
+pi remove npm:@henryqw/pi-auto-compact
+```
 
 ## Development
 
 ```bash
-npm test
-npm run pack:check
-npm run test:live
+npm test --workspace @henryqw/pi-auto-compact
+npm run typecheck --workspace @henryqw/pi-auto-compact
+npm run pack:check --workspace @henryqw/pi-auto-compact
 ```
 
-`test:live` uses real Pi plus authenticated model access. It disables Pi's built-in auto-compaction, sets a temporary 12K context window, sends a large prompt, and verifies extension compaction, automatic resume, persisted resume message, and assistant response. Set `PI_AUTO_COMPACT_AUTH_FILE` when auth is not at `~/.pi/agent/auth.json`.
+`test:live` needs real Pi plus authenticated model access. Set `PI_AUTO_COMPACT_AUTH_FILE` when auth is not at `~/.pi/agent/auth.json`.
+
+```bash
+npm run test:live --workspace @henryqw/pi-auto-compact
+```

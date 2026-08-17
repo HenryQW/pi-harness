@@ -8,13 +8,30 @@ Shared `fast`, `balanced`, and `frontier` model profiles for HenryQW Pi extensio
 pi install npm:@henryqw/pi-task-models
 ```
 
-Run `/task-models`. Top menu shows all profiles plus configured task assignments whose `@henryqw` package is active in Pi's effective command/tool registry. Selecting a profile chooses primary model, primary thinking, fallback model or `None`, then fallback thinking when needed; one completed flow writes whole profile once. Selecting a task changes its profile assignment.
+## With
 
-Menus and runtime resolution use current session's `ctx.scopedModels`, including pinned thinking levels. Empty scope falls back to Pi's full available model registry. Numbered Codex account aliases are deduplicated, and fallback choices exclude selected primary model. Hidden task assignments remain stored when package is disabled or removed.
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-auto-compact` | Consumer. Compaction uses the `balanced` profile. |
+| `@henryqw/pi-herdr-rename` | Consumer. Rename uses the `fast` profile. |
+| `@henryqw/pi-subagent` | Consumer. Caller picks `fast`, `balanced`, or `frontier`. |
+| `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots dedupe to one route. |
+
+## Use
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/task-models` | command | Edit a profile or assign a task to a profile. |
+
+Selecting a profile sets primary model, primary thinking, optional fallback model, then fallback thinking. One completed flow writes the whole profile. Selecting a task changes its assignment.
+
+Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. Empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated. Fallback choices exclude the selected primary. Hidden task assignments stay stored when a package is disabled.
+
+Package also exports config and route-resolution helpers for consumers.
 
 ## Config
 
-Config lives at `getAgentDir()/config/pi-task-models.json`, normally `~/.pi/agent/config/pi-task-models.json`:
+`~/.pi/agent/config/pi-task-models.json`
 
 ```json
 {
@@ -37,22 +54,15 @@ Config lives at `getAgentDir()/config/pi-task-models.json`, normally `~/.pi/agen
 }
 ```
 
-Each configured profile requires one primary model and thinking level. Fallback is optional. Model references use canonical `provider/model`; numbered `openai-codex-N` account routes are stored as `openai-codex/model` and resolve onto active matching account when available.
+Each configured profile needs one primary model and thinking level. Fallback is optional. Model references use canonical `provider/model`; numbered `openai-codex-N` routes store as `openai-codex/model`.
 
-Config reads are strict. Malformed or unknown values fail visibly and never rewrite file. Only explicit `/task-models` actions write config.
+Reads are strict. Malformed or unknown values fail visibly and never rewrite the file. Only explicit `/task-models` actions write config.
 
-## Consumers
+## Remove
 
-- `pi-herdr-rename`: task assignment defaults to `fast`; retries configured fallback after primary route failure.
-- `pi-auto-compact`: task assignment defaults to `balanced`; retries fallback, then uses current session model so compaction still runs.
-- `pi-subagent`: caller chooses `fast`, `balanced`, or `frontier`; fallback is selected only before child starts. Started child is never retried because tools may already have side effects.
-- `pi-herdr-subagents`: intentionally independent.
-
-Primary and fallback routes outside current model scope, with unavailable models, or with unsupported or scope-pinned-different thinking levels are skipped. Consumers define final failure behavior above.
-
-## Library API
-
-Package exports config, canonical model reference, model deduplication, supported-thinking, route resolution, and active-task discovery helpers. Pi model registry and extension `sourceInfo` remain runtime authority.
+```bash
+pi remove npm:@henryqw/pi-task-models
+```
 
 ## Development
 

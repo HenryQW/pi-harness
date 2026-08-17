@@ -1,19 +1,43 @@
-# Pi Multi Codex
+# `@henryqw/pi-multi-codex`
 
-Use multiple ChatGPT Codex OAuth slots in Pi.
+Use multiple ChatGPT Codex OAuth accounts in Pi.
 
-Native Pi auth remains owner of credentials. Run `/login` and select OpenAI
-Codex for slot 1. Run `/codex-add`, then `/login` and select reported numbered
-slot for each additional Codex OAuth credential.
+## Install
 
-Extension reads native `auth.json` and never writes or refreshes credentials.
+```bash
+pi install npm:@henryqw/pi-multi-codex
+```
 
-`/codex-status` shows shared seven-day quota snapshots. Refresh runs in background;
-status never waits for network. Credential-free snapshots live in
-`config/pi-multi-codex/usage.json` under Pi agent directory.
+## With
 
-Before first agent start, fresh snapshots route a managed Codex model to slot with
-most seven-day quota. Routing preserves model ID and never changes in-progress work.
-`/codex-switch` opens Pi selector for authenticated slots. Footer shows active slot
-and fresh seven-day quota. Scoped sessions can switch only to exact scoped aliases;
-restart or update model scope after adding slot.
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-model-thinking` | Improves. Thinking level follows the model across slots. |
+| `@henryqw/pi-task-models` | Improves. Numbered slots share one profile route. |
+| `@henryqw/pi-subagent` | Improves. Isolated children keep Main's active Codex slot. |
+
+## Use
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/codex-add` | command | Create the next numbered slot, then authenticate that slot. |
+| `/codex-status` | command | Show shared seven-day quota snapshots. Never waits on network. |
+| `/codex-switch` | command | Pick an authenticated slot. |
+
+Extension reads `auth.json` and never writes or refreshes credentials. Before the first agent start, a fresh snapshot routes a managed Codex model to the slot with the most seven-day quota. Routing preserves model ID and never changes in-progress work. Footer shows the active slot and fresh seven-day quota. Scoped sessions can switch only to exact scoped aliases; restart or update model scope after adding a slot.
+
+Quota snapshots live in `~/.pi/agent/config/pi-multi-codex/usage.json`. They are credential-free cache, not user-edited config.
+
+## Remove
+
+```bash
+pi remove npm:@henryqw/pi-multi-codex
+```
+
+## Development
+
+```bash
+npm test --workspace @henryqw/pi-multi-codex
+npm run typecheck --workspace @henryqw/pi-multi-codex
+npm run pack:check --workspace @henryqw/pi-multi-codex
+```
