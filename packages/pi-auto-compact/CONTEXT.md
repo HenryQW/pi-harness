@@ -17,5 +17,5 @@ The user-directed work in progress when auto-compaction begins and which continu
 _Avoid_: Prompt, new task
 
 **Compaction task profile**:
-Shared task-model profile assigned to `pi-auto-compact/autoCompact` (default `balanced`) with primary and optional fallback Pi registry routes. If neither route works, native compaction uses the current session model.
+Shared task-model profile assigned to `pi-auto-compact/autoCompact` (default `fast`) with primary and optional fallback Pi registry routes. If neither route works, native compaction uses the current session model.
 _Avoid_: dedicated compaction model, package-owned model picker

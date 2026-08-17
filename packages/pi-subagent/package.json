@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "Delegate one task to an isolated Pi role with explicit extensions and skills.",
   "keywords": [
     "pi-package",
@@ -47,6 +47,6 @@
   },
   "dependencies": {
     "@henryqw/pi-multi-codex": "^0.3.8",
-    "@henryqw/pi-task-models": "^0.1.0"
+    "@henryqw/pi-task-models": "^0.2.0"
   }
 }

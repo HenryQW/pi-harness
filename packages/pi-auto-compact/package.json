@@ -45,6 +45,6 @@
     ]
   },
   "dependencies": {
-    "@henryqw/pi-task-models": "^0.1.0"
+    "@henryqw/pi-task-models": "^0.2.0"
   }
 }

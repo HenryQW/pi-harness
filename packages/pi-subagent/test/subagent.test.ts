@@ -262,6 +262,7 @@ Return concise findings.
 				balanced: { primary: { model: "provider/balanced-model", thinkingLevel: "medium" } },
 				frontier: { primary: { model: "provider/frontier-model", thinkingLevel: "max" } },
 			},
+			tasks: { "pi-subagent/delegateTask": "fast" },
 		}));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
@@ -276,8 +277,8 @@ Return concise findings.
 
 		const omitted = await app.tool.execute("call-2", { role: "worker", task: "inspect code" }, undefined, undefined, app.ctx);
 		const omittedArgs = JSON.parse(omitted.content[0].text);
-		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/balanced-model");
-		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "medium");
+		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/fast-model");
+		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "off");
 		assert.equal(await readFile(join(agentDir, "config", "pi-subagent.json"), "utf8"), legacyConfig);
 	});
 });
