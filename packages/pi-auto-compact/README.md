@@ -31,7 +31,7 @@ pi remove npm:@henryqw/pi-auto-compact
 
 ## Configure
 
-Run `/auto-compact` to set the compaction threshold. Run `/task-models` to configure the shared primary and optional fallback routes. The `pi-auto-compact/autoCompact` task defaults to the `balanced` profile.
+Run `/auto-compact` to set the compaction threshold. Run `/task-models` to configure the shared primary and optional fallback routes. The `pi-auto-compact/autoCompact` task defaults to the `fast` profile.
 
 Threshold config lives in `~/.pi/agent/config/pi-auto-compact.json`:
 
@@ -47,7 +47,7 @@ Threshold must be at least 25% and below 100%; lower values are not meaningful. 
 
 - Refuses activation with an error when Pi's effective `compaction.enabled` setting is not `false`; competing automatic compactors can start duplicate summaries.
 - Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed/forked `session_start`.
-- Uses the assigned `balanced` task profile's primary route, then its configured fallback when a route is outside current model scope, unavailable, cannot authenticate, or its summary request fails. Scoped thinking pins are enforced. If neither route works, Pi's current session model still performs automatic compaction. Malformed shared task-model config is reported and left unchanged. Manual `/compact` always stays native.
+- Uses the assigned task profile's primary route, then its configured fallback when a route is outside current model scope, unavailable, cannot authenticate, or its summary request fails. Scoped thinking pins are enforced. If neither route works, Pi's current session model still performs automatic compaction. Malformed shared task-model config is reported and left unchanged. Manual `/compact` always stays native.
 - Keeps newest 15% as temporary emergency context while compaction runs.
 - Sends a follow-up message after mid-task compaction so task execution continues; final-answer compaction stays idle.
 - Compacts above configured `autoCompactThreshold` percentage (50% by default).

@@ -30,7 +30,7 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 			profiles: {},
 			tasks: {
 				"pi-herdr-rename/rename": "fast",
-				"pi-auto-compact/autoCompact": "balanced",
+				"pi-auto-compact/autoCompact": "fast",
 				"pi-subagent/delegateTask": "balanced",
 			},
 		});
