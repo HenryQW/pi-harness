@@ -1,6 +1,6 @@
 # `@henryqw/pi-model-thinking`
 
-Pi extension that restores chosen thinking level whenever model becomes active.
+Remember the thinking level for each model and restore it when that model becomes active.
 
 ## Install
 
@@ -8,19 +8,23 @@ Pi extension that restores chosen thinking level whenever model becomes active.
 pi install npm:@henryqw/pi-model-thinking
 ```
 
-Remove with:
+## With
 
-```bash
-pi remove npm:@henryqw/pi-model-thinking
-```
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots share one thinking level. |
 
 ## Use
 
-Run `/model-thinking`, then choose level to remember for current model. Choose `Use current level` to clear saved choice.
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/model-thinking` | command | Choose the level to remember for the current model. `Use current level` clears the saved choice. |
 
-Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Applied on session start and model change. Numbered `pi-multi-codex` providers share canonical `openai-codex/model`, so account switches keep the same level.
 
-Config lives in `~/.pi/agent/config/pi-model-thinking.json`:
+## Config
+
+`~/.pi/agent/config/pi-model-thinking.json`
 
 ```json
 {
@@ -29,4 +33,18 @@ Config lives in `~/.pi/agent/config/pi-model-thinking.json`:
 }
 ```
 
-Extension applies config when session starts or model changes. Numbered `pi-multi-codex` providers share canonical `openai-codex/model` setting, so account switches keep same level. Missing config starts empty, invalid entries are skipped, and malformed config is preserved.
+Missing config starts empty. Invalid entries are skipped. Malformed files are preserved and never rewritten on startup.
+
+## Remove
+
+```bash
+pi remove npm:@henryqw/pi-model-thinking
+```
+
+## Development
+
+```bash
+npm test --workspace @henryqw/pi-model-thinking
+npm run typecheck --workspace @henryqw/pi-model-thinking
+npm run pack:check --workspace @henryqw/pi-model-thinking
+```

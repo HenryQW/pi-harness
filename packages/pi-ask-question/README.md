@@ -1,6 +1,6 @@
 # `@henryqw/pi-ask-question`
 
-Pi extension exposing `ask_question`, an interactive tool for asking user one question. Tool shows one to three supplied options, marks first as recommended, then adds `Something else.` for custom answer.
+Ask the user one interactive question with up to three choices, or a custom answer.
 
 ## Install
 
@@ -8,7 +8,11 @@ Pi extension exposing `ask_question`, an interactive tool for asking user one qu
 pi install npm:@henryqw/pi-ask-question
 ```
 
-Tool accepts:
+## Use
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `ask_question` | tool | Pause for one interactive answer. |
 
 ```json
 {
@@ -21,9 +25,9 @@ Tool accepts:
 }
 ```
 
-Supply one to three meaningful options in preference order; UI adds `(Recommended)` to first label. Number keys select options directly. Empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions return error result. Aborting tool call closes pending question.
+Supply one to three options in preference order. UI marks the first `(Recommended)` and adds `Something else.` for a custom answer. Number keys select options. Empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions return an error. Aborting the tool closes the pending question.
 
-Remove with:
+## Remove
 
 ```bash
 pi remove npm:@henryqw/pi-ask-question
@@ -32,20 +36,13 @@ pi remove npm:@henryqw/pi-ask-question
 ## Development
 
 ```bash
-npm test
-npm run typecheck
-npm run pack:check
+npm test --workspace @henryqw/pi-ask-question
+npm run typecheck --workspace @henryqw/pi-ask-question
+npm run pack:check --workspace @henryqw/pi-ask-question
 ```
 
-Run manual model/TUI check outside CI:
+Manual TUI check outside CI:
 
 ```bash
-npm run test:manual
+npm run test:manual --workspace @henryqw/pi-ask-question
 ```
-
-Pass criteria:
-
-1. Agent calls `ask_question` instead of asking in plain text.
-2. UI shows one to three useful choices, first marked `(Recommended)`, plus `Something else.`.
-3. Option descriptions explain tradeoffs without repeating labels.
-4. Number key selects matching option; custom choice accepts typed answer; `Esc` cancels.
