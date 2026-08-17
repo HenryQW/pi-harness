@@ -29,7 +29,6 @@ import {
 	LAUNCH_DRAFT_ARG,
 	LAUNCH_DRAFT_COMMAND,
 	buildPaneSplitArgs,
-	parsePaneListPaneIds,
 	parsePaneSplitPaneId,
 	safeErrorText,
 	type BtwPayload,
@@ -737,32 +736,6 @@ export async function registerBtwExtension(
 						config.autoSubmit && draftQuestion.trim() ? LAUNCH_DRAFT_COMMAND : undefined,
 				};
 
-				const preSplitList = await herdr
-					.exec(["pane", "list"], { timeout: 5_000 })
-					.catch(() => undefined);
-				const existingPaneIds =
-					preSplitList?.code === 0 && !preSplitList.killed
-						? new Set(parsePaneListPaneIds(preSplitList.stdout) ?? [])
-						: undefined;
-
-				const closeFocusedSplitPane = async (): Promise<void> => {
-					const currentResult = await herdr
-						.exec(["pane", "current", "--current"], { timeout: 5_000 })
-						.catch(() => undefined);
-					const currentPaneId =
-						currentResult?.code === 0 && !currentResult.killed
-							? parsePaneSplitPaneId(currentResult.stdout)
-							: null;
-					if (
-						currentPaneId &&
-						existingPaneIds &&
-						!existingPaneIds.has(currentPaneId) &&
-						currentPaneId !== launchOptions.parentPaneId
-					) {
-						await herdr.run(["pane", "close", currentPaneId], { timeout: 5_000 }).catch(() => undefined);
-					}
-				};
-
 				// Step 1: create the side pane with the parent's cwd.
 				const splitResult = await herdr.exec(buildPaneSplitArgs(launchOptions), {
 					timeout: 10_000,
@@ -777,7 +750,6 @@ export async function registerBtwExtension(
 					return;
 				}
 				if (splitOutcome === "ambiguous") {
-					await closeFocusedSplitPane();
 					await store.remove(payloadPath);
 					ctx.ui.notify(
 						`/btw failed: ${safeErrorText(splitResult.stdout, splitResult.stderr)}`,
@@ -788,9 +760,7 @@ export async function registerBtwExtension(
 
 				const paneId = parsePaneSplitPaneId(splitResult.stdout);
 				if (!paneId) {
-					// Split focuses the new pane. Recover its ID from current-pane state
-					// before cleanup when split's response body is malformed.
-					await closeFocusedSplitPane();
+					// Without split's returned ID, no later pane lookup can prove ownership.
 					await store.remove(payloadPath);
 					ctx.ui.notify(
 						"/btw failed: could not determine the new pane ID from `herdr pane split` output",

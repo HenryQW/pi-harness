@@ -29,22 +29,13 @@ type ExecResult = {
 	killed?: boolean;
 };
 
-const PANE_LIST_STDOUT = JSON.stringify({
-	id: "cli:pane:list",
-	result: { panes: [{ pane_id: "w1:p1" }] },
-});
 const PANE_SPLIT_STDOUT = JSON.stringify({
 	id: "cli:pane:split",
 	result: { pane: { pane_id: "w1:p9", tab_id: "w1:t1", workspace_id: "w1" }, type: "pane_info" },
 });
-const EXISTING_PANE_STDOUT = JSON.stringify({ result: { pane: { pane_id: "w1:p1" } } });
-
 /** Herdr exec stub: pane split succeeds with a pane ID; agent start returns a ready agent. */
 function herdrExec(agentStart?: ExecResult) {
 	return async (_command: string, args: string[]): Promise<ExecResult> => {
-		if (args[0] === "pane" && args[1] === "list") {
-			return { code: 0, stdout: PANE_LIST_STDOUT, stderr: "" };
-		}
 		if (args[0] === "pane" && args[1] === "split") {
 			return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 		}
@@ -322,11 +313,9 @@ test("parent command captures native context and launches Herdr without leaking 
 		assert.ok(payload?.launchId);
 		assert.ok((payload?.capability.length ?? 0) >= 64);
 		assert.deepEqual(store.removed, []);
-		assert.equal(harness.execCalls.length, 3);
-		assert.equal(harness.execCalls[1]?.command, "herdr");
-		assert.equal(harness.execCalls[2]?.command, "herdr");
-		const splitArgs = harness.execCalls[1]?.args ?? [];
-		const startArgs = harness.execCalls[2]?.args ?? [];
+		assert.equal(harness.execCalls.length, 2);
+		const splitArgs = harness.execCalls[0]?.args ?? [];
+		const startArgs = harness.execCalls[1]?.args ?? [];
 		assert.deepEqual(startArgs.slice(startArgs.indexOf("--model"), startArgs.indexOf("--model") + 2), [
 			"--model",
 			"test-provider/test-model",
@@ -563,9 +552,6 @@ test("parent retries agent start on the transient pane-busy error", async () => 
 		let startCalls = 0;
 		const busy = JSON.stringify({ error: { code: "agent_pane_busy", message: "pane is busy" } });
 		const harness = await createHarness(store, async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "list") {
-				return { code: 0, stdout: PANE_LIST_STDOUT, stderr: "" };
-			}
 			if (args[0] === "pane" && args[1] === "split") {
 				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 			}
@@ -651,7 +637,7 @@ test("parent command removes sensitive payload after a definite nonzero split fa
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.execCalls.length, 2);
+		assert.equal(harness.execCalls.length, 1);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.deepEqual(ctx.notifications.at(-1), {
 			message: "/btw failed: no server",
@@ -671,8 +657,8 @@ test("parent command closes the split pane and removes payload when agent start 
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.execCalls.length, 4);
-		assert.deepEqual(harness.execCalls[3]?.args, ["pane", "close", "w1:p9"]);
+		assert.equal(harness.execCalls.length, 3);
+		assert.deepEqual(harness.execCalls[2]?.args, ["pane", "close", "w1:p9"]);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.deepEqual(ctx.notifications.at(-1), {
 			message: "/btw failed: pi not found",
@@ -685,7 +671,6 @@ test("parent closes split pane when agent start throws", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const harness = await createHarness(store, async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "list") return { code: 0, stdout: PANE_LIST_STDOUT, stderr: "" };
 			if (args[0] === "pane" && args[1] === "split") return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 			if (args[0] === "pane" && args[1] === "close") return { code: 0, stdout: "", stderr: "" };
 			throw new Error("spawn failed");
@@ -694,39 +679,30 @@ test("parent closes split pane when agent start throws", async () => {
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.execCalls.length, 4);
-		assert.deepEqual(harness.execCalls[1]?.args.slice(0, 2), ["pane", "split"]);
-		assert.deepEqual(harness.execCalls[2]?.args.slice(0, 2), ["agent", "start"]);
-		assert.deepEqual(harness.execCalls[3]?.args, ["pane", "close", "w1:p9"]);
+		assert.equal(harness.execCalls.length, 3);
+		assert.deepEqual(harness.execCalls[0]?.args.slice(0, 2), ["pane", "split"]);
+		assert.deepEqual(harness.execCalls[1]?.args.slice(0, 2), ["agent", "start"]);
+		assert.deepEqual(harness.execCalls[2]?.args, ["pane", "close", "w1:p9"]);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /spawn failed/);
 	});
 });
 
-test("parent reconciles a timed-out split before removing its payload", async () => {
+test("parent does not guess pane ownership after a timed-out split", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
-		const harness = await createHarness(store, async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "list") {
-				return { code: 0, stdout: PANE_LIST_STDOUT, stderr: "" };
-			}
-			if (args[0] === "pane" && args[1] === "split") {
-				return { code: 1, stdout: "", stderr: "timeout", killed: true };
-			}
-			if (args[0] === "pane" && args[1] === "current") {
-				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
-			}
-			return { code: 0, stdout: "", stderr: "" };
-		});
+		const harness = await createHarness(store, async () => ({
+			code: 1,
+			stdout: "",
+			stderr: "timeout",
+			killed: true,
+		}));
 		const ctx = createCommandContext();
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
 		assert.deepEqual(harness.execCalls.map(({ args }) => args), [
-			["pane", "list"],
 			["pane", "split", "--pane", "w1:p1", "--direction", "right", "--cwd", "/tmp/project", "--focus"],
-			["pane", "current", "--current"],
-			["pane", "close", "w1:p9"],
 		]);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.equal(ctx.notifications.at(-1)?.type, "error");
@@ -734,39 +710,10 @@ test("parent reconciles a timed-out split before removing its payload", async ()
 	});
 });
 
-test("parent leaves an existing focused pane open after a timed-out split", async () => {
-	await withParentEnvironment(async () => {
-		const store = new FakeStore();
-		const harness = await createHarness(store, async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "list") return { code: 0, stdout: PANE_LIST_STDOUT, stderr: "" };
-			if (args[0] === "pane" && args[1] === "split") {
-				return { code: 1, stdout: "", stderr: "timeout", killed: true };
-			}
-			if (args[0] === "pane" && args[1] === "current") {
-				return { code: 0, stdout: EXISTING_PANE_STDOUT, stderr: "" };
-			}
-			return { code: 0, stdout: "", stderr: "" };
-		});
-		const ctx = createCommandContext();
-		await harness.commands.get("btw")?.handler("question", ctx);
-		harness.cleanup();
-
-		assert.deepEqual(harness.execCalls.map(({ args }) => args), [
-			["pane", "list"],
-			["pane", "split", "--pane", "w1:p1", "--direction", "right", "--cwd", "/tmp/project", "--focus"],
-			["pane", "current", "--current"],
-		]);
-		assert.deepEqual(store.removed, [store.payloadPath]);
-	});
-});
-
 test("parent rejects a malformed successful agent start response", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const harness = await createHarness(store, async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "list") {
-				return { code: 0, stdout: PANE_LIST_STDOUT, stderr: "" };
-			}
 			if (args[0] === "pane" && args[1] === "split") {
 				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 			}
@@ -786,27 +733,16 @@ test("parent rejects a malformed successful agent start response", async () => {
 	});
 });
 
-test("parent command closes the focused split pane when split output has no pane ID", async () => {
+test("parent does not guess pane ownership when split output has no pane ID", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
-		const harness = await createHarness(store, async (_command, args) => {
-			if (args[0] === "pane" && args[1] === "list") {
-				return { code: 0, stdout: PANE_LIST_STDOUT, stderr: "" };
-			}
-			if (args[0] === "pane" && args[1] === "split") {
-				return { code: 0, stdout: "not json", stderr: "" };
-			}
-			if (args[0] === "pane" && args[1] === "current") {
-				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
-			}
-			return { code: 0, stdout: "", stderr: "" };
-		});
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "not json", stderr: "" }));
 		const ctx = createCommandContext();
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.execCalls.length, 4);
-		assert.deepEqual(harness.execCalls[3]?.args, ["pane", "close", "w1:p9"]);
+		assert.equal(harness.execCalls.length, 1);
+		assert.deepEqual(harness.execCalls[0]?.args.slice(0, 2), ["pane", "split"]);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.equal(ctx.notifications.at(-1)?.type, "error");
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /pane ID/);
@@ -846,8 +782,8 @@ test("parent command applies configured model, thinking, tools, and split", asyn
 		harness.cleanup();
 
 		assert.deepEqual(store.created[0]?.config, configStore.config);
-		const splitArgs = harness.execCalls[1]?.args ?? [];
-		const args = harness.execCalls[2]?.args ?? [];
+		const splitArgs = harness.execCalls[0]?.args ?? [];
+		const args = harness.execCalls[1]?.args ?? [];
 		assert.deepEqual(
 			splitArgs.slice(splitArgs.indexOf("--direction"), splitArgs.indexOf("--direction") + 2),
 			["--direction", "down"],
@@ -888,7 +824,7 @@ test("parent uses saved BTW model without a current model", async () => {
 		harness.cleanup();
 
 		assert.equal(store.created[0]?.metadata.model, null);
-		const args = harness.execCalls[2]?.args ?? [];
+		const args = harness.execCalls[1]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), [
 			"--model",
 			"openai-codex/gpt-5.6-luna",
@@ -922,7 +858,7 @@ test("parent honors scoped thinking pin for saved BTW model", async () => {
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		const args = harness.execCalls[2]?.args ?? [];
+		const args = harness.execCalls[1]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
 			"--thinking",
 			"low",
@@ -951,7 +887,7 @@ test("parent selects active thinking pin when inheriting among duplicate scoped 
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		const args = harness.execCalls[2]?.args ?? [];
+		const args = harness.execCalls[1]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
 			"--thinking",
 			"high",
@@ -969,7 +905,7 @@ test("parent omits the launch-draft sentinel when auto-submit is off or there is
 		// auto-submit off (default) with a question -> no sentinel
 		await command?.handler("question", createCommandContext());
 		assert.equal(
-			(harness.execCalls[2]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
+			(harness.execCalls[1]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
 			false,
 		);
 
@@ -978,7 +914,7 @@ test("parent omits the launch-draft sentinel when auto-submit is off or there is
 		await command?.handler("", createCommandContext());
 		harness.cleanup();
 		assert.equal(
-			(harness.execCalls[5]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
+			(harness.execCalls[3]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
 			false,
 		);
 	});

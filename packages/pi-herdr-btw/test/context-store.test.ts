@@ -199,6 +199,15 @@ test("ContextStore keeps launches with pending merge requests", async (t) => {
 	await access(secondPath);
 });
 
+test("ContextStore retains a launch when its merge request cannot be read", async (t) => {
+	const { store } = await createFixture(t);
+	const payloadPath = await store.create(fixturePayload());
+	await writeFile(join(dirname(payloadPath), "merge-request.json"), "{", { mode: 0o600 });
+
+	await assert.rejects(store.removeIfNoPendingMerge(payloadPath), SyntaxError);
+	await access(payloadPath);
+});
+
 test("ContextStore lists launch payload paths inside the private root", async (t) => {
 	const { store } = await createFixture(t);
 	const first = await store.create(fixturePayload("one"));

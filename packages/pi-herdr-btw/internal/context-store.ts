@@ -116,7 +116,7 @@ export class ContextStore {
 
 	/** Keep a launch with a request until its parent consumes it. */
 	async removeIfNoPendingMerge(payloadPath: string): Promise<boolean> {
-		if ((await this.readMergeRequest(payloadPath).catch(() => undefined)) !== undefined) return false;
+		if ((await this.readMergeRequest(payloadPath)) !== undefined) return false;
 		await this.remove(payloadPath);
 		return true;
 	}

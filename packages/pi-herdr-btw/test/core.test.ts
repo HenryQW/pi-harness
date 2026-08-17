@@ -10,7 +10,6 @@ import {
 	classifyLaunchResult,
 	createPayload,
 	isBtwPayload,
-	parsePaneListPaneIds,
 	parsePaneSplitPaneId,
 	isAgentStartReady,
 	safeErrorText,
@@ -109,13 +108,6 @@ test("parsePaneSplitPaneId reads the pane ID from pane split JSON output", () =>
 	assert.equal(parsePaneSplitPaneId("not json"), null);
 	assert.equal(parsePaneSplitPaneId("{}"), null);
 	assert.equal(parsePaneSplitPaneId(JSON.stringify({ result: { pane: { pane_id: "" } } })), null);
-});
-
-test("parsePaneListPaneIds reads pane IDs and rejects malformed output", () => {
-	const stdout = JSON.stringify({ result: { panes: [{ pane_id: "w1:p1" }, { pane_id: "w1:p2" }, {}] } });
-	assert.deepEqual(parsePaneListPaneIds(stdout), ["w1:p1", "w1:p2"]);
-	assert.equal(parsePaneListPaneIds("not json"), null);
-	assert.equal(parsePaneListPaneIds(JSON.stringify({ result: {} })), null);
 });
 
 test("isAgentStartReady validates Herdr agent identity and readiness", () => {

@@ -243,18 +243,6 @@ export function parsePaneSplitPaneId(stdout: string): string | null {
 	}
 }
 
-export function parsePaneListPaneIds(stdout: string): string[] | null {
-	try {
-		const parsed = JSON.parse(stdout) as { result?: { panes?: Array<{ pane_id?: unknown }> } };
-		if (!Array.isArray(parsed.result?.panes)) return null;
-		return parsed.result.panes.flatMap((pane) =>
-			typeof pane?.pane_id === "string" && pane.pane_id.length > 0 ? [pane.pane_id] : [],
-		);
-	} catch {
-		return null;
-	}
-}
-
 export function isAgentStartReady(
 	stdout: string,
 	expected: { name: string; paneId: string },
