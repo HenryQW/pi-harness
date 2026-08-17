@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdtemp, readFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -80,6 +80,26 @@ test("ConfigStore serializes read-modify-write updates", async (t) => {
 		model: "anthropic/claude-sonnet",
 		tools: "none",
 	});
+});
+
+test("ConfigStore reclaims a stale lock without recursive deletion", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-herdr-btw-config-stale-lock-test-"));
+	t.after(async () => {
+		const { rm } = await import("node:fs/promises");
+		await rm(directory, { recursive: true, force: true });
+	});
+	const path = join(directory, "config.json");
+	const lockPath = `${path}.lock`;
+	await mkdir(lockPath, { mode: 0o700 });
+	await writeFile(join(lockPath, "owner-stale"), "stale", { encoding: "utf8", mode: 0o600 });
+	const stale = new Date(Date.now() - 60_000);
+	await utimes(lockPath, stale, stale);
+
+	const store = new ConfigStore(path);
+	await store.save({ ...DEFAULT_CONFIG, tools: "none" });
+
+	assert.deepEqual(await store.load(), { ...DEFAULT_CONFIG, tools: "none" });
+	await assert.rejects(lstat(lockPath), { code: "ENOENT" });
 });
 
 test("ConfigStore persists private config and resets it", async (t) => {

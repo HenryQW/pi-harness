@@ -177,6 +177,18 @@ export class ContextStore {
 				if (!info?.isDirectory() || info.isSymbolicLink()) return;
 				assertOwnedByCurrentUser(info.uid, launchDir);
 				if (info.mtimeMs < now - maxAgeMs) {
+					// A heartbeat may have refreshed this launch after the first stat.
+					const current = await lstat(launchDir).catch(() => undefined);
+					if (
+						!current?.isDirectory() ||
+						current.isSymbolicLink() ||
+						current.dev !== info.dev ||
+						current.ino !== info.ino ||
+						current.ctimeMs !== info.ctimeMs ||
+						current.mtimeMs !== info.mtimeMs
+					) {
+						return;
+					}
 					await rm(launchDir, { recursive: true, force: true });
 				}
 			}),
