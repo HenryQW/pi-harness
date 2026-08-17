@@ -1,6 +1,6 @@
 # `@henryqw/pi-herdr-rename`
 
-Give each conversation a short semantic title: Pi session name, current Herdr pane, and a Git branch when the checkout is still generated.
+Give each conversation one short human title across Pi and Herdr while keeping semantic naming for Git branches.
 
 ## Install
 
@@ -21,28 +21,15 @@ Requires Pi Coding Agent 0.84.2+.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/rename` | command | Generate a title from up to three recent user/assistant rounds. |
+| `/rename` | command | Generate a display title and semantic branch from up to three recent user/assistant rounds. |
 
-First real user prompt also generates a title in the background and does not delay the main reply.
+First real user prompt generates a title in the background after Pi expands skill and prompt-template shorthand. It does not delay main reply. Extension-injected prompts, empty prompts, and image-only input are ignored.
 
-Successful titles use `type: subject`, lowercase words, and by default at most four words and 40 characters. Example: `fix: extension name` → Git branch `fix/extension-name`.
+Display titles are natural task phrases, preferably three or four words and always at most four words and 20 characters. Model classification stays internal: `refactor: update task logic` displays as `Update task logic` and maps to Git branch `refactor/update-task-logic`.
 
-In a linked worktree, a detached checkout or Herdr `worktree/...` branch is renamed; an existing non-generated branch stays. A generated workspace label such as `worktree-brave-meadow-4aa8` becomes the semantic branch; custom workspace names stay. The enclosing Herdr tab updates only when this pane is the tab's only pane. Outside Herdr, only the Pi session name changes.
+In a linked worktree, a detached checkout or Herdr `worktree/...` branch is renamed; an existing non-generated branch stays. A generated workspace label such as `worktree-brave-meadow-4aa8` becomes display title; custom workspace names stay. Enclosing Herdr tab updates only when this pane is tab's only pane. Outside Herdr, only Pi session name changes.
 
-Tries the assigned profile primary, then fallback. Never substitutes the current session model. No viable route leaves titles unchanged. Resuming a named session reapplies the saved title without another model request.
-
-## Config
-
-`~/.pi/agent/config/pi-herdr-rename.json`
-
-```json
-{
-  "maxWords": 4,
-  "maxChars": 40
-}
-```
-
-`maxWords` must be at least 2 and `maxChars` at least 6; defaults are 4 and 40. Invalid limits use defaults. Model routes live in `~/.pi/agent/config/pi-task-models.json`. Malformed shared task-model config is reported, left unchanged, and never changes a title.
+Tries assigned profile primary, then fallback, while honoring configured thinking level. Never substitutes current session model. No viable route leaves titles unchanged. Resuming a session created by this version reapplies saved display title and semantic branch without another model request. Older titles receive no migration.
 
 ## Remove
 

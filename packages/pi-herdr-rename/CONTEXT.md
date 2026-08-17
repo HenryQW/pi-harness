@@ -4,20 +4,20 @@ Pi extension that gives each conversation one short task label across Pi and its
 
 ## Language
 
-**Chat title**:
-Semantic model-generated task label in `type: subject` form, stored as Pi session display name and applied to current Herdr pane. It also labels enclosing tab when current pane has no siblings.
-_Avoid_: session rename, terminal name
+**Display title**:
+Model-generated natural task phrase, sentence-cased and limited to four words and 20 characters. One display title labels Pi conversation and current Herdr pane and workspace. It also labels enclosing tab when current pane has no siblings.
+_Avoid_: semantic title, session rename, terminal name
 
 **Semantic branch**:
-Git-safe branch derived from semantic chat title: `fix: extension name` becomes `fix/extension-name`. It replaces a detached checkout or Herdr-generated `worktree/...` branch; an existing non-generated branch wins.
-_Avoid_: raw generated branch, arbitrary Git mutation
+Git-safe branch combining task type with display-title words: `Update task logic` classified as `refactor` becomes `refactor/update-task-logic`. It replaces a detached checkout or Herdr-generated `worktree/...` branch; an existing non-generated branch wins.
+_Avoid_: display title, raw generated branch, arbitrary Git mutation
 
 **Generated worktree label**:
-Herdr linked-worktree label matching its `worktree-<adjective>-<noun>-<hex>` default. It is replaced with current semantic Git branch; custom workspace labels remain unchanged.
-_Avoid_: chat title, custom workspace name
+Herdr linked-worktree label matching its `worktree-<adjective>-<noun>-<hex>` default. It is replaced with current display title; custom workspace labels remain unchanged.
+_Avoid_: semantic branch, custom workspace name
 
 **Sole-pane tab**:
-Herdr tab containing current pane and no sibling panes. Only this tab receives chat title because title cannot misrepresent another pane.
+Herdr tab containing current pane and no sibling panes. Only this tab receives display title because title cannot misrepresent another pane.
 _Avoid_: single-pane session, empty tab
 
 **Rename task profile**:
