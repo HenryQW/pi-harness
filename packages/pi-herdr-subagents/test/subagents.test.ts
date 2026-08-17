@@ -67,6 +67,7 @@ function mainHarness(options: {
 	mainName?: string | null;
 	selectResults?: Array<string | undefined>;
 	availableModels?: TestModel[];
+	currentModel?: TestModel;
 	onModelRegistryRefresh?: (options: { allowNetwork?: boolean }) => Promise<void> | void;
 } = {}) {
 	const handlers = new Map<string, Handler>();
@@ -89,7 +90,7 @@ function mainHarness(options: {
 	const cwd = "/work/project";
 	const ctx = {
 		cwd,
-		model: options.noModel ? undefined : model,
+		model: options.noModel ? undefined : options.currentModel ?? model,
 		thinkingLevel: Object.hasOwn(options, "thinkingLevel") ? options.thinkingLevel : "high",
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: {
@@ -362,6 +363,27 @@ test("/subagent-model maps all model classes from Pi's available model list and 
 		assert.equal(started[started.indexOf("--thinking") + 1], "max");
 		assert.match(delegated.content[0].text, /^Model: test-provider\/frontier-model \(frontier\)$/m);
 		assert.match(delegated.content[0].text, /^Thinking: max$/m);
+	});
+	await rm(agentDir, { recursive: true, force: true });
+});
+
+test("canonical Codex route follows active account alias in isolated Herdr Subagent", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-subagents-codex-alias-"));
+	await withEnvironment({ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace-1", HERDR_PANE_ID: "main-pane", PI_CODING_AGENT_DIR: agentDir }, async () => {
+		await mkdir(join(agentDir, "config"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-herdr-subagents.json"), JSON.stringify({
+			maxConcurrentSubagents: 10,
+			models: { frontier: { model: "openai-codex/gpt-test", thinkingLevel: "high" } },
+		}));
+		const canonical: TestModel = { provider: "openai-codex", id: "gpt-test", input: ["text"], reasoning: true };
+		const alias: TestModel = { ...canonical, provider: "openai-codex-2" };
+		const app = mainHarness({ availableModels: [canonical, alias], currentModel: alias });
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		await app.tools.get("delegate_task")!.execute("frontier", { task: "inspect", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const started = app.calls.find((args) => args[0] === "agent" && args[1] === "start")!;
+		assert.equal(started[started.indexOf("--model") + 1], "openai-codex-2/gpt-test");
+		const extensions = started.flatMap((value, index) => value === "--extension" ? [started[index + 1]] : []);
+		assert.ok(extensions.some((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")));
 	});
 	await rm(agentDir, { recursive: true, force: true });
 });

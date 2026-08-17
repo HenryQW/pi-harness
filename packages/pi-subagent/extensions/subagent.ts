@@ -1,16 +1,26 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
-import { getSupportedThinkingLevels, StringEnum } from "@earendil-works/pi-ai";
+import { basename, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir, parseFrontmatter, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	modelReference,
+	orderedProfileRoutes,
+	PROFILE_NAMES,
+	readTaskModelsConfig,
+	resolveTaskModelRoute,
+	type ProfileName,
+	type ResolvedTaskRoute,
+} from "@henryqw/pi-task-models";
 import { Type } from "typebox";
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-const MODEL_CLASSES = ["fast", "balanced", "frontier"] as const;
-const configPath = () => join(getAgentDir(), "config", "pi-subagent.json");
+const MODEL_CLASSES = PROFILE_NAMES;
+const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
+const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
 const WIDGET_KEY = "subagent-status";
@@ -19,10 +29,7 @@ const TERMINAL_DISPLAY_MS = 1_000;
 const MAX_WIDGET_ROWS = 8;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-type ModelClass = (typeof MODEL_CLASSES)[number];
-type ConfiguredModel = { model: string; thinkingLevel: ThinkingLevel };
-type Config = { models: Partial<Record<ModelClass, ConfiguredModel>> };
+type ModelClass = ProfileName;
 type Role = {
 	name: string;
 	description: string;
@@ -49,61 +56,26 @@ type WidgetItem = {
 	removeAt?: number;
 };
 
-const defaultConfig = (): Config => ({ models: {} });
 const isModelClass = (value: unknown): value is ModelClass =>
 	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
-const isThinkingLevel = (value: unknown): value is ThinkingLevel =>
-	typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
-const isModelReference = (value: unknown): value is string => {
-	if (typeof value !== "string" || value !== value.trim() || value.includes("\0")) return false;
-	const separator = value.indexOf("/");
-	return separator > 0 && separator < value.length - 1;
-};
+const isNumberedCodexProvider = (provider: string): boolean => CODEX_ALIAS.test(provider);
 
-function readConfig(): { value: Config; invalid: boolean } {
+function resolveTaskRoute(ctx: ExtensionContext, modelClass: ModelClass): ResolvedTaskRoute {
+	let config;
 	try {
-		const value = JSON.parse(readFileSync(configPath(), "utf8")) as unknown;
-		if (!value || typeof value !== "object" || Array.isArray(value)) return { value: defaultConfig(), invalid: true };
-		const record = value as Record<string, unknown>;
-		if (Object.keys(record).some((key) => key !== "models")) return { value: defaultConfig(), invalid: true };
-		if (record.models === undefined) return { value: defaultConfig(), invalid: false };
-		if (!record.models || typeof record.models !== "object" || Array.isArray(record.models)) {
-			return { value: defaultConfig(), invalid: true };
-		}
-		const modelRecord = record.models as Record<string, unknown>;
-		const models: Config["models"] = {};
-		let invalid = Object.keys(modelRecord).some((key) => !isModelClass(key));
-		for (const modelClass of MODEL_CLASSES) {
-			if (!Object.hasOwn(modelRecord, modelClass)) continue;
-			const candidate = modelRecord[modelClass];
-			if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-				invalid = true;
-				continue;
-			}
-			const route = candidate as Record<string, unknown>;
-			if (isModelReference(route.model) && isThinkingLevel(route.thinkingLevel)) {
-				models[modelClass] = { model: route.model, thinkingLevel: route.thinkingLevel };
-			} else invalid = true;
-		}
-		return { value: { models }, invalid };
-	} catch (error: unknown) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-			return { value: defaultConfig(), invalid: false };
-		}
-		return { value: defaultConfig(), invalid: true };
+		config = readTaskModelsConfig();
+	} catch {
+		throw new Error("Couldn't read task model config. Run /task-models.");
 	}
-}
 
-function writeConfig(config: Config): void {
-	const file = configPath();
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+	const profile = config.profiles[modelClass];
+	if (!profile) throw new Error(`No ${modelClass} task model profile is configured. Run /task-models.`);
+	for (const route of orderedProfileRoutes(profile)) {
+		const resolved = resolveTaskModelRoute(ctx, route);
+		if (resolved) return resolved;
+	}
+	throw new Error(`No usable ${modelClass} task model route. Run /task-models.`);
 }
-
-const modelReference = (model: { provider: string; id: string }): string => `${model.provider}/${model.id}`;
-const availableTextModels = (ctx: ExtensionContext) => ctx.modelRegistry
-	.getAvailable()
-	.filter((model) => model.input.includes("text"));
 
 const cleanText = (value: unknown, field: string, file: string): string => {
 	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -466,7 +438,7 @@ const Parameters = Type.Object({
 	role: Type.String({ description: "Configured Subagent role name" }),
 	task: Type.String({ description: "One bounded task with needed context and expected result" }),
 	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
-		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning. Defaults to configured balanced, then Main route.",
+		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning. Defaults to the shared balanced profile.",
 	})),
 });
 
@@ -499,8 +471,6 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
 	let activeTui: TUI | undefined;
-	let config = defaultConfig();
-
 	const stopWidgetTimer = () => {
 		if (!widgetTimer) return;
 		clearInterval(widgetTimer);
@@ -573,15 +543,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		requestWidgetRender();
 	};
 
-	const refreshConfig = (ctx: ExtensionContext) => {
-		const loaded = readConfig();
-		config = loaded.value;
-		if (loaded.invalid) ctx.ui.notify("Invalid pi-subagent config values were ignored.", "warning");
-	};
-
 	pi.on("session_start", (_event, ctx) => {
 		ensureWidget(ctx);
-		refreshConfig(ctx);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		stopWidgetTimer();
@@ -589,48 +552,6 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
-	});
-
-	pi.registerCommand("subagent", {
-		description: "configure fast, balanced, and frontier Subagent model routes",
-		handler: async (args, ctx) => {
-			if (args.trim()) {
-				ctx.ui.notify("Usage: /subagent", "warning");
-				return;
-			}
-			refreshConfig(ctx);
-			const modelClass = await ctx.ui.select("Subagent model class", [...MODEL_CLASSES]);
-			if (!isModelClass(modelClass)) return;
-			const models = availableTextModels(ctx);
-			if (!models.length) {
-				ctx.ui.notify("No authenticated text models are available.", "warning");
-				return;
-			}
-			const saved = config.models[modelClass];
-			const references = models.map(modelReference).sort();
-			const selected = await ctx.ui.select(
-				`${modelClass} Subagent model · saved: ${saved?.model ?? "none"}`,
-				references,
-			);
-			const selectedModel = models.find((model) => modelReference(model) === selected);
-			if (!selectedModel) return;
-			const levels = getSupportedThinkingLevels(selectedModel);
-			const thinkingLevel = await ctx.ui.select(
-				`${modelClass} Subagent thinking level · saved: ${saved?.thinkingLevel ?? "none"}`,
-				levels,
-			);
-			if (!isThinkingLevel(thinkingLevel) || !levels.some((level) => level === thinkingLevel)) return;
-			try {
-				const latest = readConfig();
-				const route = { model: modelReference(selectedModel), thinkingLevel };
-				const next = { ...latest.value, models: { ...latest.value.models, [modelClass]: route } };
-				writeConfig(next);
-				config = next;
-				ctx.ui.notify(`${modelClass} Subagent set to ${route.model} with thinking ${thinkingLevel}.`, "info");
-			} catch {
-				ctx.ui.notify("Couldn't save pi-subagent model config.", "warning");
-			}
-		},
 	});
 
 	pi.registerTool({
@@ -646,34 +567,14 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				throw new Error(`Unknown Subagent role: ${params.role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
 			}
 
-			refreshConfig(ctx);
-			if (!ctx.model) throw new Error("delegate_task requires an active Pi model.");
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, or frontier.");
 			}
 			const modelClass = params.modelClass ?? "balanced";
-			const configuredModel = config.models[modelClass];
-			if (params.modelClass && !configuredModel) {
-				throw new Error(`No ${modelClass} Subagent model configured; run /subagent.`);
-			}
-			const selectedModelInfo = configuredModel && availableTextModels(ctx)
-				.find((model) => modelReference(model) === configuredModel.model);
-			if (params.modelClass && configuredModel && !selectedModelInfo) {
-				throw new Error(`Configured ${modelClass} Subagent model is unavailable; run /subagent.`);
-			}
-			const thinkingAvailable = Boolean(configuredModel && selectedModelInfo
-				&& getSupportedThinkingLevels(selectedModelInfo).some((level) => level === configuredModel.thinkingLevel));
-			if (params.modelClass && configuredModel && selectedModelInfo && !thinkingAvailable) {
-				throw new Error(`Configured ${modelClass} Subagent thinking level is unavailable; run /subagent.`);
-			}
-			const configuredRoute = thinkingAvailable ? configuredModel : undefined;
-			const modelReferenceValue = configuredRoute?.model ?? modelReference(ctx.model);
-			const model = configuredRoute ? selectedModelInfo : ctx.model;
-			if (!model) throw new Error("Subagent model metadata is unavailable.");
-			const thinkingLevel = configuredRoute?.thinkingLevel ?? ctx.thinkingLevel;
-			if (thinkingLevel && !getSupportedThinkingLevels(model).includes(thinkingLevel)) {
-				throw new Error(`Subagent thinking level ${thinkingLevel} is unavailable for ${modelReferenceValue}.`);
-			}
+			const resolvedRoute = resolveTaskRoute(ctx, modelClass);
+			const model = resolvedRoute.model;
+			const modelReferenceValue = modelReference(model);
+			const thinkingLevel = resolvedRoute.thinkingLevel;
 
 			const resolvedSkills = resolveSkillPaths(pi, role.skills);
 			if (resolvedSkills.missing.length) {
@@ -689,7 +590,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			try {
 				await writeFile(promptPath, role.systemPrompt, { encoding: "utf8", mode: 0o600 });
 				const args = ["--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills"];
-				for (const extension of role.extensions) args.push("--extension", extension);
+				const extensions = isNumberedCodexProvider(model.provider)
+					? [...role.extensions, MULTI_CODEX_EXTENSION]
+					: role.extensions;
+				for (const extension of new Set(extensions)) args.push("--extension", extension);
 				for (const skill of resolvedSkills.paths) args.push("--skill", skill);
 				if (role.tools !== undefined) {
 					if (role.tools.length) args.push("--tools", role.tools.join(","));

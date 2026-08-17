@@ -10,10 +10,14 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+	orderedProfileRoutes,
+	readTaskModelsConfig,
+	resolveTaskModelRoute,
+	type ResolvedTaskRoute,
+} from "@henryqw/pi-task-models";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
-type ThinkingLevel = NonNullable<Parameters<typeof compact>[6]>;
-type TextModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
 
 /**
  * Proactive compaction runs at four points:
@@ -27,41 +31,16 @@ type TextModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[n
  */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
-const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const AUTO_COMPACT_TASK = "pi-auto-compact/autoCompact";
+const DEFAULT_AUTO_COMPACT_PROFILE = "balanced" as const;
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
 type Config = {
 	autoCompactThreshold: number;
-	compactionModel?: string;
-	compactionThinkingLevel?: ThinkingLevel;
 };
-
-type ModelReference = { provider: string; modelId: string };
 
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
-}
-
-function isValidThinkingLevel(value: unknown): value is ThinkingLevel {
-	return typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
-}
-
-function supportedThinkingLevels(model: TextModel): ThinkingLevel[] {
-	if (!model.reasoning) return ["off"];
-	return THINKING_LEVELS.filter((level) => {
-		const mapped = model.thinkingLevelMap?.[level];
-		return mapped !== null && ((level !== "xhigh" && level !== "max") || mapped !== undefined);
-	});
-}
-
-function parseModelReference(value: unknown): ModelReference | undefined {
-	if (typeof value !== "string") return undefined;
-	const separator = value.indexOf("/");
-	if (separator <= 0 || separator === value.length - 1) return undefined;
-
-	const provider = value.slice(0, separator).trim();
-	const modelId = value.slice(separator + 1).trim();
-	return provider && modelId ? { provider, modelId } : undefined;
 }
 
 function readConfig(): Config {
@@ -77,32 +56,42 @@ function readConfig(): Config {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error("Config must be an object.");
 	}
-	const config = value as Record<string, unknown>;
-	const threshold = config.autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
+	const threshold = (value as Record<string, unknown>).autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	if (!isValidThreshold(threshold)) {
 		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
 	}
-	if (config.compactionModel !== undefined && !parseModelReference(config.compactionModel)) {
-		throw new Error("compactionModel must be a provider/model string.");
-	}
-	const thinkingLevel = config.compactionThinkingLevel;
-	if (thinkingLevel !== undefined && !isValidThinkingLevel(thinkingLevel)) {
-		throw new Error("compactionThinkingLevel is invalid.");
-	}
-	if (thinkingLevel !== undefined && config.compactionModel === undefined) {
-		throw new Error("compactionThinkingLevel requires compactionModel.");
-	}
-	return {
-		autoCompactThreshold: threshold,
-		compactionModel: typeof config.compactionModel === "string" ? config.compactionModel.trim() : undefined,
-		compactionThinkingLevel: thinkingLevel,
-	};
+	return { autoCompactThreshold: threshold };
 }
 
 function writeConfig(config: Config): void {
 	const file = configPath();
 	mkdirSync(dirname(file), { recursive: true });
 	writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] | undefined {
+	let config;
+	try {
+		config = readTaskModelsConfig();
+	} catch {
+		ctx.ui.notify("Couldn't read task model config; using current session model.", "error");
+		return undefined;
+	}
+
+	const profileName = config.tasks[AUTO_COMPACT_TASK] ?? DEFAULT_AUTO_COMPACT_PROFILE;
+	const profile = config.profiles[profileName];
+	if (!profile) {
+		ctx.ui.notify(`Task model profile ${profileName} is not configured; using current session model.`, "error");
+		return [];
+	}
+
+	const routes = orderedProfileRoutes(profile)
+		.map((route) => resolveTaskModelRoute(ctx, route))
+		.filter((route): route is ResolvedTaskRoute => route !== undefined);
+	if (!routes.length) {
+		ctx.ui.notify(`No usable ${profileName} task model route; using current session model.`, "error");
+	}
+	return routes;
 }
 
 function withoutDeletedHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
@@ -176,8 +165,6 @@ function hasToolCall(message: AgentMessage): boolean {
 export default function (pi: ExtensionAPI) {
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	let compactionModel: string | undefined;
-	let compactionThinkingLevel: ThinkingLevel | undefined;
 	// Prevent lifecycle hooks from starting duplicate summaries.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
@@ -268,7 +255,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("auto-compact", {
-		description: "configure automatic compaction",
+		description: "configure automatic compaction threshold",
 		handler: async (args, ctx) => {
 			if (args.trim()) {
 				ctx.ui.notify("Usage: /auto-compact", "error");
@@ -280,57 +267,6 @@ export default function (pi: ExtensionAPI) {
 				config = readConfig();
 			} catch {
 				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
-				return;
-			}
-			const save = (next: Config) => {
-				try {
-					writeConfig(next);
-					return true;
-				} catch {
-					ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
-					return false;
-				}
-			};
-
-			const thresholdOption = `Threshold · ${config.autoCompactThreshold}%`;
-			const modelOption = `Model · ${config.compactionModel
-				? `${config.compactionModel} (${config.compactionThinkingLevel ?? "off"})`
-				: "current session"}`;
-			const setting = await ctx.ui.select("Configure auto-compact", [modelOption, thresholdOption]);
-			if (!setting) return;
-
-			if (setting === modelOption) {
-				const models = ctx.modelRegistry
-					.getAvailable()
-					.filter((model) => model.input.includes("text"))
-					.sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
-				const currentModel = "Current session model";
-				const selected = await ctx.ui.select("Auto-compact model", [
-					currentModel,
-					...models.map((model) => `${model.provider}/${model.id}`),
-				]);
-				if (!selected) return;
-
-				if (selected === currentModel) {
-					if (!save({ ...config, compactionModel: undefined, compactionThinkingLevel: undefined })) return;
-					compactionModel = undefined;
-					compactionThinkingLevel = undefined;
-					ctx.ui.notify("Auto-compact model set to current session model.", "info");
-					return;
-				}
-
-				const model = models.find((candidate) => `${candidate.provider}/${candidate.id}` === selected);
-				if (!model) return;
-				const thinkingLevels = supportedThinkingLevels(model);
-				const thinkingLevel = thinkingLevels.length === 1
-					? thinkingLevels[0]
-					: await ctx.ui.select(`Thinking level · ${selected}`, thinkingLevels);
-				if (!isValidThinkingLevel(thinkingLevel)) return;
-
-				if (!save({ ...config, compactionModel: selected, compactionThinkingLevel: thinkingLevel })) return;
-				compactionModel = selected;
-				compactionThinkingLevel = thinkingLevel;
-				ctx.ui.notify(`Auto-compact model set to ${selected} (${thinkingLevel}).`, "info");
 				return;
 			}
 
@@ -350,7 +286,12 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			if (!save({ ...config, autoCompactThreshold: threshold })) return;
+			try {
+				writeConfig({ autoCompactThreshold: threshold });
+			} catch {
+				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
+				return;
+			}
 			autoCompactThreshold = threshold;
 			ctx.ui.notify(`Auto-compact threshold set to ${threshold}%.`, "info");
 		},
@@ -360,14 +301,9 @@ export default function (pi: ExtensionAPI) {
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
 		try {
-			const config = readConfig();
-			autoCompactThreshold = config.autoCompactThreshold;
-			compactionModel = config.compactionModel;
-			compactionThinkingLevel = config.compactionThinkingLevel;
+			autoCompactThreshold = readConfig().autoCompactThreshold;
 		} catch {
 			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-			compactionModel = undefined;
-			compactionThinkingLevel = undefined;
 			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
 		}
 
@@ -403,44 +339,35 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		if (!compactionModel) return;
-		const reference = parseModelReference(compactionModel);
-		if (!reference) return;
-		const model = ctx.modelRegistry.find(reference.provider, reference.modelId);
-		if (!model) {
-			ctx.ui.notify("Configured compaction model not found; using current session model.", "error");
-			return;
-		}
-		if (compactionThinkingLevel && !supportedThinkingLevels(model).includes(compactionThinkingLevel)) {
-			ctx.ui.notify("Configured thinking level is unsupported; using current session model.", "error");
-			return;
+		const routes = configuredTaskRoutes(ctx);
+		if (!routes?.length) return;
+
+		for (const route of routes) {
+			try {
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(route.model);
+				if (!auth.ok) continue;
+
+				const requestModel = auth.baseUrl ? { ...route.model, baseUrl: auth.baseUrl } : route.model;
+				return {
+					compaction: await compact(
+						event.preparation,
+						requestModel,
+						auth.apiKey,
+						withoutDeletedHeaders(auth.headers),
+						event.customInstructions,
+						event.signal,
+						route.thinkingLevel,
+						undefined,
+						auth.env,
+					),
+				};
+			} catch {
+				if (event.signal.aborted) return;
+			}
 		}
 
-		try {
-			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok) {
-				ctx.ui.notify("Couldn't authenticate configured compaction model; using current session model.", "error");
-				return;
-			}
-
-			const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
-			return {
-				compaction: await compact(
-					event.preparation,
-					requestModel,
-					auth.apiKey,
-					withoutDeletedHeaders(auth.headers),
-					event.customInstructions,
-					event.signal,
-					compactionThinkingLevel,
-					undefined,
-					auth.env,
-				),
-			};
-		} catch {
-			if (!event.signal.aborted) {
-				ctx.ui.notify("Configured compaction model failed; using current session model.", "error");
-			}
+		if (!event.signal.aborted) {
+			ctx.ui.notify("Configured task model routes failed; using current session model.", "error");
 		}
 	});
 }

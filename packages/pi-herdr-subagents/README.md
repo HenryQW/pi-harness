@@ -82,7 +82,7 @@ Subagent Limit defaults to 10 per Main session. Run `/subagent-limit` to set pos
 }
 ```
 
-Explicit model classes must be configured and reject when configured model or thinking level becomes unavailable. Implicit `balanced` routing falls back to Main in either case. Lower limit does not stop live Subagents. New delegation rejects at limit; package never queues work.
+Explicit model classes must be configured and reject when configured model or thinking level becomes unavailable. Numbered `pi-multi-codex` providers save as canonical `openai-codex/model`; delegation follows Main's active Codex account slot when same model is available and explicitly loads provider extension in isolated child. Implicit `balanced` routing falls back to Main in either case. Lower limit does not stop live Subagents. New delegation rejects at limit; package never queues work.
 
 ## Why Herdr panes?
 

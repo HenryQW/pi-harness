@@ -34,6 +34,7 @@ test("persists and applies model thinking levels", async () => {
 		} as unknown as ExtensionAPI);
 
 		const model = { provider: "openai-codex", id: "gpt-test" };
+		const aliasModel = { ...model, provider: "openai-codex-2" };
 		let selected = "high";
 		const ctx = {
 			model,
@@ -46,13 +47,16 @@ test("persists and applies model thinking levels", async () => {
 		} as unknown as ExtensionContext;
 
 		assert.equal(commandName, "model-thinking");
+		(ctx as unknown as { model: typeof model }).model = aliasModel;
 		await command?.("", ctx);
 		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { "openai-codex/gpt-test": "high" });
 		assert.deepEqual(levels, ["high"]);
+		(ctx as unknown as { model: typeof model }).model = model;
 
 		levels.length = 0;
 		handlers.get("session_start")?.({}, ctx);
-		assert.deepEqual(levels, ["high"]);
+		handlers.get("model_select")?.({ model: aliasModel }, ctx);
+		assert.deepEqual(levels, ["high", "high"]);
 
 		levels.length = 0;
 		status = "";

@@ -10,7 +10,9 @@ import { Type } from "typebox";
 import {
 	CONFIG_LOCK_FAILURE,
 	MODEL_CLASSES,
+	canonicalModelReference,
 	defaultConfig,
+	isCodexProvider,
 	isModelClass,
 	isThinkingLevel,
 	mutateConfig,
@@ -23,6 +25,7 @@ import {
 } from "../internal/protocol.ts";
 
 const SUBAGENT_EXTENSION = fileURLToPath(new URL("../internal/subagent.ts", import.meta.url));
+const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const HERDR_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
@@ -60,6 +63,7 @@ type OwnedSubagent = {
 
 type HerdrLocation = { workspace: string; pane: string };
 type HerdrTab = { id: string; label?: string };
+type TextModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
 
 const object = (value: unknown, label: string): Record<string, unknown> => {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid.`);
@@ -88,7 +92,17 @@ const parseJson = (value: string, label: string): Record<string, unknown> => {
 const availableTextModels = (ctx: ExtensionContext) => ctx.modelRegistry
 	.getAvailable()
 	.filter((model) => model.input.includes("text"));
-const modelReference = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;
+const modelReference = (model: { provider: string; id: string }) =>
+	canonicalModelReference(`${model.provider}/${model.id}`);
+const resolveModel = (models: TextModel[], reference: string, preferredProvider?: string): TextModel | undefined => {
+	const separator = reference.indexOf("/");
+	const provider = reference.slice(0, separator);
+	const id = reference.slice(separator + 1);
+	if (!isCodexProvider(provider)) return models.find((model) => model.provider === provider && model.id === id);
+	return (isCodexProvider(preferredProvider) ? models.find((model) => model.provider === preferredProvider && model.id === id) : undefined)
+		?? models.find((model) => model.provider === "openai-codex" && model.id === id)
+		?? models.find((model) => isCodexProvider(model.provider) && model.id === id);
+};
 
 const subagentName = (taskId: string) => `subagent_${taskId.replaceAll("-", "").slice(0, 8)}`;
 const mainName = () => `main_${randomBytes(4).toString("hex")}`;
@@ -262,9 +276,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	};
 
 	const startSubagent = async (name: string, tabId: string, paneId: string, model: string, thinkingLevel: string | undefined, where: HerdrLocation, ctx: ExtensionContext, signal?: AbortSignal) => {
+		const provider = model.slice(0, model.indexOf("/"));
 		const args = [
 			"agent", "start", name, "--kind", "pi", "--pane", paneId, "--",
 			"--no-session", "--no-extensions", "--extension", SUBAGENT_EXTENSION,
+			...(isCodexProvider(provider) && provider !== "openai-codex" ? ["--extension", MULTI_CODEX_EXTENSION] : []),
 			"--append-system-prompt", COMPLETION_PROMPT,
 			"--tools", "read,bash,edit,write,finish_task",
 			"--model", model,
@@ -330,12 +346,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const saved = config.models[modelClass];
-			const references = models.map(modelReference).sort();
+			const references = [...new Set(models.map(modelReference))].sort();
 			const selected = await ctx.ui.select(
 				`${modelClass} Subagent model · saved: ${saved?.model ?? "none"}`,
 				references,
 			);
-			const selectedModel = models.find((model) => modelReference(model) === selected);
+			const selectedModel = selected && resolveModel(models, selected, ctx.model?.provider);
 			if (!selectedModel) return;
 			const levels = getSupportedThinkingLevels(selectedModel);
 			const thinkingLevel = await ctx.ui.select(
@@ -344,7 +360,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			);
 			if (!isThinkingLevel(thinkingLevel) || !levels.some((level) => level === thinkingLevel)) return;
 			try {
-				const route = { model: selected, thinkingLevel };
+				const route = { model: canonicalModelReference(selected), thinkingLevel };
 				// Merge against disk so another Main session's limit and model mappings survive this route update.
 				await mutateConfig((latest) => ({ ...latest, models: { ...latest.models, [modelClass]: route } }));
 				config = { ...config, models: { ...config.models, [modelClass]: route } };
@@ -410,8 +426,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			if (params.modelClass && !configuredModel) {
 				throw new Error(`No ${modelClass} Subagent model configured; run /subagent-model.`);
 			}
-			const availableModel = configuredModel && availableTextModels(ctx)
-				.find((model) => modelReference(model) === configuredModel.model);
+			const availableModel = configuredModel && resolveModel(
+				availableTextModels(ctx),
+				configuredModel.model,
+				ctx.model.provider,
+			);
 			if (params.modelClass && configuredModel && !availableModel) {
 				throw new Error(`Configured ${modelClass} Subagent model is unavailable; run /subagent-model.`);
 			}
@@ -422,10 +441,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			// Explicit unavailable routes reject above. Omitted balanced routes alone may fall back to Main.
 			const configuredRoute = thinkingAvailable ? configuredModel : undefined;
-			const selectedModel = configuredRoute?.model ?? `${ctx.model.provider}/${ctx.model.id}`;
-			const selectedThinkingLevel = configuredRoute?.thinkingLevel ?? ctx.thinkingLevel;
 			const selectedModelInfo = configuredRoute ? availableModel : ctx.model;
 			if (!selectedModelInfo) throw new Error("delegate_task selected model metadata is unavailable.");
+			const selectedModel = `${selectedModelInfo.provider}/${selectedModelInfo.id}`;
+			const selectedThinkingLevel = configuredRoute?.thinkingLevel ?? ctx.thinkingLevel;
 			const where = location();
 			const existingTabs = await reconcile(where, ctx, signal);
 			renderWidget(ctx);

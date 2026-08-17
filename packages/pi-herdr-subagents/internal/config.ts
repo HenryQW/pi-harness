@@ -11,6 +11,7 @@ const CONFIG_LOCK_TIMEOUT_MS = 1_000;
 const CONFIG_LOCK_RETRY_MS = 25;
 export const CONFIG_LOCK_FAILURE = "Subagent config is busy; try again.";
 const CONFIG_LOCK_OWNER = "owner";
+const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 
 export type ModelClass = typeof MODEL_CLASSES[number];
 type ConfiguredModel = { model: string; thinkingLevel: string };
@@ -27,6 +28,13 @@ export const isModelClass = (value: unknown): value is ModelClass =>
 	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
 export const isThinkingLevel = (value: unknown): value is string =>
 	typeof value === "string" && Boolean(value) && value === value.trim() && !value.includes("\0");
+export const isCodexProvider = (provider: string | undefined): boolean =>
+	provider === "openai-codex" || Boolean(provider && CODEX_ALIAS.test(provider));
+export const canonicalModelReference = (reference: string): string => {
+	const separator = reference.indexOf("/");
+	const provider = reference.slice(0, separator);
+	return `${isCodexProvider(provider) ? "openai-codex" : provider}/${reference.slice(separator + 1)}`;
+};
 const isModelReference = (value: unknown): value is string => {
 	if (typeof value !== "string" || value !== value.trim() || value.includes("\0")) return false;
 	const slash = value.indexOf("/");
@@ -48,7 +56,7 @@ function configModels(value: unknown): { value: Config["models"]; invalid: boole
 		}
 		const configured = candidate as Record<string, unknown>;
 		if (isModelReference(configured.model) && isThinkingLevel(configured.thinkingLevel)) {
-			models[modelClass] = { model: configured.model, thinkingLevel: configured.thinkingLevel };
+			models[modelClass] = { model: canonicalModelReference(configured.model), thinkingLevel: configured.thinkingLevel };
 		} else invalid = true;
 	}
 	return { value: models, invalid };

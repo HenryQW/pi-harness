@@ -29,4 +29,4 @@ Config lives in `~/.pi/agent/config/pi-model-thinking.json`:
 }
 ```
 
-Extension applies config when session starts or model changes. Missing config starts empty, invalid entries are skipped, and malformed config is preserved.
+Extension applies config when session starts or model changes. Numbered `pi-multi-codex` providers share canonical `openai-codex/model` setting, so account switches keep same level. Missing config starts empty, invalid entries are skipped, and malformed config is preserved.

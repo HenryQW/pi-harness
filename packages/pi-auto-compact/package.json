@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-compact",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Proactively compact Pi context at a configurable threshold and resume the current task.",
   "keywords": [
     "pi-package",
@@ -25,7 +25,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.7"
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "repository": {
     "type": "git",
@@ -42,5 +43,8 @@
     "extensions": [
       "./extensions"
     ]
+  },
+  "dependencies": {
+    "@henryqw/pi-task-models": "^0.1.0"
   }
 }
