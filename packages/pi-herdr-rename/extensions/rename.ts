@@ -1,8 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import {
 	BorderedLoader,
-	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -18,19 +15,18 @@ const WIDGET_KEY = "pi-herdr-rename";
 const WIDGET_RESULT_MS = 2_000;
 const MAX_MESSAGE_CHARS = 1_000;
 const MAX_CONTEXT_CHARS = 2_000;
-const DEFAULT_MAX_WORDS = 4;
-const DEFAULT_MAX_CHARS = 40;
+const DISPLAY_MAX_WORDS = 4;
+const DISPLAY_MAX_CHARS = 20;
+const SEMANTIC_TYPE_MAX_CHARS = 12;
 const RENAME_TASK = "pi-herdr-rename/rename";
 const DEFAULT_RENAME_PROFILE = "fast" as const;
+const TITLE_STATE_TYPE = "pi-herdr-rename/title";
 const HERDR_DEFAULT_WORKTREE_NAME = /^(?:worktree[-/])?(?:brave|calm|clear|green|lucky|quiet|rapid|silver)-(?:river|cloud|field|forest|harbor|meadow|stone|valley)-[0-9a-f]{4}$/;
-const configPath = () => join(getAgentDir(), "config", "pi-herdr-rename.json");
+const SEMANTIC_BRANCH = /^[a-z][a-z0-9-]{0,11}\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-type RenameConfig = { maxWords: number; maxChars: number };
+type GeneratedTitle = { display: string; branch: string };
 
 class RenameModelError extends Error {}
-
-const positiveInteger = (value: unknown, fallback: number, minimum = 1) =>
-	typeof value === "number" && Number.isInteger(value) && value >= minimum ? value : fallback;
 
 function configuredRenameRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
 	let config;
@@ -55,9 +51,30 @@ function configuredRenameRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
 	return routes;
 }
 
-function branchFromTitle(title: string): string | undefined {
+function parseGeneratedTitle(title: string): GeneratedTitle | undefined {
 	const match = /^([a-z][a-z0-9-]*): ([a-z0-9]+(?: [a-z0-9]+)*)$/.exec(title);
-	return match ? `${match[1]}/${match[2].replaceAll(" ", "-")}` : undefined;
+	if (!match) return undefined;
+	const subject = match[2];
+	if (
+		match[1].length > SEMANTIC_TYPE_MAX_CHARS ||
+		subject.length > DISPLAY_MAX_CHARS ||
+		subject.split(" ").length > DISPLAY_MAX_WORDS
+	) return undefined;
+	return {
+		display: subject[0].toUpperCase() + subject.slice(1),
+		branch: `${match[1]}/${subject.replaceAll(" ", "-")}`,
+	};
+}
+
+function savedTitle(ctx: ExtensionContext): GeneratedTitle | undefined {
+	const entry = [...ctx.sessionManager.getBranch()]
+		.reverse()
+		.find((candidate) => candidate.type === "custom" && candidate.customType === TITLE_STATE_TYPE);
+	if (entry?.type !== "custom" || !entry.data || typeof entry.data !== "object" || Array.isArray(entry.data)) return undefined;
+	const { display, branch } = entry.data as { display?: unknown; branch?: unknown };
+	return typeof display === "string" && typeof branch === "string" && SEMANTIC_BRANCH.test(branch)
+		? { display, branch }
+		: undefined;
 }
 
 function branchAvailable(candidate: string, branches: string[]): boolean {
@@ -75,20 +92,6 @@ function availableBranch(branch: string, branches: string[]): string {
 		if (branchAvailable(candidate, branches)) return candidate;
 	}
 	throw new Error("Could not choose an available semantic branch.");
-}
-
-async function configured(): Promise<RenameConfig> {
-	try {
-		const config: unknown = JSON.parse(await readFile(configPath(), "utf8"));
-		if (config && typeof config === "object" && !Array.isArray(config)) {
-			const values = config as { maxWords?: unknown; maxChars?: unknown };
-			return {
-				maxWords: positiveInteger(values.maxWords, DEFAULT_MAX_WORDS, 2),
-				maxChars: positiveInteger(values.maxChars, DEFAULT_MAX_CHARS, 6),
-			};
-		}
-	} catch {}
-	return { maxWords: DEFAULT_MAX_WORDS, maxChars: DEFAULT_MAX_CHARS };
 }
 
 function messageText(content: unknown): string {
@@ -144,10 +147,9 @@ function recentConversation(ctx: ExtensionContext, fallback?: string): string | 
 	return selected.reverse().join("\n\n");
 }
 
-async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<string> {
-	const { maxWords, maxChars } = await configured();
+async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<GeneratedTitle> {
 	const completionContext = {
-		systemPrompt: `Return only a semantic title for latest user intent. Format: type: subject. Use lowercase type and lowercase alphanumeric subject words separated by spaces. No other punctuation; at most ${maxWords} words and at most ${maxChars} characters.`,
+		systemPrompt: `Return only type: subject for latest user intent. Type: lowercase semantic word, max ${SEMANTIC_TYPE_MAX_CHARS} characters. Subject: natural task phrase, preferably 3-4 lowercase alphanumeric words, max ${DISPLAY_MAX_WORDS} words and ${DISPLAY_MAX_CHARS} characters. No other punctuation.`,
 		messages: [{ role: "user" as const, content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
 	};
 	const complete = async (route: ResolvedTaskRoute) => {
@@ -173,7 +175,6 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 				env: auth.env,
 				signal,
 				maxRetries: 0,
-				maxTokens: 64,
 				...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }),
 			}).result();
 		} catch (error) {
@@ -196,10 +197,9 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 				.trim()
 				.toLowerCase()
 				.replace(/\s+/g, " ");
-			if (!title || title.length > maxChars || title.split(" ").length > maxWords || !branchFromTitle(title)) {
-				throw new RenameModelError("Rename task model returned an invalid title.");
-			}
-			return title;
+			const generated = parseGeneratedTitle(title);
+			if (!generated) throw new RenameModelError("Rename task model returned an invalid title.");
+			return generated;
 		} catch (error) {
 			if (signal.aborted || !(error instanceof RenameModelError)) throw error;
 			failure = error;
@@ -213,6 +213,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		pi.exec(command, [...args], options));
 	let latestUserText: string | undefined;
 	let automaticStarted = false;
+	let automaticPending = false;
 	let sequence = 0;
 	let active: AbortController | undefined;
 	let widgetSequence = 0;
@@ -221,12 +222,18 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 	const isCurrent = (request: number, controller: AbortController) =>
 		request === sequence && active === controller && !controller.signal.aborted;
 
-	const applyHerdr = async (title: string, request: number, controller: AbortController): Promise<void> => {
+	const applyHerdr = async (
+		displayTitle: string,
+		branchCandidate: string,
+		previousDisplayTitle: string | undefined,
+		request: number,
+		controller: AbortController,
+	): Promise<void> => {
 		const paneId = process.env.HERDR_PANE_ID;
 		if (!paneId) return;
 
 		if (!isCurrent(request, controller)) return;
-		await herdr.run(["pane", "rename", paneId, title], { signal: controller.signal });
+		await herdr.run(["pane", "rename", paneId, displayTitle], { signal: controller.signal });
 		if (!isCurrent(request, controller)) return;
 
 		const paneResponse: unknown = await herdr.json(["pane", "get", paneId], { signal: controller.signal });
@@ -239,7 +246,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		const paneCount = (tabResponse as { result?: { tab?: { pane_count?: unknown } } }).result?.tab?.pane_count;
 		if (typeof paneCount !== "number") throw new Error("Herdr tab response omitted pane_count.");
 		if (paneCount === 1 && isCurrent(request, controller)) {
-			await herdr.run(["tab", "rename", tabId, title], { signal: controller.signal });
+			await herdr.run(["tab", "rename", tabId, displayTitle], { signal: controller.signal });
 		}
 		if (!isCurrent(request, controller)) return;
 
@@ -261,19 +268,21 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 			return result.stdout.trim();
 		};
 
-		let branch = await runGit(["branch", "--show-current"]);
+		const branch = await runGit(["branch", "--show-current"]);
 		if (!branch || branch.startsWith("worktree/")) {
-			const generatedBranch = branchFromTitle(title);
-			if (!generatedBranch || !isCurrent(request, controller)) return;
+			if (!isCurrent(request, controller)) return;
 			const branches = (await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
 				.split("\n")
 				.filter(Boolean);
-			const semanticBranch = availableBranch(generatedBranch, branches);
+			const semanticBranch = availableBranch(branchCandidate, branches);
 			await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
-			branch = semanticBranch;
 		}
-		if (HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) && isCurrent(request, controller)) {
-			await herdr.run(["workspace", "rename", workspaceId, branch], { signal: controller.signal });
+		if (
+			workspaceName !== displayTitle &&
+			(HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) || workspaceName === previousDisplayTitle) &&
+			isCurrent(request, controller)
+		) {
+			await herdr.run(["workspace", "rename", workspaceId, displayTitle], { signal: controller.signal });
 		}
 	};
 
@@ -289,13 +298,20 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 	};
 
 	const rename = async (text: string, ctx: ExtensionContext, manual: boolean): Promise<string | undefined> => {
+		if (manual) {
+			automaticPending = false;
+			automaticStarted = true;
+		}
 		const { request, controller } = begin();
 		try {
 			const title = await generateTitle(text, ctx, controller.signal);
 			if (!isCurrent(request, controller)) return;
-			pi.setSessionName(title);
-			await applyHerdr(title, request, controller);
-			return title;
+			const saved = savedTitle(ctx);
+			const previousDisplayTitle = saved && pi.getSessionName() === saved.display ? saved.display : undefined;
+			pi.setSessionName(title.display);
+			pi.appendEntry(TITLE_STATE_TYPE, title);
+			await applyHerdr(title.display, title.branch, previousDisplayTitle, request, controller);
+			return title.display;
 		} catch (error) {
 			if (isCurrent(request, controller) && (manual || error instanceof RenameModelError)) {
 				ctx.ui.notify(error instanceof Error ? error.message : "Rename failed.", "warning");
@@ -318,6 +334,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		active?.abort();
 		active = undefined;
 		sequence++;
+		automaticPending = false;
 		latestUserText = latestSessionUserText(ctx);
 		try {
 			const taskModels = readTaskModelsConfig();
@@ -330,33 +347,40 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		}
 		const title = pi.getSessionName();
 		automaticStarted = Boolean(title || latestUserText);
-		if (!title) return;
+		const saved = savedTitle(ctx);
+		if (!title || title !== saved?.display) return;
 
 		const { request, controller } = begin();
-		void applyHerdr(title, request, controller)
+		void applyHerdr(title, saved.branch, saved.display, request, controller)
 			.catch(() => undefined)
 			.finally(() => finish(request, controller));
 	});
 
-	pi.on("input", (event, ctx) => {
+	pi.on("input", (event) => {
 		if (event.source === "extension" || !event.text.trim()) return { action: "continue" };
 		latestUserText = event.text.slice(0, MAX_MESSAGE_CHARS);
-		if (!automaticStarted) {
-			automaticStarted = true;
-			void rename(latestUserText, ctx, false);
-		}
+		if (!automaticStarted) automaticPending = true;
 		return { action: "continue" };
+	});
+
+	pi.on("before_agent_start", (event, ctx) => {
+		if (automaticStarted || !automaticPending || !event.prompt.trim()) return;
+		automaticPending = false;
+		automaticStarted = true;
+		latestUserText = event.prompt.slice(0, MAX_MESSAGE_CHARS);
+		void rename(latestUserText, ctx, false);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		clearWidget(ctx);
 		active?.abort();
 		active = undefined;
+		automaticPending = false;
 		sequence++;
 	});
 
 	pi.registerCommand("rename", {
-		description: "Generate a new chat title from recent conversation context",
+		description: "Generate a new display title from recent conversation context",
 		handler: async (_args, ctx) => {
 			const context = recentConversation(ctx, latestUserText);
 			if (!context) {
