@@ -6,17 +6,22 @@ Delegate one bounded task to one isolated Pi process. Main chooses the role and 
 
 ```bash
 pi install npm:@henryqw/pi-task-models
+pi install npm:@henryqw/pi-multi-codex
 pi install npm:@henryqw/pi-subagent
 ```
 
-`pi-task-models` provides `/task-models` for Subagent routes.
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-task-models` | Required. Shared `fast` / `balanced` / `frontier` routes. |
+| `@henryqw/pi-multi-codex` | Required. Child uses Main's active Codex slot. |
 
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| `delegate_task` | Start one isolated child for `role`, `task`, and optional `modelClass`. |
-| `/task-models` | Configure shared `fast`, `balanced`, and `frontier` profiles. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `delegate_task` | tool | Start one isolated child for `role`, `task`, and optional `modelClass`. |
 
 `modelClass` is `fast`, `balanced`, or `frontier`. Omitted class uses `balanced`. Primary route is resolved against current scoped text models; fallback is tried only before launch. If no route is usable, delegation rejects with `Run /task-models`. A started child is never retried.
 

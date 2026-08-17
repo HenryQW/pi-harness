@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-rename",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Generate short Pi chat titles and rename the current Herdr location.",
   "keywords": [
     "pi-package",
