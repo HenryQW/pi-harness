@@ -43,7 +43,7 @@ pi install npm:@henryqw/pi-herdr-btw
 
 In side pane, `/btw merge <prompt>` packages user/assistant turns, sends transcript to parent, refocuses parent pane, and closes side pane. Parent appends transcript without triggering a turn, then submits prompt. Bare `/btw merge` opens editor for prompt.
 
-Pending delivery waits for parent to settle and for current model authentication to be ready. Unacknowledged requests survive child shutdown and reload.
+Pending delivery waits for parent to settle and for current model authentication to be ready. Requests survive child shutdown until parent consumes them or 24-hour stale cleanup expires them.
 
 ## Config
 

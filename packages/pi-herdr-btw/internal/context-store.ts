@@ -14,15 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isBtwPayload, type BtwPayload } from "./core.ts";
-import {
-	ackMatchesRequest,
-	isMergeAck,
-	isMergeRequest,
-	MERGE_ACK_FILE,
-	MERGE_REQUEST_FILE,
-	type MergeAck,
-	type MergeRequest,
-} from "./merge.ts";
+import { isMergeRequest, MERGE_REQUEST_FILE, type MergeRequest } from "./merge.ts";
 
 const PAYLOAD_FILE = "payload.json";
 const LAUNCH_PREFIX = "launch-";
@@ -122,28 +114,9 @@ export class ContextStore {
 		return this.readLaunchFile(payloadPath, MERGE_REQUEST_FILE);
 	}
 
-	async writeMergeAck(payloadPath: string, ack: MergeAck): Promise<void> {
-		if (!isMergeAck(ack)) throw new Error("Invalid /btw merge acknowledgement");
-		await this.writeLaunchFile(payloadPath, MERGE_ACK_FILE, ack);
-	}
-
-	async readMergeAck(payloadPath: string): Promise<unknown> {
-		return this.readLaunchFile(payloadPath, MERGE_ACK_FILE);
-	}
-
-	/**
-	 * Acknowledgement-aware cleanup: remove the launch directory unless it
-	 * still holds an unacknowledged merge request. Stale-TTL cleanup remains
-	 * the backstop for crashed parents.
-	 */
+	/** Keep a launch with a request until its parent consumes it. */
 	async removeIfNoPendingMerge(payloadPath: string): Promise<boolean> {
-		const request = await this.readMergeRequest(payloadPath).catch(() => undefined);
-		if (request !== undefined) {
-			const ack = await this.readMergeAck(payloadPath).catch(() => undefined);
-			// A stale ack from an earlier merge must not allow deleting a newer,
-			// still-undelivered request.
-			if (!ackMatchesRequest(ack, request)) return false;
-		}
+		if ((await this.readMergeRequest(payloadPath).catch(() => undefined)) !== undefined) return false;
 		await this.remove(payloadPath);
 		return true;
 	}

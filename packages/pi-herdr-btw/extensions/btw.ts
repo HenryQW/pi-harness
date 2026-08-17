@@ -36,16 +36,12 @@ import {
 	type HerdrLaunchOptions,
 } from "../internal/core.ts";
 import {
-	ackMatchesRequest,
 	buildMergeTranscript,
-	isMergeAck,
 	isPromptWithinBounds,
 	MAX_PROMPT_BYTES,
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
 	MergeCoordinator,
-	isMergeRequest,
-	type MergeAck,
 	type MergeRequest,
 } from "../internal/merge.ts";
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
@@ -53,8 +49,6 @@ import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
 const CHILD_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000;
 const LITERAL_DRAFT_PREFIX = "\u200b";
 const MERGE_POLL_INTERVAL_MS = 3_000;
-const ACK_POLL_INTERVAL_MS = 2_000;
-const ACK_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const AGENT_START_BUSY_RETRIES = 5;
 const AGENT_START_RETRY_DELAY_MS = 250;
 
@@ -76,8 +70,6 @@ export type ContextStorePort = Pick<
 	| "listLaunchPayloadPaths"
 	| "writeMergeRequest"
 	| "readMergeRequest"
-	| "writeMergeAck"
-	| "readMergeAck"
 	| "removeIfNoPendingMerge"
 >;
 export type ConfigStorePort = Pick<ConfigStore, "load" | "save" | "update" | "reset">;
@@ -253,67 +245,6 @@ async function configureChild(
 	let launchDraftPending = !!(payload?.config.autoSubmit && payload.draftQuestion.trim());
 
 	// Child-side /btw: reviewed merge back to the parent, plus help.
-	let ackTimer: ReturnType<typeof setInterval> | undefined;
-	let pendingAckRequestId: string | undefined;
-	let pendingAckStartedAt: number | undefined;
-	let notifyAck: (message: string, type: "info" | "warning" | "error") => void = () => undefined;
-
-	const stopAckPolling = (): void => {
-		if (ackTimer) {
-			clearInterval(ackTimer);
-			ackTimer = undefined;
-		}
-	};
-
-	const finishAck = (ack: MergeAck): void => {
-		stopAckPolling();
-		pendingAckRequestId = undefined;
-		pendingAckStartedAt = undefined;
-		notifyAck(
-			ack.status === "accepted"
-				? "Merge accepted: the parent has the side thread and is continuing with your prompt."
-				: `Merge rejected by the parent: ${ack.reason ?? "unknown reason"}`,
-			ack.status === "accepted" ? "info" : "error",
-		);
-	};
-
-	const startAckPolling = (requestId: string, startedAt: number): void => {
-		stopAckPolling();
-		ackTimer = setInterval(async () => {
-			const ack = await store.readMergeAck(payloadPath).catch(() => undefined);
-			if (ack !== undefined && isMergeAck(ack) && ack.requestId === requestId) {
-				finishAck(ack);
-			} else if (Date.now() - startedAt > ACK_POLL_TIMEOUT_MS) {
-				stopAckPolling();
-				pendingAckRequestId = undefined;
-				pendingAckStartedAt = undefined;
-				notifyAck(
-					"Merge still unacknowledged; it stays pending until the parent picks it up or it expires.",
-					"warning",
-				);
-			}
-		}, ACK_POLL_INTERVAL_MS);
-		ackTimer.unref?.();
-	};
-
-	const resumeAckPolling = async (): Promise<void> => {
-		if (!payload) return;
-		const request = await store.readMergeRequest(payloadPath).catch(() => undefined);
-		if (!isMergeRequest(request)) return;
-		const ack = await store.readMergeAck(payloadPath).catch(() => undefined);
-		if (ackMatchesRequest(ack, request)) {
-			if (isMergeAck(ack)) finishAck(ack);
-			return;
-		}
-		const sameRequest = pendingAckRequestId === request.requestId;
-		pendingAckRequestId = request.requestId;
-		if (!sameRequest || pendingAckStartedAt === undefined) {
-			const createdAt = Date.parse(request.createdAt);
-			pendingAckStartedAt = Number.isFinite(createdAt) ? createdAt : Date.now();
-		}
-		startAckPolling(request.requestId, pendingAckStartedAt ?? Date.now());
-	};
-
 	pi.registerCommand("btw", {
 		description:
 			"Side-thread /btw: fold this side thread into the parent and continue there (/btw merge <prompt...>)",
@@ -339,17 +270,10 @@ async function configureChild(
 				return;
 			}
 
-			const existingAck = await store.readMergeAck(payloadPath).catch(() => undefined);
 			const existingRequest = await store.readMergeRequest(payloadPath).catch(() => undefined);
 			if (existingRequest !== undefined) {
-				if (!ackMatchesRequest(existingAck, existingRequest)) {
-					ctx.ui.notify("A merge is already pending; the parent has not acknowledged it yet.", "warning");
-					return;
-				}
-				if (isMergeAck(existingAck) && existingAck.status === "accepted") {
-					ctx.ui.notify("This side thread was already merged into the parent.", "warning");
-					return;
-				}
+				ctx.ui.notify("A merge was already sent from this side thread.", "warning");
+				return;
 			}
 
 			// The prompt after `merge` is what the parent will auto-submit; bare
@@ -398,9 +322,8 @@ async function configureChild(
 				return;
 			}
 
-			// Close the loop: hand focus back to the parent pane and close this one.
-			// The mailbox request survives the pane teardown (cleanup is ack-aware),
-			// and the parent picks it up on its next poll or agent_settled.
+			// Hand focus back to the parent and close this side pane. The durable
+			// request survives teardown until the parent consumes it.
 			const ownPaneId = process.env.HERDR_PANE_ID;
 			if (ownPaneId) {
 				if (payload.parentPaneId) {
@@ -414,19 +337,12 @@ async function configureChild(
 				if (closed) return;
 			}
 
-			// Fallback (not in a Herdr pane, or the close failed): stay open and
-			// watch for the acknowledgement instead.
-			ctx.ui.notify("Merge pending: waiting for the parent session to accept it.", "info");
-			notifyAck = (message, type) => ctx.ui.notify(message, type);
-			pendingAckRequestId = request.requestId;
-			pendingAckStartedAt = Date.now();
-			startAckPolling(request.requestId, pendingAckStartedAt);
+			// Fallback: process stays open, but handoff is complete.
+			ctx.ui.notify("Merge sent to the parent session.", "info");
 		},
 	});
 
-	pi.on("session_start", async (event, ctx) => {
-		notifyAck = (message, type) => ctx.ui.notify(message, type);
-		await resumeAckPolling();
+	pi.on("session_start", (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		ctx.ui.setTitle("pi /btw — Herdr side thread");
 
@@ -461,12 +377,8 @@ async function configureChild(
 			clearInterval(heartbeatTimer);
 			heartbeatTimer = undefined;
 		}
-		stopAckPolling();
 		if (event.reason === "quit") {
-			pendingAckRequestId = undefined;
-			pendingAckStartedAt = undefined;
-			// Acknowledgement-aware cleanup: an unacknowledged merge outlives the
-			// child (until ack or the stale TTL), so the parent can still import it.
+			// A pending request outlives the child until parent consumption or TTL.
 			await store.removeIfNoPendingMerge(payloadPath).catch(() => undefined);
 		}
 	});

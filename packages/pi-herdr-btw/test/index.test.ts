@@ -6,7 +6,6 @@ import type { BtwPayload } from "../internal/core.ts";
 import {
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
-	type MergeAck,
 	type MergeRequest,
 } from "../internal/merge.ts";
 import {
@@ -75,7 +74,6 @@ class FakeStore implements ContextStorePort {
 	readValue: BtwPayload = fixturePayload({ draftQuestion: "draft" });
 	readError: Error | undefined;
 	mergeRequest: unknown;
-	mergeAck: MergeAck | undefined;
 	retained = 0;
 
 	async create(payload: BtwPayload): Promise<string> {
@@ -90,6 +88,7 @@ class FakeStore implements ContextStorePort {
 
 	async remove(payloadPath: string): Promise<void> {
 		this.removed.push(payloadPath);
+		this.mergeRequest = undefined;
 	}
 
 	async touch(): Promise<void> {
@@ -114,20 +113,12 @@ class FakeStore implements ContextStorePort {
 		return this.mergeRequest;
 	}
 
-	async writeMergeAck(_payloadPath: string, ack: MergeAck): Promise<void> {
-		this.mergeAck = ack;
-	}
-
-	async readMergeAck(_payloadPath: string): Promise<unknown> {
-		return this.mergeAck;
-	}
-
 	async removeIfNoPendingMerge(payloadPath: string): Promise<boolean> {
-		if (this.mergeRequest !== undefined && this.mergeAck === undefined) {
+		if (this.mergeRequest !== undefined) {
 			this.retained += 1;
 			return false;
 		}
-		this.removed.push(payloadPath);
+		await this.remove(payloadPath);
 		return true;
 	}
 }
@@ -1021,7 +1012,7 @@ test("parent merge scan appends the transcript passively and auto-submits the pr
 		assert.deepEqual(sent?.options, { triggerTurn: false });
 		// The transcript itself never triggers a turn; the prompt does.
 		assert.deepEqual(harness.sentUserMessages, ["apply the side-thread findings"]);
-		assert.equal(store.mergeAck?.status, "accepted");
+		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /delivered 1/);
 	});
 });
@@ -1065,7 +1056,8 @@ test("parent does not reuse auth for a model selected during authentication", as
 		await scan;
 		harness.cleanup();
 
-		assert.equal(store.mergeAck, undefined);
+		assert.ok(store.mergeRequest);
+		assert.deepEqual(store.removed, []);
 		assert.equal(harness.sentMessages.length, 0);
 		assert.equal(harness.sentUserMessages.length, 0);
 	});
@@ -1105,7 +1097,8 @@ test("parent cancels an in-flight merge scan on session shutdown", async () => {
 		await scan;
 		harness.cleanup();
 
-		assert.equal(store.mergeAck, undefined);
+		assert.ok(store.mergeRequest);
+		assert.deepEqual(store.removed, []);
 		assert.equal(harness.sentMessages.length, 0);
 		assert.equal(harness.sentUserMessages.length, 0);
 	});
@@ -1162,7 +1155,8 @@ test("parent defers merge delivery while busy and delivers on agent_settled", as
 		await harness.commands.get("btw")?.handler("merge", ctx);
 		assert.equal(harness.sentMessages.length, 0);
 		assert.deepEqual(harness.sentUserMessages, []);
-		assert.equal(store.mergeAck, undefined);
+		assert.ok(store.mergeRequest);
+		assert.deepEqual(store.removed, []);
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /pending/);
 
 		idle = true;
@@ -1170,7 +1164,7 @@ test("parent defers merge delivery while busy and delivers on agent_settled", as
 		harness.cleanup();
 		assert.equal(harness.sentMessages.length, 1);
 		assert.deepEqual(harness.sentUserMessages, ["deferred prompt"]);
-		assert.equal((store.mergeAck as MergeAck | undefined)?.status, "accepted");
+		assert.deepEqual(store.removed, [store.payloadPath]);
 	});
 });
 
@@ -1196,8 +1190,7 @@ test("parent rejects merges that fail capability validation", async () => {
 
 		assert.equal(harness.sentMessages.length, 0);
 		assert.deepEqual(harness.sentUserMessages, []);
-		assert.equal(store.mergeAck?.status, "rejected");
-		assert.match(store.mergeAck?.reason ?? "", /capability/);
+		assert.deepEqual(store.removed, [store.payloadPath]);
 	});
 });
 
@@ -1217,7 +1210,7 @@ test("child mode blocks prompts when the private payload cannot be read", async 
 	});
 });
 
-test("child quit keeps the launch directory while a merge is unacknowledged", async () => {
+test("child quit keeps the launch directory while a merge is pending", async () => {
 	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
 		const store = new FakeStore();
 		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -1226,21 +1219,10 @@ test("child quit keeps the launch directory while a merge is unacknowledged", as
 		await harness.emit("session_shutdown", { reason: "reload" }, {});
 		assert.deepEqual(store.removed, []);
 
-		// pending unacked merge -> retained
 		store.mergeRequest = { requestId: "req-1" };
 		await harness.emit("session_shutdown", { reason: "quit" }, {});
 		assert.deepEqual(store.removed, []);
 		assert.equal(store.retained, 1);
-
-		// acknowledged -> removed
-		store.mergeAck = {
-			protocolVersion: MERGE_PROTOCOL_VERSION,
-			requestId: "req-1",
-			status: "accepted",
-			processedAt: "2026-07-15T00:06:00.000Z",
-		};
-		await harness.emit("session_shutdown", { reason: "quit" }, {});
-		assert.deepEqual(store.removed, [store.payloadPath]);
 	});
 });
 
@@ -1529,7 +1511,7 @@ test("child merge packages the transcript with the prompt, refocuses the parent,
 	});
 });
 
-test("child merge stays open and polls for the ack when it is not in a Herdr pane", async () => {
+test("child merge reports completed handoff when no Herdr pane can close", async () => {
 	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
 		await withChildPaneId(undefined, async () => {
 			const store = new FakeStore();
@@ -1537,56 +1519,11 @@ test("child merge stays open and polls for the ack when it is not in a Herdr pan
 			harness.cleanup();
 			const { ctx, notifications } = createChildMergeContext();
 
-			const originalSetInterval = globalThis.setInterval;
-			const timers: Array<ReturnType<typeof setInterval>> = [];
-			(globalThis as any).setInterval = (...args: Parameters<typeof setInterval>) => {
-				const timer = originalSetInterval(...args);
-				timers.push(timer);
-				return timer;
-			};
-			try {
-				await harness.commands.get("btw")?.handler("merge apply the findings", ctx);
-				assert.equal(timers.length, 1);
-
-				await harness.emit("session_shutdown", { reason: "reload" }, {});
-				const start = createChildStartContext();
-				await harness.emit("session_start", { reason: "reload" }, start.ctx);
-				assert.equal(timers.length, 3);
-			} finally {
-				(globalThis as any).setInterval = originalSetInterval;
-				for (const timer of timers) clearInterval(timer);
-			}
+			await harness.commands.get("btw")?.handler("merge apply the findings", ctx);
 
 			assert.ok(store.mergeRequest);
 			assert.deepEqual(harness.execCalls, []);
-			assert.match(notifications.at(-1)?.message ?? "", /Merge pending/);
-		});
-	});
-});
-
-test("child reports an acknowledgement recovered during session reload", async () => {
-	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
-		await withChildPaneId(undefined, async () => {
-			const store = new FakeStore();
-			const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
-			harness.cleanup();
-			const { ctx } = createChildMergeContext();
-
-			await harness.commands.get("btw")?.handler("merge apply the findings", ctx);
-			const request = store.mergeRequest as MergeRequest;
-			store.mergeAck = {
-				protocolVersion: MERGE_PROTOCOL_VERSION,
-				requestId: request.requestId,
-				status: "accepted",
-				processedAt: "2026-07-15T00:00:02.000Z",
-			};
-
-			await harness.emit("session_shutdown", { reason: "reload" }, {});
-			const start = createChildStartContext();
-			await harness.emit("session_start", { reason: "reload" }, start.ctx);
-			harness.cleanup();
-
-			assert.match(start.notifications.at(-1)?.message ?? "", /Merge accepted/);
+			assert.match(notifications.at(-1)?.message ?? "", /Merge sent/);
 		});
 	});
 });
@@ -1667,30 +1604,6 @@ test("child merge refuses to stack a second request on a pending one", async () 
 		};
 		await harness.commands.get("btw")?.handler("merge another prompt", ctx);
 		assert.deepEqual(store.mergeRequest, { requestId: "req-1" });
-		assert.match(notifications.at(-1)?.message ?? "", /already pending/);
-	});
-});
-
-test("child merge refuses a second request after accepted acknowledgement", async () => {
-	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
-		const store = new FakeStore();
-		store.mergeRequest = { requestId: "req-1" };
-		store.mergeAck = {
-			protocolVersion: MERGE_PROTOCOL_VERSION,
-			requestId: "req-1",
-			status: "accepted",
-			processedAt: "2026-07-15T00:06:00.000Z",
-		};
-		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
-		harness.cleanup();
-		const notifications: Array<{ message: string; type: string }> = [];
-		const ctx = {
-			sessionManager: { getEntries: () => [], getLeafId: () => null },
-			ui: { notify: (message: string, type: string) => notifications.push({ message, type }) },
-		};
-
-		await harness.commands.get("btw")?.handler("merge another prompt", ctx);
-		assert.deepEqual(store.mergeRequest, { requestId: "req-1" });
-		assert.match(notifications.at(-1)?.message ?? "", /already merged/);
+		assert.match(notifications.at(-1)?.message ?? "", /already sent/);
 	});
 });

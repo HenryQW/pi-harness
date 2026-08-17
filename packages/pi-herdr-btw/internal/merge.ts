@@ -3,7 +3,6 @@ import type { BtwPayload } from "./core.ts";
 
 export const MERGE_PROTOCOL_VERSION = 2 as const;
 export const MERGE_REQUEST_FILE = "merge-request.json";
-export const MERGE_ACK_FILE = "merge-ack.json";
 export const MERGE_CUSTOM_TYPE = "pi-herdr-btw.merge";
 export const MAX_SUMMARY_BYTES = 64 * 1024;
 export const MAX_PROMPT_BYTES = 16 * 1024;
@@ -25,14 +24,6 @@ export type MergeRequest = {
 	prompt: string;
 };
 
-export type MergeAck = {
-	protocolVersion: typeof MERGE_PROTOCOL_VERSION;
-	requestId: string;
-	status: "accepted" | "rejected";
-	processedAt: string;
-	reason?: string;
-};
-
 export function isMergeRequest(value: unknown): value is MergeRequest {
 	if (!value || typeof value !== "object") return false;
 	const request = value as Partial<MergeRequest>;
@@ -51,19 +42,6 @@ export function isMergeRequest(value: unknown): value is MergeRequest {
 		isSummaryWithinBounds(request.summary) &&
 		typeof request.prompt === "string" &&
 		isPromptWithinBounds(request.prompt)
-	);
-}
-
-export function isMergeAck(value: unknown): value is MergeAck {
-	if (!value || typeof value !== "object") return false;
-	const ack = value as Partial<MergeAck>;
-	return (
-		ack.protocolVersion === MERGE_PROTOCOL_VERSION &&
-		typeof ack.requestId === "string" &&
-		ack.requestId.length > 0 &&
-		(ack.status === "accepted" || ack.status === "rejected") &&
-		typeof ack.processedAt === "string" &&
-		(ack.reason === undefined || typeof ack.reason === "string")
 	);
 }
 
@@ -89,17 +67,6 @@ export function validateRequestAgainstPayload(
 	if (request.capability !== payload.capability) return "capability mismatch";
 	if (request.parentSessionId !== payload.parentSessionId) return "parent session mismatch";
 	return undefined;
-}
-
-/** True when the ack acknowledges exactly the given (possibly malformed) request. */
-export function ackMatchesRequest(ack: unknown, rawRequest: unknown): boolean {
-	if (!isMergeAck(ack)) return false;
-	const requestId =
-		!!rawRequest && typeof rawRequest === "object" && typeof (rawRequest as { requestId?: unknown }).requestId === "string"
-			? (rawRequest as { requestId: string }).requestId
-			: undefined;
-	// Malformed requests without a usable requestId are acked as "unknown".
-	return ack.requestId === (requestId ?? "unknown");
 }
 
 export function buildMergeMessageContent(summary: string): string {
@@ -210,8 +177,7 @@ export type MergeStorePort = {
 	listLaunchPayloadPaths(): Promise<string[]>;
 	read(payloadPath: string): Promise<BtwPayload>;
 	readMergeRequest(payloadPath: string): Promise<unknown>;
-	readMergeAck(payloadPath: string): Promise<unknown>;
-	writeMergeAck(payloadPath: string, ack: MergeAck): Promise<void>;
+	remove(payloadPath: string): Promise<void>;
 };
 
 export type ParentSessionPort = {
@@ -234,19 +200,17 @@ export type ScanResult = {
 
 /**
  * Parent-side merge coordinator. Scans the private launch store for pending
- * merge requests bound to the current parent session, delivers each exactly
- * once as a passive custom message, and acknowledges it.
+ * merge requests bound to the current parent session and consumes each after
+ * delivery or rejection.
  */
 export class MergeCoordinator {
 	private readonly store: MergeStorePort;
 	private readonly session: ParentSessionPort;
-	private readonly now: () => Date;
 	private scanning = false;
 
-	constructor(store: MergeStorePort, session: ParentSessionPort, now: () => Date = () => new Date()) {
+	constructor(store: MergeStorePort, session: ParentSessionPort) {
 		this.store = store;
 		this.session = session;
-		this.now = now;
 	}
 
 	async scan(): Promise<ScanResult> {
@@ -283,37 +247,30 @@ export class MergeCoordinator {
 		const rawRequest = await this.store.readMergeRequest(payloadPath);
 		if (rawRequest === undefined) return;
 
-		// Only an ack for THIS request means it was processed; a stale ack from an
-		// earlier merge in the same launch must not mask a newer request.
-		const ack = await this.store.readMergeAck(payloadPath);
-		if (ackMatchesRequest(ack, rawRequest)) return;
-
 		const payload = await this.store.read(payloadPath);
 		// Only the session a launch is bound to may consume its merge requests.
 		if (payload.parentSessionId !== this.session.getSessionId()) return;
 
 		if (!isMergeRequest(rawRequest)) {
-			await this.reject(payloadPath, rawRequest, "malformed merge request");
+			await this.reject(payloadPath, "malformed merge request");
 			result.rejected += 1;
 			return;
 		}
 		const validationError = validateRequestAgainstPayload(rawRequest, payload);
 		if (validationError) {
-			await this.reject(payloadPath, rawRequest, validationError);
+			await this.reject(payloadPath, validationError);
 			result.rejected += 1;
 			return;
 		}
 
 		const entries = this.session.getBranch();
 		if (hasSubmittedPromptRequestId(entries, rawRequest.requestId, rawRequest.prompt)) {
-			// Prompt submission succeeded earlier but the ack write crashed. Re-ack
-			// without re-submitting to avoid double-triggering a paid model turn.
-			await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
+			await this.store.remove(payloadPath);
 			return;
 		}
 
-		// pi.sendUserMessage() is fire-and-forget. Avoid acknowledging a request
-		// when current model/auth state would reject its prompt.
+		// pi.sendUserMessage() is fire-and-forget. Keep the request pending when
+		// current model/auth state would reject its prompt.
 		try {
 			if (!(await this.session.canSubmitPrompt())) {
 				result.deferred += 1;
@@ -334,7 +291,7 @@ export class MergeCoordinator {
 		// asynchronous model check is pending.
 		const currentEntries = this.session.getBranch();
 		if (hasSubmittedPromptRequestId(currentEntries, rawRequest.requestId, rawRequest.prompt)) {
-			await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
+			await this.store.remove(payloadPath);
 			return;
 		}
 
@@ -349,31 +306,12 @@ export class MergeCoordinator {
 		}
 		this.session.submitPrompt(rawRequest.prompt);
 		result.delivered += 1;
-		await this.acknowledge(payloadPath, rawRequest.requestId, "accepted");
+		await this.store.remove(payloadPath);
 		this.session.notify("Merged a /btw side thread into this session; continuing with its prompt.", "info");
 	}
 
-	private async reject(payloadPath: string, rawRequest: unknown, reason: string): Promise<void> {
-		const requestId =
-			!!rawRequest && typeof rawRequest === "object" && typeof (rawRequest as { requestId?: unknown }).requestId === "string"
-				? ((rawRequest as { requestId: string }).requestId)
-				: "unknown";
-		await this.acknowledge(payloadPath, requestId, "rejected", reason);
+	private async reject(payloadPath: string, reason: string): Promise<void> {
+		await this.store.remove(payloadPath);
 		this.session.notify(`Rejected a /btw merge request: ${reason}`, "warning");
-	}
-
-	private async acknowledge(
-		payloadPath: string,
-		requestId: string,
-		status: MergeAck["status"],
-		reason?: string,
-	): Promise<void> {
-		await this.store.writeMergeAck(payloadPath, {
-			protocolVersion: MERGE_PROTOCOL_VERSION,
-			requestId,
-			status,
-			processedAt: this.now().toISOString(),
-			...(reason ? { reason } : {}),
-		});
 	}
 }

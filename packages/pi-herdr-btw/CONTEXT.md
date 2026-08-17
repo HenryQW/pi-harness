@@ -16,6 +16,10 @@ _Avoid_: Child agent
 User/assistant text turns returned to Main; tool payloads are excluded.
 _Avoid_: Full child context
 
+**Merge Request**:
+One-way handoff of Side-Thread Transcript plus follow-up prompt to Main. Main owns consumption; Side Thread does not wait for confirmation.
+_Avoid_: Merge acknowledgement
+
 **Model Override**:
 Saved `provider/model` used by side threads instead of Main's current model.
 _Avoid_: Hardcoded model
