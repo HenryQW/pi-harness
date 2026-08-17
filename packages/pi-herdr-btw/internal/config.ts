@@ -3,16 +3,12 @@ import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, writeFile } 
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-export type BtwThinkingLevel = (typeof THINKING_LEVELS)[number];
 export const TOOL_MODES = ["inherit", "all", "read-only", "none"] as const;
 export type BtwToolMode = (typeof TOOL_MODES)[number];
 export type BtwSplit = "right" | "down";
 
 export type BtwConfig = {
 	autoSubmit: boolean;
-	model: string | null;
-	thinkingLevel: BtwThinkingLevel | null;
 	tools: BtwToolMode;
 	split: BtwSplit;
 };
@@ -23,8 +19,6 @@ const CONFIG_LOCK_RETRY_MS = 25;
 
 export const DEFAULT_CONFIG: Readonly<BtwConfig> = Object.freeze({
 	autoSubmit: false,
-	model: null,
-	thinkingLevel: null,
 	tools: "inherit",
 	split: "right",
 });
@@ -33,29 +27,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-export function isModelName(value: string): boolean {
-	return /^[^/\s]+\/\S+$/.test(value);
-}
-
 export function parseConfig(value: unknown): BtwConfig {
 	if (!isRecord(value)) throw new Error("/btw config must be a JSON object");
+	const allowedKeys = new Set(["autoSubmit", "tools", "split"]);
+	for (const key of Object.keys(value)) {
+		if (!allowedKeys.has(key)) throw new Error(`unknown config key: ${key}`);
+	}
 
 	const config = { ...DEFAULT_CONFIG };
 	if ("autoSubmit" in value) {
 		if (typeof value.autoSubmit !== "boolean") throw new Error("autoSubmit must be true or false");
 		config.autoSubmit = value.autoSubmit;
-	}
-	if ("model" in value) {
-		if (value.model !== null && (typeof value.model !== "string" || !isModelName(value.model))) {
-			throw new Error("model must be null or provider/model");
-		}
-		config.model = value.model as string | null;
-	}
-	if ("thinkingLevel" in value) {
-		if (value.thinkingLevel !== null && !THINKING_LEVELS.includes(value.thinkingLevel as BtwThinkingLevel)) {
-			throw new Error(`thinkingLevel must be null or one of: ${THINKING_LEVELS.join(", ")}`);
-		}
-		config.thinkingLevel = value.thinkingLevel as BtwThinkingLevel | null;
 	}
 	if ("tools" in value) {
 		if (!TOOL_MODES.includes(value.tools as BtwToolMode)) {
@@ -75,15 +57,13 @@ export function parseConfig(value: unknown): BtwConfig {
 export function formatConfig(config: BtwConfig): string {
 	return [
 		`auto-submit: ${config.autoSubmit ? "on" : "off"}`,
-		`model: ${config.model ?? "inherit"}`,
-		`thinking: ${config.thinkingLevel ?? "inherit"}`,
 		`tools: ${config.tools}`,
 		`split: ${config.split}`,
 	].join(" · ");
 }
 
 export const CONFIG_COMMAND_USAGE =
-	"/btw config [auto-submit on|off | model inherit|provider/model | thinking inherit|off|minimal|low|medium|high|xhigh|max | tools inherit|all|read-only|none | split right|down | reset]";
+	"/btw config [auto-submit on|off | tools inherit|all|read-only|none | split right|down | reset]";
 
 export type ConfigCommandResult = {
 	action: "show" | "save" | "reset";
@@ -103,16 +83,6 @@ export function applyConfigCommand(current: BtwConfig, input: string): ConfigCom
 		case "auto-submit":
 			if (value !== "on" && value !== "off") throw new Error(CONFIG_COMMAND_USAGE);
 			config.autoSubmit = value === "on";
-			break;
-		case "model":
-			if (value !== "inherit" && !isModelName(value)) throw new Error(CONFIG_COMMAND_USAGE);
-			config.model = value === "inherit" ? null : value;
-			break;
-		case "thinking":
-			if (value !== "inherit" && !THINKING_LEVELS.includes(value as BtwThinkingLevel)) {
-				throw new Error(CONFIG_COMMAND_USAGE);
-			}
-			config.thinkingLevel = value === "inherit" ? null : (value as BtwThinkingLevel);
 			break;
 		case "tools":
 			if (!TOOL_MODES.includes(value as BtwToolMode)) {

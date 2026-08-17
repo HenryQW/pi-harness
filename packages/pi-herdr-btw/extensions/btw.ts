@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode } from "@henryqw/pi-herdr";
 import {
+	orderedProfileRoutes,
+	readTaskModelsConfig,
+	resolveTaskModelRoute,
+	type ResolvedTaskRoute,
+} from "@henryqw/pi-task-models";
+import {
 	buildSessionContext,
 	convertToLlm,
 	serializeConversation,
@@ -11,9 +17,7 @@ import {
 	CONFIG_COMMAND_USAGE,
 	ConfigStore,
 	formatConfig,
-	THINKING_LEVELS,
 	type BtwConfig,
-	type BtwThinkingLevel,
 } from "../internal/config.ts";
 import { ContextStore } from "../internal/context-store.ts";
 import {
@@ -46,6 +50,8 @@ import {
 } from "../internal/merge.ts";
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
 
+const BTW_TASK = "pi-herdr-btw/btw";
+const DEFAULT_BTW_PROFILE = "fast" as const;
 const CHILD_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000;
 const LITERAL_DRAFT_PREFIX = "\u200b";
 const MERGE_POLL_INTERVAL_MS = 3_000;
@@ -89,26 +95,21 @@ function sameStringArray(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-type AvailableModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
-
-function supportedThinkingLevels(model: AvailableModel): BtwThinkingLevel[] {
-	if (!model.reasoning) return ["off"];
-	return THINKING_LEVELS.filter((level) => {
-		const mapped = model.thinkingLevelMap?.[level];
-		return mapped !== null && ((level !== "xhigh" && level !== "max") || mapped !== undefined);
-	});
-}
-
-type ModelOption = { model: AvailableModel; pinnedThinkingLevel?: BtwThinkingLevel };
-
-function availableTextModelOptions(ctx: ExtensionContext): ModelOption[] {
-	const options: ModelOption[] = ctx.scopedModels.length
-		? ctx.scopedModels.map(({ model, thinkingLevel }) => ({
-				model,
-				pinnedThinkingLevel: thinkingLevel as BtwThinkingLevel | undefined,
-			}))
-		: ctx.modelRegistry.getAvailable().map((model) => ({ model }));
-	return options.filter(({ model }) => model.input.includes("text"));
+function configuredBtwRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
+	let config;
+	try {
+		config = readTaskModelsConfig();
+	} catch {
+		throw new Error("Couldn't read task model config. Run /task-models.");
+	}
+	const profileName = config.tasks[BTW_TASK] ?? DEFAULT_BTW_PROFILE;
+	const profile = config.profiles[profileName];
+	if (!profile) throw new Error(`BTW task profile ${profileName} is not configured. Run /task-models.`);
+	const routes = orderedProfileRoutes(profile)
+		.map((route) => resolveTaskModelRoute(ctx, route))
+		.filter((route): route is ResolvedTaskRoute => route !== undefined);
+	if (!routes.length) throw new Error(`BTW task profile ${profileName} has no available route. Run /task-models.`);
+	return routes;
 }
 
 /**
@@ -498,86 +499,6 @@ export async function registerBtwExtension(
 		}
 	});
 
-	pi.registerCommand("btw-model", {
-		description: "Choose model and thinking level used for /btw side threads",
-		handler: async (args, ctx) => {
-			if (args.trim()) {
-				ctx.ui.notify("Usage: /btw-model", "error");
-				return;
-			}
-			if (!ctx.hasUI) {
-				ctx.ui.notify("/btw-model requires interactive UI", "error");
-				return;
-			}
-			try {
-				await configStore.load();
-			} catch {
-				ctx.ui.notify("Couldn't read pi-herdr-btw config.", "error");
-				return;
-			}
-			const models = availableTextModelOptions(ctx).sort((a, b) =>
-				`${a.model.provider}/${a.model.id}`.localeCompare(`${b.model.provider}/${b.model.id}`),
-			);
-			if (!models.length) {
-				ctx.ui.notify("No authenticated text models are available.", "warning");
-				return;
-			}
-			const inherit = "Current session model";
-			const modelNames = models.map(({ model }) => `${model.provider}/${model.id}`);
-			const duplicateNames = new Set(
-				modelNames.filter((name, index) => modelNames.indexOf(name) !== index),
-			);
-			const modelChoices = models.map((option) => {
-				const modelName = `${option.model.provider}/${option.model.id}`;
-				return {
-					option,
-					modelName,
-					label: duplicateNames.has(modelName)
-						? `${modelName} (${option.pinnedThinkingLevel ?? "default"})`
-						: modelName,
-				};
-			});
-			const selected = await ctx.ui.select(
-				"BTW model",
-				[inherit, ...modelChoices.map(({ label }) => label)],
-			);
-			if (!selected) return;
-			if (selected === inherit) {
-				try {
-					await configStore.update((latest) => ({ ...latest, model: null, thinkingLevel: null }));
-				} catch {
-					ctx.ui.notify("Couldn't save pi-herdr-btw config.", "error");
-					return;
-				}
-				ctx.ui.notify("BTW model and thinking set to current session values.", "info");
-				return;
-			}
-
-			const selectedChoice = modelChoices.find(({ label }) => label === selected);
-			if (!selectedChoice) return;
-			const selectedModel = selectedChoice.option.model;
-			const selectedModelName = selectedChoice.modelName;
-			const thinkingLevels = selectedChoice.option.pinnedThinkingLevel
-				? [selectedChoice.option.pinnedThinkingLevel]
-				: supportedThinkingLevels(selectedModel);
-			const thinkingLevel = thinkingLevels.length === 1
-				? thinkingLevels[0]
-				: await ctx.ui.select(`Thinking level · ${selectedModelName}`, thinkingLevels);
-			if (!thinkingLevel || !thinkingLevels.includes(thinkingLevel as BtwThinkingLevel)) return;
-			try {
-				await configStore.update((latest) => ({
-					...latest,
-					model: selectedModelName,
-					thinkingLevel: thinkingLevel as BtwThinkingLevel,
-				}));
-			} catch {
-				ctx.ui.notify("Couldn't save pi-herdr-btw config.", "error");
-				return;
-			}
-			ctx.ui.notify(`BTW model set to ${selectedModelName} (${thinkingLevel}).`, "info");
-		},
-	});
-
 	pi.registerCommand("btw", {
 		// Pi has no argumentHint field for extension commands (only builtins and
 		// prompt templates); the TUI renders template hints as "hint — description",
@@ -661,42 +582,26 @@ export async function registerBtwExtension(
 				await store.removeStale();
 				const createdAt = new Date().toISOString();
 				const sessionId = ctx.sessionManager.getSessionId();
-				const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-				const configuredModel = config.model ?? currentModel;
-				if (!configuredModel) {
-					ctx.ui.notify("/btw requires a saved model or an active model", "error");
-					return;
-				}
+				const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
 				const thinkingLevel = pi.getThinkingLevel();
-				const modelOptions = availableTextModelOptions(ctx).filter(
-					({ model: candidate }) => `${candidate.provider}/${candidate.id}` === configuredModel,
-				);
-				const modelOption = modelOptions.find(
-					({ pinnedThinkingLevel }) => pinnedThinkingLevel === (config.thinkingLevel ?? thinkingLevel),
-				) ?? modelOptions.find(({ pinnedThinkingLevel }) => pinnedThinkingLevel === undefined) ?? modelOptions[0];
-				if (!modelOption) {
-					ctx.ui.notify(`BTW model unavailable: ${configuredModel}`, "error");
-					return;
-				}
-				try {
-					if (!(await ctx.modelRegistry.getApiKeyAndHeaders(modelOption.model)).ok) {
+				let launchRoute: ResolvedTaskRoute | undefined;
+				for (const route of configuredBtwRoutes(ctx)) {
+					try {
+						const authenticated = (await ctx.modelRegistry.getApiKeyAndHeaders(route.model)).ok;
 						if (launchGeneration !== sessionGeneration) return;
-						ctx.ui.notify(`Couldn't authenticate BTW model: ${configuredModel}`, "error");
-						return;
+						if (authenticated) {
+							launchRoute = route;
+							break;
+						}
+					} catch {
+						if (launchGeneration !== sessionGeneration) return;
 					}
-				} catch {
-					if (launchGeneration !== sessionGeneration) return;
-					ctx.ui.notify(`Couldn't authenticate BTW model: ${configuredModel}`, "error");
+				}
+				if (!launchRoute) {
+					ctx.ui.notify("No authenticated BTW task model route is available. Run /task-models.", "error");
 					return;
 				}
-				if (launchGeneration !== sessionGeneration) return;
-				const model = currentModel ?? null;
 				const activeTools = pi.getActiveTools();
-				const launchThinkingLevel = modelOption.pinnedThinkingLevel ?? config.thinkingLevel ?? thinkingLevel;
-				if (!supportedThinkingLevels(modelOption.model).includes(launchThinkingLevel as BtwThinkingLevel)) {
-					ctx.ui.notify(`BTW thinking level unavailable for ${configuredModel}: ${launchThinkingLevel}`, "error");
-					return;
-				}
 				let parentSystemPrompt: string | null = null;
 				try {
 					parentSystemPrompt = ctx.getSystemPrompt();
@@ -712,7 +617,7 @@ export async function registerBtwExtension(
 							generatedAt: createdAt,
 							cwd: ctx.cwd,
 							session: ctx.sessionManager.getSessionFile() ?? "ephemeral",
-							model,
+							model: currentModel,
 						},
 						parentSystemPrompt,
 						parentActiveTools: activeTools,
@@ -732,8 +637,8 @@ export async function registerBtwExtension(
 					cwd: ctx.cwd,
 					parentPaneId: process.env.HERDR_PANE_ID,
 					payloadPath,
-					model: configuredModel,
-					thinkingLevel: launchThinkingLevel,
+					model: `${launchRoute.model.provider}/${launchRoute.model.id}`,
+					thinkingLevel: launchRoute.thinkingLevel,
 					toolMode: config.tools,
 					activeTools,
 					split: config.split,

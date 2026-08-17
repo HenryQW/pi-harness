@@ -5,7 +5,7 @@ Pi extension inspired by Claude Code `/btw`, based on [oscabriel/pi-herdr-btw](h
 ## Behavior
 
 - snapshots parent's current, compaction-aware context
-- inherits cwd, model, and thinking level by default
+- inherits cwd and uses shared task-model routing
 - prefills question for review by default
 - leaves parent session unchanged
 - supports `/btw merge` to return side-thread transcript and follow-up prompt
@@ -13,15 +13,18 @@ Pi extension inspired by Claude Code `/btw`, based on [oscabriel/pi-herdr-btw](h
 
 ## Requirements
 
-- Pi v0.83.0+
+- Pi v0.84.2+
 - Herdr v0.7.4+
 - Pi running in Herdr-managed pane
 
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-btw
 ```
+
+`pi-task-models` loads `/task-models`, which configures shared model profiles used by side-thread launch.
 
 ## Usage
 
@@ -29,15 +32,14 @@ pi install npm:@henryqw/pi-herdr-btw
 /btw                              open empty side pane
 /btw <question...>                open side pane with draft question
 /btw ask <question...>            escape hatch for reserved first words
-/btw config [...]                 show or change defaults
-/btw-model                        choose side-thread model
+/btw config [...]                 show or change launch defaults
 /btw merge <prompt...>            merge side thread into parent and continue
 /btw help                         show grammar
 ```
 
 `ask`, `config`, `merge`, and `help` route only when they are exact first words. Other input is a question.
 
-`/btw-model` selects a model, then one of its supported thinking levels. It follows Pi's current scoped model list when `--models` or `enabledModels` is configured, including scoped thinking-level pins.
+Model and thinking level come from `@henryqw/pi-task-models`. Task `pi-herdr-btw/btw` defaults to profile `fast`. Run `/task-models` to configure its profile, primary route, and optional fallback. Routes follow Pi's current model scope; first authenticated viable route is selected before pane launch.
 
 ## Merge
 
@@ -47,26 +49,13 @@ Pending delivery waits for parent to settle and for current model authentication
 
 ## Config
 
-Run `/btw-model` to choose from Pi's available authenticated text models. Choose `Current session model` to clear override. Selection saves here:
+`/btw config` persists launch behavior in `~/.pi/agent/config/pi-herdr-btw.json`. Model routing stays in shared `pi-task-models.json` config.
 
-`~/.pi/agent/config/pi-herdr-btw.json`
-
-```json
-{
-  "model": "openai-codex/gpt-5.6-luna",
-  "thinkingLevel": "max"
-}
-```
-
-Saved `model` and `thinkingLevel` drive new side panes. Omit or set either to `null` to use current session values. `/btw config` can also persist `autoSubmit`, `tools`, and `split`.
-
-Other settings:
+Settings:
 
 ```text
 /btw config
 /btw config auto-submit on|off
-/btw config model inherit|provider/model
-/btw config thinking inherit|off|minimal|low|medium|high|xhigh|max
 /btw config tools inherit|all|read-only|none
 /btw config split right|down
 /btw config reset

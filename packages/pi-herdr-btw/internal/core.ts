@@ -2,12 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createReadOnlyTools } from "@earendil-works/pi-coding-agent";
 import {
-	isModelName,
-	THINKING_LEVELS,
 	TOOL_MODES,
 	type BtwConfig,
 	type BtwSplit,
-	type BtwThinkingLevel,
 	type BtwToolMode,
 } from "./config.ts";
 
@@ -149,10 +146,6 @@ export function isBtwPayload(value: unknown): value is BtwPayload {
 		!!payload.config &&
 		typeof payload.config === "object" &&
 		typeof payload.config.autoSubmit === "boolean" &&
-		(payload.config.model === null ||
-			(typeof payload.config.model === "string" && isModelName(payload.config.model))) &&
-		(payload.config.thinkingLevel === null ||
-			THINKING_LEVELS.includes(payload.config.thinkingLevel as BtwThinkingLevel)) &&
 		TOOL_MODES.includes(payload.config.tools as BtwToolMode) &&
 		(payload.config.split === "right" || payload.config.split === "down")
 	);

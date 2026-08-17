@@ -10,6 +10,7 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export const DEFAULT_TASK_ASSIGNMENTS = {
+	"pi-herdr-btw/btw": "fast",
 	"pi-herdr-rename/rename": "fast",
 	"pi-auto-compact/autoCompact": "fast",
 	"pi-subagent/delegateTask": "balanced",

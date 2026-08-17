@@ -9,8 +9,7 @@ export const HELP_TEXT = `/btw usage:
 /btw                        open an empty side pane
 /btw <question...>          open a side pane with a draft question
 /btw ask <question...>      explicit form for questions starting with a reserved word
-/btw config [...]           show or change defaults (auto-submit, model, thinking, tools, split, reset)
-/btw-model                   choose side-thread model
+/btw config [...]           show or change defaults (auto-submit, tools, split, reset)
 /btw merge <prompt...>      fold this side thread into the parent and continue with the prompt
 /btw help                   show this grammar`;
 

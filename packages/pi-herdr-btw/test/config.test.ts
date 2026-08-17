@@ -14,32 +14,29 @@ import {
 test("config commands expose a small validated settings interface", () => {
 	let config = { ...DEFAULT_CONFIG };
 	config = applyConfigCommand(config, "auto-submit on").config;
-	config = applyConfigCommand(config, "model anthropic/claude-sonnet").config;
-	config = applyConfigCommand(config, "thinking xhigh").config;
 	config = applyConfigCommand(config, "tools read-only").config;
 	config = applyConfigCommand(config, "split down").config;
 
 	assert.deepEqual(config, {
 		autoSubmit: true,
-		model: "anthropic/claude-sonnet",
-		thinkingLevel: "xhigh",
 		tools: "read-only",
 		split: "down",
 	});
 	assert.match(formatConfig(config), /auto-submit: on/);
 	assert.deepEqual(applyConfigCommand(config, "reset").config, DEFAULT_CONFIG);
-	assert.throws(() => applyConfigCommand(config, "model not-a-qualified-model"), /btw config/);
+	assert.throws(() => applyConfigCommand(config, "model provider/model"), /btw config/);
 	assert.throws(() => applyConfigCommand(config, "tools dangerous"), /btw config/);
 });
 
 test("parseConfig fills omitted values and rejects invalid values", () => {
 	assert.deepEqual(parseConfig({ autoSubmit: true }), { ...DEFAULT_CONFIG, autoSubmit: true });
-	assert.deepEqual(parseConfig({ model: "openai-codex/gpt-5.6-luna", thinkingLevel: "max" }), {
+	assert.deepEqual(parseConfig({ tools: "none", split: "down" }), {
 		...DEFAULT_CONFIG,
-		model: "openai-codex/gpt-5.6-luna",
-		thinkingLevel: "max",
+		tools: "none",
+		split: "down",
 	});
-	assert.throws(() => parseConfig({ thinkingLevel: "huge" }), /thinkingLevel/);
+	assert.throws(() => parseConfig({ tools: "dangerous" }), /tools/);
+	assert.throws(() => parseConfig({ model: "provider/model" }), /unknown config key/);
 	assert.throws(() => parseConfig({ split: "left" }), /split/);
 });
 
@@ -71,13 +68,13 @@ test("ConfigStore serializes read-modify-write updates", async (t) => {
 	await first.save(DEFAULT_CONFIG);
 
 	await Promise.all([
-		first.update((config) => ({ ...config, model: "anthropic/claude-sonnet" })),
+		first.update((config) => ({ ...config, autoSubmit: true })),
 		second.update((config) => ({ ...config, tools: "none" })),
 	]);
 
 	assert.deepEqual(await first.load(), {
 		...DEFAULT_CONFIG,
-		model: "anthropic/claude-sonnet",
+		autoSubmit: true,
 		tools: "none",
 	});
 });

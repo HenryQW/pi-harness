@@ -20,6 +20,6 @@ _Avoid_: Full child context
 One-way handoff of Side-Thread Transcript plus follow-up prompt to Main. Main owns consumption; Side Thread does not wait for confirmation.
 _Avoid_: Merge acknowledgement
 
-**Model Override**:
-Saved `provider/model` used by side threads instead of Main's current model.
-_Avoid_: Hardcoded model
+**BTW Task Profile**:
+Shared `pi-task-models` route assignment used to choose Side Thread model and thinking level. Defaults to `fast`; launch may use configured fallback before Side Thread starts.
+_Avoid_: Package-owned model picker

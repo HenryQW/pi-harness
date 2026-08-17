@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { writeTaskModelsConfig } from "@henryqw/pi-task-models";
 import { DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
 import type { BtwPayload } from "../internal/core.ts";
 import {
@@ -257,21 +261,31 @@ async function createHarness(
 	return { commands, handlers, execCalls, sentUserMessages, sentMessages, configStore, emit, cleanup, timers };
 }
 
-async function withParentEnvironment(run: () => Promise<void>): Promise<void> {
+async function withParentEnvironment(run: (agentDir: string) => Promise<void>): Promise<void> {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-btw-task-models-"));
+	writeTaskModelsConfig({
+		profiles: {
+			fast: { primary: { model: "test-provider/test-model", thinkingLevel: "high" } },
+		},
+		tasks: {},
+	}, agentDir);
 	const previous = {
+		agentDir: process.env.PI_CODING_AGENT_DIR,
 		herdr: process.env.HERDR_ENV,
 		pane: process.env.HERDR_PANE_ID,
 		workspace: process.env.HERDR_WORKSPACE_ID,
 		tab: process.env.HERDR_TAB_ID,
 	};
+	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_PANE_ID = "w1:p1";
 	process.env.HERDR_WORKSPACE_ID = "w1";
 	process.env.HERDR_TAB_ID = "w1:t1";
 	try {
-		await run();
+		await run(agentDir);
 	} finally {
 		for (const [key, value] of Object.entries({
+			PI_CODING_AGENT_DIR: previous.agentDir,
 			HERDR_ENV: previous.herdr,
 			HERDR_PANE_ID: previous.pane,
 			HERDR_WORKSPACE_ID: previous.workspace,
@@ -280,6 +294,7 @@ async function withParentEnvironment(run: () => Promise<void>): Promise<void> {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		}
+		await rm(agentDir, { recursive: true, force: true });
 	}
 }
 
@@ -396,154 +411,18 @@ test("config subcommand updates and resets launch defaults, including malformed-
 		const command = harness.commands.get("btw");
 
 		await command?.handler("config auto-submit on", ctx);
-		await command?.handler("config model anthropic/claude-sonnet", ctx);
 		await command?.handler("config tools read-only", ctx);
 		harness.cleanup();
 
 		assert.equal(harness.configStore.config.autoSubmit, true);
-		assert.equal(harness.configStore.config.model, "anthropic/claude-sonnet");
 		assert.equal(harness.configStore.config.tools, "read-only");
-		assert.equal(harness.configStore.saved.length, 3);
+		assert.equal(harness.configStore.saved.length, 2);
 
 		harness.configStore.loadError = new Error("malformed config");
 		await command?.handler("config reset", ctx);
 		assert.deepEqual(harness.configStore.config, DEFAULT_CONFIG);
 		assert.equal(harness.configStore.resetRuns, 1);
 	});
-});
-
-test("btw-model saves a selected text model while preserving other settings", async () => {
-	const store = new FakeStore();
-	const configStore = new FakeConfigStore();
-	configStore.config = { ...DEFAULT_CONFIG, autoSubmit: true };
-	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }), configStore);
-	const ctx = createCommandContext();
-	ctx.modelRegistry = {
-		getAvailable: () => [
-			{ provider: "image", id: "vision", input: ["image"] },
-			{
-				provider: "test-provider",
-				id: "test-model",
-				input: ["text"],
-				reasoning: true,
-				thinkingLevelMap: { xhigh: "xhigh", max: "max" },
-			},
-			{ provider: "test-provider", id: "unscoped-model", input: ["text"] },
-		],
-	};
-	ctx.scopedModels = [
-		{
-			model: {
-				provider: "test-provider",
-				id: "test-model",
-				input: ["text"],
-				reasoning: true,
-				thinkingLevelMap: { xhigh: "xhigh", max: "max" },
-			},
-		},
-	];
-	ctx.ui.select = async (title: string, choices: string[]) => {
-		if (title === "BTW model") {
-			assert.deepEqual(choices, ["Current session model", "test-provider/test-model"]);
-			return "test-provider/test-model";
-		}
-		assert.equal(title, "Thinking level · test-provider/test-model");
-		assert.deepEqual(choices, ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-		return "max";
-	};
-
-	await harness.commands.get("btw-model")?.handler("", ctx);
-	assert.deepEqual(configStore.config, {
-		...DEFAULT_CONFIG,
-		autoSubmit: true,
-		model: "test-provider/test-model",
-		thinkingLevel: "max",
-	});
-	assert.deepEqual(configStore.saved, [configStore.config]);
-	assert.match(ctx.notifications.at(-1)?.message ?? "", /test-provider\/test-model/);
-	harness.cleanup();
-});
-
-test("btw-model restricts a scoped model to its pinned thinking level", async () => {
-	const store = new FakeStore();
-	const configStore = new FakeConfigStore();
-	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }), configStore);
-	const ctx = createCommandContext();
-	ctx.scopedModels = [
-		{
-			model: {
-				provider: "test-provider",
-				id: "pinned-model",
-				input: ["text"],
-				reasoning: true,
-				thinkingLevelMap: { low: "low", max: "max" },
-			},
-			thinkingLevel: "low",
-		},
-	];
-	let pickerCalls = 0;
-	ctx.ui.select = async (title: string, choices: string[]) => {
-		pickerCalls += 1;
-		assert.equal(title, "BTW model");
-		assert.deepEqual(choices, ["Current session model", "test-provider/pinned-model"]);
-		return "test-provider/pinned-model";
-	};
-
-	await harness.commands.get("btw-model")?.handler("", ctx);
-	assert.equal(pickerCalls, 1);
-	assert.equal(configStore.config.model, "test-provider/pinned-model");
-	assert.equal(configStore.config.thinkingLevel, "low");
-	harness.cleanup();
-});
-
-test("btw-model preserves selected scoped thinking pin for duplicate model entries", async () => {
-	const store = new FakeStore();
-	const configStore = new FakeConfigStore();
-	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }), configStore);
-	const ctx = createCommandContext();
-	const model = {
-		provider: "test-provider",
-		id: "duplicate-model",
-		input: ["text"],
-		reasoning: true,
-		thinkingLevelMap: { low: "low", max: "max" },
-	};
-	ctx.scopedModels = [
-		{ model, thinkingLevel: "low" },
-		{ model, thinkingLevel: "max" },
-	];
-	ctx.ui.select = async (title: string, choices: string[]) => {
-		assert.equal(title, "BTW model");
-		assert.deepEqual(choices, [
-			"Current session model",
-			"test-provider/duplicate-model (low)",
-			"test-provider/duplicate-model (max)",
-		]);
-		return "test-provider/duplicate-model (max)";
-	};
-
-	await harness.commands.get("btw-model")?.handler("", ctx);
-	assert.equal(configStore.config.model, "test-provider/duplicate-model");
-	assert.equal(configStore.config.thinkingLevel, "max");
-	harness.cleanup();
-});
-
-test("btw-model refuses non-UI mode without opening a picker", async () => {
-	const store = new FakeStore();
-	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
-	const ctx = createCommandContext();
-	ctx.hasUI = false;
-	let selected = false;
-	ctx.ui.select = async () => {
-		selected = true;
-		return "Current session model";
-	};
-
-	await harness.commands.get("btw-model")?.handler("", ctx);
-	harness.cleanup();
-
-	assert.equal(selected, false);
-	assert.match(ctx.notifications.at(-1)?.message ?? "", /interactive UI/);
 });
 
 test("parent retries agent start on the transient pane-busy error", async () => {
@@ -612,50 +491,69 @@ test("parent stops pane-busy retries when its session shuts down during backoff"
 	});
 });
 
-test("parent rejects unavailable or unauthenticated BTW models before splitting", async () => {
-	await withParentEnvironment(async () => {
+test("parent uses authenticated task-profile fallback when primary authentication fails", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		writeTaskModelsConfig({
+			profiles: {
+				frontier: {
+					primary: { model: "test-provider/test-model", thinkingLevel: "high" },
+					fallback: { model: "anthropic/claude-haiku", thinkingLevel: "low" },
+				},
+			},
+			tasks: { "pi-herdr-btw/btw": "frontier" },
+		}, agentDir);
 		const store = new FakeStore();
-		const configStore = new FakeConfigStore();
-		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku" };
-		const harness = await createHarness(store, herdrExec(), configStore);
-		const scopedCtx = createCommandContext();
-		scopedCtx.scopedModels = [
-			{ model: { provider: "test-provider", id: "test-model", input: ["text"] } },
-		];
-		await harness.commands.get("btw")?.handler("question", scopedCtx);
-		assert.equal(harness.execCalls.length, 0);
-		assert.equal(store.created.length, 0);
-		assert.match(scopedCtx.notifications.at(-1)?.message ?? "", /model unavailable/);
+		const harness = await createHarness(store, herdrExec());
+		const ctx = createCommandContext();
+		const authenticated: string[] = [];
+		ctx.modelRegistry.getApiKeyAndHeaders = async (model: { provider: string; id: string }) => {
+			authenticated.push(`${model.provider}/${model.id}`);
+			return { ok: model.id === "claude-haiku" };
+		};
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
 
+		assert.deepEqual(authenticated, ["test-provider/test-model", "anthropic/claude-haiku"]);
+		const startArgs = harness.execCalls[1]?.args ?? [];
+		assert.deepEqual(startArgs.slice(startArgs.indexOf("--model"), startArgs.indexOf("--model") + 2), [
+			"--model",
+			"anthropic/claude-haiku",
+		]);
+		assert.deepEqual(startArgs.slice(startArgs.indexOf("--thinking"), startArgs.indexOf("--thinking") + 2), [
+			"--thinking",
+			"low",
+		]);
+	});
+});
+
+test("parent rejects unavailable or unauthenticated task-profile routes before splitting", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		writeTaskModelsConfig({
+			profiles: { frontier: { primary: { model: "missing/model", thinkingLevel: "high" } } },
+			tasks: { "pi-herdr-btw/btw": "frontier" },
+		}, agentDir);
+		const unavailableStore = new FakeStore();
+		const unavailableHarness = await createHarness(unavailableStore, herdrExec());
+		const unavailableCtx = createCommandContext();
+		await unavailableHarness.commands.get("btw")?.handler("question", unavailableCtx);
+		unavailableHarness.cleanup();
+		assert.equal(unavailableHarness.execCalls.length, 0);
+		assert.equal(unavailableStore.created.length, 0);
+		assert.match(unavailableCtx.notifications.at(-1)?.message ?? "", /no available route/);
+
+		writeTaskModelsConfig({
+			profiles: { fast: { primary: { model: "test-provider/test-model", thinkingLevel: "high" } } },
+			tasks: {},
+		}, agentDir);
+		const authStore = new FakeStore();
+		const authHarness = await createHarness(authStore, herdrExec());
 		const authCtx = createCommandContext();
-		const savedModel = {
-			provider: "anthropic",
-			id: "claude-haiku",
-			input: ["text"],
-			reasoning: true,
-			thinkingLevelMap: { high: "high" },
-		};
-		authCtx.modelRegistry = {
-			getAvailable: () => [savedModel],
-			getApiKeyAndHeaders: async () => ({ ok: false }),
-		};
-		await harness.commands.get("btw")?.handler("question", authCtx);
-		harness.cleanup();
-		assert.equal(harness.execCalls.length, 0);
-		assert.equal(store.created.length, 0);
-		assert.match(authCtx.notifications.at(-1)?.message ?? "", /authenticate/);
-
-		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: "max" };
-		const thinkingCtx = createCommandContext();
-		thinkingCtx.modelRegistry = {
-			getAvailable: () => [savedModel],
-			getApiKeyAndHeaders: async () => ({ ok: true }),
-		};
-		await harness.commands.get("btw")?.handler("question", thinkingCtx);
-		harness.cleanup();
-		assert.equal(harness.execCalls.length, 0);
-		assert.equal(store.created.length, 0);
-		assert.match(thinkingCtx.notifications.at(-1)?.message ?? "", /thinking level/);
+		authCtx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: false });
+		await authHarness.commands.get("btw")?.handler("question", authCtx);
+		authHarness.cleanup();
+		assert.equal(authHarness.execCalls.length, 0);
+		assert.equal(authStore.created.length, 0);
+		assert.match(authCtx.notifications.at(-1)?.message ?? "", /No authenticated BTW task model route/);
 	});
 });
 
@@ -944,17 +842,11 @@ test("parent retains payload when killed reconciliation reports partial not-foun
 	});
 });
 
-test("parent command applies configured model, thinking, tools, and split", async () => {
+test("parent command applies configured tools, split, and auto-submit", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const configStore = new FakeConfigStore();
-		configStore.config = {
-			autoSubmit: true,
-			model: "anthropic/claude-haiku",
-			thinkingLevel: "low",
-			tools: "none",
-			split: "down",
-		};
+		configStore.config = { autoSubmit: true, tools: "none", split: "down" };
 		const harness = await createHarness(store, herdrExec(), configStore);
 		await harness.commands.get("btw")?.handler("question", createCommandContext());
 		harness.cleanup();
@@ -966,36 +858,16 @@ test("parent command applies configured model, thinking, tools, and split", asyn
 			splitArgs.slice(splitArgs.indexOf("--direction"), splitArgs.indexOf("--direction") + 2),
 			["--direction", "down"],
 		);
-		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), [
-			"--model",
-			"anthropic/claude-haiku",
-		]);
-		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
-			"--thinking",
-			"low",
-		]);
-		// autoSubmit launches carry the launch-draft sentinel as pi's initial
-		// message so the child submits the draft after initial render (avoids
-		// the double-paint startup race); the question itself never hits argv.
 		assert.equal(args.at(-1), "/btw --launch-draft");
 		assert.equal(args.at(-2), "--no-tools");
-		assert.equal(
-			[...splitArgs, ...args].some((arg) => arg.includes("question")),
-			false,
-		);
+		assert.equal([...splitArgs, ...args].some((arg) => arg.includes("question")), false);
 	});
 });
 
-test("parent uses saved BTW model without a current model", async () => {
+test("parent uses task profile without a current model", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
-		const configStore = new FakeConfigStore();
-		configStore.config = {
-			...DEFAULT_CONFIG,
-			model: "openai-codex/gpt-5.6-luna",
-			thinkingLevel: "max",
-		};
-		const harness = await createHarness(store, herdrExec(), configStore);
+		const harness = await createHarness(store, herdrExec());
 		const ctx = createCommandContext();
 		ctx.model = undefined;
 		await harness.commands.get("btw")?.handler("question", ctx);
@@ -1005,67 +877,8 @@ test("parent uses saved BTW model without a current model", async () => {
 		const args = harness.execCalls[1]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), [
 			"--model",
-			"openai-codex/gpt-5.6-luna",
+			"test-provider/test-model",
 		]);
-		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
-			"--thinking",
-			"max",
-		]);
-	});
-});
-
-test("parent honors scoped thinking pin for saved BTW model", async () => {
-	await withParentEnvironment(async () => {
-		const store = new FakeStore();
-		const configStore = new FakeConfigStore();
-		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: "max" };
-		const harness = await createHarness(store, herdrExec(), configStore);
-		const ctx = createCommandContext();
-		ctx.scopedModels = [
-			{
-				model: {
-					provider: "anthropic",
-					id: "claude-haiku",
-					input: ["text"],
-					reasoning: true,
-					thinkingLevelMap: { low: "low", max: "max" },
-				},
-				thinkingLevel: "low",
-			},
-		];
-		await harness.commands.get("btw")?.handler("question", ctx);
-		harness.cleanup();
-
-		const args = harness.execCalls[1]?.args ?? [];
-		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
-			"--thinking",
-			"low",
-		]);
-	});
-});
-
-test("parent selects active thinking pin when inheriting among duplicate scoped model entries", async () => {
-	await withParentEnvironment(async () => {
-		const store = new FakeStore();
-		const configStore = new FakeConfigStore();
-		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: null };
-		const harness = await createHarness(store, herdrExec(), configStore);
-		const ctx = createCommandContext();
-		const model = {
-			provider: "anthropic",
-			id: "claude-haiku",
-			input: ["text"],
-			reasoning: true,
-			thinkingLevelMap: { low: "low", high: "high" },
-		};
-		ctx.scopedModels = [
-			{ model, thinkingLevel: "low" },
-			{ model, thinkingLevel: "high" },
-		];
-		await harness.commands.get("btw")?.handler("question", ctx);
-		harness.cleanup();
-
-		const args = harness.execCalls[1]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
 			"--thinking",
 			"high",
@@ -1504,24 +1317,6 @@ test("decideCacheMode explains every fallback reason", () => {
 		thinkingLevel: "high",
 	};
 	assert.deepEqual(decideCacheMode(payload, matching), { mode: "native" });
-	assert.deepEqual(
-		decideCacheMode(
-			fixturePayload({
-				config: { ...DEFAULT_CONFIG, model: matching.model, thinkingLevel: "high" },
-			}),
-			matching,
-		),
-		{ mode: "native" },
-	);
-	assert.deepEqual(
-		decideCacheMode(
-			fixturePayload({
-				config: { ...DEFAULT_CONFIG, model: matching.model, thinkingLevel: "high" },
-			}),
-			{ ...matching, thinkingLevel: "low" },
-		),
-		{ mode: "fallback", reason: "thinking level differs from parent" },
-	);
 	const noPrompt = decideCacheMode(fixturePayload({ parentSystemPrompt: null }), matching);
 	assert.match(noPrompt.reason ?? "", /system prompt/);
 	assert.match(
@@ -1535,13 +1330,6 @@ test("decideCacheMode explains every fallback reason", () => {
 	assert.match(
 		decideCacheMode(payload, { ...matching, thinkingLevel: "low" }).reason ?? "",
 		/thinking/,
-	);
-	assert.deepEqual(
-		decideCacheMode(
-			fixturePayload({ config: { ...DEFAULT_CONFIG, model: "other/model" } }),
-			matching,
-		),
-		{ mode: "native" },
 	);
 });
 
