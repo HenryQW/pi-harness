@@ -1071,6 +1071,46 @@ test("parent does not reuse auth for a model selected during authentication", as
 	});
 });
 
+test("parent cancels an in-flight merge scan on session shutdown", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const payload = store.readValue;
+		store.mergeRequest = {
+			protocolVersion: MERGE_PROTOCOL_VERSION,
+			requestId: "req-shutdown-race",
+			launchId: payload.launchId,
+			parentSessionId: payload.parentSessionId,
+			capability: payload.capability,
+			createdAt: "2026-07-15T00:05:00.000Z",
+			summary: "shutdown race summary",
+			prompt: "shutdown race prompt",
+		} satisfies MergeRequest;
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		const ctx = createCommandContext();
+		let resolveAuth: ((value: { ok: boolean }) => void) | undefined;
+		let resolveAuthStarted: (() => void) | undefined;
+		const authStarted = new Promise<void>((resolve) => (resolveAuthStarted = resolve));
+		ctx.modelRegistry.getApiKeyAndHeaders = () => {
+			resolveAuthStarted?.();
+			return new Promise<{ ok: boolean }>((resolve) => {
+				resolveAuth = resolve;
+			});
+		};
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+
+		const scan = harness.commands.get("btw")?.handler("merge", ctx);
+		await authStarted;
+		await harness.emit("session_shutdown", { reason: "quit" }, {});
+		resolveAuth?.({ ok: true });
+		await scan;
+		harness.cleanup();
+
+		assert.equal(store.mergeAck, undefined);
+		assert.equal(harness.sentMessages.length, 0);
+		assert.equal(harness.sentUserMessages.length, 0);
+	});
+});
+
 test("parent defers startup merge recovery until after initial rendering", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();

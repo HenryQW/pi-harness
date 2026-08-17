@@ -497,6 +497,7 @@ export async function registerBtwExtension(
 	let sessionCtx:
 		| Pick<ExtensionCommandContext, "sessionManager" | "isIdle" | "model" | "modelRegistry">
 		| undefined;
+	let sessionGeneration = 0;
 	// Notifications need a UI context; route them through the last known ctx.
 	let notifyFn: ((message: string, type: "info" | "warning" | "error") => void) | undefined;
 	const coordinator = new MergeCoordinator(store, {
@@ -504,6 +505,7 @@ export async function registerBtwExtension(
 		isIdle: () => sessionCtx?.isIdle() ?? false,
 		getBranch: () => sessionCtx?.sessionManager.getBranch() ?? [],
 		canSubmitPrompt: async () => {
+			const generation = sessionGeneration;
 			const model = sessionCtx?.model;
 			const modelRegistry = sessionCtx?.modelRegistry;
 			if (!model || !modelRegistry) return false;
@@ -511,7 +513,12 @@ export async function registerBtwExtension(
 			try {
 				const authenticated = (await modelRegistry.getApiKeyAndHeaders(model)).ok;
 				const currentModel = sessionCtx?.model;
-				return authenticated && !!currentModel && `${currentModel.provider}/${currentModel.id}` === modelName;
+				return (
+					authenticated &&
+					generation === sessionGeneration &&
+					!!currentModel &&
+					`${currentModel.provider}/${currentModel.id}` === modelName
+				);
 			} catch {
 				return false;
 			}
@@ -543,6 +550,7 @@ export async function registerBtwExtension(
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		sessionGeneration += 1;
 		sessionCtx = ctx;
 		notifyFn = (message, type) => ctx.ui.notify(message, type);
 		// Pi renders restored messages after session_start. Defer recovery so a
@@ -565,6 +573,9 @@ export async function registerBtwExtension(
 		await scanMerges();
 	});
 	pi.on("session_shutdown", () => {
+		sessionGeneration += 1;
+		sessionCtx = undefined;
+		notifyFn = undefined;
 		if (startupScan) {
 			clearImmediate(startupScan);
 			startupScan = undefined;
