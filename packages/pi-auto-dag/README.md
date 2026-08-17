@@ -5,12 +5,13 @@ Plan and run a local Delivery Graph with Pi and Herdr: review, approve, execute 
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-dag
 ```
 
-Needs a POSIX host. Windows fails before gate execution.
+Needs a POSIX host. Windows fails before gate execution. `pi-task-models` provides shared `/task-models` configuration.
 
-Load the orchestrator only in the main integration profile. Worker agent directories must not load Auto DAG.
+Load the orchestrator only in the main integration session.
 
 ```json
 {
@@ -22,7 +23,7 @@ Load the orchestrator only in the main integration profile. Worker agent directo
 }
 ```
 
-Auto DAG injects `extensions/worker.ts` when it launches a worker.
+Worker policy comes from user-owned `@henryqw/pi-subagent` Roles. Subagent resolves Role Skills, tools, extensions, shared task-model route, Pi arguments, and managed Herdr lifecycle. Auto DAG adds `extensions/worker.ts` with graph protocol tools and owns graph state, prompts, gates, receipts, and execution decisions.
 
 ## Use
 
@@ -53,28 +54,14 @@ Auto DAG injects `extensions/worker.ts` when it launches a worker.
 
 ```json
 {
-  "version": 3,
-  "profiles": {
-    "coder": {
-      "description": "General implementation",
-      "agent_dir": "/absolute/path/to/profiles/coder",
-      "skills": ["agent-memory", "tdd"],
-      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"]
-    },
-    "reviewer": {
-      "description": "Read-only review",
-      "agent_dir": "/absolute/path/to/profiles/reviewer",
-      "skills": [],
-      "tools": ["read", "bash", "grep", "find", "ls"]
-    }
-  },
-  "implementation_profiles": ["coder"],
-  "reviewer_profile": "reviewer",
-  "repair_profile": "coder"
+  "version": 4,
+  "implementation_roles": ["coder", "backend", "frontend"],
+  "reviewer_role": "reviewer",
+  "repair_role": "coder"
 }
 ```
 
-Each profile key is its ID. `agent_dir` must be an absolute existing directory. `skills` are effective Pi skill names, not paths. `repair_profile` must be one of `implementation_profiles`. Unknown skill names block before worker creation.
+Role definitions live in `~/.pi/agent/config/pi-subagent/*.md`. Every referenced Role must exist; `repair_role` must be one of `implementation_roles`. Auto DAG uses shared tasks `pi-auto-dag/implement` (default `balanced`) and `pi-auto-dag/review` (default `frontier`). Invalid Role or model routes block before worker creation.
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
@@ -93,7 +80,7 @@ Put the graph at `.context/issues/graph.json`. This path cannot change. File mus
 - Implementation issue fields are exactly `id`, `title`, `profile`, `objective`, `acceptance`, `testing`, and `depends_on`.
 - `final_check` has only `acceptance` and `testing`.
 - IDs are lowercase hyphenated names; `final-check` is reserved.
-- Profiles must be IDs in `implementation_profiles`. Dependencies must be acyclic.
+- Each `profile` value must name a configured `implementation_roles` Role. Dependencies must be acyclic.
 
 ```json
 {
@@ -155,7 +142,7 @@ flowchart TD
 - `auto_dag_resume` rechecks config and Git, asks live workers to resend, restarts missing workers, and retries cleanup. Failed Required Gate evidence is never rerun automatically.
 - `auto_dag_health` on a completed run fast-forwards to the remote PR head, triages threads and checks, then optionally repairs and pushes once to the same PR.
 
-Run files live under `.context/pi-auto-dag/active.json` and `.context/pi-auto-dag/runs/<run-id>/state.json`. `active.json` locks one checkout until cleanup succeeds.
+Run State schema is version `4`. Files live under `.context/pi-auto-dag/active.json` and `.context/pi-auto-dag/runs/<run-id>/state.json`. `active.json` locks one checkout until cleanup succeeds.
 
 ## Remove
 

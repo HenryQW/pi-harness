@@ -1,10 +1,11 @@
 import { access, readFile } from "node:fs/promises";
 import { Type } from "typebox";
-import { defineTool, withFileMutationQueue, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, withFileMutationQueue, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveRoleLaunch, type ResolveRoleLaunchInput } from "@henryqw/pi-subagent";
 import { commandFailure, errorMessage, runCommand, type CommandRunner } from "./command.ts";
-import { loadProjectConfig, type AvailableSkill } from "./config.ts";
+import { configuredRole, loadProjectConfig } from "./config.ts";
 import { inspectIntegrationBranch, resolveGitTopLevel } from "./git.ts";
-import { assertDeliveryGraphProfiles, deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
+import { assertDeliveryGraphRoles, deliveryGraphPath, deriveDependencyWaves, hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
 import { assertIgnoredLocalContext } from "./intake.ts";
 import type { DeliveryGraph } from "./model.ts";
 import { approvedGraphHash, clearPlanningReviewPass, planningReviewPath, requirePlanningReviewPass } from "./planning-review.ts";
@@ -16,10 +17,12 @@ export const PLANNING_TOOLS = {
 	approve: "auto_dag_approve",
 } as const;
 
+export type PlanningLaunchResolver = (ctx: ExtensionContext, input: ResolveRoleLaunchInput) => WorkerLaunch;
+
 export function registerPlanning(
 	pi: ExtensionAPI,
 	runner: CommandRunner = runCommand,
-	availableSkills: () => readonly AvailableSkill[] | undefined = () => undefined,
+	resolveLaunch: PlanningLaunchResolver = (ctx, input) => resolveRoleLaunch(pi, ctx, input),
 ): void {
 	pi.registerCommand("dag-plan", {
 		description: "Plan and approve a local Delivery Graph without starting execution",
@@ -55,13 +58,13 @@ export function registerPlanning(
 				return;
 			}
 			let reviewerLaunch: WorkerLaunch;
-			let implementationProfiles: Array<{ id: string; description: string }>;
+			let implementationRoles: Array<{ name: string; description: string }>;
 			try {
-				const config = await loadProjectConfig(ctx.getSystemPromptOptions().skills ?? []);
-				reviewerLaunch = createPlanningReviewLaunch(config.profiles[config.reviewer_profile], root);
-				implementationProfiles = config.implementation_profiles.map((id) => ({ id, description: config.profiles[id].description }));
+				const config = await loadProjectConfig();
+				reviewerLaunch = createPlanningReviewLaunch((input) => resolveLaunch(ctx, input), configuredRole(config, config.reviewer_role), root);
+				implementationRoles = config.implementation_roles.map((name) => ({ name, description: configuredRole(config, name).description }));
 			} catch (error) {
-				ctx.ui.notify(`Planning profiles unavailable: ${errorMessage(error)}`, "error");
+				ctx.ui.notify(`Planning Roles unavailable: ${errorMessage(error)}`, "error");
 				return;
 			}
 			const existing = await inspectExistingGraph(root);
@@ -74,7 +77,7 @@ export function registerPlanning(
 				`Planning mode: ${mode}`,
 				`Repository root: ${root}`,
 				`Delivery Graph: ${deliveryGraphPath(root)}`,
-				`Implementation profiles: ${JSON.stringify(implementationProfiles)}`,
+				`Implementation Roles: ${JSON.stringify(implementationRoles)}`,
 				`Reviewer launch environment: ${JSON.stringify(reviewerLaunch.env)}`,
 				`Reviewer Pi arguments: ${JSON.stringify(reviewerLaunch.args)}`,
 				args.trim() ? `Additional user context: ${args.trim()}` : "Additional user context: none",
@@ -85,13 +88,13 @@ export function registerPlanning(
 	pi.registerTool(defineTool({
 		name: PLANNING_TOOLS.validate,
 		label: "Validate Delivery Graph",
-		description: "Deterministically validate authoritative Delivery Graph structure, profiles, references, cycles, commands, and derived waves. Does not approve or execute.",
+		description: "Deterministically validate authoritative Delivery Graph structure, Roles, references, cycles, commands, and derived waves. Does not approve or execute.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const root = await planningRoot(ctx.cwd, runner);
-			const config = await loadProjectConfig(availableSkills() ?? []);
+			const config = await loadProjectConfig();
 			const graph = await readDeliveryGraph(root);
-			assertDeliveryGraphProfiles(graph, config.implementation_profiles);
+			assertDeliveryGraphRoles(graph, config.implementation_roles);
 			return graphResult(graph);
 		},
 	}));
@@ -107,9 +110,9 @@ export function registerPlanning(
 			return withFileMutationQueue(deliveryGraphPath(root), () => withFileMutationQueue(planningReviewPath(root), async () => {
 				const activeRun = await readActiveRunId(root);
 				if (activeRun) throw new Error(`Cannot approve while Auto DAG run is active: ${activeRun}`);
-				const config = await loadProjectConfig(availableSkills() ?? []);
+				const config = await loadProjectConfig();
 				const draft = await readDeliveryGraph(root);
-				assertDeliveryGraphProfiles(draft, config.implementation_profiles);
+				assertDeliveryGraphRoles(draft, config.implementation_roles);
 				if (draft.status !== "draft") throw new Error("Delivery Graph must have draft status before approval");
 				await requirePlanningReviewPass(root, draft);
 				const candidate = { ...draft, status: "approved" as const };

@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
+import { configuredRole } from "./config.ts";
+import { findManagedSubagentTab, promptManagedSubagent, reconcileManagedSubagentTab, retireManagedSubagentTab, startManagedSubagent } from "@henryqw/pi-subagent";
 import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
@@ -10,15 +11,14 @@ import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { actionTicketPath, assertActiveActionTicket, ensureActionTicket, eventReceiptPath, readWorkerReceipt, rejectWorkerEnvelope, reviewId, rotateRejectedActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
 import { recordGateExecution, reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { hasAcceptedWorkerEvent, readRunState, recordAcceptedWorkerEvent, writeRunState, type Uuid } from "./state.ts";
-import { findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
-import { createWorkerLaunch, workerDeliveryContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { createWorkerLaunch, workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface PrHealthOptions {
 	runner: CommandRunner;
 	uuid: Uuid;
 	now?: () => string;
-	availableSkills?: () => readonly AvailableSkill[] | undefined;
+	resolveLaunch: RoleLaunchResolver;
 }
 
 export async function preflightPrHealthEnvelope(
@@ -140,7 +140,7 @@ async function resumePendingHealthWork(state: RunState, config: ProjectConfig, o
 
 async function loadPrHealthConfig(state: RunState, options: PrHealthOptions): Promise<ProjectConfig> {
 	try {
-		return await assertRunBoundary(state, options.runner, options.availableSkills?.());
+		return await assertRunBoundary(state, options.runner);
 	} catch (error) {
 		await save({ ...state, phase: "blocked", block_reason: errorMessage(error) }, options);
 		throw error;
@@ -173,12 +173,12 @@ export async function cleanupPrHealth(state: RunState, options: PrHealthOptions)
 	for (const key of ["reviewer_tab_id", "coder_tab_id"] as const) {
 		try {
 			const label = `auto-dag:${state.run_id}:health:${health.attempt}:${key === "reviewer_tab_id" ? "reviewer" : "coder"}`;
-			const tabId = health[key] ?? (await findWorkerTab(state, label, options))?.tab_id;
+			const tabId = health[key] ?? (await findManagedSubagentTab(workerHost(state), label, workerHostOptions(options)))?.tabId;
 			if (!tabId) {
 				state = await save(clearLifecycleCleanupBlock(state, issue.id, "tab"), options);
 				continue;
 			}
-			await retireWorkerTab(state, tabId, options);
+			await retireManagedSubagentTab(workerHost(state), tabId, workerHostOptions(options));
 			health = { ...health, [key]: undefined };
 			state = await save(clearLifecycleCleanupBlock({ ...state, health }, issue.id, "tab"), options);
 		} catch (error) {
@@ -268,22 +268,22 @@ async function ensureHealthReviewer(
 		const gate = requiredHealthGate(health, nonEmptyString(health.commit, "PR-health repair commit"));
 		if (gate.exit_code !== 0) return await blockHealth(state, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options);
 	}
-	let launch = await workerLaunch(state, issue, config, "reviewer");
+	let launch = await workerLaunch(state, issue, config, "reviewer", options);
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:reviewer`;
-	const resource = await reconcileWorkerTab(state, {
-		tab_id: health.reviewer_tab_id,
-		pane_id: health.reviewer_pane,
+	const resource = await reconcileManagedSubagentTab(workerHost(state), {
+		tabId: health.reviewer_tab_id,
+		paneId: health.reviewer_pane,
 		cwd: state.main_worktree,
 		launch,
 		label,
-	}, options);
-	if (health.reviewer_tab_id !== resource.tab_id || health.reviewer_pane !== resource.pane_id) {
-		health = { ...health, reviewer_tab_id: resource.tab_id, reviewer_pane: resource.pane_id };
+	}, workerHostOptions(options));
+	if (health.reviewer_tab_id !== resource.tabId || health.reviewer_pane !== resource.paneId) {
+		health = { ...health, reviewer_tab_id: resource.tabId, reviewer_pane: resource.paneId };
 		state = await save({ ...state, health }, options);
 	}
 	const agent = nonEmptyString(health.reviewer_agent, "PR-health reviewer agent");
-	launch = await workerLaunch(state, issue, config, "reviewer");
-	const started = await startWorkerAgent(state, agent, nonEmptyString(health.reviewer_pane, "PR-health reviewer pane"), launch, options, {
+	launch = await workerLaunch(state, issue, config, "reviewer", options);
+	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(health.reviewer_pane, "PR-health reviewer pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = requiredHealth(state);
 			if (!latest.instruction_pending) state = await save({ ...state, health: { ...latest, instruction_pending: true } }, options);
@@ -337,8 +337,7 @@ async function ensureHealthReviewer(
 		state.run_id,
 		options.uuid,
 	);
-	await revalidateResolvedProfile(config, config.reviewer_profile);
-	await promptWorkerAgent(state, agent, prompt, options);
+	await promptManagedSubagent(workerHost(state), agent, prompt, workerHostOptions(options));
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);
 	return state;
 }
@@ -400,7 +399,7 @@ async function submitHealthTriage(
 async function completeHealthyTriage(state: RunState, options: PrHealthOptions): Promise<RunState> {
 	let health = requiredHealth(state);
 	if (health.reviewer_tab_id) {
-		await retireWorkerTab(state, health.reviewer_tab_id, options);
+		await retireManagedSubagentTab(workerHost(state), health.reviewer_tab_id, workerHostOptions(options));
 		health = { ...health, reviewer_tab_id: undefined, reviewer_pane: undefined };
 		state = await save({ ...state, health }, options);
 	}
@@ -438,23 +437,23 @@ async function ensureHealthCoder(
 	let health = requiredHealth(state);
 	await ensureHealthWorktree(state, options);
 	const issue = finalCheck(state);
-	const repairIssue = { ...issue, profile: config.repair_profile, role: "implementation" } as const;
-	let launch = await workerLaunch(state, repairIssue, config, "implementer");
+	const repairIssue = { ...issue, profile: config.repair_role, role: "implementation" } as const;
+	let launch = await workerLaunch(state, repairIssue, config, "implementer", options);
 	const label = `auto-dag:${state.run_id}:health:${health.attempt}:coder`;
-	const resource = await reconcileWorkerTab(state, {
-		tab_id: health.coder_tab_id,
-		pane_id: health.coder_pane,
+	const resource = await reconcileManagedSubagentTab(workerHost(state), {
+		tabId: health.coder_tab_id,
+		paneId: health.coder_pane,
 		cwd: nonEmptyString(health.worktree, "PR-health repair worktree"),
 		launch,
 		label,
-	}, options);
-	if (health.coder_tab_id !== resource.tab_id || health.coder_pane !== resource.pane_id) {
-		health = { ...health, coder_tab_id: resource.tab_id, coder_pane: resource.pane_id };
+	}, workerHostOptions(options));
+	if (health.coder_tab_id !== resource.tabId || health.coder_pane !== resource.paneId) {
+		health = { ...health, coder_tab_id: resource.tabId, coder_pane: resource.paneId };
 		state = await save({ ...state, health }, options);
 	}
 	const agent = nonEmptyString(health.coder_agent, "PR-health coder agent");
-	launch = await workerLaunch(state, repairIssue, config, "implementer");
-	const started = await startWorkerAgent(state, agent, nonEmptyString(health.coder_pane, "PR-health coder pane"), launch, options, {
+	launch = await workerLaunch(state, repairIssue, config, "implementer", options);
+	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(health.coder_pane, "PR-health coder pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = requiredHealth(state);
 			if (!latest.instruction_pending) state = await save({ ...state, health: { ...latest, instruction_pending: true } }, options);
@@ -478,8 +477,7 @@ async function ensureHealthCoder(
 		state.run_id,
 		options.uuid,
 	);
-	await revalidateResolvedProfile(config, config.repair_profile);
-	await promptWorkerAgent(state, agent, fullPrompt ? {
+	await promptManagedSubagent(workerHost(state), agent, fullPrompt ? {
 		type: "auto_dag_pr_health_repair",
 		run_id: state.run_id,
 		delivery: workerDeliveryContext(state.graph),
@@ -500,7 +498,7 @@ async function ensureHealthCoder(
 		review_findings: health.review_findings,
 		...gate,
 		instruction,
-	}, options);
+	}, workerHostOptions(options));
 	if (needsInstruction) state = await save({ ...state, health: { ...requiredHealth(state), instruction_pending: undefined } }, options);
 	return state;
 }
@@ -576,7 +574,7 @@ async function applyHealthRepair(state: RunState, options: PrHealthOptions): Pro
 	if (!(await activeHealthHeadMatches(state, health, options))) {
 		return await blockHealth(state, "PR head changed before applying health repair", options);
 	}
-	await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	await assertRunBoundary(state, options.runner);
 	await verifyHealthRepairCommit(state, commit, options);
 	if (!health.integration_intent) {
 		state = await save({ ...state, health: { ...health, status: "applying", integration_intent: commit } }, options);
@@ -625,7 +623,7 @@ async function completeHealthRepair(state: RunState, options: PrHealthOptions): 
 	let health = requiredHealth(state);
 	for (const key of ["coder_tab_id", "reviewer_tab_id"] as const) {
 		if (!health[key]) continue;
-		await retireWorkerTab(state, health[key]!, options);
+		await retireManagedSubagentTab(workerHost(state), health[key]!, workerHostOptions(options));
 		health = { ...health, [key]: undefined };
 		state = await save({ ...state, health }, options);
 	}
@@ -703,7 +701,7 @@ async function recoverHealthFastForward(state: RunState, options: PrHealthOption
 		if (head !== intent.expected_head && head !== intent.remote_head) {
 			throw new Error("PR-health fast-forward did not leave the exact intended integration HEAD");
 		}
-		if (head === intent.expected_head) await assertRunBoundary(state, options.runner, options.availableSkills?.());
+		if (head === intent.expected_head) await assertRunBoundary(state, options.runner);
 		const fastForwardArgs = ["merge-base", "--is-ancestor", intent.expected_head, intent.remote_head];
 		const fastForward = await options.runner("git", fastForwardArgs, { cwd: state.main_worktree });
 		if (fastForward.code === 1) {
@@ -838,13 +836,14 @@ async function workerLaunch(
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
+	options: PrHealthOptions,
 ): Promise<WorkerLaunch> {
-	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = await revalidateResolvedProfile(config, profileId);
+	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
 	return createWorkerLaunch({
-		role,
+		resolveLaunch: options.resolveLaunch,
+		workerRole: role,
+		role: configuredRole(config, roleName),
 		events: WORKER_ROLE_EVENTS[role],
-		profile,
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),

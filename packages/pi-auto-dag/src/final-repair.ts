@@ -1,6 +1,15 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
+import { configuredRole } from "./config.ts";
+import {
+	findManagedSubagentTab,
+	managedSubagentTabExists,
+	promptManagedSubagent,
+	reconcileManagedSubagentPane,
+	reconcileManagedSubagentTab,
+	retireManagedSubagentTab,
+	startManagedSubagent,
+} from "@henryqw/pi-subagent";
 import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredGateCommand, requiredTaskGate } from "./final-gate.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
@@ -9,15 +18,14 @@ import type { LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnv
 import { actionTicketPath, ensureActionTicket, reviewId, type ReviewKind } from "./review-ticket.ts";
 import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
-import { ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, retireWorkerTab, startWorkerAgent, workerAgentName, workerTabExists } from "./worker-host.ts";
-import { createWorkerLaunch, workerDeliveryContext, workerIssueContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { createWorkerLaunch, workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, workerIssueContext, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { nonEmptyString, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export type FinalRepairOptions = {
 	runner: CommandRunner;
 	uuid: Uuid;
 	now?: () => string;
-	availableSkills?: () => readonly AvailableSkill[] | undefined;
+	resolveLaunch: RoleLaunchResolver;
 };
 
 export function isFinalRepairActive(state: RunState): boolean {
@@ -151,13 +159,13 @@ async function cleanupAbortedFinalRepair(state: RunState, issue: LocalIssue, opt
 	let current = task(state, issue.id);
 	try {
 		const tabId = current.tab_id ?? (current.implementer_provisioning_id
-			? (await findWorkerTab(state, current.implementer_provisioning_id, options))?.tab_id
+			? (await findManagedSubagentTab(workerHost(state), current.implementer_provisioning_id, workerHostOptions(options)))?.tabId
 			: undefined);
 		if (!tabId) {
 			state = await save(clearLifecycleCleanupBlock(replaceTask(state, issue.id, { ...current, tab_cleanup_done: true }), issue.id, "tab"), options);
 			current = task(state, issue.id);
 		} else {
-			await retireWorkerTab(state, tabId, options);
+			await retireManagedSubagentTab(workerHost(state), tabId, workerHostOptions(options));
 			state = await save(clearLifecycleCleanupBlock(replaceTask(state, issue.id, {
 				...current,
 				tab_id: undefined,
@@ -251,22 +259,22 @@ async function ensureFinalRepairCoder(
 ): Promise<RunState> {
 	await ensureRepairWorktree(state, issue, options);
 	let current = task(state, issue.id);
-	let launch = await workerLaunch(state, owner, config, "implementer");
+	let launch = await workerLaunch(state, owner, config, "implementer", options);
 	const label = nonEmptyString(current.implementer_provisioning_id, "final repair implementer provisioning identity");
-	const resource = await reconcileWorkerTab(state, {
-		tab_id: current.tab_id,
-		pane_id: current.implementer_pane,
+	const resource = await reconcileManagedSubagentTab(workerHost(state), {
+		tabId: current.tab_id,
+		paneId: current.implementer_pane,
 		cwd: nonEmptyString(current.worktree, "final repair worktree"),
 		launch,
 		label,
-	}, options);
-	if (current.tab_id !== resource.tab_id || current.implementer_pane !== resource.pane_id) {
-		state = await save(replaceTask(state, issue.id, { ...current, tab_id: resource.tab_id, implementer_pane: resource.pane_id }), options);
+	}, workerHostOptions(options));
+	if (current.tab_id !== resource.tabId || current.implementer_pane !== resource.paneId) {
+		state = await save(replaceTask(state, issue.id, { ...current, tab_id: resource.tabId, implementer_pane: resource.paneId }), options);
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.implementer_agent, "final repair implementer agent");
-	launch = await workerLaunch(state, owner, config, "implementer");
-	const started = await startWorkerAgent(state, agent, nonEmptyString(current.implementer_pane, "final repair implementer pane"), launch, options, {
+	launch = await workerLaunch(state, owner, config, "implementer", options);
+	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(current.implementer_pane, "final repair implementer pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
 			if (!latest.implementer_instruction_pending) state = await save(replaceTask(state, issue.id, { ...latest, implementer_instruction_pending: true }), options);
@@ -292,8 +300,7 @@ async function ensureFinalRepairCoder(
 		state.run_id,
 		options.uuid,
 	);
-	await revalidateResolvedProfile(config, config.repair_profile);
-	await promptWorkerAgent(state, agent, fullPrompt ? {
+	await promptManagedSubagent(workerHost(state), agent, fullPrompt ? {
 		type: "auto_dag_final_repair",
 		run_id: state.run_id,
 		delivery: workerDeliveryContext(state.graph),
@@ -314,7 +321,7 @@ async function ensureFinalRepairCoder(
 		review_findings: current.review_findings,
 		...gate,
 		instruction,
-	}, options);
+	}, workerHostOptions(options));
 	if (needsInstruction) {
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), implementer_instruction_pending: undefined }), options);
 	}
@@ -342,35 +349,35 @@ async function ensureFinalRepairReviewer(
 			block_reason: `Final-gate repair required gate exited with code ${gate.exit_code}; reviewer was not launched`,
 		}, options);
 	}
-	if (!current.tab_id || !current.implementer_pane || (current.reviewer_pane && !(await workerTabExists(state, current.tab_id, options)))) {
+	if (!current.tab_id || !current.implementer_pane || (current.reviewer_pane && !(await managedSubagentTabExists(workerHost(state), current.tab_id, workerHostOptions(options))))) {
 		const label = nonEmptyString(current.implementer_provisioning_id, "final repair implementer provisioning identity");
-		const resource = await reconcileWorkerTab(state, {
-			tab_id: undefined,
-			pane_id: undefined,
+		const resource = await reconcileManagedSubagentTab(workerHost(state), {
+			tabId: undefined,
+			paneId: undefined,
 			cwd: nonEmptyString(current.worktree, "final repair worktree"),
-			launch: await workerLaunch(state, owner, config, "implementer"),
+			launch: await workerLaunch(state, owner, config, "implementer", options),
 			label,
-		}, options);
+		}, workerHostOptions(options));
 		state = await save(replaceTask(state, issue.id, {
 			...current,
-			tab_id: resource.tab_id,
-			implementer_pane: resource.pane_id,
+			tab_id: resource.tabId,
+			implementer_pane: resource.paneId,
 			reviewer_pane: undefined,
 		}), options);
 		current = task(state, issue.id);
 	}
-	let launch = await workerLaunch(state, owner, config, "reviewer");
+	let launch = await workerLaunch(state, owner, config, "reviewer", options);
 	if (!current.reviewer_pane) {
 		const tab = nonEmptyString(current.tab_id, "final repair tab id");
 		const root = nonEmptyString(current.implementer_pane, "final repair implementer pane");
 		const label = nonEmptyString(current.reviewer_provisioning_id, "final repair reviewer provisioning identity");
-		const pane = await ensureWorkerPane(state, tab, root, nonEmptyString(current.worktree, "final repair worktree"), launch, label, options);
+		const pane = await reconcileManagedSubagentPane(workerHost(state), tab, root, nonEmptyString(current.worktree, "final repair worktree"), launch, label, workerHostOptions(options));
 		state = await save(replaceTask(state, issue.id, { ...current, reviewer_pane: pane }), options);
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, "final repair reviewer agent");
-	launch = await workerLaunch(state, owner, config, "reviewer");
-	const started = await startWorkerAgent(state, agent, nonEmptyString(current.reviewer_pane, "final repair reviewer pane"), launch, options, {
+	launch = await workerLaunch(state, owner, config, "reviewer", options);
+	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(current.reviewer_pane, "final repair reviewer pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
 			if (!latest.reviewer_instruction_pending) state = await save(replaceTask(state, issue.id, { ...latest, reviewer_instruction_pending: true }), options);
@@ -390,9 +397,8 @@ async function ensureFinalRepairReviewer(
 		state.run_id,
 		options.uuid,
 	);
-	await revalidateResolvedProfile(config, config.reviewer_profile);
 	const amendments = gateCommandAmendments(state, issue.id);
-	await promptWorkerAgent(state, agent, reviewPrompt({
+	await promptManagedSubagent(workerHost(state), agent, reviewPrompt({
 		kind: "final_repair",
 		graph: state.graph,
 		issue,
@@ -405,7 +411,7 @@ async function ensureFinalRepairReviewer(
 			owner_issue: workerIssueContext(owner, false),
 			...(amendments.length ? { gate_command_amendments: amendments } : {}),
 		},
-	}, promptMode), options);
+	}, promptMode), workerHostOptions(options));
 	if (needsInstruction) {
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);
 	}
@@ -455,7 +461,7 @@ async function applyFinalRepair(state: RunState, issue: LocalIssue, options: Fin
 	const reviewed = nonEmptyString(current.repair_commit ?? current.commit, "final-gate repair commit");
 	const commit = current.integration_intent ?? reviewed;
 	if (current.integration_intent && current.integration_intent !== reviewed) throw new Error("Final-gate repair integration intent does not match its reviewed commit");
-	await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	await assertRunBoundary(state, options.runner);
 	await verifyRepairCommit(state, issue, commit, options);
 	if (!current.integration_intent) {
 		state = await save(replaceTask(state, issue.id, { ...current, status: "repair_applying", integration_intent: commit }), options);
@@ -475,7 +481,7 @@ async function finishFinalRepair(state: RunState, issue: LocalIssue, options: Fi
 	const current = task(state, issue.id);
 	const commit = nonEmptyString(current.repair_commit ?? current.commit, "integrated final-gate repair commit");
 	if (current.tab_id) {
-		await retireWorkerTab(state, current.tab_id, options);
+		await retireManagedSubagentTab(workerHost(state), current.tab_id, workerHostOptions(options));
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), tab_id: undefined, implementer_pane: undefined, reviewer_pane: undefined }), options);
 	}
 	const worktree = task(state, issue.id).worktree;
@@ -564,7 +570,7 @@ async function verifyOneCommit(
 async function closeFinalTab(state: RunState, issue: LocalIssue, options: FinalRepairOptions): Promise<RunState> {
 	const current = task(state, issue.id);
 	if (!current.tab_id) return state;
-	await retireWorkerTab(state, current.tab_id, options);
+	await retireManagedSubagentTab(workerHost(state), current.tab_id, workerHostOptions(options));
 	return await save(replaceTask(state, issue.id, {
 		...current,
 		tab_id: undefined,
@@ -621,13 +627,14 @@ async function workerLaunch(
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
+	options: FinalRepairOptions,
 ): Promise<WorkerLaunch> {
-	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = await revalidateResolvedProfile(config, profileId);
+	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
 	return createWorkerLaunch({
-		role,
+		resolveLaunch: options.resolveLaunch,
+		workerRole: role,
+		role: configuredRole(config, roleName),
 		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		profile,
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),

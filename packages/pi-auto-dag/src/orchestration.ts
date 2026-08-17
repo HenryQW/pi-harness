@@ -1,5 +1,5 @@
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
-import type { AvailableSkill } from "./config.ts";
+import { findManagedSubagentTab, retireManagedSubagentTab } from "@henryqw/pi-subagent";
 import { cleanupFinalRepair, resumeFinalRepair } from "./final-repair.ts";
 import { executionIssues } from "./graph.ts";
 import {
@@ -22,8 +22,7 @@ import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
 import { hasAcceptedWorkerEvent, issueById, readRunState, recordAcceptedWorkerEvent, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
 import { actionTicketPath, assertActiveActionTicket, eventReceiptPath, readWorkerReceipt, rejectWorkerEnvelope, rotateRejectedActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
-import { findWorkerTab, retireWorkerTab, workerAgentName } from "./worker-host.ts";
-import { WORKER_ROLE_EVENTS, type WorkerEvent, type WorkerRole } from "./worker.ts";
+import { WORKER_ROLE_EVENTS, workerAgentName, workerHost, workerHostOptions, type RoleLaunchResolver, type WorkerEvent, type WorkerRole } from "./worker.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface OrchestrationOptions {
@@ -31,7 +30,7 @@ export interface OrchestrationOptions {
 	uuid: Uuid;
 	now?: () => string;
 	delay?: (milliseconds: number) => Promise<void>;
-	availableSkills?: () => readonly AvailableSkill[] | undefined;
+	resolveLaunch: RoleLaunchResolver;
 }
 
 type CleanupOperation = CleanupBlock["operation"];
@@ -62,7 +61,7 @@ export async function advanceRun(state: RunState, options: OrchestrationOptions)
 	state = await retryCleanup(state, options);
 	if (state.cleanup_blocks?.length) return state;
 	if (state.phase === "aborted" || state.phase === "blocked" || state.phase === "completed") return state;
-	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner, options.availableSkills?.()), options);
+	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner), options);
 }
 
 /** Validate a fresh event before recovery while allowing durable receipt/state replay first. */
@@ -140,7 +139,7 @@ export async function resumeRun(
 	if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
 	state = await recoverAppliedIntegration(state, options);
-	const config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	const config = await assertRunBoundary(state, options.runner);
 	if (conflictedIssueId) {
 		const { block_reason: _blockReason, ...recovered } = state;
 		return await replaceConflictedCommit(hasBlockedTask(state) ? state : { ...recovered, phase: "execution" }, conflictedIssueId, config, options);
@@ -433,7 +432,7 @@ async function integrateWave(state: RunState, config: ProjectConfig, options: Or
 		const current = task(state, issueId);
 		if (current.status === "completed") continue;
 		if (current.status !== "approved") return state;
-		config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
+		config = await assertRunBoundary(state, options.runner);
 		const commit = nonEmptyString(current.commit, `Run Task ${issueId} approved commit`);
 		if (current.integration_intent && current.integration_intent !== commit) {
 			throw new Error(`Run Task ${issueId} integration intent does not match its approved commit`);
@@ -451,7 +450,7 @@ async function integrateWave(state: RunState, config: ProjectConfig, options: Or
 		} catch (error) {
 			return await blockRun(state, errorMessage(error), options);
 		}
-		config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
+		config = await assertRunBoundary(state, options.runner);
 		state = await save(replaceTask(state, issueId, { ...current, integration_intent: commit }), options);
 		try {
 			await commandOutput(options.runner, "git", ["cherry-pick", "-x", commit], state.main_worktree);
@@ -466,7 +465,7 @@ async function integrateWave(state: RunState, config: ProjectConfig, options: Or
 		if (state.cleanup_blocks?.length) return state;
 	}
 	state = await save({ ...state, wave: undefined }, options);
-	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner, options.availableSkills?.()), options);
+	return await advanceWithConfig(state, await assertRunBoundary(state, options.runner), options);
 }
 
 async function markIntegrated(state: RunState, issueId: string, integrationCommit: string, options: OrchestrationOptions): Promise<RunState> {
@@ -505,7 +504,7 @@ async function replaceConflictedCommit(
 	config: ProjectConfig,
 	options: OrchestrationOptions,
 ): Promise<RunState> {
-	config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	config = await assertRunBoundary(state, options.runner);
 	await ensureWorktree(state, issueId, options);
 	const base = await commandOutput(options.runner, "git", ["rev-parse", "HEAD"], state.main_worktree);
 	const current = task(state, issueId);
@@ -559,13 +558,13 @@ async function cleanupTask(
 			let tabId: string | undefined;
 			try {
 				tabId = current.tab_id ?? (current.implementer_provisioning_id
-					? (await findWorkerTab(state, current.implementer_provisioning_id, options))?.tab_id
+					? (await findManagedSubagentTab(workerHost(state), current.implementer_provisioning_id, workerHostOptions(options)))?.tabId
 					: undefined);
 				if (!tabId) {
 					state = await markCleanupDone(state, issueId, operation, options);
 					continue;
 				}
-				await retireWorkerTab(state, tabId, options);
+				await retireManagedSubagentTab(workerHost(state), tabId, workerHostOptions(options));
 				state = await markCleanupDone(state, issueId, operation, options);
 			} catch (error) {
 				return await recordCleanupBlock(state, issueId, operation, errorMessage(error), options);

@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandOutput, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
+import { configuredRole } from "./config.ts";
+import { promptManagedSubagent, reconcileManagedSubagentTab, startManagedSubagent } from "@henryqw/pi-subagent";
 import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredTaskGate } from "./final-gate.ts";
 import { acceptFinalRepairEnvelope, advanceFinalRepair, isFinalRepairActive, recoverFinalRepairIntegration } from "./final-repair.ts";
 import { deleteExpectedBranch, ensureChildWorktree, retireChildWorktree } from "./git.ts";
@@ -11,15 +12,14 @@ import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./
 import { actionTicketPath, ensureActionTicket, reviewId, type ReviewKind } from "./review-ticket.ts";
 import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
-import { promptWorkerAgent, reconcileWorkerTab, startWorkerAgent, workerAgentName } from "./worker-host.ts";
-import { createWorkerLaunch, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { createWorkerLaunch, workerAgentName, workerHost, workerHostOptions, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 type PrLifecycleOptions = {
 	runner: CommandRunner;
 	uuid: Uuid;
 	now?: () => string;
-	availableSkills?: () => readonly AvailableSkill[] | undefined;
+	resolveLaunch: RoleLaunchResolver;
 };
 
 /** Run the lifecycle-owned final gate and reviewer, then create or recover the one integration PR. */
@@ -94,7 +94,7 @@ async function ensureFinalReviewer(
 	options: PrLifecycleOptions,
 	mode: "review" | "resume",
 ): Promise<RunState> {
-	await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	await assertRunBoundary(state, options.runner);
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, "final-check commit");
 	if (commit !== state.integration_head) throw new Error("Final-check commit does not match the integration HEAD");
@@ -105,26 +105,26 @@ async function ensureFinalReviewer(
 		return await failFinalGate(state, issue, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options, [], true);
 	}
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
-	let launch = await workerLaunch(state, issue, config, "reviewer");
-	const resource = await reconcileWorkerTab(state, {
-		tab_id: current.tab_id,
-		pane_id: current.reviewer_pane,
+	let launch = await workerLaunch(state, issue, config, "reviewer", options);
+	const resource = await reconcileManagedSubagentTab(workerHost(state), {
+		tabId: current.tab_id,
+		paneId: current.reviewer_pane,
 		cwd: state.main_worktree,
 		launch,
 		label,
-	}, options);
-	if (current.tab_id !== resource.tab_id || current.reviewer_pane !== resource.pane_id) {
+	}, workerHostOptions(options));
+	if (current.tab_id !== resource.tabId || current.reviewer_pane !== resource.paneId) {
 		state = await save(replaceTask(state, issue.id, {
 			...current,
-			tab_id: resource.tab_id,
-			implementer_pane: resource.pane_id,
-			reviewer_pane: resource.pane_id,
+			tab_id: resource.tabId,
+			implementer_pane: resource.paneId,
+			reviewer_pane: resource.paneId,
 		}), options);
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, "final reviewer agent");
-	launch = await workerLaunch(state, issue, config, "reviewer");
-	const started = await startWorkerAgent(state, agent, nonEmptyString(current.reviewer_pane, "final reviewer pane"), launch, options, {
+	launch = await workerLaunch(state, issue, config, "reviewer", options);
+	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(current.reviewer_pane, "final reviewer pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
 			if (!latest.reviewer_instruction_pending) state = await save(replaceTask(state, issue.id, { ...latest, reviewer_instruction_pending: true }), options);
@@ -144,9 +144,8 @@ async function ensureFinalReviewer(
 		state.run_id,
 		options.uuid,
 	);
-	await revalidateResolvedProfile(config, config.reviewer_profile);
 	const amendments = gateCommandAmendments(state, issue.id);
-	await promptWorkerAgent(state, agent, reviewPrompt({
+	await promptManagedSubagent(workerHost(state), agent, reviewPrompt({
 		kind: "final_check",
 		graph: state.graph,
 		issue,
@@ -154,7 +153,7 @@ async function ensureFinalReviewer(
 		base: state.source_commit,
 		gate: requiredTaskGate(current, commit, "Final check"),
 		...(amendments.length ? { context: { gate_command_amendments: amendments } } : {}),
-	}, promptMode), options);
+	}, promptMode), workerHostOptions(options));
 	if (needsInstruction) {
 		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);
 	}
@@ -173,7 +172,7 @@ async function submitFinalReview(
 	const gate = requiredTaskGate(current, state.integration_head, "Final check");
 	const verdict = oneOf(envelope.payload.verdict, ["approved", "changes_requested", "blocked"] as const, "final-check verdict");
 	const findings = stringArray(envelope.payload.findings, "final-check findings");
-	await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	await assertRunBoundary(state, options.runner);
 	if (current.commit !== state.integration_head || current.final_gate_head !== state.integration_head) {
 		return await failFinalGate(state, issue, "Final-check review did not inspect the exact integration HEAD", options);
 	}
@@ -188,7 +187,7 @@ async function submitFinalReview(
 }
 
 async function openPr(state: RunState, issue: LocalIssue, options: PrLifecycleOptions): Promise<RunState> {
-	await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	await assertRunBoundary(state, options.runner);
 	if (state.pr) return await completePr(state, issue, options);
 	await matchingOpenPr(state, options);
 	await commandOutput(options.runner, "git", ["push", "origin", state.integration_branch], state.main_worktree);
@@ -265,13 +264,14 @@ async function workerLaunch(
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
+	options: PrLifecycleOptions,
 ): Promise<WorkerLaunch> {
-	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = await revalidateResolvedProfile(config, profileId);
+	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
 	return createWorkerLaunch({
-		role,
+		resolveLaunch: options.resolveLaunch,
+		workerRole: role,
+		role: configuredRole(config, roleName),
 		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		profile,
 		run_id: state.run_id,
 		issue_id: finalCheck(state).id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),

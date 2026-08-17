@@ -1,6 +1,15 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
-import { revalidateResolvedProfile, type AvailableSkill } from "./config.ts";
+import { configuredRole } from "./config.ts";
+import {
+	createManagedSubagentTab,
+	findManagedSubagentTab,
+	managedSubagentTabExists,
+	promptManagedSubagent,
+	reconcileManagedSubagentPane,
+	reconcileManagedSubagentTab,
+	startManagedSubagent,
+} from "@henryqw/pi-subagent";
 import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
 import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
@@ -9,15 +18,14 @@ import type { LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTask
 import { actionTicketPath, ensureActionTicket, reviewId } from "./review-ticket.ts";
 import { recordGateExecution, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
-import { createWorkerTab, ensureWorkerPane, findWorkerTab, promptWorkerAgent, reconcileWorkerTab, startWorkerAgent, workerAgentName, workerTabExists } from "./worker-host.ts";
-import { createWorkerLaunch, workerDeliveryContext, workerIssueContext, WORKER_ROLE_EVENTS, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { createWorkerLaunch, workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, workerIssueContext, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { nonEmptyString, positiveInteger } from "./validate.ts";
 
 export interface ImplementationWorkerOptions {
 	runner: CommandRunner;
 	uuid: Uuid;
 	delay?: (milliseconds: number) => Promise<void>;
-	availableSkills?: () => readonly AvailableSkill[] | undefined;
+	resolveLaunch: RoleLaunchResolver;
 }
 
 export type ImplementerAction = NonNullable<RunTaskState["pending_action"]>;
@@ -55,7 +63,7 @@ export async function ensureImplementer(
 	mode: ImplementerAction | "resume",
 ): Promise<RunState> {
 	await ensureWorktree(state, issue.id, options);
-	config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	config = await assertRunBoundary(state, options.runner);
 	let current = task(state, issue.id);
 	const action = pendingImplementerAction(current);
 	if (current.pending_action !== action) {
@@ -67,31 +75,31 @@ export async function ensureImplementer(
 		state = await save(replaceTask(state, issue.id, { ...current, implementer_provisioning_id: provisioningId }), options);
 		current = task(state, issue.id);
 	}
-	let launch = await workerLaunch(state, issue, config, "implementer");
-	const resource = await reconcileWorkerTab(state, {
-		tab_id: current.tab_id,
-		pane_id: current.implementer_pane,
+	let launch = await workerLaunch(state, issue, config, "implementer", options);
+	const resource = await reconcileManagedSubagentTab(workerHost(state), {
+		tabId: current.tab_id,
+		paneId: current.implementer_pane,
 		cwd: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 		launch,
 		label: provisioningId,
-	}, options);
-	if (current.tab_id !== resource.tab_id || current.implementer_pane !== resource.pane_id) {
+	}, workerHostOptions(options));
+	if (current.tab_id !== resource.tabId || current.implementer_pane !== resource.paneId) {
 		state = await save(replaceTask(state, issue.id, {
 			...current,
-			tab_id: resource.tab_id,
-			implementer_pane: resource.pane_id,
+			tab_id: resource.tabId,
+			implementer_pane: resource.paneId,
 			implementer_agent: current.implementer_agent ?? workerAgentName(state.workspace_id, state.run_id, issue.id, "implementer"),
 		}), options);
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.implementer_agent, `Run Task ${issue.id} implementer_agent`);
-	launch = await workerLaunch(state, issue, config, "implementer");
-	const started = await startWorkerAgent(
-		state,
+	launch = await workerLaunch(state, issue, config, "implementer", options);
+	const started = await startManagedSubagent(
+		workerHost(state),
 		agent,
 		nonEmptyString(current.implementer_pane, `Run Task ${issue.id} implementer_pane`),
 		launch,
-		options,
+		workerHostOptions(options),
 		{
 			beforeStart: async () => {
 				const latest = task(state, issue.id);
@@ -124,8 +132,7 @@ export async function ensureImplementer(
 		state.run_id,
 		options.uuid,
 	);
-	await revalidateResolvedProfile(config, nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`));
-	await promptWorkerAgent(state, agent, implementerPrompt(state, issue, current, promptMode, fullPrompt), options);
+	await promptManagedSubagent(workerHost(state), agent, implementerPrompt(state, issue, current, promptMode, fullPrompt), workerHostOptions(options));
 	if (task(state, issue.id).implementer_instruction_pending || task(state, issue.id).resolution_pending) {
 		state = await save(replaceTask(state, issue.id, {
 			...task(state, issue.id),
@@ -144,13 +151,13 @@ export async function ensureReviewer(
 	mode: "review" | "resume",
 ): Promise<RunState> {
 	await ensureWorktree(state, issue.id, options);
-	config = await assertRunBoundary(state, options.runner, options.availableSkills?.());
+	config = await assertRunBoundary(state, options.runner);
 	state = await ensureTaskGate(state, issue, config.required_gate_timeout_ms, options);
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
 	const gate = requiredTaskGate(current, commit, issue.id);
 	if (gate.exit_code !== 0) throw new Error(`Required gate exited with code ${gate.exit_code}; reviewer was not launched`);
-	if (!current.tab_id || !current.implementer_pane || (current.reviewer_pane && !(await workerTabExists(state, current.tab_id, options)))) {
+	if (!current.tab_id || !current.implementer_pane || (current.reviewer_pane && !(await managedSubagentTabExists(workerHost(state), current.tab_id, workerHostOptions(options))))) {
 		const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
 		current = {
 			...current,
@@ -159,18 +166,18 @@ export async function ensureReviewer(
 			reviewer_pane: undefined,
 			implementer_provisioning_id: provisioningId,
 		};
-		const created = await findWorkerTab(state, provisioningId, options)
-			?? await createWorkerTab(
-				state,
+		const created = await findManagedSubagentTab(workerHost(state), provisioningId, workerHostOptions(options))
+			?? await createManagedSubagentTab(
+				workerHost(state),
 				nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-				await workerLaunch(state, issue, config, "implementer"),
+				await workerLaunch(state, issue, config, "implementer", options),
 				provisioningId,
-				options,
+				workerHostOptions(options),
 			);
 		state = await save(replaceTask(state, issue.id, {
 			...current,
-			tab_id: created.tab_id,
-			implementer_pane: created.pane_id,
+			tab_id: created.tabId,
+			implementer_pane: created.paneId,
 		}), options);
 		current = task(state, issue.id);
 	}
@@ -182,14 +189,14 @@ export async function ensureReviewer(
 		}
 		const tabId = nonEmptyString(current.tab_id, `Run Task ${issue.id} tab_id`);
 		const implementerPane = nonEmptyString(current.implementer_pane, `Run Task ${issue.id} implementer_pane`);
-		const paneId = await ensureWorkerPane(
-			state,
+		const paneId = await reconcileManagedSubagentPane(
+			workerHost(state),
 			tabId,
 			implementerPane,
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
-			await workerLaunch(state, issue, config, "reviewer"),
+			await workerLaunch(state, issue, config, "reviewer", options),
 			provisioningId,
-			options,
+			workerHostOptions(options),
 		);
 		state = await save(replaceTask(state, issue.id, {
 			...current,
@@ -199,13 +206,13 @@ export async function ensureReviewer(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, `Run Task ${issue.id} reviewer_agent`);
-	const reviewerLaunch = await workerLaunch(state, issue, config, "reviewer");
-	const started = await startWorkerAgent(
-		state,
+	const reviewerLaunch = await workerLaunch(state, issue, config, "reviewer", options);
+	const started = await startManagedSubagent(
+		workerHost(state),
 		agent,
 		nonEmptyString(current.reviewer_pane, `Run Task ${issue.id} reviewer_pane`),
 		reviewerLaunch,
-		options,
+		workerHostOptions(options),
 		{
 			beforeStart: async () => {
 				const latest = task(state, issue.id);
@@ -231,8 +238,7 @@ export async function ensureReviewer(
 		state.run_id,
 		options.uuid,
 	);
-	await revalidateResolvedProfile(config, config.reviewer_profile);
-	await promptWorkerAgent(state, agent, reviewerPrompt(state, issue, current, promptMode), options);
+	await promptManagedSubagent(workerHost(state), agent, reviewerPrompt(state, issue, current, promptMode), workerHostOptions(options));
 	if (task(state, issue.id).reviewer_instruction_pending || task(state, issue.id).resolution_pending) {
 		state = await save(replaceTask(state, issue.id, {
 			...task(state, issue.id),
@@ -305,13 +311,14 @@ async function workerLaunch(
 	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
+	options: ImplementationWorkerOptions,
 ): Promise<WorkerLaunch> {
-	const profileId = role === "reviewer" ? config.reviewer_profile : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	const profile = await revalidateResolvedProfile(config, profileId);
+	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
 	return createWorkerLaunch({
-		role,
+		resolveLaunch: options.resolveLaunch,
+		workerRole: role,
+		role: configuredRole(config, roleName),
 		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		profile,
 		run_id: state.run_id,
 		issue_id: issue.id,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),

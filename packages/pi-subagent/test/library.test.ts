@@ -1,0 +1,195 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	listManagedSubagents,
+	managedSubagentName,
+	managedSubagentWorkspaceId,
+	promptManagedSubagent,
+	reconcileManagedSubagentPane,
+	reconcileManagedSubagentTab,
+	resolveRoleLaunch,
+	retireManagedSubagentTab,
+	startManagedSubagent,
+	type ManagedSubagentExecutor,
+	type PiLaunch,
+	type Role,
+} from "../src/index.ts";
+
+const model = {
+	provider: "openai-codex-2",
+	id: "gpt-test",
+	name: "Test",
+	api: "openai-responses",
+	baseUrl: "https://example.test",
+	input: ["text"],
+	contextWindow: 100_000,
+	maxTokens: 10_000,
+	reasoning: true,
+	thinkingLevelMap: { high: "high" },
+} as const;
+
+test("assigned Role launch merges caller policy and resolves effective Pi resources", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-library-"));
+	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
+	await mkdir(join(agentDir, "config"), { recursive: true });
+	await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		profiles: { frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } } },
+		tasks: { "pi-example/review": "frontier" },
+	}));
+	const role: Role = {
+		name: "reviewer",
+		description: "Reviews changes",
+		tools: ["read"],
+		extensions: ["/roles/reviewer.ts"],
+		skills: ["security", "missing"],
+		systemPrompt: "Review only the requested change.",
+	};
+	const pi = {
+		getCommands: () => [{
+			name: "skill:security",
+			source: "skill",
+			sourceInfo: { path: "/effective/security/SKILL.md" },
+		}],
+	} as unknown as Pick<ExtensionAPI, "getCommands">;
+	const ctx = {
+		model,
+		scopedModels: [],
+		modelRegistry: { getAvailable: () => [model] },
+		isProjectTrusted: () => false,
+	} as unknown as ExtensionContext;
+
+	const launch = resolveRoleLaunch(pi, ctx, {
+		role,
+		taskId: "pi-example/review",
+		agentDir,
+		extensions: ["/caller/adapter.ts", "/roles/reviewer.ts"],
+		tools: ["submit", "read"],
+		env: { CALLER_ID: "run-1" },
+	});
+
+	assert.deepEqual(launch.env, { CALLER_ID: "run-1" });
+	assert.equal(launch.model, model);
+	assert.equal(launch.thinkingLevel, "high");
+	assert.deepEqual(launch.missingSkills, ["missing"]);
+	assert.deepEqual(launch.args.slice(0, 3), ["--no-session", "--no-extensions", "--no-skills"]);
+	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
+	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
+	assert.deepEqual(valuesAfter(launch.args, "--skill"), ["/effective/security/SKILL.md"]);
+	assert.equal(valueAfter(launch.args, "--tools"), "read,submit");
+	assert.equal(valueAfter(launch.args, "--model"), "openai-codex-2/gpt-test");
+	assert.equal(valueAfter(launch.args, "--thinking"), "high");
+	assert.ok(launch.args.includes("--no-approve"));
+	assert.equal(valueAfter(launch.args, "--append-system-prompt"), role.systemPrompt);
+
+	const defaultTools = resolveRoleLaunch(pi, ctx, {
+		role: { ...role, tools: undefined },
+		taskId: "pi-example/review",
+		agentDir,
+		extensions: ["/caller/adapter.ts"],
+		tools: ["submit"],
+	});
+	assert.equal(defaultTools.args.includes("--tools"), false);
+	assert.equal(defaultTools.args.includes("--no-tools"), false);
+});
+
+test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retires", async () => {
+	const herdr = fakeHerdr();
+	const options = { execute: herdr.execute };
+	const workspaceId = await managedSubagentWorkspaceId("/main", "main-pane", options);
+	const host = { cwd: "/main", workspaceId };
+	const launch: PiLaunch = { env: { RUN_ID: "run-1" }, args: ["--no-session", "--model", "test/model"] };
+	const root = await reconcileManagedSubagentTab(host, { cwd: "/work", launch, label: "task-1" }, options);
+	assert.deepEqual(await reconcileManagedSubagentTab(host, { cwd: "/work", launch, label: "task-1" }, options), root);
+	const pane = await reconcileManagedSubagentPane(host, root.tabId, root.paneId, "/work", launch, "review", options);
+	const name = managedSubagentName(workspaceId, "run-1", "task-1", "review");
+	assert.match(name, /^[a-z][a-z0-9_-]{0,31}$/);
+	assert.equal(name, managedSubagentName(workspaceId, "run-1", "task-1", "review"));
+	assert.notEqual(name, managedSubagentName(workspaceId, "run-1", "task-1", "implement"));
+	assert.equal(await startManagedSubagent(host, name, pane, launch, options), "started");
+	assert.equal(await startManagedSubagent(host, name, pane, launch, options), "existing");
+	await promptManagedSubagent(host, name, { instruction: "review" }, options);
+	assert.deepEqual(await listManagedSubagents(host, options), new Map([[pane, "working"]]));
+	assert.ok(herdr.calls.some((args) => args.includes("RUN_ID=run-1")));
+	assert.ok(herdr.calls.some((args) => args[0] === "agent" && args[1] === "start" && args.includes("test/model")));
+	assert.ok(herdr.calls.some((args) => args[0] === "agent" && args[1] === "prompt" && args.at(-1) === JSON.stringify({ instruction: "review" })));
+	await retireManagedSubagentTab(host, root.tabId, options);
+	assert.equal(herdr.tabs.size, 0);
+});
+
+function valueAfter(args: string[], flag: string): string {
+	return args[args.indexOf(flag) + 1]!;
+}
+
+function valuesAfter(args: string[], flag: string): string[] {
+	return args.flatMap((value, index) => value === flag ? [args[index + 1]!] : []);
+}
+
+function fakeHerdr() {
+	let tabNumber = 0;
+	let paneNumber = 0;
+	const tabs = new Map<string, { tab_id: string; label: string; workspace_id: string }>();
+	const panes = new Map<string, { pane_id: string; tab_id: string; label?: string }>();
+	const agents = new Map<string, string>();
+	const calls: string[][] = [];
+	const execute: ManagedSubagentExecutor = async (command, input) => {
+		assert.equal(command, "herdr");
+		const args = [...input];
+		calls.push(args);
+		switch (args.slice(0, 2).join(" ")) {
+			case "pane list":
+				return ok({ result: { panes: [...panes.values(), { pane_id: "main-pane", workspace_id: "workspace-1" }] } });
+			case "tab list":
+				return ok({ result: { tabs: [...tabs.values()] } });
+			case "tab create": {
+				const tabId = `tab-${++tabNumber}`;
+				const paneId = `pane-${++paneNumber}`;
+				tabs.set(tabId, { tab_id: tabId, label: valueAfter(args, "--label"), workspace_id: valueAfter(args, "--workspace") });
+				panes.set(paneId, { pane_id: paneId, tab_id: tabId });
+				return ok({ result: { tab: { tab_id: tabId }, root_pane: { pane_id: paneId } } });
+			}
+			case "pane split": {
+				const paneId = `pane-${++paneNumber}`;
+				panes.set(paneId, { pane_id: paneId, tab_id: panes.get(valueAfter(args, "--pane"))!.tab_id });
+				return ok({ result: { pane: { pane_id: paneId } } });
+			}
+			case "pane rename":
+				panes.get(args[2]!)!.label = args[3];
+				return ok({ result: {} });
+			case "agent get":
+				return agents.has(args[2]!)
+					? ok({ result: { agent: { pane_id: agents.get(args[2]!) } } })
+					: fail("agent_not_found");
+			case "agent start":
+				agents.set(args[2]!, valueAfter(args, "--pane"));
+				return ok({ result: {} });
+			case "agent prompt":
+				return ok({ result: {} });
+			case "agent list":
+				return ok({ result: { agents: [
+					...[...agents.values()].map((paneId) => ({ pane_id: paneId, workspace_id: "workspace-1", agent_status: "working" })),
+					{ pane_id: "foreign", workspace_id: "workspace-2", agent_status: "idle" },
+				] } });
+			case "tab close":
+				tabs.delete(args[2]!);
+				for (const [paneId, pane] of panes) if (pane.tab_id === args[2]) panes.delete(paneId);
+				return ok({ result: {} });
+			case "tab get":
+				return tabs.has(args[2]!) ? ok({ result: { tab: tabs.get(args[2]!) } }) : fail("tab_not_found");
+			default:
+				return { code: 1, stdout: "", stderr: `Unexpected Herdr call: ${args.join(" ")}` };
+		}
+	};
+	return { execute, calls, tabs };
+}
+
+function ok(value: unknown) {
+	return { code: 0, stdout: JSON.stringify(value), stderr: "" };
+}
+
+function fail(code: string) {
+	return { code: 1, stdout: "", stderr: JSON.stringify({ error: { code } }) };
+}

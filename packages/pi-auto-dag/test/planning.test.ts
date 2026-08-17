@@ -10,7 +10,7 @@ import { hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "../src
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "../src/planning-review.ts";
 import { PLANNING_TOOLS, registerPlanning } from "../src/planning.ts";
 import { createWorkerExtension } from "../src/worker.ts";
-import { createTestProfiles, createTestSkills, testProfileConfig, testSkills } from "./support/profiles.ts";
+import { createTestRoles, testLaunchResolver, testRoleConfig } from "./support/roles.ts";
 
 const execFile = promisify(execFileCallback);
 
@@ -206,10 +206,7 @@ test("approval survives a rejected post-approval Git operation", async (t) => {
 test("dag-plan resolves the Git top-level and refuses its active execution", async (t) => {
 	const project = await setup(t);
 	await writeDeliveryGraph(project.root, draft);
-	await createTestSkills(project.agentDir);
-	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(project.root, {
-		profileSkills: { reviewer: ["shared"] },
-	})));
+	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig()));
 	const subdirectory = join(project.root, "packages", "app");
 	await mkdir(subdirectory, { recursive: true });
 	const previousHerdr = process.env.HERDR_ENV;
@@ -231,7 +228,7 @@ test("dag-plan resolves the Git top-level and refuses its active execution", asy
 		},
 		registerTool() {},
 		sendUserMessage(message: string) { messages.push(message); },
-	} as never);
+	} as never, runCommand, (_ctx, input) => testLaunchResolver(input));
 	assert.equal(commandName, "dag-plan");
 	assert.ok(command);
 	const notifications: string[] = [];
@@ -239,7 +236,6 @@ test("dag-plan resolves the Git top-level and refuses its active execution", asy
 		cwd: subdirectory,
 		mode: "tui",
 		isIdle: () => true,
-		getSystemPromptOptions: () => ({ skills: testSkills(project.agentDir) }),
 		ui: {
 			select: async () => "Resume",
 			notify: (message: string) => { notifications.push(message); },
@@ -250,9 +246,9 @@ test("dag-plan resolves the Git top-level and refuses its active execution", asy
 	assert.match(messages[0], /Planning mode: resume/);
 	assert.match(messages[0], new RegExp(`Repository root: ${escapeRegExp(project.root)}`));
 	assert.match(messages[0], new RegExp(`Delivery Graph: ${escapeRegExp(join(project.root, ".context", "issues", "graph.json"))}`));
-	assert.match(messages[0], /Implementation profiles:.*backend test profile/);
-	assert.match(messages[0], /Reviewer launch environment:.*PI_CODING_AGENT_DIR/);
-	assert.match(messages[0], /Reviewer Pi arguments:.*--no-skills.*--skill.*shared.*SKILL.md.*auto_dag_submit_plan_review/);
+	assert.match(messages[0], /Implementation Roles:.*backend test Role/);
+	assert.match(messages[0], /Reviewer launch environment:.*PI_AUTO_DAG_PLANNING_ROOT/);
+	assert.match(messages[0], /Reviewer Pi arguments:.*--no-skills.*auto_dag_submit_plan_review/);
 	assert.match(messages[0], /Additional user context: preserve CLI contract/);
 	assert.match(messages[0], /do not start Auto DAG/);
 
@@ -300,10 +296,10 @@ async function setup(t: TestContext): Promise<{ root: string; agentDir: string }
 	await git(root, "add", ".gitignore");
 	await git(root, "commit", "-m", "initial");
 	await git(root, "switch", "-c", "integration");
-	await createTestProfiles(root);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-planning-agent-"));
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root)));
+	await createTestRoles(agentDir);
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig()));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	t.after(async () => {

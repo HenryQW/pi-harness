@@ -1,29 +1,15 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, type ExtensionContext, getAgentDir, parseFrontmatter, type Theme } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import {
-	DEFAULT_TASK_ASSIGNMENTS,
-	modelReference,
-	orderedProfileRoutes,
-	PROFILE_NAMES,
-	readTaskModelsConfig,
-	resolveTaskModelRoute,
-	type ProfileName,
-	type ResolvedTaskRoute,
-} from "@henryqw/pi-task-models";
+import { modelReference, PROFILE_NAMES, type ProfileName } from "@henryqw/pi-task-models";
 import { Type } from "typebox";
+import { createRoleLaunch, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute } from "@henryqw/pi-subagent";
 
 const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
-const DEFAULT_MODEL_CLASS = DEFAULT_TASK_ASSIGNMENTS[SUBAGENT_TASK];
-const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
-const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
 const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
@@ -35,14 +21,6 @@ const MAX_WIDGET_ROWS = 8;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type ModelClass = ProfileName;
-type Role = {
-	name: string;
-	description: string;
-	tools?: string[];
-	extensions: string[];
-	skills: string[];
-	systemPrompt: string;
-};
 type ChildResult = {
 	exitCode: number;
 	output: string;
@@ -61,27 +39,7 @@ type WidgetItem = {
 	removeAt?: number;
 };
 
-const isModelClass = (value: unknown): value is ModelClass =>
-	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
-const isNumberedCodexProvider = (provider: string): boolean => CODEX_ALIAS.test(provider);
-
-function resolveTaskRoute(ctx: ExtensionContext, modelClass?: ModelClass): ResolvedTaskRoute {
-	let config;
-	try {
-		config = readTaskModelsConfig();
-	} catch {
-		throw new Error("Couldn't read task model config. Run /task-models.");
-	}
-
-	const profileName = modelClass ?? config.tasks[SUBAGENT_TASK] ?? DEFAULT_MODEL_CLASS;
-	const profile = config.profiles[profileName];
-	if (!profile) throw new Error(`No ${profileName} task model profile is configured. Run /task-models.`);
-	for (const route of orderedProfileRoutes(profile)) {
-		const resolved = resolveTaskModelRoute(ctx, route);
-		if (resolved) return resolved;
-	}
-	throw new Error(`No usable ${profileName} task model route. Run /task-models.`);
-}
+const isModelClass = isProfileName;
 
 const cleanText = (value: unknown, field: string, file: string): string => {
 	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -89,70 +47,6 @@ const cleanText = (value: unknown, field: string, file: string): string => {
 	}
 	return value.trim();
 };
-
-const stringList = (value: unknown, field: string, file: string, required = false): string[] => {
-	if (value === undefined) {
-		if (required) throw new Error(`${file}: ${field} is required.`);
-		return [];
-	}
-	const values = typeof value === "string" ? value.split(",") : value;
-	if (!Array.isArray(values) || values.some((item) => typeof item !== "string" || !item.trim() || item.includes("\0"))) {
-		throw new Error(`${file}: ${field} must be an array of strings.`);
-	}
-	return values.map((item) => item.trim());
-};
-
-const extensionList = (value: unknown, file: string): string[] => {
-	const extensions = stringList(value, "extensions", file);
-	for (const extension of extensions) {
-		const packageSource = /^(?:npm|git|github|https?|ssh):/.test(extension);
-		const userPath = isAbsolute(extension) || extension.startsWith("~/") || extension.startsWith("~\\") || extension.startsWith("file://");
-		if (!packageSource && !userPath) {
-			throw new Error(`${file}: extensions entries must be absolute paths or package sources.`);
-		}
-	}
-	return extensions;
-};
-
-export function loadRoles(agentDir = getAgentDir()): Role[] {
-	const dir = join(agentDir, "config", "pi-subagent");
-	let entries;
-	try {
-		entries = readdirSync(dir, { withFileTypes: true });
-	} catch (error: unknown) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
-		throw error;
-	}
-
-	const roles = entries
-		.filter((entry) => entry.name.endsWith(".md") && (entry.isFile() || entry.isSymbolicLink()))
-		.sort((a, b) => a.name.localeCompare(b.name))
-		.map((entry): Role => {
-			const file = join(dir, entry.name);
-			let parsed: ReturnType<typeof parseFrontmatter>;
-			try {
-				parsed = parseFrontmatter(readFileSync(file, "utf8"));
-			} catch (error) {
-				throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-			}
-			const frontmatter = parsed.frontmatter;
-			return {
-				name: cleanText(frontmatter.name, "name", file),
-				description: cleanText(frontmatter.description, "description", file),
-				tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
-				extensions: extensionList(frontmatter.extensions, file),
-				skills: stringList(frontmatter.skills, "skills", file),
-				systemPrompt: cleanText(parsed.body, "system prompt", file),
-			};
-		});
-
-	const names = new Set<string>();
-	for (const role of roles) {
-		if (names.has(role.name)) throw new Error(`Duplicate Subagent role: ${role.name}.`);
-		names.add(role.name);
-	}
-	return roles;
-}
 
 function piInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
@@ -471,20 +365,6 @@ const roleSummary = (): string => {
 	}
 };
 
-function resolveSkillPaths(pi: ExtensionAPI, names: string[]): { paths: string[]; missing: string[] } {
-	const skills = new Map(pi.getCommands()
-		.filter((command) => command.source === "skill")
-		.map((command) => [command.name, command.sourceInfo.path]));
-	const paths: string[] = [];
-	const missing: string[] = [];
-	for (const name of names) {
-		const path = skills.get(`skill:${name}`);
-		if (path) paths.push(path);
-		else missing.push(name);
-	}
-	return { paths, missing };
-}
-
 export default function subagentExtension(pi: ExtensionAPI): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	let widgetInstalled = false;
@@ -590,40 +470,22 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, or frontier.");
 			}
-			const resolvedRoute = resolveTaskRoute(ctx, params.modelClass);
-			const model = resolvedRoute.model;
-			const modelReferenceValue = modelReference(model);
-			const thinkingLevel = resolvedRoute.thinkingLevel;
-
-			const resolvedSkills = resolveSkillPaths(pi, role.skills);
-			if (resolvedSkills.missing.length) {
+			const launch = params.modelClass === undefined
+				? resolveRoleLaunch(pi, ctx, { role, taskId: SUBAGENT_TASK })
+				: createRoleLaunch(pi, ctx, { role, route: resolveTaskRoute(ctx, params.modelClass) });
+			const modelReferenceValue = modelReference(launch.model);
+			const thinkingLevel = launch.thinkingLevel;
+			if (launch.missingSkills.length) {
 				ctx.ui.notify(
-					`Subagent role ${role.name} skipped unavailable Pi skills: ${resolvedSkills.missing.join(", ")}.`,
+					`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
 					"warning",
 				);
 			}
 
-			const tempDir = await mkdtemp(join(tmpdir(), "pi-subagent-"));
-			const promptPath = join(tempDir, "system.md");
 			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 			try {
-				await writeFile(promptPath, role.systemPrompt, { encoding: "utf8", mode: 0o600 });
-				const args = ["--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills"];
-				const extensions = isNumberedCodexProvider(model.provider)
-					? [...role.extensions, MULTI_CODEX_EXTENSION]
-					: role.extensions;
-				for (const extension of new Set(extensions)) args.push("--extension", extension);
-				for (const skill of resolvedSkills.paths) args.push("--skill", skill);
-				if (role.tools !== undefined) {
-					if (role.tools.length) args.push("--tools", role.tools.join(","));
-					else args.push("--no-tools");
-				}
-				args.push("--model", modelReferenceValue);
-				if (thinkingLevel) args.push("--thinking", thinkingLevel);
-				args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
-				args.push("--append-system-prompt", promptPath, `Task: ${task}`);
-
-				startWidgetItem(toolCallId, role.name, model.id, thinkingLevel, task, ctx);
+				const args = ["--mode", "json", "-p", ...launch.args, `Task: ${task}`];
+				startWidgetItem(toolCallId, role.name, launch.model.id, thinkingLevel, task, ctx);
 				const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
 				const result = await runPi(
 					args,
@@ -642,11 +504,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				if (signal?.aborted) widgetStatus = "aborted";
 				throw error;
 			} finally {
-				try {
-					await rm(tempDir, { recursive: true, force: true });
-				} finally {
-					finishWidgetItem(toolCallId, widgetStatus);
-				}
+				finishWidgetItem(toolCallId, widgetStatus);
 			}
 		},
 	});

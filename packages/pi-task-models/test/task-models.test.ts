@@ -12,6 +12,7 @@ import {
 	orderedProfileRoutes,
 	readTaskModelsConfig,
 	resolveAvailableModel,
+	resolveConfiguredTaskRoute,
 	resolveTaskModelRoute,
 	supportedThinkingLevels,
 	taskThinkingLevels,
@@ -33,6 +34,8 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 				"pi-herdr-rename/rename": "fast",
 				"pi-auto-compact/autoCompact": "fast",
 				"pi-subagent/delegateTask": "balanced",
+				"pi-auto-dag/implement": "balanced",
+				"pi-auto-dag/review": "frontier",
 			},
 		});
 
@@ -112,11 +115,79 @@ test("uses scoped models and pinned thinking for picker and route resolution", (
 	assert.equal(resolveTaskModelRoute(ctx, { model: "provider/excluded", thinkingLevel: "off" }), undefined);
 });
 
+test("resolves configured task routes through assignment, profile, and fallback", () => {
+	const dir = tempDir();
+	try {
+		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false } as any;
+		const fallback = { provider: "provider", id: "fallback", input: ["text"], reasoning: false } as any;
+		const ctx = {
+			model: primary,
+			scopedModels: [],
+			modelRegistry: { getAvailable: () => [primary, fallback] },
+		} as any;
+
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir),
+			/Task pi-auto-dag\/implement profile balanced is not configured\. Run \/task-models\./,
+		);
+		const file = join(dir, "config", "pi-task-models.json");
+		mkdirSync(join(dir, "config"), { recursive: true });
+		writeFileSync(file, JSON.stringify({
+			profiles: {
+				frontier: {
+					primary: { model: "provider/primary", thinkingLevel: "off" },
+					fallback: { model: "provider/fallback", thinkingLevel: "off" },
+				},
+			},
+			tasks: { "pi-auto-dag/implement": "frontier" },
+		}));
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir), {
+			model: primary,
+			thinkingLevel: "off",
+		});
+
+		writeFileSync(file, JSON.stringify({
+			profiles: {
+				frontier: {
+					primary: { model: "provider/unavailable", thinkingLevel: "off" },
+					fallback: { model: "provider/fallback", thinkingLevel: "off" },
+				},
+			},
+			tasks: { "pi-auto-dag/implement": "frontier" },
+		}));
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir), {
+			model: fallback,
+			thinkingLevel: "off",
+		});
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, "pi-other/run", dir),
+			/Task pi-other\/run is not assigned to a profile\. Run \/task-models\./,
+		);
+
+		writeFileSync(file, JSON.stringify({
+			profiles: { frontier: { primary: { model: "provider/unavailable", thinkingLevel: "off" } } },
+			tasks: { "pi-auto-dag/implement": "frontier" },
+		}));
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir),
+			/Task pi-auto-dag\/implement profile frontier has no available route\. Run \/task-models\./,
+		);
+		writeFileSync(file, "{ not json\n");
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir),
+			/Couldn't read task model config\. Run \/task-models\./,
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 	const active = activeTaskPackages({
 		getCommands() {
 			return [
 				{ sourceInfo: { source: "npm:@henryqw/pi-herdr-rename", path: "/tmp/node_modules/@henryqw/pi-herdr-rename/extensions/rename.ts", scope: "user", origin: "package" } },
+				{ sourceInfo: { source: "npm:@henryqw/pi-auto-dag", path: "/tmp/node_modules/@henryqw/pi-auto-dag/extensions/auto-dag.ts", scope: "user", origin: "package" } },
 				{ sourceInfo: { source: "npm:@henryqw/pi-new", path: "/tmp/node_modules/@henryqw/pi-new/extensions/new.ts", scope: "user", origin: "package" } },
 				{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts", scope: "user", origin: "package" } },
 			] as never;
@@ -132,7 +203,14 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 		"pi-new/customTask": "frontier",
 	});
 
-	assert.deepEqual(active.map((entry) => entry.task).sort(), ["pi-auto-compact/autoCompact", "pi-herdr-rename/rename", "pi-new/customTask", "pi-subagent/delegateTask"]);
+	assert.deepEqual(active.map((entry) => entry.task).sort(), [
+		"pi-auto-compact/autoCompact",
+		"pi-auto-dag/implement",
+		"pi-auto-dag/review",
+		"pi-herdr-rename/rename",
+		"pi-new/customTask",
+		"pi-subagent/delegateTask",
+	]);
 	assert.deepEqual(activeTaskPackages({
 		getCommands: () => [{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts" } }] as never,
 		getAllTools: () => [] as never,

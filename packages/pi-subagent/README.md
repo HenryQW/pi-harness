@@ -1,6 +1,6 @@
 # `@henryqw/pi-subagent`
 
-Delegate one bounded task to one isolated Pi process. Main chooses the role and may override shared task-model effort per call.
+Delegate one bounded task to one isolated Pi process, or reuse validated Role launch and managed Herdr hosting for durable workers. Main chooses Role and may override shared task-model effort per call.
 
 ## Install
 
@@ -59,6 +59,34 @@ Do not edit files.
 | Markdown body | yes | Role system instructions |
 
 Missing skills warn and skip; they do not block delegation. No repo-controlled `.pi/agents` roles. No package-local model picker.
+
+## Library API
+
+Package root exports shared `Role` loading, Skill resolution, task-routed Pi launch, and generic managed Herdr lifecycle:
+
+```ts
+import {
+  loadRoles,
+  resolveRoleLaunch,
+  managedSubagentWorkspaceId,
+  reconcileManagedSubagentTab,
+  startManagedSubagent,
+} from "@henryqw/pi-subagent";
+
+const role = loadRoles().find(({ name }) => name === "reviewer")!;
+const launch = resolveRoleLaunch(pi, ctx, {
+  role,
+  taskId: "your-package/review",
+  extensions: [adapterExtensionPath],
+  tools: ["submit_review"],
+});
+const workspaceId = await managedSubagentWorkspaceId(ctx.cwd, mainPane, { execute });
+const host = { cwd: ctx.cwd, workspaceId };
+const tab = await reconcileManagedSubagentTab(host, { cwd: worktree, launch, label }, { execute });
+await startManagedSubagent(host, agentName, tab.paneId, launch, { execute });
+```
+
+`resolveRoleLaunch` uses shared task assignment and effective Pi registries. Caller tools extend explicit Role allowlists; omitted Role `tools` preserves Pi defaults. Generic host APIs contain no workflow prompts or durable state.
 
 ## Remove
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { executionIssues, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
 import {
 	RUN_STATE_VERSION,
@@ -19,7 +19,6 @@ import {
 	type RunState,
 	type RunTaskState,
 	type RunWave,
-	type SkillRegistryEntry,
 	type WorkerEnvelope,
 } from "./model.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
@@ -29,7 +28,7 @@ const RUN_PHASES = ["execution", "blocked", "aborted", "completed"] as const;
 const PR_HEALTH_STATUSES = ["triaging", "repairing", "reviewing", "applying", "pushing", "post_push_cleanup", "blocked", "completed"] as const;
 
 const RUN_STATE_KEYS = [
-	"version", "run_id", "graph_hash", "graph", "skill_registry", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "gate_command_amendments", "main_pane", "workspace_id",
+	"version", "run_id", "graph_hash", "graph", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "gate_command_amendments", "main_pane", "workspace_id",
 	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "health", "health_history", "health_fast_forward_intent", "accepted_events",
 ] as const;
 
@@ -72,7 +71,6 @@ export function runDirectory(mainWorktree: string, runId: string): string {
 export function createInitialRunState(input: {
 	run_id: string;
 	graph: DeliveryGraph;
-	skill_registry: SkillRegistryEntry[];
 	source_commit: string;
 	main_worktree: string;
 	integration_branch: string;
@@ -89,7 +87,6 @@ export function createInitialRunState(input: {
 		run_id: input.run_id,
 		graph_hash: hashDeliveryGraph(graph),
 		graph,
-		skill_registry: parseSkillRegistry(input.skill_registry, "skill_registry"),
 		source_commit: sourceCommit,
 		integration_head: sourceCommit,
 		main_worktree: resolve(input.main_worktree),
@@ -219,7 +216,6 @@ export function parseRunState(value: unknown): RunState {
 		run_id: runId,
 		graph_hash: graphHash,
 		graph,
-		skill_registry: parseSkillRegistry(input.skill_registry, "run state.skill_registry"),
 		source_commit: sourceCommit,
 		integration_head: nonEmptyString(input.integration_head, "run state.integration_head"),
 		main_worktree: resolve(nonEmptyString(input.main_worktree, "run state.main_worktree")),
@@ -248,20 +244,6 @@ export function parseRunState(value: unknown): RunState {
 	}
 	if (input.accepted_events !== undefined) state.accepted_events = parseAcceptedEvents(input.accepted_events);
 	return state;
-}
-
-function parseSkillRegistry(value: unknown, label: string): SkillRegistryEntry[] {
-	return array(value, label).map((entry, index) => {
-		const entryLabel = `${label}[${index}]`;
-		const input = object(entry, entryLabel);
-		exactKeys(input, ["name", "file_path"], entryLabel);
-		const filePath = nonEmptyString(input.file_path, `${entryLabel}.file_path`);
-		if (!isAbsolute(filePath)) throw new Error(`${entryLabel}.file_path must be absolute`);
-		return {
-			name: nonEmptyString(input.name, `${entryLabel}.name`),
-			file_path: filePath,
-		};
-	});
 }
 
 function parseAcceptedEvents(value: unknown): Record<string, string> {
