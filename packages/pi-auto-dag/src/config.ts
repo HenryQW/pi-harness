@@ -1,36 +1,27 @@
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { loadRoles, type Role } from "@henryqw/pi-subagent";
 import {
 	CONFIG_VERSION,
 	DEFAULT_MAX_PARALLEL_TASKS,
 	DEFAULT_MAX_REVIEW_ROUNDS,
 	DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
 	MAX_REQUIRED_GATE_TIMEOUT_MS,
-	type ConfiguredProfile,
-	type ProfileRoutingConfig,
 	type ProjectConfig,
-	type ResolvedProfile,
-	type SkillRegistryEntry,
+	type RoleRoutingConfig,
 } from "./model.ts";
-import { exactKeys, nonEmptyString, object, optionalPositiveInteger, positiveInteger, stringArray } from "./validate.ts";
+import { nonEmptyString, object, optionalPositiveInteger, positiveInteger, stringArray } from "./validate.ts";
 
 const CONFIG_KEYS = [
 	"version",
-	"profiles",
-	"implementation_profiles",
-	"reviewer_profile",
-	"repair_profile",
+	"implementation_roles",
+	"reviewer_role",
+	"repair_role",
 ] as const;
 const OPTIONAL_CONFIG_KEYS = ["max_parallel_tasks", "max_review_rounds", "required_gate_timeout_ms"] as const;
-const PROFILE_KEYS = ["description", "agent_dir", "skills", "tools"] as const;
 
-export interface AvailableSkill {
-	name: string;
-	filePath: string;
-}
-
-export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
+export function parseProjectConfig(value: unknown): RoleRoutingConfig {
 	const input = object(value, "auto-dag configuration");
 	for (const key of Object.keys(input)) {
 		if (![...CONFIG_KEYS, ...OPTIONAL_CONFIG_KEYS].includes(key as never)) {
@@ -44,19 +35,15 @@ export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
 		throw new Error(`Unsupported auto-dag configuration version: ${input.version}`);
 	}
 
-	const profiles = parseProfiles(input.profiles);
-	const implementationProfiles = uniqueStrings(
-		stringArray(input.implementation_profiles, "configuration implementation_profiles"),
-		"configuration implementation_profiles",
+	const implementationRoles = uniqueStrings(
+		stringArray(input.implementation_roles, "configuration implementation_roles"),
+		"configuration implementation_roles",
 	);
-	if (!implementationProfiles.length) throw new Error("configuration implementation_profiles must contain a profile");
-	const reviewerProfile = nonEmptyString(input.reviewer_profile, "configuration reviewer_profile");
-	const repairProfile = nonEmptyString(input.repair_profile, "configuration repair_profile");
-	if (!implementationProfiles.includes(repairProfile)) {
-		throw new Error(`configuration repair_profile must be an implementation profile: ${repairProfile}`);
-	}
-	for (const id of new Set([...implementationProfiles, reviewerProfile, repairProfile])) {
-		if (!Object.hasOwn(profiles, id)) throw new Error(`configuration profiles is missing referenced profile: ${id}`);
+	if (!implementationRoles.length) throw new Error("configuration implementation_roles must contain a Role");
+	const reviewerRole = nonEmptyString(input.reviewer_role, "configuration reviewer_role");
+	const repairRole = nonEmptyString(input.repair_role, "configuration repair_role");
+	if (!implementationRoles.includes(repairRole)) {
+		throw new Error(`configuration repair_role must be an implementation Role: ${repairRole}`);
 	}
 	const requiredGateTimeoutMs = optionalPositiveInteger(
 		input.required_gate_timeout_ms,
@@ -69,10 +56,9 @@ export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
 
 	return {
 		version: CONFIG_VERSION,
-		profiles,
-		implementation_profiles: implementationProfiles,
-		reviewer_profile: reviewerProfile,
-		repair_profile: repairProfile,
+		implementation_roles: implementationRoles,
+		reviewer_role: reviewerRole,
+		repair_role: repairRole,
 		max_parallel_tasks: optionalPositiveInteger(
 			input.max_parallel_tasks,
 			DEFAULT_MAX_PARALLEL_TASKS,
@@ -87,9 +73,7 @@ export function parseProjectConfig(value: unknown): ProfileRoutingConfig {
 	};
 }
 
-export async function loadProjectConfig(
-	availableSkills: readonly AvailableSkill[] = [],
-): Promise<ProjectConfig> {
+export async function loadProjectConfig(roles?: readonly Role[]): Promise<ProjectConfig> {
 	const path = join(getAgentDir(), "config", "pi-auto-dag.json");
 	let text: string;
 	try {
@@ -97,85 +81,37 @@ export async function loadProjectConfig(
 	} catch (error) {
 		throw new Error(`Cannot read pi-auto-dag configuration at ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	let config: ProfileRoutingConfig;
+	let config: RoleRoutingConfig;
 	try {
 		config = parseProjectConfig(JSON.parse(text));
 	} catch (error) {
 		if (error instanceof SyntaxError) throw new Error(`Pi-auto-dag configuration at ${path} is not valid JSON: ${error.message}`);
 		throw error;
 	}
-	return await resolveProjectConfig(config, availableSkills);
+	return resolveProjectConfig(config, roles ?? loadRoles());
 }
 
-export async function resolveProjectConfig(
-	config: ProfileRoutingConfig,
-	availableSkills: readonly AvailableSkill[] = [],
-): Promise<ProjectConfig> {
-	const registry = parseAvailableSkills(availableSkills);
-	const requiredNames = new Set(Object.values(config.profiles).flatMap((profile) => profile.skills));
-	for (const name of requiredNames) {
-		if (!registry.some((skill) => skill.name === name)) throw new Error(`Configured Pi skill is unavailable: ${name}`);
+export function resolveProjectConfig(config: RoleRoutingConfig, roles: readonly Role[]): ProjectConfig {
+	const byName = new Map<string, Role>();
+	for (const role of roles) {
+		const name = nonEmptyString(role.name, "Subagent Role name");
+		if (byName.has(name)) throw new Error(`Duplicate Subagent Role: ${name}.`);
+		byName.set(name, role);
 	}
-	const skillRegistry = registry.filter((skill) => requiredNames.has(skill.name));
-	const profiles = Object.fromEntries(await Promise.all(Object.entries(config.profiles).map(async ([id, configured]) => {
-		const profile: ResolvedProfile = {
-			...configured,
-			id,
-			skills: skillRegistry.filter((skill) => configured.skills.includes(skill.name)).map((skill) => skill.file_path),
-		};
-		await assertProfileResources(profile);
-		return [id, profile] as const;
-	})));
-	return { ...config, profiles, skill_registry: skillRegistry };
-}
-
-export async function revalidateResolvedProfile(config: ProjectConfig, id: string): Promise<ResolvedProfile> {
-	const profile = config.profiles[id];
-	if (!profile) throw new Error(`Resolved Pi profile is missing: ${id}`);
-	await assertProfileResources(profile);
-	return profile;
-}
-
-function parseProfiles(value: unknown): Record<string, ConfiguredProfile> {
-	const input = object(value, "configuration profiles");
-	return Object.fromEntries(Object.entries(input).map(([rawId, value]) => {
-		const id = nonEmptyString(rawId, "configuration profile ID");
-		const label = `configuration profiles.${id}`;
-		const profile = object(value, label);
-		exactKeys(profile, PROFILE_KEYS, label);
-		const agentDir = nonEmptyString(profile.agent_dir, `${label}.agent_dir`);
-		if (!isAbsolute(agentDir)) throw new Error(`${label}.agent_dir must be absolute`);
-		return [id, {
-			description: nonEmptyString(profile.description, `${label}.description`),
-			agent_dir: agentDir,
-			skills: uniqueStrings(stringArray(profile.skills, `${label}.skills`), `${label}.skills`),
-			tools: uniqueStrings(stringArray(profile.tools, `${label}.tools`), `${label}.tools`),
-		} satisfies ConfiguredProfile] as const;
-	}));
-}
-
-function parseAvailableSkills(skills: readonly AvailableSkill[]): SkillRegistryEntry[] {
-	return skills.map((skill, index) => {
-		const name = nonEmptyString(skill.name, `effective Pi skill[${index}].name`);
-		const filePath = nonEmptyString(skill.filePath, `effective Pi skill[${index}].filePath`);
-		if (!isAbsolute(filePath)) throw new Error(`effective Pi skill[${index}].filePath must be absolute: ${filePath}`);
-		return { name, file_path: filePath };
-	});
-}
-
-async function assertProfileResources(profile: ResolvedProfile): Promise<void> {
-	await assertPath(profile.agent_dir, `Profile ${profile.id} directory`, "directory");
-	for (const path of profile.skills) await assertPath(path, `Profile ${profile.id} skill file`, "file");
-}
-
-async function assertPath(path: string, label: string, kind: "directory" | "file"): Promise<void> {
-	let info;
-	try {
-		info = await stat(path);
-	} catch {
-		throw new Error(`${label} is missing: ${path}`);
+	const required = new Set([...config.implementation_roles, config.reviewer_role, config.repair_role]);
+	for (const name of required) {
+		if (!byName.has(name)) throw new Error(`Configured Subagent Role is unavailable: ${name}`);
 	}
-	if (kind === "directory" ? !info.isDirectory() : !info.isFile()) throw new Error(`${label} is not a ${kind}: ${path}`);
+	return {
+		...config,
+		roles: Object.fromEntries([...required].map((name) => [name, byName.get(name)!])),
+	};
+}
+
+export function configuredRole(config: ProjectConfig, name: string): Role {
+	const role = config.roles[name];
+	if (!role) throw new Error(`Configured Subagent Role is unavailable: ${name}`);
+	return role;
 }
 
 function uniqueStrings(values: string[], label: string): string[] {

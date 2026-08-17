@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { acknowledgeRequiredGate, reconcileRequiredGateProcess, recordedGateEvidence, requiredGateProcessPath, runCommand, type CommandRunner } from "./command.ts";
-import type { AvailableSkill } from "./config.ts";
+import { findManagedSubagentTab, managedSubagentWorkspaceId, retireManagedSubagentTab } from "@henryqw/pi-subagent";
 import { amendRequiredGateCommand, isRetryableFinalGate, retryableFinalGate, type GateCommandAmendmentRequest } from "./final-gate.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
@@ -13,7 +13,7 @@ import { WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket
 import { recordGateExecution } from "./review.ts";
 import { claimActiveRun, hasAcceptedWorkerEvent, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
-import { findWorkerTab, retireWorkerTab, workerWorkspaceId } from "./worker-host.ts";
+import { workerHost, workerHostOptions, type RoleLaunchResolver } from "./worker.ts";
 
 export interface CoreLifecycleOptions {
 	runner?: CommandRunner;
@@ -21,7 +21,7 @@ export interface CoreLifecycleOptions {
 	now?: () => string;
 	mainPane?: () => string | undefined;
 	delay?: (milliseconds: number) => Promise<void>;
-	availableSkills?: () => readonly AvailableSkill[] | undefined;
+	resolveLaunch?: RoleLaunchResolver;
 }
 
 export interface CoreLifecycle {
@@ -45,13 +45,13 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		uuid,
 		now: options.now,
 		delay: options.delay,
-		availableSkills: options.availableSkills,
+		resolveLaunch: options.resolveLaunch ?? (() => { throw new Error("Auto DAG launch resolver is unavailable"); }),
 	};
 	return {
 		async start(mainWorktree, mainPane) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const pane = nonEmptyString(mainPane ?? options.mainPane?.(), "main Herdr pane");
-				const workspaceId = await workerWorkspaceId(root, pane, { runner });
+				const workspaceId = await managedSubagentWorkspaceId(root, pane, { execute: runner });
 				const state = await startLocalRun({
 					mainWorktree: root,
 					runner,
@@ -59,7 +59,6 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 					now: options.now,
 					mainPane: pane,
 					workspaceId,
-					availableSkills: options.availableSkills?.(),
 				});
 				return await completeSuccessfulRun(await blockOnFailure(state, uuid, async () => await initializeOrchestration(state, pane, orchestration)), orchestration);
 			});
@@ -114,7 +113,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				let state = await readActiveRun(root);
 				state = await reconcileGate(state, orchestration);
-				await guardBoundary(state, runner, uuid, options.availableSkills?.());
+				await guardBoundary(state, runner, uuid);
 				const { issue, evidence } = retryableFinalGate(state);
 				if (!isDeepStrictEqual(evidence, expectedEvidence)) {
 					throw new Error("Final Check Required Gate evidence changed during infrastructure retry approval");
@@ -153,7 +152,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				if (state.phase === "aborted" || state.phase === "completed") {
 					throw new Error(`Cannot resolve a ${state.phase} run`);
 				}
-				const config = await guardBoundary(state, runner, uuid, options.availableSkills?.());
+				const config = await guardBoundary(state, runner, uuid);
 				const id = nonEmptyString(issueId, "resolution issue_id");
 				if (!state.tasks[id]) throw new Error(`Run does not contain Local Issue: ${id}`);
 				if (!amendment && id === "final-check" && isRetryableFinalGate(state)) {
@@ -288,9 +287,9 @@ async function retireActiveTaskWorker(
 	options: OrchestrationOptions,
 ): Promise<RunTaskState> {
 	const tabId = current.tab_id ?? (current.implementer_provisioning_id
-		? (await findWorkerTab(state, current.implementer_provisioning_id, options))?.tab_id
+		? (await findManagedSubagentTab(workerHost(state), current.implementer_provisioning_id, workerHostOptions(options)))?.tabId
 		: undefined);
-	if (tabId) await retireWorkerTab(state, tabId, options);
+	if (tabId) await retireManagedSubagentTab(workerHost(state), tabId, workerHostOptions(options));
 	const {
 		tab_id: _tabId,
 		implementer_pane: _implementerPane,
@@ -336,10 +335,9 @@ async function guardBoundary(
 	state: RunState,
 	runner: CommandRunner,
 	uuid: Uuid,
-	availableSkills?: readonly AvailableSkill[],
 ): Promise<ProjectConfig> {
 	try {
-		return await assertRunBoundary(state, runner, availableSkills);
+		return await assertRunBoundary(state, runner);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		await writeRunState(state.main_worktree, { ...state, phase: "blocked", block_reason: message }, uuid);

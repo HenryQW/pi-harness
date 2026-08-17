@@ -52,6 +52,6 @@ _Avoid_: Issue, Local Issue, worker
 User-approved clarification that unblocks one Run Task without changing its Local Issue.
 _Avoid_: Graph edit, issue update, new requirement
 
-**Pi Profile**:
-Config-defined Worker launch policy containing agent directory, description, effective Pi skill names, and baseline tools. At runtime Auto DAG selects matching entries from Pi's ordered effective skill registry, disables ambient skill loading, and injects exact selected `SKILL.md` paths. Run State retains selected entries only for recovery; Herdr only hosts resulting process.
-_Avoid_: Profile resolver, Herdr profile, skill path configuration
+**Subagent Role**:
+User-owned `@henryqw/pi-subagent` Role selected by Delivery Graph `profile` value or configured review/repair role. Subagent resolves Role Skills, tools, extensions, shared task-model route, Pi launch arguments, and managed Herdr lifecycle. Auto DAG contributes only graph-specific protocol extension, phase tools, prompt, and action identity.
+_Avoid_: Auto DAG profile, copied Role config, skill path configuration, package-owned model route

@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { listManagedSubagents, resolveRoleLaunch, type ResolveRoleLaunchInput, type ResolvedRoleLaunch } from "@henryqw/pi-subagent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
-import type { AvailableSkill } from "./config.ts";
 import { isRetryableFinalGate, requiredGateCommandAmendmentRequest, retryableFinalGate } from "./final-gate.ts";
 import { executionIssues } from "./graph.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
@@ -11,7 +11,7 @@ import type { WorkerRole } from "./worker.ts";
 import { parseWorkerEnvelope } from "./orchestration.ts";
 import { registerPlanning } from "./planning.ts";
 import { nonEmptyString } from "./validate.ts";
-import { listWorkerAgents } from "./worker-host.ts";
+import { workerHost, workerHostOptions, type RoleLaunchResolver } from "./worker.ts";
 
 export const ORCHESTRATOR_TOOLS = {
 	start: "auto_dag_start",
@@ -37,18 +37,25 @@ function quotedConfirmationValue(value: string): string {
 
 /** The main integration extension exposes the public lifecycle surface and nothing else. */
 export function createOrchestratorExtension(options: OrchestratorExtensionOptions = {}) {
-	let effectiveSkills: readonly AvailableSkill[] | undefined;
-	const availableSkills = (): readonly AvailableSkill[] | undefined => effectiveSkills;
-	const lifecycle = options.lifecycle ?? createCoreLifecycle({
-		mainPane: () => process.env.HERDR_PANE_ID,
-		availableSkills,
-	});
 	const runner = options.runner ?? runCommand;
 	return (pi: ExtensionAPI) => {
-		pi.on("before_agent_start", (event) => {
-			effectiveSkills = event.systemPromptOptions.skills ?? [];
+		let liveContext: ExtensionContext | undefined;
+		const resolveFor = (ctx: ExtensionContext, input: ResolveRoleLaunchInput): ResolvedRoleLaunch => {
+			const launch = resolveRoleLaunch(pi, ctx, input);
+			if (launch.missingSkills.length) {
+				ctx.ui.notify(`Subagent Role ${input.role.name} skipped unavailable Skills: ${launch.missingSkills.join(", ")}`, "warning");
+			}
+			return launch;
+		};
+		const resolveLaunch: RoleLaunchResolver = (input) => {
+			if (!liveContext) throw new Error("Auto DAG launch context is unavailable");
+			return resolveFor(liveContext, input);
+		};
+		const lifecycle = options.lifecycle ?? createCoreLifecycle({
+			mainPane: () => process.env.HERDR_PANE_ID,
+			resolveLaunch,
 		});
-		registerPlanning(pi, runner, availableSkills);
+		registerPlanning(pi, runner, resolveFor);
 		let state: RunState | undefined;
 		let liveAgents: Map<string, string> | undefined;
 		let pendingHandoffs = new Set<string>();
@@ -74,6 +81,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			updateWorkerWidget(ctx, widgetVisible ? state : undefined, liveAgents, dismissedWidgetEntries, pendingHandoffs);
 		};
 		const refreshWorkerWidget = async (ctx: ExtensionContext): Promise<void> => {
+			liveContext = ctx;
 			try {
 				state = await lifecycle.status(ctx.cwd);
 			} catch (error) {
@@ -94,7 +102,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			readingHerdr = true;
 			const generation = ++herdrGeneration;
 			try {
-				const agents = await listWorkerAgents(state, { runner });
+				const agents = await listManagedSubagents(workerHost(state), workerHostOptions({ runner }));
 				if (generation === herdrGeneration) {
 					liveAgents = agents;
 					pendingHandoffs = await pendingWorkerHandoffs(state);
@@ -134,7 +142,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 						try {
 							agents = !state || !expected.some((worker) => worker.activity !== "blocked")
 								? new Map()
-								: await listWorkerAgents(state, { runner });
+								: await listManagedSubagents(workerHost(state), workerHostOptions({ runner }));
 						} catch (error) {
 							ctx.ui.notify(`Auto DAG widget fix could not read Herdr worker status: ${errorMessage(error)}. No entries removed.`, "warning");
 							return;
@@ -181,6 +189,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			if (ctx.mode === "tui" && widgetVisible) await refreshHerdr(ctx);
 		});
 		pi.on("input", async (event, ctx) => {
+			liveContext = ctx;
 			let envelope: WorkerEnvelope | undefined;
 			try {
 				envelope = workerEnvelopeInput(event.text);
@@ -204,6 +213,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			description: "Validate the approved local Delivery Graph and start its sole active run.",
 			parameters: Type.Object({ main_pane: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
 				return stateResult(await lifecycle.start(ctx.cwd, _params.main_pane ?? process.env.HERDR_PANE_ID));
 			},
 		}));
@@ -214,6 +224,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			description: "Read the sole active run, or one historical run by ID.",
 			parameters: Type.Object({ run_id: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
 				return stateResult(await lifecycle.status(ctx.cwd, params.run_id));
 			},
 		}));
@@ -224,6 +235,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			description: "Resume only the active run after rechecking frozen local inputs.",
 			parameters: Type.Object({ envelope: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
 				return stateResult(await lifecycle.resume(ctx.cwd, params.envelope));
 			},
 		}));
@@ -234,6 +246,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			description: "Interactively archive failed Final Check Required Gate evidence and rerun its exact frozen command and commit in a fresh environment.",
 			parameters: Type.Object({ reason: Type.String() }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
 				if (ctx.mode !== "tui") throw new Error("Required Gate infrastructure retry requires interactive TUI mode");
 				const reason = nonEmptyString(params.reason, "infrastructure retry reason");
 				const candidate = await lifecycle.status(ctx.cwd);
@@ -264,6 +277,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				replacement_command: Type.Optional(Type.String()),
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
 				if (params.replacement_command === undefined) {
 					return stateResult(await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution));
 				}
@@ -290,6 +304,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			description: "Abort only the active run after retaining its durable evidence.",
 			parameters: Type.Object({ reason: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
 				return stateResult(await lifecycle.abort(ctx.cwd, params.reason));
 			},
 		}));
@@ -300,6 +315,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			description: "Run explicit health handling for the required retained run ID.",
 			parameters: Type.Object({ run_id: Type.String(), envelope: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
 				return stateResult(await lifecycle.health(ctx.cwd, params.run_id, params.envelope));
 			},
 		}));

@@ -1,9 +1,17 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { defineTool, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient } from "@henryqw/pi-herdr";
-import { commandOutput, runCommand, type CommandRunner } from "./command.ts";
-import { DEFAULT_REQUIRED_GATE_TIMEOUT_MS, type DeliveryGraph, type LocalIssue, type ResolvedProfile, type WorkerEnvelope } from "./model.ts";
+import {
+	managedSubagentName,
+	type ManagedSubagentHost,
+	type ManagedSubagentHostOptions,
+	type PiLaunch,
+	type ResolveRoleLaunchInput,
+	type Role,
+} from "@henryqw/pi-subagent";
+import { DEFAULT_TASK_ASSIGNMENTS } from "@henryqw/pi-task-models";
+import { commandFailure, commandOutput, runCommand, type CommandRunner } from "./command.ts";
+import { DEFAULT_REQUIRED_GATE_TIMEOUT_MS, type DeliveryGraph, type LocalIssue, type WorkerEnvelope } from "./model.ts";
 import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
 import { readActionTicket, readWorkerReceipt, type ActionTicket } from "./review-ticket.ts";
 import { nonEmptyString, oneOf, positiveInteger } from "./validate.ts";
@@ -24,10 +32,14 @@ export const WORKER_ROLE_EVENTS: Record<WorkerRole, WorkerEvent[]> = {
 	reviewer: ["submit_review", "submit_health", "block_task"],
 };
 
+export type WorkerLaunch = PiLaunch;
+export type RoleLaunchResolver = (input: ResolveRoleLaunchInput) => WorkerLaunch;
+
 export interface WorkerLaunchInput {
-	role: WorkerRole;
+	resolveLaunch: RoleLaunchResolver;
+	workerRole: WorkerRole;
+	role: Role;
 	events?: WorkerEvent[];
-	profile: ResolvedProfile;
 	run_id: string;
 	issue_id: string;
 	main_pane: string;
@@ -35,22 +47,24 @@ export interface WorkerLaunchInput {
 	required_gate_timeout_ms: number;
 }
 
-export interface WorkerLaunch {
-	env: Record<string, string>;
-	args: string[];
-}
-
 export const WORKER_EXTENSION_PATH = fileURLToPath(new URL("../extensions/worker.ts", import.meta.url));
+export const AUTO_DAG_TASK_IDS = {
+	implement: "pi-auto-dag/implement",
+	review: "pi-auto-dag/review",
+} as const satisfies Record<string, keyof typeof DEFAULT_TASK_ASSIGNMENTS>;
 const WORKER_DELIVERY_MARGIN_MS = 60_000;
 
-/** Profile owns baseline Pi resources; Auto DAG adds only its worker adapter and phase tools. */
+/** A Role owns launch policy; Auto DAG contributes only its protocol adapter, phase tools, and action identity. */
 export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
-	const role = parseWorkerRole(input.role);
-	const events = parseWorkerEvents(input.events ?? WORKER_ROLE_EVENTS[role], role);
-	return {
+	const workerRole = parseWorkerRole(input.workerRole);
+	const events = parseWorkerEvents(input.events ?? WORKER_ROLE_EVENTS[workerRole], workerRole);
+	return input.resolveLaunch({
+		role: input.role,
+		taskId: workerRole === "reviewer" ? AUTO_DAG_TASK_IDS.review : AUTO_DAG_TASK_IDS.implement,
+		extensions: [WORKER_EXTENSION_PATH],
+		tools: events.map((event) => WORKER_TOOLS[event]),
 		env: {
-			PI_CODING_AGENT_DIR: nonEmptyString(input.profile.agent_dir, "worker profile agent_dir"),
-			PI_AUTO_DAG_WORKER_ROLE: role,
+			PI_AUTO_DAG_WORKER_ROLE: workerRole,
 			PI_AUTO_DAG_WORKER_EVENTS: events.join(","),
 			PI_AUTO_DAG_RUN_ID: nonEmptyString(input.run_id, "worker run_id"),
 			PI_AUTO_DAG_ISSUE_ID: nonEmptyString(input.issue_id, "worker issue_id"),
@@ -58,31 +72,34 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 			PI_AUTO_DAG_ACTION_TICKET: nonEmptyString(input.action_ticket, "worker action ticket"),
 			PI_AUTO_DAG_DELIVERY_TIMEOUT_MS: String(positiveInteger(input.required_gate_timeout_ms, "worker required gate timeout") + WORKER_DELIVERY_MARGIN_MS),
 		},
-		args: profileLaunchArgs(input.profile, events.map((event) => WORKER_TOOLS[event])),
-	};
+	});
 }
 
-export function createPlanningReviewLaunch(profile: ResolvedProfile, mainWorktree: string): WorkerLaunch {
-	return {
-		env: {
-			PI_CODING_AGENT_DIR: nonEmptyString(profile.agent_dir, "planning reviewer profile agent_dir"),
-			PI_AUTO_DAG_PLANNING_ROOT: nonEmptyString(mainWorktree, "planning reviewer main worktree"),
-		},
-		args: profileLaunchArgs(profile, [PLANNING_REVIEW_TOOL]),
-	};
+export function createPlanningReviewLaunch(
+	resolveLaunch: RoleLaunchResolver,
+	role: Role,
+	mainWorktree: string,
+): WorkerLaunch {
+	return resolveLaunch({
+		role,
+		taskId: AUTO_DAG_TASK_IDS.review,
+		extensions: [WORKER_EXTENSION_PATH],
+		tools: [PLANNING_REVIEW_TOOL],
+		env: { PI_AUTO_DAG_PLANNING_ROOT: nonEmptyString(mainWorktree, "planning reviewer main worktree") },
+	});
 }
 
-function profileLaunchArgs(profile: ResolvedProfile, addedTools: string[]): string[] {
-	return [
-		"--offline",
-		"--no-session",
-		"--no-skills",
-		...profile.skills.flatMap((path) => ["--skill", nonEmptyString(path, `profile ${profile.id} skill path`)]),
-		"--extension",
-		WORKER_EXTENSION_PATH,
-		"--tools",
-		[...new Set([...profile.tools, ...addedTools])].join(","),
-	];
+export function workerAgentName(workspaceId: string, runId: string, roleKey: string, role: WorkerRole): string {
+	const suffix = role === "implementer" ? "-i" : "-r";
+	return `${managedSubagentName(workspaceId, "pi-auto-dag", runId, roleKey, role).slice(0, -suffix.length)}${suffix}`;
+}
+
+export function workerHost(state: { main_worktree: string; workspace_id: string }): ManagedSubagentHost {
+	return { cwd: state.main_worktree, workspaceId: state.workspace_id };
+}
+
+export function workerHostOptions(options: { runner: CommandRunner; delay?: (milliseconds: number) => Promise<void> }): ManagedSubagentHostOptions {
+	return { execute: options.runner, ...(options.delay ? { delay: options.delay } : {}) };
 }
 
 interface WorkerEnvironment {
@@ -152,10 +169,11 @@ export async function sendWorkerEnvelope(
 	if (!Number.isInteger(attempts) || attempts < 1) throw new Error("worker deliveryAttempts must be a positive integer");
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error("worker deliveryTimeoutMs must be a positive integer");
 	let lastError: unknown;
-	const herdr = createHerdrClient(runner);
 	for (let attempt = 1; attempt <= attempts; attempt += 1) {
 		try {
-			await herdr.run(["agent", "prompt", worker.main_pane, JSON.stringify(envelope), "--wait", "--timeout", String(timeoutMs)], { cwd });
+			const args = ["agent", "prompt", worker.main_pane, JSON.stringify(envelope), "--wait", "--timeout", String(timeoutMs)];
+			const result = await runner("herdr", args, { cwd });
+			if (result.code !== 0) throw new Error(commandFailure("herdr", args, result));
 		} catch (error) {
 			lastError = error;
 			const receipt = await waitForReceipt(ticket.receipt_path, delivery.delay);

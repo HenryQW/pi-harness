@@ -14,7 +14,7 @@ Before drafting, know:
 - constraints and non-goals
 - observable acceptance behavior
 - realistic testing seams and commands
-- supplied implementation profile IDs and descriptions
+- supplied implementation Role names and descriptions
 - dependency boundaries
 
 Discover repository facts yourself. Use conversation context already available. Ask user only unresolved product decisions; if answers are needed, ask them and stop current turn. Never invoke another planning or grilling workflow.
@@ -58,7 +58,7 @@ Planning modes:
 
 ## Deterministic validation
 
-After each draft or revision, call `auto_dag_validate`. Fix every structural error before semantic review. Validator owns exact keys, statuses, IDs, non-empty required fields, supplied profile values, references, uniqueness, self-dependencies, cycles, commands, and dependency waves.
+After each draft or revision, call `auto_dag_validate`. Fix every structural error before semantic review. Validator owns exact keys, statuses, IDs, non-empty required fields, supplied Role values in `profile`, references, uniqueness, self-dependencies, cycles, commands, and dependency waves.
 
 ## Independent semantic review
 
