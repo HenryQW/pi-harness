@@ -516,6 +516,38 @@ test("btw-model restricts a scoped model to its pinned thinking level", async ()
 	harness.cleanup();
 });
 
+test("btw-model preserves selected scoped thinking pin for duplicate model entries", async () => {
+	const store = new FakeStore();
+	const configStore = new FakeConfigStore();
+	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }), configStore);
+	const ctx = createCommandContext();
+	const model = {
+		provider: "test-provider",
+		id: "duplicate-model",
+		input: ["text"],
+		reasoning: true,
+		thinkingLevelMap: { low: "low", max: "max" },
+	};
+	ctx.scopedModels = [
+		{ model, thinkingLevel: "low" },
+		{ model, thinkingLevel: "max" },
+	];
+	ctx.ui.select = async (title: string, choices: string[]) => {
+		assert.equal(title, "BTW model");
+		assert.deepEqual(choices, [
+			"Current session model",
+			"test-provider/duplicate-model (low)",
+			"test-provider/duplicate-model (max)",
+		]);
+		return "test-provider/duplicate-model (max)";
+	};
+
+	await harness.commands.get("btw-model")?.handler("", ctx);
+	assert.equal(configStore.config.model, "test-provider/duplicate-model");
+	assert.equal(configStore.config.thinkingLevel, "max");
+	harness.cleanup();
+});
+
 test("btw-model refuses non-UI mode without opening a picker", async () => {
 	const store = new FakeStore();
 	const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -903,6 +935,35 @@ test("parent honors scoped thinking pin for saved BTW model", async () => {
 		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
 			"--thinking",
 			"low",
+		]);
+	});
+});
+
+test("parent selects saved thinking pin among duplicate scoped model entries", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const configStore = new FakeConfigStore();
+		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: "max" };
+		const harness = await createHarness(store, herdrExec(), configStore);
+		const ctx = createCommandContext();
+		const model = {
+			provider: "anthropic",
+			id: "claude-haiku",
+			input: ["text"],
+			reasoning: true,
+			thinkingLevelMap: { low: "low", max: "max" },
+		};
+		ctx.scopedModels = [
+			{ model, thinkingLevel: "low" },
+			{ model, thinkingLevel: "max" },
+		];
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
+
+		const args = harness.execCalls[2]?.args ?? [];
+		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
+			"--thinking",
+			"max",
 		]);
 	});
 });

@@ -587,9 +587,23 @@ export async function registerBtwExtension(
 				return;
 			}
 			const inherit = "Current session model";
+			const modelNames = models.map(({ model }) => `${model.provider}/${model.id}`);
+			const duplicateNames = new Set(
+				modelNames.filter((name, index) => modelNames.indexOf(name) !== index),
+			);
+			const modelChoices = models.map((option) => {
+				const modelName = `${option.model.provider}/${option.model.id}`;
+				return {
+					option,
+					modelName,
+					label: duplicateNames.has(modelName)
+						? `${modelName} (${option.pinnedThinkingLevel ?? "default"})`
+						: modelName,
+				};
+			});
 			const selected = await ctx.ui.select(
 				"BTW model",
-				[inherit, ...models.map(({ model }) => `${model.provider}/${model.id}`)],
+				[inherit, ...modelChoices.map(({ label }) => label)],
 			);
 			if (!selected) return;
 			if (selected === inherit) {
@@ -603,26 +617,28 @@ export async function registerBtwExtension(
 				return;
 			}
 
-			const selectedOption = models.find(({ model }) => `${model.provider}/${model.id}` === selected);
-			if (!selectedOption) return;
-			const thinkingLevels = selectedOption.pinnedThinkingLevel
-				? [selectedOption.pinnedThinkingLevel]
-				: supportedThinkingLevels(selectedOption.model);
+			const selectedChoice = modelChoices.find(({ label }) => label === selected);
+			if (!selectedChoice) return;
+			const selectedModel = selectedChoice.option.model;
+			const selectedModelName = selectedChoice.modelName;
+			const thinkingLevels = selectedChoice.option.pinnedThinkingLevel
+				? [selectedChoice.option.pinnedThinkingLevel]
+				: supportedThinkingLevels(selectedModel);
 			const thinkingLevel = thinkingLevels.length === 1
 				? thinkingLevels[0]
-				: await ctx.ui.select(`Thinking level · ${selected}`, thinkingLevels);
+				: await ctx.ui.select(`Thinking level · ${selectedModelName}`, thinkingLevels);
 			if (!thinkingLevel || !thinkingLevels.includes(thinkingLevel as BtwThinkingLevel)) return;
 			try {
 				await configStore.update((latest) => ({
 					...latest,
-					model: selected,
+					model: selectedModelName,
 					thinkingLevel: thinkingLevel as BtwThinkingLevel,
 				}));
 			} catch {
 				ctx.ui.notify("Couldn't save pi-herdr-btw config.", "error");
 				return;
 			}
-			ctx.ui.notify(`BTW model set to ${selected} (${thinkingLevel}).`, "info");
+			ctx.ui.notify(`BTW model set to ${selectedModelName} (${thinkingLevel}).`, "info");
 		},
 	});
 
@@ -714,9 +730,12 @@ export async function registerBtwExtension(
 					ctx.ui.notify("/btw requires a saved model or an active model", "error");
 					return;
 				}
-				const modelOption = availableTextModelOptions(ctx).find(
+				const modelOptions = availableTextModelOptions(ctx).filter(
 					({ model: candidate }) => `${candidate.provider}/${candidate.id}` === configuredModel,
 				);
+				const modelOption = modelOptions.find(
+					({ pinnedThinkingLevel }) => pinnedThinkingLevel === config.thinkingLevel,
+				) ?? modelOptions.find(({ pinnedThinkingLevel }) => pinnedThinkingLevel === undefined) ?? modelOptions[0];
 				if (!modelOption) {
 					ctx.ui.notify(`BTW model unavailable: ${configuredModel}`, "error");
 					return;
