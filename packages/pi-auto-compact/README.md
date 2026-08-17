@@ -9,7 +9,13 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-`pi-task-models` provides `/task-models` for the shared compaction routes. Requires Pi Coding Agent 0.84.2+.
+Requires Pi Coding Agent 0.84.2+.
+
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-task-models` | Required. Shared model profiles for compaction routes. |
 
 Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 
@@ -21,14 +27,13 @@ Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 }
 ```
 
-Restart Pi after install or settings changes. Trusted project settings in `.pi/settings.json` must not set `compaction.enabled` back to `true`. Manual `/compact` stays available.
+Restart Pi after install or settings changes. Trusted project settings in `.pi/settings.json` must not set `compaction.enabled` back to `true`.
 
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| `/auto-compact` | Set the compaction threshold. |
-| `/task-models` | Configure the shared `pi-auto-compact/autoCompact` profile (default `balanced`). |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/auto-compact` | command | Set the compaction threshold. |
 
 Refuses to activate unless effective `compaction.enabled` is `false`. Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`. Tries the assigned profile primary, then fallback; if neither route works, the current session model still compacts. After mid-task compaction, a follow-up message continues the current task.
 

@@ -10,9 +10,9 @@ pi install npm:@henryqw/pi-ask-question
 
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| `ask_question` | Pause for one interactive answer. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `ask_question` | tool | Pause for one interactive answer. |
 
 ```json
 {

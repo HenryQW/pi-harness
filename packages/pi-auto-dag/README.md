@@ -26,20 +26,24 @@ Auto DAG injects `extensions/worker.ts` when it launches a worker.
 
 ## Use
 
-| Surface | Purpose |
-| --- | --- |
-| `/dag-plan` | Draft, review, and approve a graph. No execution. Needs interactive TUI inside Herdr. |
-| `/dag-widget show\|hide\|fix` | Show or hide the worker widget; dismiss entries whose worker is confirmed missing. |
-| `auto_dag_validate` | Validate the graph contract and derive waves. |
-| `auto_dag_submit_plan_review` | Reviewer-only: record `PASS` for the exact current graph hash. |
-| `auto_dag_approve` | Confirm the exact hash and atomically approve the draft. Never starts a run. |
-| `auto_dag_start` | Start the approved graph. |
-| `auto_dag_status` | Read the active run, or one retained run by ID. |
-| `auto_dag_resume` | Recover workers, pending events, or cleanup. |
-| `auto_dag_retry_gate` | Archive infrastructure-invalid Final Check evidence and retry the exact gate. TUI confirm. |
-| `auto_dag_resolve` | Unblock one task; optional exact replacement for a failed Required Gate command. |
-| `auto_dag_abort` | Stop the run and clean owned resources. Never force-deletes uncommitted work. |
-| `auto_dag_health` | Check PR feedback and CI for a retained `run_id`. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/dag-plan` | command | Draft, review, and approve a graph. No execution. Needs interactive TUI inside Herdr. |
+| `/dag-widget` | command | `show`, `hide`, or `fix` the worker widget. `fix` dismisses entries whose worker is confirmed missing. |
+| `auto_dag_validate` | tool | Validate the graph contract and derive waves. |
+| `auto_dag_approve` | tool | Confirm the exact hash and atomically approve the draft. Never starts a run. |
+| `auto_dag_start` | tool | Start the approved graph. |
+| `auto_dag_status` | tool | Read the active run, or one retained run by ID. |
+| `auto_dag_resume` | tool | Recover workers, pending events, or cleanup. |
+| `auto_dag_retry_gate` | tool | Archive infrastructure-invalid Final Check evidence and retry the exact gate. TUI confirm. |
+| `auto_dag_resolve` | tool | Unblock one task; optional exact replacement for a failed Required Gate command. |
+| `auto_dag_abort` | tool | Stop the run and clean owned resources. Never force-deletes uncommitted work. |
+| `auto_dag_health` | tool | Check PR feedback and CI for a retained `run_id`. |
+| `auto_dag_submit_plan_review` | tool | Worker: record `PASS` for the exact current graph hash. |
+| `auto_dag_request_review` | tool | Worker implementer: request review. |
+| `auto_dag_submit_review` | tool | Worker reviewer: submit verdict and findings. |
+| `auto_dag_submit_health` | tool | Worker reviewer: submit PR-health summary. |
+| `auto_dag_block_task` | tool | Worker: block the current task. |
 
 `auto_dag_resume`, `auto_dag_retry_gate`, `auto_dag_resolve`, and `auto_dag_abort` use the only active run.
 
