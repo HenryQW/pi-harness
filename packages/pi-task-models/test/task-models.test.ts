@@ -162,6 +162,38 @@ test("task-models hides task assignment when no supported task package is active
 	}
 });
 
+test("task-models shows unique full IDs for matching task names", async () => {
+	const dir = tempDir();
+	try {
+		mkdirSync(join(dir, "config"), { recursive: true });
+		writeFileSync(join(dir, "config", "pi-task-models.json"), JSON.stringify({
+			tasks: { "pi-a/summarize": "balanced", "pi-b/summarize": "balanced" },
+		}));
+		let handler: ((args: string[], ctx: never) => Promise<void>) | undefined;
+		registerTaskModelsExtension({
+			registerCommand(_name: string, options: { handler: (args: string[], ctx: unknown) => Promise<void> }) {
+				handler = options.handler;
+			},
+			getCommands: () => ["pi-a", "pi-b"].map((name) => ({
+				sourceInfo: { source: `npm:@henryqw/${name}`, path: `/node_modules/@henryqw/${name}/extension.ts` },
+			})) as never,
+			getAllTools: () => [] as never,
+		} as never, { agentDir: dir });
+		await handler!([], {
+			ui: {
+				select: async (_label: string, options: readonly string[]) => {
+					assert.ok(options.includes("pi-a/summarize · balanced"));
+					assert.ok(options.includes("pi-b/summarize · balanced"));
+					return undefined;
+				},
+				notify() {},
+			},
+		} as never);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("task-models configures primary and fallback atomically in one profile flow", async () => {
 	const dir = tempDir();
 	try {

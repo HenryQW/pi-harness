@@ -27,7 +27,6 @@ export type ResolvedTaskRoute = {
 export type ActiveTaskPackage = {
     packageName: string;
     task: string;
-    label: string;
 };
 export declare const configPath: (agentDir?: string) => string;
 export declare function readTaskModelsConfig(agentDir?: string): TaskModelsConfig;

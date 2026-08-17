@@ -39,7 +39,6 @@ export type ResolvedTaskRoute = {
 export type ActiveTaskPackage = {
 	packageName: string;
 	task: string;
-	label: string;
 };
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
@@ -262,10 +261,9 @@ export function activeTaskPackages(
 	];
 	return Object.keys(tasks).flatMap((task) => {
 		if (!isTaskId(task)) return [];
-		const [packageShort, label] = task.split("/");
-		const packageName = `@henryqw/${packageShort}`;
+		const packageName = `@henryqw/${task.slice(0, task.indexOf("/"))}`;
 		return sources.some((source) => sourceMatchesPackage(source, packageName))
-			? [{ packageName, task, label }]
+			? [{ packageName, task }]
 			: [];
 	});
 }
@@ -315,7 +313,7 @@ export function createTaskModelsExtension(
 			};
 			const taskOptions = activeTaskPackages(pi, config.tasks).map((entry) => ({
 				entry,
-				label: `${entry.label} task · ${config.tasks[entry.task]}`,
+				label: `${entry.task} · ${config.tasks[entry.task]}`,
 			}));
 			const selected = await ctx.ui.select("Task models", [
 				...profileOptions.map(({ label }) => label),
@@ -325,11 +323,11 @@ export function createTaskModelsExtension(
 
 			const task = taskOptions.find(({ label }) => label === selected)?.entry;
 			if (task) {
-				const profile = await ctx.ui.select(`${task.label} profile`, [...PROFILE_NAMES]);
+				const profile = await ctx.ui.select(`${task.task} profile`, [...PROFILE_NAMES]);
 				if (!isProfileName(profile)) return;
 				config.tasks[task.task] = profile;
 				if (!save()) return;
-				ctx.ui.notify(`${task.label} assigned to ${profile}.`, "info");
+				ctx.ui.notify(`${task.task} assigned to ${profile}.`, "info");
 				return;
 			}
 
