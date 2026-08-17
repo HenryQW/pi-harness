@@ -939,11 +939,11 @@ test("parent honors scoped thinking pin for saved BTW model", async () => {
 	});
 });
 
-test("parent selects saved thinking pin among duplicate scoped model entries", async () => {
+test("parent selects active thinking pin when inheriting among duplicate scoped model entries", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const configStore = new FakeConfigStore();
-		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: "max" };
+		configStore.config = { ...DEFAULT_CONFIG, model: "anthropic/claude-haiku", thinkingLevel: null };
 		const harness = await createHarness(store, herdrExec(), configStore);
 		const ctx = createCommandContext();
 		const model = {
@@ -951,11 +951,11 @@ test("parent selects saved thinking pin among duplicate scoped model entries", a
 			id: "claude-haiku",
 			input: ["text"],
 			reasoning: true,
-			thinkingLevelMap: { low: "low", max: "max" },
+			thinkingLevelMap: { low: "low", high: "high" },
 		};
 		ctx.scopedModels = [
 			{ model, thinkingLevel: "low" },
-			{ model, thinkingLevel: "max" },
+			{ model, thinkingLevel: "high" },
 		];
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
@@ -963,7 +963,7 @@ test("parent selects saved thinking pin among duplicate scoped model entries", a
 		const args = harness.execCalls[2]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
 			"--thinking",
-			"max",
+			"high",
 		]);
 	});
 });
@@ -1475,6 +1475,33 @@ test("child merge stays open and polls for the ack when it is not in a Herdr pan
 			assert.ok(store.mergeRequest);
 			assert.deepEqual(harness.execCalls, []);
 			assert.match(notifications.at(-1)?.message ?? "", /Merge pending/);
+		});
+	});
+});
+
+test("child reports an acknowledgement recovered during session reload", async () => {
+	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
+		await withChildPaneId(undefined, async () => {
+			const store = new FakeStore();
+			const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+			harness.cleanup();
+			const { ctx } = createChildMergeContext();
+
+			await harness.commands.get("btw")?.handler("merge apply the findings", ctx);
+			const request = store.mergeRequest as MergeRequest;
+			store.mergeAck = {
+				protocolVersion: MERGE_PROTOCOL_VERSION,
+				requestId: request.requestId,
+				status: "accepted",
+				processedAt: "2026-07-15T00:00:02.000Z",
+			};
+
+			await harness.emit("session_shutdown", { reason: "reload" }, {});
+			const start = createChildStartContext();
+			await harness.emit("session_start", { reason: "reload" }, start.ctx);
+			harness.cleanup();
+
+			assert.match(start.notifications.at(-1)?.message ?? "", /Merge accepted/);
 		});
 	});
 });

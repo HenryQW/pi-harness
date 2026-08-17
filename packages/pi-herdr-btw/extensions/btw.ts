@@ -45,6 +45,7 @@ import {
 	MERGE_PROTOCOL_VERSION,
 	MergeCoordinator,
 	isMergeRequest,
+	type MergeAck,
 	type MergeRequest,
 } from "../internal/merge.ts";
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
@@ -264,20 +265,24 @@ async function configureChild(
 		}
 	};
 
+	const finishAck = (ack: MergeAck): void => {
+		stopAckPolling();
+		pendingAckRequestId = undefined;
+		pendingAckStartedAt = undefined;
+		notifyAck(
+			ack.status === "accepted"
+				? "Merge accepted: the parent has the side thread and is continuing with your prompt."
+				: `Merge rejected by the parent: ${ack.reason ?? "unknown reason"}`,
+			ack.status === "accepted" ? "info" : "error",
+		);
+	};
+
 	const startAckPolling = (requestId: string, startedAt: number): void => {
 		stopAckPolling();
 		ackTimer = setInterval(async () => {
 			const ack = await store.readMergeAck(payloadPath).catch(() => undefined);
 			if (ack !== undefined && isMergeAck(ack) && ack.requestId === requestId) {
-				stopAckPolling();
-				pendingAckRequestId = undefined;
-				pendingAckStartedAt = undefined;
-				notifyAck(
-					ack.status === "accepted"
-						? "Merge accepted: the parent has the side thread and is continuing with your prompt."
-						: `Merge rejected by the parent: ${ack.reason ?? "unknown reason"}`,
-					ack.status === "accepted" ? "info" : "error",
-				);
+				finishAck(ack);
 			} else if (Date.now() - startedAt > ACK_POLL_TIMEOUT_MS) {
 				stopAckPolling();
 				pendingAckRequestId = undefined;
@@ -297,9 +302,7 @@ async function configureChild(
 		if (!isMergeRequest(request)) return;
 		const ack = await store.readMergeAck(payloadPath).catch(() => undefined);
 		if (ackMatchesRequest(ack, request)) {
-			pendingAckRequestId = undefined;
-			pendingAckStartedAt = undefined;
-			stopAckPolling();
+			if (isMergeAck(ack)) finishAck(ack);
 			return;
 		}
 		const sameRequest = pendingAckRequestId === request.requestId;
@@ -730,11 +733,12 @@ export async function registerBtwExtension(
 					ctx.ui.notify("/btw requires a saved model or an active model", "error");
 					return;
 				}
+				const thinkingLevel = pi.getThinkingLevel();
 				const modelOptions = availableTextModelOptions(ctx).filter(
 					({ model: candidate }) => `${candidate.provider}/${candidate.id}` === configuredModel,
 				);
 				const modelOption = modelOptions.find(
-					({ pinnedThinkingLevel }) => pinnedThinkingLevel === config.thinkingLevel,
+					({ pinnedThinkingLevel }) => pinnedThinkingLevel === (config.thinkingLevel ?? thinkingLevel),
 				) ?? modelOptions.find(({ pinnedThinkingLevel }) => pinnedThinkingLevel === undefined) ?? modelOptions[0];
 				if (!modelOption) {
 					ctx.ui.notify(`BTW model unavailable: ${configuredModel}`, "error");
@@ -751,7 +755,6 @@ export async function registerBtwExtension(
 				}
 				const model = currentModel ?? null;
 				const activeTools = pi.getActiveTools();
-				const thinkingLevel = pi.getThinkingLevel();
 				const launchThinkingLevel = modelOption.pinnedThinkingLevel ?? config.thinkingLevel ?? thinkingLevel;
 				if (!supportedThinkingLevels(modelOption.model).includes(launchThinkingLevel as BtwThinkingLevel)) {
 					ctx.ui.notify(`BTW thinking level unavailable for ${configuredModel}: ${launchThinkingLevel}`, "error");
