@@ -11,6 +11,7 @@ import {
 	createPayload,
 	isBtwPayload,
 	parsePaneSplitPaneId,
+	parseReadyAgentPaneId,
 	isAgentStartReady,
 	safeErrorText,
 } from "../internal/core.ts";
@@ -108,6 +109,22 @@ test("parsePaneSplitPaneId reads the pane ID from pane split JSON output", () =>
 	assert.equal(parsePaneSplitPaneId("not json"), null);
 	assert.equal(parsePaneSplitPaneId("{}"), null);
 	assert.equal(parsePaneSplitPaneId(JSON.stringify({ result: { pane: { pane_id: "" } } })), null);
+});
+
+test("parseReadyAgentPaneId validates ready agent lookup output", () => {
+	assert.equal(
+		parseReadyAgentPaneId(
+			JSON.stringify({ result: { type: "agent_info", agent: { pane_id: "w29:p2", agent_status: "idle" } } }),
+		),
+		"w29:p2",
+	);
+	assert.equal(
+		parseReadyAgentPaneId(
+			JSON.stringify({ result: { type: "agent_info", agent: { pane_id: "w29:p2", agent_status: "unknown" } } }),
+		),
+		null,
+	);
+	assert.equal(parseReadyAgentPaneId("not json"), null);
 });
 
 test("isAgentStartReady validates Herdr agent identity and readiness", () => {

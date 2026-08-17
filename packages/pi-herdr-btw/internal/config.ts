@@ -131,10 +131,12 @@ export function applyConfigCommand(current: BtwConfig, input: string): ConfigCom
 	return { action: "save", config };
 }
 
+const configPath = () => join(getAgentDir(), "config", "pi-herdr-btw.json");
+
 export class ConfigStore {
 	readonly path: string;
 
-	constructor(path = join(getAgentDir(), "config", "pi-herdr-btw.json")) {
+	constructor(path = configPath()) {
 		this.path = path;
 	}
 

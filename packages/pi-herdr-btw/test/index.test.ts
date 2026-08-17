@@ -578,6 +578,40 @@ test("parent retries agent start on the transient pane-busy error", async () => 
 	});
 });
 
+test("parent stops pane-busy retries when its session shuts down during backoff", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		let startCalls = 0;
+		let startResolve: (() => void) | undefined;
+		const startCalled = new Promise<void>((resolve) => (startResolve = resolve));
+		const busy = JSON.stringify({ error: { code: "agent_pane_busy", message: "pane is busy" } });
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			if (args[0] === "agent" && args[1] === "start") {
+				startCalls += 1;
+				startResolve?.();
+				return { code: 1, stdout: "", stderr: busy };
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
+		const ctx = createCommandContext();
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+
+		const launch = harness.commands.get("btw")?.handler("question", ctx);
+		await startCalled;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await harness.emit("session_shutdown", { reason: "quit" }, {});
+		await launch;
+		harness.cleanup();
+
+		assert.equal(startCalls, 1);
+		assert.deepEqual(harness.execCalls.at(-1)?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
+	});
+});
+
 test("parent rejects unavailable or unauthenticated BTW models before splitting", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
@@ -622,6 +656,32 @@ test("parent rejects unavailable or unauthenticated BTW models before splitting"
 		assert.equal(harness.execCalls.length, 0);
 		assert.equal(store.created.length, 0);
 		assert.match(thinkingCtx.notifications.at(-1)?.message ?? "", /thinking level/);
+	});
+});
+
+test("parent cancels a launch when its session changes during model authentication", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, herdrExec());
+		const ctx = createCommandContext();
+		let resolveAuth: ((value: { ok: boolean }) => void) | undefined;
+		let authStartedResolve: (() => void) | undefined;
+		const authStarted = new Promise<void>((resolve) => (authStartedResolve = resolve));
+		ctx.modelRegistry.getApiKeyAndHeaders = () => {
+			authStartedResolve?.();
+			return new Promise((resolve) => (resolveAuth = resolve));
+		};
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+
+		const launch = harness.commands.get("btw")?.handler("question", ctx);
+		await authStarted;
+		await harness.emit("session_shutdown", { reason: "quit" }, {});
+		resolveAuth?.({ ok: true });
+		await launch;
+		harness.cleanup();
+
+		assert.equal(store.created.length, 0);
+		assert.equal(harness.execCalls.length, 0);
 	});
 });
 
@@ -749,13 +809,131 @@ test("parent does not guess pane ownership when split output has no pane ID", as
 	});
 });
 
-test("parent retains payload for an ambiguous killed agent start", async () => {
+test("parent keeps an ambiguously started agent that becomes ready in its exact pane", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
-		const harness = await createHarness(
-			store,
-			herdrExec({ code: 1, stdout: "", stderr: "timeout", killed: true }),
-		);
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			if (args[0] === "agent" && args[1] === "start") {
+				return { code: 1, stdout: "", stderr: "timeout", killed: true };
+			}
+			if (args[0] === "agent" && args[1] === "wait") {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						result: { type: "agent_info", agent: { pane_id: "w1:p9", agent_status: "idle" } },
+					}),
+					stderr: "",
+				};
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
+		const ctx = createCommandContext();
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
+
+		const startArgs = harness.execCalls.find(({ args }) => args[0] === "agent" && args[1] === "start")?.args;
+		const waitArgs = harness.execCalls.find(({ args }) => args[0] === "agent" && args[1] === "wait")?.args;
+		assert.deepEqual(waitArgs, [
+			"agent",
+			"wait",
+			startArgs?.[2],
+			"--until",
+			"idle",
+			"--until",
+			"working",
+			"--until",
+			"blocked",
+			"--until",
+			"done",
+			"--timeout",
+			"5000",
+		]);
+		assert.deepEqual(store.removed, []);
+		assert.equal(harness.execCalls.some(({ args }) => args[0] === "pane" && args[1] === "close"), false);
+	});
+});
+
+test("parent closes its known pane when reconciliation finds the named agent elsewhere", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			if (args[0] === "agent" && args[1] === "start") {
+				return { code: 1, stdout: "", stderr: "timeout", killed: true };
+			}
+			if (args[0] === "agent" && args[1] === "wait") {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						result: { type: "agent_info", agent: { pane_id: "w1:p77", agent_status: "idle" } },
+					}),
+					stderr: "",
+				};
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
+		await harness.commands.get("btw")?.handler("question", createCommandContext());
+		harness.cleanup();
+
+		assert.deepEqual(harness.execCalls.at(-1)?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
+	});
+});
+
+test("parent cleans up its known pane when ambiguous agent start reconciliation finds no agent", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			if (args[0] === "agent" && args[1] === "start") {
+				return { code: 1, stdout: "", stderr: "timeout", killed: true };
+			}
+			if (args[0] === "agent" && args[1] === "wait") {
+				return {
+					code: 1,
+					stdout: "",
+					stderr: JSON.stringify({ error: { code: "agent_not_found", message: "not found" } }),
+				};
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
+		const ctx = createCommandContext();
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
+
+		assert.deepEqual(harness.execCalls.at(-1)?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
+		assert.equal(ctx.notifications.at(-1)?.type, "error");
+	});
+});
+
+test("parent retains payload when killed reconciliation reports partial not-found output", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") {
+				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			}
+			if (args[0] === "agent" && args[1] === "start") {
+				return { code: 1, stdout: "", stderr: "timeout", killed: true };
+			}
+			if (args[0] === "agent" && args[1] === "wait") {
+				return {
+					code: 1,
+					stdout: "",
+					stderr: JSON.stringify({ error: { code: "agent_not_found", message: "not found" } }),
+					killed: true,
+				};
+			}
+			return { code: 0, stdout: "", stderr: "" };
+		});
 		const ctx = createCommandContext();
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();

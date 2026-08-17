@@ -30,6 +30,7 @@ import {
 	LAUNCH_DRAFT_COMMAND,
 	buildPaneSplitArgs,
 	parsePaneSplitPaneId,
+	parseReadyAgentPaneId,
 	safeErrorText,
 	type BtwPayload,
 	type HerdrLaunchOptions,
@@ -652,6 +653,7 @@ export async function registerBtwExtension(
 			}
 
 			const draftQuestion = route.kind === "ask" ? route.question : "";
+			const launchGeneration = sessionGeneration;
 
 			let payloadPath: string | undefined;
 			try {
@@ -678,13 +680,16 @@ export async function registerBtwExtension(
 				}
 				try {
 					if (!(await ctx.modelRegistry.getApiKeyAndHeaders(modelOption.model)).ok) {
+						if (launchGeneration !== sessionGeneration) return;
 						ctx.ui.notify(`Couldn't authenticate BTW model: ${configuredModel}`, "error");
 						return;
 					}
 				} catch {
+					if (launchGeneration !== sessionGeneration) return;
 					ctx.ui.notify(`Couldn't authenticate BTW model: ${configuredModel}`, "error");
 					return;
 				}
+				if (launchGeneration !== sessionGeneration) return;
 				const model = currentModel ?? null;
 				const activeTools = pi.getActiveTools();
 				const launchThinkingLevel = modelOption.pinnedThinkingLevel ?? config.thinkingLevel ?? thinkingLevel;
@@ -717,6 +722,10 @@ export async function registerBtwExtension(
 						config,
 					}),
 				);
+				if (launchGeneration !== sessionGeneration) {
+					await store.remove(payloadPath);
+					return;
+				}
 
 				const launchOptions: HerdrLaunchOptions = {
 					paneName: `btw-${sessionId.slice(0, 6)}-${Date.now().toString(36).slice(-4)}`,
@@ -740,6 +749,12 @@ export async function registerBtwExtension(
 				const splitResult = await herdr.exec(buildPaneSplitArgs(launchOptions), {
 					timeout: 10_000,
 				});
+				if (launchGeneration !== sessionGeneration) {
+					const paneId = parsePaneSplitPaneId(splitResult.stdout);
+					if (paneId) await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
+					await store.remove(payloadPath);
+					return;
+				}
 				const splitOutcome = classifyLaunchResult(splitResult);
 				if (splitOutcome === "failed") {
 					await store.remove(payloadPath);
@@ -775,13 +790,23 @@ export async function registerBtwExtension(
 				try {
 					result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
 					for (let attempt = 1; attempt < AGENT_START_BUSY_RETRIES; attempt += 1) {
-						if (result.killed || !hasHerdrErrorCode(result, "agent_pane_busy")) break;
+						if (
+							launchGeneration !== sessionGeneration ||
+							result.killed ||
+							!hasHerdrErrorCode(result, "agent_pane_busy")
+						) break;
 						await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
+						if (launchGeneration !== sessionGeneration) break;
 						result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
 					}
 				} catch (error) {
 					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
 					throw error;
+				}
+				if (launchGeneration !== sessionGeneration) {
+					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
+					await store.remove(payloadPath);
+					return;
 				}
 				const outcome = classifyLaunchResult(result);
 				if (outcome === "success" && !isAgentStartReady(result.stdout, { name: launchOptions.paneName, paneId })) {
@@ -802,6 +827,49 @@ export async function registerBtwExtension(
 					return;
 				}
 
+				const reconciled = await herdr
+					.exec(
+						[
+							"agent",
+							"wait",
+							launchOptions.paneName,
+							"--until",
+							"idle",
+							"--until",
+							"working",
+							"--until",
+							"blocked",
+							"--until",
+							"done",
+							"--timeout",
+							"5000",
+						],
+						{ timeout: 6_000 },
+					)
+					.catch(() => undefined);
+				if (launchGeneration !== sessionGeneration) {
+					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
+					await store.remove(payloadPath);
+					return;
+				}
+				const reconciledPaneId =
+					reconciled?.code === 0 && !reconciled.killed
+						? parseReadyAgentPaneId(reconciled.stdout)
+						: null;
+				if (reconciledPaneId === paneId) {
+					ensurePolling();
+					return;
+				}
+				if (
+					reconciledPaneId ||
+					(reconciled && !reconciled.killed && hasHerdrErrorCode(reconciled, "agent_not_found"))
+				) {
+					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
+					await store.remove(payloadPath);
+					ctx.ui.notify("/btw failed: Herdr did not start Pi in the new pane", "error");
+					return;
+				}
+
 				ensurePolling();
 				ctx.ui.notify(
 					"/btw launch timed out or was killed after it may have reached Herdr. Context cleanup is deferred in case the child pane is still starting.",
@@ -809,6 +877,7 @@ export async function registerBtwExtension(
 				);
 			} catch (error) {
 				if (payloadPath) await store.remove(payloadPath).catch(() => undefined);
+				if (launchGeneration !== sessionGeneration) return;
 				const message = error instanceof Error ? error.message : String(error);
 				ctx.ui.notify(`/btw failed: ${message.slice(0, 500)}`, "error");
 			}

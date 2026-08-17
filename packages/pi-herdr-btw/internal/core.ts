@@ -243,6 +243,25 @@ export function parsePaneSplitPaneId(stdout: string): string | null {
 	}
 }
 
+export function parseReadyAgentPaneId(stdout: string): string | null {
+	try {
+		const parsed = JSON.parse(stdout) as {
+			result?: { type?: unknown; agent?: { pane_id?: unknown; agent_status?: unknown } };
+		};
+		const agent = parsed.result?.agent;
+		return (
+			parsed.result?.type === "agent_info" &&
+			typeof agent?.pane_id === "string" &&
+			agent.pane_id.length > 0 &&
+			["idle", "working", "blocked", "done"].includes(String(agent.agent_status))
+		)
+			? agent.pane_id
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 export function isAgentStartReady(
 	stdout: string,
 	expected: { name: string; paneId: string },
