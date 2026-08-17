@@ -31,7 +31,8 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 			profiles: {},
 			tasks: {
 				"pi-herdr-rename/rename": "fast",
-				"pi-auto-compact/autoCompact": "balanced",
+				"pi-auto-compact/autoCompact": "fast",
+				"pi-subagent/delegateTask": "balanced",
 				"pi-auto-dag/implement": "balanced",
 				"pi-auto-dag/review": "frontier",
 			},
@@ -193,6 +194,7 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 		getAllTools() {
 			return [
 				{ sourceInfo: { source: "file:/tmp/packages/pi-auto-compact", path: "/tmp/packages/pi-auto-compact/extensions/auto-compact.ts", scope: "user", origin: "package" } },
+				{ sourceInfo: { source: "npm:@henryqw/pi-subagent", path: "/tmp/node_modules/@henryqw/pi-subagent/extensions/subagent.ts", scope: "user", origin: "package" } },
 			] as never;
 		},
 	}, {
@@ -206,6 +208,7 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 		"pi-auto-dag/review",
 		"pi-herdr-rename/rename",
 		"pi-new/customTask",
+		"pi-subagent/delegateTask",
 	]);
 	assert.deepEqual(activeTaskPackages({
 		getCommands: () => [{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts" } }] as never,

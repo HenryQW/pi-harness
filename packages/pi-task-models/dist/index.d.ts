@@ -5,7 +5,8 @@ export declare const THINKING_LEVELS: readonly ["off", "minimal", "low", "medium
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export declare const DEFAULT_TASK_ASSIGNMENTS: {
     readonly "pi-herdr-rename/rename": "fast";
-    readonly "pi-auto-compact/autoCompact": "balanced";
+    readonly "pi-auto-compact/autoCompact": "fast";
+    readonly "pi-subagent/delegateTask": "balanced";
     readonly "pi-auto-dag/implement": "balanced";
     readonly "pi-auto-dag/review": "frontier";
 };

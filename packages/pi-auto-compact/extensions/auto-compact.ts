@@ -11,6 +11,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+	DEFAULT_TASK_ASSIGNMENTS,
 	orderedProfileRoutes,
 	readTaskModelsConfig,
 	resolveTaskModelRoute,
@@ -32,7 +33,7 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
 const AUTO_COMPACT_TASK = "pi-auto-compact/autoCompact";
-const DEFAULT_AUTO_COMPACT_PROFILE = "balanced" as const;
+const DEFAULT_AUTO_COMPACT_PROFILE = DEFAULT_TASK_ASSIGNMENTS[AUTO_COMPACT_TASK];
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
 type Config = {

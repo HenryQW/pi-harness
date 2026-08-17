@@ -35,7 +35,7 @@ Restart Pi after install or settings changes. Trusted project settings in `.pi/s
 | --- | --- | --- |
 | `/auto-compact` | command | Set the compaction threshold. |
 
-Refuses to activate unless effective `compaction.enabled` is `false`. Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`. Tries the assigned profile primary, then fallback; if neither route works, the current session model still compacts. After mid-task compaction, a follow-up message continues the current task.
+Refuses to activate unless effective `compaction.enabled` is `false`. Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`. `pi-auto-compact/autoCompact` defaults to the `fast` profile. Tries the assigned profile primary, then fallback; if neither route works, the current session model still compacts. After mid-task compaction, a follow-up message continues the current task.
 
 ## Config
 
