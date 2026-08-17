@@ -81,7 +81,7 @@ Each call starts one isolated child process. Ambient extensions and skills are d
 
 Numbered `pi-multi-codex` providers use the Main session's active Codex account slot when the same model is available, and the provider extension is explicitly loaded in the isolated child. Invalid role config or task-model route fails before child starts.
 
-Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. Error collection stays bounded while child runs; malformed JSON events above 1 MiB fail delegation. Truncated output ends with exact omitted-byte count.
+Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. JSON event types unused by delegation are discarded before their payloads are buffered; consumed or unclassifiable events above 1 MiB fail delegation. Error collection stays bounded while child runs. Truncated output ends with exact omitted-byte count.
 
 ## Widget
 

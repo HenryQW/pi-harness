@@ -509,6 +509,28 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	});
 });
 
+test("ignores oversized lifecycle events after final message", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
+name: scout
+description: Finds relevant code
+tools: [read]
+---
+Return concise findings.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const event = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
+event({ type: "agent_end", messages: [{ role: "toolResult", content: "x".repeat(2 * 1024 * 1024) }] });
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "scout", task: "find auth" }, undefined, undefined, app.ctx);
+		assert.equal(result.content[0].text, "done");
+	});
+});
+
 test("output cap preserves complete UTF-8 characters", () => {
 	const original = "🙂".repeat(20_000);
 	const result = capOutput(original);

@@ -23,6 +23,8 @@ const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
+const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
+const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const TERMINAL_DISPLAY_MS = 1_000;
@@ -306,6 +308,8 @@ async function runPi(
 		child.stderr.setEncoding("utf8");
 		let lineParts: string[] = [];
 		let lineBytes = 0;
+		let linePrefix = "";
+		let ignoreLine = false;
 		let output = "";
 		const stderr = { prefix: "", totalBytes: 0 };
 		const partial = { prefix: "", totalBytes: 0 };
@@ -396,17 +400,29 @@ async function runPi(
 				const newline = data.indexOf("\n", offset);
 				const end = newline === -1 ? data.length : newline;
 				const part = data.slice(offset, end);
-				lineBytes += Buffer.byteLength(part, "utf8");
-				if (lineBytes > MAX_JSON_EVENT_BYTES) {
-					protocolError = new Error(`Subagent JSON event exceeds ${MAX_JSON_EVENT_BYTES} bytes.`);
-					killTree(true);
-					return;
+				if (!ignoreLine) {
+					linePrefix += part.slice(0, Math.max(0, 256 - linePrefix.length));
+					const eventType = JSON_EVENT_TYPE.exec(linePrefix)?.[1];
+					if (eventType && !CONSUMED_JSON_EVENTS.has(eventType)) {
+						ignoreLine = true;
+						lineParts = [];
+						lineBytes = 0;
+					} else {
+						lineBytes += Buffer.byteLength(part, "utf8");
+						if (lineBytes > MAX_JSON_EVENT_BYTES) {
+							protocolError = new Error(`Subagent JSON event exceeds ${MAX_JSON_EVENT_BYTES} bytes.`);
+							killTree(true);
+							return;
+						}
+						if (part) lineParts.push(part);
+					}
 				}
-				if (part) lineParts.push(part);
 				if (newline === -1) return;
-				processLine(lineParts.join(""));
+				if (!ignoreLine) processLine(lineParts.join(""));
 				lineParts = [];
 				lineBytes = 0;
+				linePrefix = "";
+				ignoreLine = false;
 				offset = newline + 1;
 			}
 		});
