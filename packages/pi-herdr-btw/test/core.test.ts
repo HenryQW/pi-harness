@@ -261,6 +261,7 @@ test("payload creation and validation are versioned", () => {
 	assert.equal(isBtwPayload({ ...payload, draftQuestion: null }), false);
 	assert.equal(isBtwPayload({ ...payload, capability: "short" }), false);
 	assert.equal(isBtwPayload({ ...payload, messages: [{ notRole: true }] }), false);
+	assert.equal(isBtwPayload({ ...payload, messages: [{ role: "user" }] }), false);
 	assert.equal(isBtwPayload({ ...payload, config: { ...payload.config, tools: "write-only" } }), false);
 });
 

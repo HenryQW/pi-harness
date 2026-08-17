@@ -43,19 +43,22 @@ function herdrExec(agentStart?: ExecResult) {
 		if (args[0] === "pane" && args[1] === "split") {
 			return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 		}
-		if (agentStart) return agentStart;
-		const paneIndex = args.indexOf("--pane");
-		const paneId = paneIndex >= 0 ? args[paneIndex + 1] : undefined;
-		return {
-			code: 0,
-			stdout: JSON.stringify({
-				result: {
-					type: "agent_started",
-					agent: { name: args[2], pane_id: paneId, interactive_ready: true },
-				},
-			}),
-			stderr: "",
-		};
+		if (args[0] === "agent" && args[1] === "start") {
+			if (agentStart) return agentStart;
+			const paneIndex = args.indexOf("--pane");
+			const paneId = paneIndex >= 0 ? args[paneIndex + 1] : undefined;
+			return {
+				code: 0,
+				stdout: JSON.stringify({
+					result: {
+						type: "agent_started",
+						agent: { name: args[2], pane_id: paneId, interactive_ready: true },
+					},
+				}),
+				stderr: "",
+			};
+		}
+		return { code: 0, stdout: "", stderr: "" };
 	};
 }
 
@@ -68,6 +71,7 @@ class FakeStore implements ContextStorePort {
 	touchRuns = 0;
 	readValue: BtwPayload = fixturePayload({ draftQuestion: "draft" });
 	readError: Error | undefined;
+	mergeReadError: Error | undefined;
 	mergeRequest: unknown;
 	retained = 0;
 
@@ -105,6 +109,7 @@ class FakeStore implements ContextStorePort {
 	}
 
 	async readMergeRequest(_payloadPath: string): Promise<unknown> {
+		if (this.mergeReadError) throw this.mergeReadError;
 		return this.mergeRequest;
 	}
 
@@ -583,6 +588,37 @@ test("parent cancels a launch when its session changes during model authenticati
 	});
 });
 
+test("parent retains payload when session cancellation cannot close its known pane", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		let resolveStart: ((result: ExecResult) => void) | undefined;
+		let startCalledResolve: (() => void) | undefined;
+		const startCalled = new Promise<void>((resolve) => (startCalledResolve = resolve));
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			if (args[0] === "agent" && args[1] === "start") {
+				startCalledResolve?.();
+				return new Promise((resolve) => (resolveStart = resolve));
+			}
+			return { code: 1, stdout: "", stderr: "close failed" };
+		});
+		const ctx = createCommandContext();
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+
+		const launch = harness.commands.get("btw")?.handler("question", ctx);
+		await startCalled;
+		await harness.emit("session_shutdown", { reason: "quit" }, {});
+		resolveStart?.({ code: 0, stdout: "", stderr: "" });
+		await launch;
+		harness.cleanup();
+
+		assert.deepEqual(harness.execCalls.at(-1)?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(store.removed, []);
+		assert.equal(ctx.notifications.at(-1)?.type, "warning");
+		assert.match(ctx.notifications.at(-1)?.message ?? "", /cancellation could not close.*cleanup is deferred/);
+	});
+});
+
 test("parent command removes sensitive payload after a definite nonzero split failure", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
@@ -622,6 +658,25 @@ test("parent command closes the split pane and removes payload when agent start 
 			message: "/btw failed: pi not found",
 			type: "error",
 		});
+	});
+});
+
+test("parent retains payload and warns when failed agent cleanup cannot close its pane", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async (_command, args) => {
+			if (args[0] === "pane" && args[1] === "split") return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			if (args[0] === "agent" && args[1] === "start") return { code: 1, stdout: "", stderr: "pi not found" };
+			return { code: 1, stdout: "", stderr: "close failed" };
+		});
+		const ctx = createCommandContext();
+		await harness.commands.get("btw")?.handler("question", ctx);
+		harness.cleanup();
+
+		assert.deepEqual(harness.execCalls.at(-1)?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(store.removed, []);
+		assert.equal(ctx.notifications.at(-1)?.type, "warning");
+		assert.match(ctx.notifications.at(-1)?.message ?? "", /could not be closed.*cleanup is deferred/);
 	});
 });
 
@@ -1487,6 +1542,23 @@ test("child merge refuses an empty side thread", async () => {
 		assert.equal(store.mergeRequest, undefined);
 		assert.deepEqual(harness.execCalls, []);
 		assert.match(notifications.at(-1)?.message ?? "", /no conversation yet/);
+	});
+});
+
+test("child merge fails closed when pending-delivery lookup fails", async () => {
+	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
+		const store = new FakeStore();
+		store.mergeReadError = new Error("mailbox unavailable");
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		harness.cleanup();
+		const { ctx, notifications } = createChildMergeContext();
+
+		await harness.commands.get("btw")?.handler("merge another prompt", ctx);
+
+		assert.equal(store.mergeRequest, undefined);
+		assert.deepEqual(harness.execCalls, []);
+		assert.equal(notifications.at(-1)?.type, "error");
+		assert.match(notifications.at(-1)?.message ?? "", /could not check pending delivery: mailbox unavailable/);
 	});
 });
 

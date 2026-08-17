@@ -271,7 +271,14 @@ async function configureChild(
 				return;
 			}
 
-			const existingRequest = await store.readMergeRequest(payloadPath).catch(() => undefined);
+			let existingRequest: unknown;
+			try {
+				existingRequest = await store.readMergeRequest(payloadPath);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`/btw merge could not check pending delivery: ${message.slice(0, 500)}`, "error");
+				return;
+			}
 			if (existingRequest !== undefined) {
 				ctx.ui.notify("A merge was already sent from this side thread.", "warning");
 				return;
@@ -575,6 +582,23 @@ export async function registerBtwExtension(
 
 			const draftQuestion = route.kind === "ask" ? route.question : "";
 			const launchGeneration = sessionGeneration;
+			const closeAndRemove = async (paneId: string, path: string): Promise<boolean> => {
+				try {
+					await herdr.run(["pane", "close", paneId], { timeout: 5_000 });
+				} catch {
+					ensurePolling();
+					return false;
+				}
+				await store.remove(path);
+				return true;
+			};
+			const reportKnownPaneFailure = async (message: string, paneId: string, path: string): Promise<void> => {
+				if (await closeAndRemove(paneId, path)) {
+					ctx.ui.notify(message, "error");
+					return;
+				}
+				ctx.ui.notify(`${message}. The side pane could not be closed; context cleanup is deferred.`, "warning");
+			};
 
 			let payloadPath: string | undefined;
 			try {
@@ -656,8 +680,11 @@ export async function registerBtwExtension(
 				});
 				if (launchGeneration !== sessionGeneration) {
 					const paneId = parsePaneSplitPaneId(splitResult.stdout);
-					if (paneId) await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
-					await store.remove(payloadPath);
+					if (!paneId) {
+						await store.remove(payloadPath);
+					} else if (!(await closeAndRemove(paneId, payloadPath))) {
+						ctx.ui.notify("/btw cancellation could not close the side pane; context cleanup is deferred.", "warning");
+					}
 					return;
 				}
 				const splitOutcome = classifyLaunchResult(splitResult);
@@ -705,19 +732,23 @@ export async function registerBtwExtension(
 						result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
 					}
 				} catch (error) {
-					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
-					throw error;
+					const message = error instanceof Error ? error.message : String(error);
+					await reportKnownPaneFailure(`/btw failed: ${message.slice(0, 500)}`, paneId, payloadPath);
+					return;
 				}
 				if (launchGeneration !== sessionGeneration) {
-					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
-					await store.remove(payloadPath);
+					if (!(await closeAndRemove(paneId, payloadPath))) {
+						ctx.ui.notify("/btw cancellation could not close the side pane; context cleanup is deferred.", "warning");
+					}
 					return;
 				}
 				const outcome = classifyLaunchResult(result);
 				if (outcome === "success" && !isAgentStartReady(result.stdout, { name: launchOptions.paneName, paneId })) {
-					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
-					await store.remove(payloadPath);
-					ctx.ui.notify("/btw failed: `herdr agent start` returned an invalid or non-interactive result", "error");
+					await reportKnownPaneFailure(
+						"/btw failed: `herdr agent start` returned an invalid or non-interactive result",
+						paneId,
+						payloadPath,
+					);
 					return;
 				}
 				if (outcome === "success") {
@@ -726,9 +757,11 @@ export async function registerBtwExtension(
 				}
 
 				if (outcome === "failed") {
-					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
-					await store.remove(payloadPath);
-					ctx.ui.notify(`/btw failed: ${safeErrorText(result.stdout, result.stderr)}`, "error");
+					await reportKnownPaneFailure(
+						`/btw failed: ${safeErrorText(result.stdout, result.stderr)}`,
+						paneId,
+						payloadPath,
+					);
 					return;
 				}
 
@@ -753,8 +786,9 @@ export async function registerBtwExtension(
 					)
 					.catch(() => undefined);
 				if (launchGeneration !== sessionGeneration) {
-					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
-					await store.remove(payloadPath);
+					if (!(await closeAndRemove(paneId, payloadPath))) {
+						ctx.ui.notify("/btw cancellation could not close the side pane; context cleanup is deferred.", "warning");
+					}
 					return;
 				}
 				const reconciledPaneId =
@@ -769,9 +803,11 @@ export async function registerBtwExtension(
 					reconciledPaneId ||
 					(reconciled && !reconciled.killed && hasHerdrErrorCode(reconciled, "agent_not_found"))
 				) {
-					await herdr.run(["pane", "close", paneId], { timeout: 5_000 }).catch(() => undefined);
-					await store.remove(payloadPath);
-					ctx.ui.notify("/btw failed: Herdr did not start Pi in the new pane", "error");
+					await reportKnownPaneFailure(
+						"/btw failed: Herdr did not start Pi in the new pane",
+						paneId,
+						payloadPath,
+					);
 					return;
 				}
 

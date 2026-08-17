@@ -114,6 +114,66 @@ export function createPayload(options: CreatePayloadOptions): BtwPayload {
 	};
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isTextContent(value: unknown): boolean {
+	return isRecord(value) && value.type === "text" && typeof value.text === "string";
+}
+
+function isImageContent(value: unknown): boolean {
+	return isRecord(value) && value.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string";
+}
+
+function isUserContent(value: unknown): boolean {
+	return typeof value === "string" || (Array.isArray(value) && value.every((block) => isTextContent(block) || isImageContent(block)));
+}
+
+function isAssistantContent(value: unknown): boolean {
+	return Array.isArray(value) && value.every((block) =>
+		isTextContent(block) ||
+		(isRecord(block) && block.type === "thinking" && typeof block.thinking === "string") ||
+		(isRecord(block) && block.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string" && isRecord(block.arguments))
+	);
+}
+
+function isUsage(value: unknown): boolean {
+	if (!isRecord(value)) return false;
+	const cost = value.cost;
+	if (!isRecord(cost)) return false;
+	return ["input", "output", "cacheRead", "cacheWrite", "totalTokens"].every((key) => typeof value[key] === "number") &&
+		["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => typeof cost[key] === "number");
+}
+
+function isAgentMessage(value: unknown): value is AgentMessage {
+	if (!isRecord(value) || typeof value.timestamp !== "number") return false;
+	switch (value.role) {
+		case "user":
+			return isUserContent(value.content);
+		case "assistant":
+			return isAssistantContent(value.content) && typeof value.api === "string" && typeof value.provider === "string" &&
+				typeof value.model === "string" && isUsage(value.usage) &&
+				["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(value.stopReason as string);
+		case "toolResult":
+			return typeof value.toolCallId === "string" && typeof value.toolName === "string" &&
+				Array.isArray(value.content) && value.content.every((block) => isTextContent(block) || isImageContent(block)) &&
+				typeof value.isError === "boolean";
+		case "bashExecution":
+			return typeof value.command === "string" && typeof value.output === "string" &&
+				(value.exitCode === undefined || typeof value.exitCode === "number") &&
+				typeof value.cancelled === "boolean" && typeof value.truncated === "boolean";
+		case "custom":
+			return typeof value.customType === "string" && isUserContent(value.content) && typeof value.display === "boolean";
+		case "branchSummary":
+			return typeof value.summary === "string" && typeof value.fromId === "string";
+		case "compactionSummary":
+			return typeof value.summary === "string" && typeof value.tokensBefore === "number";
+		default:
+			return false;
+	}
+}
+
 export function isBtwPayload(value: unknown): value is BtwPayload {
 	if (!value || typeof value !== "object") return false;
 	const payload = value as Partial<BtwPayload>;
@@ -138,10 +198,7 @@ export function isBtwPayload(value: unknown): value is BtwPayload {
 		payload.parentActiveTools.every((tool) => typeof tool === "string") &&
 		typeof payload.parentThinkingLevel === "string" &&
 		Array.isArray(payload.messages) &&
-		payload.messages.every(
-			(message) =>
-				!!message && typeof message === "object" && typeof (message as { role?: unknown }).role === "string",
-		) &&
+		payload.messages.every(isAgentMessage) &&
 		typeof payload.draftQuestion === "string" &&
 		!!payload.config &&
 		typeof payload.config === "object" &&
