@@ -8,7 +8,7 @@ Shared `fast`, `balanced`, and `frontier` model profiles for HenryQW Pi extensio
 pi install npm:@henryqw/pi-task-models
 ```
 
-Run `/task-models`. Top menu shows all profiles plus assignments for active supported packages. Selecting a profile chooses primary model, primary thinking, fallback model or `None`, then fallback thinking when needed; one completed flow writes whole profile once. Selecting a task changes its profile assignment.
+Run `/task-models`. Top menu shows all profiles plus configured task assignments whose `@henryqw` package is active in Pi's effective command/tool registry. Selecting a profile chooses primary model, primary thinking, fallback model or `None`, then fallback thinking when needed; one completed flow writes whole profile once. Selecting a task changes its profile assignment.
 
 Menus and runtime resolution use current session's `ctx.scopedModels`, including pinned thinking levels. Empty scope falls back to Pi's full available model registry. Numbered Codex account aliases are deduplicated, and fallback choices exclude selected primary model. Hidden task assignments remain stored when package is disabled or removed.
 

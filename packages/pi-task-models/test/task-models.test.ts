@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -8,6 +8,7 @@ import {
 	availableTaskModels,
 	canonicalModelReference,
 	dedupeAvailableModels,
+	DEFAULT_TASK_ASSIGNMENTS,
 	orderedProfileRoutes,
 	readTaskModelsConfig,
 	resolveAvailableModel,
@@ -43,13 +44,16 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 			{ extra: true },
 			{ profiles: { fast: { primary: { model: " provider/model", thinkingLevel: "low" } } } },
 			{ profiles: { fast: { primary: { model: "provider/model", thinkingLevel: "low", extra: true } } } },
-			{ tasks: { "unknown/task": "fast" } },
+			{ tasks: { "bad task": "fast" } },
 		]) {
 			const text = `${JSON.stringify(invalid)}\n`;
 			writeFileSync(file, text);
 			assert.throws(() => readTaskModelsConfig(dir));
 			assert.equal(readFileSync(file, "utf8"), text);
 		}
+
+		writeFileSync(file, `${JSON.stringify({ tasks: { "pi-new/customTask": "frontier" } })}\n`);
+		assert.equal(readTaskModelsConfig(dir).tasks["pi-new/customTask"], "frontier");
 
 		writeTaskModelsConfig(
 			{
@@ -75,12 +79,15 @@ test("canonicalizes codex aliases, dedupes active models, and resolves thinking 
 	const alias = { ...canonical, provider: "openai-codex-2" } as any;
 	const other = { provider: "other", id: "model", input: ["text"], reasoning: false } as any;
 	const models = dedupeAvailableModels([alias, canonical, other], "openai-codex-2");
+	const withoutActiveCodex = dedupeAvailableModels([canonical, alias, other], "other");
 
 	assert.equal(models[0].provider, "openai-codex-2");
+	assert.equal(withoutActiveCodex[0].provider, "openai-codex-2");
 	assert.equal(canonicalModelReference(alias), "openai-codex/gpt-5");
 	assert.deepEqual(supportedThinkingLevels(other as never), ["off"]);
 	assert.deepEqual(supportedThinkingLevels(canonical as never), ["off", "minimal", "low", "medium", "high", "max"]);
 	assert.equal(resolveAvailableModel(models as never, "openai-codex/gpt-5", "openai-codex-2")?.provider, "openai-codex-2");
+	assert.equal(resolveAvailableModel([canonical, alias] as never, "openai-codex/gpt-5", "other")?.provider, "openai-codex-2");
 	assert.deepEqual(orderedProfileRoutes({ primary: { model: "a/b", thinkingLevel: "low" }, fallback: { model: "c/d", thinkingLevel: "high" } }), [
 		{ model: "a/b", thinkingLevel: "low" },
 		{ model: "c/d", thinkingLevel: "high" },
@@ -108,7 +115,7 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 		getCommands() {
 			return [
 				{ sourceInfo: { source: "npm:@henryqw/pi-herdr-rename", path: "/tmp/node_modules/@henryqw/pi-herdr-rename/extensions/rename.ts", scope: "user", origin: "package" } },
-				{ sourceInfo: { source: "npm:@henryqw/pi-herdr-subagents", path: "/tmp/node_modules/@henryqw/pi-herdr-subagents/extensions/subagents.ts", scope: "user", origin: "package" } },
+				{ sourceInfo: { source: "npm:@henryqw/pi-new", path: "/tmp/node_modules/@henryqw/pi-new/extensions/new.ts", scope: "user", origin: "package" } },
 				{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts", scope: "user", origin: "package" } },
 			] as never;
 		},
@@ -117,9 +124,12 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 				{ sourceInfo: { source: "file:/tmp/packages/pi-auto-compact", path: "/tmp/packages/pi-auto-compact/extensions/auto-compact.ts", scope: "user", origin: "package" } },
 			] as never;
 		},
+	}, {
+		...DEFAULT_TASK_ASSIGNMENTS,
+		"pi-new/customTask": "frontier",
 	});
 
-	assert.deepEqual(active.map((entry) => entry.task).sort(), ["pi-auto-compact/autoCompact", "pi-herdr-rename/rename"]);
+	assert.deepEqual(active.map((entry) => entry.task).sort(), ["pi-auto-compact/autoCompact", "pi-herdr-rename/rename", "pi-new/customTask"]);
 	assert.deepEqual(activeTaskPackages({
 		getCommands: () => [{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts" } }] as never,
 		getAllTools: () => [] as never,
@@ -177,18 +187,19 @@ test("task-models configures primary and fallback atomically in one profile flow
 		const alias = { ...canonical, provider: "openai-codex-2" };
 		const fallback = { provider: "other", id: "fallback", input: ["text"], reasoning: false };
 		const excluded = { provider: "other", id: "excluded", input: ["text"], reasoning: false };
-		const selections = [
+		let selections = [
 			"fast · not configured",
 			"openai-codex-2/gpt-5",
 			"low",
 			"other/fallback",
 			"off",
 		];
-		await handler!([], {
+		const notifications: string[] = [];
+		const ctx = {
 			ui: {
 				select: async (label: string, options: readonly string[]) => {
 					assert.equal(options.includes("other/excluded"), false);
-					if (label === "Profile fast fallback") {
+					if (label === "Profile fast fallback" && selections.length === 2) {
 						assert.throws(() => readFileSync(join(dir, "config", "pi-task-models.json"), "utf8"), { code: "ENOENT" });
 					}
 					const choice = selections.shift();
@@ -196,7 +207,7 @@ test("task-models configures primary and fallback atomically in one profile flow
 					assert.ok(options.includes(choice));
 					return choice;
 				},
-				notify() {},
+				notify(message: string) { notifications.push(message); },
 			} as never,
 			modelRegistry: { getAvailable: () => [canonical, alias, fallback, excluded] as never } as never,
 			model: alias as never,
@@ -204,13 +215,26 @@ test("task-models configures primary and fallback atomically in one profile flow
 				{ model: alias, thinkingLevel: "low" },
 				{ model: fallback, thinkingLevel: "off" },
 			] as never,
-		} as never);
+		} as never;
+		await handler!([], ctx);
 
 		assert.deepEqual(readTaskModelsConfig(dir).profiles.fast, {
 			primary: { model: "openai-codex/gpt-5", thinkingLevel: "low" },
 			fallback: { model: "other/fallback", thinkingLevel: "off" },
 		});
 		assert.deepEqual(selections, []);
+
+		const file = join(dir, "config", "pi-task-models.json");
+		chmodSync(file, 0o444);
+		selections = [
+			"fast · openai-codex/gpt-5 (low) → other/fallback (off)",
+			"openai-codex-2/gpt-5",
+			"low",
+			"None",
+		];
+		await handler!([], ctx);
+		assert.ok(notifications.includes("Couldn't save task model config."));
+		chmodSync(file, 0o644);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

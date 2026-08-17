@@ -14,21 +14,6 @@ export const DEFAULT_TASK_ASSIGNMENTS = {
 	"pi-auto-compact/autoCompact": "balanced",
 } as const satisfies Readonly<Record<string, ProfileName>>;
 
-export const KNOWN_TASK_PACKAGES = [
-	{
-		packageName: "@henryqw/pi-herdr-rename",
-		task: "pi-herdr-rename/rename",
-		label: "Rename",
-		defaultProfile: "fast",
-	},
-	{
-		packageName: "@henryqw/pi-auto-compact",
-		task: "pi-auto-compact/autoCompact",
-		label: "Auto-compact",
-		defaultProfile: "balanced",
-	},
-] as const;
-
 export type TaskModelRoute = {
 	model: string;
 	thinkingLevel: ThinkingLevel;
@@ -51,7 +36,11 @@ export type ResolvedTaskRoute = {
 	thinkingLevel: ThinkingLevel;
 };
 
-export type ActiveTaskPackage = (typeof KNOWN_TASK_PACKAGES)[number];
+export type ActiveTaskPackage = {
+	packageName: string;
+	task: string;
+	label: string;
+};
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
@@ -81,6 +70,10 @@ function isModelReference(value: unknown): value is string {
 		&& value === value.trim()
 		&& !value.includes("\0")
 		&& /^[^\s/]+\/\S+$/.test(value);
+}
+
+function isTaskId(value: string): boolean {
+	return /^[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9-]*$/.test(value);
 }
 
 function isTaskRoute(value: unknown): value is TaskModelRoute {
@@ -140,8 +133,7 @@ function parseConfig(value: unknown): TaskModelsConfig {
 			throw new Error("tasks must be an object.");
 		}
 		for (const [task, profile] of Object.entries(record.tasks as Record<string, unknown>)) {
-			if (!Object.hasOwn(DEFAULT_TASK_ASSIGNMENTS, task)) throw new Error(`Unknown task: ${task}.`);
-			if (!isProfileName(profile)) throw new Error(`Invalid profile assignment for ${task}.`);
+			if (!isTaskId(task) || !isProfileName(profile)) throw new Error(`Invalid profile assignment for ${task}.`);
 			tasks[task] = profile;
 		}
 	}
@@ -200,9 +192,9 @@ export function dedupeAvailableModels(models: readonly AvailableModel[], preferr
 function shouldPreferModel(candidate: AvailableModel, current: AvailableModel, preferredProvider?: string): boolean {
 	if (preferredProvider && candidate.provider === preferredProvider && current.provider !== preferredProvider) return true;
 	if (preferredProvider && current.provider === preferredProvider && candidate.provider !== preferredProvider) return false;
-	const candidateCanonical = candidate.provider === "openai-codex";
-	const currentCanonical = current.provider === "openai-codex";
-	if (candidateCanonical !== currentCanonical) return candidateCanonical;
+	const candidateAlias = CODEX_ALIAS.test(candidate.provider);
+	const currentAlias = CODEX_ALIAS.test(current.provider);
+	if (candidateAlias !== currentAlias) return candidateAlias;
 	return false;
 }
 
@@ -221,8 +213,8 @@ export function resolveAvailableModel(
 	return (preferredProvider && isCodexProvider(preferredProvider)
 		? models.find((model) => model.provider === preferredProvider && model.id === id)
 		: undefined)
-		?? models.find((model) => model.provider === "openai-codex" && model.id === id)
-		?? models.find((model) => isCodexProvider(model.provider) && model.id === id);
+		?? models.find((model) => CODEX_ALIAS.test(model.provider) && model.id === id)
+		?? models.find((model) => model.provider === "openai-codex" && model.id === id);
 }
 
 export function supportedThinkingLevels(model: AvailableModel): ThinkingLevel[] {
@@ -260,12 +252,22 @@ export function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[
 	return profile.fallback ? [profile.primary, profile.fallback] : [profile.primary];
 }
 
-export function activeTaskPackages(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">): ActiveTaskPackage[] {
+export function activeTaskPackages(
+	pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">,
+	tasks: Readonly<Record<string, ProfileName>> = DEFAULT_TASK_ASSIGNMENTS,
+): ActiveTaskPackage[] {
 	const sources = [
 		...pi.getCommands().map((command) => command.sourceInfo),
 		...pi.getAllTools().map((tool) => tool.sourceInfo),
 	];
-	return KNOWN_TASK_PACKAGES.filter((entry) => sources.some((source) => sourceMatchesPackage(source, entry.packageName)));
+	return Object.keys(tasks).flatMap((task) => {
+		if (!isTaskId(task)) return [];
+		const [packageShort, label] = task.split("/");
+		const packageName = `@henryqw/${packageShort}`;
+		return sources.some((source) => sourceMatchesPackage(source, packageName))
+			? [{ packageName, task, label }]
+			: [];
+	});
 }
 
 function sourceMatchesPackage(sourceInfo: { source: string; path: string }, packageName: string): boolean {
@@ -302,9 +304,18 @@ export function createTaskModelsExtension(
 						: `${name} · not configured`,
 				};
 			});
-			const taskOptions = activeTaskPackages(pi).map((entry) => ({
+			const save = (): boolean => {
+				try {
+					writeTaskModelsConfig(config, agentDir);
+					return true;
+				} catch {
+					ctx.ui.notify("Couldn't save task model config.", "error");
+					return false;
+				}
+			};
+			const taskOptions = activeTaskPackages(pi, config.tasks).map((entry) => ({
 				entry,
-				label: `${entry.label} task · ${config.tasks[entry.task] ?? entry.defaultProfile}`,
+				label: `${entry.label} task · ${config.tasks[entry.task]}`,
 			}));
 			const selected = await ctx.ui.select("Task models", [
 				...profileOptions.map(({ label }) => label),
@@ -317,7 +328,7 @@ export function createTaskModelsExtension(
 				const profile = await ctx.ui.select(`${task.label} profile`, [...PROFILE_NAMES]);
 				if (!isProfileName(profile)) return;
 				config.tasks[task.task] = profile;
-				writeTaskModelsConfig(config, agentDir);
+				if (!save()) return;
 				ctx.ui.notify(`${task.label} assigned to ${profile}.`, "info");
 				return;
 			}
@@ -343,7 +354,7 @@ export function createTaskModelsExtension(
 			if (fallbackModel !== "None" && !fallback) return;
 
 			config.profiles[profile] = { primary, ...(fallback ? { fallback } : {}) };
-			writeTaskModelsConfig(config, agentDir);
+			if (!save()) return;
 			ctx.ui.notify(`${profile} profile saved.`, "info");
 		},
 	});

@@ -8,20 +8,6 @@ export const DEFAULT_TASK_ASSIGNMENTS = {
     "pi-herdr-rename/rename": "fast",
     "pi-auto-compact/autoCompact": "balanced",
 };
-export const KNOWN_TASK_PACKAGES = [
-    {
-        packageName: "@henryqw/pi-herdr-rename",
-        task: "pi-herdr-rename/rename",
-        label: "Rename",
-        defaultProfile: "fast",
-    },
-    {
-        packageName: "@henryqw/pi-auto-compact",
-        task: "pi-auto-compact/autoCompact",
-        label: "Auto-compact",
-        defaultProfile: "balanced",
-    },
-];
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
 const defaultTaskAssignments = () => ({ ...DEFAULT_TASK_ASSIGNMENTS });
@@ -43,6 +29,9 @@ function isModelReference(value) {
         && value === value.trim()
         && !value.includes("\0")
         && /^[^\s/]+\/\S+$/.test(value);
+}
+function isTaskId(value) {
+    return /^[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9-]*$/.test(value);
 }
 function isTaskRoute(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -101,9 +90,7 @@ function parseConfig(value) {
             throw new Error("tasks must be an object.");
         }
         for (const [task, profile] of Object.entries(record.tasks)) {
-            if (!Object.hasOwn(DEFAULT_TASK_ASSIGNMENTS, task))
-                throw new Error(`Unknown task: ${task}.`);
-            if (!isProfileName(profile))
+            if (!isTaskId(task) || !isProfileName(profile))
                 throw new Error(`Invalid profile assignment for ${task}.`);
             tasks[task] = profile;
         }
@@ -161,10 +148,10 @@ function shouldPreferModel(candidate, current, preferredProvider) {
         return true;
     if (preferredProvider && current.provider === preferredProvider && candidate.provider !== preferredProvider)
         return false;
-    const candidateCanonical = candidate.provider === "openai-codex";
-    const currentCanonical = current.provider === "openai-codex";
-    if (candidateCanonical !== currentCanonical)
-        return candidateCanonical;
+    const candidateAlias = CODEX_ALIAS.test(candidate.provider);
+    const currentAlias = CODEX_ALIAS.test(current.provider);
+    if (candidateAlias !== currentAlias)
+        return candidateAlias;
     return false;
 }
 export function resolveAvailableModel(models, reference, preferredProvider) {
@@ -178,8 +165,8 @@ export function resolveAvailableModel(models, reference, preferredProvider) {
     return (preferredProvider && isCodexProvider(preferredProvider)
         ? models.find((model) => model.provider === preferredProvider && model.id === id)
         : undefined)
-        ?? models.find((model) => model.provider === "openai-codex" && model.id === id)
-        ?? models.find((model) => isCodexProvider(model.provider) && model.id === id);
+        ?? models.find((model) => CODEX_ALIAS.test(model.provider) && model.id === id)
+        ?? models.find((model) => model.provider === "openai-codex" && model.id === id);
 }
 export function supportedThinkingLevels(model) {
     return getSupportedThinkingLevels(model);
@@ -205,12 +192,20 @@ export function resolveTaskModelRoute(ctx, route) {
 export function orderedProfileRoutes(profile) {
     return profile.fallback ? [profile.primary, profile.fallback] : [profile.primary];
 }
-export function activeTaskPackages(pi) {
+export function activeTaskPackages(pi, tasks = DEFAULT_TASK_ASSIGNMENTS) {
     const sources = [
         ...pi.getCommands().map((command) => command.sourceInfo),
         ...pi.getAllTools().map((tool) => tool.sourceInfo),
     ];
-    return KNOWN_TASK_PACKAGES.filter((entry) => sources.some((source) => sourceMatchesPackage(source, entry.packageName)));
+    return Object.keys(tasks).flatMap((task) => {
+        if (!isTaskId(task))
+            return [];
+        const [packageShort, label] = task.split("/");
+        const packageName = `@henryqw/${packageShort}`;
+        return sources.some((source) => sourceMatchesPackage(source, packageName))
+            ? [{ packageName, task, label }]
+            : [];
+    });
 }
 function sourceMatchesPackage(sourceInfo, packageName) {
     const npmSource = `npm:${packageName}`;
@@ -243,9 +238,19 @@ export function createTaskModelsExtension(pi, options) {
                         : `${name} · not configured`,
                 };
             });
-            const taskOptions = activeTaskPackages(pi).map((entry) => ({
+            const save = () => {
+                try {
+                    writeTaskModelsConfig(config, agentDir);
+                    return true;
+                }
+                catch {
+                    ctx.ui.notify("Couldn't save task model config.", "error");
+                    return false;
+                }
+            };
+            const taskOptions = activeTaskPackages(pi, config.tasks).map((entry) => ({
                 entry,
-                label: `${entry.label} task · ${config.tasks[entry.task] ?? entry.defaultProfile}`,
+                label: `${entry.label} task · ${config.tasks[entry.task]}`,
             }));
             const selected = await ctx.ui.select("Task models", [
                 ...profileOptions.map(({ label }) => label),
@@ -259,7 +264,8 @@ export function createTaskModelsExtension(pi, options) {
                 if (!isProfileName(profile))
                     return;
                 config.tasks[task.task] = profile;
-                writeTaskModelsConfig(config, agentDir);
+                if (!save())
+                    return;
                 ctx.ui.notify(`${task.label} assigned to ${profile}.`, "info");
                 return;
             }
@@ -287,7 +293,8 @@ export function createTaskModelsExtension(pi, options) {
             if (fallbackModel !== "None" && !fallback)
                 return;
             config.profiles[profile] = { primary, ...(fallback ? { fallback } : {}) };
-            writeTaskModelsConfig(config, agentDir);
+            if (!save())
+                return;
             ctx.ui.notify(`${profile} profile saved.`, "info");
         },
     });

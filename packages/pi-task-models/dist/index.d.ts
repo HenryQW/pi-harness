@@ -7,17 +7,6 @@ export declare const DEFAULT_TASK_ASSIGNMENTS: {
     readonly "pi-herdr-rename/rename": "fast";
     readonly "pi-auto-compact/autoCompact": "balanced";
 };
-export declare const KNOWN_TASK_PACKAGES: readonly [{
-    readonly packageName: "@henryqw/pi-herdr-rename";
-    readonly task: "pi-herdr-rename/rename";
-    readonly label: "Rename";
-    readonly defaultProfile: "fast";
-}, {
-    readonly packageName: "@henryqw/pi-auto-compact";
-    readonly task: "pi-auto-compact/autoCompact";
-    readonly label: "Auto-compact";
-    readonly defaultProfile: "balanced";
-}];
 export type TaskModelRoute = {
     model: string;
     thinkingLevel: ThinkingLevel;
@@ -35,7 +24,11 @@ export type ResolvedTaskRoute = {
     model: AvailableModel;
     thinkingLevel: ThinkingLevel;
 };
-export type ActiveTaskPackage = (typeof KNOWN_TASK_PACKAGES)[number];
+export type ActiveTaskPackage = {
+    packageName: string;
+    task: string;
+    label: string;
+};
 export declare const configPath: (agentDir?: string) => string;
 export declare function readTaskModelsConfig(agentDir?: string): TaskModelsConfig;
 export declare function writeTaskModelsConfig(config: TaskModelsConfig, agentDir?: string): void;
@@ -54,7 +47,7 @@ export declare function availableTaskModels(ctx: ExtensionContext): AvailableMod
 export declare function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel): ThinkingLevel[];
 export declare function resolveTaskModelRoute(ctx: ExtensionContext, route: TaskModelRoute): ResolvedTaskRoute | undefined;
 export declare function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[];
-export declare function activeTaskPackages(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">): ActiveTaskPackage[];
+export declare function activeTaskPackages(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">, tasks?: Readonly<Record<string, ProfileName>>): ActiveTaskPackage[];
 export declare function createTaskModelsExtension(pi: ExtensionAPI, options?: {
     agentDir?: string;
 }): void;
