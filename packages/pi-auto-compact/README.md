@@ -1,12 +1,15 @@
 # `@henryqw/pi-auto-compact`
 
-Pi extension that compacts context before it reaches 50% of current model context, then resumes current task. Requires Pi Coding Agent 0.80.7+.
+Pi extension that compacts context before it reaches 50% of current model context, then resumes current task. Requires Pi Coding Agent 0.84.2+.
 
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
+
+`pi-task-models` loads `/task-models`, which configures the shared model profiles used by automatic compaction.
 
 Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 
@@ -28,29 +31,23 @@ pi remove npm:@henryqw/pi-auto-compact
 
 ## Configure
 
-Run `/auto-compact`, then choose:
+Run `/auto-compact` to set the compaction threshold. Run `/task-models` to configure the shared primary and optional fallback routes. The `pi-auto-compact/autoCompact` task defaults to the `balanced` profile.
 
-- `Model`: use current session model or select an available text model and its supported thinking level.
-- `Threshold`: set compaction percentage.
-
-Config lives in `~/.pi/agent/config/pi-auto-compact.json`:
+Threshold config lives in `~/.pi/agent/config/pi-auto-compact.json`:
 
 ```json
 {
-  "autoCompactThreshold": 50,
-  "compactionModel": "openai-codex/gpt-5.6-terra",
-  "compactionThinkingLevel": "max"
+  "autoCompactThreshold": 50
 }
 ```
 
-`compactionModel` is optional and must name Pi-known `provider/model`; omit it to compact with current session model. `compactionThinkingLevel` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, requires a dedicated model, and defaults to `off` when omitted. Threshold must be at least 25% and below 100%; lower values are not meaningful. Missing config defaults to 50%. Restart or `/reload` after manual edits; menu changes apply immediately.
+Threshold must be at least 25% and below 100%; lower values are not meaningful. Missing config defaults to 50%. Model routes belong in `~/.pi/agent/config/pi-task-models.json`; menu changes apply immediately.
 
 ## Behavior
 
 - Refuses activation with an error when Pi's effective `compaction.enabled` setting is not `false`; competing automatic compactors can start duplicate summaries.
 - Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed/forked `session_start`.
-- Uses Pi's native summary and session persistence; optional `compactionModel` runs automatic summaries with selected model and thinking level. Manual `/compact` keeps using current session model.
-- Falls back to current session model when configured compaction model is unavailable, cannot authenticate, or fails.
+- Uses the assigned `balanced` task profile's primary route, then its configured fallback when a route is outside current model scope, unavailable, cannot authenticate, or its summary request fails. Scoped thinking pins are enforced. If neither route works, Pi's current session model still performs automatic compaction. Malformed shared task-model config is reported and left unchanged. Manual `/compact` always stays native.
 - Keeps newest 15% as temporary emergency context while compaction runs.
 - Sends a follow-up message after mid-task compaction so task execution continues; final-answer compaction stays idle.
 - Compacts above configured `autoCompactThreshold` percentage (50% by default).

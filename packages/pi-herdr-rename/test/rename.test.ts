@@ -8,7 +8,13 @@ import herdrRenameExtension from "../extensions/rename.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 type Command = (args: string, ctx: ExtensionContext) => Promise<void>;
-type Model = { provider: string; id: string; input: string[] };
+type Model = {
+	provider: string;
+	id: string;
+	input: string[];
+	reasoning?: boolean;
+	thinkingLevelMap?: Record<string, string | null | undefined>;
+};
 type CompletionCall = { model: Model; context: any; options: any };
 
 const defaultModel: Model = { provider: "openai-codex", id: "gpt-5.6-luna", input: ["text"] };
@@ -24,8 +30,8 @@ function harness(options: {
 	currentModel?: Model;
 	branch?: any[];
 	complete?: (call: CompletionCall) => Promise<any>;
+	auth?: (model: Model) => Promise<{ ok: true; apiKey?: string } | { ok: false; error: string }>;
 	exec?: (args: string[], options?: { signal?: AbortSignal; cwd?: string }) => Promise<ReturnType<typeof success>>;
-	select?: string;
 } = {}) {
 	const handlers = new Map<string, Handler>();
 	const commands = new Map<string, Command>();
@@ -65,11 +71,18 @@ function harness(options: {
 		model: options.currentModel ?? defaultModel,
 		modelRegistry: {
 			getAvailable: () => models,
-			complete: async (model: Model, context: any, completionOptions: any) => {
-				const call = { model, context, options: completionOptions };
-				completionCalls.push(call);
-				return options.complete ? options.complete(call) : response("feat: generated title");
-			},
+			getApiKeyAndHeaders: async (model: Model) => options.auth
+				? options.auth(model)
+				: { ok: true as const, apiKey: "test-key" },
+			getProvider: () => ({
+				streamSimple: (model: Model, context: any, completionOptions: any) => ({
+					result: async () => {
+						const call = { model, context, options: completionOptions };
+						completionCalls.push(call);
+						return options.complete ? options.complete(call) : response("feat: generated title");
+					},
+				}),
+			}),
 		},
 		sessionManager: { getBranch: () => options.branch ?? [] },
 		ui: {
@@ -77,7 +90,6 @@ function harness(options: {
 				notifications.push(message);
 				notificationTypes.push(type);
 			},
-			select: async () => options.select,
 			setWidget: (_key: string, content: unknown) => widgets.push(content),
 		},
 	} as unknown as ExtensionContext;
@@ -104,7 +116,15 @@ async function withAgentDir(run: (dir: string) => Promise<void>): Promise<void> 
 		await mkdir(join(dir, "config"), { recursive: true });
 		await writeFile(
 			join(dir, "config", "pi-herdr-rename.json"),
-			JSON.stringify({ model: `${defaultModel.provider}/${defaultModel.id}` }),
+			JSON.stringify({ maxWords: 4, maxChars: 40 }),
+		);
+		await writeFile(
+			join(dir, "config", "pi-task-models.json"),
+			JSON.stringify({
+				profiles: {
+					fast: { primary: { model: `${defaultModel.provider}/${defaultModel.id}`, thinkingLevel: "off" } },
+				},
+			}),
 		);
 		await run(dir);
 	} finally {
@@ -291,12 +311,12 @@ test("manual rename widget shows progress, result, then disappears", async (t) =
 	});
 });
 
-test("automatic rename warns without fallback after non-transport model error", async () => {
+test("rename never uses the current session model without a configured fallback", async () => {
 	await withAgentDir(async () => {
-		const mainModel: Model = { provider: "main", id: "reliable", input: ["text"] };
+		const currentModel: Model = { provider: "main", id: "reliable", input: ["text"] };
 		const app = harness({
-			models: [defaultModel, mainModel],
-			currentModel: mainModel,
+			models: [defaultModel, currentModel],
+			currentModel,
 			complete: async () => ({ ...response("", "error"), errorMessage: "Provider failed" }),
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -310,30 +330,53 @@ test("automatic rename warns without fallback after non-transport model error", 
 	});
 });
 
-test("rename falls back to current main model after configured model transport failure", async () => {
-	await withAgentDir(async () => {
-		const mainModel: Model = { provider: "main", id: "reliable", input: ["text"] };
-		for (const configuredFailure of [
-			async () => ({ ...response("", "error"), errorMessage: "fetch failed" }),
-			async () => {
-				throw new TypeError("fetch failed");
+test("rename defaults to fast and uses its fallback after an invalid title", async () => {
+	await withAgentDir(async (dir) => {
+		const primary: Model = {
+			provider: "primary",
+			id: "fast",
+			input: ["text"],
+			reasoning: true,
+			thinkingLevelMap: { low: "low" },
+		};
+		const fallback: Model = {
+			provider: "fallback",
+			id: "fast",
+			input: ["text"],
+			reasoning: true,
+			thinkingLevelMap: { low: "low" },
+		};
+		const currentModel: Model = { provider: "main", id: "reliable", input: ["text"] };
+		const legacyConfig = { model: "legacy/model", maxWords: 4, maxChars: 40 };
+		await writeFile(join(dir, "config", "pi-herdr-rename.json"), JSON.stringify(legacyConfig));
+		await writeFile(join(dir, "config", "pi-task-models.json"), JSON.stringify({
+			profiles: {
+				fast: {
+					primary: { model: "primary/fast", thinkingLevel: "low" },
+					fallback: { model: "fallback/fast", thinkingLevel: "low" },
+				},
 			},
-		]) {
-			const app = harness({
-				sessionName: "saved",
-				branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
-				models: [defaultModel, mainModel],
-				currentModel: mainModel,
-				complete: async (call) => call.model === defaultModel ? configuredFailure() : response("fix: fallback title"),
-			});
-			await app.handlers.get("session_start")?.({}, app.ctx);
-			await app.commands.get("rename")?.("", app.ctx);
+		}));
 
-			assert.deepEqual(app.completionCalls.map((call) => call.model), [defaultModel, mainModel]);
-			assert.deepEqual(app.completionCalls.map((call) => call.options.maxRetries), [0, 0]);
-			assert.deepEqual(app.names, ["fix: fallback title"]);
-			assert.doesNotMatch(app.notifications.join("\n"), /fetch failed/);
-		}
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
+			models: [primary, fallback, currentModel],
+			currentModel,
+			complete: async (call) => call.model === primary
+				? response("plain title")
+				: response("fix: fallback title"),
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.equal(app.commands.has("rename-model"), false);
+		await app.commands.get("rename")?.("", app.ctx);
+
+		assert.deepEqual(app.completionCalls.map((call) => call.model), [primary, fallback]);
+		assert.deepEqual(app.completionCalls.map((call) => call.options.maxRetries), [0, 0]);
+		assert.deepEqual(app.completionCalls.map((call) => call.options.reasoning), ["low", "low"]);
+		assert.deepEqual(app.names, ["fix: fallback title"]);
+		assert.deepEqual(JSON.parse(await readFile(join(dir, "config", "pi-herdr-rename.json"), "utf8")), legacyConfig);
+		assert.doesNotMatch(app.notifications.join("\n"), /invalid title/);
 	});
 });
 
@@ -371,7 +414,7 @@ test("configured word and character limits control generation and validation", a
 	await withAgentDir(async (dir) => {
 		await writeFile(
 			join(dir, "config", "pi-herdr-rename.json"),
-			JSON.stringify({ model: `${defaultModel.provider}/${defaultModel.id}`, maxWords: 2, maxChars: 12 }),
+			JSON.stringify({ maxWords: 2, maxChars: 12 }),
 		);
 		const titles = ["feat: a b", "fix: abcdefgh", "fix: tiny"];
 		const app = harness({ sessionName: "saved", complete: async () => response(titles.shift() ?? "") });
@@ -388,7 +431,7 @@ test("configured word and character limits control generation and validation", a
 
 		await writeFile(
 			join(dir, "config", "pi-herdr-rename.json"),
-			JSON.stringify({ model: `${defaultModel.provider}/${defaultModel.id}`, maxWords: 1, maxChars: 5 }),
+			JSON.stringify({ maxWords: 1, maxChars: 5 }),
 		);
 		const fallback = harness({
 			sessionName: "saved",
@@ -400,43 +443,39 @@ test("configured word and character limits control generation and validation", a
 	});
 });
 
-test("rename model config is required, persists selection, and never substitutes another model", async () => {
+test("rename reports an unconfigured fast profile without changing the title", async () => {
 	await withAgentDir(async (dir) => {
-		const config = join(dir, "config", "pi-herdr-rename.json");
-		await rm(config);
-
-		const other: Model = { provider: "other", id: "small", input: ["text"] };
+		await writeFile(join(dir, "config", "pi-task-models.json"), JSON.stringify({ profiles: {} }));
 		const app = harness({
 			sessionName: "saved",
-			models: [defaultModel, other],
-			currentModel: other,
-			select: "other/small",
+			branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
-		assert.match(app.notifications.at(-1) ?? "", /Run \/rename-model/);
-		await app.handlers.get("session_start")?.({}, app.ctx);
-		assert.equal(app.notifications.filter((message) => message.includes("/rename-model")).length, 2);
-		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
+		assert.match(app.notifications.at(-1) ?? "", /Configure rename task profile fast/);
 		await app.commands.get("rename")?.("", app.ctx);
 		assert.equal(app.completionCalls.length, 0);
-		assert.match(app.notifications.at(-1) ?? "", /not configured/);
+		assert.deepEqual(app.names, []);
+		assert.match(app.notifications.at(-1) ?? "", /profile fast is not configured/);
+	});
+});
 
-		await app.commands.get("rename-model")?.("", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(config, "utf8")), {
-			model: "other/small",
-			maxWords: 4,
-			maxChars: 40,
+test("rename reports malformed shared config without rewriting it", async () => {
+	await withAgentDir(async (dir) => {
+		const taskModelsFile = join(dir, "config", "pi-task-models.json");
+		const malformed = "{ not json\\n";
+		await writeFile(taskModelsFile, malformed);
+
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
 		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.match(app.notifications[0] ?? "", /Couldn't read task model config/);
 		await app.commands.get("rename")?.("", app.ctx);
-		assert.equal(app.completionCalls[0].model.id, other.id);
-
-		await writeFile(config, JSON.stringify({ model: "missing/model" }));
-		const unavailable = harness({ sessionName: "saved", models: [defaultModel] });
-		await unavailable.handlers.get("session_start")?.({}, unavailable.ctx);
-		unavailable.handlers.get("input")?.({ source: "interactive", text: "prompt" }, unavailable.ctx);
-		await unavailable.commands.get("rename")?.("", unavailable.ctx);
-		assert.equal(unavailable.completionCalls.length, 0);
-		assert.match(unavailable.notifications.at(-1) ?? "", /unavailable/);
+		assert.equal(app.completionCalls.length, 0);
+		assert.deepEqual(app.names, []);
+		assert.match(app.notifications.at(-1) ?? "", /Couldn't read task model config/);
+		assert.equal(await readFile(taskModelsFile, "utf8"), malformed);
 	});
 });
 

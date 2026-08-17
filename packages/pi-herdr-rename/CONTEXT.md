@@ -20,6 +20,6 @@ _Avoid_: chat title, custom workspace name
 Herdr tab containing current pane and no sibling panes. Only this tab receives chat title because title cannot misrepresent another pane.
 _Avoid_: single-pane session, empty tab
 
-**Rename model**:
-User-selected Pi text model used to generate semantic chat titles and Git branch names. On its transport/fetch failure, current text-capable main model runs once.
-_Avoid_: title model, active model
+**Rename task profile**:
+Shared task-model profile assigned to `pi-herdr-rename/rename` (default `fast`) with primary and optional fallback Pi registry routes. Rename never substitutes the current session model; no viable route leaves titles unchanged.
+_Avoid_: package-owned rename model, active model
