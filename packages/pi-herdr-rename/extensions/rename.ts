@@ -185,30 +185,27 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 		return response;
 	};
 
-	let response: Awaited<ReturnType<typeof complete>> | undefined;
 	let failure: RenameModelError | undefined;
 	for (const route of configuredRenameRoutes(ctx)) {
 		try {
-			response = await complete(route);
-			break;
+			const response = await complete(route);
+			const title = response.content
+				.filter((part) => part.type === "text")
+				.map((part) => part.text)
+				.join(" ")
+				.trim()
+				.toLowerCase()
+				.replace(/\s+/g, " ");
+			if (!title || title.length > maxChars || title.split(" ").length > maxWords || !branchFromTitle(title)) {
+				throw new RenameModelError("Rename task model returned an invalid title.");
+			}
+			return title;
 		} catch (error) {
 			if (signal.aborted || !(error instanceof RenameModelError)) throw error;
 			failure = error;
 		}
 	}
-	if (!response) throw failure ?? new RenameModelError("Rename task model routes failed.");
-
-	const title = response.content
-		.filter((part) => part.type === "text")
-		.map((part) => part.text)
-		.join(" ")
-		.trim()
-		.toLowerCase()
-		.replace(/\s+/g, " ");
-	if (!title || title.length > maxChars || title.split(" ").length > maxWords || !branchFromTitle(title)) {
-		throw new Error("Rename task model returned an invalid title.");
-	}
-	return title;
+	throw failure ?? new RenameModelError("Rename task model routes failed.");
 }
 
 export default function herdrRenameExtension(pi: ExtensionAPI): void {

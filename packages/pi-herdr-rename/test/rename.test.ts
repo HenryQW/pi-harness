@@ -330,7 +330,7 @@ test("rename never uses the current session model without a configured fallback"
 	});
 });
 
-test("rename defaults to fast and uses its configured fallback", async () => {
+test("rename defaults to fast and uses its fallback after an invalid title", async () => {
 	await withAgentDir(async (dir) => {
 		const primary: Model = {
 			provider: "primary",
@@ -364,7 +364,7 @@ test("rename defaults to fast and uses its configured fallback", async () => {
 			models: [primary, fallback, currentModel],
 			currentModel,
 			complete: async (call) => call.model === primary
-				? { ...response("", "error"), errorMessage: "fetch failed" }
+				? response("plain title")
 				: response("fix: fallback title"),
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -376,7 +376,7 @@ test("rename defaults to fast and uses its configured fallback", async () => {
 		assert.deepEqual(app.completionCalls.map((call) => call.options.reasoning), ["low", "low"]);
 		assert.deepEqual(app.names, ["fix: fallback title"]);
 		assert.deepEqual(JSON.parse(await readFile(join(dir, "config", "pi-herdr-rename.json"), "utf8")), legacyConfig);
-		assert.doesNotMatch(app.notifications.join("\n"), /fetch failed/);
+		assert.doesNotMatch(app.notifications.join("\n"), /invalid title/);
 	});
 });
 
