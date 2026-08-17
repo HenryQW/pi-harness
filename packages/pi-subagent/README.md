@@ -1,6 +1,6 @@
 # @henryqw/pi-subagent
 
-Delegate one bounded task to one isolated Pi process. Main chooses role and model class per task.
+Delegate one bounded task to one isolated Pi process. Main chooses role and may override shared task-model effort per task.
 
 Based on Pi's authoritative [`examples/extensions/subagent`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions/subagent): child processes use `pi --mode json -p --no-session`.
 
@@ -60,7 +60,7 @@ Main calls `delegate_task` with:
 
 - `role`: configured role name
 - `task`: one bounded task
-- `modelClass`: optional `fast`, `balanced`, or `frontier`; omitted `modelClass` uses `balanced`
+- `modelClass`: optional `fast`, `balanced`, or `frontier`; omitted `modelClass` uses shared `pi-subagent/delegateTask` assignment, initially `balanced`
 
 Configure shared profiles with `/task-models`. The shared file is `~/.pi/agent/config/pi-task-models.json`:
 
@@ -71,11 +71,14 @@ Configure shared profiles with `/task-models`. The shared file is `~/.pi/agent/c
       "primary": { "model": "provider/model", "thinkingLevel": "medium" },
       "fallback": { "model": "other-provider/model", "thinkingLevel": "low" }
     }
+  },
+  "tasks": {
+    "pi-subagent/delegateTask": "balanced"
   }
 }
 ```
 
-The selected profile's primary route is resolved against current scoped text models and scoped thinking pins; empty scope means all available models. Its fallback is tried only before child launch when the primary route, model, or thinking level is unavailable. If no route is usable, delegation rejects with `Run /task-models`. Once a child starts, its failure is returned and is never retried with another route.
+When `modelClass` is omitted, `/task-models` controls Subagent effort by assigning `pi-subagent/delegateTask` to a shared profile. An explicit `modelClass` overrides that assignment. Selected profile's primary route is resolved against current scoped text models and scoped thinking pins; empty scope means all available models. Its fallback is tried only before child launch when the primary route, model, or thinking level is unavailable. If no route is usable, delegation rejects with `Run /task-models`. Once a child starts, its failure is returned and is never retried with another route.
 
 Each call starts one isolated child process. Ambient extensions and skills are disabled. Only role resources load. Child uses delegated working directory and normal Pi project context files, inheriting Main's project approval decision. Abort terminates child process group.
 

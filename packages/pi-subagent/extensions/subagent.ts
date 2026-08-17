@@ -8,6 +8,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir, parseFrontmatter, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import {
+	DEFAULT_TASK_ASSIGNMENTS,
 	modelReference,
 	orderedProfileRoutes,
 	PROFILE_NAMES,
@@ -19,6 +20,8 @@ import {
 import { Type } from "typebox";
 
 const MODEL_CLASSES = PROFILE_NAMES;
+const SUBAGENT_TASK = "pi-subagent/delegateTask";
+const DEFAULT_MODEL_CLASS = DEFAULT_TASK_ASSIGNMENTS[SUBAGENT_TASK];
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const MAX_OUTPUT_BYTES = 50 * 1024;
@@ -60,7 +63,7 @@ const isModelClass = (value: unknown): value is ModelClass =>
 	typeof value === "string" && MODEL_CLASSES.includes(value as ModelClass);
 const isNumberedCodexProvider = (provider: string): boolean => CODEX_ALIAS.test(provider);
 
-function resolveTaskRoute(ctx: ExtensionContext, modelClass: ModelClass): ResolvedTaskRoute {
+function resolveTaskRoute(ctx: ExtensionContext, modelClass?: ModelClass): ResolvedTaskRoute {
 	let config;
 	try {
 		config = readTaskModelsConfig();
@@ -68,13 +71,14 @@ function resolveTaskRoute(ctx: ExtensionContext, modelClass: ModelClass): Resolv
 		throw new Error("Couldn't read task model config. Run /task-models.");
 	}
 
-	const profile = config.profiles[modelClass];
-	if (!profile) throw new Error(`No ${modelClass} task model profile is configured. Run /task-models.`);
+	const profileName = modelClass ?? config.tasks[SUBAGENT_TASK] ?? DEFAULT_MODEL_CLASS;
+	const profile = config.profiles[profileName];
+	if (!profile) throw new Error(`No ${profileName} task model profile is configured. Run /task-models.`);
 	for (const route of orderedProfileRoutes(profile)) {
 		const resolved = resolveTaskModelRoute(ctx, route);
 		if (resolved) return resolved;
 	}
-	throw new Error(`No usable ${modelClass} task model route. Run /task-models.`);
+	throw new Error(`No usable ${profileName} task model route. Run /task-models.`);
 }
 
 const cleanText = (value: unknown, field: string, file: string): string => {
@@ -438,7 +442,7 @@ const Parameters = Type.Object({
 	role: Type.String({ description: "Configured Subagent role name" }),
 	task: Type.String({ description: "One bounded task with needed context and expected result" }),
 	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
-		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning. Defaults to the shared balanced profile.",
+		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
 });
 
@@ -557,7 +561,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, or frontier for ambiguous and high-risk work. Request concise conclusions and file/line references; split broad scouting work.`,
+		description: `Delegate one bounded task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, or frontier for ambiguous and high-risk work; omit modelClass to use shared task-model settings. Request concise conclusions and file/line references; split broad scouting work.`,
 		parameters: Parameters,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const task = cleanText(params.task, "task", "delegate_task");
@@ -570,8 +574,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, or frontier.");
 			}
-			const modelClass = params.modelClass ?? "balanced";
-			const resolvedRoute = resolveTaskRoute(ctx, modelClass);
+			const resolvedRoute = resolveTaskRoute(ctx, params.modelClass);
 			const model = resolvedRoute.model;
 			const modelReferenceValue = modelReference(model);
 			const thinkingLevel = resolvedRoute.thinkingLevel;

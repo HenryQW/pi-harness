@@ -6,6 +6,7 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export declare const DEFAULT_TASK_ASSIGNMENTS: {
     readonly "pi-herdr-rename/rename": "fast";
     readonly "pi-auto-compact/autoCompact": "balanced";
+    readonly "pi-subagent/delegateTask": "balanced";
 };
 export type TaskModelRoute = {
     model: string;

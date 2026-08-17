@@ -1,6 +1,6 @@
 # Pi Task Models
 
-Pi Task Models stores shared task profiles and task-to-profile assignments for HenryQW extensions.
+Pi Task Models stores shared task profiles and task-to-profile assignments for HenryQW extensions, including default Subagent effort.
 
 ## Language
 
