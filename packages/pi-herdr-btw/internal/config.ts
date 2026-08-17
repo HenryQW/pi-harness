@@ -249,7 +249,11 @@ export class ConfigStore {
 					// Remove only observed owner's unique entry. Only the process that
 					// removes that entry may remove lockPath; this prevents a stale
 					// reclaimer from deleting a replacement created in between.
-					if (!ownerName) continue;
+					if (!ownerName) {
+						if (Date.now() >= deadline) throw new Error(`Timed out waiting for config lock: ${this.path}`);
+						await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
+						continue;
+					}
 					try {
 						await rm(join(lockPath, ownerName));
 					} catch (error) {
