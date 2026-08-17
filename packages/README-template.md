@@ -1,0 +1,62 @@
+<!-- Copy to packages/<package>/README.md. Replace placeholders, delete optional sections that do not apply, and keep remaining sections in this order. -->
+
+# `@henryqw/<package>`
+
+<One sentence describing user-visible value.>
+
+## Install
+
+```bash
+pi install npm:@henryqw/<package>
+```
+
+<Runtime requirement or setup step, if needed.>
+
+<!-- Optional: separately installed companion Pi packages only. -->
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/<companion>` | Required or improves. <Why.> |
+
+## Use
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/<command>` | command | <What it does.> |
+| `<tool>` | tool | <What it does.> |
+
+<Behavior, limits, integrations, and safety caveats.>
+
+<!-- Optional. -->
+## Config
+
+`~/.pi/agent/config/<package>.json`
+
+```json
+{
+  "<setting>": "<value>"
+}
+```
+
+<Defaults, valid values, and invalid-config behavior.>
+
+<!-- Optional: add feature-specific sections here, for example Library API, Workflow, or Recovery. -->
+## <Feature>
+
+<Feature-specific documentation.>
+
+<!-- Pi extensions only. -->
+## Remove
+
+```bash
+pi remove npm:@henryqw/<package>
+```
+
+## Development
+
+```bash
+npm test --workspace @henryqw/<package>
+npm run typecheck --workspace @henryqw/<package>
+npm run pack:check --workspace @henryqw/<package>
+```
