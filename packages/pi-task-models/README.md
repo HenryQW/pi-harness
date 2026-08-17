@@ -45,7 +45,7 @@ Config reads are strict. Malformed or unknown values fail visibly and never rewr
 ## Consumers
 
 - `pi-herdr-rename`: task assignment defaults to `fast`; retries configured fallback after primary route failure.
-- `pi-auto-compact`: task assignment defaults to `balanced`; retries fallback, then uses current session model so compaction still runs.
+- `pi-auto-compact`: task assignment defaults to `fast`; retries fallback, then uses current session model so compaction still runs.
 - `pi-subagent`: `pi-subagent/delegateTask` defaults to `balanced`; caller may override with `fast`, `balanced`, or `frontier`. Fallback is selected only before child starts. Started child is never retried because tools may already have side effects.
 - `pi-herdr-subagents`: intentionally independent.
 
