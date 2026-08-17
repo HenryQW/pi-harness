@@ -223,6 +223,19 @@ export class ConfigStore {
 				}
 				const info = await lstat(lockPath).catch(() => undefined);
 				if (!info || Date.now() - info.mtimeMs > CONFIG_LOCK_STALE_MS) {
+					if (!info) continue;
+					const owner = await readFile(ownerPath, "utf8").catch(() => undefined);
+					const currentInfo = await lstat(lockPath).catch(() => undefined);
+					const currentOwner = await readFile(ownerPath, "utf8").catch(() => undefined);
+					if (
+						!currentInfo ||
+						currentInfo.dev !== info.dev ||
+						currentInfo.ino !== info.ino ||
+						currentInfo.ctimeMs !== info.ctimeMs ||
+						currentOwner !== owner
+					) {
+						continue;
+					}
 					await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
 					continue;
 				}

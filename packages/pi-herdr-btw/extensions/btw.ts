@@ -341,9 +341,15 @@ async function configureChild(
 
 			const existingAck = await store.readMergeAck(payloadPath).catch(() => undefined);
 			const existingRequest = await store.readMergeRequest(payloadPath).catch(() => undefined);
-			if (existingRequest !== undefined && !ackMatchesRequest(existingAck, existingRequest)) {
-				ctx.ui.notify("A merge is already pending; the parent has not acknowledged it yet.", "warning");
-				return;
+			if (existingRequest !== undefined) {
+				if (!ackMatchesRequest(existingAck, existingRequest)) {
+					ctx.ui.notify("A merge is already pending; the parent has not acknowledged it yet.", "warning");
+					return;
+				}
+				if (isMergeAck(existingAck) && existingAck.status === "accepted") {
+					ctx.ui.notify("This side thread was already merged into the parent.", "warning");
+					return;
+				}
 			}
 
 			// The prompt after `merge` is what the parent will auto-submit; bare
@@ -499,9 +505,13 @@ export async function registerBtwExtension(
 		getBranch: () => sessionCtx?.sessionManager.getBranch() ?? [],
 		canSubmitPrompt: async () => {
 			const model = sessionCtx?.model;
-			if (!model || !sessionCtx) return false;
+			const modelRegistry = sessionCtx?.modelRegistry;
+			if (!model || !modelRegistry) return false;
+			const modelName = `${model.provider}/${model.id}`;
 			try {
-				return (await sessionCtx.modelRegistry.getApiKeyAndHeaders(model)).ok;
+				const authenticated = (await modelRegistry.getApiKeyAndHeaders(model)).ok;
+				const currentModel = sessionCtx?.model;
+				return authenticated && !!currentModel && `${currentModel.provider}/${currentModel.id}` === modelName;
 			} catch {
 				return false;
 			}

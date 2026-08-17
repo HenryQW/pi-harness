@@ -1026,6 +1026,51 @@ test("parent merge scan appends the transcript passively and auto-submits the pr
 	});
 });
 
+test("parent does not reuse auth for a model selected during authentication", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const payload = store.readValue;
+		store.mergeRequest = {
+			protocolVersion: MERGE_PROTOCOL_VERSION,
+			requestId: "req-auth-race",
+			launchId: payload.launchId,
+			parentSessionId: payload.parentSessionId,
+			capability: payload.capability,
+			createdAt: "2026-07-15T00:05:00.000Z",
+			summary: "auth race summary",
+			prompt: "auth race prompt",
+		} satisfies MergeRequest;
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		const ctx = createCommandContext();
+		let resolveAuth: ((value: { ok: boolean }) => void) | undefined;
+		let resolveAuthStarted: (() => void) | undefined;
+		const authStarted = new Promise<void>((resolve) => (resolveAuthStarted = resolve));
+		ctx.modelRegistry.getApiKeyAndHeaders = () => {
+			resolveAuthStarted?.();
+			return new Promise<{ ok: boolean }>((resolve) => {
+				resolveAuth = resolve;
+			});
+		};
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+		await harness.emit("session_shutdown", { reason: "test" }, {});
+
+		const scan = harness.commands.get("btw")?.handler("merge", ctx);
+		await authStarted;
+		await harness.emit(
+			"model_select",
+			{ model: { provider: "other-provider", id: "other-model" } },
+			ctx,
+		);
+		resolveAuth?.({ ok: true });
+		await scan;
+		harness.cleanup();
+
+		assert.equal(store.mergeAck, undefined);
+		assert.equal(harness.sentMessages.length, 0);
+		assert.equal(harness.sentUserMessages.length, 0);
+	});
+});
+
 test("parent defers startup merge recovery until after initial rendering", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
@@ -1583,5 +1628,29 @@ test("child merge refuses to stack a second request on a pending one", async () 
 		await harness.commands.get("btw")?.handler("merge another prompt", ctx);
 		assert.deepEqual(store.mergeRequest, { requestId: "req-1" });
 		assert.match(notifications.at(-1)?.message ?? "", /already pending/);
+	});
+});
+
+test("child merge refuses a second request after accepted acknowledgement", async () => {
+	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
+		const store = new FakeStore();
+		store.mergeRequest = { requestId: "req-1" };
+		store.mergeAck = {
+			protocolVersion: MERGE_PROTOCOL_VERSION,
+			requestId: "req-1",
+			status: "accepted",
+			processedAt: "2026-07-15T00:06:00.000Z",
+		};
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		harness.cleanup();
+		const notifications: Array<{ message: string; type: string }> = [];
+		const ctx = {
+			sessionManager: { getEntries: () => [], getLeafId: () => null },
+			ui: { notify: (message: string, type: string) => notifications.push({ message, type }) },
+		};
+
+		await harness.commands.get("btw")?.handler("merge another prompt", ctx);
+		assert.deepEqual(store.mergeRequest, { requestId: "req-1" });
+		assert.match(notifications.at(-1)?.message ?? "", /already merged/);
 	});
 });
