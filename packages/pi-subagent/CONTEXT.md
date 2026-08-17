@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Run one bounded task in one isolated Pi child process using a configured role.
+Provide validated user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, and a `delegate_task` extension that runs one bounded task in one isolated child process.
 
 ## Domain glossary
 
@@ -12,13 +12,16 @@ Run one bounded task in one isolated Pi child process using a configured role.
 - **Model Class**: `fast`, `balanced`, or `frontier`, chosen by Main from task complexity.
 - **Route**: configured model and thinking-level pair selected from a shared Model Class profile; the primary route precedes its optional fallback.
 - **Delegated Task**: one bounded work request sent from Main to one Role.
+- **Pi Launch**: reusable `{env,args}` policy for one Role, resolved model route, explicit caller resources, and project trust.
+- **Managed Subagent**: Pi agent hosted in a reconciled Herdr tab or pane; lifecycle orchestration remains with the caller.
 
 ## Invariants
 
 - One Delegated Task creates one ephemeral child process and no saved session.
 - Ambient child extensions and Skills stay disabled; Role explicitly selects extensions and Skills. Omitted Role tools use Pi's effective `defaultTools` for built-ins; an explicit list is strict.
 - Role Skill names resolve through Main's effective Pi Skill registry; unavailable names warn and skip without blocking delegation.
-- Main selects Role and Model Class per task; omitted class uses the shared `balanced` profile.
-- The selected profile resolves primary then fallback only before child launch when a route, model, or thinking level is unavailable. If neither route is usable, delegation rejects with `Run /task-models`; a started child is never retried.
+- `delegate_task` selects Role and Model Class per call; omitted class uses the shared `balanced` profile. Library callers select Role plus a shared task ID whose task-model assignment chooses the profile.
+- The selected profile resolves primary then fallback only before launch when a route, model, or thinking level is unavailable. If neither route is usable, launch rejects with `Run /task-models`; a started child is never retried by this package.
 - Role config lives only in user `config/pi-subagent` directory; model routes live in shared `config/pi-task-models.json`; repository roles do not execute.
 - Numbered Codex routes prefer Main's active account slot and explicitly load the multi-Codex child extension.
+- Generic Herdr host functions validate workspace ownership and provisioning identity while callers retain domain state, prompts, and lifecycle decisions.

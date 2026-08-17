@@ -10,7 +10,7 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { markGateHostReady, reconcileRequiredGateProcess, requiredGateProcessPath, runCommand, runRequiredGate, type RequiredGateExecution } from "../src/command.ts";
 import { loadProjectConfig, parseProjectConfig, resolveProjectConfig } from "../src/config.ts";
-import { assertDeliveryGraphProfiles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
+import { assertDeliveryGraphRoles, deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph } from "../src/graph.ts";
 import { assertRunBoundary, startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle } from "../src/lifecycle.ts";
 import { DEFAULT_MAX_PARALLEL_TASKS, DEFAULT_MAX_REVIEW_ROUNDS, DEFAULT_REQUIRED_GATE_TIMEOUT_MS, MAX_REQUIRED_GATE_TIMEOUT_MS } from "../src/model.ts";
@@ -19,9 +19,8 @@ import { PLANNING_TOOLS } from "../src/planning.ts";
 import { persistGateOutput, recordGateExecution } from "../src/review.ts";
 import { writeWorkerReceipt } from "../src/review-ticket.ts";
 import { createInitialRunState, parseRunState, readActiveRunId, readRunState } from "../src/state.ts";
-import { workerAgentName } from "../src/worker-host.ts";
-import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
-import { createTestProfiles, createTestSkills, testProfileConfig, testSkills } from "./support/profiles.ts";
+import { createWorkerExtension, createWorkerLaunch, sendWorkerEnvelope, workerAgentName, workerEnvironment, WORKER_EXTENSION_PATH, WORKER_ROLE_EVENTS, WORKER_TOOLS } from "../src/worker.ts";
+import { createTestRoles, testLaunchResolver, testRoleConfig, testRoles } from "./support/roles.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
@@ -127,13 +126,16 @@ test("packed package runs required gate through plain Node host", async (t) => {
 	const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 	const { stdout: packedJson } = await execFile("npm", ["pack", "--json", "--pack-destination", root], { cwd: packageRoot });
 	const tarball = join(root, (JSON.parse(packedJson) as Array<{ filename: string }>)[0].filename);
-	const herdrRoot = fileURLToPath(new URL("../../pi-herdr/", import.meta.url));
-	const { stdout: herdrPackedJson } = await execFile("npm", ["pack", "--json", "--pack-destination", root], { cwd: herdrRoot });
-	const herdrTarball = join(root, (JSON.parse(herdrPackedJson) as Array<{ filename: string }>)[0].filename);
+	const dependencyTarballs: string[] = [];
+	for (const packageName of ["pi-herdr", "pi-task-models", "pi-subagent"]) {
+		const cwd = fileURLToPath(new URL(`../../${packageName}/`, import.meta.url));
+		const { stdout } = await execFile("npm", ["pack", "--json", "--pack-destination", root], { cwd });
+		dependencyTarballs.push(join(root, (JSON.parse(stdout) as Array<{ filename: string }>)[0].filename));
+	}
 	const app = join(root, "app");
 	await mkdir(app);
 	await writeFile(join(app, "package.json"), "{\"type\":\"module\"}\n");
-	await execFile("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--legacy-peer-deps", herdrTarball, tarball], { cwd: app });
+	await execFile("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--legacy-peer-deps", ...dependencyTarballs, tarball], { cwd: app });
 	const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
 	const jitiPath = piRequire.resolve("jiti");
 	const commandUrl = pathToFileURL(join(app, "node_modules", "@henryqw", "pi-auto-dag", "src", "command.ts")).href;
@@ -181,7 +183,6 @@ test("required gate output overflow becomes exact failed evidence", async (t) =>
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: commit,
 		main_worktree: project.root,
 		integration_branch: "main",
@@ -325,7 +326,6 @@ test("completed required gate handoff is recovered without rerunning the command
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: commit,
 		main_worktree: project.root,
 		integration_branch: "main",
@@ -348,7 +348,6 @@ test("same-commit Required Gate retries retain immutable full output", async (t)
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: commit,
 		main_worktree: project.root,
 		integration_branch: "main",
@@ -872,58 +871,42 @@ test("reconciliation kills detached gate command after gate host SIGKILL", async
 });
 
 test("strict config and local graph validation derive deterministic dependencies", () => {
-	const config = parseProjectConfig(testProfileConfig("/tmp"));
+	const config = parseProjectConfig(testRoleConfig());
 	assert.equal(config.max_parallel_tasks, DEFAULT_MAX_PARALLEL_TASKS);
 	assert.equal(config.max_review_rounds, DEFAULT_MAX_REVIEW_ROUNDS);
 	assert.equal(config.required_gate_timeout_ms, DEFAULT_REQUIRED_GATE_TIMEOUT_MS);
-	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: 0 }), /must be a positive integer/);
+	assert.throws(() => parseProjectConfig({ ...testRoleConfig(), required_gate_timeout_ms: 0 }), /must be a positive integer/);
 	assert.equal(
-		parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS }).required_gate_timeout_ms,
+		parseProjectConfig({ ...testRoleConfig(), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS }).required_gate_timeout_ms,
 		MAX_REQUIRED_GATE_TIMEOUT_MS,
 	);
 	assert.throws(
-		() => parseProjectConfig({ ...testProfileConfig("/tmp"), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS + 1 }),
+		() => parseProjectConfig({ ...testRoleConfig(), required_gate_timeout_ms: MAX_REQUIRED_GATE_TIMEOUT_MS + 1 }),
 		/must not exceed 2147483647/,
 	);
 	assert.throws(() => parseProjectConfig({ ...config, unknown: true }), /Unknown auto-dag configuration setting/);
-	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), implementation_profiles: ["coder", "coder"] }), /must not contain duplicates/);
-	assert.throws(() => parseProjectConfig({ ...testProfileConfig("/tmp"), repair_profile: "reviewer" }), /must be an implementation profile/);
+	assert.throws(() => parseProjectConfig({ ...testRoleConfig(), implementation_roles: ["coder", "coder"] }), /must not contain duplicates/);
+	assert.throws(() => parseProjectConfig({ ...testRoleConfig(), repair_role: "reviewer" }), /must be an implementation Role/);
 
 	const parsed = parseDeliveryGraph(graph);
-	assertDeliveryGraphProfiles(parsed, config.implementation_profiles);
+	assertDeliveryGraphRoles(parsed, config.implementation_roles);
 	assert.deepEqual(deriveDependencyWaves(parsed), [["core"], ["release"]]);
-	assert.throws(() => assertDeliveryGraphProfiles(parseDeliveryGraph({ ...graph, issues: [{ ...graph.issues[0], profile: "mobile" }, ...graph.issues.slice(1)] }), config.implementation_profiles), /profile must be one of/);
+	assert.throws(() => assertDeliveryGraphRoles(parseDeliveryGraph({ ...graph, issues: [{ ...graph.issues[0], profile: "mobile" }, ...graph.issues.slice(1)] }), config.implementation_roles), /profile must be one of/);
 	assert.throws(() => parseDeliveryGraph({ ...graph, unknown: true }), /Unknown Delivery Graph setting/);
 	assert.throws(() => parseDeliveryGraph({ ...graph, issues: [{ ...graph.issues[0], id: "../escape" }, ...graph.issues.slice(1)] }), /path-safe lowercase-hyphen ID/);
 	assert.throws(() => parseDeliveryGraph({ ...graph, issues: graph.issues.map((issue) => issue.id === "core" ? { ...issue, depends_on: ["release"] } : issue) }), /dependency cycle/);
 	assert.throws(() => parseDeliveryGraph({ ...graph, final_check: { ...graph.final_check, acceptance: [] } }), /must contain at least one criterion/);
 });
 
-test("config profiles resolve skill names from effective Pi registry without collapsing registry duplicates", async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-profile-config-"));
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
-	await createTestProfiles(root);
-	await createTestSkills(root);
-	const config = parseProjectConfig(testProfileConfig(root, {
-		profileSkills: { backend: ["coding", "shared"] },
-	}));
-	const [coding, shared] = testSkills(root);
-	const resolved = await resolveProjectConfig(config, [shared, coding, shared]);
-	assert.deepEqual(resolved.profiles.backend.skills, [shared.filePath, coding.filePath, shared.filePath]);
-	assert.deepEqual(resolved.skill_registry, [
-		{ name: "shared", file_path: shared.filePath },
-		{ name: "coding", file_path: coding.filePath },
-		{ name: "shared", file_path: shared.filePath },
-	]);
-	await assert.rejects(resolveProjectConfig(config, [coding]), /Configured Pi skill is unavailable: shared/);
-	assert.throws(() => parseProjectConfig({
-		...testProfileConfig(root),
-		profiles: { ...testProfileConfig(root).profiles, backend: { ...testProfileConfig(root).profiles.backend, agent_dir: "relative" } },
-	}), /must be absolute/);
-	assert.throws(() => parseProjectConfig({
-		...testProfileConfig(root),
-		profiles: { ...testProfileConfig(root).profiles, backend: { ...testProfileConfig(root).profiles.backend, tools: ["read", "read"] } },
-	}), /must not contain duplicates/);
+test("config resolves referenced Subagent Roles", () => {
+	const config = parseProjectConfig(testRoleConfig());
+	const resolved = resolveProjectConfig(config, testRoles());
+	assert.deepEqual(Object.keys(resolved.roles), ["coder", "backend", "frontend", "reviewer"]);
+	assert.equal(resolved.roles.backend.description, "backend test Role");
+	assert.throws(
+		() => resolveProjectConfig(config, testRoles().filter((role) => role.name !== "reviewer")),
+		/Configured Subagent Role is unavailable: reviewer/,
+	);
 });
 
 test("worker agent names hash opaque identities into the Herdr contract", () => {
@@ -931,7 +914,7 @@ test("worker agent names hash opaque identities into the Herdr contract", () => 
 	const longName = workerAgentName("Workspace".repeat(20), RUN_ID, "account-slots", "implementer");
 	for (const candidate of [name, longName]) {
 		assert.match(candidate, /^[a-z][a-z0-9_-]{0,31}$/);
-		assert.equal(candidate.length, 30);
+		assert.equal(candidate.length, 32);
 	}
 	assert.equal(name, workerAgentName("w1V", RUN_ID, "account-slots", "implementer"));
 	assert.notEqual(name, workerAgentName("w2V", RUN_ID, "account-slots", "implementer"));
@@ -944,7 +927,6 @@ test("persisted state rejects obsolete and malformed durable values", () => {
 	const state = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -977,20 +959,19 @@ test("persisted state rejects obsolete and malformed durable values", () => {
 	assert.throws(() => parseRunState({ ...state, health: { status: "triaging", head: 1 } }), /run state.health.head must be a string/);
 });
 
-test("agent config follows PI_CODING_AGENT_DIR and strictly loads JSON", async (t) => {
+test("agent config follows PI_CODING_AGENT_DIR and strictly loads Role references", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-config-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await createTestProfiles(agentDir);
-	await createTestSkills(agentDir);
+	await createTestRoles(agentDir);
 	useAgentDir(t, agentDir);
-	const config = testProfileConfig(agentDir, { profileSkills: { backend: ["coding", "shared"] } });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(config));
-	const loaded = await loadProjectConfig(testSkills(agentDir));
-	assert.deepEqual(Object.keys(loaded.profiles), ["coder", "backend", "frontend", "reviewer"]);
-	assert.equal(loaded.profiles.backend.agent_dir, join(agentDir, "profiles", "backend"));
-	assert.deepEqual(loaded.profiles.backend.skills, testSkills(agentDir).map((skill) => skill.filePath));
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), "version: 3\n");
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig()));
+	const loaded = await loadProjectConfig();
+	assert.deepEqual(Object.keys(loaded.roles), ["coder", "backend", "frontend", "reviewer"]);
+	assert.equal(loaded.roles.backend.description, "backend test Role");
+	await rm(join(agentDir, "config", "pi-subagent", "reviewer.md"));
+	await assert.rejects(loadProjectConfig(), /Configured Subagent Role is unavailable: reviewer/);
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), "version: 4\n");
 	await assert.rejects(loadProjectConfig(), /not valid JSON/);
 	await rm(join(agentDir, "config", "pi-auto-dag.json"));
 	await assert.rejects(loadProjectConfig(), /Cannot read pi-auto-dag configuration/);
@@ -1000,25 +981,15 @@ test("local intake resolves the Git top-level and boundaries use agent config", 
 	const project = await makeProject(t);
 	const subdirectory = join(project.root, "packages", "app");
 	await mkdir(subdirectory, { recursive: true });
-	await createTestSkills(project.agentDir);
-	const [coding] = testSkills(project.agentDir);
-	const profileSkills = { coder: ["coding"] };
-	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(project.root, { profileSkills })));
-	const availableSkills = [coding, coding];
 	const state = await startLocalRun({
 		mainWorktree: subdirectory,
 		mainPane: "main-pane",
 		workspaceId: "main-workspace",
 		uuid: () => RUN_ID,
 		now: () => "2026-08-09T00:00:00.000Z",
-		availableSkills,
 	});
 
 	assert.equal(state.main_worktree, project.root);
-	assert.deepEqual(state.skill_registry, [
-		{ name: "coding", file_path: coding.filePath },
-		{ name: "coding", file_path: coding.filePath },
-	]);
 	assert.equal(state.graph_hash, hashDeliveryGraph(parseDeliveryGraph(graph)));
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	assert.equal((await createCoreLifecycle().status(subdirectory))?.run_id, RUN_ID);
@@ -1028,13 +999,12 @@ test("local intake resolves the Git top-level and boundaries use agent config", 
 		mainPane: "main-pane",
 		workspaceId: "main-workspace",
 		uuid: () => "22222222-2222-4222-8222-222222222222",
-		availableSkills,
 	}), /active pi-auto-dag run/);
 
-	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(project.root, { maxParallel: 2, profileSkills })));
+	await writeFile(join(project.agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig({ maxParallel: 2 })));
 	const recoveredConfig = await assertRunBoundary(state);
 	assert.equal(recoveredConfig.max_parallel_tasks, 2);
-	assert.deepEqual(recoveredConfig.profiles.coder.skills, [coding.filePath, coding.filePath]);
+	assert.equal(recoveredConfig.roles.coder.name, "coder");
 
 	const changedGraph = { ...graph, goal: "Changed local DAG" };
 	await writeFile(join(project.root, ".context", "issues", "graph.json"), JSON.stringify(changedGraph));
@@ -1071,7 +1041,6 @@ test("extensions separate public lifecycle tools and show active workers", async
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -1339,10 +1308,12 @@ test("extensions separate public lifecycle tools and show active workers", async
 	createWorkerExtension({ environment: {} })({ registerTool(tool: { name: string }) { inertWorkerTools.push(tool); } } as never);
 	assert.deepEqual(inertWorkerTools, []);
 
+	const [coder, , , reviewer] = testRoles();
 	const launch = createWorkerLaunch({
-		role: "implementer",
+		resolveLaunch: testLaunchResolver,
+		workerRole: "implementer",
+		role: coder,
 		events: WORKER_ROLE_EVENTS.implementer,
-		profile: resolvedProfile("coder", ["read", "bash", "edit", "write", "web_search"]),
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
@@ -1350,33 +1321,33 @@ test("extensions separate public lifecycle tools and show active workers", async
 		required_gate_timeout_ms: 7_200_000,
 	});
 	assert.equal(launch.env.PI_AUTO_DAG_DELIVERY_TIMEOUT_MS, "7260000");
-	assert.deepEqual(launch.args, [
-		"--offline", "--no-session", "--no-skills", "--skill", "/tmp/coder/SKILL.md", "--skill", "/Users/test/.pi/shared/SKILL.md",
-		"--extension", WORKER_EXTENSION_PATH, "--tools",
-		"read,bash,edit,write,web_search,auto_dag_request_review,auto_dag_block_task",
-	]);
+	assert.ok(launch.args.includes(WORKER_EXTENSION_PATH));
+	assert.ok(launch.args.includes("pi-auto-dag/implement"));
+	assert.match(launch.args[launch.args.indexOf("--tools") + 1], /auto_dag_request_review,auto_dag_block_task/);
 	const reviewerLaunch = createWorkerLaunch({
-		role: "reviewer",
+		resolveLaunch: testLaunchResolver,
+		workerRole: "reviewer",
+		role: reviewer,
 		events: ["submit_review", "block_task"],
-		profile: resolvedProfile("reviewer", ["read", "bash", "web_search"]),
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
 		action_ticket: reviewTicket,
 		required_gate_timeout_ms: DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
 	});
-	assert.equal(reviewerLaunch.args.at(-1), "read,bash,web_search,auto_dag_submit_review,auto_dag_block_task");
+	assert.match(reviewerLaunch.args[reviewerLaunch.args.indexOf("--tools") + 1], /auto_dag_submit_review,auto_dag_block_task/);
 	const healthReviewerLaunch = createWorkerLaunch({
-		role: "reviewer",
+		resolveLaunch: testLaunchResolver,
+		workerRole: "reviewer",
+		role: reviewer,
 		events: WORKER_ROLE_EVENTS.reviewer,
-		profile: resolvedProfile("reviewer", ["read", "bash", "web_search"]),
 		run_id: RUN_ID,
 		issue_id: "core",
 		main_pane: "main-pane",
 		action_ticket: reviewTicket,
 		required_gate_timeout_ms: DEFAULT_REQUIRED_GATE_TIMEOUT_MS,
 	});
-	assert.match(healthReviewerLaunch.args.at(-1)!, /auto_dag_submit_health/);
+	assert.match(healthReviewerLaunch.args[healthReviewerLaunch.args.indexOf("--tools") + 1], /auto_dag_submit_health/);
 
 	const directTicket = join(workerTemp, "direct-ticket.json");
 	const directReceipt = join(workerTemp, "direct-receipt.json");
@@ -1409,7 +1380,6 @@ test("orchestrator requires interactive approval for infrastructure gate retry",
 	const initial = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -1490,7 +1460,6 @@ test("orchestrator routes worker envelopes without an LLM turn and keeps tool te
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -1561,7 +1530,6 @@ test("orchestrator requires exact TUI confirmation before amending a failed gate
 	const runningState = createInitialRunState({
 		run_id: RUN_ID,
 		graph: parseDeliveryGraph(graph),
-		skill_registry: [],
 		source_commit: "source",
 		main_worktree: "/tmp/pi-auto-dag",
 		integration_branch: "main",
@@ -1695,11 +1663,11 @@ async function makeProject(t: TestContext, gitignore = ".context/\n"): Promise<{
 	await git(root, "init", "-b", "main");
 	await git(root, "config", "user.email", "test@example.com");
 	await git(root, "config", "user.name", "Test User");
-	await createTestProfiles(root);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root)));
+	await createTestRoles(agentDir);
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig()));
 	useAgentDir(t, agentDir);
 	await mkdir(join(root, ".context", "issues"), { recursive: true });
 	await writeFile(join(root, ".gitignore"), gitignore);
@@ -1708,16 +1676,6 @@ async function makeProject(t: TestContext, gitignore = ".context/\n"): Promise<{
 	await git(root, "commit", "-m", "initial");
 	await git(root, "checkout", "-b", "dag");
 	return { root, agentDir };
-}
-
-function resolvedProfile(id: string, tools: string[]) {
-	return {
-		id,
-		description: `${id} profile`,
-		agent_dir: `/tmp/${id}`,
-		skills: [`/tmp/${id}/SKILL.md`, "/Users/test/.pi/shared/SKILL.md"],
-		tools,
-	};
 }
 
 function useAgentDir(t: TestContext, agentDir: string): void {

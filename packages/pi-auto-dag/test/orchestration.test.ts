@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
-import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
+import { createTestRoles, testLaunchResolver, testRoleConfig } from "./support/roles.ts";
 import { recordedGateEvidence, type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
@@ -685,36 +685,27 @@ test("failed implementation gate accepts an exact command amendment before revie
 	assert.deepEqual(revision.required_gate, { command: replacement, amendments: state.gate_command_amendments });
 });
 
-test("reviewer-profile deletion mid-review blocks, then resolution launches a fresh reviewer from durable evidence", async (t) => {
+test("reviewer Role deletion mid-review blocks, then resolution launches a fresh reviewer from durable evidence", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
-	let deleteReviewerProfile = false;
-	const runner: CommandRunner = async (command, args, options) => {
-		const result = await herdr.runner(command, args, options);
-		if (deleteReviewerProfile && command === "herdr" && args.slice(0, 2).join(" ") === "agent get" && args[2].endsWith("-r")) {
-			deleteReviewerProfile = false;
-			await rm(join(project.root, "profiles", "reviewer"), { recursive: true, force: true });
-		}
-		return result;
-	};
-	const lifecycle = makeLifecycle(runner);
+	const lifecycle = makeLifecycle(herdr.runner);
 	let state = await lifecycle.start(project.root, "main-pane");
 	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(reviewPrompts(herdr).length, 1);
 
-	deleteReviewerProfile = true;
-	await assert.rejects(lifecycle.resume(project.root), /Profile reviewer directory is missing/);
+	await rm(join(project.agentDir, "config", "pi-subagent", "reviewer.md"));
+	await assert.rejects(lifecycle.resume(project.root), /Configured Subagent Role is unavailable: reviewer/);
 	state = (await lifecycle.status(project.root))!;
 	assert.equal(state.phase, "blocked");
-	assert.match(String(state.block_reason), /Profile reviewer directory is missing/);
+	assert.match(String(state.block_reason), /Configured Subagent Role is unavailable: reviewer/);
 	const stuckTab = state.tasks.alpha.tab_id;
 	const gateRuns = herdr.calls.filter((call) => call.command === "sh").length;
 	assert.equal(state.tasks.alpha.review_commit, commit);
 
-	await createTestProfiles(project.root);
-	state = await lifecycle.resolve(project.root, "alpha", "Reviewer profile restored; restart review.");
+	await createTestRoles(project.agentDir);
+	state = await lifecycle.resolve(project.root, "alpha", "Reviewer Role restored; restart review.");
 	assert.equal(state.phase, "execution");
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.notEqual(state.tasks.alpha.tab_id, stuckTab);
@@ -1030,6 +1021,7 @@ function makeLifecycle(runner: CommandRunner, delay?: (milliseconds: number) => 
 		uuid: () => RUN_ID,
 		now: () => "2026-08-09T00:00:00.000Z",
 		delay,
+		resolveLaunch: testLaunchResolver,
 	});
 }
 
@@ -1059,17 +1051,17 @@ async function makeProject(
 	maxParallel: number,
 	maxReviews: number,
 	shared?: string,
-): Promise<{ root: string }> {
+): Promise<{ root: string; agentDir: string }> {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-orchestration-"));
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 	await git(root, "init", "-b", "main");
 	await git(root, "config", "user.email", "test@example.com");
 	await git(root, "config", "user.name", "Test User");
-	await createTestProfiles(root);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, {
+	await createTestRoles(agentDir);
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig({
 		maxParallel,
 		maxReviews,
 	})));
@@ -1081,7 +1073,7 @@ async function makeProject(
 	await git(root, "checkout", "-b", "dag");
 	await mkdir(join(root, ".context", "issues"), { recursive: true });
 	await writeFile(join(root, ".context", "issues", "graph.json"), JSON.stringify(deliveryGraph));
-	return { root };
+	return { root, agentDir };
 }
 
 function useAgentDir(t: TestContext, agentDir: string): void {

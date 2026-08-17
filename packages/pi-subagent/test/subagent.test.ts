@@ -6,7 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import subagentExtension, { capOutput, loadRoles } from "../extensions/subagent.ts";
+import subagentExtension, { capOutput } from "../extensions/subagent.ts";
+import { loadRoles } from "../src/index.ts";
 
 type Tool = { description: string; execute: (...args: any[]) => Promise<any> };
 
@@ -148,9 +149,8 @@ Review only requested change.
 			profiles: { frontier: { primary: { model: "test/text-model", thinkingLevel: "high" } } },
 		}));
 		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { readFileSync } from "node:fs";
-const args = process.argv.slice(2);
-const prompt = readFileSync(args[args.indexOf("--append-system-prompt") + 1], "utf8");
+		await writeFile(runner, `const args = process.argv.slice(2);
+const prompt = args[args.indexOf("--append-system-prompt") + 1];
 console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ args, prompt, cwd: process.cwd() }) }], stopReason: "end" } }));
 `);
 		process.argv[1] = runner;
@@ -180,7 +180,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			"--model", "test/text-model",
 			"--thinking", "high",
 			"--no-approve",
-			"--append-system-prompt", child.args.at(-2),
+			"--append-system-prompt", "Review only requested change.",
 			"Task: inspect auth",
 		]);
 		assert.equal(updates.length, 1);

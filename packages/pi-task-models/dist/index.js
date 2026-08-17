@@ -7,6 +7,8 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export const DEFAULT_TASK_ASSIGNMENTS = {
     "pi-herdr-rename/rename": "fast",
     "pi-auto-compact/autoCompact": "balanced",
+    "pi-auto-dag/implement": "balanced",
+    "pi-auto-dag/review": "frontier",
 };
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
@@ -188,6 +190,27 @@ export function resolveTaskModelRoute(ctx, route) {
     return model && taskThinkingLevels(ctx, model).includes(route.thinkingLevel)
         ? { model, thinkingLevel: route.thinkingLevel }
         : undefined;
+}
+export function resolveConfiguredTaskRoute(ctx, task, agentDir = getAgentDir()) {
+    let config;
+    try {
+        config = readTaskModelsConfig(agentDir);
+    }
+    catch {
+        throw new Error("Couldn't read task model config. Run /task-models.");
+    }
+    const profileName = config.tasks[task];
+    if (!profileName)
+        throw new Error(`Task ${task} is not assigned to a profile. Run /task-models.`);
+    const profile = config.profiles[profileName];
+    if (!profile)
+        throw new Error(`Task ${task} profile ${profileName} is not configured. Run /task-models.`);
+    for (const route of orderedProfileRoutes(profile)) {
+        const resolved = resolveTaskModelRoute(ctx, route);
+        if (resolved)
+            return resolved;
+    }
+    throw new Error(`Task ${task} profile ${profileName} has no available route. Run /task-models.`);
 }
 export function orderedProfileRoutes(profile) {
     return profile.fallback ? [profile.primary, profile.fallback] : [profile.primary];

@@ -156,11 +156,11 @@ function parseId(value: unknown, label: string): string {
 	return id;
 }
 
-export function assertDeliveryGraphProfiles(graph: DeliveryGraph, implementationProfiles: readonly string[]): void {
-	const allowed = new Set(implementationProfiles);
+export function assertDeliveryGraphRoles(graph: DeliveryGraph, implementationRoles: readonly string[]): void {
+	const allowed = new Set(implementationRoles);
 	for (const issue of graph.issues) {
 		if (!allowed.has(issue.profile)) {
-			throw new Error(`Delivery Graph issues profile must be one of: ${implementationProfiles.join(", ")}; received ${issue.profile}`);
+			throw new Error(`Delivery Graph issues profile must be one of: ${implementationRoles.join(", ")}; received ${issue.profile}`);
 		}
 	}
 }

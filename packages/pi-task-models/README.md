@@ -13,6 +13,7 @@ pi install npm:@henryqw/pi-task-models
 | Package | Why |
 | --- | --- |
 | `@henryqw/pi-auto-compact` | Consumer. Compaction uses the `balanced` profile. |
+| `@henryqw/pi-auto-dag` | Consumer. Implement uses `balanced`; review uses `frontier`. |
 | `@henryqw/pi-herdr-rename` | Consumer. Rename uses the `fast` profile. |
 | `@henryqw/pi-subagent` | Consumer. Caller picks `fast`, `balanced`, or `frontier`. |
 | `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots dedupe to one route. |
@@ -49,7 +50,9 @@ Package also exports config and route-resolution helpers for consumers.
   },
   "tasks": {
     "pi-herdr-rename/rename": "fast",
-    "pi-auto-compact/autoCompact": "balanced"
+    "pi-auto-compact/autoCompact": "balanced",
+    "pi-auto-dag/implement": "balanced",
+    "pi-auto-dag/review": "frontier"
   }
 }
 ```
@@ -57,6 +60,8 @@ Package also exports config and route-resolution helpers for consumers.
 Each configured profile needs one primary model and thinking level. Fallback is optional. Model references use canonical `provider/model`; numbered `openai-codex-N` routes store as `openai-codex/model`.
 
 Reads are strict. Malformed or unknown values fail visibly and never rewrite the file. Only explicit `/task-models` actions write config.
+
+Consumers can call `resolveConfiguredTaskRoute(ctx, taskId)` to read strict shared config, choose usable primary or fallback route, and fail with `/task-models` guidance when assignment, profile, or route is unavailable.
 
 ## Remove
 

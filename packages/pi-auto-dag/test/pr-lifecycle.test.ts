@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
-import { createTestProfiles, testProfileConfig } from "./support/profiles.ts";
+import { createTestRoles, testLaunchResolver, testRoleConfig } from "./support/roles.ts";
 import { recordedGateEvidence, type CommandRunner, runCommand } from "../src/command.ts";
 import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
@@ -1088,6 +1088,7 @@ function makeLifecycle(runner: CommandRunner): CoreLifecycle {
 		runner,
 		uuid: () => RUN_ID,
 		now: () => "2026-08-09T00:00:00.000Z",
+		resolveLaunch: testLaunchResolver,
 	});
 }
 
@@ -1119,11 +1120,11 @@ async function makeProject(t: TestContext, options: { maxReviews?: number } = {}
 	await git(root, "init", "-b", "main");
 	await git(root, "config", "user.email", "test@example.com");
 	await git(root, "config", "user.name", "Test User");
-	await createTestProfiles(root);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testProfileConfig(root, { maxParallel: 1, maxReviews: options.maxReviews ?? 2 })));
+	await createTestRoles(agentDir);
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig({ maxParallel: 1, maxReviews: options.maxReviews ?? 2 })));
 	useAgentDir(t, agentDir);
 	await writeFile(join(root, ".gitignore"), ".context/\n.local-tools/\nnode_modules/\n");
 	await writeFile(join(root, "conflict.txt"), "base\n");

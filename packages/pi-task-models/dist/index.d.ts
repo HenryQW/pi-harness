@@ -6,6 +6,8 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export declare const DEFAULT_TASK_ASSIGNMENTS: {
     readonly "pi-herdr-rename/rename": "fast";
     readonly "pi-auto-compact/autoCompact": "balanced";
+    readonly "pi-auto-dag/implement": "balanced";
+    readonly "pi-auto-dag/review": "frontier";
 };
 export type TaskModelRoute = {
     model: string;
@@ -45,6 +47,7 @@ export declare function supportedThinkingLevels(model: AvailableModel): Thinking
 export declare function availableTaskModels(ctx: ExtensionContext): AvailableModel[];
 export declare function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel): ThinkingLevel[];
 export declare function resolveTaskModelRoute(ctx: ExtensionContext, route: TaskModelRoute): ResolvedTaskRoute | undefined;
+export declare function resolveConfiguredTaskRoute(ctx: ExtensionContext, task: string, agentDir?: string): ResolvedTaskRoute;
 export declare function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[];
 export declare function activeTaskPackages(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">, tasks?: Readonly<Record<string, ProfileName>>): ActiveTaskPackage[];
 export declare function createTaskModelsExtension(pi: ExtensionAPI, options?: {
