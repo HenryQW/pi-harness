@@ -4,6 +4,7 @@ export type ProfileName = (typeof PROFILE_NAMES)[number];
 export declare const THINKING_LEVELS: readonly ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export declare const DEFAULT_TASK_ASSIGNMENTS: {
+    readonly "pi-herdr-btw/btw": "fast";
     readonly "pi-herdr-rename/rename": "fast";
     readonly "pi-auto-compact/autoCompact": "fast";
     readonly "pi-subagent/delegateTask": "balanced";

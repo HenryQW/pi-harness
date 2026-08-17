@@ -14,6 +14,7 @@ pi install npm:@henryqw/pi-task-models
 | --- | --- |
 | `@henryqw/pi-auto-compact` | Consumer. Compaction defaults to the `fast` profile. |
 | `@henryqw/pi-auto-dag` | Consumer. Implement uses `balanced`; review uses `frontier`. |
+| `@henryqw/pi-herdr-btw` | Consumer. Side-thread launch uses the `fast` profile. |
 | `@henryqw/pi-herdr-rename` | Consumer. Rename uses the `fast` profile. |
 | `@henryqw/pi-subagent` | Consumer. Delegation defaults to `balanced`; caller may override it. |
 | `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots dedupe to one route. |
@@ -26,7 +27,7 @@ pi install npm:@henryqw/pi-task-models
 
 Selecting a profile sets primary model, primary thinking, optional fallback model, then fallback thinking. One completed flow writes the whole profile. Selecting a task changes its assignment.
 
-Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. Empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated. Fallback choices exclude the selected primary. Hidden task assignments stay stored when a package is disabled.
+Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. Empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated. Fallback choices exclude the selected primary. Hidden task assignments stay stored when a package is disabled. BTW selects the first authenticated viable route before pane launch.
 
 Package also exports config and route-resolution helpers for consumers.
 
@@ -49,6 +50,7 @@ Package also exports config and route-resolution helpers for consumers.
     }
   },
   "tasks": {
+    "pi-herdr-btw/btw": "fast",
     "pi-herdr-rename/rename": "fast",
     "pi-auto-compact/autoCompact": "fast",
     "pi-subagent/delegateTask": "balanced",

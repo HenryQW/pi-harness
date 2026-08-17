@@ -5,6 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 export const PROFILE_NAMES = ["fast", "balanced", "frontier"];
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const DEFAULT_TASK_ASSIGNMENTS = {
+    "pi-herdr-btw/btw": "fast",
     "pi-herdr-rename/rename": "fast",
     "pi-auto-compact/autoCompact": "fast",
     "pi-subagent/delegateTask": "balanced",

@@ -11,6 +11,7 @@ Public Pi packages under `@henryqw` scope.
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | `pi install npm:@henryqw/pi-auto-compact` | Compact context at the set threshold and resume current task. |
 | [`@henryqw/pi-auto-dag`](./packages/pi-auto-dag) | `pi install npm:@henryqw/pi-auto-dag` | Execute an approved local Delivery Graph through Pi workers. |
 | [`@henryqw/pi-herdr`](./packages/pi-herdr) | `npm install @henryqw/pi-herdr` | Run Herdr CLI commands through a shared thin client. |
+| [`@henryqw/pi-herdr-btw`](./packages/pi-herdr-btw) | `pi install npm:@henryqw/pi-herdr-btw` | Open and merge Pi side threads in Herdr panes. |
 | [`@henryqw/pi-herdr-rename`](./packages/pi-herdr-rename) | `pi install npm:@henryqw/pi-herdr-rename` | Generate short chat titles and rename current Herdr location. |
 | [`@henryqw/pi-model-thinking`](./packages/pi-model-thinking) | `pi install npm:@henryqw/pi-model-thinking` | Remember chosen thinking level per model. |
 | [`@henryqw/pi-multi-codex`](./packages/pi-multi-codex) | `pi install npm:@henryqw/pi-multi-codex` | Use multiple ChatGPT Codex OAuth accounts in Pi. |

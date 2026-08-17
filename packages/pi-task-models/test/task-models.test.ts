@@ -30,6 +30,7 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 		assert.deepEqual(readTaskModelsConfig(dir), {
 			profiles: {},
 			tasks: {
+				"pi-herdr-btw/btw": "fast",
 				"pi-herdr-rename/rename": "fast",
 				"pi-auto-compact/autoCompact": "fast",
 				"pi-subagent/delegateTask": "balanced",

@@ -23,6 +23,7 @@
       "./packages/pi-task-models/extensions/task-models.ts",
       "./packages/pi-open-in/extensions",
       "./packages/pi-herdr-rename/extensions",
+      "./packages/pi-herdr-btw/extensions/btw.ts",
       "./packages/pi-multi-codex/extensions",
       "./packages/pi-subagent/extensions/subagent.ts"
     ]
