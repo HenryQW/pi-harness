@@ -6,6 +6,11 @@ import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
 const CLEAR = "Use current level";
 const configPath = () => join(getAgentDir(), "config", "pi-model-thinking.json");
+const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
+
+function modelKey(provider: string, id: string): string {
+	return `${provider === "openai-codex" || CODEX_ALIAS.test(provider) ? "openai-codex" : provider}/${id}`;
+}
 
 function isValidThinkingLevel(value: unknown): value is ThinkingLevel {
 	return typeof value === "string" && LEVELS.includes(value as ThinkingLevel);
@@ -21,7 +26,11 @@ function readConfig(): Record<string, ThinkingLevel> {
 		throw error;
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Config must be an object.");
-	return Object.fromEntries(Object.entries(value).filter(([, level]) => isValidThinkingLevel(level)));
+	return Object.fromEntries(Object.entries(value).flatMap(([key, level]) => {
+		if (!isValidThinkingLevel(level)) return [];
+		const separator = key.indexOf("/");
+		return [[separator > 0 ? modelKey(key.slice(0, separator), key.slice(separator + 1)) : key, level]];
+	}));
 }
 
 // Config is tiny; concurrent Pi processes use last-writer-wins updates.
@@ -34,7 +43,7 @@ function writeConfig(config: Record<string, ThinkingLevel>): void {
 export default function modelThinkingExtension(pi: ExtensionAPI): void {
 	const setThinkingLevel = (provider: string, id: string): ThinkingLevel | undefined => {
 		try {
-			const level = readConfig()[`${provider}/${id}`];
+			const level = readConfig()[modelKey(provider, id)];
 			if (level) {
 				pi.setThinkingLevel(level);
 				return pi.getThinkingLevel();
@@ -52,7 +61,7 @@ export default function modelThinkingExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const key = `${ctx.model.provider}/${ctx.model.id}`;
+			const key = modelKey(ctx.model.provider, ctx.model.id);
 			let config: Record<string, ThinkingLevel>;
 			try {
 				config = readConfig();

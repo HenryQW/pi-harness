@@ -38,8 +38,14 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           published=0
+          task_models_seen=0
 
-          for manifest in packages/*/package.json; do
+          # Shared task-model library must exist before first consumer releases.
+          for manifest in packages/pi-task-models/package.json packages/*/package.json; do
+            if [ "$manifest" = packages/pi-task-models/package.json ]; then
+              [ "$task_models_seen" = 1 ] && continue
+              task_models_seen=1
+            fi
             name="$(node -p "require('./$manifest').name")"
             if [ "$(node -p "Boolean(require('./$manifest').private)")" = true ]; then
               continue

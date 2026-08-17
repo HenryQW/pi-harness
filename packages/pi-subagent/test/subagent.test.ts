@@ -23,6 +23,12 @@ async function environment(run: (agentDir: string) => Promise<void>): Promise<vo
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const previousScript = process.argv[1];
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	await mkdir(join(agentDir, "config"), { recursive: true });
+	await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		profiles: {
+			balanced: { primary: { model: "test/text-model", thinkingLevel: "low" } },
+		},
+	}));
 	try {
 		await run(agentDir);
 	} finally {
@@ -50,8 +56,8 @@ function harness(options: {
 	ui?: boolean;
 	skills?: Array<{ name: string; path: string }>;
 	trusted?: boolean;
-	selectResults?: Array<string | undefined>;
 	availableModels?: any[];
+	currentModel?: any;
 } = {}) {
 	let tool: Tool | undefined;
 	let widget: { render: (width: number) => string[] } | undefined;
@@ -59,7 +65,6 @@ function harness(options: {
 	const notifications: Array<{ message: string; type: string }> = [];
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const commands = new Map<string, { handler: (...args: any[]) => any }>();
-	const selectResults = [...(options.selectResults ?? [])];
 	const tui = { requestRender: () => { renders++; } };
 	const theme = { fg: (_color: string, value: string) => value };
 	const api = {
@@ -78,13 +83,12 @@ function harness(options: {
 	subagentExtension(api);
 	const ctx = {
 		cwd: "/tmp",
-		model,
+		model: options.currentModel ?? model,
 		thinkingLevel: "low",
 		hasUI: options.ui ?? false,
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: { getAvailable: () => options.availableModels ?? [model] },
 		ui: {
-			select: async () => selectResults.shift(),
 			notify: (message: string, type: string) => notifications.push({ message, type }),
 			setWidget: (_key: string, content: any) => {
 				widget = typeof content === "function" ? content(tui, theme) : undefined;
@@ -140,9 +144,8 @@ skills:
 ---
 Review only requested change.
 `);
-		await mkdir(join(agentDir, "config"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent.json"), JSON.stringify({
-			models: { frontier: { model: "test/text-model", thinkingLevel: "high" } },
+		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			profiles: { frontier: { primary: { model: "test/text-model", thinkingLevel: "high" } } },
 		}));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `import { readFileSync } from "node:fs";
@@ -188,7 +191,55 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	});
 });
 
-test("/subagent configures all model classes and routes explicit class", async () => {
+test("role without tools leaves Pi tool policy unoverridden", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Uses Pi default tools
+extensions:
+  - /user/extensions/company-tools.ts
+---
+Do bounded work.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text);
+		assert.equal(args.includes("--tools"), false);
+		assert.equal(args.includes("--no-tools"), false);
+		assert.equal(args[args.indexOf("--extension") + 1], "/user/extensions/company-tools.ts");
+	});
+});
+
+test("empty role tools disable all child tools", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "thinker.md"), `---
+name: thinker
+description: Reasons without tools
+tools: []
+---
+Return a plan.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "thinker", task: "plan" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text);
+		assert.equal(args.includes("--tools"), false);
+		assert.ok(args.includes("--no-tools"));
+	});
+});
+
+test("shared profiles route explicit and omitted model classes without a subagent command", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -198,39 +249,67 @@ tools: [read]
 ---
 Return concise findings.
 `);
+		const legacyConfig = JSON.stringify({ models: { frontier: { model: "legacy/model", thinkingLevel: "high" } } });
+		await writeFile(join(agentDir, "config", "pi-subagent.json"), legacyConfig);
 		const availableModels = [
 			{ provider: "provider", id: "fast-model", input: ["text"], reasoning: false },
 			{ provider: "provider", id: "balanced-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
 			{ provider: "provider", id: "frontier-model", input: ["text"], reasoning: true, thinkingLevelMap: { max: "max" } },
 		];
-		const app = harness({
-			availableModels,
-			selectResults: [
-				"fast", "provider/fast-model", "off",
-				"balanced", "provider/balanced-model", "medium",
-				"frontier", "provider/frontier-model", "max",
-			],
-		});
-		for (let index = 0; index < 3; index++) await app.commands.get("subagent")!.handler("", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "config", "pi-subagent.json"), "utf8")), {
-			models: {
-				fast: { model: "provider/fast-model", thinkingLevel: "off" },
-				balanced: { model: "provider/balanced-model", thinkingLevel: "medium" },
-				frontier: { model: "provider/frontier-model", thinkingLevel: "max" },
+		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			profiles: {
+				fast: { primary: { model: "provider/fast-model", thinkingLevel: "off" } },
+				balanced: { primary: { model: "provider/balanced-model", thinkingLevel: "medium" } },
+				frontier: { primary: { model: "provider/frontier-model", thinkingLevel: "max" } },
 			},
-		});
-
+		}));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
 		process.argv[1] = runner;
-		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx);
-		const args = JSON.parse(result.content[0].text);
-		assert.equal(args[args.indexOf("--model") + 1], "provider/frontier-model");
-		assert.equal(args[args.indexOf("--thinking") + 1], "max");
+		const app = harness({ availableModels });
+		assert.equal(app.commands.has("subagent"), false);
+
+		const explicit = await app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const explicitArgs = JSON.parse(explicit.content[0].text);
+		assert.equal(explicitArgs[explicitArgs.indexOf("--model") + 1], "provider/frontier-model");
+		assert.equal(explicitArgs[explicitArgs.indexOf("--thinking") + 1], "max");
+
+		const omitted = await app.tool.execute("call-2", { role: "worker", task: "inspect code" }, undefined, undefined, app.ctx);
+		const omittedArgs = JSON.parse(omitted.content[0].text);
+		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/balanced-model");
+		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "medium");
+		assert.equal(await readFile(join(agentDir, "config", "pi-subagent.json"), "utf8"), legacyConfig);
 	});
 });
 
-test("explicit unconfigured model class rejects before child start", async () => {
+test("canonical Codex route follows active account alias in isolated child", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Return concise findings.
+`);
+		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			profiles: { frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } } },
+		}));
+		const canonical = { ...model, provider: "openai-codex", id: "gpt-test" };
+		const alias = { ...canonical, provider: "openai-codex-2" };
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
+		process.argv[1] = runner;
+		const app = harness({ availableModels: [canonical, alias], currentModel: alias });
+		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text) as string[];
+		assert.equal(args[args.indexOf("--model") + 1], "openai-codex-2/gpt-test");
+		const extensions = args.flatMap((value, index) => value === "--extension" ? [args[index + 1]] : []);
+		assert.ok(extensions.some((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")));
+	});
+});
+
+test("explicit unconfigured model class rejects with task-models guidance before child start", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -243,8 +322,70 @@ Return concise findings.
 		const app = harness();
 		await assert.rejects(
 			app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx),
-			/No frontier Subagent model configured/,
+			/Run \/task-models/,
 		);
+	});
+});
+
+test("uses a profile fallback when the primary thinking level is unavailable before launch", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Return concise findings.
+`);
+		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			profiles: {
+				balanced: {
+					primary: { model: "provider/primary", thinkingLevel: "high" },
+					fallback: { model: "provider/fallback", thinkingLevel: "low" },
+				},
+			},
+		}));
+		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
+		const fallback = { provider: "provider", id: "fallback", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low" } };
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
+		process.argv[1] = runner;
+		const app = harness({ availableModels: [primary, fallback] });
+		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text);
+		assert.equal(args[args.indexOf("--model") + 1], "provider/fallback");
+		assert.equal(args[args.indexOf("--thinking") + 1], "low");
+	});
+});
+
+test("does not retry a child after launch failure", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Return concise findings.
+`);
+		const marker = join(agentDir, "child-launches");
+		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			profiles: {
+				balanced: {
+					primary: { model: "provider/primary", thinkingLevel: "off" },
+					fallback: { model: "provider/fallback", thinkingLevel: "off" },
+				},
+			},
+		}));
+		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
+		const fallback = { provider: "provider", id: "fallback", input: ["text"], reasoning: false };
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(marker)}, "1");\nprocess.exit(2);\n`);
+		process.argv[1] = runner;
+		const app = harness({ availableModels: [primary, fallback] });
+		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect" }, undefined, undefined, app.ctx);
+		assert.equal(result.isError, true);
+		assert.equal(await readFile(marker, "utf8"), "1");
 	});
 });
 
@@ -380,7 +521,8 @@ test("invalid role config blocks delegation without blocking extension load", as
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "broken.md"), `---
 name: broken
-description: Missing bounded tool list
+description: Has malformed tool list
+tools: [read, 1]
 ---
 Do work.
 `);

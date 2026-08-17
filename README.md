@@ -7,11 +7,11 @@ Public Pi packages under `@henryqw` scope.
 | Package | Install | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | `pi install npm:@henryqw/pi-ask-question` | Ask user one interactive multiple-choice or free-text question. |
+| [`@henryqw/pi-add-dir`](./packages/pi-add-dir) | `pi install npm:@henryqw/pi-add-dir` | Add external directories with context, skills, and file search. |
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | `pi install npm:@henryqw/pi-auto-compact` | Compact context at the set threshold and resume current task. |
 | [`@henryqw/pi-auto-dag`](./packages/pi-auto-dag) | `pi install npm:@henryqw/pi-auto-dag` | Execute an approved local Delivery Graph through Pi workers. |
 | [`@henryqw/pi-herdr`](./packages/pi-herdr) | `npm install @henryqw/pi-herdr` | Run Herdr CLI commands through a shared thin client. |
 | [`@henryqw/pi-herdr-btw`](./packages/pi-herdr-btw) | `pi install npm:@henryqw/pi-herdr-btw` | Open and merge Pi side threads in Herdr panes. |
-| [`@henryqw/pi-herdr-subagents`](./packages/pi-herdr-subagents) | `pi install npm:@henryqw/pi-herdr-subagents` | Delegate bounded work to interactive Pi Subagents in Herdr tabs. |
 | [`@henryqw/pi-model-thinking`](./packages/pi-model-thinking) | `pi install npm:@henryqw/pi-model-thinking` | Remember chosen thinking level per model. |
 | [`@henryqw/pi-open-in`](./packages/pi-open-in) | `pi install npm:@henryqw/pi-open-in` | Open current working directory with configurable command. |
 | [`@henryqw/pi-subagent`](./packages/pi-subagent) | `pi install npm:@henryqw/pi-subagent` | Delegate one task to an isolated role with explicit extensions and skills. |

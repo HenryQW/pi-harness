@@ -16,9 +16,11 @@
   "pi": {
     "extensions": [
       "./packages/pi-ask-question/extensions/ask-question.ts",
+      "./packages/pi-add-dir/extensions/add-dir.ts",
       "./packages/pi-auto-compact/extensions",
       "./packages/pi-auto-dag/extensions/auto-dag.ts",
       "./packages/pi-model-thinking/extensions",
+      "./packages/pi-task-models/extensions/task-models.ts",
       "./packages/pi-open-in/extensions",
       "./packages/pi-herdr-rename/extensions",
       "./packages/pi-herdr-btw/extensions/btw.ts",
@@ -33,7 +35,7 @@
     "pack:check": "npm run pack:check --workspaces --if-present"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
   }
 }

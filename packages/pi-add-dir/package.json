@@ -1,12 +1,13 @@
 {
-  "name": "@henryqw/pi-model-thinking",
-  "version": "0.1.5",
-  "description": "Remember Pi thinking level per model.",
+  "name": "@henryqw/pi-add-dir",
+  "version": "0.1.1",
+  "description": "Add external directories to a Pi session with context, skills, and file search.",
   "keywords": [
     "pi-package",
     "pi",
-    "thinking",
-    "settings"
+    "external-directory",
+    "context",
+    "skills"
   ],
   "type": "module",
   "engines": {
@@ -20,17 +21,18 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/model-thinking.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
+    "typebox": "^1.3.13"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-model-thinking"
+    "directory": "packages/pi-add-dir"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"
@@ -40,7 +42,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/add-dir.ts"
     ]
   }
 }

@@ -7,12 +7,15 @@ Based on Pi's authoritative [`examples/extensions/subagent`](https://github.com/
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
+`pi-task-models` provides the shared `/task-models` command used to configure Subagent routes.
+
 ## Configure roles
 
-Use Pi's existing role Markdown format in package-owned `~/.pi/agent/config/pi-subagent/*.md`. Configure `fast`, `balanced`, and `frontier` model routes with `/subagent`.
+Use Pi's existing role Markdown format in the user-owned `~/.pi/agent/config/pi-subagent/*.md`. Model routes are shared with other HenryQW task extensions and are configured with `/task-models`.
 
 ```markdown
 ---
@@ -36,18 +39,20 @@ Fields:
 | --- | --- | --- |
 | `name` | yes | Role selected by Main |
 | `description` | yes | Tells Main when to use role |
-| `tools` | yes | Exact built-in and extension tool allowlist; use `[]` for none |
+| `tools` | no | Omit for Pi effective `defaultTools`; a non-empty list is an exact built-in and extension tool allowlist; use `[]` for none |
 | `extensions` | no | Absolute/user-home paths or package sources passed to Pi `--extension` |
 | `skills` | no | Effective Pi Skill names loaded for role |
 | Markdown body | yes | Role system instructions |
+
+Omitted `tools` uses Pi's effective `defaultTools` for built-ins. Tools registered by Role extensions stay active without listing their names. A non-empty `tools` list strictly allowlists both built-in and extension tools; `tools: []` sends `--no-tools`.
 
 String lists may also use comma-separated text, matching Pi's example role files. Repository-relative extension paths are rejected: child working directory is delegated project, so relative paths could load untrusted project code. Use absolute paths, `~/...`, or explicit package sources such as `npm:...`.
 
 Skill entries use Pi Skill names, normally Skill directory names, not filesystem paths. At delegation time, package resolves names from Main's effective Pi Skill registry and passes matching files to child. Missing or unavailable Skills produce warning and are skipped; they do not block delegation. This preserves Main's trust and Skill collision decisions.
 
-Pi's example `agents/` directory contains sample Role files, not another runtime mechanism. This package reuses that Markdown format but ships no presets: role capabilities and model routes stay explicit in user config. No nested `agents/` directory is needed because Roles remain Markdown files.
+Pi's example `agents/` directory contains sample Role files, not another runtime mechanism. This package reuses that Markdown format but ships no presets: role capabilities stay explicit in user config. No nested `agents/` directory is needed because Roles remain Markdown files.
 
-Reload Pi after adding or changing role files or manually editing model config. `/subagent` applies changes immediately.
+Role Markdown and shared task-model settings are read when each task starts. The package has no model picker or package-local model settings.
 
 ## Execution
 
@@ -55,25 +60,26 @@ Main calls `delegate_task` with:
 
 - `role`: configured role name
 - `task`: one bounded task
-- `modelClass`: optional `fast`, `balanced`, or `frontier`; defaults to configured `balanced`, then Main route
+- `modelClass`: optional `fast`, `balanced`, or `frontier`; omitted `modelClass` uses `balanced`
 
-Run `/subagent` once per class. Select class, authenticated text model, and supported thinking level. Config lives in `~/.pi/agent/config/pi-subagent.json`:
+Configure shared profiles with `/task-models`. The shared file is `~/.pi/agent/config/pi-task-models.json`:
 
 ```json
 {
-  "models": {
-    "fast": { "model": "provider/fast-model", "thinkingLevel": "off" },
-    "balanced": { "model": "provider/balanced-model", "thinkingLevel": "medium" },
-    "frontier": { "model": "provider/frontier-model", "thinkingLevel": "max" }
+  "profiles": {
+    "balanced": {
+      "primary": { "model": "provider/model", "thinkingLevel": "medium" },
+      "fallback": { "model": "other-provider/model", "thinkingLevel": "low" }
+    }
   }
 }
 ```
 
-Explicit class routes must be configured and available. Omitted `modelClass` falls back to Main when `balanced` route is missing or stale.
+The selected profile's primary route is resolved against current scoped text models and scoped thinking pins; empty scope means all available models. Its fallback is tried only before child launch when the primary route, model, or thinking level is unavailable. If no route is usable, delegation rejects with `Run /task-models`. Once a child starts, its failure is returned and is never retried with another route.
 
-Each call starts isolated child process. Ambient extensions and skills are disabled. Only role resources load. Child uses delegated working directory and normal Pi project context files, inheriting Main's project approval decision. Abort terminates child process group.
+Each call starts one isolated child process. Ambient extensions and skills are disabled. Only role resources load. Child uses delegated working directory and normal Pi project context files, inheriting Main's project approval decision. Abort terminates child process group.
 
-Configured model and thinking level must exist in Main model registry. Invalid role config or explicit model class fails before child starts.
+Numbered `pi-multi-codex` providers use the Main session's active Codex account slot when the same model is available, and the provider extension is explicitly loaded in the isolated child. Invalid role config or task-model route fails before child starts.
 
 Main-visible streaming updates, final output, and errors are capped at 50 KiB of UTF-8 text. Error collection stays bounded while child runs; malformed JSON events above 1 MiB fail delegation. Truncated output ends with exact omitted-byte count.
 

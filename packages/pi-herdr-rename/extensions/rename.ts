@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
 	BorderedLoader,
 	getAgentDir,
@@ -7,42 +7,88 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient } from "@henryqw/pi-herdr";
+import {
+	orderedProfileRoutes,
+	readTaskModelsConfig,
+	resolveTaskModelRoute,
+	type ResolvedTaskRoute,
+} from "@henryqw/pi-task-models";
 
 const WIDGET_KEY = "pi-herdr-rename";
 const WIDGET_RESULT_MS = 2_000;
 const MAX_MESSAGE_CHARS = 1_000;
-const MAX_CONTEXT_CHARS = 4_000;
+const MAX_CONTEXT_CHARS = 2_000;
 const DEFAULT_MAX_WORDS = 4;
 const DEFAULT_MAX_CHARS = 40;
+const RENAME_TASK = "pi-herdr-rename/rename";
+const DEFAULT_RENAME_PROFILE = "fast" as const;
+const HERDR_DEFAULT_WORKTREE_NAME = /^(?:worktree[-/])?(?:brave|calm|clear|green|lucky|quiet|rapid|silver)-(?:river|cloud|field|forest|harbor|meadow|stone|valley)-[0-9a-f]{4}$/;
 const configPath = () => join(getAgentDir(), "config", "pi-herdr-rename.json");
 
-type RenameConfig = { model?: string; maxWords: number; maxChars: number };
+type RenameConfig = { maxWords: number; maxChars: number };
 
 class RenameModelError extends Error {}
 
-const positiveInteger = (value: unknown, fallback: number) =>
-	typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+const positiveInteger = (value: unknown, fallback: number, minimum = 1) =>
+	typeof value === "number" && Number.isInteger(value) && value >= minimum ? value : fallback;
+
+function configuredRenameRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
+	let config;
+	try {
+		config = readTaskModelsConfig();
+	} catch {
+		throw new RenameModelError("Couldn't read task model config. Run /task-models.");
+	}
+
+	const profileName = config.tasks[RENAME_TASK] ?? DEFAULT_RENAME_PROFILE;
+	const profile = config.profiles[profileName];
+	if (!profile) {
+		throw new RenameModelError(`Rename task profile ${profileName} is not configured. Run /task-models.`);
+	}
+
+	const routes = orderedProfileRoutes(profile)
+		.map((route) => resolveTaskModelRoute(ctx, route))
+		.filter((route): route is ResolvedTaskRoute => route !== undefined);
+	if (!routes.length) {
+		throw new RenameModelError(`Rename task profile ${profileName} has no available route. Run /task-models.`);
+	}
+	return routes;
+}
+
+function branchFromTitle(title: string): string | undefined {
+	const match = /^([a-z][a-z0-9-]*): ([a-z0-9]+(?: [a-z0-9]+)*)$/.exec(title);
+	return match ? `${match[1]}/${match[2].replaceAll(" ", "-")}` : undefined;
+}
+
+function branchAvailable(candidate: string, branches: string[]): boolean {
+	return branches.every((branch) => branch !== candidate && !branch.startsWith(`${candidate}/`) && !candidate.startsWith(`${branch}/`));
+}
+
+function availableBranch(branch: string, branches: string[]): string {
+	const [type, subject] = branch.split("/");
+	for (let suffix = 1; suffix <= branches.length + 1; suffix++) {
+		const candidate = suffix === 1 ? branch : `${type}/${subject}-${suffix}`;
+		if (branchAvailable(candidate, branches)) return candidate;
+	}
+	for (let suffix = 2; suffix <= branches.length + 2; suffix++) {
+		const candidate = `${type}-${suffix}/${subject}`;
+		if (branchAvailable(candidate, branches)) return candidate;
+	}
+	throw new Error("Could not choose an available semantic branch.");
+}
 
 async function configured(): Promise<RenameConfig> {
 	try {
 		const config: unknown = JSON.parse(await readFile(configPath(), "utf8"));
 		if (config && typeof config === "object" && !Array.isArray(config)) {
-			const values = config as { model?: unknown; maxWords?: unknown; maxChars?: unknown };
+			const values = config as { maxWords?: unknown; maxChars?: unknown };
 			return {
-				model: typeof values.model === "string" && /^[^\s/]+\/\S+$/.test(values.model) ? values.model : undefined,
-				maxWords: positiveInteger(values.maxWords, DEFAULT_MAX_WORDS),
-				maxChars: positiveInteger(values.maxChars, DEFAULT_MAX_CHARS),
+				maxWords: positiveInteger(values.maxWords, DEFAULT_MAX_WORDS, 2),
+				maxChars: positiveInteger(values.maxChars, DEFAULT_MAX_CHARS, 6),
 			};
 		}
 	} catch {}
 	return { maxWords: DEFAULT_MAX_WORDS, maxChars: DEFAULT_MAX_CHARS };
-}
-
-async function saveModel(model: string): Promise<void> {
-	const path = configPath();
-	const { maxWords, maxChars } = await configured();
-	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify({ model, maxWords, maxChars }, null, 2)}\n`, "utf8");
 }
 
 function messageText(content: unknown): string {
@@ -99,40 +145,67 @@ function recentConversation(ctx: ExtensionContext, fallback?: string): string | 
 }
 
 async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<string> {
-	const { model: key, maxWords, maxChars } = await configured();
-	if (!key) throw new Error("Rename model is not configured. Run /rename-model.");
-	const separator = key.indexOf("/");
-	const provider = key.slice(0, separator);
-	const id = key.slice(separator + 1);
-	const model = ctx.modelRegistry
-		.getAvailable()
-		.find((candidate) => candidate.provider === provider && candidate.id === id && candidate.input.includes("text"));
-	if (!model) throw new Error(`Rename model unavailable: ${key}. Run /rename-model.`);
+	const { maxWords, maxChars } = await configured();
+	const completionContext = {
+		systemPrompt: `Return only a semantic title for latest user intent. Format: type: subject. Use lowercase type and lowercase alphanumeric subject words separated by spaces. No other punctuation; at most ${maxWords} words and at most ${maxChars} characters.`,
+		messages: [{ role: "user" as const, content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
+	};
+	const complete = async (route: ResolvedTaskRoute) => {
+		let auth;
+		try {
+			auth = await ctx.modelRegistry.getApiKeyAndHeaders(route.model);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			throw new RenameModelError("Couldn't authenticate rename task model.");
+		}
+		if (!auth.ok) throw new RenameModelError("Couldn't authenticate rename task model.");
 
-	const response = await ctx.modelRegistry.complete(
-		model,
-		{
-			systemPrompt: `Return only a short chat title for the current conversation topic, prioritizing the most recent user intent: lowercase, at most ${maxWords} words, and at most ${maxChars} characters.`,
-			messages: [{ role: "user", content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
-		},
-		{ signal, maxRetries: 0, maxTokens: 64 },
-	);
-	if (response.stopReason === "error") {
-		throw new RenameModelError(response.errorMessage || "Rename model failed.");
-	}
-	if (response.stopReason !== "stop") throw new Error("Rename model did not return a complete title.");
+		const provider = ctx.modelRegistry.getProvider(route.model.provider);
+		if (!provider) throw new RenameModelError("Rename task model provider is unavailable.");
+		const model = auth.baseUrl ? { ...route.model, baseUrl: auth.baseUrl } : route.model;
 
-	const title = response.content
-		.filter((part) => part.type === "text")
-		.map((part) => part.text)
-		.join(" ")
-		.trim()
-		.toLowerCase()
-		.replace(/\s+/g, " ");
-	if (!title || title.length > maxChars || title.split(" ").length > maxWords) {
-		throw new Error("Rename model returned an invalid title.");
+		let response;
+		try {
+			// streamSimple maps the shared thinking level through this registered model's metadata.
+			response = await provider.streamSimple(model, completionContext, {
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				env: auth.env,
+				signal,
+				maxRetries: 0,
+				maxTokens: 64,
+				...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }),
+			}).result();
+		} catch (error) {
+			if (signal.aborted) throw error;
+			throw new RenameModelError(error instanceof Error ? error.message : "Rename task model failed.");
+		}
+		if (response.stopReason === "error") throw new RenameModelError(response.errorMessage || "Rename task model failed.");
+		if (response.stopReason !== "stop") throw new RenameModelError("Rename task model did not return a complete title.");
+		return response;
+	};
+
+	let failure: RenameModelError | undefined;
+	for (const route of configuredRenameRoutes(ctx)) {
+		try {
+			const response = await complete(route);
+			const title = response.content
+				.filter((part) => part.type === "text")
+				.map((part) => part.text)
+				.join(" ")
+				.trim()
+				.toLowerCase()
+				.replace(/\s+/g, " ");
+			if (!title || title.length > maxChars || title.split(" ").length > maxWords || !branchFromTitle(title)) {
+				throw new RenameModelError("Rename task model returned an invalid title.");
+			}
+			return title;
+		} catch (error) {
+			if (signal.aborted || !(error instanceof RenameModelError)) throw error;
+			failure = error;
+		}
 	}
-	return title;
+	throw failure ?? new RenameModelError("Rename task model routes failed.");
 }
 
 export default function herdrRenameExtension(pi: ExtensionAPI): void {
@@ -157,7 +230,8 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (!isCurrent(request, controller)) return;
 
 		const paneResponse: unknown = await herdr.json(["pane", "get", paneId], { signal: controller.signal });
-		const tabId = (paneResponse as { result?: { pane?: { tab_id?: unknown } } }).result?.pane?.tab_id;
+		const pane = (paneResponse as { result?: { pane?: { tab_id?: unknown; workspace_id?: unknown } } }).result?.pane;
+		const tabId = pane?.tab_id;
 		if (typeof tabId !== "string" || !tabId) throw new Error("Herdr pane response omitted tab_id.");
 		if (!isCurrent(request, controller)) return;
 
@@ -166,6 +240,40 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (typeof paneCount !== "number") throw new Error("Herdr tab response omitted pane_count.");
 		if (paneCount === 1 && isCurrent(request, controller)) {
 			await herdr.run(["tab", "rename", tabId, title], { signal: controller.signal });
+		}
+		if (!isCurrent(request, controller)) return;
+
+		const workspaceId = pane?.workspace_id;
+		if (typeof workspaceId !== "string" || !workspaceId) throw new Error("Herdr pane response omitted workspace_id.");
+		const workspaceResponse: unknown = await herdr.json(["workspace", "get", workspaceId], { signal: controller.signal });
+		const workspace = (workspaceResponse as { result?: { workspace?: { label?: unknown; worktree?: { checkout_path?: unknown; is_linked_worktree?: unknown } } } }).result?.workspace;
+		const workspaceName = workspace?.label;
+		if (typeof workspaceName !== "string") throw new Error("Herdr workspace response omitted label.");
+		const worktree = workspace?.worktree;
+		const checkoutPath = worktree?.checkout_path;
+		if (worktree?.is_linked_worktree !== true || typeof checkoutPath !== "string" || !checkoutPath) return;
+
+		const runGit = async (args: string[]) => {
+			const result = await pi.exec("git", args, { cwd: checkoutPath, signal: controller.signal });
+			if (result.code !== 0 || result.killed) {
+				throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim() || (result.killed ? "killed" : `exit ${result.code}`)}`);
+			}
+			return result.stdout.trim();
+		};
+
+		let branch = await runGit(["branch", "--show-current"]);
+		if (!branch || branch.startsWith("worktree/")) {
+			const generatedBranch = branchFromTitle(title);
+			if (!generatedBranch || !isCurrent(request, controller)) return;
+			const branches = (await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
+				.split("\n")
+				.filter(Boolean);
+			const semanticBranch = availableBranch(generatedBranch, branches);
+			await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
+			branch = semanticBranch;
+		}
+		if (HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) && isCurrent(request, controller)) {
+			await herdr.run(["workspace", "rename", workspaceId, branch], { signal: controller.signal });
 		}
 	};
 
@@ -205,14 +313,20 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		ctx.ui.setWidget(WIDGET_KEY, undefined);
 	};
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", (_event, ctx) => {
 		clearWidget(ctx);
 		active?.abort();
 		active = undefined;
 		sequence++;
 		latestUserText = latestSessionUserText(ctx);
-		if (!(await configured()).model) {
-			ctx.ui.notify("Run /rename-model to configure chat title generation.", "warning");
+		try {
+			const taskModels = readTaskModelsConfig();
+			const profileName = taskModels.tasks[RENAME_TASK] ?? DEFAULT_RENAME_PROFILE;
+			if (!taskModels.profiles[profileName]) {
+				ctx.ui.notify(`Configure rename task profile ${profileName} with /task-models.`, "warning");
+			}
+		} catch {
+			ctx.ui.notify("Couldn't read task model config. Run /task-models.", "warning");
 		}
 		const title = pi.getSessionName();
 		automaticStarted = Boolean(title || latestUserText);
@@ -269,29 +383,6 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 				widgetTimer = undefined;
 			}, WIDGET_RESULT_MS);
 			widgetTimer.unref?.();
-		},
-	});
-
-	pi.registerCommand("rename-model", {
-		description: "Choose the model used to generate chat titles",
-		handler: async (_args, ctx) => {
-			const models = ctx.modelRegistry
-				.getAvailable()
-				.filter((model) => model.input.includes("text"))
-				.map((model) => `${model.provider}/${model.id}`)
-				.sort();
-			if (!models.length) {
-				ctx.ui.notify("No authenticated text models are available.", "warning");
-				return;
-			}
-			const selected = await ctx.ui.select("Rename model", models);
-			if (!selected) return;
-			try {
-				await saveModel(selected);
-				ctx.ui.notify(`Rename model saved: ${selected}`, "info");
-			} catch {
-				ctx.ui.notify("Couldn't save rename model config.", "warning");
-			}
 		},
 	});
 }
