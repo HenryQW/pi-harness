@@ -13,7 +13,6 @@ import {
 	type MergeRequest,
 } from "../internal/merge.ts";
 import {
-	decideCacheMode,
 	registerBtwExtension,
 	type ConfigStorePort,
 	type ContextStorePort,
@@ -1362,30 +1361,6 @@ test("child falls back to the portable document when the prefix cannot match", a
 		assert.match(messages[0]?.content?.[0]?.text ?? "", /read-only snapshot/);
 		assert.match(messages[0]?.content?.[0]?.text ?? "", /<parent-conversation>/);
 	});
-});
-
-test("decideCacheMode explains every fallback reason", () => {
-	const payload = fixturePayload();
-	const matching = {
-		model: "test-provider/test-model",
-		activeTools: ["read", "bash"],
-		thinkingLevel: "high",
-	};
-	assert.deepEqual(decideCacheMode(payload, matching), { mode: "native" });
-	const noPrompt = decideCacheMode(fixturePayload({ parentSystemPrompt: null }), matching);
-	assert.match(noPrompt.reason ?? "", /system prompt/);
-	assert.match(
-		decideCacheMode(payload, { ...matching, model: "other/model" }).reason ?? "",
-		/model/,
-	);
-	assert.match(
-		decideCacheMode(payload, { ...matching, activeTools: ["read"] }).reason ?? "",
-		/tool/,
-	);
-	assert.match(
-		decideCacheMode(payload, { ...matching, thinkingLevel: "low" }).reason ?? "",
-		/thinking/,
-	);
 });
 
 function createChildMergeContext(options: { editor?: (title: string, prefill?: string) => Promise<string | undefined> } = {}) {

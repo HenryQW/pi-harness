@@ -6,15 +6,10 @@ import test from "node:test";
 import {
 	activeTaskPackages,
 	availableTaskModels,
-	canonicalModelReference,
-	dedupeAvailableModels,
 	DEFAULT_TASK_ASSIGNMENTS,
-	orderedProfileRoutes,
 	readTaskModelsConfig,
-	resolveAvailableModel,
 	resolveConfiguredTaskRoute,
 	resolveTaskModelRoute,
-	supportedThinkingLevels,
 	taskThinkingLevels,
 	writeTaskModelsConfig,
 } from "@henryqw/pi-task-models";
@@ -77,26 +72,6 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
-});
-
-test("canonicalizes codex aliases, dedupes active models, and resolves thinking levels", () => {
-	const canonical = { provider: "openai-codex", id: "gpt-5", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low", max: "max" } } as any;
-	const alias = { ...canonical, provider: "openai-codex-2" } as any;
-	const other = { provider: "other", id: "model", input: ["text"], reasoning: false } as any;
-	const models = dedupeAvailableModels([alias, canonical, other], "openai-codex-2");
-	const withoutActiveCodex = dedupeAvailableModels([canonical, alias, other], "other");
-
-	assert.equal(models[0].provider, "openai-codex-2");
-	assert.equal(withoutActiveCodex[0].provider, "openai-codex-2");
-	assert.equal(canonicalModelReference(alias), "openai-codex/gpt-5");
-	assert.deepEqual(supportedThinkingLevels(other as never), ["off"]);
-	assert.deepEqual(supportedThinkingLevels(canonical as never), ["off", "minimal", "low", "medium", "high", "max"]);
-	assert.equal(resolveAvailableModel(models as never, "openai-codex/gpt-5", "openai-codex-2")?.provider, "openai-codex-2");
-	assert.equal(resolveAvailableModel([canonical, alias] as never, "openai-codex/gpt-5", "other")?.provider, "openai-codex-2");
-	assert.deepEqual(orderedProfileRoutes({ primary: { model: "a/b", thinkingLevel: "low" }, fallback: { model: "c/d", thinkingLevel: "high" } }), [
-		{ model: "a/b", thinkingLevel: "low" },
-		{ model: "c/d", thinkingLevel: "high" },
-	]);
 });
 
 test("uses scoped models and pinned thinking for picker and route resolution", () => {

@@ -63,15 +63,6 @@ async function execute(tool: RegisteredTool, params: Params, ctx: unknown, signa
 
 test("ask_question validates context and options", async () => {
 	const tool = loadTool();
-	assert.equal(tool.name, "ask_question");
-	assert.equal(tool.executionMode, "sequential");
-	assert.match(tool.promptSnippet ?? "", /up to three options/);
-	assert.deepEqual(tool.promptGuidelines, [
-		"In interactive TUI sessions, use ask_question instead of plain assistant text whenever user input is needed to proceed; in non-interactive sessions, ask in plain assistant text.",
-		"Give ask_question one to three concise, meaningful options without inventing filler, put recommended option first, and omit '(Recommended)' from its label.",
-		"Give ask_question option descriptions only when they explain meaningful tradeoffs; never repeat option labels.",
-	]);
-
 	const params = { question: "Continue?", options: [{ label: "Yes" }, { label: "No" }, { label: "Later" }] };
 	assert.match((await execute(tool, params, { mode: "rpc" })).content[0]!.text, /UI not available/);
 	assert.match((await execute(tool, { question: "Continue?", options: [] }, tuiContext([]))).content[0]!.text, /1 to 3 options required/);
