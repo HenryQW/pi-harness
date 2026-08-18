@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import childToolPolicy, { ROLE_TOOL_POLICY_FLAG } from "../extensions/role-tools.ts";
 import {
 	listManagedSubagents,
 	managedSubagentName,
@@ -31,6 +32,48 @@ const model = {
 	reasoning: true,
 	thinkingLevelMap: { high: "high" },
 } as const;
+
+test("child role policy keeps selected built-ins and activates loaded extension tools", () => {
+	let sessionStart: (() => void) | undefined;
+	let activeTools = ["read", "bash", "edit", "write", "extension_tool"];
+	const pi = {
+		registerFlag(name: string) { assert.equal(name, ROLE_TOOL_POLICY_FLAG); },
+		getFlag(name: string) {
+			assert.equal(name, ROLE_TOOL_POLICY_FLAG);
+			return JSON.stringify(["read"]);
+		},
+		on(event: string, handler: () => void) {
+			if (event === "session_start") sessionStart = handler;
+		},
+		getAllTools: () => [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "extension_tool", sourceInfo: { source: "npm:example-extension" } },
+			{ name: "sdk_tool", sourceInfo: { source: "sdk" } },
+			{ name: "inline_tool", sourceInfo: { source: "inline" } },
+		],
+		setActiveTools(names: string[]) { activeTools = names; },
+	} as unknown as ExtensionAPI;
+
+	childToolPolicy(pi);
+	assert.ok(sessionStart);
+	sessionStart();
+	assert.deepEqual(activeTools, ["read", "extension_tool"]);
+});
+
+test("child role policy rejects a malformed tool flag", () => {
+	let sessionStart: (() => void) | undefined;
+	const pi = {
+		registerFlag() {},
+		getFlag: () => "not-json",
+		on(event: string, handler: () => void) {
+			if (event === "session_start") sessionStart = handler;
+		},
+	} as unknown as ExtensionAPI;
+
+	childToolPolicy(pi);
+	assert.ok(sessionStart);
+	assert.throws(sessionStart, /pi-subagent-role-tools must be JSON tool names/);
+});
 
 test("assigned Role launch merges caller policy and resolves effective Pi resources", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-library-"));
@@ -78,8 +121,11 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.deepEqual(launch.args.slice(0, 3), ["--no-session", "--no-extensions", "--no-skills"]);
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
 	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
+	assert.match(valuesAfter(launch.args, "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
 	assert.deepEqual(valuesAfter(launch.args, "--skill"), ["/effective/security/SKILL.md"]);
-	assert.equal(valueAfter(launch.args, "--tools"), "read,submit");
+	assert.equal(launch.args.includes("--tools"), false);
+	assert.equal(launch.args.includes("--no-tools"), false);
+	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "submit"]));
 	assert.equal(valueAfter(launch.args, "--model"), "openai-codex-2/gpt-test");
 	assert.equal(valueAfter(launch.args, "--thinking"), "high");
 	assert.ok(launch.args.includes("--no-approve"));
@@ -94,6 +140,8 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	});
 	assert.equal(defaultTools.args.includes("--tools"), false);
 	assert.equal(defaultTools.args.includes("--no-tools"), false);
+	assert.equal(defaultTools.args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
+	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
 });
 
 test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retires", async () => {

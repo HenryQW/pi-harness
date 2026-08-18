@@ -18,7 +18,7 @@ Provide validated user Roles, shared task-model Pi launch policy, generic manage
 ## Invariants
 
 - One Delegated Task creates one ephemeral child process and no saved session.
-- Ambient child extensions and Skills stay disabled; Role explicitly selects extensions and Skills. Omitted Role tools use Pi's effective `defaultTools` for built-ins; an explicit list is strict.
+- Ambient child extensions and Skills stay disabled; Role explicitly selects extension sources and named Skills. Pi loads Skills supplied by those extension packages or their resource discovery. Omitted Role tools use Pi's effective `defaultTools`; an explicit list sets base tools while loaded extension tools activate automatically.
 - Role Skill names resolve through Main's effective Pi Skill registry; unavailable names warn and skip without blocking delegation.
 - Main selects Role and may override Model Class per task; omitted class uses shared `pi-subagent/delegateTask` assignment, initially `balanced`. Library callers select Role plus their own shared task ID.
 - The selected profile resolves primary then fallback only before launch when a route, model, or thinking level is unavailable. If neither route is usable, launch rejects with `Run /task-models`; a started child is never retried by this package.
