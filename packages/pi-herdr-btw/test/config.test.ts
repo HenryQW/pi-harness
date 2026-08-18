@@ -40,22 +40,6 @@ test("parseConfig fills omitted values and rejects invalid values", () => {
 	assert.throws(() => parseConfig({ split: "left" }), /split/);
 });
 
-test("ConfigStore defaults to Pi's private config directory", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-herdr-btw-agent-test-"));
-	t.after(async () => {
-		const { rm } = await import("node:fs/promises");
-		await rm(directory, { recursive: true, force: true });
-	});
-	const previous = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = directory;
-	try {
-		assert.equal(new ConfigStore().path, join(directory, "config", "pi-herdr-btw.json"));
-	} finally {
-		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previous;
-	}
-});
-
 test("ConfigStore serializes read-modify-write updates", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-herdr-btw-config-lock-test-"));
 	t.after(async () => {

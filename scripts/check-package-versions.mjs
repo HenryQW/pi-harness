@@ -44,7 +44,7 @@ for (const packageDir of packageDirs) {
   if (current.private) continue
 
   const packageChanged = changedFiles.some(file => file.startsWith(`${packageDir}/`))
-  if (!packageChanged || !changedFiles.some(file => publishedChange(file, packageDir, current))) continue
+  if (!packageChanged || !changedFiles.some(file => file.startsWith(`${packageDir}/`) && publishedChange(file, packageDir, current))) continue
 
   const previous = packageJsonAt(base, manifest)
   if (previous && previous.version === current.version) {
