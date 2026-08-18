@@ -10,7 +10,12 @@ import { ROLE_TOOL_POLICY_FLAG } from "../extensions/role-tools.ts";
 import subagentExtension, { capOutput } from "../extensions/subagent.ts";
 import { loadRoles } from "../src/index.ts";
 
-type Tool = { description: string; execute: (...args: any[]) => Promise<any> };
+type Tool = {
+	description: string;
+	promptSnippet?: string;
+	promptGuidelines?: string[];
+	execute: (...args: any[]) => Promise<any>;
+};
 
 function assertTruncated(actual: string, original: string): void {
 	assert.ok(Buffer.byteLength(actual, "utf8") <= 50 * 1024);
@@ -162,6 +167,12 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			trusted: false,
 		});
 		assert.match(app.tool.description, /reviewer: Reviews focused changes/);
+		assert.equal(app.tool.promptSnippet, "Delegate one bounded, independently executable task to an isolated role");
+		assert.deepEqual(app.tool.promptGuidelines, [
+			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
+			"Each delegate_task task must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
+			"Submit independent delegate_task calls together for parallel execution. Parallel edits must own non-overlapping files; otherwise sequence them. Use the minimum number of Subagents needed.",
+		]);
 		const updates: any[] = [];
 		const result = await app.tool.execute(
 			"call-1",

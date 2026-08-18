@@ -350,7 +350,9 @@ async function runPi(
 
 const Parameters = Type.Object({
 	role: Type.String({ description: "Configured Subagent role name" }),
-	task: Type.String({ description: "One bounded task with needed context and expected result" }),
+	task: Type.String({
+		description: "Bounded task packet: objective; exact scope and exclusions; relevant context and constraints; expected deliverable; validation. Never the whole parent request.",
+	}),
 	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
 		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
@@ -457,7 +459,13 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, or frontier for ambiguous and high-risk work; omit modelClass to use shared task-model settings. Request concise conclusions and file/line references; split broad scouting work.`,
+		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, or frontier for ambiguous and high-risk work; omit modelClass to use shared task-model settings.`,
+		promptSnippet: "Delegate one bounded, independently executable task to an isolated role",
+		promptGuidelines: [
+			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
+			"Each delegate_task task must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
+			"Submit independent delegate_task calls together for parallel execution. Parallel edits must own non-overlapping files; otherwise sequence them. Use the minimum number of Subagents needed.",
+		],
 		parameters: Parameters,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const task = cleanText(params.task, "task", "delegate_task");

@@ -25,6 +25,8 @@ pi install npm:@henryqw/pi-subagent
 
 `modelClass` is `fast`, `balanced`, or `frontier`. Omitted class uses the shared `pi-subagent/delegateTask` assignment, which defaults to `balanced`. Primary route is resolved against current scoped text models; fallback is tried only before launch. If no route is usable, delegation rejects with `Run /task-models`. A started child is never retried.
 
+Main splits broad work into independent bounded tasks and keeps integration and cross-cutting decisions. Each `task` states its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation. Independent sibling calls can run concurrently; concurrent edit tasks must own non-overlapping files.
+
 Each call starts one isolated child (`pi --mode json -p --no-session`). Ambient extensions and Skills are off. Role/caller extensions load; those packages' tools and Skills auto-load, plus any extra `skills` names. Child uses the delegated working directory and Main's project approval. Abort kills the child process group. Streaming output is capped at 50 KiB. Unused JSON event types are discarded before payload buffering; consumed or unclassifiable events above 1 MiB fail delegation.
 
 TUI shows one row per Subagent with role, route, task, tokens, and elapsed time. Terminal rows drop after one second.
