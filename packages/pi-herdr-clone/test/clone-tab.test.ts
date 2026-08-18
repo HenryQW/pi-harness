@@ -240,14 +240,14 @@ test("trust-boundary failures prevent agent launch and failed tab creation remov
 			});
 		});
 
-		await t.test("an invalid created tab never starts an agent and removes its clone", async () => {
+		await t.test("a failed tab create removes its clone", async () => {
 			await withPane("pane-current", async () => {
 				const app = harness(data.manager, data.cwd, (args) => {
 					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
-					if (args[0] === "tab") return success({ result: { tab: { tab_id: "tab-new" }, root_pane: {} } });
+					if (args[0] === "tab") return { stdout: "", stderr: "tab create denied", code: 1, killed: false };
 					return success();
 				});
-				await assert.rejects(app.command("", app.ctx), /root pane_id/);
+				await assert.rejects(app.command("", app.ctx), /tab create denied/);
 				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
 					["pane", "get"],
 					["tab", "create"],
@@ -261,6 +261,33 @@ test("trust-boundary failures prevent agent launch and failed tab creation remov
 });
 
 test("launch-attempt failures retain recovery artifacts while focus failure reports a started clone", async (t) => {
+	await t.test("an invalid created tab retains clone and reports the tab", async () => {
+		const data = await fixture();
+		try {
+			await withPane("pane-current", async () => {
+				const app = harness(data.manager, data.cwd, (args) => {
+					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
+					if (args[0] === "tab") return success({ result: { tab: { tab_id: "tab-new" }, root_pane: {} } });
+					return success();
+				});
+				await assert.rejects(app.command("", app.ctx), (error: Error) => {
+					assert.match(error.message, /could not be confirmed/);
+					assert.match(error.message, /tab-new/);
+					assert.match(error.message, /root pane_id/);
+					return true;
+				});
+				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
+					["pane", "get"],
+					["tab", "create"],
+				]);
+				const leftover = (await readdir(data.sessionDir)).filter((name) => name !== basename(data.sessionFile));
+				assert.equal(leftover.length, 1);
+			});
+		} finally {
+			await rm(data.root, { recursive: true, force: true });
+		}
+	});
+
 	await t.test("agent start failure retains clone and reports every Herdr ID", async () => {
 		const data = await fixture();
 		try {

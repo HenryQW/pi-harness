@@ -13,5 +13,5 @@ New Herdr tab whose root pane starts Pi with the active-path clone, then receive
 _Avoid_: worker tab, worktree tab
 
 **Ambiguous launch**:
-Failed Herdr agent-start attempt whose timeout may hide a successful process start. Clone tab and session are retained and identified for recovery.
+Tab-create response missing identity, or failed Herdr agent-start attempt whose timeout may hide a successful process start. Clone tab and session are retained and identified for recovery.
 _Avoid_: failed clone, cleanup failure

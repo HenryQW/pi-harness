@@ -59,27 +59,41 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 			}
 			if (!cloneStat.isFile()) throw new Error(`Pi clone session path is not a file: ${cloneFile}`);
 
-			let tabId: string;
-			let rootPaneId: string;
+			const tabCreateArgs = ["tab", "create", "--workspace", workspaceId, "--cwd", ctx.cwd, "--no-focus"] as const;
+			const createdTab = await herdr.exec(tabCreateArgs, { cwd: ctx.cwd });
+			if (createdTab.code !== 0 || createdTab.killed) {
+				const createError = new Error(herdrCommandFailure(tabCreateArgs, createdTab));
+				try {
+					await unlink(cloneFile);
+				} catch (cleanupError) {
+					throw new AggregateError(
+						[createError, cleanupError],
+						`${createError.message} Clone cleanup also failed for ${cloneFile}: ${errorMessage(cleanupError)}`,
+					);
+				}
+				throw createError;
+			}
+
+			let tabId: string | undefined;
+			let rootPaneId: string | undefined;
 			try {
-				const tabResponse = await herdr.json([
-					"tab", "create", "--workspace", workspaceId, "--cwd", ctx.cwd, "--no-focus",
-				], { cwd: ctx.cwd });
+				const tabResponse: unknown = JSON.parse(createdTab.stdout);
+				if (!tabResponse || typeof tabResponse !== "object" || Array.isArray(tabResponse)) {
+					throw new Error("Herdr tab create returned invalid JSON");
+				}
 				const result = (tabResponse as {
 					result?: { tab?: { tab_id?: unknown }; root_pane?: { pane_id?: unknown } };
 				}).result;
 				tabId = requiredString(result?.tab?.tab_id, "Herdr tab response tab_id");
 				rootPaneId = requiredString(result?.root_pane?.pane_id, `Herdr tab ${tabId} root pane_id`);
 			} catch (error) {
-				try {
-					await unlink(cloneFile);
-				} catch (cleanupError) {
-					throw new AggregateError(
-						[error, cleanupError],
-						`${errorMessage(error)} Clone cleanup also failed for ${cloneFile}: ${errorMessage(cleanupError)}`,
-					);
-				}
-				throw error;
+				throw new Error(
+					`Clone launch could not be confirmed after creating a Herdr tab; retained${tabId ? ` Herdr tab ${tabId} and` : ""} session ${cloneFile}: ${errorMessage(error)}`,
+					{ cause: error },
+				);
+			}
+			if (!tabId || !rootPaneId) {
+				throw new Error(`Clone launch could not be confirmed after creating a Herdr tab; retained session ${cloneFile}.`);
 			}
 
 			const agentName = `clone-${randomUUID().replaceAll("-", "").slice(0, 24)}`;

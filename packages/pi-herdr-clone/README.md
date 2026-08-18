@@ -26,7 +26,7 @@ The command waits until Pi is idle, then:
 
 The command requires `HERDR_ENV=1`, `HERDR_PANE_ID`, an existing persisted session file, and a current session leaf. It has no configuration or worktree behavior.
 
-If tab creation fails before agent start, the cloned session file is removed. Once agent start is attempted, its tab and session file are retained on failure because a timeout can leave the launch outcome unknown; the error reports their IDs for recovery. A later focus failure is shown as a warning and does not report the already-started clone as failed.
+If tab creation itself fails, the cloned session file is removed. If Herdr creates the tab but the response is incomplete, or once agent start is attempted, the tab and session file are retained because the launch outcome can be unknown; the error reports any known IDs for recovery. A later focus failure is shown as a warning and does not report the already-started clone as failed.
 
 ## Development
 
