@@ -171,6 +171,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.deepEqual(app.tool.promptGuidelines, [
 			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
 			"Each delegate_task task must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
+			"For each delegate_task call, choose the least capable modelClass that can reliably complete the task: fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
 			"Submit independent delegate_task calls together for parallel execution. Parallel edits must own non-overlapping files; otherwise sequence them. Use the minimum number of Subagents needed.",
 		]);
 		const updates: any[] = [];
