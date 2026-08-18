@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { ROLE_TOOL_POLICY_FLAG } from "../extensions/role-tools.ts";
 import subagentExtension, { capOutput } from "../extensions/subagent.ts";
 import { loadRoles } from "../src/index.ts";
 
@@ -172,11 +173,14 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const child = JSON.parse(result.content[0].text);
 		assert.equal(child.cwd, await realpath("/tmp"));
 		assert.equal(child.prompt, "Review only requested change.");
+		const policyExtension = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension").at(-1)!;
+		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
 		assert.deepEqual(child.args, [
 			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
 			"--extension", "/user/extensions/review.ts",
+			"--extension", policyExtension,
 			"--skill", "/effective/skills/security/SKILL.md",
-			"--tools", "read,grep",
+			`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(["read", "grep"]),
 			"--model", "test/text-model",
 			"--thinking", "high",
 			"--no-approve",
@@ -212,11 +216,13 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const args = JSON.parse(result.content[0].text);
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
+		assert.equal(args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
 		assert.equal(args[args.indexOf("--extension") + 1], "/user/extensions/company-tools.ts");
+		assert.equal(args.filter((value: string, index: number) => args[index - 1] === "--extension").some((path: string) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
 	});
 });
 
-test("empty role tools disable all child tools", async () => {
+test("empty role tools leave only loaded extension tools", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "thinker.md"), `---
@@ -235,7 +241,9 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const result = await app.tool.execute("call-1", { role: "thinker", task: "plan" }, undefined, undefined, app.ctx);
 		const args = JSON.parse(result.content[0].text);
 		assert.equal(args.includes("--tools"), false);
-		assert.ok(args.includes("--no-tools"));
+		assert.equal(args.includes("--no-tools"), false);
+		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
+		assert.match(args.filter((value: string, index: number) => args[index - 1] === "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
 	});
 });
 

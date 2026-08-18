@@ -25,7 +25,7 @@ pi install npm:@henryqw/pi-subagent
 
 `modelClass` is `fast`, `balanced`, or `frontier`. Omitted class uses the shared `pi-subagent/delegateTask` assignment, which defaults to `balanced`. Primary route is resolved against current scoped text models; fallback is tried only before launch. If no route is usable, delegation rejects with `Run /task-models`. A started child is never retried.
 
-Each call starts one isolated child (`pi --mode json -p --no-session`). Ambient extensions and skills are off; only role resources load. Child uses the delegated working directory and Main's project approval. Abort kills the child process group. Streaming output is capped at 50 KiB. Unused JSON event types are discarded before payload buffering; consumed or unclassifiable events above 1 MiB fail delegation.
+Each call starts one isolated child (`pi --mode json -p --no-session`). Ambient extensions and Skills are off. Role/caller extensions load; those packages' tools and Skills auto-load, plus any extra `skills` names. Child uses the delegated working directory and Main's project approval. Abort kills the child process group. Streaming output is capped at 50 KiB. Unused JSON event types are discarded before payload buffering; consumed or unclassifiable events above 1 MiB fail delegation.
 
 TUI shows one row per Subagent with role, route, task, tokens, and elapsed time. Terminal rows drop after one second.
 
@@ -53,9 +53,9 @@ Do not edit files.
 | --- | --- | --- |
 | `name` | yes | Role selected by Main |
 | `description` | yes | Tells Main when to use the role |
-| `tools` | no | Omit for Pi `defaultTools`; a non-empty list is an exact allowlist; `[]` means none |
-| `extensions` | no | Absolute/`~/` paths or package sources. Repository-relative paths are rejected. |
-| `skills` | no | Effective Pi skill names, resolved from Main's registry |
+| `tools` | no | Omit for Pi defaults; when present, base tools are listed and every loaded Role/caller extension tool is added automatically. `[]` leaves extension tools only. |
+| `extensions` | no | Absolute/`~/` paths or package sources. Package-declared Skills and Pi `resources_discover` Skill paths load automatically. Repository-relative paths are rejected. |
+| `skills` | no | Additional effective Pi Skill names, resolved from Main's registry |
 | Markdown body | yes | Role system instructions |
 
 Missing skills warn and skip; they do not block delegation. No repo-controlled `.pi/agents` roles. No package-local model picker.
@@ -86,7 +86,7 @@ const tab = await reconcileManagedSubagentTab(host, { cwd: worktree, launch, lab
 await startManagedSubagent(host, agentName, tab.paneId, launch, { execute });
 ```
 
-`resolveRoleLaunch` uses shared task assignment and effective Pi registries. Caller tools extend explicit Role allowlists; omitted Role `tools` preserves Pi defaults. Generic host APIs contain no workflow prompts or durable state.
+`resolveRoleLaunch` uses shared task assignment and effective Pi registries. Caller tools extend Role base tools; Role and caller extension tools activate automatically. Omitted Role `tools` preserves Pi defaults. Generic host APIs contain no workflow prompts or durable state.
 
 ## Remove
 

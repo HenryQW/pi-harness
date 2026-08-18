@@ -19,6 +19,8 @@ import {
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
+const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
+const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 
 export interface Role {
 	name: string;
@@ -182,14 +184,15 @@ export function createRoleLaunch(
 ): ResolvedRoleLaunch {
 	const role = input.role;
 	const skills = resolveRoleSkills(pi, role);
+	const tools = role.tools === undefined
+		? undefined
+		: [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
 	const extensions = [
 		...role.extensions,
 		...(input.extensions ?? []),
 		...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
+		...(tools === undefined ? [] : [ROLE_TOOLS_EXTENSION]),
 	].map((extension) => validateExtension(extension, `Role ${role.name}`));
-	const tools = role.tools === undefined
-		? undefined
-		: [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
 	const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid launch environment name: ${key}`);
 		if (typeof value !== "string" || value.includes("\0")) throw new Error(`Invalid launch environment value: ${key}`);
@@ -198,10 +201,7 @@ export function createRoleLaunch(
 	const args = ["--no-session", "--no-extensions", "--no-skills"];
 	for (const extension of new Set(extensions)) args.push("--extension", extension);
 	for (const skill of skills.paths) args.push("--skill", skill);
-	if (tools !== undefined) {
-		if (tools.length) args.push("--tools", tools.join(","));
-		else args.push("--no-tools");
-	}
+	if (tools !== undefined) args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));
 	args.push("--model", modelReference(input.route.model));
 	if (input.route.thinkingLevel) args.push("--thinking", input.route.thinkingLevel);
 	args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");

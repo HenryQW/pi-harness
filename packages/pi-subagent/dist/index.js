@@ -7,6 +7,8 @@ import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode } from "@henr
 import { modelReference, orderedProfileRoutes, PROFILE_NAMES, readTaskModelsConfig, resolveConfiguredTaskRoute, resolveTaskModelRoute, } from "@henryqw/pi-task-models";
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
+const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
+const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const isProfileName = (value) => typeof value === "string" && PROFILE_NAMES.includes(value);
 const cleanText = (value, field, source) => {
     if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -117,14 +119,15 @@ export function resolveRoleSkills(pi, role) {
 export function createRoleLaunch(pi, ctx, input) {
     const role = input.role;
     const skills = resolveRoleSkills(pi, role);
+    const tools = role.tools === undefined
+        ? undefined
+        : [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
     const extensions = [
         ...role.extensions,
         ...(input.extensions ?? []),
         ...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
+        ...(tools === undefined ? [] : [ROLE_TOOLS_EXTENSION]),
     ].map((extension) => validateExtension(extension, `Role ${role.name}`));
-    const tools = role.tools === undefined
-        ? undefined
-        : [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
     const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
             throw new Error(`Invalid launch environment name: ${key}`);
@@ -137,12 +140,8 @@ export function createRoleLaunch(pi, ctx, input) {
         args.push("--extension", extension);
     for (const skill of skills.paths)
         args.push("--skill", skill);
-    if (tools !== undefined) {
-        if (tools.length)
-            args.push("--tools", tools.join(","));
-        else
-            args.push("--no-tools");
-    }
+    if (tools !== undefined)
+        args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));
     args.push("--model", modelReference(input.route.model));
     if (input.route.thinkingLevel)
         args.push("--thinking", input.route.thinkingLevel);
