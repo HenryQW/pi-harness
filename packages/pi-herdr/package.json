@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Shared client for interacting with Herdr from Node.js tools and Pi packages.",
   "keywords": [
     "pi-package",
@@ -31,6 +31,12 @@
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4"
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
   },
   "repository": {
     "type": "git",

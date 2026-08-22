@@ -12,6 +12,10 @@ _Avoid_: session fork, full session copy
 New Herdr tab whose root pane starts Pi with the active-path clone, then receives focus after successful agent start.
 _Avoid_: worker tab, worktree tab
 
+**Worktree clone**:
+New Herdr Git worktree workspace (`herdr worktree create`) whose root pane starts Pi with the active-path clone inside the fresh checkout, then receives focus after successful agent start. Branch and checkout path are chosen by Herdr.
+_Avoid_: branch clone, repo copy
+
 **Ambiguous launch**:
 Tab-create response missing identity, or failed Herdr agent-start attempt whose timeout may hide a successful process start. Clone tab and session are retained and identified for recovery.
 _Avoid_: failed clone, cleanup failure

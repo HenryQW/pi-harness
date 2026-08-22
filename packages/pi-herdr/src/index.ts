@@ -1,3 +1,5 @@
+import { lock } from "proper-lockfile";
+
 export interface HerdrExecResult {
 	code: number;
 	stdout: string;
@@ -58,6 +60,16 @@ export function hasHerdrErrorCode(result: Pick<HerdrExecResult, "stdout" | "stde
 			return false;
 		}
 	});
+}
+
+/** Lock a Herdr worktree checkout path while mutating it via the Herdr CLI. */
+export async function withWorktreeLock<T>(checkout: string, operation: () => Promise<T>): Promise<T> {
+	const release = await lock(checkout);
+	try {
+		return await operation();
+	} finally {
+		await release();
+	}
 }
 
 function herdrCommandName(args: readonly string[]): string {

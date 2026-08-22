@@ -1,3 +1,4 @@
+import { lock } from "proper-lockfile";
 export function createHerdrClient(execute) {
     const exec = async (args, options) => {
         if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
@@ -41,6 +42,16 @@ export function hasHerdrErrorCode(result, expected) {
             return false;
         }
     });
+}
+/** Lock a Herdr worktree checkout path while mutating it via the Herdr CLI. */
+export async function withWorktreeLock(checkout, operation) {
+    const release = await lock(checkout);
+    try {
+        return await operation();
+    }
+    finally {
+        await release();
+    }
 }
 function herdrCommandName(args) {
     return ["herdr", ...args.slice(0, 2)].join(" ");
