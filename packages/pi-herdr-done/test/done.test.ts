@@ -221,7 +221,8 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				pullResult: { stdout: "", stderr: "error: Your local changes would be overwritten by merge", code: 1 },
 			}));
 			await assert.rejects(app.command("--force", context()), /overwritten by merge/);
-			assert.equal(app.calls.length, 5);
+			// --force skips the dependents check, so no herdr api snapshot call.
+			assert.equal(app.calls.length, 4);
 		});
 	});
 
