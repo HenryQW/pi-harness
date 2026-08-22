@@ -27,7 +27,7 @@ pi install npm:@henryqw/pi-subagent
 
 Main splits broad work into independent bounded tasks and keeps integration and cross-cutting decisions. Each `task` states its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation. Each call uses the least capable `modelClass` that can reliably complete its task. Independent sibling calls can run concurrently; concurrent edit tasks must own non-overlapping files.
 
-Each call starts one isolated child (`pi --mode json -p --no-session`). Ambient extensions and Skills are off. Role/caller extensions load; those packages' tools and Skills auto-load, plus any extra `skills` names. Child uses the delegated working directory and Main's project approval. Abort kills the child process group. Streaming output is capped at 50 KiB. Unused JSON event types are discarded before payload buffering; consumed or unclassifiable events above 1 MiB fail delegation.
+Each call starts one isolated child (`pi --mode json -p --no-session`). Ambient extensions and Skills are off. Role/caller extensions load; those packages' tools and Skills auto-load, plus any extra `skills` names. Child uses the delegated working directory and Main's project approval. Abort kills the child process group. An inactive child times out after 10 minutes; current model/tool execution or activity in the last minute grants one 5-minute grace period, then the child stops. Streaming output is capped at 50 KiB. Unused JSON event types are discarded before payload buffering; consumed or unclassifiable events above 1 MiB fail delegation.
 
 TUI shows one row per Subagent with role, route, task, tokens, and elapsed time. Terminal rows drop after one second.
 
