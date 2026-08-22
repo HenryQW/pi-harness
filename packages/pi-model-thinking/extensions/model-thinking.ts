@@ -66,7 +66,7 @@ export default function modelThinkingExtension(pi: ExtensionAPI): void {
 			try {
 				config = readConfig();
 			} catch {
-				ctx.ui.notify("Couldn't read model thinking config.", "error");
+				ctx.ui.notify(`Couldn't read ${configPath()}. Fix or delete it to use this command.`, "error");
 				return;
 			}
 
