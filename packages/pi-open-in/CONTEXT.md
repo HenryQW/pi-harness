@@ -7,7 +7,7 @@ The `/open` Pi command that launches configured command for current working dire
 _Avoid_: editor command, project opener
 
 **Open command configuration**:
-User config selecting executable launched by `/open`; `/set-open-in <command>` updates it, defaulting to `code`.
+User config selecting executable launched by `/open`; `/set-open-in <command>` updates it, defaulting to `code`. Command string is split on whitespace; tokens with spaces unsupported.
 _Avoid_: project config, editor preference
 
 **Current working directory**:

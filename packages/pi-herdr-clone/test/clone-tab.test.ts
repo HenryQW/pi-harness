@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
+import { lock } from "proper-lockfile";
 import {
 	SessionManager,
 	type ExtensionAPI,
@@ -77,6 +78,16 @@ function harness(
 		exec: async (executable: string, args: string[], options: { cwd: string }) => {
 			calls.push({ command: executable, args, options });
 			events.push(`exec:${args.slice(0, 2).join(" ")}`);
+			if (args[0] === "workspace" && args[1] === "get") {
+				return success({
+					result: {
+						workspace: {
+							workspace_id: args[2],
+							worktree: { checkout_path: cwd },
+						},
+					},
+				});
+			}
 			if (respond) return await respond(args);
 			if (args[0] === "pane" && args[1] === "get") {
 				return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
@@ -153,6 +164,7 @@ test("/clone-tab retries a briefly busy root pane, copies only the active path, 
 			assert.deepEqual(app.events, [
 				"waitForIdle",
 				"exec:pane get",
+				"exec:workspace get",
 				"exec:tab create",
 				"exec:agent start",
 				"exec:agent start",
@@ -160,7 +172,7 @@ test("/clone-tab retries a briefly busy root pane, copies only the active path, 
 			]);
 			assert.ok(app.calls.every((call) => call.command === "herdr" && call.options.cwd === activeCwd));
 			assert.deepEqual(app.calls[0].args, ["pane", "get", "pane-alias"]);
-			assert.deepEqual(app.calls[1].args, [
+			assert.deepEqual(app.calls[2].args, [
 				"tab", "create", "--workspace", "workspace-live", "--cwd", activeCwd, "--no-focus",
 			]);
 			const startCalls = app.calls.filter((call) => call.args[0] === "agent");
@@ -173,7 +185,7 @@ test("/clone-tab retries a briefly busy root pane, copies only the active path, 
 			assert.equal(start[8], "--session");
 			const cloneFile = start[9]!;
 			assert.equal(cloneFile.startsWith("/"), true);
-			assert.deepEqual(app.calls[4].args, ["tab", "focus", "tab-new"]);
+			assert.deepEqual(app.calls[5].args, ["tab", "focus", "tab-new"]);
 			await stat(cloneFile);
 
 			const clone = SessionManager.open(cloneFile);
@@ -240,6 +252,23 @@ test("trust-boundary failures prevent agent launch and failed tab creation remov
 			});
 		});
 
+		await t.test("checkout removal lock prevents clone creation", async () => {
+			await withPane("pane-current", async () => {
+				const release = await lock(data.cwd);
+				try {
+					const app = harness(data.manager, data.cwd);
+					await assert.rejects(app.command("", app.ctx), /already being held/);
+					assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
+						["pane", "get"],
+						["workspace", "get"],
+					]);
+					assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
+				} finally {
+					await release();
+				}
+			});
+		});
+
 		await t.test("a failed tab create removes its clone", async () => {
 			await withPane("pane-current", async () => {
 				const app = harness(data.manager, data.cwd, (args) => {
@@ -250,6 +279,7 @@ test("trust-boundary failures prevent agent launch and failed tab creation remov
 				await assert.rejects(app.command("", app.ctx), /tab create denied/);
 				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
 					["pane", "get"],
+					["workspace", "get"],
 					["tab", "create"],
 				]);
 				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
@@ -278,6 +308,7 @@ test("launch-attempt failures retain recovery artifacts while focus failure repo
 				});
 				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
 					["pane", "get"],
+					["workspace", "get"],
 					["tab", "create"],
 				]);
 				const leftover = (await readdir(data.sessionDir)).filter((name) => name !== basename(data.sessionFile));

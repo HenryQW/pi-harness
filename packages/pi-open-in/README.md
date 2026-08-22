@@ -25,6 +25,8 @@ pi install npm:@henryqw/pi-open-in
 }
 ```
 
+The command is split on whitespace; tokens cannot contain spaces (no quoting). Use a wrapper script for executables in spaced paths.
+
 ## Remove
 
 ```bash
