@@ -12,6 +12,7 @@ const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
+const MAX_ACTIVE_CHILDREN = 4;
 const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
 const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
 const WIDGET_KEY = "subagent-status";
@@ -433,6 +434,35 @@ export default function subagentExtension(
 	timeoutPolicy: TimeoutPolicy = DEFAULT_TIMEOUT_POLICY,
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
+	let activeChildren = 0;
+	const queuedChildren: Array<() => void> = [];
+	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
+		if (signal?.aborted) return Promise.reject(new Error("Subagent was aborted."));
+		if (activeChildren < MAX_ACTIVE_CHILDREN) {
+			activeChildren++;
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve, reject) => {
+			function abort() {
+				const index = queuedChildren.indexOf(grant);
+				if (index < 0) return;
+				queuedChildren.splice(index, 1);
+				signal?.removeEventListener("abort", abort);
+				reject(new Error("Subagent was aborted."));
+			}
+			const grant = () => {
+				signal?.removeEventListener("abort", abort);
+				resolve();
+			};
+			queuedChildren.push(grant);
+			signal?.addEventListener("abort", abort, { once: true });
+		});
+	};
+	const releaseChildPermit = () => {
+		const grant = queuedChildren.shift();
+		if (grant) grant();
+		else activeChildren--;
+	};
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
@@ -555,9 +585,10 @@ export default function subagentExtension(
 				);
 			}
 
+			const args = ["--mode", "json", "-p", ...launch.args, `Task: ${task}`];
+			await acquireChildPermit(signal);
 			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 			try {
-				const args = ["--mode", "json", "-p", ...launch.args, `Task: ${task}`];
 				startWidgetItem(toolCallId, role.name, launch.model.id, thinkingLevel, task, ctx);
 				const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
 				const result = await runPi(
@@ -578,6 +609,7 @@ export default function subagentExtension(
 				if (signal?.aborted && !(error instanceof SubagentTimeoutError)) widgetStatus = "aborted";
 				throw error;
 			} finally {
+				releaseChildPermit();
 				finishWidgetItem(toolCallId, widgetStatus);
 			}
 		},
