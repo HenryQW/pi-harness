@@ -218,7 +218,18 @@ function watchContext(root: string, widgets: Array<[string, string[] | undefined
 	return {
 		cwd: root,
 		mode: "tui",
-		ui: { setWidget: (key: string, content: string[] | undefined) => widgets.push([key, content]) },
+		ui: {
+			setWidget: (key: string, content: unknown) => {
+				if (typeof content !== "function") {
+					widgets.push([key, content as string[] | undefined]);
+					return;
+				}
+				// Render loader components immediately and stop their animation timer.
+				const component = (content as (tui: unknown, theme: unknown) => object)({ requestRender() {} }, { fg: (_color: string, text: string) => text });
+				widgets.push([key, (component as { render(width: number): string[] }).render(120)]);
+				(component as { dispose?(): void }).dispose?.();
+			},
+		},
 	};
 }
 
@@ -250,8 +261,8 @@ test("session start reports background install through widget", async (t) => {
 	// Running flips to ok while watching: installing, success, auto-dismiss, status consumed.
 	await writeStatus(root, { state: "running" });
 	const watching = watch();
-	await sleep(20);
-	assert.deepEqual(readWidget(widgets), ["pi-deps: installing dependencies…"]);
+	await sleep(10);
+	assert.match(readWidget(widgets)?.[0] ?? "", /installing dependencies… \d+s$/u);
 	await writeStatus(root, { state: "ok" });
 	await watching;
 	assert.deepEqual(readWidget(widgets), ["pi-deps: dependencies installed"]);
