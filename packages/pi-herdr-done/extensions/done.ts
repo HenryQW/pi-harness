@@ -1,7 +1,6 @@
 import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient } from "@henryqw/pi-herdr";
-import { lock } from "proper-lockfile";
+import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 
 type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 
@@ -47,8 +46,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const parentIsBare = mainCheckout !== checkout &&
 				worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
 
-			const release = await lock(checkout);
-			try {
+			await withWorktreeLock(checkout, async () => {
 				// With --force, skip the dependents check entirely and let git remove the checkout.
 				if (option !== "--force") {
 					const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
@@ -78,18 +76,11 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 				await execOrThrow("git", [
 					"worktree", "remove", ...(option === "--force" ? ["--force"] : []), checkout,
 				], ctx.cwd);
-			} finally {
-				await release();
-			}
+			});
 			if (!parentIsBare && mainCheckout !== checkout) {
 				// Serialize concurrent completions pulling the same parent checkout.
 				// Run outside the removed checkout because its directory no longer exists.
-				const releasePull = await lock(mainCheckout);
-				try {
-					await execOrThrow("git", ["pull", "--ff-only"], mainCheckout);
-				} finally {
-					await releasePull();
-				}
+				await withWorktreeLock(mainCheckout, () => execOrThrow("git", ["pull", "--ff-only"], mainCheckout));
 			}
 			// Close only this session's tab so unrelated tabs survive.
 			// Run outside the removed checkout because its directory no longer exists.

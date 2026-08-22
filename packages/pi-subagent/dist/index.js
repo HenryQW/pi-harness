@@ -89,13 +89,13 @@ export function resolveTaskRoute(ctx, profileName, agentDir = getAgentDir()) {
     catch {
         throw new Error("Couldn't read task model config. Run /task-models.");
     }
-    return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName]);
+    return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName], agentDir);
 }
-function resolveConfiguredRoute(ctx, profileName, profile) {
+function resolveConfiguredRoute(ctx, profileName, profile, agentDir = getAgentDir()) {
     if (!profile)
         throw new Error(`No ${profileName} task model profile is configured. Run /task-models.`);
     for (const route of orderedProfileRoutes(profile)) {
-        const resolved = resolveTaskModelRoute(ctx, route);
+        const resolved = resolveTaskModelRoute(ctx, route, agentDir);
         if (resolved)
             return resolved;
     }
