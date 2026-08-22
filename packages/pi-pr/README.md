@@ -15,11 +15,13 @@ Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repositor
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | Footer | UI | Show the current branch pull request. |
-| `/pr` | command | Open the current branch pull request in a browser. |
+| `/pr` | command | Open current branch PR, or create and open one when absent. |
 
 Each entry is one linked `PR #number` plus one plain-language state: `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `merge conflict`, `merged`, or `closed`. Status priority favors action: merge conflict, changes requested, CI failure, then CI progress. Colors support text; they do not carry meaning alone.
 
 The status loads at session start, polls every 30 seconds, and refreshes after an agent successfully runs `gh pr create` or after `/pr`. No pull request leaves the footer blank.
+
+`/pr` finds an open PR for current branch. When absent, it requires clean worktree, pushes `HEAD` to `origin`, creates a PR with `gh pr create --fill`, then opens it. It never commits changes; GitHub CLI uses repository default base branch. Use normal PR workflow when commit, validation, or custom PR text is needed.
 
 ## Remove
 

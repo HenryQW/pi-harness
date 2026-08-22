@@ -59,6 +59,23 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	return { number, url, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
 }
 
+function parseOpenPullRequestNumbers(json: string): number[] {
+	let values: unknown;
+	try {
+		values = JSON.parse(json);
+	} catch {
+		throw new Error("Find pull requests failed: invalid GitHub CLI output");
+	}
+	if (!Array.isArray(values)) throw new Error("Find pull requests failed: invalid GitHub CLI output");
+	return values.map((value) => {
+		const number = isRecord(value) ? value.number : undefined;
+		if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) {
+			throw new Error("Find pull requests failed: invalid GitHub CLI output");
+		}
+		return number;
+	});
+}
+
 function ciStatus(rollup: unknown[]): CiStatus {
 	if (!rollup.length) return "none";
 	let running = false;
@@ -163,20 +180,44 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("pr", {
-		description: "Open the pull request for the current branch",
+		description: "Open current branch pull request, or create one when absent",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
-			let result;
+			const execute = async (action: string, command: string, args: string[]) => {
+				let result;
+				try {
+					result = await pi.exec(command, args, { cwd: ctx.cwd, signal: ctx.signal, timeout: 10_000 });
+				} catch (error) {
+					throw new Error(`${action} failed: ${error instanceof Error ? error.message : String(error)}`);
+				}
+				if (result.code !== 0) {
+					const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command was cancelled" : `exit code ${result.code}`);
+					throw new Error(`${action} failed: ${detail}`);
+				}
+				return result;
+			};
+
 			try {
-				result = await pi.exec("gh", ["pr", "view", "--web"], { cwd: ctx.cwd, signal: ctx.signal, timeout: 10_000 });
-			} catch (error) {
+				const branch = (await execute("Read current branch", "git", ["branch", "--show-current"])).stdout.trim();
+				if (!branch) throw new Error("Create pull request failed: current checkout has no branch");
+				const listed = await execute("Find pull requests", "gh", [
+					"pr", "list", "--head", branch, "--state", "open", "--limit", "100", "--json", "number",
+				]);
+				const numbers = parseOpenPullRequestNumbers(listed.stdout);
+				if (numbers.length > 1) throw new Error("Open pull request failed: multiple open pull requests found for current branch");
+
+				if (numbers.length === 1) {
+					await execute("Open pull request", "gh", ["pr", "view", String(numbers[0]), "--web"]);
+					return;
+				}
+
+				const status = await execute("Check working tree", "git", ["status", "--porcelain"]);
+				if (status.stdout.trim()) throw new Error("Create pull request failed: commit or stash working tree changes first");
+				await execute("Push branch", "git", ["push", "-u", "origin", "HEAD"]);
+				await execute("Create pull request", "gh", ["pr", "create", "--fill"]);
+				await execute("Open pull request", "gh", ["pr", "view", "--web"]);
+			} finally {
 				void refresh(true);
-				throw new Error(`Open pull request failed: ${error instanceof Error ? error.message : String(error)}`);
-			}
-			void refresh(true);
-			if (result.code !== 0) {
-				const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command was cancelled" : `exit code ${result.code}`);
-				throw new Error(`Open pull request failed: ${detail}`);
 			}
 		},
 	});

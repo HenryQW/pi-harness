@@ -65,7 +65,7 @@ test("renders one plain-language PR state, prioritizing action", () => {
 	assert.equal(parsePullRequest(pullRequest({ url: "javascript:alert(1)" })), undefined);
 });
 
-test("polls UI sessions, queues refreshes, and cleans up", async (t) => {
+test("polls UI sessions, creates absent PRs, and cleans up", async (t) => {
 	type Handler = (event: never, ctx: ExtensionContext) => Promise<void> | void;
 	type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 	let sessionStart: Handler | undefined;
@@ -90,9 +90,10 @@ test("polls UI sessions, queues refreshes, and cleans up", async (t) => {
 		globalThis.clearInterval = originalClearInterval;
 	});
 
-	const calls: Array<{ args: string[]; signal: AbortSignal | undefined }> = [];
+	const calls: Array<{ command: string; args: string[]; signal: AbortSignal | undefined }> = [];
 	const statuses: Array<string | undefined> = [];
-	let webResult = result();
+	let openPullRequest = true;
+	let dirty = false;
 	let hold: Promise<ReturnType<typeof result>> | undefined;
 	let heldSignal: AbortSignal | undefined;
 	const good = JSON.stringify(pullRequest());
@@ -105,16 +106,26 @@ test("polls UI sessions, queues refreshes, and cleans up", async (t) => {
 		registerCommand(name: string, options: Command) {
 			if (name === "pr") command = options;
 		},
-		exec: async (_command: string, args: string[], options?: { signal?: AbortSignal }) => {
-			calls.push({ args, signal: options?.signal });
-			if (args[2] === "--web") return webResult;
-			if (hold) {
-				heldSignal = options?.signal;
-				const pending = hold;
-				hold = undefined;
-				return pending;
+		exec: async (executable: string, args: string[], options?: { signal?: AbortSignal }) => {
+			calls.push({ command: executable, args, signal: options?.signal });
+			if (executable === "gh" && args[0] === "pr" && args[1] === "view" && args[2] === "--json") {
+				if (hold) {
+					heldSignal = options?.signal;
+					const pending = hold;
+					hold = undefined;
+					return pending;
+				}
+				return result(good);
 			}
-			return result(good);
+			if (executable === "git" && args.join(" ") === "branch --show-current") return result("feature/pr\n");
+			if (executable === "gh" && args[0] === "pr" && args[1] === "list") {
+				return result(openPullRequest ? JSON.stringify([{ number: 42 }]) : "[]");
+			}
+			if (executable === "git" && args.join(" ") === "status --porcelain") return result(dirty ? " M changed.ts\n" : "");
+			if (executable === "git" && args.join(" ") === "push -u origin HEAD") return result();
+			if (executable === "gh" && args.join(" ") === "pr create --fill") return result("https://github.com/acme/project/pull/42\n");
+			if (executable === "gh" && args[0] === "pr" && args[1] === "view" && args.at(-1) === "--web") return result();
+			throw new Error(`Unexpected command: ${executable} ${args.join(" ")}`);
 		},
 	} as unknown as ExtensionAPI);
 
@@ -129,6 +140,7 @@ test("polls UI sessions, queues refreshes, and cleans up", async (t) => {
 		},
 	} as unknown as ExtensionContext;
 	const noUi = { hasUI: false } as ExtensionContext;
+	const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 	await sessionStart?.({} as never, noUi);
 	assert.equal(calls.length, 0);
@@ -148,7 +160,7 @@ test("polls UI sessions, queues refreshes, and cleans up", async (t) => {
 	} as never, context);
 	assert.equal(calls.length, 2);
 	release(result(good));
-	await new Promise<void>((resolve) => setImmediate(() => resolve()));
+	await flush();
 	assert.equal(calls.length, 3);
 
 	await toolResult?.({ toolName: "bash", input: { command: "echo gh pr create" }, isError: false } as never, context);
@@ -156,14 +168,37 @@ test("polls UI sessions, queues refreshes, and cleans up", async (t) => {
 	assert.equal(calls.length, 3);
 
 	assert.ok(command);
+	calls.length = 0;
 	await command.handler("", context as ExtensionCommandContext);
-	assert.deepEqual(calls[3]?.args, ["pr", "view", "--web"]);
-	assert.equal(calls[3]?.signal, commandSignal);
-	await new Promise<void>((resolve) => setImmediate(() => resolve()));
-	assert.equal(calls.length, 5);
+	await flush();
+	assert.deepEqual(calls.map(({ command: executable, args }) => [executable, args]), [
+		["git", ["branch", "--show-current"]],
+		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number"]],
+		["gh", ["pr", "view", "42", "--web"]],
+		["gh", ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
+	]);
+	assert.equal(calls[0]?.signal, commandSignal);
 
-	webResult = result("", 1, "no pull request for branch");
-	await assert.rejects(command.handler("", context as ExtensionCommandContext), /Open pull request failed: no pull request for branch/);
+	openPullRequest = false;
+	calls.length = 0;
+	await command.handler("", context as ExtensionCommandContext);
+	await flush();
+	assert.deepEqual(calls.map(({ command: executable, args }) => [executable, args]), [
+		["git", ["branch", "--show-current"]],
+		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number"]],
+		["git", ["status", "--porcelain"]],
+		["git", ["push", "-u", "origin", "HEAD"]],
+		["gh", ["pr", "create", "--fill"]],
+		["gh", ["pr", "view", "--web"]],
+		["gh", ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
+	]);
+
+	dirty = true;
+	calls.length = 0;
+	await assert.rejects(command.handler("", context as ExtensionCommandContext), /commit or stash working tree changes first/);
+	assert.equal(calls.some(({ command: executable, args }) => executable === "git" && args[0] === "push"), false);
+	assert.equal(calls.some(({ command: executable, args }) => executable === "gh" && args[1] === "create"), false);
+	dirty = false;
 
 	let releaseAbort!: (value: ReturnType<typeof result>) => void;
 	hold = new Promise((resolve) => { releaseAbort = resolve; });
