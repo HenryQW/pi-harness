@@ -60,6 +60,7 @@ function harness(options: {
 	trusted?: boolean;
 	availableModels?: any[];
 	currentModel?: any;
+	timeoutPolicy?: { softMs: number; graceMs: number; activeWindowMs: number };
 } = {}) {
 	let tool: Tool | undefined;
 	let widget: { render: (width: number) => string[] } | undefined;
@@ -82,7 +83,7 @@ function harness(options: {
 			}));
 		},
 	} as unknown as ExtensionAPI;
-	subagentExtension(api);
+	subagentExtension(api, options.timeoutPolicy);
 	const ctx = {
 		cwd: "/tmp",
 		model: options.currentModel ?? model,
@@ -563,6 +564,79 @@ Do work.
 			app.tool.execute("call-1", { role: "broken", task: "work" }, undefined, undefined, app.ctx),
 			/tools/,
 		);
+	});
+});
+
+test("inactive Subagent times out", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Do bounded work.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_start", message: { role: "user", content: [] } }));
+setInterval(() => {}, 1_000);
+`);
+		process.argv[1] = runner;
+		const app = harness({ timeoutPolicy: { softMs: 120, graceMs: 150, activeWindowMs: 10 } });
+		await assert.rejects(
+			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			/Subagent timed out.*without active status/,
+		);
+	});
+});
+
+test("active Subagent gets one grace period", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Do bounded work.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} });
+setTimeout(() => {
+	event({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", result: {}, isError: false });
+	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
+}, 180);
+`);
+		process.argv[1] = runner;
+		const app = harness({ timeoutPolicy: { softMs: 120, graceMs: 150, activeWindowMs: 10 } });
+		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		assert.equal(result.content[0].text, "done");
+	});
+});
+
+test("timeout remains failure when user abort follows deadline", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Do bounded work.
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `process.on("SIGTERM", () => setTimeout(() => process.exit(0), 80));
+setInterval(() => {}, 1_000);
+`);
+		process.argv[1] = runner;
+		const app = harness({ ui: true, timeoutPolicy: { softMs: 120, graceMs: 150, activeWindowMs: 10 } });
+		const abort = new AbortController();
+		const running = app.tool.execute("call-1", { role: "worker", task: "work" }, abort.signal, undefined, app.ctx);
+		setTimeout(() => abort.abort(), 150);
+		await assert.rejects(running, /Subagent timed out/);
+		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
+		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
 });
 
