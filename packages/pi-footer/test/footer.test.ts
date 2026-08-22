@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,12 @@ const plain = (text: string) => text
 	.replace(/\x1b\[[0-9;]*m/g, "");
 
 test("renders usage, model thinking, and emitted extension statuses", async (t) => {
+	type FooterFactory = (tui: { requestRender(): void }, theme: { fg(_color: string, text: string): string }, data: {
+		getGitBranch(): string;
+		getExtensionStatuses(): ReadonlyMap<string, string>;
+		onBranchChange(callback: () => void): () => void;
+	}) => { render(width: number): string[]; dispose(): void };
+
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -29,13 +35,10 @@ test("renders usage, model thinking, and emitted extension statuses", async (t) 
 	});
 
 	let sessionStart: ((event: unknown, ctx: ExtensionContext) => unknown) | undefined;
-	let footerFactory: ((tui: { requestRender(): void }, theme: { fg(_color: string, text: string): string }, data: {
-		getGitBranch(): string;
-		getExtensionStatuses(): ReadonlyMap<string, string>;
-		onBranchChange(callback: () => void): () => void;
-	}) => { render(width: number): string[]; dispose(): void }) | undefined;
+	let footerFactory: FooterFactory | undefined;
 	let disposed = false;
 	let thinkingLevel = "high";
+	let gitOutput = "/Users/me/.herdr/worktrees/repo/worktree-clear-field-f8d2\n/Users/me/Git/repo/.git\n";
 	let entries = [
 		{ type: "message", message: { role: "assistant", usage: usage(800, 200, 200, 0.1) } },
 		{ type: "message", message: { role: "toolResult", usage: usage(100, 50, 0, 0.02) } },
@@ -48,7 +51,7 @@ test("renders usage, model thinking, and emitted extension statuses", async (t) 
 		on(event: string, handler: typeof sessionStart) {
 			if (event === "session_start") sessionStart = handler;
 		},
-		exec: async () => ({ stdout: "/Users/me/Git/repo/.git\n", stderr: "", code: 0, killed: false }),
+		exec: async () => ({ stdout: gitOutput, stderr: "", code: 0, killed: false }),
 	} as unknown as ExtensionAPI);
 
 	const ctx = {
@@ -74,7 +77,7 @@ test("renders usage, model thinking, and emitted extension statuses", async (t) 
 		{
 			getGitBranch: () => "worktree/clear-field-f8d2",
 			getExtensionStatuses: () => new Map([
-				["ponytail", "● 🐴 ponytail: ⚡ FULL"],
+				["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],
 				["pi-pr", "\x1b[32mO #123 ●✓\x1b[39m"],
 				["pi-multi-codex", "Codex #1 · 50% · 7d 1d 1h 22m"],
 				["hidden", ""],
@@ -91,9 +94,15 @@ test("renders usage, model thinking, and emitted extension statuses", async (t) 
 	assert.deepEqual(rendered.map(plain), [
 		"repo · clear-field-f8d2",
 		usageText + " ".repeat(100 - usageText.length - modelText.length) + modelText,
-		"Codex #1 · 50% · 7d 1d 1h 22m O #123 ●✓ ● 🐴 ponytail: ⚡ FULL",
+		"Codex #1 · 50% · 7d 1d 1h 22m O #123 ●✓ ●  🐴\tponytail: ⚡ FULL ready",
 	]);
 	assert.match(rendered[2]!, /\x1b\[32mO #123 ●✓\x1b\[39m/);
+
+	await mkdir(join(agentDir, "config"));
+	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"codex"}');
+	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
+	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"code"}');
+	assert.match(footer.render(100)[0]!, /vscode:\/\//);
 
 	thinkingLevel = "off";
 	footer.render(100);
@@ -118,4 +127,24 @@ test("renders usage, model thinking, and emitted extension statuses", async (t) 
 	assert.doesNotMatch(footer.render(100)[1], /\?%/);
 	footer.dispose();
 	assert.equal(disposed, true);
+
+	gitOutput = "/parent/child\n/parent/.git/modules/child\n";
+	let submoduleFooterFactory: FooterFactory | undefined;
+	await sessionStart?.({}, {
+		...ctx,
+		cwd: "/parent/child",
+		ui: { setFooter: (factory: FooterFactory) => { submoduleFooterFactory = factory; } },
+	} as unknown as ExtensionContext);
+	assert.ok(submoduleFooterFactory);
+	const submoduleFooter = submoduleFooterFactory(
+		{ requestRender() {} },
+		{ fg: (_color, text) => text },
+		{
+			getGitBranch: () => "main",
+			getExtensionStatuses: () => new Map(),
+			onBranchChange: () => () => {},
+		},
+	);
+	assert.equal(plain(submoduleFooter.render(100)[0]!), "child · main");
+	submoduleFooter.dispose();
 });

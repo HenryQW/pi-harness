@@ -20,7 +20,7 @@ function formatTokens(count: number): string {
 }
 
 function sanitizeStatus(text: string): string {
-	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+	return text.replace(/[\r\n]+/g, " ").trim();
 }
 
 function align(left: string, right: string, width: number, ellipsis: string): string {
@@ -43,9 +43,15 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
-		const git = await pi.exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: ctx.cwd });
-		const repo = git.code === 0 ? basename(dirname(git.stdout.trim())) : basename(ctx.cwd);
-		const openUri = configuredOpenUri(ctx.cwd);
+		const git = await pi.exec(
+			"git",
+			["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+			{ cwd: ctx.cwd },
+		);
+		const [root, commonDir] = git.stdout.trim().split(/\r?\n/);
+		const rootName = basename(root || ctx.cwd);
+		const commonName = commonDir && basename(commonDir) === ".git" ? basename(dirname(commonDir)) : undefined;
+		const repo = git.code === 0 ? commonName && commonName !== rootName ? commonName : rootName : basename(ctx.cwd);
 
 		ctx.ui.setFooter((tui, theme, data) => {
 			const unsubscribe = data.onBranchChange(() => tui.requestRender());
@@ -79,6 +85,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 
 					const branch = data.getGitBranch()?.replace(/^worktree\//, "");
 					const context = ctx.getContextUsage()?.percent;
+					const openUri = configuredOpenUri(ctx.cwd);
 					const statuses = [...data.getExtensionStatuses()]
 						.sort(([a], [b]) => a.localeCompare(b))
 						.map(([, text]) => sanitizeStatus(text))
