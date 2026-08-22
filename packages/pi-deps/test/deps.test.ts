@@ -45,12 +45,14 @@ test("/deps toggles only its managed shared hook", async (t) => {
 	const gitDir = join(root, ".git");
 	const notifications: string[] = [];
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+	const exec = (args: string[]) =>
+		Promise.resolve({ stdout: args[1] === "--git-path" ? ".git/hooks\n" : ".git\n", stderr: "", code: 0, killed: false });
 	depsExtension({
 		registerCommand(name: string, options: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) {
 			assert.equal(name, "deps");
 			handler = options.handler;
 		},
-		exec: async () => ({ stdout: ".git\n", stderr: "", code: 0, killed: false }),
+		exec: (_command: string, args: string[]) => exec(args),
 	} as unknown as ExtensionAPI);
 	const ctx = {
 		cwd: root,
@@ -79,6 +81,30 @@ test("/deps toggles only its managed shared hook", async (t) => {
 	await assert.rejects(handler!("", ctx), /Refusing to modify unmanaged Git hook/);
 	assert.equal(await readFile(installed, "utf8"), "#!/bin/sh\necho existing\n");
 	assert.equal(notifications.length, 4);
+});
+
+test("/deps refuses non-default effective hooks directory", async (t) => {
+	const root = await temporaryDirectory(t);
+	const notifications: string[] = [];
+	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+	depsExtension({
+		registerCommand(_name: string, options: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) {
+			handler = options.handler;
+		},
+		exec: async (_command: string, args: string[]) => ({
+			stdout: args[1] === "--git-path" ? "/global/hooks\n" : ".git\n",
+			stderr: "",
+			code: 0,
+			killed: false,
+		}),
+	} as unknown as ExtensionAPI);
+	const ctx = {
+		cwd: root,
+		ui: { notify: (message: string) => { notifications.push(message); } },
+	} as unknown as ExtensionCommandContext;
+
+	await assert.rejects(handler!("", ctx), /Refusing non-default hooks directory/);
+	assert.equal(notifications.length, 0);
 });
 
 test("creation hook chooses frozen Node install commands", async (t) => {

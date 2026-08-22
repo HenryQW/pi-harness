@@ -28,11 +28,11 @@ Only current major versions are supported; older majors are not handled and fall
 | --- | --- | --- |
 | `/deps` | command | Toggle dependency preparation for future worktrees in current repository. |
 
-Run `/deps` once from any worktree to enable preparation through repository's shared `post-checkout` hook. Run it again to disable. Hooks without this package's marker are never overwritten or removed. After updating the package, run `/deps` twice in each opted-in repository to replace the copied hook with the current version.
+Run `/deps` once from any worktree to enable preparation through repository's shared `post-checkout` hook. Run it again to disable. Hooks without this package's marker are never overwritten or removed. After updating the package, run `/deps` twice in each opted-in repository to replace the copied hook with the current version. A configured `core.hooksPath` replaces the shared hooks directory, so `/deps` refuses instead of installing where Git would ignore or share the hook.
 
 Only Git-root lockfiles are inspected. npm, pnpm, Yarn, and Bun use frozen installs; uv uses `uv sync --locked`. Node and uv both run when both lockfile types exist. Root npm and uv workspaces remain package-manager concerns; nested independent projects are not scanned.
 
-Creation waits for installs. Missing executables, conflicting Node lockfiles, `packageManager` mismatches, and install failures make worktree command fail while leaving created worktree available for inspection. Unsupported repositories and already-present `node_modules`, `.pnp.cjs`, or `.venv` are skipped.
+Creation waits for installs. Missing executables, conflicting Node lockfiles, `packageManager` mismatches, and install failures make worktree command fail while leaving created worktree available for inspection. Unsupported repositories and already-present `node_modules`, `.pnp.cjs`, or `.venv` are skipped. Worktrees created with `git worktree add --no-checkout` never run `post-checkout`, so they are not prepared.
 
 Dependency installation may execute repository-controlled build and install scripts. Enable only repositories you trust.
 

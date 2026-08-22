@@ -68,12 +68,23 @@ export default function depsExtension(pi: ExtensionAPI): void {
 		description: "Toggle dependency preparation for future Git worktrees",
 		handler: async (args, ctx) => {
 			if (args.trim()) throw new Error("Usage: /deps");
-			const result = await pi.exec("git", ["rev-parse", "--git-common-dir"], { cwd: ctx.cwd });
+			const git = (args2: string[]) => pi.exec("git", args2, { cwd: ctx.cwd });
+			const result = await git(["rev-parse", "--git-common-dir"]);
 			if (result.code !== 0 || result.killed) {
 				throw new Error(`Cannot locate shared Git directory: ${result.stderr.trim() || `exit code ${result.code}`}`);
 			}
 			const commonGitDir = result.stdout.trim();
 			if (!commonGitDir) throw new Error("Cannot locate shared Git directory: git returned an empty path");
+
+			// core.hooksPath replaces <commonGitDir>/hooks; refuse instead of writing where Git ignores or shares the hook.
+			const hooksDir = await git(["rev-parse", "--git-path", "hooks"]);
+			if (hooksDir.code !== 0 || hooksDir.killed) {
+				throw new Error(`Cannot locate effective hooks directory: ${hooksDir.stderr.trim() || `exit code ${hooksDir.code}`}`);
+			}
+			const defaultHooksDir = resolve(ctx.cwd, commonGitDir, "hooks");
+			if (resolve(ctx.cwd, hooksDir.stdout.trim()) !== defaultHooksDir) {
+				throw new Error(`Refusing non-default hooks directory (core.hooksPath?): ${hooksDir.stdout.trim()}; expected ${defaultHooksDir}`);
+			}
 
 			try {
 				const toggled = await toggleDependencyHook(resolve(ctx.cwd, commonGitDir));
