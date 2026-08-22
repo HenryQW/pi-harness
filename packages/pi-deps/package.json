@@ -1,0 +1,47 @@
+{
+  "name": "@henryqw/pi-deps",
+  "version": "0.1.0",
+  "description": "Prepare Node and uv dependencies when opted-in Git worktrees are created.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "git",
+    "worktree",
+    "dependencies"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "hooks",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/deps.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-packages.git",
+    "directory": "packages/pi-deps"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-packages/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/deps.ts"
+    ]
+  }
+}
