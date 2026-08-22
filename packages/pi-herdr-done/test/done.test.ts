@@ -8,23 +8,43 @@ import type {
 import herdrDoneExtension from "../extensions/done.ts";
 
 type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
-type ExecResult = { stdout: string; stderr: string; code: number; killed: boolean };
+type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
+type ExecCall = { command: string; args: string[]; options: { cwd: string } };
+type Executor = (call: ExecCall) => ExecResult | Promise<ExecResult>;
 
-function harness(result: ExecResult = { stdout: "", stderr: "", code: 0, killed: false }) {
+const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
+
+function harness(executor: Executor = () => ok()) {
 	let command: Command | undefined;
-	const calls: Array<{ command: string; args: string[]; options: { cwd: string } }> = [];
+	const calls: ExecCall[] = [];
 	const api = {
 		registerCommand(name: string, options: { handler: Command }) {
 			if (name === "done") command = options.handler;
 		},
 		exec: async (executable: string, args: string[], options: { cwd: string }) => {
-			calls.push({ command: executable, args, options });
-			return result;
+			const call = { command: executable, args, options };
+			calls.push(call);
+			return executor(call);
 		},
 	} as unknown as ExtensionAPI;
 	herdrDoneExtension(api);
 	assert.ok(command);
 	return { command, calls };
+}
+
+function snapshotExecutor(options: {
+	toplevel?: string;
+	panes?: unknown[];
+	removeResult?: ExecResult;
+} = {}): Executor {
+	return async ({ command, args }) => {
+		if (command === "git" && args[0] === "rev-parse") return ok(`${options.toplevel ?? "/repo/worktree"}\n`);
+		if (command === "herdr" && args[0] === "api") {
+			return ok(JSON.stringify({ result: { snapshot: { panes: options.panes ?? [] } } }));
+		}
+		if (command === "git" && args[0] === "worktree") return options.removeResult ?? ok();
+		return ok();
+	};
 }
 
 async function withHerdrEnvironment(
@@ -49,14 +69,19 @@ async function withHerdrEnvironment(
 }
 
 const context = (events: string[] = [], confirmed = true) => ({
-	cwd: "/repo/worktree",
+	cwd: "/repo/worktree/nested",
 	waitForIdle: async () => { events.push("idle"); },
 	ui: { confirm: async (title: string, message: string) => { events.push(`confirm:${title}:${message}`); return confirmed; } },
 }) as unknown as ExtensionCommandContext;
 
-test("/done removes the worktree checkout then closes only the current tab without force", async () => {
+test("/done resolves the checkout root, skips own tab, removes the checkout, then closes the tab", async () => {
 	await withHerdrEnvironment("1", "w1:t1", async () => {
-		const app = harness();
+		const app = harness(snapshotExecutor({
+			panes: [
+				{ tab_id: "w1:t1", cwd: "/repo/worktree" },
+				{ tab_id: "w1:t1", cwd: "/repo/worktree/nested" },
+			],
+		}));
 		const events: string[] = [];
 		await app.command("", context(events));
 		assert.deepEqual(events, [
@@ -64,11 +89,9 @@ test("/done removes the worktree checkout then closes only the current tab witho
 			"idle",
 		]);
 		assert.deepEqual(app.calls, [
-			{
-				command: "git",
-				args: ["worktree", "remove", "."],
-				options: { cwd: "/repo/worktree" },
-			},
+			{ command: "git", args: ["rev-parse", "--show-toplevel"], options: { cwd: "/repo/worktree/nested" } },
+			{ command: "herdr", args: ["api", "snapshot"], options: { cwd: "/repo/worktree/nested" } },
+			{ command: "git", args: ["worktree", "remove", "/repo/worktree"], options: { cwd: "/repo/worktree/nested" } },
 			{ command: "herdr", args: ["tab", "close", "w1:t1"], options: { cwd: tmpdir() } },
 		]);
 	});
@@ -76,13 +99,23 @@ test("/done removes the worktree checkout then closes only the current tab witho
 
 test("/done --force skips confirmation and forwards force to git worktree remove", async () => {
 	await withHerdrEnvironment("1", "w1:t1", async () => {
-		const app = harness();
-		const events: string[] = [];
-		await app.command("--force", context(events));
-		assert.deepEqual(events, ["idle"]);
-		assert.deepEqual(app.calls[0]?.args, ["worktree", "remove", "--force", "."]);
-		assert.equal(app.calls.length, 2);
+		const app = harness(snapshotExecutor());
+		await app.command("--force", context());
+		assert.deepEqual(app.calls.find((c) => c.args[0] === "worktree")?.args,
+			["worktree", "remove", "--force", "/repo/worktree"]);
 	});
+});
+
+test("/done refuses when another Herdr tab still uses the checkout", async () => {
+	for (const cwd of ["/repo/worktree", "/repo/worktree/sub"]) {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const app = harness(snapshotExecutor({
+				panes: [{ tab_id: "w2:t9", cwd }],
+			}));
+			await assert.rejects(app.command("", context()), /still used by Herdr tabs w2:t9/);
+			assert.equal(app.calls.length, 2);
+		});
+	}
 });
 
 test("declined confirmation leaves the worktree untouched", async () => {
@@ -95,7 +128,7 @@ test("declined confirmation leaves the worktree untouched", async () => {
 	});
 });
 
-test("/done fails safely outside a current Herdr worktree and preserves removal errors", async (t) => {
+test("/done fails safely before any execution and preserves removal errors", async (t) => {
 	await t.test("rejects arguments and missing Herdr context before execution", async () => {
 		for (const [args, herdrEnv, tabId, expected] of [
 			["--yes", "1", "w1:t1", /Usage: \/done \[--force\]/],
@@ -112,14 +145,21 @@ test("/done fails safely outside a current Herdr worktree and preserves removal 
 
 	await t.test("surfaces dirty-worktree refusal and skips tab close", async () => {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
-			const app = harness({
-				stdout: "",
-				stderr: "error: the following file is dirty",
-				code: 1,
-				killed: false,
-			});
+			const app = harness(snapshotExecutor({
+				removeResult: { stdout: "", stderr: "error: the following file is dirty", code: 1 },
+			}));
 			await assert.rejects(app.command("", context()), /dirty/);
-			assert.equal(app.calls.length, 1);
+			assert.equal(app.calls.length, 3);
+		});
+	});
+
+	await t.test("treats a killed removal as failure", async () => {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const app = harness(snapshotExecutor({
+				removeResult: { stdout: "", stderr: "", code: 0, killed: true },
+			}));
+			await assert.rejects(app.command("", context()), /killed/);
+			assert.equal(app.calls.length, 3);
 		});
 	});
 });

@@ -2,11 +2,21 @@ import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 
-type ExecResult = { code: number; stderr: string };
+type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
+
+type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
 
 export default function herdrDoneExtension(pi: ExtensionAPI): void {
 	const herdr = createHerdrClient<{ cwd: string }>((command, args, options) =>
 		pi.exec(command, [...args], options));
+
+	const execOrThrow = async (command: string, args: string[], cwd: string): Promise<string> => {
+		const result = await pi.exec(command, args, { cwd }) as unknown as ExecResult;
+		if (result.code !== 0 || result.killed) {
+			throw new Error(`${command} ${args[0]} failed: ${result.stderr.trim() || "killed"}`);
+		}
+		return result.stdout;
+	};
 
 	pi.registerCommand("done", {
 		description: "Close and remove the current Herdr worktree",
@@ -25,13 +35,25 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			}
 
 			await ctx.waitForIdle();
-			const removal = await pi.exec("git", [
-				"worktree", "remove", ...(option === "--force" ? ["--force"] : []), ".",
-			], { cwd: ctx.cwd }) as unknown as ExecResult;
-			if (removal.code !== 0) {
-				throw new Error(`git worktree remove failed: ${removal.stderr.trim()}`);
+			const checkout = (await execOrThrow("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).trim();
+
+			const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
+			const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
+			if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
+			const dependents = [...new Set(panes
+				.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
+					typeof pane.tab_id === "string" && pane.tab_id !== tabId &&
+					typeof pane.cwd === "string" &&
+					(pane.cwd === checkout || pane.cwd.startsWith(`${checkout}/`)))
+				.map((pane) => pane.tab_id))];
+			if (dependents.length > 0) {
+				throw new Error(`Worktree still used by Herdr tabs ${dependents.join(", ")}; close them first.`);
 			}
-			// Close only this session's tab so sibling tabs in the workspace survive.
+
+			await execOrThrow("git", [
+				"worktree", "remove", ...(option === "--force" ? ["--force"] : []), checkout,
+			], ctx.cwd);
+			// Close only this session's tab so unrelated tabs survive.
 			// Run outside the removed checkout because its directory no longer exists.
 			await herdr.run(["tab", "close", tabId], { cwd: tmpdir() });
 		},
