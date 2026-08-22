@@ -40,6 +40,7 @@ test("renders one plain-language PR state, prioritizing action", () => {
 	});
 	assert.equal(plain(conflict), "PR #42 · merge conflict");
 	assert.match(conflict, /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
+	assert.match(conflict, /<text>PR #42<\/text>/);
 
 	assert.equal(plain(render({
 		reviewDecision: "CHANGES_REQUESTED",

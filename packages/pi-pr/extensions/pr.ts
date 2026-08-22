@@ -90,7 +90,7 @@ function statusFor(pullRequest: PullRequest, ci: CiStatus): Status {
 }
 
 export function formatPullRequest(pullRequest: PullRequest, theme: ExtensionContext["ui"]["theme"]): string {
-	const link = hyperlink(theme.fg("accent", `PR #${pullRequest.number}`), pullRequest.url);
+	const link = hyperlink(theme.fg("text", `PR #${pullRequest.number}`), pullRequest.url);
 	const status = statusFor(pullRequest, ciStatus(pullRequest.statusCheckRollup));
 	return `${link} · ${theme.fg(status.color, status.text)}`;
 }
