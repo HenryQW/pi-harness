@@ -12,16 +12,17 @@ pi install npm:@henryqw/pi-herdr-done
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/done` | command | Close current Herdr worktree workspace and remove its clean checkout. |
-| `/done --force` | command | Close workspace and remove checkout even when worktree is dirty. |
+| `/done` | command | Remove the current worktree checkout and close only this session's tab. |
+| `/done --force` | command | Same, even when the worktree is dirty. |
 
 Both forms wait for Pi to become idle. `/done` asks for confirmation first; `/done --force` skips it because the flag already states intent. Normal removal runs:
 
 ```bash
-herdr worktree remove --workspace "$HERDR_WORKSPACE_ID"
+git worktree remove .
+herdr tab close "$HERDR_TAB_ID"
 ```
 
-Herdr closes the worktree workspace and removes its checkout. Command requires Pi running inside Herdr with `HERDR_ENV=1` and `HERDR_WORKSPACE_ID` set.
+Only the current session's tab closes, so sibling tabs in the same workspace survive. Command requires Pi running inside Herdr with `HERDR_ENV=1` and `HERDR_TAB_ID` set.
 
 Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --force` to explicitly delete them.
 

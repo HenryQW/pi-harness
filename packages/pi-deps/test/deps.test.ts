@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import depsExtension from "../extensions/deps.ts";
+import depsExtension, { watchDependencyInstallation } from "../extensions/deps.ts";
 
 const hook = new URL("../hooks/post-checkout.mjs", import.meta.url);
 const zeroHead = "0".repeat(40);
@@ -13,8 +13,24 @@ const nextHead = "1".repeat(40);
 
 async function temporaryDirectory(t: TestContext): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "pi-deps-"));
+	spawnSync("git", ["init", "-q"], { cwd: root }); // hook resolves the per-worktree Git directory
 	t.after(() => rm(root, { recursive: true, force: true }));
 	return root;
+}
+
+async function waitForStatus(root: string): Promise<{ state: string; message?: string }> {
+	const statusPath = join(root, ".git", "pi-deps", "status.json");
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		try {
+			const status = JSON.parse(await readFile(statusPath, "utf8"));
+			if (status.state !== "running") return status;
+		} catch {
+			// not written yet
+		}
+		await new Promise((resolveSleep) => setTimeout(resolveSleep, 25));
+	}
+	throw new Error("background installer did not finish");
 }
 
 async function fakeManager(bin: string, name: string): Promise<void> {
@@ -48,6 +64,7 @@ test("/deps toggles only its managed shared hook", async (t) => {
 	const exec = (args: string[]) =>
 		Promise.resolve({ stdout: args[1] === "--git-path" ? ".git/hooks\n" : ".git\n", stderr: "", code: 0, killed: false });
 	depsExtension({
+		on() {},
 		registerCommand(name: string, options: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) {
 			assert.equal(name, "deps");
 			handler = options.handler;
@@ -88,6 +105,7 @@ test("/deps refuses non-default effective hooks directory", async (t) => {
 	const notifications: string[] = [];
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
 	depsExtension({
+		on() {},
 		registerCommand(_name: string, options: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) {
 			handler = options.handler;
 		},
@@ -124,6 +142,7 @@ test("creation hook chooses frozen Node install commands", async (t) => {
 		await writeFile(join(root, lockfile), lockContent);
 		const result = runHook(root, bin);
 		assert.equal(result.status, 0, result.stderr);
+		assert.equal((await waitForStatus(root)).state, "ok");
 		const calls = (await readFile(join(root, "commands.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 		assert.deepEqual(calls, [expected]);
 	}
@@ -142,12 +161,15 @@ test("creation hook runs Node then uv once and ignores normal checkouts", async 
 	assert.equal(runHook(root, bin, nextHead).status, 0);
 	await assert.rejects(readFile(join(root, "commands.log")), /ENOENT/);
 	assert.equal(runHook(root, bin).status, 0);
+	assert.equal((await waitForStatus(root)).state, "ok");
 	assert.deepEqual(
 		(await readFile(join(root, "commands.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line)),
 		[["npm", "ci"], ["uv", "sync", "--locked"]],
 	);
 	assert.equal(runHook(root, bin).status, 0);
 	assert.equal((await readFile(join(root, "commands.log"), "utf8")).trim().split("\n").length, 2);
+	// Nothing left to install clears the stale outcome instead of leaving it for watchers.
+	await assert.rejects(readFile(join(root, ".git", "pi-deps", "status.json")), /ENOENT/);
 });
 
 test("creation hook rejects conflicting manager evidence", async (t) => {
@@ -177,14 +199,117 @@ test("creation hook rejects malformed packageManager declarations", async (t) =>
 	}
 });
 
-test("creation hook reports missing package manager executable", async (t) => {
+test("creation hook reports missing package manager executable as background failure", async (t) => {
 	const root = await temporaryDirectory(t);
 	const bin = join(root, "bin");
 	await mkdir(bin);
+	// Parent still needs git; only the manager executable is missing.
+	const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+	assert.ok(realGit);
+	await writeFile(join(bin, "git"), `#!/bin/sh\nexec ${realGit} "$@"\n`, { mode: 0o755 });
 	await writeFile(join(root, "package.json"), JSON.stringify({ packageManager: "npm@11.0.0" }));
 	await writeFile(join(root, "package-lock.json"), "{}");
 
 	const result = runHook(root, bin, zeroHead, bin);
-	assert.equal(result.status, 127);
-	assert.match(result.stderr, /failed to start npm/);
+	assert.equal(result.status, 0); // worktree creation is no longer blocked
+	assert.match((await waitForStatus(root)).message ?? "", /failed to start npm/);
+});
+function watchContext(root: string, widgets: Array<[string, string[] | undefined]>) {
+	return {
+		cwd: root,
+		mode: "tui",
+		ui: {
+			setWidget: (key: string, content: unknown) => {
+				if (typeof content !== "function") {
+					widgets.push([key, content as string[] | undefined]);
+					return;
+				}
+				// Render loader components immediately and stop their animation timer.
+				const component = (content as (tui: unknown, theme: unknown) => object)({ requestRender() {} }, { fg: (_color: string, text: string) => text });
+				widgets.push([key, (component as { render(width: number): string[] }).render(120)]);
+				(component as { dispose?(): void }).dispose?.();
+			},
+		},
+	};
+}
+
+function fakeExec(gitDir: string) {
+	return async () => ({ stdout: `${gitDir}\n`, stderr: "", code: 0, killed: false });
+}
+
+const watchTiming = { pollMs: 10, successTtlMs: 30 };
+
+const sleep = (ms: number) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+async function writeStatus(root: string, status: object): Promise<void> {
+	await mkdir(join(root, ".git", "pi-deps"), { recursive: true });
+	await writeFile(join(root, ".git", "pi-deps", "status.json"), JSON.stringify(status));
+}
+
+const readWidget = (widgets: Array<[string, string[] | undefined]>) => widgets.at(-1)?.[1];
+
+test("session start reports background install through widget", async (t) => {
+	const root = await temporaryDirectory(t);
+	const widgets: Array<[string, string[] | undefined]> = [];
+	const ctx = watchContext(root, widgets);
+	const watch = () => watchDependencyInstallation(fakeExec(join(root, ".git")), ctx, watchTiming);
+
+	// No status file: no widget.
+	await watch();
+	assert.equal(widgets.length, 0);
+
+	// Running flips to ok while watching: installing, success, auto-dismiss, status consumed.
+	await writeStatus(root, { state: "running" });
+	const watching = watch();
+	await sleep(10);
+	assert.match(readWidget(widgets)?.[0] ?? "", /installing dependencies… \d+s$/u);
+	await writeStatus(root, { state: "ok" });
+	await watching;
+	assert.deepEqual(readWidget(widgets), ["pi-deps: dependencies installed"]);
+	await assert.rejects(readFile(join(root, ".git", "pi-deps", "status.json")), /ENOENT/);
+	await sleep(50);
+	assert.equal(readWidget(widgets), undefined);
+});
+
+test("session start keeps install failures visible", async (t) => {
+	const root = await temporaryDirectory(t);
+	const widgets: Array<[string, string[] | undefined]> = [];
+	await writeStatus(root, { state: "error", message: "npm ci failed with exit code 1" });
+	await watchDependencyInstallation(fakeExec(join(root, ".git")), watchContext(root, widgets), watchTiming);
+	const widget = readWidget(widgets);
+	assert.match(widget?.[0] ?? "", /install failed: npm ci failed with exit code 1/);
+	assert.match(widget?.[1] ?? "", /install\.log$/);
+	await assert.rejects(readFile(join(root, ".git", "pi-deps", "status.json")), /ENOENT/);
+});
+
+test("session start ignores non-TUI modes and failed Git lookups", async (t) => {
+	const root = await temporaryDirectory(t);
+	const widgets: Array<[string, string[] | undefined]> = [];
+	const ctx = { ...watchContext(root, widgets), mode: "rpc" };
+	await writeStatus(root, { state: "ok" });
+	await watchDependencyInstallation(fakeExec(join(root, ".git")), ctx, watchTiming);
+	assert.equal(widgets.length, 0);
+	await watchDependencyInstallation(
+		async () => ({ stdout: "", stderr: "not a repo", code: 128, killed: false }),
+		watchContext(root, widgets),
+		watchTiming,
+	);
+	assert.equal(widgets.length, 0);
+});
+
+test("extension wires the watcher into session start", async (t) => {
+	const root = await temporaryDirectory(t);
+	const widgets: Array<[string, string[] | undefined]> = [];
+	let sessionStart: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
+	depsExtension({
+		on(event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+			assert.equal(event, "session_start");
+			sessionStart = handler;
+		},
+		registerCommand() {},
+		exec: fakeExec(join(root, ".git")),
+	} as unknown as ExtensionAPI);
+	await writeStatus(root, { state: "ok" });
+	await sessionStart!({}, watchContext(root, widgets));
+	assert.deepEqual(readWidget(widgets), ["pi-deps: dependencies installed"]);
 });

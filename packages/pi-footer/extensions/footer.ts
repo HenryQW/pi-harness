@@ -53,34 +53,49 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		const commonName = commonDir && basename(commonDir) === ".git" ? basename(dirname(commonDir)) : undefined;
 		const repo = git.code === 0 ? commonName && commonName !== rootName ? commonName : rootName : basename(ctx.cwd);
 
+		// ponytail: keyed on length + last entry (sessions are append-only); revisit if entries ever mutate in place.
+		let usageKey: string | undefined;
+		let input = 0;
+		let output = 0;
+		let cost = 0;
+		let cacheRate: number | undefined;
+		const computeUsage = () => {
+			input = 0;
+			output = 0;
+			cost = 0;
+			cacheRate = undefined;
+			const add = (usage: Usage | undefined) => {
+				if (!usage) return;
+				input += usage.input;
+				output += usage.output;
+				cost += usage.cost.total;
+			};
+
+			for (const entry of ctx.sessionManager.getEntries()) {
+				if (entry.type === "message" && entry.message.role === "assistant") {
+					const usage = entry.message.usage;
+					const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+					cacheRate = prompt ? usage.cacheRead / prompt * 100 : 0;
+					add(usage);
+				} else if (entry.type === "message" && entry.message.role === "toolResult") {
+					add(entry.message.usage);
+				} else if (entry.type === "branch_summary" || entry.type === "compaction") {
+					add(entry.usage);
+				}
+			}
+		};
+
 		ctx.ui.setFooter((tui, theme, data) => {
 			const unsubscribe = data.onBranchChange(() => tui.requestRender());
 			return {
 				dispose: unsubscribe,
 				invalidate() { },
 				render(width: number): string[] {
-					let input = 0;
-					let output = 0;
-					let cost = 0;
-					let cacheRate: number | undefined;
-					const add = (usage: Usage | undefined) => {
-						if (!usage) return;
-						input += usage.input;
-						output += usage.output;
-						cost += usage.cost.total;
-					};
-
-					for (const entry of ctx.sessionManager.getEntries()) {
-						if (entry.type === "message" && entry.message.role === "assistant") {
-							const usage = entry.message.usage;
-							const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
-							cacheRate = prompt ? usage.cacheRead / prompt * 100 : 0;
-							add(usage);
-						} else if (entry.type === "message" && entry.message.role === "toolResult") {
-							add(entry.message.usage);
-						} else if (entry.type === "branch_summary" || entry.type === "compaction") {
-							add(entry.usage);
-						}
+					const entries = ctx.sessionManager.getEntries();
+					const key = `${entries.length}:${entries.at(-1)?.type}`;
+					if (key !== usageKey) {
+						usageKey = key;
+						computeUsage();
 					}
 
 					const branch = data.getGitBranch()?.replace(/^worktree\//, "");

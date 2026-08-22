@@ -491,3 +491,68 @@ test("activates only when Pi built-in auto-compaction is disabled", async () => 
 		await rm(tempRoot, { recursive: true, force: true });
 	}
 });
+
+test("emergency context truncation cuts on user boundary and prepends notice", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-context-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+
+	try {
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		const handlers = loadExtension();
+		const big = "x".repeat(20_000);
+		let compactions = 0;
+		const ctx = {
+			cwd: tempRoot,
+			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: 900, contextWindow: 1000, percent: 90 }),
+			compact: () => { compactions++; },
+		} as unknown as ExtensionContext;
+
+		handlers.get("session_start")?.(
+			{ type: "session_start", reason: "startup" } as never,
+			ctx,
+		);
+
+		// Below threshold: no truncation, no compaction.
+		assert.equal(handlers.get("context")?.({
+			type: "context",
+			messages: [{ role: "user", content: "hello", timestamp: 1 }],
+		} as never, ctx), undefined);
+		assert.equal(compactions, 0);
+
+		const messages = [
+			{ role: "user", content: big, timestamp: 1 },
+			{ role: "assistant", content: big, timestamp: 2 },
+			{ role: "toolResult", content: big, timestamp: 3 },
+			{ role: "user", content: "continue", timestamp: 4 },
+			{ role: "assistant", content: "done", timestamp: 5 },
+		];
+		const result = handlers.get("context")?.({
+			type: "context",
+			messages,
+		} as never, ctx) as { messages?: typeof messages } | undefined;
+		assert.ok(result?.messages, "oversized context must be truncated");
+
+		// Notice prepended; cut lands on a user boundary (never mid tool pair).
+		const [notice, firstKept] = result.messages;
+		assert.equal(notice.role, "user");
+		assert.match(notice.content as string, /^\[Context compacted: 3 earlier messages/);
+		assert.equal(firstKept, messages[3]);
+		assert.deepEqual(result.messages.slice(1), messages.slice(3));
+
+		// Truncation schedules exactly one compaction and blocks re-entry.
+		assert.equal(compactions, 0);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(compactions, 1);
+		assert.equal(handlers.get("context")?.({
+			type: "context",
+			messages,
+		} as never, ctx), undefined);
+		assert.equal(compactions, 1);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});

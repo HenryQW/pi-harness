@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionUIContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { type Component, truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 
 const hookSourcePath = fileURLToPath(new URL("../hooks/post-checkout.mjs", import.meta.url));
 const managedHookMarker = "pi-deps-managed-hook";
@@ -63,7 +64,102 @@ export async function toggleDependencyHook(commonGitDir: string): Promise<{ enab
 	return { enabled: true, path };
 }
 
+const widgetKey = "pi-deps";
+const pollMs = 500;
+const successTtlMs = 5000;
+const waitTimeoutMs = 10 * 60_000;
+const spinnerIntervalMs = 100;
+const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function formatElapsed(startedAt: number, now = Date.now()): string {
+	const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+	const minutes = Math.floor(seconds / 60);
+	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+interface InstallStatus {
+	state?: string;
+	message?: string;
+}
+
+export interface InstallWatchContext {
+	cwd: string;
+	mode?: string;
+	ui: Pick<ExtensionUIContext, "setWidget">;
+}
+
+// Watches the status file written by the background installer spawned by the post-checkout hook.
+// First consumer wins: the status file is removed once reported.
+export async function watchDependencyInstallation(
+	exec: ExtensionAPI["exec"],
+	ctx: InstallWatchContext,
+	timing: { pollMs?: number; successTtlMs?: number } = {},
+): Promise<void> {
+	if (ctx.mode && ctx.mode !== "tui") return;
+	const git = await exec("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: ctx.cwd });
+	if (git.code !== 0 || git.killed) return;
+	const stateDir = join(git.stdout.trim(), "pi-deps");
+	const statusPath = join(stateDir, "status.json");
+	const readStatus = async (): Promise<InstallStatus | undefined> => {
+		try {
+			return JSON.parse(await readFile(statusPath, "utf8")) as InstallStatus;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			return { state: "running" }; // partial write from installer or test; retry next poll
+		}
+	};
+
+	let status = await readStatus();
+	if (!status) return;
+	if (status.state === "running") {
+		const startedAt = Date.now();
+		let timer: ReturnType<typeof setInterval> | undefined;
+		ctx.ui.setWidget(widgetKey, (tui: TUI, theme: Theme): Component & { dispose?(): void } => {
+			timer ??= setInterval(() => tui.requestRender(), spinnerIntervalMs);
+			timer.unref();
+			return {
+				invalidate() {},
+				dispose() {
+					if (timer) clearInterval(timer);
+					timer = undefined;
+				},
+				render: (width: number) => {
+					const frame = spinnerFrames[Math.floor(Date.now() / spinnerIntervalMs) % spinnerFrames.length]!;
+					return [
+						truncateToWidth(
+							`${theme.fg("accent", frame)} pi-deps: installing dependencies… ${theme.fg("dim", formatElapsed(startedAt))}`,
+							width,
+						),
+					];
+				},
+			};
+		});
+	}
+	const deadline = Date.now() + waitTimeoutMs;
+	while (status.state === "running" && Date.now() < deadline) {
+		await new Promise((resolveSleep) => setTimeout(resolveSleep, timing.pollMs ?? pollMs));
+		status = await readStatus();
+		if (!status) {
+			ctx.ui.setWidget(widgetKey, undefined);
+			return;
+		}
+	}
+	await rm(statusPath, { force: true }); // consume so later sessions do not replay a stale outcome
+	if (status.state === "ok") {
+		ctx.ui.setWidget(widgetKey, ["pi-deps: dependencies installed"]);
+		setTimeout(() => ctx.ui.setWidget(widgetKey, undefined), timing.successTtlMs ?? successTtlMs);
+	} else if (status.state === "error") {
+		ctx.ui.setWidget(widgetKey, [
+			`pi-deps: install failed: ${status.message ?? "unknown error"}`,
+			`pi-deps: log: ${join(stateDir, "install.log")}`,
+		]);
+	}
+}
+
 export default function depsExtension(pi: ExtensionAPI): void {
+	pi.on("session_start", async (_event, ctx) => {
+		await watchDependencyInstallation(pi.exec.bind(pi), ctx).catch(() => {});
+	});
 	pi.registerCommand("deps", {
 		description: "Toggle dependency preparation for future Git worktrees",
 		handler: async (args, ctx) => {

@@ -41,10 +41,11 @@ async function saveCommand(command: string): Promise<void> {
 }
 
 export default function openInExtension(pi: ExtensionAPI): void {
-	const command = configuredCommand();
-
+	// ponytail: static description so it never goes stale after /set-open-in
+	// (handler re-reads config per invocation); per-token whitespace splitting,
+	// tokens with spaces not supported.
 	pi.registerCommand("open", {
-		description: `Open the current path with \`${command} <current-path>\``,
+		description: "Open the current path with the configured command",
 		handler: async (_args, ctx) => {
 			const [executable, ...args] = configuredCommand().split(/\s+/);
 			const result = await pi.exec(executable, [...args, ctx.cwd]);
