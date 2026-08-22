@@ -6,7 +6,13 @@ import {
 	SessionManager,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode } from "@henryqw/pi-herdr";
+import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode, type HerdrExecResult } from "@henryqw/pi-herdr";
+import { lock } from "proper-lockfile";
+
+type WorkspaceInfo = {
+	workspace_id?: unknown;
+	worktree?: { checkout_path?: unknown } | null;
+};
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -46,32 +52,47 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 			const pane = (paneResponse as { result?: { pane?: { pane_id?: unknown; workspace_id?: unknown } } }).result?.pane;
 			requiredString(pane?.pane_id, "Herdr pane response pane_id");
 			const workspaceId = requiredString(pane?.workspace_id, "Herdr pane response workspace_id");
-
-			const session = SessionManager.open(sessionFile, ctx.sessionManager.getSessionDir(), ctx.cwd);
-			const createdClone = session.createBranchedSession(leafId);
-			if (!createdClone) throw new Error("Pi did not create a persisted clone session file.");
-			const cloneFile = resolve(createdClone);
-			let cloneStat;
-			try {
-				cloneStat = await stat(cloneFile);
-			} catch (error) {
-				throw new Error(`Pi clone session file was not created: ${cloneFile}`, { cause: error });
+			const workspaceResponse = await herdr.json(["workspace", "get", workspaceId], { cwd: ctx.cwd });
+			const workspace = (workspaceResponse as { result?: { workspace?: WorkspaceInfo } }).result?.workspace;
+			if (requiredString(workspace?.workspace_id, "Herdr workspace response workspace_id") !== workspaceId) {
+				throw new Error(`Herdr workspace response did not match ${workspaceId}.`);
 			}
-			if (!cloneStat.isFile()) throw new Error(`Pi clone session path is not a file: ${cloneFile}`);
+			const checkout = workspace?.worktree == null
+				? undefined
+				: requiredString(workspace.worktree.checkout_path, "Herdr workspace response checkout_path");
+			const release = checkout ? await lock(checkout) : undefined;
 
-			const tabCreateArgs = ["tab", "create", "--workspace", workspaceId, "--cwd", ctx.cwd, "--no-focus"] as const;
-			const createdTab = await herdr.exec(tabCreateArgs, { cwd: ctx.cwd });
-			if (createdTab.code !== 0 || createdTab.killed) {
-				const createError = new Error(herdrCommandFailure(tabCreateArgs, createdTab));
+			let cloneFile: string;
+			let createdTab: HerdrExecResult;
+			try {
+				const session = SessionManager.open(sessionFile, ctx.sessionManager.getSessionDir(), ctx.cwd);
+				const createdClone = session.createBranchedSession(leafId);
+				if (!createdClone) throw new Error("Pi did not create a persisted clone session file.");
+				cloneFile = resolve(createdClone);
+				let cloneStat;
 				try {
-					await unlink(cloneFile);
-				} catch (cleanupError) {
-					throw new AggregateError(
-						[createError, cleanupError],
-						`${createError.message} Clone cleanup also failed for ${cloneFile}: ${errorMessage(cleanupError)}`,
-					);
+					cloneStat = await stat(cloneFile);
+				} catch (error) {
+					throw new Error(`Pi clone session file was not created: ${cloneFile}`, { cause: error });
 				}
-				throw createError;
+				if (!cloneStat.isFile()) throw new Error(`Pi clone session path is not a file: ${cloneFile}`);
+
+				const tabCreateArgs = ["tab", "create", "--workspace", workspaceId, "--cwd", ctx.cwd, "--no-focus"] as const;
+				createdTab = await herdr.exec(tabCreateArgs, { cwd: ctx.cwd });
+				if (createdTab.code !== 0 || createdTab.killed) {
+					const createError = new Error(herdrCommandFailure(tabCreateArgs, createdTab));
+					try {
+						await unlink(cloneFile);
+					} catch (cleanupError) {
+						throw new AggregateError(
+							[createError, cleanupError],
+							`${createError.message} Clone cleanup also failed for ${cloneFile}: ${errorMessage(cleanupError)}`,
+						);
+					}
+					throw createError;
+				}
+			} finally {
+				await release?.();
 			}
 
 			let tabId: string | undefined;

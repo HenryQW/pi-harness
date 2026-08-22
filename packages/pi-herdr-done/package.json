@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-done",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Close and remove the current Herdr worktree from Pi.",
   "keywords": [
     "pi-package",
@@ -27,7 +27,8 @@
     "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "dependencies": {
-    "@henryqw/pi-herdr": "^0.1.2"
+    "@henryqw/pi-herdr": "^0.1.2",
+    "proper-lockfile": "^4.1.2"
   },
   "repository": {
     "type": "git",
