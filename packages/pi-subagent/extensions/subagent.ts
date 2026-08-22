@@ -18,9 +18,16 @@ const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const TERMINAL_DISPLAY_MS = 1_000;
 const MAX_WIDGET_ROWS = 8;
+const DEFAULT_TIMEOUT_POLICY = {
+	softMs: 10 * 60_000,
+	graceMs: 5 * 60_000,
+	activeWindowMs: 60_000,
+};
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+type TimeoutPolicy = typeof DEFAULT_TIMEOUT_POLICY;
 type ModelClass = ProfileName;
+class SubagentTimeoutError extends Error {}
 type ChildResult = {
 	exitCode: number;
 	output: string;
@@ -192,6 +199,7 @@ async function runPi(
 	signal: AbortSignal | undefined,
 	onUpdate: ((text: string) => void) | undefined,
 	onTokens: ((tokens: number) => void) | undefined,
+	timeoutPolicy: TimeoutPolicy,
 ): Promise<ChildResult> {
 	if (signal?.aborted) throw new Error("Subagent was aborted.");
 	return await new Promise<ChildResult>((resolve, reject) => {
@@ -207,6 +215,7 @@ async function runPi(
 		let lineParts: string[] = [];
 		let lineBytes = 0;
 		let linePrefix = "";
+		let lineEventType: string | undefined;
 		let ignoreLine = false;
 		let output = "";
 		const stderr = { prefix: "", totalBytes: 0 };
@@ -217,9 +226,22 @@ async function runPi(
 		let spawnError: Error | undefined;
 		let protocolError: Error | undefined;
 		let aborted = false;
+		let timedOutAfterMs: number | undefined;
+		let graceGranted = false;
+		let lastActivityAt = Date.now();
+		let modelActive = false;
+		let activeTools = 0;
 		let completedTokens = 0;
 		let currentTokens = 0;
+		let softDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+		let hardDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const observeEvent = (type: string) => {
+			lastActivityAt = Date.now();
+			if (type === "tool_execution_start") activeTools++;
+			else if (type === "tool_execution_end") activeTools = Math.max(0, activeTools - 1);
+		};
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
@@ -232,12 +254,15 @@ async function runPi(
 			if (!event || typeof event !== "object" || Array.isArray(event)) return;
 			const record = event as Record<string, unknown>;
 			if (record.type === "message_start") {
+				if (record.message && typeof record.message === "object" && !Array.isArray(record.message)
+					&& (record.message as Record<string, unknown>).role === "assistant") modelActive = true;
 				partial.prefix = "";
 				partial.totalBytes = 0;
 				hasPartialText = false;
 				return;
 			}
 			if (record.type === "message_update") {
+				modelActive = true;
 				const tokens = usageTokens(record.usage);
 				if (tokens !== undefined) {
 					currentTokens = tokens;
@@ -266,6 +291,7 @@ async function runPi(
 			if (record.message && typeof record.message === "object" && !Array.isArray(record.message)) {
 				const message = record.message as Record<string, unknown>;
 				if (message.role === "assistant") {
+					modelActive = false;
 					completedTokens += usageTokens(message.usage) ?? currentTokens;
 					currentTokens = 0;
 					onTokens?.(completedTokens);
@@ -293,6 +319,7 @@ async function runPi(
 
 		child.stdout.on("data", (data: string) => {
 			if (protocolError) return;
+			lastActivityAt = Date.now();
 			let offset = 0;
 			while (offset < data.length) {
 				const newline = data.indexOf("\n", offset);
@@ -301,6 +328,10 @@ async function runPi(
 				if (!ignoreLine) {
 					linePrefix += part.slice(0, Math.max(0, 256 - linePrefix.length));
 					const eventType = JSON_EVENT_TYPE.exec(linePrefix)?.[1];
+					if (eventType && !lineEventType) {
+						lineEventType = eventType;
+						observeEvent(eventType);
+					}
 					if (eventType && !CONSUMED_JSON_EVENTS.has(eventType)) {
 						ignoreLine = true;
 						lineParts = [];
@@ -320,27 +351,57 @@ async function runPi(
 				lineParts = [];
 				lineBytes = 0;
 				linePrefix = "";
+				lineEventType = undefined;
 				ignoreLine = false;
 				offset = newline + 1;
 			}
 		});
-		child.stderr.on("data", (data: string) => appendBounded(stderr, data));
+		child.stderr.on("data", (data: string) => {
+			lastActivityAt = Date.now();
+			appendBounded(stderr, data);
+		});
 		child.on("error", (error) => { spawnError = error; });
 
-		const abort = () => {
-			aborted = true;
+		const stop = () => {
 			killTree(false);
 			killTimer = setTimeout(() => killTree(true), 5_000);
 			killTimer.unref();
 		};
+		const abort = () => {
+			if (timedOutAfterMs !== undefined) return;
+			aborted = true;
+			stop();
+		};
+		const timeout = (afterMs: number) => {
+			if (aborted || timedOutAfterMs !== undefined) return;
+			timedOutAfterMs = afterMs;
+			stop();
+		};
+		softDeadlineTimer = setTimeout(() => {
+			const active = modelActive || activeTools > 0 || Date.now() - lastActivityAt <= timeoutPolicy.activeWindowMs;
+			if (active && timeoutPolicy.graceMs > 0) graceGranted = true;
+			else timeout(timeoutPolicy.softMs);
+		}, timeoutPolicy.softMs);
+		softDeadlineTimer.unref();
+		hardDeadlineTimer = setTimeout(
+			() => timeout(timeoutPolicy.softMs + timeoutPolicy.graceMs),
+			timeoutPolicy.softMs + timeoutPolicy.graceMs,
+		);
+		hardDeadlineTimer.unref();
 		signal?.addEventListener("abort", abort, { once: true });
+		if (signal?.aborted) abort();
 
 		child.on("close", (code) => {
 			if (!protocolError && lineBytes) processLine(lineParts.join(""));
-			if (aborted) killTree(true);
+			if (aborted || timedOutAfterMs !== undefined) killTree(true);
+			if (softDeadlineTimer) clearTimeout(softDeadlineTimer);
+			if (hardDeadlineTimer) clearTimeout(hardDeadlineTimer);
 			if (killTimer) clearTimeout(killTimer);
 			signal?.removeEventListener("abort", abort);
 			if (aborted) reject(new Error("Subagent was aborted."));
+			else if (timedOutAfterMs !== undefined) reject(new SubagentTimeoutError(
+				`Subagent timed out after ${formatElapsed(0, timedOutAfterMs)}${graceGranted ? ` despite active status at the ${formatElapsed(0, timeoutPolicy.softMs)} soft deadline` : " without active status at the soft deadline"}.`,
+			));
 			else if (protocolError) reject(protocolError);
 			else if (spawnError) reject(spawnError);
 			else resolve({ exitCode: code ?? 1, output, stderr: boundedText(stderr), stopReason, errorMessage });
@@ -367,7 +428,10 @@ const roleSummary = (): string => {
 	}
 };
 
-export default function subagentExtension(pi: ExtensionAPI): void {
+export default function subagentExtension(
+	pi: ExtensionAPI,
+	timeoutPolicy: TimeoutPolicy = DEFAULT_TIMEOUT_POLICY,
+): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
@@ -502,6 +566,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					signal,
 					(text) => onUpdate?.({ content: [{ type: "text", text }], details }),
 					(tokens) => updateWidgetTokens(toolCallId, tokens),
+					timeoutPolicy,
 				);
 				const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 				widgetStatus = result.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
@@ -510,7 +575,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					: result.output || "(no output)");
 				return { content: [{ type: "text" as const, text }], details, ...(failed ? { isError: true } : {}) };
 			} catch (error) {
-				if (signal?.aborted) widgetStatus = "aborted";
+				if (signal?.aborted && !(error instanceof SubagentTimeoutError)) widgetStatus = "aborted";
 				throw error;
 			} finally {
 				finishWidgetItem(toolCallId, widgetStatus);
