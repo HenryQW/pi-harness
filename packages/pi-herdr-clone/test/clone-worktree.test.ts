@@ -184,6 +184,7 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 			await stat(cloneFile);
 
 			const clone = SessionManager.open(cloneFile);
+			assert.equal(clone.getHeader()?.cwd, "/repos/pi-packages/.herdr-checkouts/wt-x");
 			const text = clone.getEntries().flatMap((entry) => {
 				if (entry.type !== "message" || !("content" in entry.message)) return [];
 				const content = entry.message.content;
@@ -204,8 +205,8 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 	}
 });
 
-test("failed worktree creation removes the clone; agent failure retains every artifact", async (t) => {
-	await t.test("a failed worktree create removes its clone", async () => {
+test("worktree creation failures happen before cloning and retain nothing of the clone", async (t) => {
+	await t.test("a definitively failed worktree create never creates a clone", async () => {
 		const data = await fixture();
 		try {
 			await withPane("pane-current", async () => {
@@ -227,7 +228,29 @@ test("failed worktree creation removes the clone; agent failure retains every ar
 		}
 	});
 
-	await t.test("an incomplete worktree response retains the clone and reports known IDs", async () => {
+	await t.test("a killed worktree create is ambiguous and creates no clone", async () => {
+		const data = await fixture();
+		try {
+			await withPane("pane-current", async () => {
+				const app = harness(data.manager, data.cwd, (args) => {
+					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
+					if (args[0] === "worktree") return { stdout: "", stderr: "killed mid-create", code: 9, killed: true };
+					return success();
+				});
+				await assert.rejects(app.command("", app.ctx), (error: Error) => {
+					assert.match(error.message, /could not be confirmed/);
+					assert.match(error.message, /partial worktree workspace/);
+					return true;
+				});
+				assert.equal(app.calls.some((call) => call.args[0] === "agent"), false);
+				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
+			});
+		} finally {
+			await rm(data.root, { recursive: true, force: true });
+		}
+	});
+
+	await t.test("an incomplete worktree response retains the worktree IDs and creates no clone", async () => {
 		const data = await fixture();
 		try {
 			await withPane("pane-current", async () => {
@@ -236,9 +259,9 @@ test("failed worktree creation removes the clone; agent failure retains every ar
 					if (args[0] === "worktree") {
 						return success({
 							result: {
-								workspace: { workspace_id: "workspace-new" },
+								workspace: {},
 								tab: { tab_id: "tab-new" },
-								root_pane: {},
+								root_pane: { pane_id: "pane-root" },
 								worktree: { checkout_path: "/repos/wt-x" },
 							},
 						});
@@ -247,12 +270,13 @@ test("failed worktree creation removes the clone; agent failure retains every ar
 				});
 				await assert.rejects(app.command("", app.ctx), (error: Error) => {
 					assert.match(error.message, /could not be confirmed/);
-					assert.match(error.message, /workspace-new/);
-					assert.match(error.message, /root pane_id/);
+					assert.match(error.message, /tab-new/);
+					assert.match(error.message, /pane-root/);
+					assert.match(error.message, /missing workspace_id/);
 					return true;
 				});
-				const leftover = (await readdir(data.sessionDir)).filter((name) => name !== basename(data.sessionFile));
-				assert.equal(leftover.length, 1);
+				assert.equal(app.calls.some((call) => call.args[0] === "agent"), false);
+				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
 			});
 		} finally {
 			await rm(data.root, { recursive: true, force: true });

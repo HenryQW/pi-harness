@@ -67,8 +67,12 @@ async function resolveSource(
 	return { sessionFile, leafId, workspaceId, checkout };
 }
 
-async function createBranchedClone(ctx: ExtensionCommandContext, source: SourceContext): Promise<string> {
-const session = SessionManager.open(source.sessionFile, ctx.sessionManager.getSessionDir(), ctx.cwd);
+async function createBranchedClone(
+	ctx: ExtensionCommandContext,
+	source: SourceContext,
+	cwd: string,
+): Promise<string> {
+	const session = SessionManager.open(source.sessionFile, ctx.sessionManager.getSessionDir(), cwd);
 	const createdClone = session.createBranchedSession(source.leafId);
 	if (!createdClone) throw new Error("Pi did not create a persisted clone session file.");
 	const cloneFile = resolve(createdClone);
@@ -138,7 +142,7 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 			let cloneFile: string;
 			let createdTab: HerdrExecResult;
 			try {
-				cloneFile = await createBranchedClone(ctx, source);
+				cloneFile = await createBranchedClone(ctx, source, ctx.cwd);
 				const tabCreateArgs = ["tab", "create", "--workspace", source.workspaceId, "--cwd", ctx.cwd, "--no-focus"] as const;
 				createdTab = await herdr.exec(tabCreateArgs, { cwd: ctx.cwd });
 				if (createdTab.code !== 0 || createdTab.killed) {
@@ -166,7 +170,7 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 					{ cause: error },
 				);
 			}
-			const agentName = await launchCloneAgent(herdr, ctx, rootPaneId!, cloneFile, `Herdr tab ${tabId}, root pane ${rootPaneId}`);
+			const agentName = await launchCloneAgent(herdr, ctx, rootPaneId!, cloneFile, `Herdr tab ${tabId}, root pane ${rootPaneId}, and session ${cloneFile}`);
 
 			try {
 				await herdr.run(["tab", "focus", tabId!], { cwd: ctx.cwd });
@@ -189,19 +193,14 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			await ctx.waitForIdle();
 			const source = await resolveSource("clone-worktree", herdr, ctx);
-			const release = source.checkout ? await lock(source.checkout) : undefined;
 
-			let cloneFile: string;
-			let createdWorktree: HerdrExecResult;
-			try {
-				cloneFile = await createBranchedClone(ctx, source);
-				const worktreeCreateArgs = ["worktree", "create", "--workspace", source.workspaceId, "--no-focus"] as const;
-				createdWorktree = await herdr.exec(worktreeCreateArgs, { cwd: ctx.cwd });
-				if (createdWorktree.code !== 0 || createdWorktree.killed) {
-					await discardCloneOrAggregate(cloneFile, new Error(herdrCommandFailure(worktreeCreateArgs, createdWorktree)));
-				}
-			} finally {
-				await release?.();
+			// Create the worktree before the clone so the session header can be
+			// stamped with the fresh checkout cwd. A killed or incomplete create is
+			// ambiguous: Herdr may have retained partial worktree state.
+			const worktreeCreateArgs = ["worktree", "create", "--workspace", source.workspaceId, "--no-focus"] as const;
+			const createdWorktree = await herdr.exec(worktreeCreateArgs, { cwd: ctx.cwd });
+			if (createdWorktree.code !== 0 && !createdWorktree.killed) {
+				throw new Error(herdrCommandFailure(worktreeCreateArgs, createdWorktree));
 			}
 
 			let workspaceId: string | undefined;
@@ -221,20 +220,45 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 						worktree?: { checkout_path?: unknown };
 					};
 				}).result;
-				workspaceId = requiredString(result?.workspace?.workspace_id, "Herdr worktree response workspace_id");
-				tabId = requiredString(result?.tab?.tab_id, "Herdr worktree response tab_id");
-				rootPaneId = requiredString(result?.root_pane?.pane_id, `Herdr worktree tab ${tabId} root pane_id`);
-				checkoutPath = requiredString(result?.worktree?.checkout_path, "Herdr worktree response checkout_path");
+				// Collect every returned identifier before validating so recovery
+				// keeps all known IDs even when an earlier field is missing.
+				workspaceId = typeof result?.workspace?.workspace_id === "string" ? result.workspace.workspace_id : undefined;
+				tabId = typeof result?.tab?.tab_id === "string" ? result.tab.tab_id : undefined;
+				rootPaneId = typeof result?.root_pane?.pane_id === "string" ? result.root_pane.pane_id : undefined;
+				checkoutPath = typeof result?.worktree?.checkout_path === "string" ? result.worktree.checkout_path : undefined;
+				const missing = [
+					[workspaceId, "workspace_id"],
+					[tabId, "tab_id"],
+					[rootPaneId, "root_pane.pane_id"],
+					[checkoutPath, "worktree.checkout_path"],
+				].filter(([value]) => !value).map(([, label]) => label);
+				if (missing.length > 0) {
+					throw new Error(`Herdr worktree create response is missing ${missing.join(", ")}.`);
+				}
 			} catch (error) {
 				const known = [
 					workspaceId && `workspace ${workspaceId}`,
 					tabId && `tab ${tabId}`,
 					rootPaneId && `root pane ${rootPaneId}`,
+					checkoutPath && `checkout ${checkoutPath}`,
 				].filter(Boolean).join(", ");
 				throw new Error(
-					`Clone launch could not be confirmed after creating a Herdr worktree; retained${known ? ` Herdr ${known} and` : ""} session ${cloneFile}: ${errorMessage(error)}`,
+					`Clone could not be confirmed after creating a Herdr worktree${known ? ` (${known})` : ""}; Herdr may have retained a partial worktree workspace, inspect herdr workspace list: ${errorMessage(error)}`,
 					{ cause: error },
 				);
+			}
+
+			let cloneFile: string;
+			const release = source.checkout ? await lock(source.checkout) : undefined;
+			try {
+				cloneFile = await createBranchedClone(ctx, source, checkoutPath!);
+			} catch (error) {
+				throw new Error(
+					`Clone session could not be created for Herdr worktree workspace ${workspaceId} (tab ${tabId}, checkout ${checkoutPath}); retained worktree without a clone session: ${errorMessage(error)}`,
+					{ cause: error },
+				);
+			} finally {
+				await release?.();
 			}
 			const agentName = await launchCloneAgent(
 				herdr, ctx, rootPaneId!, cloneFile,
