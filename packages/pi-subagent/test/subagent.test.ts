@@ -727,6 +727,42 @@ test("invalid PI_SUBAGENT_MAX_CHILDREN fails extension load", () => {
 	}
 });
 
+test("config file maxChildren applies and malformed config warns without failing load", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const configDir = join(agentDir, "config");
+		await mkdir(configDir, { recursive: true });
+		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({ maxChildren: 1 }));
+
+		const configured = harness({ ui: true });
+		configured.handlers.get("session_start")?.({}, configured.ctx);
+		assert.deepEqual(configured.notifications, []);
+
+		const tasks = ["task-1", "task-2"];
+		const runner = await blockedPiRunner(agentDir);
+		const app = harness({ ui: true });
+		const calls = tasks.map((task, index) => app.tool.execute(
+			`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx,
+		));
+		try {
+			await waitFor(() => runner.started().length === 1);
+			await runner.release("task-1");
+			await waitFor(() => runner.started().includes("task-2"));
+		} finally {
+			await Promise.all(tasks.map((task) => runner.release(task)));
+			await Promise.allSettled(calls);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+
+		// Malformed file: session still loads; warning surfaces at session_start.
+		await writeFile(join(configDir, "pi-subagent.json"), "{ broken");
+		const warned = harness({ ui: true });
+		warned.handlers.get("session_start")?.({}, warned.ctx);
+		assert.equal(warned.notifications.length, 1);
+		assert.match(warned.notifications[0]!.message, /not valid JSON/);
+	});
+});
+
 test("drops an aborted queued delegation and transfers its permit", async () => {
 	await environment(async (agentDir) => {
 		process.env.PI_SUBAGENT_MAX_CHILDREN = "4";

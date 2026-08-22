@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { readSubagentConfig } from "./config.ts";
 import {
 	availableTaskModels,
 	modelReference,
@@ -460,11 +461,19 @@ export default function subagentExtension(
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
-	// spend. Override with PI_SUBAGENT_MAX_CHILDREN (positive integer).
+	// spend. Precedence: PI_SUBAGENT_MAX_CHILDREN env > config/pi-subagent.json
+	// maxChildren > default 5. Invalid config falls back to the default and is
+	// reported once the UI exists; an invalid env value fails fast.
+	const loadedConfig = readSubagentConfig();
+	const startupWarnings = [loadedConfig.error].filter((message): message is string => message !== undefined);
+	let maxActiveChildren = loadedConfig.config.maxChildren ?? 5;
 	const maxChildrenRaw = process.env.PI_SUBAGENT_MAX_CHILDREN;
-	const maxActiveChildren = maxChildrenRaw === undefined ? 5 : Number.parseInt(maxChildrenRaw, 10);
-	if (!Number.isInteger(maxActiveChildren) || maxActiveChildren < 1) {
-		throw new Error(`PI_SUBAGENT_MAX_CHILDREN must be a positive integer, got ${JSON.stringify(maxChildrenRaw)}.`);
+	if (maxChildrenRaw !== undefined) {
+		const parsed = Number.parseInt(maxChildrenRaw, 10);
+		if (!Number.isInteger(parsed) || parsed < 1) {
+			throw new Error(`PI_SUBAGENT_MAX_CHILDREN must be a positive integer, got ${JSON.stringify(maxChildrenRaw)}.`);
+		}
+		maxActiveChildren = parsed;
 	}
 	let backgroundSequence = 0;
 	// Background children outlive the launching tool call, so they get their own
@@ -577,6 +586,7 @@ export default function subagentExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		ensureWidget(ctx);
+		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		stopWidgetTimer();
