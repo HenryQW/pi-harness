@@ -650,11 +650,11 @@ Do work.
 
 test("runs four child delegations and starts queued children FIFO", async () => {
 	await environment(async (agentDir) => {
-		process.env.PI_SUBAGENT_MAX_CHILDREN = "4";
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "4";
 		try {
 			await runsQueuedChildrenFifo(agentDir);
 		} finally {
-			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
 	});
 });
@@ -688,9 +688,9 @@ async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
 		}
 }
 
-test("PI_SUBAGENT_MAX_CHILDREN overrides the default child cap", async () => {
+test("PI_SUBAGENT_MAX_SUBAGENTS overrides the default child cap", async () => {
 	await environment(async (agentDir) => {
-		process.env.PI_SUBAGENT_MAX_CHILDREN = "1";
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "1";
 		try {
 			await writeWorkerRole(agentDir);
 			const tasks = ["task-1", "task-2"];
@@ -713,26 +713,26 @@ test("PI_SUBAGENT_MAX_CHILDREN overrides the default child cap", async () => {
 				await app.handlers.get("session_shutdown")?.({}, app.ctx);
 			}
 		} finally {
-			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
 	});
 });
 
-test("invalid PI_SUBAGENT_MAX_CHILDREN fails extension load", () => {
-	process.env.PI_SUBAGENT_MAX_CHILDREN = "zero";
+test("invalid PI_SUBAGENT_MAX_SUBAGENTS fails extension load", () => {
+	process.env.PI_SUBAGENT_MAX_SUBAGENTS = "zero";
 	try {
-		assert.throws(() => harness(), /PI_SUBAGENT_MAX_CHILDREN/);
+		assert.throws(() => harness(), /PI_SUBAGENT_MAX_SUBAGENTS/);
 	} finally {
-		delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+		delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 	}
 });
 
-test("config file maxChildren applies and malformed config warns without failing load", async () => {
+test("config file maxSubagents applies and malformed config warns without failing load", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const configDir = join(agentDir, "config");
 		await mkdir(configDir, { recursive: true });
-		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({ maxChildren: 1 }));
+		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 1 }));
 
 		const configured = harness({ ui: true });
 		configured.handlers.get("session_start")?.({}, configured.ctx);
@@ -765,7 +765,7 @@ test("config file maxChildren applies and malformed config warns without failing
 
 test("drops an aborted queued delegation and transfers its permit", async () => {
 	await environment(async (agentDir) => {
-		process.env.PI_SUBAGENT_MAX_CHILDREN = "4";
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "4";
 		try {
 			await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
@@ -801,14 +801,14 @@ test("drops an aborted queued delegation and transfers its permit", async () => 
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
 		} finally {
-			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
 	});
 });
 
 test("queued delegation does not consume its inactive-child timeout", async () => {
 	await environment(async (agentDir) => {
-		process.env.PI_SUBAGENT_MAX_CHILDREN = "4";
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "4";
 		try {
 			await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 5 }, (_, index) => `task-${index + 1}`);
@@ -845,7 +845,7 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
 		} finally {
-			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
 	});
 });

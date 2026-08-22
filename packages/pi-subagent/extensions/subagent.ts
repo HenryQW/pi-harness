@@ -461,19 +461,19 @@ export default function subagentExtension(
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
-	// spend. Precedence: PI_SUBAGENT_MAX_CHILDREN env > config/pi-subagent.json
-	// maxChildren > default 5. Invalid config falls back to the default and is
+	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent.json
+	// maxSubagents > default 5. Invalid config falls back to the default and is
 	// reported once the UI exists; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
 	const startupWarnings = [loadedConfig.error].filter((message): message is string => message !== undefined);
-	let maxActiveChildren = loadedConfig.config.maxChildren ?? 5;
-	const maxChildrenRaw = process.env.PI_SUBAGENT_MAX_CHILDREN;
-	if (maxChildrenRaw !== undefined) {
-		const parsed = Number.parseInt(maxChildrenRaw, 10);
+	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
+	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+	if (maxSubagentsRaw !== undefined) {
+		const parsed = Number.parseInt(maxSubagentsRaw, 10);
 		if (!Number.isInteger(parsed) || parsed < 1) {
-			throw new Error(`PI_SUBAGENT_MAX_CHILDREN must be a positive integer, got ${JSON.stringify(maxChildrenRaw)}.`);
+			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`);
 		}
-		maxActiveChildren = parsed;
+		maxActiveSubagents = parsed;
 	}
 	let backgroundSequence = 0;
 	// Background children outlive the launching tool call, so they get their own
@@ -483,7 +483,7 @@ export default function subagentExtension(
 	const queuedChildren: Array<() => void> = [];
 	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
 		if (signal?.aborted) return Promise.reject(new Error("Subagent was aborted."));
-		if (activeChildren < maxActiveChildren) {
+		if (activeChildren < maxActiveSubagents) {
 			activeChildren++;
 			return Promise.resolve();
 		}

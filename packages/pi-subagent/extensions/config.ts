@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface SubagentConfig {
-	maxChildren?: number;
+	maxSubagents?: number;
 }
 
 export interface LoadedSubagentConfig {
@@ -38,13 +38,13 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 		return { config: {}, error: `${path} must contain a JSON object; using defaults.` };
 	}
-	const { maxChildren } = parsed as Record<string, unknown>;
-	if (maxChildren === undefined) return { config: {} };
-	if (typeof maxChildren !== "number" || !Number.isInteger(maxChildren) || maxChildren < 1) {
+	const { maxSubagents } = parsed as Record<string, unknown>;
+	if (maxSubagents === undefined) return { config: {} };
+	if (typeof maxSubagents !== "number" || !Number.isInteger(maxSubagents) || maxSubagents < 1) {
 		return {
 			config: {},
-			error: `${path}: maxChildren must be an integer >= 1, got ${JSON.stringify(maxChildren)}; using defaults.`,
+			error: `${path}: maxSubagents must be an integer >= 1, got ${JSON.stringify(maxSubagents)}; using defaults.`,
 		};
 	}
-	return { config: { maxChildren } };
+	return { config: { maxSubagents } };
 }

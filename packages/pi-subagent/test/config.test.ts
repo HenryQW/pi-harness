@@ -20,12 +20,12 @@ test("missing config file yields empty config", async () => {
 	});
 });
 
-test("valid maxChildren is accepted", async () => {
+test("valid maxSubagents is accepted", async () => {
 	await withAgentDir(async (agentDir) => {
 		const dir = join(agentDir, "config");
 		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxChildren: 3 }));
-		assert.deepEqual(readSubagentConfig(agentDir), { config: { maxChildren: 3 } });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 3 }));
+		assert.deepEqual(readSubagentConfig(agentDir), { config: { maxSubagents: 3 } });
 	});
 });
 
@@ -33,7 +33,7 @@ test("malformed JSON reports an error and preserves defaults", async () => {
 	await withAgentDir(async (agentDir) => {
 		const path = join(agentDir, "config", "pi-subagent.json");
 		await mkdir(join(agentDir, "config"), { recursive: true });
-		const broken = "{ maxChildren: ";
+		const broken = "{ maxSubagents: ";
 		await writeFile(path, broken);
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
@@ -43,14 +43,14 @@ test("malformed JSON reports an error and preserves defaults", async () => {
 	});
 });
 
-test("invalid maxChildren value reports an error and preserves defaults", async () => {
+test("invalid maxSubagents value reports an error and preserves defaults", async () => {
 	await withAgentDir(async (agentDir) => {
 		const dir = join(agentDir, "config");
 		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxChildren: 0 }));
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 0 }));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /maxChildren must be an integer >= 1, got 0/);
+		assert.match(loaded.error!, /maxSubagents must be an integer >= 1, got 0/);
 	});
 });
 
