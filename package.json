@@ -28,6 +28,7 @@
       "./packages/pi-herdr-rename/extensions",
       "./packages/pi-herdr-btw/extensions/btw.ts",
       "./packages/pi-herdr-clone/extensions",
+      "./packages/pi-herdr-done/extensions",
       "./packages/pi-multi-codex/extensions",
       "./packages/pi-subagent/extensions/subagent.ts"
     ]

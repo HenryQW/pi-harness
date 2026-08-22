@@ -1,0 +1,48 @@
+{
+  "name": "@henryqw/pi-herdr-done",
+  "version": "0.2.0",
+  "description": "Close and remove the current Herdr worktree from Pi.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "herdr",
+    "worktree"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2"
+  },
+  "dependencies": {
+    "@henryqw/pi-herdr": "^0.1.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-packages.git",
+    "directory": "packages/pi-herdr-done"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-packages/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}
