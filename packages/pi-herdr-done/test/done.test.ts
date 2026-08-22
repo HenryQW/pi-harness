@@ -46,6 +46,7 @@ function snapshotExecutor(options: {
 	mainCheckout?: string;
 	bareMain?: boolean;
 	panes?: unknown[];
+	tabs?: unknown[];
 	removeResult?: ExecResult;
 	pullResult?: ExecResult;
 } = {}): Executor {
@@ -59,6 +60,9 @@ function snapshotExecutor(options: {
 		}
 		if (command === "herdr" && args[0] === "api") {
 			return ok(JSON.stringify({ result: { snapshot: { panes: options.panes ?? [] } } }));
+		}
+		if (command === "herdr" && args[0] === "tab") {
+			return ok(JSON.stringify({ result: { tabs: options.tabs ?? [] } }));
 		}
 		if (command === "git" && args[0] === "worktree") return options.removeResult ?? ok();
 		if (command === "git" && args[0] === "pull") return options.pullResult ?? ok();
@@ -118,23 +122,31 @@ test("/done resolves the checkout root, skips own tab, removes the checkout, the
 	});
 });
 
-test("/done --force skips confirmation and forwards force to git worktree remove", async () => {
+test("/done --force skips confirmation and dependents check, forwards force to git worktree remove", async () => {
 	await withHerdrEnvironment("1", "w1:t1", async () => {
-		const app = harness(snapshotExecutor());
+		const app = harness(snapshotExecutor({
+			panes: [{ tab_id: "w2:t9", cwd: checkout }],
+		}));
 		await app.command("--force", context());
 		assert.deepEqual(app.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "remove")?.args,
 			["worktree", "remove", "--force", checkout]);
 	});
 });
 
-test("/done refuses when another Herdr tab still uses the checkout or the parent", async () => {
+test("/done refuses with blocking tab labels when another Herdr tab still uses the checkout or the parent", async () => {
 	for (const cwd of [checkout, `${checkout}/sub`, mainCheckoutDir, `${mainCheckoutDir}/sub`]) {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor({
-				panes: [{ tab_id: "w2:t9", cwd }],
+				panes: [{ tab_id: "w2:t9", cwd }, { tab_id: "w3:t4", cwd }],
+				tabs: [
+					{ tab_id: "w2:t9", label: "Fix puid pgid" },
+					{ tab_id: "w3:t4" },
+				],
 			}));
-			await assert.rejects(app.command("", context()), /still used by Herdr tabs w2:t9/);
-			assert.equal(app.calls.length, 3);
+			await assert.rejects(
+				app.command("", context()),
+				/still used by Herdr tabs Fix puid pgid, w3:t4/);
+			assert.equal(app.calls.length, 4);
 		});
 	}
 });
@@ -209,7 +221,8 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				pullResult: { stdout: "", stderr: "error: Your local changes would be overwritten by merge", code: 1 },
 			}));
 			await assert.rejects(app.command("--force", context()), /overwritten by merge/);
-			assert.equal(app.calls.length, 5);
+			// --force skips the dependents check, so no herdr api snapshot call.
+			assert.equal(app.calls.length, 4);
 		});
 	});
 
