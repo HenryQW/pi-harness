@@ -5,7 +5,7 @@ Pi Task Models stores shared task profiles and task-to-profile assignments for H
 ## Language
 
 **Task Profile**:
-Named shared route set (`fast`, `balanced`, or `frontier`) with a required primary route and optional fallback route.
+Named shared route set (`fast`, `balanced`, `frontier`, or `fav`) with a required primary route and optional fallback route (`fav` has no fallback).
 _Avoid_: package-owned model picker, per-extension model catalog
 
 **Task Route**:

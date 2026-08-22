@@ -14,7 +14,7 @@ pi install npm:@henryqw/pi-subagent
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-task-models` | Required. Shared `fast` / `balanced` / `frontier` routes. |
+| `@henryqw/pi-task-models` | Required. Shared `fast` / `balanced` / `frontier` / `fav` routes. |
 | `@henryqw/pi-multi-codex` | Required. Child uses Main's active Codex slot. |
 
 ## Use
@@ -23,7 +23,7 @@ pi install npm:@henryqw/pi-subagent
 | --- | --- | --- |
 | `delegate_task` | tool | Start one isolated child for `role`, `task`, and optional `modelClass`. |
 
-`modelClass` is `fast`, `balanced`, or `frontier`. Omitted class uses the shared `pi-subagent/delegateTask` assignment, which defaults to `balanced`. Primary route is resolved against current scoped text models; fallback is tried only before launch. If no route is usable, delegation rejects with `Run /task-models`. A started child is never retried.
+`modelClass` is `fast`, `balanced`, `frontier`, or `fav`. Omitted class uses the shared `pi-subagent/delegateTask` assignment, which defaults to `balanced`. Primary route is resolved against current scoped text models; fallback is tried only before launch. If no route is usable, delegation rejects with `Run /task-models`. A started child is never retried.
 
 Main splits broad work into independent bounded tasks and keeps integration and cross-cutting decisions. Each `task` states its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation. Each call uses the least capable `modelClass` that can reliably complete its task. Independent sibling calls can run concurrently; concurrent edit tasks must own non-overlapping files. Up to four active ephemeral `delegate_task` children run per Main; excess calls wait FIFO. Queued calls do not start a child or consume child timeout. Managed Herdr workers are unaffected.
 
