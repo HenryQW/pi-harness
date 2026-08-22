@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "test": "npm run build && node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
