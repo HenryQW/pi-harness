@@ -7,7 +7,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import openInExtension from "../extensions/open.ts";
+import openInExtension, { configuredOpenUri } from "../extensions/open.ts";
 
 type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 
@@ -63,6 +63,10 @@ test("/set-open-in saves command used by /open", async () => {
 			commands.get("open")?.description,
 			"Open the current path with `code <current-path>`",
 		);
+		assert.equal(
+			configuredOpenUri("/tmp/project folder#1"),
+			"vscode://file/tmp/project%20folder%231",
+		);
 
 		await commands.get("set-open-in")?.handler("codex", ctx);
 		assert.deepEqual(
@@ -70,6 +74,7 @@ test("/set-open-in saves command used by /open", async () => {
 			{ command: "codex" },
 		);
 		assert.deepEqual(notifications, ["Saved open-in command: codex"]);
+		assert.equal(configuredOpenUri("/tmp/project"), undefined);
 
 		await commands.get("open")?.handler("", ctx);
 		assert.deepEqual(calls, [{ command: "codex", args: ["/tmp/project"] }]);

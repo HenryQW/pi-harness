@@ -1,13 +1,12 @@
 {
-  "name": "@henryqw/pi-open-in",
-  "version": "0.2.0",
-  "description": "Open the current Pi working directory with a configurable command.",
+  "name": "@henryqw/pi-footer",
+  "version": "0.1.0",
+  "description": "Show concise repository, branch, and usage details in the Pi footer.",
   "keywords": [
     "pi-package",
     "pi",
-    "vscode",
-    "visual-studio-code",
-    "command"
+    "footer",
+    "worktree"
   ],
   "type": "module",
   "engines": {
@@ -19,21 +18,20 @@
     "README.md",
     "LICENSE"
   ],
-  "exports": {
-    "./open-uri": "./extensions/open.ts"
-  },
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/open.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.2"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-open-in"
+    "directory": "packages/pi-footer"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"
@@ -43,7 +41,10 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/footer.ts"
     ]
+  },
+  "dependencies": {
+    "@henryqw/pi-open-in": "^0.2.0"
   }
 }

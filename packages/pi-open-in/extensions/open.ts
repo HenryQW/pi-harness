@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	getAgentDir,
 	type ExtensionAPI,
@@ -20,6 +21,11 @@ function configuredCommand(): string {
 		// Missing or malformed config uses default command.
 	}
 	return DEFAULT_COMMAND;
+}
+
+export function configuredOpenUri(path: string): string | undefined {
+	if (configuredCommand() !== "code") return undefined;
+	return `vscode://file${pathToFileURL(path).pathname}`;
 }
 
 async function saveCommand(command: string): Promise<void> {

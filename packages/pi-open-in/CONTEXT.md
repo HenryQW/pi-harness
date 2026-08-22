@@ -13,3 +13,7 @@ _Avoid_: project config, editor preference
 **Current working directory**:
 Pi session path passed to configured command by `/open`.
 _Avoid_: process directory, repository root
+
+**Open URI**:
+Safe editor URI derived only when open command is exactly `code`; maps current working directory to `vscode://file/...`. Arbitrary configured commands cannot become OSC 8 links.
+_Avoid_: command link, shell URI
