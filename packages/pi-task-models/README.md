@@ -1,6 +1,6 @@
 # `@henryqw/pi-task-models`
 
-Shared `fast`, `balanced`, and `frontier` model profiles for HenryQW Pi extensions.
+Shared `fast`, `balanced`, `frontier`, and `fav` model profiles for HenryQW Pi extensions.
 
 ## Install
 
@@ -47,6 +47,9 @@ Package also exports config and route-resolution helpers for consumers.
     },
     "frontier": {
       "primary": { "model": "openai-codex/gpt-frontier", "thinkingLevel": "max" }
+    },
+    "fav": {
+      "primary": { "model": "openai-codex/gpt-favorite", "thinkingLevel": "high" }
     }
   },
   "tasks": {

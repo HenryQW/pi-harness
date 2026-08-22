@@ -427,7 +427,7 @@ const Parameters = Type.Object({
 		description: "Designated model as provider/modelId; overrides modelClass. Unknown references reject with the list of available models.",
 	})),
 	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
-		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning. Defaults to the shared pi-subagent/delegateTask assignment.",
+		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning; fav for the user's favorite model when they ask for it. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
 });
 
@@ -574,12 +574,12 @@ export default function subagentExtension(
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, or frontier for ambiguous and high-risk work; omit modelClass to use shared task-model settings. When the user designates a specific model, pass it as provider/modelId in model.`,
+		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, frontier for ambiguous and high-risk work, or fav when the user asks for their favorite model; omit modelClass to use shared task-model settings. When the user designates a specific model, pass it as provider/modelId in model.`,
 		promptSnippet: "Delegate one bounded, independently executable task to an isolated role",
 		promptGuidelines: [
 			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
 			"Each delegate_task task must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
-			"For each delegate_task call, choose the least capable modelClass that can reliably complete the task: fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
+			"Use fav when the user explicitly asks for their favorite model. Otherwise, choose the least capable modelClass that can reliably complete the task: fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
 			"Submit independent delegate_task calls together for parallel execution. Parallel edits must own non-overlapping files; otherwise sequence them. Use the minimum number of Subagents needed.",
 		],
 		parameters: Parameters,
@@ -592,7 +592,7 @@ export default function subagentExtension(
 			}
 
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
-				throw new Error("delegate_task modelClass must be fast, balanced, or frontier.");
+				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
 			}
 			const launch = params.model !== undefined
 				? createRoleLaunch(pi, ctx, { role, route: resolveDesignatedRoute(ctx, cleanText(params.model, "model", "delegate_task")) })
