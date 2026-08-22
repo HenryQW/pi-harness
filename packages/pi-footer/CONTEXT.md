@@ -10,6 +10,6 @@ _Avoid_: Working-directory path, worktree path
 Cumulative session input, output, and estimated cost plus latest cache-hit rate and current context usage, followed by right-aligned active model and thinking level. `off` matches dim model text, active levels follow a distinct green-to-red gradient ending with red `max`, and `ultra` is rainbow when runtime supports it.
 _Avoid_: Token counter, status line
 
-**Subscription line**:
-Active Codex account slot, remaining seven-day quota, and time until quota-window reset. Seven-day window label is omitted.
-_Avoid_: Account balance, rate-limit line
+**Extension status line**:
+Every non-empty status emitted through `ctx.ui.setStatus()`, sorted by status key and preserving producer text, ANSI styling, glyphs, and links.
+_Avoid_: Plugin summary, rewritten status

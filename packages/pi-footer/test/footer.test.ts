@@ -18,7 +18,7 @@ const plain = (text: string) => text
 	.replace(/\x1b\]8;;.*?\x1b\\/g, "")
 	.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("renders readable usage, model thinking, and subscription status", async (t) => {
+test("renders usage, model thinking, and emitted extension statuses", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -73,7 +73,12 @@ test("renders readable usage, model thinking, and subscription status", async (t
 		{ fg: (color, text) => { colors.push([color, text]); return text; } },
 		{
 			getGitBranch: () => "worktree/clear-field-f8d2",
-			getExtensionStatuses: () => new Map([["pi-multi-codex", "Codex #1 · 50% · 7d 1d 1h 22m"]]),
+			getExtensionStatuses: () => new Map([
+				["ponytail", "● 🐴 ponytail: ⚡ FULL"],
+				["pi-pr", "\x1b[32mO #123 ●✓\x1b[39m"],
+				["pi-multi-codex", "Codex #1 · 50% · 7d 1d 1h 22m"],
+				["hidden", ""],
+			]),
 			onBranchChange: () => () => { disposed = true; },
 		},
 	);
@@ -86,8 +91,9 @@ test("renders readable usage, model thinking, and subscription status", async (t
 	assert.deepEqual(rendered.map(plain), [
 		"repo · clear-field-f8d2",
 		usageText + " ".repeat(100 - usageText.length - modelText.length) + modelText,
-		"Codex #1 · 50% · 1d 1h 22m",
+		"Codex #1 · 50% · 7d 1d 1h 22m O #123 ●✓ ● 🐴 ponytail: ⚡ FULL",
 	]);
+	assert.match(rendered[2]!, /\x1b\[32mO #123 ●✓\x1b\[39m/);
 
 	thinkingLevel = "off";
 	footer.render(100);

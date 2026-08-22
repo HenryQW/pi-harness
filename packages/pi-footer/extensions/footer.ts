@@ -19,6 +19,10 @@ function formatTokens(count: number): string {
 	return `${(count / 1_000_000).toFixed(1)}M`;
 }
 
+function sanitizeStatus(text: string): string {
+	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+}
+
 function align(left: string, right: string, width: number, ellipsis: string): string {
 	const available = width - visibleWidth(left) - 2;
 	if (available <= 0) return truncateToWidth(left, width, ellipsis);
@@ -75,7 +79,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 
 					const branch = data.getGitBranch()?.replace(/^worktree\//, "");
 					const context = ctx.getContextUsage()?.percent;
-					const subscription = data.getExtensionStatuses().get("pi-multi-codex")?.replace(" · 7d ", " · ");
+					const statuses = [...data.getExtensionStatuses()]
+						.sort(([a], [b]) => a.localeCompare(b))
+						.map(([, text]) => sanitizeStatus(text))
+						.filter(Boolean);
 					const thinking = String(ctx.thinkingLevel ?? "off");
 					const thinkingColor = THINKING_COLORS[thinking as keyof typeof THINKING_COLORS];
 					const ellipsis = theme.fg("dim", "…");
@@ -96,7 +103,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						identity + (openUri ? hyperlink(theme.fg("accent", checkout), openUri) : theme.fg("dim", checkout)),
 						align(usage, model, width, ellipsis),
 					];
-					if (subscription) lines.push(subscription);
+					if (statuses.length) lines.push(statuses.join(" "));
 					return lines.map((line) => truncateToWidth(line, width, ellipsis));
 				},
 			};

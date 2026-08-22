@@ -28,7 +28,7 @@ Second line shows cumulative input tokens, output tokens, latest cache-hit rate,
 
 `off` uses same dim grey as model name. Active levels use a distinct ANSI-256 gradient: green `minimal`, yellow-green `low`, lime `medium`, yellow `high`, orange `xhigh`, and red `max`. `ultra` renders as rainbow when runtime supplies it. Pi 0.84.2 does not yet accept `ultra` as thinking level, so footer support is ready but unreachable until Pi adds it.
 
-When `@henryqw/pi-multi-codex` has a fresh snapshot for active subscription, final line shows subscription name, remaining seven-day quota, and time until reset. Seven-day window label is omitted as redundant.
+Final line renders every status emitted through `ctx.ui.setStatus()`, sorted by status key. Text, colors, links, and glyphs are preserved, including Ponytail mode, GitHub PR state, and Codex quota.
 
 ## Install
 
