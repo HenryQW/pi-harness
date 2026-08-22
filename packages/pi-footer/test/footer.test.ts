@@ -18,7 +18,7 @@ const plain = (text: string) => text
 	.replace(/\x1b\]8;;.*?\x1b\\/g, "")
 	.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("renders usage, model thinking, and emitted extension statuses", async (t) => {
+test("renders checkout PR status, usage, and other extension statuses", async (t) => {
 	type FooterFactory = (tui: { requestRender(): void }, theme: { fg(_color: string, text: string): string }, data: {
 		getGitBranch(): string;
 		getExtensionStatuses(): ReadonlyMap<string, string>;
@@ -78,7 +78,7 @@ test("renders usage, model thinking, and emitted extension statuses", async (t) 
 			getGitBranch: () => "worktree/clear-field-f8d2",
 			getExtensionStatuses: () => new Map([
 				["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],
-				["pi-pr", "\x1b[32mO #123 ●✓\x1b[39m"],
+				["pi-pr", "\x1b[32mPR #123 · approved\x1b[39m"],
 				["pi-multi-codex", "Codex #1 · 50% · 7d 1d 1h 22m"],
 				["hidden", ""],
 			]),
@@ -92,11 +92,12 @@ test("renders usage, model thinking, and emitted extension statuses", async (t) 
 	const usageText = "↑ 2.9k · ↓ 450 · ↺ 50.0% · $ 0.350 · ◔ 42.3%";
 	const modelText = "gpt-5.6-luna • high";
 	assert.deepEqual(rendered.map(plain), [
-		"repo · clear-field-f8d2",
+		"repo · clear-field-f8d2 · PR #123 · approved",
 		usageText + " ".repeat(100 - usageText.length - modelText.length) + modelText,
-		"Codex #1 · 50% · 7d 1d 1h 22m O #123 ●✓ ●  🐴\tponytail: ⚡ FULL ready",
+		"Codex #1 · 50% · 7d 1d 1h 22m ●  🐴\tponytail: ⚡ FULL ready",
 	]);
-	assert.match(rendered[2]!, /\x1b\[32mO #123 ●✓\x1b\[39m/);
+	assert.match(rendered[0]!, /\x1b\[32mPR #123 · approved\x1b\[39m/);
+	assert.doesNotMatch(rendered[2]!, /PR #123/);
 
 	await mkdir(join(agentDir, "config"));
 	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"codex"}');

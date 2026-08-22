@@ -86,7 +86,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const branch = data.getGitBranch()?.replace(/^worktree\//, "");
 					const context = ctx.getContextUsage()?.percent;
 					const openUri = configuredOpenUri(ctx.cwd);
-					const statuses = [...data.getExtensionStatuses()]
+					const extensionStatuses = data.getExtensionStatuses();
+					const prStatus = sanitizeStatus(extensionStatuses.get("pi-pr") ?? "");
+					const statuses = [...extensionStatuses]
+						.filter(([key]) => key !== "pi-pr")
 						.sort(([a], [b]) => a.localeCompare(b))
 						.map(([, text]) => sanitizeStatus(text))
 						.filter(Boolean);
@@ -106,8 +109,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const model = theme.fg("dim", `${ctx.model?.id ?? "no-model"} • `) + thinkingText;
 					const identity = branch ? theme.fg("dim", `${repo} · `) : "";
 					const checkout = branch ?? repo;
+					const checkoutLink = openUri ? hyperlink(theme.fg("accent", checkout), openUri) : theme.fg("dim", checkout);
+					const firstLine = prStatus ? `${identity}${checkoutLink} · ${prStatus}` : `${identity}${checkoutLink}`;
 					const lines = [
-						identity + (openUri ? hyperlink(theme.fg("accent", checkout), openUri) : theme.fg("dim", checkout)),
+						firstLine,
 						align(usage, model, width, ellipsis),
 					];
 					if (statuses.length) lines.push(statuses.join(" "));
