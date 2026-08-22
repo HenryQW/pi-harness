@@ -92,10 +92,6 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 					{ cause: error },
 				);
 			}
-			if (!tabId || !rootPaneId) {
-				throw new Error(`Clone launch could not be confirmed after creating a Herdr tab; retained session ${cloneFile}.`);
-			}
-
 			const agentName = `clone-${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 			const startArgs = [
 				"agent", "start", agentName, "--kind", "pi", "--pane", rootPaneId,
