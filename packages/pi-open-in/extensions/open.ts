@@ -25,6 +25,12 @@ function configuredCommand(): string {
 
 export function configuredOpenUri(path: string): string | undefined {
 	if (configuredCommand() !== "code") return undefined;
+	if (path.startsWith("\\\\")) {
+		const [host, ...parts] = path.slice(2).split("\\");
+		const uri = new URL(`file://${host}`);
+		uri.pathname = `/${parts.join("/")}`;
+		return `vscode://file//${uri.host}${uri.pathname}`;
+	}
 	return `vscode://file${pathToFileURL(path).pathname}`;
 }
 

@@ -67,6 +67,10 @@ test("/set-open-in saves command used by /open", async () => {
 			configuredOpenUri("/tmp/project folder#1"),
 			"vscode://file/tmp/project%20folder%231",
 		);
+		assert.equal(
+			configuredOpenUri("\\\\server\\share\\project folder#1"),
+			"vscode://file//server/share/project%20folder%231",
+		);
 
 		await commands.get("set-open-in")?.handler("codex", ctx);
 		assert.deepEqual(
