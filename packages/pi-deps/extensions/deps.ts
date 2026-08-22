@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionUIContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { type Component, truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 
 const hookSourcePath = fileURLToPath(new URL("../hooks/post-checkout.mjs", import.meta.url));
 const managedHookMarker = "pi-deps-managed-hook";
@@ -67,6 +68,14 @@ const widgetKey = "pi-deps";
 const pollMs = 500;
 const successTtlMs = 5000;
 const waitTimeoutMs = 10 * 60_000;
+const spinnerIntervalMs = 100;
+const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function formatElapsed(startedAt: number, now = Date.now()): string {
+	const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+	const minutes = Math.floor(seconds / 60);
+	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
 
 interface InstallStatus {
 	state?: string;
@@ -76,7 +85,7 @@ interface InstallStatus {
 export interface InstallWatchContext {
 	cwd: string;
 	mode?: string;
-	ui: { setWidget(key: string, content: string[] | undefined): void };
+	ui: Pick<ExtensionUIContext, "setWidget">;
 }
 
 // Watches the status file written by the background installer spawned by the post-checkout hook.
@@ -102,7 +111,30 @@ export async function watchDependencyInstallation(
 
 	let status = await readStatus();
 	if (!status) return;
-	if (status.state === "running") ctx.ui.setWidget(widgetKey, ["pi-deps: installing dependencies…"]);
+	if (status.state === "running") {
+		const startedAt = Date.now();
+		let timer: ReturnType<typeof setInterval> | undefined;
+		ctx.ui.setWidget(widgetKey, (tui: TUI, theme: Theme): Component & { dispose?(): void } => {
+			timer ??= setInterval(() => tui.requestRender(), spinnerIntervalMs);
+			timer.unref();
+			return {
+				invalidate() {},
+				dispose() {
+					if (timer) clearInterval(timer);
+					timer = undefined;
+				},
+				render: (width: number) => {
+					const frame = spinnerFrames[Math.floor(Date.now() / spinnerIntervalMs) % spinnerFrames.length]!;
+					return [
+						truncateToWidth(
+							`${theme.fg("accent", frame)} pi-deps: installing dependencies… ${theme.fg("dim", formatElapsed(startedAt))}`,
+							width,
+						),
+					];
+				},
+			};
+		});
+	}
 	const deadline = Date.now() + waitTimeoutMs;
 	while (status.state === "running" && Date.now() < deadline) {
 		await new Promise((resolveSleep) => setTimeout(resolveSleep, timing.pollMs ?? pollMs));
