@@ -332,6 +332,37 @@ Return concise findings.
 	});
 });
 
+test("designated model overrides class routing and unknown reference lists available models", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Return concise findings.
+`);
+		const availableModels = [
+			{ provider: "provider", id: "alpha", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
+			{ provider: "provider", id: "beta", input: ["text"], reasoning: false },
+		];
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
+		process.argv[1] = runner;
+		const app = harness({ availableModels });
+
+		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect code", model: "provider/beta" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text) as string[];
+		assert.equal(args[args.indexOf("--model") + 1], "provider/beta");
+		assert.equal(args[args.indexOf("--thinking") + 1], "off");
+
+		await assert.rejects(
+			app.tool.execute("call-2", { role: "worker", task: "inspect code", model: "provider/gamma" }, undefined, undefined, app.ctx),
+			/Available models: provider\/alpha, provider\/beta/,
+		);
+	});
+});
+
 test("canonical Codex route follows active account alias in isolated child", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
