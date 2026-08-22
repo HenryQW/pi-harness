@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import type {
 	ExtensionAPI,
@@ -28,22 +29,22 @@ function harness(result: ExecResult = { stdout: "", stderr: "", code: 0, killed:
 
 async function withHerdrEnvironment(
 	herdrEnv: string | undefined,
-	workspaceId: string | undefined,
+	tabId: string | undefined,
 	run: () => Promise<void>,
 ): Promise<void> {
 	const previousHerdrEnv = process.env.HERDR_ENV;
-	const previousWorkspaceId = process.env.HERDR_WORKSPACE_ID;
+	const previousTabId = process.env.HERDR_TAB_ID;
 	if (herdrEnv === undefined) delete process.env.HERDR_ENV;
 	else process.env.HERDR_ENV = herdrEnv;
-	if (workspaceId === undefined) delete process.env.HERDR_WORKSPACE_ID;
-	else process.env.HERDR_WORKSPACE_ID = workspaceId;
+	if (tabId === undefined) delete process.env.HERDR_TAB_ID;
+	else process.env.HERDR_TAB_ID = tabId;
 	try {
 		await run();
 	} finally {
 		if (previousHerdrEnv === undefined) delete process.env.HERDR_ENV;
 		else process.env.HERDR_ENV = previousHerdrEnv;
-		if (previousWorkspaceId === undefined) delete process.env.HERDR_WORKSPACE_ID;
-		else process.env.HERDR_WORKSPACE_ID = previousWorkspaceId;
+		if (previousTabId === undefined) delete process.env.HERDR_TAB_ID;
+		else process.env.HERDR_TAB_ID = previousTabId;
 	}
 }
 
@@ -53,8 +54,8 @@ const context = (events: string[] = [], confirmed = true) => ({
 	ui: { confirm: async (title: string, message: string) => { events.push(`confirm:${title}:${message}`); return confirmed; } },
 }) as unknown as ExtensionCommandContext;
 
-test("/done waits for idle then asks Herdr to remove the current worktree without force", async () => {
-	await withHerdrEnvironment("1", "workspace-current", async () => {
+test("/done removes the worktree checkout then closes only the current tab without force", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
 		const app = harness();
 		const events: string[] = [];
 		await app.command("", context(events));
@@ -62,28 +63,30 @@ test("/done waits for idle then asks Herdr to remove the current worktree withou
 			"confirm:Done:Close and remove the current Herdr worktree?",
 			"idle",
 		]);
-		assert.deepEqual(app.calls, [{
-			command: "herdr",
-			args: ["worktree", "remove", "--workspace", "workspace-current"],
-			options: { cwd: "/repo/worktree" },
-		}]);
-	});
-});
-
-test("/done --force skips confirmation and forwards explicit force to Herdr", async () => {
-	await withHerdrEnvironment("1", "workspace-current", async () => {
-		const app = harness();
-		const events: string[] = [];
-		await app.command("--force", context(events));
-		assert.deepEqual(events, ["idle"]);
-		assert.deepEqual(app.calls[0]?.args, [
-			"worktree", "remove", "--workspace", "workspace-current", "--force",
+		assert.deepEqual(app.calls, [
+			{
+				command: "git",
+				args: ["worktree", "remove", "."],
+				options: { cwd: "/repo/worktree" },
+			},
+			{ command: "herdr", args: ["tab", "close", "w1:t1"], options: { cwd: tmpdir() } },
 		]);
 	});
 });
 
+test("/done --force skips confirmation and forwards force to git worktree remove", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const app = harness();
+		const events: string[] = [];
+		await app.command("--force", context(events));
+		assert.deepEqual(events, ["idle"]);
+		assert.deepEqual(app.calls[0]?.args, ["worktree", "remove", "--force", "."]);
+		assert.equal(app.calls.length, 2);
+	});
+});
+
 test("declined confirmation leaves the worktree untouched", async () => {
-	await withHerdrEnvironment("1", "workspace-current", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
 		const app = harness();
 		const events: string[] = [];
 		await app.command("", context(events, false));
@@ -92,14 +95,14 @@ test("declined confirmation leaves the worktree untouched", async () => {
 	});
 });
 
-test("/done fails safely outside a current Herdr worktree and preserves Herdr removal errors", async (t) => {
+test("/done fails safely outside a current Herdr worktree and preserves removal errors", async (t) => {
 	await t.test("rejects arguments and missing Herdr context before execution", async () => {
-		for (const [args, herdrEnv, workspaceId, expected] of [
-			["--yes", "1", "workspace-current", /Usage: \/done \[--force\]/],
-			["", undefined, "workspace-current", /inside Herdr/],
-			["", "1", undefined, /HERDR_WORKSPACE_ID/],
+		for (const [args, herdrEnv, tabId, expected] of [
+			["--yes", "1", "w1:t1", /Usage: \/done \[--force\]/],
+			["", undefined, "w1:t1", /inside Herdr/],
+			["", "1", undefined, /HERDR_TAB_ID/],
 		] as const) {
-			await withHerdrEnvironment(herdrEnv, workspaceId, async () => {
+			await withHerdrEnvironment(herdrEnv, tabId, async () => {
 				const app = harness();
 				await assert.rejects(app.command(args, context()), expected);
 				assert.deepEqual(app.calls, []);
@@ -107,15 +110,16 @@ test("/done fails safely outside a current Herdr worktree and preserves Herdr re
 		}
 	});
 
-	await t.test("surfaces dirty-worktree refusal", async () => {
-		await withHerdrEnvironment("1", "workspace-current", async () => {
+	await t.test("surfaces dirty-worktree refusal and skips tab close", async () => {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness({
 				stdout: "",
-				stderr: '{"error":{"code":"dirty_worktree_requires_force"}}',
+				stderr: "error: the following file is dirty",
 				code: 1,
 				killed: false,
 			});
-			await assert.rejects(app.command("", context()), /dirty_worktree_requires_force/);
+			await assert.rejects(app.command("", context()), /dirty/);
+			assert.equal(app.calls.length, 1);
 		});
 	});
 });
