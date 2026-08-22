@@ -143,6 +143,14 @@ function readHead(filePath: string, bytes = 8192): string | null {
 	}
 }
 
+// ponytail: 8KB head covers typical frontmatter; falls back to full read only when opener present but closer missing (rare)
+function readSkillFrontmatter(filePath: string): string | null {
+	const head = readHead(filePath, 8192);
+	if (head === null || !/^---\r?\n/.test(head)) return head;
+	if (/^---\r?\n[\s\S]*\r?\n---(?:\r?\n|$)/.test(head)) return head;
+	return readFileSafe(filePath);
+}
+
 export function buildContextInjection(dirs: AddedDir[]): string {
 	if (dirs.length === 0) return "";
 
@@ -165,7 +173,7 @@ export function buildContextInjection(dirs: AddedDir[]): string {
 			sections.push(`\n#### Skills from ${dir.label} (registered as /skill:name commands):`);
 			for (const skill of skills) {
 				registeredSkills.add(skill.name);
-				const description = skillDescription(readHead(skill.path) ?? "");
+				const description = skillDescription(readSkillFrontmatter(skill.path) ?? "");
 				sections.push(`- **${skill.name}**: ${description} - use \`/skill:${skill.name}\` or read \`${skill.path}\``);
 			}
 		}
