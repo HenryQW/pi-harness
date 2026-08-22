@@ -158,6 +158,7 @@ export function readTaskModelsConfig(agentDir = getAgentDir()): TaskModelsConfig
 }
 
 export function writeTaskModelsConfig(config: TaskModelsConfig, agentDir = getAgentDir()): void {
+	if (config.profiles.fav?.fallback) throw new Error("fav profile has no fallback.");
 	const file = configPath(agentDir);
 	mkdirSync(dirname(file), { recursive: true });
 	writeFileSync(file, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`);

@@ -304,12 +304,14 @@ Return concise findings.
 			{ provider: "provider", id: "fast-model", input: ["text"], reasoning: false },
 			{ provider: "provider", id: "balanced-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
 			{ provider: "provider", id: "frontier-model", input: ["text"], reasoning: true, thinkingLevelMap: { max: "max" } },
+			{ provider: "provider", id: "fav-model", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } },
 		];
 		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
 			profiles: {
 				fast: { primary: { model: "provider/fast-model", thinkingLevel: "off" } },
 				balanced: { primary: { model: "provider/balanced-model", thinkingLevel: "medium" } },
 				frontier: { primary: { model: "provider/frontier-model", thinkingLevel: "max" } },
+				fav: { primary: { model: "provider/fav-model", thinkingLevel: "high" } },
 			},
 			tasks: { "pi-subagent/delegateTask": "fast" },
 		}));
@@ -323,6 +325,11 @@ Return concise findings.
 		const explicitArgs = JSON.parse(explicit.content[0].text);
 		assert.equal(explicitArgs[explicitArgs.indexOf("--model") + 1], "provider/frontier-model");
 		assert.equal(explicitArgs[explicitArgs.indexOf("--thinking") + 1], "max");
+
+		const favorite = await app.tool.execute("call-fav", { role: "worker", task: "inspect code", modelClass: "fav" }, undefined, undefined, app.ctx);
+		const favoriteArgs = JSON.parse(favorite.content[0].text);
+		assert.equal(favoriteArgs[favoriteArgs.indexOf("--model") + 1], "provider/fav-model");
+		assert.equal(favoriteArgs[favoriteArgs.indexOf("--thinking") + 1], "high");
 
 		const omitted = await app.tool.execute("call-2", { role: "worker", task: "inspect code" }, undefined, undefined, app.ctx);
 		const omittedArgs = JSON.parse(omitted.content[0].text);

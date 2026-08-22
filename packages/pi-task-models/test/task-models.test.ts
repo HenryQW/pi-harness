@@ -196,10 +196,17 @@ test("readTaskModelsConfig rejects fallback on fav profile", () => {
 	const dir = tempDir();
 	try {
 		mkdirSync(join(dir, "config"), { recursive: true });
-		writeFileSync(join(dir, "config", "pi-task-models.json"), JSON.stringify({
+		const file = join(dir, "config", "pi-task-models.json");
+		writeFileSync(file, JSON.stringify({
 			profiles: { fav: { primary: { model: "p/m", thinkingLevel: "off" }, fallback: { model: "p/f", thinkingLevel: "off" } } },
 		}));
 		assert.throws(() => readTaskModelsConfig(dir), /fav profile has no fallback/);
+		const invalid = readFileSync(file, "utf8");
+		assert.throws(() => writeTaskModelsConfig({
+			profiles: { fav: { primary: { model: "p/m", thinkingLevel: "off" }, fallback: { model: "p/f", thinkingLevel: "off" } } },
+			tasks: {},
+		}, dir), /fav profile has no fallback/);
+		assert.equal(readFileSync(file, "utf8"), invalid);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
