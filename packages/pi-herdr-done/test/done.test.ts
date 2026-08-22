@@ -39,15 +39,22 @@ function harness(executor: Executor = () => ok()) {
 
 function snapshotExecutor(options: {
 	toplevel?: string;
+	mainCheckout?: string;
 	panes?: unknown[];
 	removeResult?: ExecResult;
+	pullResult?: ExecResult;
 } = {}): Executor {
 	return async ({ command, args }) => {
 		if (command === "git" && args[0] === "rev-parse") return ok(`${options.toplevel ?? checkout}\n`);
+		if (command === "git" && args[0] === "worktree" && args[1] === "list") {
+			const main = options.mainCheckout ?? "/repo/main";
+			return ok(`worktree ${main}\n\nworktree ${checkout}\n`);
+		}
 		if (command === "herdr" && args[0] === "api") {
 			return ok(JSON.stringify({ result: { snapshot: { panes: options.panes ?? [] } } }));
 		}
 		if (command === "git" && args[0] === "worktree") return options.removeResult ?? ok();
+		if (command === "git" && args[0] === "pull") return options.pullResult ?? ok();
 		return ok();
 	};
 }
@@ -95,8 +102,10 @@ test("/done resolves the checkout root, skips own tab, removes the checkout, the
 		]);
 		assert.deepEqual(app.calls, [
 			{ command: "git", args: ["rev-parse", "--show-toplevel"], options: { cwd: "/repo/worktree/nested" } },
+			{ command: "git", args: ["worktree", "list", "--porcelain"], options: { cwd: checkout } },
 			{ command: "herdr", args: ["api", "snapshot"], options: { cwd: "/repo/worktree/nested" } },
 			{ command: "git", args: ["worktree", "remove", checkout], options: { cwd: "/repo/worktree/nested" } },
+			{ command: "git", args: ["pull"], options: { cwd: "/repo/main" } },
 			{ command: "herdr", args: ["tab", "close", "w1:t1"], options: { cwd: tmpdir() } },
 		]);
 	});
@@ -106,7 +115,7 @@ test("/done --force skips confirmation and forwards force to git worktree remove
 	await withHerdrEnvironment("1", "w1:t1", async () => {
 		const app = harness(snapshotExecutor());
 		await app.command("--force", context());
-		assert.deepEqual(app.calls.find((c) => c.args[0] === "worktree")?.args,
+		assert.deepEqual(app.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "remove")?.args,
 			["worktree", "remove", "--force", checkout]);
 	});
 });
@@ -118,7 +127,7 @@ test("/done refuses when another Herdr tab still uses the checkout", async () =>
 				panes: [{ tab_id: "w2:t9", cwd }],
 			}));
 			await assert.rejects(app.command("", context()), /still used by Herdr tabs w2:t9/);
-			assert.equal(app.calls.length, 2);
+			assert.equal(app.calls.length, 3);
 		});
 	}
 });
@@ -129,7 +138,7 @@ test("/done does not check or remove while clone creation holds the checkout loc
 		try {
 			const app = harness(snapshotExecutor());
 			await assert.rejects(app.command("", context()), /already being held/);
-			assert.deepEqual(app.calls.map((call) => call.args[0]), ["rev-parse"]);
+			assert.deepEqual(app.calls.map((call) => call.args[0]), ["rev-parse", "worktree"]);
 		} finally {
 			await release();
 		}
@@ -161,13 +170,31 @@ test("/done fails safely before any execution and preserves removal errors", asy
 		}
 	});
 
+	await t.test("skips the parent pull when the session is the main worktree", async () => {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const app = harness(snapshotExecutor({ mainCheckout: checkout }));
+			await app.command("--force", context());
+			assert.equal(app.calls.some((c) => c.args[0] === "pull"), false);
+		});
+	});
+
 	await t.test("surfaces dirty-worktree refusal and skips tab close", async () => {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor({
 				removeResult: { stdout: "", stderr: "error: the following file is dirty", code: 1 },
 			}));
 			await assert.rejects(app.command("", context()), /dirty/);
-			assert.equal(app.calls.length, 3);
+			assert.equal(app.calls.length, 4);
+		});
+	});
+
+	await t.test("surfaces a failed parent pull and skips tab close", async () => {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const app = harness(snapshotExecutor({
+				pullResult: { stdout: "", stderr: "error: Your local changes would be overwritten by merge", code: 1 },
+			}));
+			await assert.rejects(app.command("--force", context()), /overwritten by merge/);
+			assert.equal(app.calls.length, 5);
 		});
 	});
 
@@ -177,7 +204,7 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				removeResult: { stdout: "", stderr: "", code: 0, killed: true },
 			}));
 			await assert.rejects(app.command("", context()), /killed/);
-			assert.equal(app.calls.length, 3);
+			assert.equal(app.calls.length, 4);
 		});
 	});
 });
