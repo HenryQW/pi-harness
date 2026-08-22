@@ -1,0 +1,36 @@
+# `@henryqw/pi-pr`
+
+Show the current branch pull request's lifecycle, CI, mergeability, and review state in the Pi footer.
+
+## Install
+
+```bash
+pi install npm:@henryqw/pi-pr
+```
+
+Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repository checkout.
+
+## Use
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| Footer | UI | Show the current branch pull request. |
+| `/pr` | command | Open the current branch pull request in a browser. |
+
+Each entry is one linked `PR #number` plus one plain-language state: `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `merge conflict`, `merged`, or `closed`. Status priority favors action: merge conflict, changes requested, CI failure, then CI progress. Colors support text; they do not carry meaning alone.
+
+The status loads at session start, polls every 30 seconds, and refreshes after an agent successfully runs `gh pr create` or after `/pr`. No pull request leaves the footer blank.
+
+## Remove
+
+```bash
+pi remove npm:@henryqw/pi-pr
+```
+
+## Development
+
+```bash
+npm test --workspace @henryqw/pi-pr
+npm run typecheck --workspace @henryqw/pi-pr
+npm run pack:check --workspace @henryqw/pi-pr
+```

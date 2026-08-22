@@ -14,6 +14,7 @@
 | `pi-task-models` | [`packages/pi-task-models/CONTEXT.md`](packages/pi-task-models/CONTEXT.md) | Shared task model profiles and task assignments |
 | `pi-multi-codex` | [`packages/pi-multi-codex/CONTEXT.md`](packages/pi-multi-codex/CONTEXT.md) | Multiple ChatGPT Codex subscription accounts |
 | `pi-footer` | [`packages/pi-footer/CONTEXT.md`](packages/pi-footer/CONTEXT.md) | Henry's opinionated Pi footer identity and usage display |
+| `pi-pr` | [`packages/pi-pr/CONTEXT.md`](packages/pi-pr/CONTEXT.md) | Current-branch pull request lifecycle in the Pi footer |
 | `pi-subagent` | [`packages/pi-subagent/CONTEXT.md`](packages/pi-subagent/CONTEXT.md) | Role-configured isolated Pi subagents |
 | `pi-open-in` | [`packages/pi-open-in/CONTEXT.md`](packages/pi-open-in/CONTEXT.md) | Open current Pi working directory with configurable command |
 

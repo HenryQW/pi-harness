@@ -1,12 +1,13 @@
 {
-  "name": "@henryqw/pi-footer",
-  "version": "0.2.1",
-  "description": "Show concise repository, branch, and usage details in the Pi footer.",
+  "name": "@henryqw/pi-pr",
+  "version": "0.1.0",
+  "description": "Show the current branch pull request status in the Pi footer.",
   "keywords": [
     "pi-package",
     "pi",
-    "footer",
-    "worktree"
+    "github",
+    "pull-request",
+    "footer"
   ],
   "type": "module",
   "engines": {
@@ -24,14 +25,13 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@earendil-works/pi-tui": "^0.84.2"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-footer"
+    "directory": "packages/pi-pr"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"
@@ -41,10 +41,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/footer.ts"
+      "./extensions/pr.ts"
     ]
-  },
-  "dependencies": {
-    "@henryqw/pi-open-in": "^0.2.0"
   }
 }
