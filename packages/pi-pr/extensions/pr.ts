@@ -8,6 +8,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 const POLL_INTERVAL_MS = 30_000;
 const PR_FIELDS = "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
+const CREATE_PR_SKILL_COMMAND = "skill:pi-pr-create";
 const FAILED_CHECK_STATES = new Set(["ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "STALE", "STARTUP_FAILURE", "TIMED_OUT"]);
 const SUCCESSFUL_CHECK_STATES = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
 
@@ -180,7 +181,7 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("pr", {
-		description: "Open current branch pull request, or create one when absent",
+		description: "Open current branch pull request, or run creation workflow when absent",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			const execute = async (action: string, command: string, args: string[]) => {
@@ -211,11 +212,15 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 					return;
 				}
 
-				const status = await execute("Check working tree", "git", ["status", "--porcelain"]);
-				if (status.stdout.trim()) throw new Error("Create pull request failed: commit or stash working tree changes first");
-				await execute("Push branch", "git", ["push", "-u", "origin", "HEAD"]);
-				await execute("Create pull request", "gh", ["pr", "create", "--fill"]);
-				await execute("Open pull request", "gh", ["pr", "view", "--web"]);
+				const workflow = pi.getCommands().find((command) =>
+					command.name === CREATE_PR_SKILL_COMMAND && command.source === "skill" && command.sourceInfo.origin === "package",
+				);
+				if (!workflow) throw new Error("Create pull request failed: bundled workflow is unavailable");
+				if (ctx.isIdle()) {
+					pi.sendUserMessage(`/${CREATE_PR_SKILL_COMMAND}`, { expandPromptTemplates: true });
+				} else {
+					pi.sendUserMessage(`/${CREATE_PR_SKILL_COMMAND}`, { deliverAs: "followUp", expandPromptTemplates: true });
+				}
 			} finally {
 				void refresh(true);
 			}

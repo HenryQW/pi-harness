@@ -65,7 +65,7 @@ test("renders one plain-language PR state, prioritizing action", () => {
 	assert.equal(parsePullRequest(pullRequest({ url: "javascript:alert(1)" })), undefined);
 });
 
-test("polls UI sessions, creates absent PRs, and cleans up", async (t) => {
+test("polls UI sessions, starts PR workflow when absent, and cleans up", async (t) => {
 	type Handler = (event: never, ctx: ExtensionContext) => Promise<void> | void;
 	type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 	let sessionStart: Handler | undefined;
@@ -92,8 +92,10 @@ test("polls UI sessions, creates absent PRs, and cleans up", async (t) => {
 
 	const calls: Array<{ command: string; args: string[]; signal: AbortSignal | undefined }> = [];
 	const statuses: Array<string | undefined> = [];
+	const messages: Array<{ content: string; options: unknown }> = [];
 	let openPullRequest = true;
-	let dirty = false;
+	let workflowAvailable = true;
+	let idle = true;
 	let hold: Promise<ReturnType<typeof result>> | undefined;
 	let heldSignal: AbortSignal | undefined;
 	const good = JSON.stringify(pullRequest());
@@ -121,11 +123,18 @@ test("polls UI sessions, creates absent PRs, and cleans up", async (t) => {
 			if (executable === "gh" && args[0] === "pr" && args[1] === "list") {
 				return result(openPullRequest ? JSON.stringify([{ number: 42 }]) : "[]");
 			}
-			if (executable === "git" && args.join(" ") === "status --porcelain") return result(dirty ? " M changed.ts\n" : "");
-			if (executable === "git" && args.join(" ") === "push -u origin HEAD") return result();
-			if (executable === "gh" && args.join(" ") === "pr create --fill") return result("https://github.com/acme/project/pull/42\n");
 			if (executable === "gh" && args[0] === "pr" && args[1] === "view" && args.at(-1) === "--web") return result();
 			throw new Error(`Unexpected command: ${executable} ${args.join(" ")}`);
+		},
+		getCommands() {
+			return workflowAvailable ? [{
+				name: "skill:pi-pr-create",
+				source: "skill",
+				sourceInfo: { origin: "package" },
+			}] : [];
+		},
+		sendUserMessage(content: string, options: unknown) {
+			messages.push({ content, options });
 		},
 	} as unknown as ExtensionAPI);
 
@@ -134,6 +143,7 @@ test("polls UI sessions, creates absent PRs, and cleans up", async (t) => {
 		hasUI: true,
 		cwd: "/repo",
 		signal: commandSignal,
+		isIdle() { return idle; },
 		ui: {
 			setStatus(_key: string, text: string | undefined) { statuses.push(text); },
 			theme: { fg(_color: string, text: string) { return text; } },
@@ -186,19 +196,23 @@ test("polls UI sessions, creates absent PRs, and cleans up", async (t) => {
 	assert.deepEqual(calls.map(({ command: executable, args }) => [executable, args]), [
 		["git", ["branch", "--show-current"]],
 		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number"]],
-		["git", ["status", "--porcelain"]],
-		["git", ["push", "-u", "origin", "HEAD"]],
-		["gh", ["pr", "create", "--fill"]],
-		["gh", ["pr", "view", "--web"]],
 		["gh", ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
 	]);
+	assert.deepEqual(messages, [{ content: "/skill:pi-pr-create", options: { expandPromptTemplates: true } }]);
 
-	dirty = true;
-	calls.length = 0;
-	await assert.rejects(command.handler("", context as ExtensionCommandContext), /commit or stash working tree changes first/);
-	assert.equal(calls.some(({ command: executable, args }) => executable === "git" && args[0] === "push"), false);
-	assert.equal(calls.some(({ command: executable, args }) => executable === "gh" && args[1] === "create"), false);
-	dirty = false;
+	idle = false;
+	messages.length = 0;
+	await command.handler("", context as ExtensionCommandContext);
+	await flush();
+	assert.deepEqual(messages, [{ content: "/skill:pi-pr-create", options: { deliverAs: "followUp", expandPromptTemplates: true } }]);
+	idle = true;
+
+	workflowAvailable = false;
+	messages.length = 0;
+	await assert.rejects(command.handler("", context as ExtensionCommandContext), /bundled workflow is unavailable/);
+	await flush();
+	assert.equal(messages.length, 0);
+	workflowAvailable = true;
 
 	let releaseAbort!: (value: ReturnType<typeof result>) => void;
 	hold = new Promise((resolve) => { releaseAbort = resolve; });

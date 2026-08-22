@@ -14,6 +14,6 @@ _Avoid_: PR summary, review dashboard, glyph stack
 `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `merge conflict`, `merged`, or `closed`.
 _Avoid_: PR state badge
 
-**PR creation fallback**:
-`/pr` creates only when current branch has no open PR, worktree is clean, and `HEAD` pushes to `origin`. Creation uses `gh pr create --fill` with GitHub CLI default base; it never commits work.
-_Avoid_: Automatic commit, hidden PR workflow
+**PR creation workflow**:
+When current branch has no open PR, `/pr` dispatches bundled `pi-pr-create` skill. Skill follows Git PR workflow: resolve base, scope and commit pending changes, validate, push, then create or update PR with derived title/body.
+_Avoid_: Duplicated shell workflow, unscoped automatic commit
