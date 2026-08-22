@@ -61,7 +61,7 @@ test("/set-open-in saves command used by /open", async () => {
 		assert.deepEqual([...commands.keys()], ["open", "set-open-in"]);
 		assert.equal(
 			commands.get("open")?.description,
-			"Open the current path with `code <current-path>`",
+			"Open the current path with the configured command",
 		);
 		assert.equal(
 			configuredOpenUri("/tmp/project folder#1"),
@@ -85,7 +85,7 @@ test("/set-open-in saves command used by /open", async () => {
 	});
 });
 
-test("/open description uses configured command", async () => {
+test("/open description is static regardless of configured command", async () => {
 	await withAgentDir(async (agentDir) => {
 		await mkdir(join(agentDir, "config"), { recursive: true });
 		await writeFile(
@@ -96,7 +96,7 @@ test("/open description uses configured command", async () => {
 		const commands = loadCommands([]);
 		assert.equal(
 			commands.get("open")?.description,
-			"Open the current path with `codex <current-path>`",
+			"Open the current path with the configured command",
 		);
 	});
 });
