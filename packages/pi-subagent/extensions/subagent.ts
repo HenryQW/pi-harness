@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { readSubagentConfig } from "./config.ts";
+import { readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import {
 	availableTaskModels,
 	modelReference,
@@ -35,6 +35,16 @@ const DEFAULT_TIMEOUT_POLICY = {
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type TimeoutPolicy = typeof DEFAULT_TIMEOUT_POLICY;
+
+/** Merge validated config-file timeout fields over defaults; absent keys keep defaults. */
+export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined): TimeoutPolicy {
+	const policy: TimeoutPolicy = { ...DEFAULT_TIMEOUT_POLICY };
+	if (!partial) return policy;
+	if (partial.softMinutes !== undefined) policy.softMs = partial.softMinutes * 60_000;
+	if (partial.graceMinutes !== undefined) policy.graceMs = partial.graceMinutes * 60_000;
+	if (partial.activeWindowSeconds !== undefined) policy.activeWindowMs = partial.activeWindowSeconds * 1_000;
+	return policy;
+}
 type ModelClass = ProfileName;
 class SubagentTimeoutError extends Error {}
 type ChildResult = {
@@ -457,7 +467,7 @@ const roleSummary = (): string => {
 
 export default function subagentExtension(
 	pi: ExtensionAPI,
-	timeoutPolicy: TimeoutPolicy = DEFAULT_TIMEOUT_POLICY,
+	overrideTimeoutPolicy?: TimeoutPolicy,
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
@@ -466,8 +476,7 @@ export default function subagentExtension(
 	// reported once the UI exists; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
 	const startupWarnings = [loadedConfig.error].filter((message): message is string => message !== undefined);
-	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
-	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 	if (maxSubagentsRaw !== undefined) {
 		const parsed = Number.parseInt(maxSubagentsRaw, 10);
 		if (!Number.isInteger(parsed) || parsed < 1) {
@@ -476,6 +485,9 @@ export default function subagentExtension(
 		maxActiveSubagents = parsed;
 	}
 	let backgroundSequence = 0;
+	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
+	// config file over defaults.
+	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, AbortController>();

@@ -873,6 +873,28 @@ setInterval(() => {}, 1_000);
 	});
 });
 
+test("config file timeout applies when no explicit policy is passed", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const configDir = join(agentDir, "config");
+		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({
+			timeout: { softMinutes: 0.002, graceMinutes: 0.002, activeWindowSeconds: 0.01 },
+		}));
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_start", message: { role: "user", content: [] } }));
+setInterval(() => {}, 1_000);
+`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		assert.equal(app.notifications.length, 0);
+		await assert.rejects(
+			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			/Subagent timed out.*without active status/,
+		);
+	});
+});
+
 test("active Subagent gets one grace period", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });

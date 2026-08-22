@@ -16,16 +16,26 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
 
 test("missing config file yields empty config", async () => {
 	await withAgentDir(async (agentDir) => {
-		assert.deepEqual(readSubagentConfig(agentDir), { config: {} });
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {});
+		assert.equal(loaded.error, undefined);
 	});
 });
 
-test("valid maxSubagents is accepted", async () => {
+test("valid maxSubagents and timeout are accepted", async () => {
 	await withAgentDir(async (agentDir) => {
 		const dir = join(agentDir, "config");
 		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 3 }));
-		assert.deepEqual(readSubagentConfig(agentDir), { config: { maxSubagents: 3 } });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
+			maxSubagents: 3,
+			timeout: { softMinutes: 20, graceMinutes: 10, activeWindowSeconds: 90 },
+		}));
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {
+			maxSubagents: 3,
+			timeout: { softMinutes: 20, graceMinutes: 10, activeWindowSeconds: 90 },
+		});
+		assert.equal(loaded.error, undefined);
 	});
 });
 
@@ -51,6 +61,31 @@ test("invalid maxSubagents value reports an error and preserves defaults", async
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /maxSubagents must be an integer >= 1, got 0/);
+	});
+});
+
+test("invalid timeout values report an error and preserve defaults", async () => {
+	await withAgentDir(async (agentDir) => {
+		const dir = join(agentDir, "config");
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
+			timeout: { softMinutes: -1, activeWindowSeconds: "ninety" },
+		}));
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {});
+		assert.match(loaded.error!, /timeout\.softMinutes must be a positive number of minutes, got -1/);
+		assert.match(loaded.error!, /timeout\.activeWindowSeconds must be a positive number of seconds/);
+	});
+});
+
+test("non-object timeout reports an error", async () => {
+	await withAgentDir(async (agentDir) => {
+		const dir = join(agentDir, "config");
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ timeout: 5 }));
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {});
+		assert.match(loaded.error!, /timeout must be a JSON object, got 5/);
 	});
 });
 
