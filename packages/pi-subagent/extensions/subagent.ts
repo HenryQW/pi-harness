@@ -20,7 +20,6 @@ const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
-const MAX_ACTIVE_CHILDREN = 4;
 const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
 const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
 const WIDGET_KEY = "subagent-status";
@@ -460,6 +459,13 @@ export default function subagentExtension(
 	timeoutPolicy: TimeoutPolicy = DEFAULT_TIMEOUT_POLICY,
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
+	// Each child is a full Pi process issuing its own model calls; cap parallel
+	// spend. Override with PI_SUBAGENT_MAX_CHILDREN (positive integer).
+	const maxChildrenRaw = process.env.PI_SUBAGENT_MAX_CHILDREN;
+	const maxActiveChildren = maxChildrenRaw === undefined ? 5 : Number.parseInt(maxChildrenRaw, 10);
+	if (!Number.isInteger(maxActiveChildren) || maxActiveChildren < 1) {
+		throw new Error(`PI_SUBAGENT_MAX_CHILDREN must be a positive integer, got ${JSON.stringify(maxChildrenRaw)}.`);
+	}
 	let backgroundSequence = 0;
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
@@ -468,7 +474,7 @@ export default function subagentExtension(
 	const queuedChildren: Array<() => void> = [];
 	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
 		if (signal?.aborted) return Promise.reject(new Error("Subagent was aborted."));
-		if (activeChildren < MAX_ACTIVE_CHILDREN) {
+		if (activeChildren < maxActiveChildren) {
 			activeChildren++;
 			return Promise.resolve();
 		}

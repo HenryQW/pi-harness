@@ -650,7 +650,17 @@ Do work.
 
 test("runs four child delegations and starts queued children FIFO", async () => {
 	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
+		process.env.PI_SUBAGENT_MAX_CHILDREN = "4";
+		try {
+			await runsQueuedChildrenFifo(agentDir);
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+		}
+	});
+});
+
+async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
+	await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
 		const runner = await blockedPiRunner(agentDir);
 		const app = harness({ ui: true });
@@ -676,12 +686,52 @@ test("runs four child delegations and starts queued children FIFO", async () => 
 			await Promise.allSettled(calls);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
+}
+
+test("PI_SUBAGENT_MAX_CHILDREN overrides the default child cap", async () => {
+	await environment(async (agentDir) => {
+		process.env.PI_SUBAGENT_MAX_CHILDREN = "1";
+		try {
+			await writeWorkerRole(agentDir);
+			const tasks = ["task-1", "task-2"];
+			const runner = await blockedPiRunner(agentDir);
+			const app = harness({ ui: true });
+			const calls = tasks.map((task, index) => app.tool.execute(
+				`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx,
+			));
+			try {
+				await waitFor(() => runner.started().length === 1);
+				assert.deepEqual(runner.started(), ["task-1"]);
+				assert.equal(app.widget!.render(80).length, 1);
+				await runner.release("task-1");
+				await waitFor(() => runner.started().includes("task-2"));
+				for (const task of tasks) await runner.release(task);
+				assert.equal((await Promise.all(calls)).length, tasks.length);
+			} finally {
+				await Promise.all(tasks.map((task) => runner.release(task)));
+				await Promise.allSettled(calls);
+				await app.handlers.get("session_shutdown")?.({}, app.ctx);
+			}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+		}
 	});
+});
+
+test("invalid PI_SUBAGENT_MAX_CHILDREN fails extension load", () => {
+	process.env.PI_SUBAGENT_MAX_CHILDREN = "zero";
+	try {
+		assert.throws(() => harness(), /PI_SUBAGENT_MAX_CHILDREN/);
+	} finally {
+		delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+	}
 });
 
 test("drops an aborted queued delegation and transfers its permit", async () => {
 	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
+		process.env.PI_SUBAGENT_MAX_CHILDREN = "4";
+		try {
+			await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
 		const runner = await blockedPiRunner(agentDir);
 		const app = harness({ ui: true });
@@ -714,12 +764,17 @@ test("drops an aborted queued delegation and transfers its permit", async () => 
 			await Promise.allSettled(calls);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
+		}
 	});
 });
 
 test("queued delegation does not consume its inactive-child timeout", async () => {
 	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
+		process.env.PI_SUBAGENT_MAX_CHILDREN = "4";
+		try {
+			await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 5 }, (_, index) => `task-${index + 1}`);
 		const timeoutPolicy = { softMs: 250, graceMs: 1_000, activeWindowMs: 100 };
 		const runner = await blockedPiRunner(agentDir, tasks.slice(0, 4));
@@ -752,6 +807,9 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 			await Promise.all(tasks.map((task) => runner.release(task)));
 			await Promise.allSettled(calls);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_CHILDREN;
 		}
 	});
 });
