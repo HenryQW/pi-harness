@@ -6,8 +6,7 @@ import {
 	SessionManager,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode, type HerdrExecResult } from "@henryqw/pi-herdr";
-import { lock } from "proper-lockfile";
+import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode, withWorktreeLock, type HerdrExecResult } from "@henryqw/pi-herdr";
 
 type WorkspaceInfo = {
 	workspace_id?: unknown;
@@ -60,15 +59,11 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 			const checkout = workspace?.worktree == null
 				? undefined
 				: requiredString(workspace.worktree.checkout_path, "Herdr workspace response checkout_path");
-			const release = checkout ? await lock(checkout) : undefined;
-
-			let cloneFile: string;
-			let createdTab: HerdrExecResult;
-			try {
+			const mutate = async (): Promise<{ createdTab: HerdrExecResult; cloneFile: string }> => {
 				const session = SessionManager.open(sessionFile, ctx.sessionManager.getSessionDir(), ctx.cwd);
 				const createdClone = session.createBranchedSession(leafId);
 				if (!createdClone) throw new Error("Pi did not create a persisted clone session file.");
-				cloneFile = resolve(createdClone);
+				const cloneFile = resolve(createdClone);
 				let cloneStat;
 				try {
 					cloneStat = await stat(cloneFile);
@@ -78,7 +73,7 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				if (!cloneStat.isFile()) throw new Error(`Pi clone session path is not a file: ${cloneFile}`);
 
 				const tabCreateArgs = ["tab", "create", "--workspace", workspaceId, "--cwd", ctx.cwd, "--no-focus"] as const;
-				createdTab = await herdr.exec(tabCreateArgs, { cwd: ctx.cwd });
+				const createdTab = await herdr.exec(tabCreateArgs, { cwd: ctx.cwd });
 				if (createdTab.code !== 0 || createdTab.killed) {
 					const createError = new Error(herdrCommandFailure(tabCreateArgs, createdTab));
 					try {
@@ -91,10 +86,9 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 					}
 					throw createError;
 				}
-			} finally {
-				await release?.();
-			}
-
+				return { createdTab, cloneFile };
+			};
+			const { createdTab, cloneFile } = checkout ? await withWorktreeLock(checkout, mutate) : await mutate();
 			let tabId: string | undefined;
 			let rootPaneId: string | undefined;
 			try {

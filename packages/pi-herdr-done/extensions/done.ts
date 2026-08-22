@@ -1,7 +1,6 @@
 import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient } from "@henryqw/pi-herdr";
-import { lock } from "proper-lockfile";
+import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 
 type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 
@@ -38,8 +37,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			await ctx.waitForIdle();
 			const checkout = (await execOrThrow("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).trim();
 
-			const release = await lock(checkout);
-			try {
+			await withWorktreeLock(checkout, async () => {
 				const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
 				const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
 				if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
@@ -56,9 +54,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 				await execOrThrow("git", [
 					"worktree", "remove", ...(option === "--force" ? ["--force"] : []), checkout,
 				], ctx.cwd);
-			} finally {
-				await release();
-			}
+			});
 			// Close only this session's tab so unrelated tabs survive.
 			// Run outside the removed checkout because its directory no longer exists.
 			await herdr.run(["tab", "close", tabId], { cwd: tmpdir() });
