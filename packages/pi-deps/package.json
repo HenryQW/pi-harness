@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/deps.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/deps.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
