@@ -429,6 +429,9 @@ const Parameters = Type.Object({
 	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
 		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning; fav for the user's favorite model when they ask for it. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
+	background: Type.Optional(Type.Boolean({
+		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles. Prefer blocking delegation whenever the parent needs the result to continue.",
+	})),
 });
 
 function resolveDesignatedRoute(ctx: ExtensionContext, reference: string): ResolvedTaskRoute {
@@ -440,6 +443,8 @@ function resolveDesignatedRoute(ctx: ExtensionContext, reference: string): Resol
 	const levels = taskThinkingLevels(ctx, model);
 	return { model, thinkingLevel: levels.includes("medium") ? "medium" : levels.at(-1)! };
 }
+
+const BACKGROUND_RESULT_TYPE = "subagent-background-result";
 
 const roleSummary = (): string => {
 	try {
@@ -455,6 +460,10 @@ export default function subagentExtension(
 	timeoutPolicy: TimeoutPolicy = DEFAULT_TIMEOUT_POLICY,
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
+	let backgroundSequence = 0;
+	// Background children outlive the launching tool call, so they get their own
+	// abort signal: tied to the session, not to the turn that started them.
+	const backgroundTasks = new Map<string, AbortController>();
 	let activeChildren = 0;
 	const queuedChildren: Array<() => void> = [];
 	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
@@ -569,18 +578,41 @@ export default function subagentExtension(
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
+		for (const controller of backgroundTasks.values()) controller.abort();
+		backgroundTasks.clear();
 	});
+
+	const reportBackground = async (
+		taskId: string,
+		details: { role: string; model: string; thinkingLevel?: string },
+		outcome: "completed" | "failed" | "aborted",
+		text: string,
+	): Promise<void> => {
+		// Custom messages convert to user-role LLM messages, so the parent agent
+		// sees the outcome on its next turn without a forced turn now.
+		try {
+			pi.sendMessage({
+				customType: BACKGROUND_RESULT_TYPE,
+				content: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}`,
+				display: true,
+				details: { ...details, taskId, outcome },
+			}, { triggerTurn: false });
+		} catch {
+			// Session may already be gone; the widget row still shows the outcome.
+		}
+	};
 
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, frontier for ambiguous and high-risk work, or fav when the user asks for their favorite model; omit modelClass to use shared task-model settings. When the user designates a specific model, pass it as provider/modelId in model.`,
+		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, frontier for ambiguous and high-risk work, or fav when the user asks for their favorite model; omit modelClass to use shared task-model settings. When the user designates a specific model, pass it as provider/modelId in model. Set background only when the user explicitly wants the task to run without blocking; background tasks report results later and cannot be waited on.`,
 		promptSnippet: "Delegate one bounded, independently executable task to an isolated role",
 		promptGuidelines: [
 			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
 			"Each delegate_task task must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
 			"Use fav when the user explicitly asks for their favorite model. Otherwise, choose the least capable modelClass that can reliably complete the task: fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
 			"Submit independent delegate_task calls together for parallel execution. Parallel edits must own non-overlapping files; otherwise sequence them. Use the minimum number of Subagents needed.",
+			"Use background: true only when the user explicitly asks for non-blocking delegation (for example \"keep working while this runs\"); the result arrives as a message after the current turn and the parent must not assume it is available yet.",
 		],
 		parameters: Parameters,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -609,11 +641,61 @@ export default function subagentExtension(
 			}
 
 			const args = ["--mode", "json", "-p", ...launch.args, `Task: ${task}`];
+			const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
+
+			if (params.background) {
+				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
+				const controller = new AbortController();
+				backgroundTasks.set(taskId, controller);
+				void (async () => {
+					await acquireChildPermit(controller.signal);
+					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
+					try {
+						startWidgetItem(taskId, role.name, launch.model.id, thinkingLevel, task, ctx);
+						const result = await runPi(
+							args,
+							ctx.cwd,
+							controller.signal,
+							undefined,
+							(tokens) => updateWidgetTokens(taskId, tokens),
+							timeoutPolicy,
+						);
+						const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+						widgetStatus = result.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
+						const text = capOutput(failed
+							? result.errorMessage || result.stderr.trim() || result.output || `Subagent exited with code ${result.exitCode}.`
+							: result.output || "(no output)");
+						await reportBackground(
+							taskId,
+							details,
+							result.stopReason === "aborted" ? "aborted" : failed ? "failed" : "completed",
+							text,
+						);
+					} catch (error) {
+						const aborted = controller.signal.aborted && !(error instanceof SubagentTimeoutError);
+						widgetStatus = aborted ? "aborted" : "failure";
+						await reportBackground(
+							taskId,
+							details,
+							aborted ? "aborted" : "failed",
+							capOutput(error instanceof Error ? error.message : String(error)),
+						);
+					} finally {
+						releaseChildPermit();
+						finishWidgetItem(taskId, widgetStatus);
+						backgroundTasks.delete(taskId);
+					}
+				})();
+				return {
+					content: [{ type: "text" as const, text: `Background subagent ${taskId} started (${role.name}, ${modelReferenceValue}). The outcome arrives as a message when the task settles; keep working or end your turn.` }],
+					details: { ...details, taskId, background: true },
+				};
+			}
+
 			await acquireChildPermit(signal);
 			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 			try {
 				startWidgetItem(toolCallId, role.name, launch.model.id, thinkingLevel, task, ctx);
-				const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
 				const result = await runPi(
 					args,
 					ctx.cwd,

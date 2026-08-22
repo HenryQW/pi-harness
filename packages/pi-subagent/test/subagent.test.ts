@@ -66,6 +66,7 @@ function harness(options: {
 	let widget: { render: (width: number) => string[] } | undefined;
 	let renders = 0;
 	const notifications: Array<{ message: string; type: string }> = [];
+	const sentMessages: Array<{ message: any; options: any }> = [];
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const commands = new Map<string, { handler: (...args: any[]) => any }>();
 	const tui = { requestRender: () => { renders++; } };
@@ -73,6 +74,7 @@ function harness(options: {
 	const api = {
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 		registerTool(candidate: Tool) { tool = candidate; },
+		sendMessage(message: any, options: any) { sentMessages.push({ message, options }); },
 		registerCommand(name: string, candidate: { handler: (...args: any[]) => any }) { commands.set(name, candidate); },
 		getCommands() {
 			return (options.skills ?? []).map((skill) => ({
@@ -103,6 +105,7 @@ function harness(options: {
 		get widget() { return widget; },
 		get renders() { return renders; },
 		notifications,
+		sentMessages,
 		ctx,
 		handlers,
 		commands,
@@ -901,5 +904,47 @@ Do bounded work.
 		assertTruncated(result.content[0].text, "e".repeat(60 * 1024));
 		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+	});
+});
+
+test("background delegation returns immediately and reports the outcome as a message", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		const result = await app.tool.execute(
+			"call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx,
+		);
+		assert.match(result.content[0]!.text, /bg-\d+-[a-z0-9]+ started \(worker/);
+		await waitFor(() => app.sentMessages.length === 1);
+		const { message, options } = app.sentMessages[0]!;
+		assert.equal(message.customType, "subagent-background-result");
+		assert.match(message.content, /completed/);
+		assert.match(message.content, /done/);
+		assert.equal(options.triggerTurn, false);
+	});
+});
+
+test("session shutdown aborts a running background subagent and reports it", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "message_start", message: { role: "assistant", content: [] } });
+setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 25);
+`);
+		process.argv[1] = runner;
+
+		const app = harness({ timeoutPolicy: { softMs: 60_000, graceMs: 60_000, activeWindowMs: 60_000 } });
+		const result = await app.tool.execute(
+			"call-1", { role: "worker", task: "long work", background: true }, undefined, undefined, app.ctx,
+		);
+		assert.match(result.content[0]!.text, /started/);
+		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await waitFor(() => app.sentMessages.length === 1);
+		assert.match(app.sentMessages[0]!.message.content, /aborted/);
 	});
 });
