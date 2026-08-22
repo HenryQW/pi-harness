@@ -70,13 +70,13 @@ function writeConfig(config: Config): void {
 	writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] | undefined {
+function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
 	let config;
 	try {
 		config = readTaskModelsConfig();
 	} catch {
 		ctx.ui.notify("Couldn't read task model config; using current session model.", "error");
-		return undefined;
+		return [];
 	}
 
 	const profileName = config.tasks[AUTO_COMPACT_TASK] ?? DEFAULT_AUTO_COMPACT_PROFILE;
@@ -341,7 +341,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const routes = configuredTaskRoutes(ctx);
-		if (!routes?.length) return;
+		if (!routes.length) return;
 
 		for (const route of routes) {
 			try {
