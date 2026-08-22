@@ -235,6 +235,12 @@ test("commands and tools persist state, inject context, register skills, and sea
 			/current working directory scope/,
 		);
 		await assert.rejects(addTool.execute("call-3", { path: external }, undefined, undefined, ctx), /Already added/);
+		await assert.rejects(
+			addTool.execute("call-nested-in", { path: join(external, "src") }, undefined, undefined, ctx),
+			/overlaps already-added directory/,
+		);
+		const parent = dirname(external);
+		await assert.rejects(addTool.execute("call-nested-over", { path: parent }, undefined, undefined, ctx), /overlaps/);
 
 		const persisted = (loaded.entries[0] as { data: unknown }).data;
 		const resumed = loadExtension([

@@ -170,6 +170,16 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 				hasNewSkills: false,
 			};
 		}
+		const overlap = addedDirs.find(
+			(dir) => isWithinDir(dir.absolutePath, absolutePath) || isWithinDir(absolutePath, dir.absolutePath),
+		);
+		if (overlap) {
+			return {
+				ok: false,
+				message: `Directory overlaps already-added directory: ${overlap.absolutePath}`,
+				hasNewSkills: false,
+			};
+		}
 
 		const context = scanDirContext(absolutePath);
 		const label = basename(absolutePath) || absolutePath;
@@ -382,7 +392,6 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		renderCall(args, theme) {
 			let text = theme.fg("toolTitle", theme.bold("search_external_files "));
 			text += theme.fg("accent", `"${cleanPath(args.pattern)}"`);
-			text += theme.fg("dim", ` across ${addedDirs.length} dir(s)`);
 			return new Text(text, 0, 0);
 		},
 

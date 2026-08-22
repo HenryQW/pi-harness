@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import * as path from "node:path";
@@ -128,6 +128,21 @@ function skillDescription(content: string): string {
 	return value.replace(/^("|')|("|')$/g, "").trim() || "No description";
 }
 
+// ponytail: 8KB head is enough for SKILL.md frontmatter descriptions; full-body reads stay in scanDirContext
+function readHead(filePath: string, bytes = 8192): string | null {
+	let fd: number | undefined;
+	try {
+		fd = openSync(filePath, "r");
+		const buffer = Buffer.alloc(bytes);
+		const bytesRead = readSync(fd, buffer, 0, bytes, 0);
+		return buffer.toString("utf8", 0, bytesRead);
+	} catch {
+		return null;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
 export function buildContextInjection(dirs: AddedDir[]): string {
 	if (dirs.length === 0) return "";
 
@@ -138,23 +153,20 @@ export function buildContextInjection(dirs: AddedDir[]): string {
 
 	const registeredSkills = new Set<string>();
 	for (const dir of dirs) {
-		const ctx = scanDirContext(dir.absolutePath);
-		const skills = [...ctx.skills].filter(([name]) => {
-			if (registeredSkills.has(name)) return false;
-			registeredSkills.add(name);
-			return true;
-		});
 		sections.push(`### ${dir.label} - \`${dir.absolutePath}\``);
 
-		if (ctx.agentsMd) sections.push(`\n#### AGENTS.md (from ${dir.label})\n${ctx.agentsMd}`);
-		if (ctx.claudeMd) sections.push(`\n#### CLAUDE.md (from ${dir.label})\n${ctx.claudeMd}`);
+		const agentsMd = readContextFile(dir.absolutePath, "AGENTS.md");
+		if (agentsMd) sections.push(`\n#### AGENTS.md (from ${dir.label})\n${agentsMd}`);
+		const claudeMd = readContextFile(dir.absolutePath, "CLAUDE.md");
+		if (claudeMd) sections.push(`\n#### CLAUDE.md (from ${dir.label})\n${claudeMd}`);
 
+		const skills = skillFiles(dir.absolutePath).filter((skill) => !registeredSkills.has(skill.name));
 		if (skills.length > 0) {
 			sections.push(`\n#### Skills from ${dir.label} (registered as /skill:name commands):`);
-			for (const [name, content] of skills) {
-				sections.push(
-					`- **${name}**: ${skillDescription(content)} - use \`/skill:${name}\` or read \`${ctx.skillPaths.get(name)}\``,
-				);
+			for (const skill of skills) {
+				registeredSkills.add(skill.name);
+				const description = skillDescription(readHead(skill.path) ?? "");
+				sections.push(`- **${skill.name}**: ${description} - use \`/skill:${skill.name}\` or read \`${skill.path}\``);
 			}
 		}
 	}
