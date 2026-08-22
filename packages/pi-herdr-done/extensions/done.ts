@@ -20,7 +20,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("done", {
-		description: "Close and remove the current Herdr worktree",
+		description: "Remove the current Herdr worktree, then fast-forward its parent workspace",
 		handler: async (args, ctx) => {
 			const option = args.trim();
 			if (option && option !== "--force") throw new Error("Usage: /done [--force]");
@@ -37,17 +37,27 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 
 			await ctx.waitForIdle();
 			const checkout = (await execOrThrow("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).trim();
+			// First record of the NUL-delimited list is always the main worktree;
+			// -z keeps paths containing newlines parseable.
+			const worktreeFields = (await execOrThrow("git", ["worktree", "list", "--porcelain", "-z"], checkout)).split("\0");
+			const mainCheckout = worktreeFields[0]?.startsWith("worktree ") ? worktreeFields[0].slice("worktree ".length) : undefined;
+			if (!mainCheckout) throw new Error("git worktree list returned no main worktree.");
+			// A bare primary has no working tree to pull into.
+			const parentIsBare = mainCheckout !== checkout &&
+				worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
 
 			const release = await lock(checkout);
 			try {
 				const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
 				const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
 				if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
+				const guarded = mainCheckout === checkout ? [checkout] : [checkout, mainCheckout];
+				const isGuarded = (cwd: string) =>
+					guarded.some((root) => cwd === root || cwd.startsWith(`${root}/`));
 				const dependents = [...new Set(panes
 					.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
 						typeof pane.tab_id === "string" && pane.tab_id !== tabId &&
-						typeof pane.cwd === "string" &&
-						(pane.cwd === checkout || pane.cwd.startsWith(`${checkout}/`)))
+						typeof pane.cwd === "string" && isGuarded(pane.cwd))
 					.map((pane) => pane.tab_id))];
 				if (dependents.length > 0) {
 					throw new Error(`Worktree still used by Herdr tabs ${dependents.join(", ")}; close them first.`);
@@ -59,13 +69,15 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			} finally {
 				await release();
 			}
-			// Pull the parent workspace only when this session ran in a linked worktree.
-			// Run outside the removed checkout because its directory no longer exists.
-			// First entry of the porcelain list is always the main (parent) worktree.
-			const worktreeList = await execOrThrow("git", ["worktree", "list", "--porcelain"], tmpdir());
-			const mainCheckout = /^worktree (.+)$/m.exec(worktreeList)?.[1];
-			if (mainCheckout && mainCheckout !== checkout) {
-				await execOrThrow("git", ["pull"], mainCheckout);
+			if (!parentIsBare && mainCheckout !== checkout) {
+				// Serialize concurrent completions pulling the same parent checkout.
+				// Run outside the removed checkout because its directory no longer exists.
+				const releasePull = await lock(mainCheckout);
+				try {
+					await execOrThrow("git", ["pull", "--ff-only"], mainCheckout);
+				} finally {
+					await releasePull();
+				}
 			}
 			// Close only this session's tab so unrelated tabs survive.
 			// Run outside the removed checkout because its directory no longer exists.
