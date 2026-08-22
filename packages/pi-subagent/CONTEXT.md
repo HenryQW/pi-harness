@@ -9,7 +9,7 @@ Provide validated user Roles, shared task-model Pi launch policy, generic manage
 - **Main**: Pi session delegating work.
 - **Subagent**: isolated Pi child process handling one task.
 - **Role**: user-owned Markdown profile defining name, description, system instructions, optional exact tool allowlist, extensions, and Skill names.
-- **Model Class**: `fast`, `balanced`, or `frontier`, assigned in shared task-model settings or overridden by Main from task complexity.
+- **Model Class**: `fast`, `balanced`, `frontier`, or `fav`, assigned in shared task-model settings or overridden by Main from task complexity.
 - **Route**: configured model and thinking-level pair selected from a shared Model Class profile; the primary route precedes its optional fallback.
 - **Delegated Task**: one bounded work request sent from Main to one Role.
 - **Pi Launch**: reusable `{env,args}` policy for one Role, resolved model route, explicit caller resources, and project trust.

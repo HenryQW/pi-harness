@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-export const PROFILE_NAMES = ["fast", "balanced", "frontier"];
+export const PROFILE_NAMES = ["fast", "balanced", "frontier", "fav"];
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const DEFAULT_TASK_ASSIGNMENTS = {
     "pi-herdr-btw/btw": "fast",
@@ -83,6 +83,8 @@ function parseConfig(value) {
             if (!isTaskProfile(profile))
                 throw new Error(`${name} profile is invalid.`);
             const profileName = name;
+            if (profileName === "fav" && profile.fallback)
+                throw new Error("fav profile has no fallback.");
             profiles[profileName] = {
                 primary: normalizeRoute(profile.primary),
                 ...(profile.fallback ? { fallback: normalizeRoute(profile.fallback) } : {}),
@@ -114,6 +116,8 @@ export function readTaskModelsConfig(agentDir = getAgentDir()) {
     }
 }
 export function writeTaskModelsConfig(config, agentDir = getAgentDir()) {
+    if (config.profiles.fav?.fallback)
+        throw new Error("fav profile has no fallback.");
     const file = configPath(agentDir);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`);
@@ -304,19 +308,24 @@ export function createTaskModelsExtension(pi, options) {
             const primary = await selectRoute(ctx, `Profile ${profile} primary`, models);
             if (!primary)
                 return;
-            const fallbackModels = models.filter((model) => canonicalModelReference(model) !== primary.model);
-            const fallbackModel = await ctx.ui.select(`Profile ${profile} fallback`, [
-                "None",
-                ...fallbackModels.map((model) => modelReference(model)),
-            ]);
-            if (!fallbackModel)
-                return;
-            const fallback = fallbackModel === "None"
-                ? undefined
-                : await selectThinkingLevel(ctx, `Profile ${profile} fallback`, fallbackModels, fallbackModel);
-            if (fallbackModel !== "None" && !fallback)
-                return;
-            config.profiles[profile] = { primary, ...(fallback ? { fallback } : {}) };
+            if (profile === "fav") {
+                config.profiles[profile] = { primary };
+            }
+            else {
+                const fallbackModels = models.filter((model) => canonicalModelReference(model) !== primary.model);
+                const fallbackModel = await ctx.ui.select(`Profile ${profile} fallback`, [
+                    "None",
+                    ...fallbackModels.map((model) => modelReference(model)),
+                ]);
+                if (!fallbackModel)
+                    return;
+                const fallback = fallbackModel === "None"
+                    ? undefined
+                    : await selectThinkingLevel(ctx, `Profile ${profile} fallback`, fallbackModels, fallbackModel);
+                if (fallbackModel !== "None" && !fallback)
+                    return;
+                config.profiles[profile] = { primary, ...(fallback ? { fallback } : {}) };
+            }
             if (!save())
                 return;
             ctx.ui.notify(`${profile} profile saved.`, "info");

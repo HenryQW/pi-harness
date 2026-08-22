@@ -192,6 +192,26 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 	}), []);
 });
 
+test("readTaskModelsConfig rejects fallback on fav profile", () => {
+	const dir = tempDir();
+	try {
+		mkdirSync(join(dir, "config"), { recursive: true });
+		const file = join(dir, "config", "pi-task-models.json");
+		writeFileSync(file, JSON.stringify({
+			profiles: { fav: { primary: { model: "p/m", thinkingLevel: "off" }, fallback: { model: "p/f", thinkingLevel: "off" } } },
+		}));
+		assert.throws(() => readTaskModelsConfig(dir), /fav profile has no fallback/);
+		const invalid = readFileSync(file, "utf8");
+		assert.throws(() => writeTaskModelsConfig({
+			profiles: { fav: { primary: { model: "p/m", thinkingLevel: "off" }, fallback: { model: "p/f", thinkingLevel: "off" } } },
+			tasks: {},
+		}, dir), /fav profile has no fallback/);
+		assert.equal(readFileSync(file, "utf8"), invalid);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("task-models hides task assignment when no supported task package is active", async () => {
 	const dir = tempDir();
 	try {
@@ -207,7 +227,7 @@ test("task-models hides task assignment when no supported task package is active
 		await handler!([], {
 			ui: {
 				select: async (_label: string, options: readonly string[]) => {
-					assert.deepEqual(options, ["fast · not configured", "balanced · not configured", "frontier · not configured"]);
+					assert.deepEqual(options, ["fast · not configured", "balanced · not configured", "frontier · not configured", "fav · not configured"]);
 					return undefined;
 				},
 				notify() {},

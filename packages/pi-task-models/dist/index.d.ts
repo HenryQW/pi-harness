@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-export declare const PROFILE_NAMES: readonly ["fast", "balanced", "frontier"];
+export declare const PROFILE_NAMES: readonly ["fast", "balanced", "frontier", "fav"];
 export type ProfileName = (typeof PROFILE_NAMES)[number];
 export declare const THINKING_LEVELS: readonly ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
