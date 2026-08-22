@@ -10,13 +10,25 @@ pi install npm:@henryqw/pi-deps
 
 Node 22.19 or newer, Git, and each selected package manager must be available on `PATH` used by Git.
 
+## Supported managers
+
+Only current major versions are supported; older majors are not handled and fall back to the lockfile default below.
+
+| Manager | Command | Lockfile |
+| --- | --- | --- |
+| npm | `npm ci` | `package-lock.json`, `npm-shrinkwrap.json` |
+| pnpm | `pnpm install --frozen-lockfile` | `pnpm-lock.yaml` |
+| Yarn | `yarn install --immutable` | `yarn.lock` (Yarn Classic 1.x is not supported) |
+| Bun | `bun install --frozen-lockfile` | `bun.lock`, `bun.lockb` |
+| uv | `uv sync --locked` | `uv.lock` |
+
 ## Use
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/deps` | command | Toggle dependency preparation for future worktrees in current repository. |
 
-Run `/deps` once from any worktree to enable preparation through repository's shared `post-checkout` hook. Run it again to disable. Existing or modified hooks are never overwritten or removed.
+Run `/deps` once from any worktree to enable preparation through repository's shared `post-checkout` hook. Run it again to disable. Hooks without this package's marker are never overwritten or removed. After updating the package, run `/deps` twice in each opted-in repository to replace the copied hook with the current version.
 
 Only Git-root lockfiles are inspected. npm, pnpm, Yarn, and Bun use frozen installs; uv uses `uv sync --locked`. Node and uv both run when both lockfile types exist. Root npm and uv workspaces remain package-manager concerns; nested independent projects are not scanned.
 

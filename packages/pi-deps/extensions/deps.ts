@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rm, unlink, writeFile, chmod } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const hookSourcePath = fileURLToPath(new URL("../hooks/post-checkout.mjs", import.meta.url));
+const managedHookMarker = "pi-deps-managed-hook";
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -25,10 +26,23 @@ export async function toggleDependencyHook(commonGitDir: string): Promise<{ enab
 	const existing = await existingHook(path);
 
 	if (existing !== undefined) {
-		if (existing !== source) {
-			throw new Error(`Refusing to modify existing Git hook: ${path}`);
+		if (!existing.includes(managedHookMarker)) {
+			throw new Error(`Refusing to modify unmanaged Git hook: ${path}`);
 		}
-		await unlink(path);
+		// Rename first so the content check happens on the exact inode being removed.
+		const staging = `${path}.pi-deps-${process.pid}-${randomUUID()}`;
+		await rename(path, staging);
+		try {
+			const removed = await readFile(staging, "utf8");
+			if (!removed.includes(managedHookMarker)) {
+				await rename(staging, path);
+				throw new Error(`Refusing to modify unmanaged Git hook: ${path}`);
+			}
+			await rm(staging);
+		} catch (error) {
+			await rm(staging, { force: true });
+			throw error;
+		}
 		return { enabled: false, path };
 	}
 

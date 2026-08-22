@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// pi-deps-managed-hook
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
@@ -45,12 +46,11 @@ function nodeInstall() {
 	}
 	const declared = packageJson?.packageManager;
 	let manager = locks[0];
-	let declaredVersion;
 	if (declared !== undefined) {
 		if (typeof declared !== "string" || !/^(npm|pnpm|yarn|bun)@.+$/.test(declared)) {
 			throw new Error(`Unsupported packageManager: ${JSON.stringify(declared)}`);
 		}
-		[manager, declaredVersion] = declared.split(/@(.+)/);
+		manager = declared.slice(0, declared.indexOf("@"));
 		if (manager !== locks[0]) {
 			throw new Error(`packageManager ${manager} does not match ${locks[0]} lockfile`);
 		}
@@ -60,12 +60,7 @@ function nodeInstall() {
 	if (manager === "npm") run("npm", ["ci"]);
 	else if (manager === "pnpm") run("pnpm", ["install", "--frozen-lockfile"]);
 	else if (manager === "bun") run("bun", ["install", "--frozen-lockfile"]);
-	else {
-		const yarnOne = declaredVersion
-			? Number.parseInt(declaredVersion, 10) === 1
-			: /^# yarn lockfile v1\r?$/m.test(readFileSync(path("yarn.lock"), "utf8"));
-		run("yarn", ["install", yarnOne ? "--frozen-lockfile" : "--immutable"]);
-	}
+	else run("yarn", ["install", "--immutable"]);
 }
 
 try {

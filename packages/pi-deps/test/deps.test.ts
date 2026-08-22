@@ -28,19 +28,19 @@ fs.mkdirSync(path.join(process.cwd(), path.basename(process.argv[1]) === "uv" ? 
 	await chmod(path, 0o755);
 }
 
-function runHook(root: string, bin: string, oldHead = zeroHead) {
+function runHook(root: string, bin: string, oldHead = zeroHead, pathOverride?: string) {
 	return spawnSync(process.execPath, [hook.pathname, oldHead, nextHead, "1"], {
 		cwd: root,
 		env: {
 			...process.env,
-			PATH: `${bin}:${process.env.PATH ?? ""}`,
+			PATH: pathOverride ?? `${bin}:${process.env.PATH ?? ""}`,
 			PI_DEPS_TEST_LOG: join(root, "commands.log"),
 		},
 		encoding: "utf8",
 	});
 }
 
-test("/deps toggles only its exact shared hook", async (t) => {
+test("/deps toggles only its managed shared hook", async (t) => {
 	const root = await temporaryDirectory(t);
 	const gitDir = join(root, ".git");
 	const notifications: string[] = [];
@@ -59,24 +59,33 @@ test("/deps toggles only its exact shared hook", async (t) => {
 
 	await handler!("", ctx);
 	const installed = join(gitDir, "hooks", "post-checkout");
-	assert.equal(await readFile(installed, "utf8"), await readFile(hook, "utf8"));
+	const source = await readFile(hook, "utf8");
+	assert.equal(await readFile(installed, "utf8"), source);
 	assert.notEqual((await stat(installed)).mode & 0o111, 0);
+
+	// Modified hook that still carries the marker stays owned and toggles off.
+	await writeFile(installed, `${source}\n// locally edited\n`);
+	await handler!("", ctx);
+	await assert.rejects(readFile(installed), /ENOENT/);
+
+	// Toggling again installs the current package source, refreshing older copies.
+	await handler!("", ctx);
+	assert.equal(await readFile(installed, "utf8"), source);
 	await handler!("", ctx);
 	await assert.rejects(readFile(installed), /ENOENT/);
 
 	await mkdir(join(gitDir, "hooks"), { recursive: true });
 	await writeFile(installed, "#!/bin/sh\necho existing\n");
-	await assert.rejects(handler!("", ctx), /Refusing to modify existing Git hook/);
+	await assert.rejects(handler!("", ctx), /Refusing to modify unmanaged Git hook/);
 	assert.equal(await readFile(installed, "utf8"), "#!/bin/sh\necho existing\n");
-	assert.equal(notifications.length, 2);
+	assert.equal(notifications.length, 4);
 });
 
 test("creation hook chooses frozen Node install commands", async (t) => {
 	const cases = [
 		["npm", "package-lock.json", "npm@11.0.0", "", ["npm", "ci"]],
 		["pnpm", "pnpm-lock.yaml", "pnpm@11.0.0", "", ["pnpm", "install", "--frozen-lockfile"]],
-		["yarn", "yarn.lock", "yarn@1.22.0", "# yarn lockfile v1\n", ["yarn", "install", "--frozen-lockfile"]],
-		["yarn", "yarn.lock", "yarn@4.0.0", "__metadata:\n  version: 8\n", ["yarn", "install", "--immutable"]],
+		["yarn", "yarn.lock", "yarn@4.0.0", "", ["yarn", "install", "--immutable"]],
 		["bun", "bun.lock", "bun@1.3.0", "", ["bun", "install", "--frozen-lockfile"]],
 	] as const;
 
@@ -126,4 +135,30 @@ test("creation hook rejects conflicting manager evidence", async (t) => {
 	const result = runHook(root, bin);
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /Conflicting Node lockfiles: npm, pnpm/);
+});
+
+test("creation hook rejects malformed packageManager declarations", async (t) => {
+	for (const declared of ["npm", "@scope/cli@1.0.0"]) {
+		const root = await temporaryDirectory(t);
+		const bin = join(root, "bin");
+		await mkdir(bin);
+		await writeFile(join(root, "package.json"), JSON.stringify({ packageManager: declared }));
+		await writeFile(join(root, "package-lock.json"), "{}");
+
+		const result = runHook(root, bin);
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /Unsupported packageManager/);
+	}
+});
+
+test("creation hook reports missing package manager executable", async (t) => {
+	const root = await temporaryDirectory(t);
+	const bin = join(root, "bin");
+	await mkdir(bin);
+	await writeFile(join(root, "package.json"), JSON.stringify({ packageManager: "npm@11.0.0" }));
+	await writeFile(join(root, "package-lock.json"), "{}");
+
+	const result = runHook(root, bin, zeroHead, bin);
+	assert.equal(result.status, 127);
+	assert.match(result.stderr, /failed to start npm/);
 });
