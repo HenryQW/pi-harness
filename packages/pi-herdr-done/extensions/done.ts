@@ -1,11 +1,11 @@
 import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient } from "@henryqw/pi-herdr";
-import { lock } from "proper-lockfile";
+import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 
 type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 
 type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
+type TabEntry = { tab_id?: unknown; label?: unknown };
 
 export default function herdrDoneExtension(pi: ExtensionAPI): void {
 	const herdr = createHerdrClient<{ cwd: string }>((command, args, options) =>
@@ -46,38 +46,41 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const parentIsBare = mainCheckout !== checkout &&
 				worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
 
-			const release = await lock(checkout);
-			try {
-				const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
-				const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
-				if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
-				const guarded = mainCheckout === checkout ? [checkout] : [checkout, mainCheckout];
-				const isGuarded = (cwd: string) =>
-					guarded.some((root) => cwd === root || cwd.startsWith(`${root}/`));
-				const dependents = [...new Set(panes
-					.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
-						typeof pane.tab_id === "string" && pane.tab_id !== tabId &&
-						typeof pane.cwd === "string" && isGuarded(pane.cwd))
-					.map((pane) => pane.tab_id))];
-				if (dependents.length > 0) {
-					throw new Error(`Worktree still used by Herdr tabs ${dependents.join(", ")}; close them first.`);
+			await withWorktreeLock(checkout, async () => {
+				// With --force, skip the dependents check entirely and let git remove the checkout.
+				if (option !== "--force") {
+					const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
+					const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
+					if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
+					const guarded = mainCheckout === checkout ? [checkout] : [checkout, mainCheckout];
+					const isGuarded = (cwd: string) =>
+						guarded.some((root) => cwd === root || cwd.startsWith(`${root}/`));
+					const dependentIds = [...new Set(panes
+						.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
+							typeof pane.tab_id === "string" && pane.tab_id !== tabId &&
+							typeof pane.cwd === "string" && isGuarded(pane.cwd))
+						.map((pane) => pane.tab_id))];
+					if (dependentIds.length > 0) {
+						const listing = await herdr.json(["tab", "list"], { cwd: ctx.cwd });
+						const tabs = (listing.result as { tabs?: TabEntry[] } | undefined)?.tabs;
+						const labels = new Map(
+							(Array.isArray(tabs) ? tabs : [])
+								.filter((tab): tab is TabEntry & { tab_id: string; label: string } =>
+									typeof tab.tab_id === "string" && typeof tab.label === "string")
+								.map((tab) => [tab.tab_id, tab.label]));
+						const names = [...new Set(dependentIds.map((id) => labels.get(id) ?? id))];
+						throw new Error(`Worktree still used by Herdr tabs ${names.join(", ")}; close them first.`);
+					}
 				}
 
 				await execOrThrow("git", [
 					"worktree", "remove", ...(option === "--force" ? ["--force"] : []), checkout,
 				], ctx.cwd);
-			} finally {
-				await release();
-			}
+			});
 			if (!parentIsBare && mainCheckout !== checkout) {
 				// Serialize concurrent completions pulling the same parent checkout.
 				// Run outside the removed checkout because its directory no longer exists.
-				const releasePull = await lock(mainCheckout);
-				try {
-					await execOrThrow("git", ["pull", "--ff-only"], mainCheckout);
-				} finally {
-					await releasePull();
-				}
+				await withWorktreeLock(mainCheckout, () => execOrThrow("git", ["pull", "--ff-only"], mainCheckout));
 			}
 			// Close only this session's tab so unrelated tabs survive.
 			// Run outside the removed checkout because its directory no longer exists.

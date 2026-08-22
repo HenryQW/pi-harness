@@ -28,8 +28,7 @@
     "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "dependencies": {
-    "@henryqw/pi-herdr": "^0.1.1",
-    "proper-lockfile": "^4.1.2"
+    "@henryqw/pi-herdr": "^0.2.0"
   },
   "repository": {
     "type": "git",
