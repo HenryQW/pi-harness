@@ -476,13 +476,14 @@ export default function subagentExtension(
 	// reported once the UI exists; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
 	const startupWarnings = [loadedConfig.error].filter((message): message is string => message !== undefined);
-	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
+	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 	if (maxSubagentsRaw !== undefined) {
-		const parsed = Number.parseInt(maxSubagentsRaw, 10);
-		if (!Number.isInteger(parsed) || parsed < 1) {
+		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes.
+		if (!/^\d+$/.test(maxSubagentsRaw) || !/^[1-9]\d*$/.test(maxSubagentsRaw)) {
 			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`);
 		}
-		maxActiveSubagents = parsed;
+		maxActiveSubagents = Number.parseInt(maxSubagentsRaw, 10);
 	}
 	let backgroundSequence = 0;
 	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
@@ -491,6 +492,9 @@ export default function subagentExtension(
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, AbortController>();
+	// Set by session_shutdown; after it, background outcomes are never delivered —
+	// the session that launched them can no longer receive messages.
+	let sessionEnded = false;
 	let activeChildren = 0;
 	const queuedChildren: Array<() => void> = [];
 	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
@@ -606,16 +610,20 @@ export default function subagentExtension(
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
+		// Suppress later background deliveries: they would land in whatever
+		// session is active by the time the aborted child settles.
+		sessionEnded = true;
 		for (const controller of backgroundTasks.values()) controller.abort();
 		backgroundTasks.clear();
 	});
 
 	const reportBackground = async (
 		taskId: string,
-		details: { role: string; model: string; thinkingLevel?: string },
+		details: { role: string; model?: string; thinkingLevel?: string },
 		outcome: "completed" | "failed" | "aborted",
 		text: string,
 	): Promise<void> => {
+		if (sessionEnded) return;
 		// Custom messages convert to user-role LLM messages, so the parent agent
 		// sees the outcome on its next turn without a forced turn now.
 		try {
@@ -654,34 +662,41 @@ export default function subagentExtension(
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
 			}
-			const launch = params.model !== undefined
+			const resolveLaunch = () => params.model !== undefined
 				? createRoleLaunch(pi, ctx, { role, route: resolveDesignatedRoute(ctx, cleanText(params.model, "model", "delegate_task")) })
 				: params.modelClass === undefined
 					? resolveRoleLaunch(pi, ctx, { role, taskId: SUBAGENT_TASK })
 					: createRoleLaunch(pi, ctx, { role, route: resolveTaskRoute(ctx, params.modelClass) });
-			const modelReferenceValue = modelReference(launch.model);
-			const thinkingLevel = launch.thinkingLevel;
-			if (launch.missingSkills.length) {
-				ctx.ui.notify(
-					`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
-					"warning",
-				);
-			}
-
-			const args = ["--mode", "json", "-p", ...launch.args, `Task: ${task}`];
-			const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
+			const notifyMissingSkills = (launch: ReturnType<typeof resolveLaunch>) => {
+				if (launch.missingSkills.length) {
+					ctx.ui.notify(
+						`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
+						"warning",
+					);
+				}
+			};
 
 			if (params.background) {
 				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
 				const controller = new AbortController();
 				backgroundTasks.set(taskId, controller);
 				void (async () => {
-					await acquireChildPermit(controller.signal);
+					let acquired = false;
 					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
+					// Role is known up front; model/thinking join after launch resolution.
+					let details: { role: string; model?: string; thinkingLevel?: string } = { role: role.name };
 					try {
-						startWidgetItem(taskId, role.name, launch.model.id, thinkingLevel, task, ctx);
+						await acquireChildPermit(controller.signal);
+						acquired = true;
+						// Resolve resources only once launched: a task queued past the
+						// cap must not start with model routes or skills resolved before
+						// registries or accounts changed while it waited.
+						const launch = resolveLaunch();
+						notifyMissingSkills(launch);
+						details = { role: role.name, model: modelReference(launch.model), thinkingLevel: launch.thinkingLevel };
+						startWidgetItem(taskId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
 						const result = await runPi(
-							args,
+							["--mode", "json", "-p", ...launch.args, `Task: ${task}`],
 							ctx.cwd,
 							controller.signal,
 							undefined,
@@ -709,23 +724,28 @@ export default function subagentExtension(
 							capOutput(error instanceof Error ? error.message : String(error)),
 						);
 					} finally {
-						releaseChildPermit();
+						if (acquired) releaseChildPermit();
 						finishWidgetItem(taskId, widgetStatus);
 						backgroundTasks.delete(taskId);
 					}
 				})();
 				return {
-					content: [{ type: "text" as const, text: `Background subagent ${taskId} started (${role.name}, ${modelReferenceValue}). The outcome arrives as a message when the task settles; keep working or end your turn.` }],
-					details: { ...details, taskId, background: true },
+					content: [{ type: "text" as const, text: `Background subagent ${taskId} started (${role.name}). The outcome arrives as a message when the task settles; keep working or end your turn.` }],
+					details: { role: role.name, taskId, background: true },
 				};
 			}
+
+			const launch = resolveLaunch();
+			notifyMissingSkills(launch);
+			const modelReferenceValue = modelReference(launch.model);
+			const details = { role: role.name, model: modelReferenceValue, thinkingLevel: launch.thinkingLevel };
 
 			await acquireChildPermit(signal);
 			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 			try {
-				startWidgetItem(toolCallId, role.name, launch.model.id, thinkingLevel, task, ctx);
+				startWidgetItem(toolCallId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
 				const result = await runPi(
-					args,
+					["--mode", "json", "-p", ...launch.args, `Task: ${task}`],
 					ctx.cwd,
 					signal,
 					(text) => onUpdate?.({ content: [{ type: "text", text }], details }),

@@ -718,12 +718,61 @@ test("PI_SUBAGENT_MAX_SUBAGENTS overrides the default child cap", async () => {
 	});
 });
 
+test("session shutdown aborts queued background subagents without unhandled rejections", async () => {
+	await environment(async (agentDir) => {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "1";
+		try {
+			const unhandled: unknown[] = [];
+			const onUnhandled = (error: unknown) => unhandled.push(error);
+			process.on("unhandledRejection", onUnhandled);
+			try {
+				await writeWorkerRole(agentDir);
+				const runner = join(agentDir, "fake-pi.mjs");
+				await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
+				process.argv[1] = runner;
+
+				const app = harness();
+				const first = await app.tool.execute("call-1", { role: "worker", task: "task-1", background: true }, undefined, undefined, app.ctx);
+				assert.match(first.content[0]!.text, /started/);
+				const second = await app.tool.execute("call-2", { role: "worker", task: "task-2", background: true }, undefined, undefined, app.ctx);
+				assert.match(second.content[0]!.text, /started/);
+				// Second task is queued; shutdown must abort it without an unhandled
+				// rejection from the discarded IIFE promise.
+				app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				assert.deepEqual(unhandled, []);
+			} finally {
+				process.off("unhandledRejection", onUnhandled);
+			}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
+	});
+});
+
+test("background outcomes are not delivered after session shutdown", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "late" }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(app.sentMessages.length, 0);
+	});
+});
+
 test("invalid PI_SUBAGENT_MAX_SUBAGENTS fails extension load", () => {
-	process.env.PI_SUBAGENT_MAX_SUBAGENTS = "zero";
-	try {
-		assert.throws(() => harness(), /PI_SUBAGENT_MAX_SUBAGENTS/);
-	} finally {
-		delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+	for (const invalid of ["zero", "2workers", "1.5", "1e3", "0", "-1"]) {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = invalid;
+		try {
+			assert.throws(() => harness(), /PI_SUBAGENT_MAX_SUBAGENTS/);
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
 	}
 });
 
@@ -1044,7 +1093,7 @@ test("background delegation returns immediately and reports the outcome as a mes
 	});
 });
 
-test("session shutdown aborts a running background subagent and reports it", async () => {
+test("session shutdown aborts a running background subagent and suppresses delivery", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const runner = join(agentDir, "fake-pi.mjs");
@@ -1060,7 +1109,9 @@ setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 
 		);
 		assert.match(result.content[0]!.text, /started/);
 		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
-		await waitFor(() => app.sentMessages.length === 1);
-		assert.match(app.sentMessages[0]!.message.content, /aborted/);
+		// The aborted child settles after shutdown; its outcome must not leak into
+		// a subsequent session.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(app.sentMessages.length, 0);
 	});
 });
