@@ -12,17 +12,20 @@ pi install npm:@henryqw/pi-herdr-done
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/done` | command | Remove the current worktree checkout and close only this session's tab. |
+| `/done` | command | Remove the current worktree checkout, fast-forward the parent workspace, and close only this session's tab. |
 | `/done --force` | command | Same, even when the worktree is dirty or used by other Herdr tabs. |
 
 Both forms wait for Pi to become idle. `/done` asks for confirmation first; `/done --force` skips it because the flag already states intent. Normal removal runs:
 
 ```bash
 git worktree remove .
+git -C <parent> pull --ff-only
 herdr tab close "$HERDR_TAB_ID"
 ```
 
-Only the current session's tab closes, so sibling tabs in the same workspace survive. When another Herdr tab still uses the checkout, `/done` refuses and lists the blocking tabs by name; use `/done --force` to remove the checkout regardless of other tabs. Command requires Pi running inside Herdr with `HERDR_ENV=1` and `HERDR_TAB_ID` set.
+The parent pull runs only when this session ran in a linked worktree with a non-bare primary; it is skipped when the parent has diverged (`--ff-only` fails safely) or when another Herdr tab is working in the parent. Concurrent completions serialize on a lock around the parent checkout.
+
+Only the current session's tab closes, so sibling tabs in the same workspace survive. When another Herdr tab still uses the checkout or its parent, `/done` refuses and lists the blocking tabs by name; use `/done --force` to remove the checkout regardless of other tabs. Command requires Pi running inside Herdr with `HERDR_ENV=1` and `HERDR_TAB_ID` set.
 
 Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --force` to explicitly delete them.
 

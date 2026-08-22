@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-deps",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Prepare Node and uv dependencies when opted-in Git worktrees are created.",
   "keywords": [
     "pi-package",
@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/deps.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/deps.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {

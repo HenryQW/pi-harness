@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-model-thinking",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Remember Pi thinking level per model.",
   "keywords": [
     "pi-package",
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/model-thinking.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/model-thinking.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {

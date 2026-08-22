@@ -154,7 +154,6 @@ pi remove npm:@henryqw/pi-auto-dag
 
 ```bash
 npm run dev:ui --workspace @henryqw/pi-auto-dag
-npm test --workspace @henryqw/pi-auto-dag -- core
 npm test --workspace @henryqw/pi-auto-dag -- orchestration
 npm test --workspace @henryqw/pi-auto-dag -- planning
 npm test --workspace @henryqw/pi-auto-dag -- pr-lifecycle
