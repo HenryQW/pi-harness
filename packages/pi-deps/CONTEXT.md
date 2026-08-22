@@ -5,7 +5,7 @@ Pi Deps makes dependency preparation an explicit repository capability for futur
 ## Language
 
 **Prepared worktree**:
-New Git worktree whose supported root dependency environments are available before its creator returns.
+New Git worktree whose supported root dependency environments start installing at creation and finish in the background; completion is signaled to consumers instead of blocking the creator.
 _Avoid_: ready repo, initialized checkout
 
 **Dependency environment**:
