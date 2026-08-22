@@ -37,10 +37,6 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 
 			await ctx.waitForIdle();
 			const checkout = (await execOrThrow("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).trim();
-			// First entry of the porcelain list is always the main (parent) worktree.
-			const worktreeList = await execOrThrow("git", ["worktree", "list", "--porcelain"], checkout);
-			const mainCheckout = /^worktree (.+)$/m.exec(worktreeList)?.[1];
-			if (!mainCheckout) throw new Error("git worktree list returned no main worktree.");
 
 			const release = await lock(checkout);
 			try {
@@ -63,7 +59,12 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			} finally {
 				await release();
 			}
-			if (mainCheckout !== checkout) {
+			// Pull the parent workspace only when this session ran in a linked worktree.
+			// Run outside the removed checkout because its directory no longer exists.
+			// First entry of the porcelain list is always the main (parent) worktree.
+			const worktreeList = await execOrThrow("git", ["worktree", "list", "--porcelain"], tmpdir());
+			const mainCheckout = /^worktree (.+)$/m.exec(worktreeList)?.[1];
+			if (mainCheckout && mainCheckout !== checkout) {
 				await execOrThrow("git", ["pull"], mainCheckout);
 			}
 			// Close only this session's tab so unrelated tabs survive.

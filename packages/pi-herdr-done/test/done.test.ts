@@ -102,9 +102,9 @@ test("/done resolves the checkout root, skips own tab, removes the checkout, the
 		]);
 		assert.deepEqual(app.calls, [
 			{ command: "git", args: ["rev-parse", "--show-toplevel"], options: { cwd: "/repo/worktree/nested" } },
-			{ command: "git", args: ["worktree", "list", "--porcelain"], options: { cwd: checkout } },
 			{ command: "herdr", args: ["api", "snapshot"], options: { cwd: "/repo/worktree/nested" } },
 			{ command: "git", args: ["worktree", "remove", checkout], options: { cwd: "/repo/worktree/nested" } },
+			{ command: "git", args: ["worktree", "list", "--porcelain"], options: { cwd: tmpdir() } },
 			{ command: "git", args: ["pull"], options: { cwd: "/repo/main" } },
 			{ command: "herdr", args: ["tab", "close", "w1:t1"], options: { cwd: tmpdir() } },
 		]);
@@ -127,7 +127,7 @@ test("/done refuses when another Herdr tab still uses the checkout", async () =>
 				panes: [{ tab_id: "w2:t9", cwd }],
 			}));
 			await assert.rejects(app.command("", context()), /still used by Herdr tabs w2:t9/);
-			assert.equal(app.calls.length, 3);
+			assert.equal(app.calls.length, 2);
 		});
 	}
 });
@@ -138,7 +138,7 @@ test("/done does not check or remove while clone creation holds the checkout loc
 		try {
 			const app = harness(snapshotExecutor());
 			await assert.rejects(app.command("", context()), /already being held/);
-			assert.deepEqual(app.calls.map((call) => call.args[0]), ["rev-parse", "worktree"]);
+			assert.deepEqual(app.calls.map((call) => call.args[0]), ["rev-parse"]);
 		} finally {
 			await release();
 		}
@@ -184,7 +184,7 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				removeResult: { stdout: "", stderr: "error: the following file is dirty", code: 1 },
 			}));
 			await assert.rejects(app.command("", context()), /dirty/);
-			assert.equal(app.calls.length, 4);
+			assert.equal(app.calls.length, 3);
 		});
 	});
 
@@ -204,7 +204,7 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				removeResult: { stdout: "", stderr: "", code: 0, killed: true },
 			}));
 			await assert.rejects(app.command("", context()), /killed/);
-			assert.equal(app.calls.length, 4);
+			assert.equal(app.calls.length, 3);
 		});
 	});
 });
