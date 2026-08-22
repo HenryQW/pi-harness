@@ -13,6 +13,7 @@ Public Pi packages under `@henryqw` scope.
 | [`@henryqw/pi-herdr`](./packages/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
 | [`@henryqw/pi-herdr-btw`](./packages/pi-herdr-btw) | Open and merge Pi side threads in Herdr panes. |
 | [`@henryqw/pi-herdr-clone`](./packages/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |
+| [`@henryqw/pi-herdr-done`](./packages/pi-herdr-done) | Close and remove current Herdr worktree. |
 | [`@henryqw/pi-herdr-rename`](./packages/pi-herdr-rename) | Generate short chat titles and rename current Herdr location. |
 | [`@henryqw/pi-model-thinking`](./packages/pi-model-thinking) | Remember chosen thinking level per model. |
 | [`@henryqw/pi-multi-codex`](./packages/pi-multi-codex) | Use multiple ChatGPT Codex OAuth accounts in Pi. |

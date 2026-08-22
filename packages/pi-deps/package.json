@@ -1,13 +1,13 @@
 {
-  "name": "@henryqw/pi-pr",
-  "version": "0.2.0",
-  "description": "Show the current branch pull request status in the Pi footer.",
+  "name": "@henryqw/pi-deps",
+  "version": "0.1.2",
+  "description": "Prepare Node and uv dependencies when opted-in Git worktrees are created.",
   "keywords": [
     "pi-package",
     "pi",
-    "github",
-    "pull-request",
-    "footer"
+    "git",
+    "worktree",
+    "dependencies"
   ],
   "type": "module",
   "engines": {
@@ -16,23 +16,22 @@
   "license": "MIT",
   "files": [
     "extensions",
-    "skills",
+    "hooks",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/deps.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-pr"
+    "directory": "packages/pi-deps"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"
@@ -42,10 +41,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/pr.ts"
-    ],
-    "skills": [
-      "./skills"
+      "./extensions/deps.ts"
     ]
   }
 }

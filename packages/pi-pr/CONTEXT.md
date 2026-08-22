@@ -13,3 +13,7 @@ _Avoid_: PR summary, review dashboard, glyph stack
 **PR state**:
 `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `merge conflict`, `merged`, or `closed`.
 _Avoid_: PR state badge
+
+**PR creation workflow**:
+When current branch has no open PR, `/pr` dispatches bundled `pi-pr-create` skill. Skill follows Git PR workflow: resolve base, scope and commit pending changes, validate, push, then create or update PR with derived title/body.
+_Avoid_: Duplicated shell workflow, unscoped automatic commit

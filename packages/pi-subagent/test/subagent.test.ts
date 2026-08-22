@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,6 +115,46 @@ async function waitFor(check: () => boolean): Promise<void> {
 		if (Date.now() >= deadline) throw new Error("Timed out waiting for test state.");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+}
+
+async function writeWorkerRole(agentDir: string): Promise<void> {
+	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+	await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [read]
+---
+Do bounded work.
+`);
+}
+
+async function blockedPiRunner(agentDir: string, activeTasks: string[] = []) {
+	const started = join(agentDir, "children-started");
+	const release = join(agentDir, "children-release");
+	await Promise.all([mkdir(started), mkdir(release)]);
+	const runner = join(agentDir, "fake-pi.mjs");
+	await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const task = process.argv.at(-1)?.replace(/^Task: /, "");
+if (!task) throw new Error("Missing delegated task.");
+const event = (value) => console.log(JSON.stringify(value));
+writeFileSync(join(${JSON.stringify(started)}, task), "");
+const release = join(${JSON.stringify(release)}, task);
+const active = ${JSON.stringify(activeTasks)}.includes(task);
+if (active) event({ type: "message_start", message: { role: "assistant", content: [] } });
+const activity = active ? setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 25) : undefined;
+const timer = setInterval(() => {
+	if (!existsSync(release)) return;
+	clearInterval(timer);
+	if (activity) clearInterval(activity);
+	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
+}, 10);
+`);
+	process.argv[1] = runner;
+	return {
+		started: () => readdirSync(started).sort(),
+		release: (task: string) => writeFile(join(release, task), ""),
+	};
 }
 
 test("role config rejects repository-relative extension sources", async () => {
@@ -595,6 +635,114 @@ Do work.
 			app.tool.execute("call-1", { role: "broken", task: "work" }, undefined, undefined, app.ctx),
 			/tools/,
 		);
+	});
+});
+
+test("runs four child delegations and starts queued children FIFO", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
+		const runner = await blockedPiRunner(agentDir);
+		const app = harness({ ui: true });
+		const calls = tasks.map((task, index) => app.tool.execute(
+			`call-${index + 1}`,
+			{ role: "worker", task },
+			undefined,
+			undefined,
+			app.ctx,
+		));
+		try {
+			await waitFor(() => (app.widget?.render(80).length ?? 0) >= 4);
+			assert.equal(app.widget!.render(80).length, 4);
+			await waitFor(() => runner.started().length === 4);
+			assert.deepEqual(runner.started(), tasks.slice(0, 4));
+			await runner.release(tasks[0]!);
+			await waitFor(() => runner.started().includes(tasks[4]!));
+			assert.deepEqual(runner.started(), [...tasks.slice(0, 4), tasks[4]!]);
+			for (const task of tasks.slice(1)) await runner.release(task);
+			assert.equal((await Promise.all(calls)).length, tasks.length);
+		} finally {
+			await Promise.all(tasks.map((task) => runner.release(task)));
+			await Promise.allSettled(calls);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+	});
+});
+
+test("drops an aborted queued delegation and transfers its permit", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
+		const runner = await blockedPiRunner(agentDir);
+		const app = harness({ ui: true });
+		const active = tasks.slice(0, 4).map((task, index) => app.tool.execute(
+			`call-${index + 1}`,
+			{ role: "worker", task },
+			undefined,
+			undefined,
+			app.ctx,
+		));
+		const calls = [...active];
+		try {
+			await waitFor(() => runner.started().length === 4);
+			assert.deepEqual(runner.started(), tasks.slice(0, 4));
+			const abort = new AbortController();
+			const fifth = app.tool.execute("call-5", { role: "worker", task: tasks[4]! }, abort.signal, undefined, app.ctx);
+			const fifthAborted = assert.rejects(fifth, /Subagent was aborted/);
+			const sixth = app.tool.execute("call-6", { role: "worker", task: tasks[5]! }, undefined, undefined, app.ctx);
+			calls.push(fifth, sixth);
+			abort.abort();
+			await fifthAborted;
+			assert.equal(app.widget!.render(80).length, 4);
+			await runner.release(tasks[0]!);
+			await waitFor(() => runner.started().includes(tasks[5]!));
+			assert.deepEqual(runner.started(), [...tasks.slice(0, 4), tasks[5]!]);
+			for (const task of tasks.slice(1)) await runner.release(task);
+			await Promise.all([...active, sixth]);
+		} finally {
+			await Promise.all(tasks.map((task) => runner.release(task)));
+			await Promise.allSettled(calls);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+	});
+});
+
+test("queued delegation does not consume its inactive-child timeout", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const tasks = Array.from({ length: 5 }, (_, index) => `task-${index + 1}`);
+		const timeoutPolicy = { softMs: 250, graceMs: 1_000, activeWindowMs: 100 };
+		const runner = await blockedPiRunner(agentDir, tasks.slice(0, 4));
+		const app = harness({ timeoutPolicy });
+		const active = tasks.slice(0, 4).map((task, index) => app.tool.execute(
+			`call-${index + 1}`,
+			{ role: "worker", task },
+			undefined,
+			undefined,
+			app.ctx,
+		));
+		const calls = [...active];
+		try {
+			await waitFor(() => runner.started().length === 4);
+			assert.deepEqual(runner.started(), tasks.slice(0, 4));
+			const queuedAt = Date.now();
+			const fifth = app.tool.execute("call-5", { role: "worker", task: tasks[4]! }, undefined, undefined, app.ctx);
+			calls.push(fifth);
+			let fifthSettled = false;
+			void fifth.then(() => { fifthSettled = true; }, () => { fifthSettled = true; });
+			await waitFor(() => Date.now() >= queuedAt + timeoutPolicy.softMs + timeoutPolicy.activeWindowMs);
+			assert.deepEqual(runner.started(), tasks.slice(0, 4));
+			assert.equal(fifthSettled, false);
+			await runner.release(tasks[0]!);
+			await waitFor(() => runner.started().includes(tasks[4]!));
+			await assert.rejects(fifth, /Subagent timed out.*without active status/);
+			for (const task of tasks.slice(1, 4)) await runner.release(task);
+			await Promise.all(active);
+		} finally {
+			await Promise.all(tasks.map((task) => runner.release(task)));
+			await Promise.allSettled(calls);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
 	});
 });
 

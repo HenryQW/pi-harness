@@ -1,13 +1,12 @@
 {
-  "name": "@henryqw/pi-pr",
+  "name": "@henryqw/pi-herdr-done",
   "version": "0.2.0",
-  "description": "Show the current branch pull request status in the Pi footer.",
+  "description": "Close and remove the current Herdr worktree from Pi.",
   "keywords": [
     "pi-package",
     "pi",
-    "github",
-    "pull-request",
-    "footer"
+    "herdr",
+    "worktree"
   ],
   "type": "module",
   "engines": {
@@ -16,7 +15,6 @@
   "license": "MIT",
   "files": [
     "extensions",
-    "skills",
     "README.md",
     "LICENSE"
   ],
@@ -26,13 +24,15 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2"
+    "@earendil-works/pi-coding-agent": "^0.84.2"
+  },
+  "dependencies": {
+    "@henryqw/pi-herdr": "^0.1.2"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-pr"
+    "directory": "packages/pi-herdr-done"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"
@@ -42,10 +42,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/pr.ts"
-    ],
-    "skills": [
-      "./skills"
+      "./extensions"
     ]
   }
 }

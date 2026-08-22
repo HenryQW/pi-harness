@@ -19,6 +19,7 @@
       "./packages/pi-add-dir/extensions/add-dir.ts",
       "./packages/pi-auto-compact/extensions",
       "./packages/pi-auto-dag/extensions/auto-dag.ts",
+      "./packages/pi-deps/extensions/deps.ts",
       "./packages/pi-model-thinking/extensions",
       "./packages/pi-footer/extensions/footer.ts",
       "./packages/pi-pr/extensions/pr.ts",
@@ -27,6 +28,7 @@
       "./packages/pi-herdr-rename/extensions",
       "./packages/pi-herdr-btw/extensions/btw.ts",
       "./packages/pi-herdr-clone/extensions",
+      "./packages/pi-herdr-done/extensions",
       "./packages/pi-multi-codex/extensions",
       "./packages/pi-subagent/extensions/subagent.ts"
     ]

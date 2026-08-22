@@ -8,6 +8,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 const POLL_INTERVAL_MS = 30_000;
 const PR_FIELDS = "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
+const CREATE_PR_SKILL_COMMAND = "skill:pi-pr-create";
 const FAILED_CHECK_STATES = new Set(["ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "STALE", "STARTUP_FAILURE", "TIMED_OUT"]);
 const SUCCESSFUL_CHECK_STATES = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
 
@@ -57,6 +58,41 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	if (!lifecycle) return undefined;
 
 	return { number, url, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
+}
+
+function parseRepositoryName(json: string): string {
+	let value: unknown;
+	try {
+		value = JSON.parse(json);
+	} catch {
+		throw new Error("Read push repository failed: invalid GitHub CLI output");
+	}
+	const nameWithOwner = isRecord(value) ? value.nameWithOwner : undefined;
+	if (typeof nameWithOwner !== "string" || !nameWithOwner) {
+		throw new Error("Read push repository failed: invalid GitHub CLI output");
+	}
+	return nameWithOwner.toLowerCase();
+}
+
+function parseOpenPullRequestNumbers(json: string, headRepository: string): number[] {
+	let values: unknown;
+	try {
+		values = JSON.parse(json);
+	} catch {
+		throw new Error("Find pull requests failed: invalid GitHub CLI output");
+	}
+	if (!Array.isArray(values)) throw new Error("Find pull requests failed: invalid GitHub CLI output");
+	return values.flatMap((value) => {
+		const number = isRecord(value) ? value.number : undefined;
+		const repository = isRecord(value) ? value.headRepository : undefined;
+		if (repository === null) return [];
+		const nameWithOwner = isRecord(repository) ? repository.nameWithOwner : undefined;
+		if (
+			typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0 ||
+			typeof nameWithOwner !== "string" || !nameWithOwner
+		) throw new Error("Find pull requests failed: invalid GitHub CLI output");
+		return nameWithOwner.toLowerCase() === headRepository ? [number] : [];
+	});
 }
 
 function ciStatus(rollup: unknown[]): CiStatus {
@@ -163,20 +199,51 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("pr", {
-		description: "Open the pull request for the current branch",
+		description: "Open current branch pull request, or run creation workflow when absent",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
-			let result;
+			const execute = async (action: string, command: string, args: string[]) => {
+				let result;
+				try {
+					result = await pi.exec(command, args, { cwd: ctx.cwd, signal: ctx.signal, timeout: 10_000 });
+				} catch (error) {
+					throw new Error(`${action} failed: ${error instanceof Error ? error.message : String(error)}`);
+				}
+				if (result.code !== 0) {
+					const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command was cancelled" : `exit code ${result.code}`);
+					throw new Error(`${action} failed: ${detail}`);
+				}
+				return result;
+			};
+
 			try {
-				result = await pi.exec("gh", ["pr", "view", "--web"], { cwd: ctx.cwd, signal: ctx.signal, timeout: 10_000 });
-			} catch (error) {
+				const branch = (await execute("Read current branch", "git", ["branch", "--show-current"])).stdout.trim();
+				if (!branch) throw new Error("Create pull request failed: current checkout has no branch");
+				const remote = (await execute("Read push remote", "git", ["remote", "get-url", "--push", "origin"])).stdout.trim();
+				if (!remote) throw new Error("Read push remote failed: origin has no push URL");
+				const repository = await execute("Read push repository", "gh", ["repo", "view", remote, "--json", "nameWithOwner"]);
+				const listed = await execute("Find pull requests", "gh", [
+					"pr", "list", "--head", branch, "--state", "open", "--limit", "100", "--json", "number,headRepository",
+				]);
+				const numbers = parseOpenPullRequestNumbers(listed.stdout, parseRepositoryName(repository.stdout));
+				if (numbers.length > 1) throw new Error("Open pull request failed: multiple open pull requests found for current branch");
+
+				if (numbers.length === 1) {
+					await execute("Open pull request", "gh", ["pr", "view", String(numbers[0]), "--web"]);
+					return;
+				}
+
+				const workflow = pi.getCommands().find((command) =>
+					command.name === CREATE_PR_SKILL_COMMAND && command.source === "skill" && command.sourceInfo.origin === "package",
+				);
+				if (!workflow) throw new Error("Create pull request failed: bundled workflow is unavailable");
+				if (ctx.isIdle()) {
+					pi.sendUserMessage(`/${CREATE_PR_SKILL_COMMAND}`, { expandPromptTemplates: true });
+				} else {
+					pi.sendUserMessage(`/${CREATE_PR_SKILL_COMMAND}`, { deliverAs: "followUp", expandPromptTemplates: true });
+				}
+			} finally {
 				void refresh(true);
-				throw new Error(`Open pull request failed: ${error instanceof Error ? error.message : String(error)}`);
-			}
-			void refresh(true);
-			if (result.code !== 0) {
-				const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command was cancelled" : `exit code ${result.code}`);
-				throw new Error(`Open pull request failed: ${detail}`);
 			}
 		},
 	});
