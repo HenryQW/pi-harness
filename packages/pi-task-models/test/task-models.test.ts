@@ -377,6 +377,18 @@ test("applies remembered pi-model-thinking level to resolved routes", () => {
 		assert.equal(resolveTaskModelRoute(ctx, { model: "provider/m", thinkingLevel: "low" }, dir)?.thinkingLevel, "low");
 		writeFileSync(thinkingFile, "{ broken");
 		assert.equal(resolveTaskModelRoute(ctx, { model: "provider/m", thinkingLevel: "low" }, dir)?.thinkingLevel, "low");
+
+		// Remembered level rescues a route whose profile level is unsupported (pinned to high only).
+		const pinnedCtx = {
+			model,
+			scopedModels: [{ model, thinkingLevel: "high" }],
+			modelRegistry: { getAvailable: () => [model] },
+		} as any;
+		writeFileSync(thinkingFile, JSON.stringify({ "provider/m": "high" }));
+		assert.deepEqual(resolveTaskModelRoute(pinnedCtx, { model: "provider/m", thinkingLevel: "low" }, dir), {
+			model,
+			thinkingLevel: "high",
+		});
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

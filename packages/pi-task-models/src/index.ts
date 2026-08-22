@@ -266,12 +266,12 @@ export function resolveTaskModelRoute(
 	agentDir = getAgentDir(),
 ): ResolvedTaskRoute | undefined {
 	const model = resolveAvailableModel(availableTaskModels(ctx), route.model, ctx.model?.provider);
-	if (!model || !taskThinkingLevels(ctx, model).includes(route.thinkingLevel)) return undefined;
+	if (!model) return undefined;
+	const levels = taskThinkingLevels(ctx, model);
 	// Remembered per-model thinking (pi-model-thinking) wins over the profile level when supported.
 	const remembered = rememberedThinkingLevel(model, agentDir);
-	const thinkingLevel = remembered && taskThinkingLevels(ctx, model).includes(remembered)
-		? remembered
-		: route.thinkingLevel;
+	const thinkingLevel = remembered && levels.includes(remembered) ? remembered : route.thinkingLevel;
+	if (!levels.includes(thinkingLevel)) return undefined;
 	return { model, thinkingLevel };
 }
 
