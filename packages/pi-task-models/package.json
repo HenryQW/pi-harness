@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-task-models",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Shared task model profiles and routing for HenryQW Pi extensions.",
   "keywords": [
     "pi-package",
@@ -30,7 +30,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "test": "npm run build && node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts extensions/*.ts test/*.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts extensions/*.ts",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
   },

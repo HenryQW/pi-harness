@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-ask-question",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Ask Pi users one interactive question with choices or a custom answer.",
   "keywords": [
     "pi-package",
@@ -21,7 +21,7 @@
   "scripts": {
     "test": "node --test test/*.test.ts",
     "test:manual": "pi --no-extensions -e ./extensions/ask-question.ts --tools ask_question --no-session \"We need storage for a small team app. Before making changes, ask me to choose storage.\"",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/ask-question.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/ask-question.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {

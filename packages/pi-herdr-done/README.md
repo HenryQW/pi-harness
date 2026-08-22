@@ -12,15 +12,18 @@ pi install npm:@henryqw/pi-herdr-done
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/done` | command | Remove the current worktree checkout and close only this session's tab. |
+| `/done` | command | Remove the current worktree checkout, fast-forward the parent workspace, and close only this session's tab. |
 | `/done --force` | command | Same, even when the worktree is dirty. |
 
 Both forms wait for Pi to become idle. `/done` asks for confirmation first; `/done --force` skips it because the flag already states intent. Normal removal runs:
 
 ```bash
 git worktree remove .
+git -C <parent> pull --ff-only
 herdr tab close "$HERDR_TAB_ID"
 ```
+
+The parent pull runs only when this session ran in a linked worktree with a non-bare primary; it is skipped when the parent has diverged (`--ff-only` fails safely) or when another Herdr tab is working in the parent. Concurrent completions serialize on a lock around the parent checkout.
 
 Only the current session's tab closes, so sibling tabs in the same workspace survive. Command requires Pi running inside Herdr with `HERDR_ENV=1` and `HERDR_TAB_ID` set.
 
