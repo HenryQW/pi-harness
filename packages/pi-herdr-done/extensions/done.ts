@@ -6,6 +6,7 @@ import { lock } from "proper-lockfile";
 type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 
 type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
+type TabEntry = { tab_id?: unknown; label?: unknown };
 
 export default function herdrDoneExtension(pi: ExtensionAPI): void {
 	const herdr = createHerdrClient<{ cwd: string }>((command, args, options) =>
@@ -40,17 +41,28 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 
 			const release = await lock(checkout);
 			try {
-				const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
-				const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
-				if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
-				const dependents = [...new Set(panes
-					.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
-						typeof pane.tab_id === "string" && pane.tab_id !== tabId &&
-						typeof pane.cwd === "string" &&
-						(pane.cwd === checkout || pane.cwd.startsWith(`${checkout}/`)))
-					.map((pane) => pane.tab_id))];
-				if (dependents.length > 0) {
-					throw new Error(`Worktree still used by Herdr tabs ${dependents.join(", ")}; close them first.`);
+				// With --force, skip the dependents check entirely and let git remove the checkout.
+				if (option !== "--force") {
+					const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
+					const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
+					if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
+					const dependentIds = [...new Set(panes
+						.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
+							typeof pane.tab_id === "string" && pane.tab_id !== tabId &&
+							typeof pane.cwd === "string" &&
+							(pane.cwd === checkout || pane.cwd.startsWith(`${checkout}/`)))
+						.map((pane) => pane.tab_id))];
+					if (dependentIds.length > 0) {
+						const listing = await herdr.json(["tab", "list"], { cwd: ctx.cwd });
+						const tabs = (listing.result as { tabs?: TabEntry[] } | undefined)?.tabs;
+						const labels = new Map(
+							(Array.isArray(tabs) ? tabs : [])
+								.filter((tab): tab is TabEntry & { tab_id: string; label: string } =>
+									typeof tab.tab_id === "string" && typeof tab.label === "string")
+								.map((tab) => [tab.tab_id, tab.label]));
+						const names = [...new Set(dependentIds.map((id) => labels.get(id) ?? id))];
+						throw new Error(`Worktree still used by Herdr tabs ${names.join(", ")}; close them first.`);
+					}
 				}
 
 				await execOrThrow("git", [
