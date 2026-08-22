@@ -14,6 +14,8 @@ export const DEFAULT_TASK_ASSIGNMENTS = {
 };
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
+// Owned by @henryqw/pi-model-thinking; keys use the same canonical provider/model form.
+const MODEL_THINKING_CONFIG_FILE = "pi-model-thinking.json";
 const defaultTaskAssignments = () => ({ ...DEFAULT_TASK_ASSIGNMENTS });
 export const configPath = (agentDir = getAgentDir()) => join(agentDir, "config", CONFIG_FILE);
 function isCodexProvider(provider) {
@@ -191,11 +193,29 @@ export function taskThinkingLevels(ctx, model) {
         return supported;
     return supported.includes(pinned) ? [pinned] : [];
 }
-export function resolveTaskModelRoute(ctx, route) {
+// pi-model-thinking's config is untrusted user data; keep only recognized levels for this model.
+export function rememberedThinkingLevel(model, agentDir = getAgentDir()) {
+    try {
+        const value = JSON.parse(readFileSync(join(agentDir, "config", MODEL_THINKING_CONFIG_FILE), "utf8"));
+        if (!value || typeof value !== "object" || Array.isArray(value))
+            return undefined;
+        const level = value[canonicalModelReference(model)];
+        return isThinkingLevel(level) ? level : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+export function resolveTaskModelRoute(ctx, route, agentDir = getAgentDir()) {
     const model = resolveAvailableModel(availableTaskModels(ctx), route.model, ctx.model?.provider);
-    return model && taskThinkingLevels(ctx, model).includes(route.thinkingLevel)
-        ? { model, thinkingLevel: route.thinkingLevel }
-        : undefined;
+    if (!model || !taskThinkingLevels(ctx, model).includes(route.thinkingLevel))
+        return undefined;
+    // Remembered per-model thinking (pi-model-thinking) wins over the profile level when supported.
+    const remembered = rememberedThinkingLevel(model, agentDir);
+    const thinkingLevel = remembered && taskThinkingLevels(ctx, model).includes(remembered)
+        ? remembered
+        : route.thinkingLevel;
+    return { model, thinkingLevel };
 }
 export function resolveConfiguredTaskRoute(ctx, task, agentDir = getAgentDir()) {
     let config;
@@ -212,7 +232,7 @@ export function resolveConfiguredTaskRoute(ctx, task, agentDir = getAgentDir()) 
     if (!profile)
         throw new Error(`Task ${task} profile ${profileName} is not configured. Run /task-models.`);
     for (const route of orderedProfileRoutes(profile)) {
-        const resolved = resolveTaskModelRoute(ctx, route);
+        const resolved = resolveTaskModelRoute(ctx, route, agentDir);
         if (resolved)
             return resolved;
     }

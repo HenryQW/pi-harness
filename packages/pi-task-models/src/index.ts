@@ -47,6 +47,8 @@ export type ActiveTaskPackage = {
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
+// Owned by @henryqw/pi-model-thinking; keys use the same canonical provider/model form.
+const MODEL_THINKING_CONFIG_FILE = "pi-model-thinking.json";
 
 const defaultTaskAssignments = (): Record<string, ProfileName> => ({ ...DEFAULT_TASK_ASSIGNMENTS });
 
@@ -243,14 +245,34 @@ export function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel)
 	return supported.includes(pinned as ThinkingLevel) ? [pinned as ThinkingLevel] : [];
 }
 
+// pi-model-thinking's config is untrusted user data; keep only recognized levels for this model.
+export function rememberedThinkingLevel(
+	model: { provider: string; id: string } | string,
+	agentDir = getAgentDir(),
+): ThinkingLevel | undefined {
+	try {
+		const value: unknown = JSON.parse(readFileSync(join(agentDir, "config", MODEL_THINKING_CONFIG_FILE), "utf8"));
+		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+		const level = (value as Record<string, unknown>)[canonicalModelReference(model)];
+		return isThinkingLevel(level) ? level : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function resolveTaskModelRoute(
 	ctx: ExtensionContext,
 	route: TaskModelRoute,
+	agentDir = getAgentDir(),
 ): ResolvedTaskRoute | undefined {
 	const model = resolveAvailableModel(availableTaskModels(ctx), route.model, ctx.model?.provider);
-	return model && taskThinkingLevels(ctx, model).includes(route.thinkingLevel)
-		? { model, thinkingLevel: route.thinkingLevel }
-		: undefined;
+	if (!model || !taskThinkingLevels(ctx, model).includes(route.thinkingLevel)) return undefined;
+	// Remembered per-model thinking (pi-model-thinking) wins over the profile level when supported.
+	const remembered = rememberedThinkingLevel(model, agentDir);
+	const thinkingLevel = remembered && taskThinkingLevels(ctx, model).includes(remembered)
+		? remembered
+		: route.thinkingLevel;
+	return { model, thinkingLevel };
 }
 
 export function resolveConfiguredTaskRoute(
@@ -269,7 +291,7 @@ export function resolveConfiguredTaskRoute(
 	const profile = config.profiles[profileName];
 	if (!profile) throw new Error(`Task ${task} profile ${profileName} is not configured. Run /task-models.`);
 	for (const route of orderedProfileRoutes(profile)) {
-		const resolved = resolveTaskModelRoute(ctx, route);
+		const resolved = resolveTaskModelRoute(ctx, route, agentDir);
 		if (resolved) return resolved;
 	}
 	throw new Error(`Task ${task} profile ${profileName} has no available route. Run /task-models.`);
