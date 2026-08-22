@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-add-dir",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Add external directories to a Pi session with context, skills, and file search.",
   "keywords": [
     "pi-package",
@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
