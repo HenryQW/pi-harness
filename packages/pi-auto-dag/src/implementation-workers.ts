@@ -1,6 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
-import { configuredRole } from "./config.ts";
 import {
 	createManagedSubagentTab,
 	findManagedSubagentTab,
@@ -17,8 +16,9 @@ import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from ".
 import type { LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
 import { actionTicketPath, ensureActionTicket, reviewId } from "./review-ticket.ts";
 import { recordGateExecution, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
-import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
-import { createWorkerLaunch, workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, workerIssueContext, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { replaceTask, task, type Uuid } from "./state.ts";
+import { hasReviewFindings, lifecycleWorkerLaunch, saveRunState as save } from "./worker-protocol.ts";
+import { workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, workerIssueContext, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { nonEmptyString, positiveInteger } from "./validate.ts";
 
 export interface ImplementationWorkerOptions {
@@ -302,10 +302,6 @@ function pendingImplementerAction(current: RunTaskState): ImplementerAction {
 	return hasReviewFindings(current) ? "revision" : current.conflict_base ? "replacement" : "initial";
 }
 
-function hasReviewFindings(current: RunTaskState): boolean {
-	return Array.isArray(current.review_findings) && current.review_findings.length > 0;
-}
-
 async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
@@ -313,18 +309,7 @@ async function workerLaunch(
 	role: WorkerRole,
 	options: ImplementationWorkerOptions,
 ): Promise<WorkerLaunch> {
-	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	return createWorkerLaunch({
-		resolveLaunch: options.resolveLaunch,
-		workerRole: role,
-		role: configuredRole(config, roleName),
-		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		run_id: state.run_id,
-		issue_id: issue.id,
-		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		action_ticket: actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", role),
-		required_gate_timeout_ms: config.required_gate_timeout_ms,
-	});
+	return await lifecycleWorkerLaunch(state, issue, issue.id, config, role, options, "implementation");
 }
 
 function implementerPrompt(
@@ -410,7 +395,3 @@ export function provisioningIdFor(runId: string, issueId: string, role: WorkerRo
 	return `auto-dag:${runId}:${issueId}:${role}`;
 }
 
-async function save(state: RunState, options: ImplementationWorkerOptions): Promise<RunState> {
-	await writeRunState(state.main_worktree, state, options.uuid);
-	return state;
-}

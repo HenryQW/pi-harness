@@ -1,17 +1,26 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type CommandRunner } from "./command.ts";
-import { configuredRole } from "./config.ts";
 import { findManagedSubagentTab, promptManagedSubagent, reconcileManagedSubagentTab, retireManagedSubagentTab, startManagedSubagent } from "@henryqw/pi-subagent";
 import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
-import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
-import { executionIssues } from "./graph.ts";
+import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree } from "./git.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { HealthCheckEvidence, HealthFastForwardIntent, LocalIssue, PrHealthState, ProjectConfig, RequiredGateEvidence, RunState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { actionTicketPath, assertActiveActionTicket, ensureActionTicket, eventReceiptPath, readWorkerReceipt, rejectWorkerEnvelope, reviewId, rotateRejectedActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
 import { recordGateExecution, reviewPrompt, type ReviewPromptMode } from "./review.ts";
-import { hasAcceptedWorkerEvent, readRunState, recordAcceptedWorkerEvent, writeRunState, type Uuid } from "./state.ts";
-import { createWorkerLaunch, workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { hasAcceptedWorkerEvent, readRunState, recordAcceptedWorkerEvent, type Uuid } from "./state.ts";
+import {
+	clearLifecycleCleanupBlock,
+	finalCheck,
+	hasReviewFindings,
+	lifecycleWorkerLaunch,
+	matchesRound,
+	recordLifecycleCleanupBlock,
+	saveRunState as save,
+	timestamp,
+	verifyOneCommit,
+} from "./worker-protocol.ts";
+import { workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface PrHealthOptions {
@@ -362,9 +371,9 @@ async function acceptHealthEnvelope(
 		if (health.status !== "reviewing") throw new Error(`PR-health review submission is stale while health is ${health.status}`);
 		return await submitHealthRepairReview(state, envelope, config, options);
 	}
-	if (envelope.type === "block_task" && health.status === "triaging" && envelope.role === "reviewer" && matchesHealthBlock(health, envelope, false)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health triage block reason"), options);
-	if (envelope.type === "block_task" && health.status === "repairing" && envelope.role === "implementer" && matchesHealthBlock(health, envelope, true)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health repair block reason"), options);
-	if (envelope.type === "block_task" && health.status === "reviewing" && envelope.role === "reviewer" && matchesHealthBlock(health, envelope, false)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health review block reason"), options);
+	if (envelope.type === "block_task" && health.status === "triaging" && envelope.role === "reviewer" && matchesRound(envelope, health.attempt, health.review_round, false)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health triage block reason"), options);
+	if (envelope.type === "block_task" && health.status === "repairing" && envelope.role === "implementer" && matchesRound(envelope, health.attempt, health.review_round, true)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health repair block reason"), options);
+	if (envelope.type === "block_task" && health.status === "reviewing" && envelope.role === "reviewer" && matchesRound(envelope, health.attempt, health.review_round, false)) return await blockHealth(state, nonEmptyString(envelope.payload.reason, "PR-health review block reason"), options);
 	if (envelope.type === "block_task") throw new Error(`PR-health block event is stale while health is ${health.status}`);
 	throw new Error(`Unexpected PR-health event ${envelope.type} while health is ${health.status}`);
 }
@@ -461,7 +470,7 @@ async function ensureHealthCoder(
 	});
 	health = requiredHealth(state);
 	const needsInstruction = Boolean(health.instruction_pending) || mode !== "resume" || started !== "existing";
-	const promptMode = mode === "resume" && needsInstruction ? (hasFindings(health) ? "revision" : "initial") : mode;
+	const promptMode = mode === "resume" && needsInstruction ? (hasReviewFindings(health) ? "revision" : "initial") : mode;
 	const fullPrompt = promptMode === "initial" || started !== "existing" || (mode === "resume" && Boolean(health.instruction_pending));
 	const instruction = promptMode === "revision"
 		? "Address the reviewer findings by amending the sole repair commit, then request review again."
@@ -641,22 +650,6 @@ async function completeHealthRepair(state: RunState, options: PrHealthOptions): 
 	return await save({ ...state, health: { ...health, status: "completed" } }, options);
 }
 
-async function recordLifecycleCleanupBlock(
-	state: RunState,
-	issueId: string,
-	operation: "tab" | "worktree",
-	reason: string,
-	options: PrHealthOptions,
-): Promise<RunState> {
-	const blocks = [...(state.cleanup_blocks ?? []).filter((block) => block.issue_id !== issueId || block.operation !== operation), { issue_id: issueId, operation, reason }];
-	return await save({ ...state, cleanup_blocks: blocks }, options);
-}
-
-function clearLifecycleCleanupBlock(state: RunState, issueId: string, operation: "tab" | "worktree"): RunState {
-	const cleanupBlocks = (state.cleanup_blocks ?? []).filter((block) => block.issue_id !== issueId || block.operation !== operation);
-	return { ...state, ...(cleanupBlocks.length ? { cleanup_blocks: cleanupBlocks } : { cleanup_blocks: undefined }) };
-}
-
 async function fastForwardToPrHead(state: RunState, options: PrHealthOptions): Promise<RunState> {
 	const expected = state.pr!;
 	const current = await viewOpenPullRequest(state.main_worktree, expected.number, options.runner);
@@ -756,19 +749,6 @@ async function verifyHealthRepairCommit(state: RunState, commit: string, options
 	);
 }
 
-async function verifyOneCommit(
-	state: RunState,
-	worktree: string,
-	branch: string,
-	base: string,
-	commit: string,
-	label: string,
-	options: PrHealthOptions,
-): Promise<string> {
-	await assertAttachedBranch(options.runner, worktree, branch, `${label} child worktree`);
-	return await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, label);
-}
-
 async function resolveThreads(state: RunState, ids: string[], options: PrHealthOptions): Promise<void> {
 	if (!ids.length) return;
 	const variables = ids.map((_, index) => `$threadId${index}:ID!`).join(",");
@@ -797,15 +777,6 @@ function healthChecks(value: unknown): HealthCheckEvidence[] {
 	});
 }
 
-function hasFindings(value: unknown): boolean {
-	return reviewFindings(value).length > 0;
-}
-
-function reviewFindings(value: unknown): string[] {
-	if (typeof value !== "object" || value === null || !Array.isArray((value as Record<string, unknown>).review_findings)) return [];
-	return (value as Record<string, unknown>).review_findings as string[];
-}
-
 function requiredHealth(state: RunState): PrHealthState {
 	if (!state.health) throw new Error("PR-health state is missing");
 	return state.health;
@@ -827,10 +798,6 @@ function healthFastForwardIntent(state: RunState): HealthFastForwardIntent {
 	};
 }
 
-function finalCheck(state: RunState): LocalIssue {
-	return executionIssues(state.graph).at(-1)!;
-}
-
 async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
@@ -838,23 +805,7 @@ async function workerLaunch(
 	role: WorkerRole,
 	options: PrHealthOptions,
 ): Promise<WorkerLaunch> {
-	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	return createWorkerLaunch({
-		resolveLaunch: options.resolveLaunch,
-		workerRole: role,
-		role: configuredRole(config, roleName),
-		events: WORKER_ROLE_EVENTS[role],
-		run_id: state.run_id,
-		issue_id: finalCheck(state).id,
-		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "pr_health", role),
-		required_gate_timeout_ms: config.required_gate_timeout_ms,
-	});
-}
-
-function matchesHealthBlock(health: PrHealthState, envelope: WorkerEnvelope, implementer: boolean): boolean {
-	return envelope.attempt === health.attempt
-		&& envelope.review_round === (implementer ? (health.review_round ?? 0) + 1 : health.review_round);
+	return await lifecycleWorkerLaunch(state, issue, finalCheck(state).id, config, role, options, "pr_health");
 }
 
 function healthWorktreePath(state: RunState, attempt: number): string {
@@ -923,13 +874,4 @@ async function blockHealth(state: RunState, reason: string, options: PrHealthOpt
 			...(blockedRole ? { blocked_role: blockedRole } : {}),
 		},
 	}, options);
-}
-
-async function save(state: RunState, options: PrHealthOptions): Promise<RunState> {
-	await writeRunState(state.main_worktree, state, options.uuid);
-	return state;
-}
-
-function timestamp(options: PrHealthOptions): string {
-	return options.now?.() ?? new Date().toISOString();
 }

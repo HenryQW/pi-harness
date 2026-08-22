@@ -20,9 +20,10 @@ import { assertAttachedBranch, deleteExpectedBranch, findAppliedCherryPick, read
 import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
-import { hasAcceptedWorkerEvent, issueById, readRunState, recordAcceptedWorkerEvent, replaceTask, task, type Uuid, writeRunState } from "./state.ts";
+import { hasAcceptedWorkerEvent, issueById, readRunState, recordAcceptedWorkerEvent, replaceTask, task, type Uuid } from "./state.ts";
 import { actionTicketPath, assertActiveActionTicket, eventReceiptPath, readWorkerReceipt, rejectWorkerEnvelope, rotateRejectedActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
 import { WORKER_ROLE_EVENTS, workerAgentName, workerHost, workerHostOptions, type RoleLaunchResolver, type WorkerEvent, type WorkerRole } from "./worker.ts";
+import { hasReviewFindings, saveRunState as save, timestamp } from "./worker-protocol.ts";
 import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface OrchestrationOptions {
@@ -694,9 +695,6 @@ function hasBlockedTask(state: RunState): boolean {
 	return Object.values(state.tasks).some((candidate) => candidate.status === "blocked");
 }
 
-function hasReviewFindings(current: RunTaskState): boolean {
-	return Array.isArray(current.review_findings) && current.review_findings.length > 0;
-}
 
 function requiredWave(state: RunState): NonNullable<RunState["wave"]> {
 	if (!state.wave) throw new Error("Run has no active dependency wave");
@@ -752,11 +750,3 @@ async function abortOwnedCherryPick(state: RunState, options: OrchestrationOptio
 	return issueId;
 }
 
-async function save(state: RunState, options: OrchestrationOptions): Promise<RunState> {
-	await writeRunState(state.main_worktree, state, options.uuid);
-	return state;
-}
-
-function timestamp(options: OrchestrationOptions): string {
-	return options.now?.() ?? new Date().toISOString();
-}
