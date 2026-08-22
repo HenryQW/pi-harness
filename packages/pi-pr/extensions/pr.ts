@@ -60,7 +60,21 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	return { number, url, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
 }
 
-function parseOpenPullRequestNumbers(json: string): number[] {
+function parseRepositoryName(json: string): string {
+	let value: unknown;
+	try {
+		value = JSON.parse(json);
+	} catch {
+		throw new Error("Read push repository failed: invalid GitHub CLI output");
+	}
+	const nameWithOwner = isRecord(value) ? value.nameWithOwner : undefined;
+	if (typeof nameWithOwner !== "string" || !nameWithOwner) {
+		throw new Error("Read push repository failed: invalid GitHub CLI output");
+	}
+	return nameWithOwner.toLowerCase();
+}
+
+function parseOpenPullRequestNumbers(json: string, headRepository: string): number[] {
 	let values: unknown;
 	try {
 		values = JSON.parse(json);
@@ -68,12 +82,16 @@ function parseOpenPullRequestNumbers(json: string): number[] {
 		throw new Error("Find pull requests failed: invalid GitHub CLI output");
 	}
 	if (!Array.isArray(values)) throw new Error("Find pull requests failed: invalid GitHub CLI output");
-	return values.map((value) => {
+	return values.flatMap((value) => {
 		const number = isRecord(value) ? value.number : undefined;
-		if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) {
-			throw new Error("Find pull requests failed: invalid GitHub CLI output");
-		}
-		return number;
+		const repository = isRecord(value) ? value.headRepository : undefined;
+		if (repository === null) return [];
+		const nameWithOwner = isRecord(repository) ? repository.nameWithOwner : undefined;
+		if (
+			typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0 ||
+			typeof nameWithOwner !== "string" || !nameWithOwner
+		) throw new Error("Find pull requests failed: invalid GitHub CLI output");
+		return nameWithOwner.toLowerCase() === headRepository ? [number] : [];
 	});
 }
 
@@ -201,10 +219,13 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 			try {
 				const branch = (await execute("Read current branch", "git", ["branch", "--show-current"])).stdout.trim();
 				if (!branch) throw new Error("Create pull request failed: current checkout has no branch");
+				const remote = (await execute("Read push remote", "git", ["remote", "get-url", "--push", "origin"])).stdout.trim();
+				if (!remote) throw new Error("Read push remote failed: origin has no push URL");
+				const repository = await execute("Read push repository", "gh", ["repo", "view", remote, "--json", "nameWithOwner"]);
 				const listed = await execute("Find pull requests", "gh", [
-					"pr", "list", "--head", branch, "--state", "open", "--limit", "100", "--json", "number",
+					"pr", "list", "--head", branch, "--state", "open", "--limit", "100", "--json", "number,headRepository",
 				]);
-				const numbers = parseOpenPullRequestNumbers(listed.stdout);
+				const numbers = parseOpenPullRequestNumbers(listed.stdout, parseRepositoryName(repository.stdout));
 				if (numbers.length > 1) throw new Error("Open pull request failed: multiple open pull requests found for current branch");
 
 				if (numbers.length === 1) {

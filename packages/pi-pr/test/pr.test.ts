@@ -94,6 +94,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	const statuses: Array<string | undefined> = [];
 	const messages: Array<{ content: string; options: unknown }> = [];
 	let openPullRequest = true;
+	let foreignPullRequest = false;
 	let workflowAvailable = true;
 	let idle = true;
 	let hold: Promise<ReturnType<typeof result>> | undefined;
@@ -120,8 +121,15 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 				return result(good);
 			}
 			if (executable === "git" && args.join(" ") === "branch --show-current") return result("feature/pr\n");
+			if (executable === "git" && args.join(" ") === "remote get-url --push origin") return result("https://github.com/acme/project\n");
+			if (executable === "gh" && args.join(" ") === "repo view https://github.com/acme/project --json nameWithOwner") {
+				return result(JSON.stringify({ nameWithOwner: "acme/project" }));
+			}
 			if (executable === "gh" && args[0] === "pr" && args[1] === "list") {
-				return result(openPullRequest ? JSON.stringify([{ number: 42 }]) : "[]");
+				return result(openPullRequest ? JSON.stringify([{
+					number: 42,
+					headRepository: { nameWithOwner: foreignPullRequest ? "other/project" : "acme/project" },
+				}]) : "[]");
 			}
 			if (executable === "gh" && args[0] === "pr" && args[1] === "view" && args.at(-1) === "--web") return result();
 			throw new Error(`Unexpected command: ${executable} ${args.join(" ")}`);
@@ -183,19 +191,32 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await flush();
 	assert.deepEqual(calls.map(({ command: executable, args }) => [executable, args]), [
 		["git", ["branch", "--show-current"]],
-		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number"]],
+		["git", ["remote", "get-url", "--push", "origin"]],
+		["gh", ["repo", "view", "https://github.com/acme/project", "--json", "nameWithOwner"]],
+		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number,headRepository"]],
 		["gh", ["pr", "view", "42", "--web"]],
 		["gh", ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
 	]);
 	assert.equal(calls[0]?.signal, commandSignal);
 
+	foreignPullRequest = true;
+	calls.length = 0;
+	await command.handler("", context as ExtensionCommandContext);
+	await flush();
+	assert.equal(calls.some(({ command: executable, args }) => executable === "gh" && args.join(" ") === "pr view 42 --web"), false);
+	assert.deepEqual(messages, [{ content: "/skill:pi-pr-create", options: { expandPromptTemplates: true } }]);
+
+	foreignPullRequest = false;
 	openPullRequest = false;
 	calls.length = 0;
+	messages.length = 0;
 	await command.handler("", context as ExtensionCommandContext);
 	await flush();
 	assert.deepEqual(calls.map(({ command: executable, args }) => [executable, args]), [
 		["git", ["branch", "--show-current"]],
-		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number"]],
+		["git", ["remote", "get-url", "--push", "origin"]],
+		["gh", ["repo", "view", "https://github.com/acme/project", "--json", "nameWithOwner"]],
+		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number,headRepository"]],
 		["gh", ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
 	]);
 	assert.deepEqual(messages, [{ content: "/skill:pi-pr-create", options: { expandPromptTemplates: true } }]);
