@@ -80,6 +80,17 @@ test("context scanning and native glob search cover external directory", async (
 		);
 		assert.equal(buildContextInjection(dirs).split("use `/skill:review`").length - 1, 1);
 
+		const bigFrontmatter = join(root, "big-frontmatter");
+		await mkdir(join(bigFrontmatter, ".pi", "skills", "big"), { recursive: true });
+		const padding = "x".repeat(10_000);
+		await writeFile(
+			join(bigFrontmatter, ".pi", "skills", "big", "SKILL.md"),
+			`---\ndescription: Big skill\npadding: ${padding}\n---\nbody`,
+		);
+		const bigInjection = buildContextInjection([{ absolutePath: bigFrontmatter, label: "big", addedAt: 3 }]);
+		assert.match(bigInjection, /Big skill/);
+		assert.doesNotMatch(bigInjection, /No description/);
+
 		const sharedSkill = join(root, "shared-skill");
 		const linkedExternal = join(root, "linked-external");
 		await mkdir(sharedSkill, { recursive: true });
@@ -235,6 +246,12 @@ test("commands and tools persist state, inject context, register skills, and sea
 			/current working directory scope/,
 		);
 		await assert.rejects(addTool.execute("call-3", { path: external }, undefined, undefined, ctx), /Already added/);
+		await assert.rejects(
+			addTool.execute("call-nested-in", { path: join(external, "src") }, undefined, undefined, ctx),
+			/overlaps already-added directory/,
+		);
+		const parent = dirname(external);
+		await assert.rejects(addTool.execute("call-nested-over", { path: parent }, undefined, undefined, ctx), /overlaps/);
 
 		const persisted = (loaded.entries[0] as { data: unknown }).data;
 		const resumed = loadExtension([
