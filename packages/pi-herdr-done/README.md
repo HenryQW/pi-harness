@@ -15,7 +15,7 @@ pi install npm:@henryqw/pi-herdr-done
 | `/done` | command | Close current Herdr worktree workspace and remove its clean checkout. |
 | `/done --force` | command | Close workspace and remove checkout even when worktree is dirty. |
 
-Both forms wait for Pi to become idle. Normal removal runs:
+Both forms wait for Pi to become idle. `/done` asks for confirmation first; `/done --force` skips it because the flag already states intent. Normal removal runs:
 
 ```bash
 herdr worktree remove --workspace "$HERDR_WORKSPACE_ID"

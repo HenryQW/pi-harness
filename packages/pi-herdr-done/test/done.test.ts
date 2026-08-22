@@ -47,9 +47,10 @@ async function withHerdrEnvironment(
 	}
 }
 
-const context = (events: string[] = []) => ({
+const context = (events: string[] = [], confirmed = true) => ({
 	cwd: "/repo/worktree",
 	waitForIdle: async () => { events.push("idle"); },
+	ui: { confirm: async (title: string, message: string) => { events.push(`confirm:${title}:${message}`); return confirmed; } },
 }) as unknown as ExtensionCommandContext;
 
 test("/done waits for idle then asks Herdr to remove the current worktree without force", async () => {
@@ -57,7 +58,10 @@ test("/done waits for idle then asks Herdr to remove the current worktree withou
 		const app = harness();
 		const events: string[] = [];
 		await app.command("", context(events));
-		assert.deepEqual(events, ["idle"]);
+		assert.deepEqual(events, [
+			"confirm:Done:Close and remove the current Herdr worktree?",
+			"idle",
+		]);
 		assert.deepEqual(app.calls, [{
 			command: "herdr",
 			args: ["worktree", "remove", "--workspace", "workspace-current"],
@@ -66,13 +70,25 @@ test("/done waits for idle then asks Herdr to remove the current worktree withou
 	});
 });
 
-test("/done --force forwards explicit force to Herdr", async () => {
+test("/done --force skips confirmation and forwards explicit force to Herdr", async () => {
 	await withHerdrEnvironment("1", "workspace-current", async () => {
 		const app = harness();
-		await app.command("--force", context());
+		const events: string[] = [];
+		await app.command("--force", context(events));
+		assert.deepEqual(events, ["idle"]);
 		assert.deepEqual(app.calls[0]?.args, [
 			"worktree", "remove", "--workspace", "workspace-current", "--force",
 		]);
+	});
+});
+
+test("declined confirmation leaves the worktree untouched", async () => {
+	await withHerdrEnvironment("1", "workspace-current", async () => {
+		const app = harness();
+		const events: string[] = [];
+		await app.command("", context(events, false));
+		assert.deepEqual(events, ["confirm:Done:Close and remove the current Herdr worktree?"]);
+		assert.deepEqual(app.calls, []);
 	});
 });
 

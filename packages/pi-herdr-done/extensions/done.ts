@@ -16,6 +16,11 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
 			if (!workspaceId) throw new Error("HERDR_WORKSPACE_ID is missing.");
 
+			if (option !== "--force") {
+				const confirmed = await ctx.ui.confirm("Done", "Close and remove the current Herdr worktree?");
+				if (!confirmed) return;
+			}
+
 			await ctx.waitForIdle();
 			await herdr.run([
 				"worktree", "remove", "--workspace", workspaceId,
