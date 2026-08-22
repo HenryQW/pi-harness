@@ -21,7 +21,9 @@ pi install npm:@henryqw/pi-subagent
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `delegate_task` | tool | Start one isolated child for `role`, `task`, and optional `modelClass`. |
+| `delegate_task` | tool | Start one isolated child for `role`, `task`, and optional `model` or `modelClass`. |
+
+An explicit `model` (`provider/modelId`) overrides `modelClass` and resolves against the currently available text models; an unknown reference rejects with the list of available models. Thinking level defaults to `medium` when supported, otherwise the highest supported level.
 
 `modelClass` is `fast`, `balanced`, or `frontier`. Omitted class uses the shared `pi-subagent/delegateTask` assignment, which defaults to `balanced`. Primary route is resolved against current scoped text models; fallback is tried only before launch. If no route is usable, delegation rejects with `Run /task-models`. A started child is never retried.
 
