@@ -69,12 +69,26 @@ test("invalid timeout values report an error and preserve defaults", async () =>
 		const dir = join(agentDir, "config");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
-			timeout: { softMinutes: -1, activeWindowSeconds: "ninety" },
+			timeout: { softMinutes: -1, activeWindowSeconds: "ninety", unknownKey: 1 },
 		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /timeout\.softMinutes must be a positive number of minutes, got -1/);
 		assert.match(loaded.error!, /timeout\.activeWindowSeconds must be a positive number of seconds/);
+		assert.match(loaded.error!, /unknown timeout\.unknownKey/);
+	});
+});
+
+test("timeout values that overflow Node timers report an error", async () => {
+	await withAgentDir(async (agentDir) => {
+		const dir = join(agentDir, "config");
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
+			timeout: { softMinutes: 50_000_000 },
+		}));
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {});
+		assert.match(loaded.error!, /exceeds the maximum supported delay/);
 	});
 });
 

@@ -25,6 +25,15 @@ export interface LoadedSubagentConfig {
 const positive = (value: unknown): value is number =>
 	typeof value === "number" && Number.isFinite(value) && value > 0;
 
+// Node clamps setTimeout delays above 2^31 - 1 ms to 1 ms, which would kill
+// every child immediately instead of applying the configured deadline.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, number, string]> = [
+	["softMinutes", 60_000, "minutes"],
+	["graceMinutes", 60_000, "minutes"],
+	["activeWindowSeconds", 1_000, "seconds"],
+];
+
 /**
  * Read the optional user config at `<agentDir>/config/pi-subagent.json`.
  * Treated as untrusted user data: malformed files are preserved untouched and
@@ -67,17 +76,23 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 		if (!record.timeout || typeof record.timeout !== "object" || Array.isArray(record.timeout)) {
 			problems.push(`timeout must be a JSON object, got ${JSON.stringify(record.timeout)}`);
 		} else {
+			const timeoutRecord = record.timeout as Record<string, unknown>;
 			const timeout: SubagentTimeoutConfig = {};
-			const fields: Array<[keyof SubagentTimeoutConfig, string]> = [
-				["softMinutes", "minutes"],
-				["graceMinutes", "minutes"],
-				["activeWindowSeconds", "seconds"],
-			];
-			for (const [key, unit] of fields) {
-				const value = (record.timeout as Record<string, unknown>)[key];
+			for (const [key, unitMs, unit] of TIMEOUT_FIELDS) {
+				const value = timeoutRecord[key];
 				if (value === undefined) continue;
-				if (positive(value)) (timeout as Record<string, number>)[key] = value;
-				else problems.push(`timeout.${key} must be a positive number of ${unit}, got ${JSON.stringify(value)}`);
+				if (!positive(value)) {
+					problems.push(`timeout.${key} must be a positive number of ${unit}, got ${JSON.stringify(value)}`);
+				} else if (value * unitMs > MAX_TIMER_DELAY_MS) {
+					problems.push(`timeout.${key} exceeds the maximum supported delay of ${MAX_TIMER_DELAY_MS} ms, got ${JSON.stringify(value)} ${unit}`);
+				} else {
+					(timeout as Record<string, number>)[key] = value;
+				}
+			}
+			for (const key of Object.keys(timeoutRecord)) {
+				if (!TIMEOUT_FIELDS.some(([known]) => known === key)) {
+					problems.push(`unknown timeout.${key}; expected ${TIMEOUT_FIELDS.map(([known]) => known).join(", ")}`);
+				}
 			}
 			if (Object.keys(timeout).length) config.timeout = timeout;
 		}
