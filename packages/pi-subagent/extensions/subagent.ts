@@ -479,11 +479,16 @@ export default function subagentExtension(
 	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
 	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 	if (maxSubagentsRaw !== undefined) {
-		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes.
+		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes —
+		// and digit strings that overflow to Infinity, which would disable the cap.
 		if (!/^\d+$/.test(maxSubagentsRaw) || !/^[1-9]\d*$/.test(maxSubagentsRaw)) {
 			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`);
 		}
-		maxActiveSubagents = Number.parseInt(maxSubagentsRaw, 10);
+		const parsed = Number.parseInt(maxSubagentsRaw, 10);
+		if (!Number.isSafeInteger(parsed)) {
+			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS exceeds the supported range, got ${JSON.stringify(maxSubagentsRaw)}.`);
+		}
+		maxActiveSubagents = parsed;
 	}
 	let backgroundSequence = 0;
 	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
@@ -492,9 +497,9 @@ export default function subagentExtension(
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, AbortController>();
-	// Set by session_shutdown; after it, background outcomes are never delivered —
-	// the session that launched them can no longer receive messages.
-	let sessionEnded = false;
+	// Bumped by session_start and session_shutdown; background tasks may only
+	// deliver into the exact session that launched them.
+	let sessionEpoch = 0;
 	let activeChildren = 0;
 	const queuedChildren: Array<() => void> = [];
 	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
@@ -601,6 +606,7 @@ export default function subagentExtension(
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		sessionEpoch += 1;
 		ensureWidget(ctx);
 		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
 	});
@@ -610,20 +616,21 @@ export default function subagentExtension(
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
-		// Suppress later background deliveries: they would land in whatever
-		// session is active by the time the aborted child settles.
-		sessionEnded = true;
+		// Invalidate every outstanding background delivery: the aborting session
+		// is gone, and a later-settling child must not reach the next session.
+		sessionEpoch += 1;
 		for (const controller of backgroundTasks.values()) controller.abort();
 		backgroundTasks.clear();
 	});
 
 	const reportBackground = async (
+		launchEpoch: number,
 		taskId: string,
 		details: { role: string; model?: string; thinkingLevel?: string },
 		outcome: "completed" | "failed" | "aborted",
 		text: string,
 	): Promise<void> => {
-		if (sessionEnded) return;
+		if (launchEpoch !== sessionEpoch) return;
 		// Custom messages convert to user-role LLM messages, so the parent agent
 		// sees the outcome on its next turn without a forced turn now.
 		try {
@@ -680,6 +687,9 @@ export default function subagentExtension(
 				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
 				const controller = new AbortController();
 				backgroundTasks.set(taskId, controller);
+				// Freeze the launching session now: a task that settles after a
+				// reload must not deliver into whichever session is active then.
+				const launchEpoch = sessionEpoch;
 				void (async () => {
 					let acquired = false;
 					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
@@ -709,6 +719,7 @@ export default function subagentExtension(
 							? result.errorMessage || result.stderr.trim() || result.output || `Subagent exited with code ${result.exitCode}.`
 							: result.output || "(no output)");
 						await reportBackground(
+							launchEpoch,
 							taskId,
 							details,
 							result.stopReason === "aborted" ? "aborted" : failed ? "failed" : "completed",
@@ -718,6 +729,7 @@ export default function subagentExtension(
 						const aborted = controller.signal.aborted && !(error instanceof SubagentTimeoutError);
 						widgetStatus = aborted ? "aborted" : "failure";
 						await reportBackground(
+							launchEpoch,
 							taskId,
 							details,
 							aborted ? "aborted" : "failed",

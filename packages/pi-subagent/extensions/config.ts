@@ -28,6 +28,10 @@ const positive = (value: unknown): value is number =>
 // Node clamps setTimeout delays above 2^31 - 1 ms to 1 ms, which would kill
 // every child immediately instead of applying the configured deadline.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+// Defaults for fields the user left unset, used when bounding the combined
+// soft + grace hard-deadline delay.
+const DEFAULT_SOFT_MINUTES = 10;
+const DEFAULT_GRACE_MINUTES = 5;
 const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, number, string]> = [
 	["softMinutes", 60_000, "minutes"],
 	["graceMinutes", 60_000, "minutes"],
@@ -63,6 +67,11 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 	const record = parsed as Record<string, unknown>;
 	const problems: string[] = [];
 	const config: SubagentConfig = {};
+	for (const key of Object.keys(record)) {
+		if (key !== "maxSubagents" && key !== "timeout") {
+			problems.push(`unknown config key ${JSON.stringify(key)}; expected maxSubagents, timeout`);
+		}
+	}
 
 	if (record.maxSubagents !== undefined) {
 		if (typeof record.maxSubagents === "number" && Number.isInteger(record.maxSubagents) && record.maxSubagents >= 1) {
@@ -95,6 +104,19 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 				}
 			}
 			if (Object.keys(timeout).length) config.timeout = timeout;
+		}
+	}
+
+	// The hard deadline schedules softMs + graceMs in one timer; the combination
+	// must stay inside Node's limit even when each field fits alone. Falling back
+	// to defaults drops the whole timeout object, matching other invalid values.
+	if (config.timeout) {
+		const hardDeadlineMinutes =
+			(config.timeout.softMinutes ?? DEFAULT_SOFT_MINUTES) +
+			(config.timeout.graceMinutes ?? DEFAULT_GRACE_MINUTES);
+		if (hardDeadlineMinutes * 60_000 > MAX_TIMER_DELAY_MS) {
+			problems.push(`timeout softMinutes + graceMinutes must stay within ${MAX_TIMER_DELAY_MS} ms combined, got ${hardDeadlineMinutes} minutes`);
+			delete config.timeout;
 		}
 	}
 

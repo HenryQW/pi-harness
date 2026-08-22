@@ -1115,3 +1115,32 @@ setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 
 		assert.equal(app.sentMessages.length, 0);
 	});
 });
+
+test("background tasks deliver again after a new session starts", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		// First session: launch, shut down (task aborts, epoch advances).
+		await app.tool.execute("call-1", { role: "worker", task: "old", background: true }, undefined, undefined, app.ctx);
+		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		app.handlers.get("session_start")?.({}, app.ctx);
+		// Second session: a fresh task must deliver normally.
+		const result = await app.tool.execute("call-2", { role: "worker", task: "new", background: true }, undefined, undefined, app.ctx);
+		assert.match(result.content[0]!.text, /started/);
+		await waitFor(() => app.sentMessages.length === 1);
+		assert.match(app.sentMessages[0]!.message.content, /completed/);
+	});
+});
+
+test("oversized PI_SUBAGENT_MAX_SUBAGENTS digit strings fail extension load", () => {
+	process.env.PI_SUBAGENT_MAX_SUBAGENTS = "9".repeat(309);
+	try {
+		assert.throws(() => harness(), /exceeds the supported range/);
+	} finally {
+		delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+	}
+});

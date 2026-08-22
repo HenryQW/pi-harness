@@ -113,3 +113,27 @@ test("non-object config root reports an error", async () => {
 		assert.match(loaded.error!, /must contain a JSON object/);
 	});
 });
+
+test("unknown top-level keys report an error", async () => {
+	await withAgentDir(async (agentDir) => {
+		const dir = join(agentDir, "config");
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagent: 2 }));
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {});
+		assert.match(loaded.error!, /unknown config key "maxSubagent"/);
+	});
+});
+
+test("combined soft plus grace deadline above the timer limit reports an error", async () => {
+	await withAgentDir(async (agentDir) => {
+		const dir = join(agentDir, "config");
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
+			timeout: { softMinutes: 20_000, graceMinutes: 20_000 },
+		}));
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {});
+		assert.match(loaded.error!, /softMinutes \+ graceMinutes must stay within/);
+	});
+});
