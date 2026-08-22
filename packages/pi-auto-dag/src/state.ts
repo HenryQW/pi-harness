@@ -32,30 +32,81 @@ const RUN_STATE_KEYS = [
 	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "health", "health_history", "health_fast_forward_intent", "accepted_events",
 ] as const;
 
-const TASK_STRING_FIELDS = [
-	"block_reason", "wave_base", "worktree", "branch", "tab_id",
-	"implementer_provisioning_id", "implementer_pane", "implementer_agent",
-	"reviewer_provisioning_id", "reviewer_pane", "reviewer_agent", "activity_started_at",
-	"commit", "integration_intent", "review_command", "review_commit", "conflict_base",
-	"final_gate_head", "repair_issue_id", "repair_base", "repair_commit",
-] as const;
-const TASK_BOOLEAN_FIELDS = [
-	"implementer_instruction_pending", "reviewer_instruction_pending", "resolution_pending",
-	"tab_cleanup_done", "worktree_cleanup_done", "branch_cleanup_done",
-] as const;
-const RUN_TASK_KEYS = [
-	"status", "attempts", ...TASK_STRING_FIELDS, ...TASK_BOOLEAN_FIELDS,
-	"review_rounds", "pending_action", "blocked_role", "review_exit_code", "review_stdout", "review_stderr", "required_gate_invalidations", "review_findings", "final_gate_findings", "repair_attempt",
-] as const;
+/** Single source of truth for durable task fields: key lists, parse branches, and labels derive from this table. */
+const TASK_OPTIONAL_FIELDS: Record<string, (value: unknown, label: string) => unknown> = {
+	block_reason: nonEmptyString,
+	wave_base: nonEmptyString,
+	worktree: nonEmptyString,
+	branch: nonEmptyString,
+	tab_id: nonEmptyString,
+	implementer_provisioning_id: nonEmptyString,
+	implementer_pane: nonEmptyString,
+	implementer_agent: nonEmptyString,
+	reviewer_provisioning_id: nonEmptyString,
+	reviewer_pane: nonEmptyString,
+	reviewer_agent: nonEmptyString,
+	activity_started_at: timestamp,
+	commit: nonEmptyString,
+	integration_intent: nonEmptyString,
+	review_command: nonEmptyString,
+	review_commit: nonEmptyString,
+	review_stdout: parseGateOutputEvidence,
+	review_stderr: parseGateOutputEvidence,
+	required_gate_invalidations: (value, label) => array(value, label)
+		.map((entry, index) => parseRequiredGateInvalidation(entry, `${label}[${index}]`)),
+	conflict_base: nonEmptyString,
+	final_gate_head: nonEmptyString,
+	repair_issue_id: nonEmptyString,
+	repair_base: nonEmptyString,
+	repair_commit: nonEmptyString,
+	implementer_instruction_pending: boolean,
+	reviewer_instruction_pending: boolean,
+	resolution_pending: boolean,
+	tab_cleanup_done: boolean,
+	worktree_cleanup_done: boolean,
+	branch_cleanup_done: boolean,
+	review_rounds: nonNegativeInteger,
+	pending_action: (value, label) => oneOf(value, ["initial", "revision", "replacement"] as const, label),
+	blocked_role: (value, label) => oneOf(value, ["implementer", "reviewer"] as const, label),
+	review_exit_code: nonNegativeInteger,
+	review_findings: stringArray,
+	final_gate_findings: stringArray,
+	repair_attempt: positiveInteger,
+};
+const RUN_TASK_KEYS = ["status", "attempts", ...Object.keys(TASK_OPTIONAL_FIELDS)];
 
-const HEALTH_STRING_FIELDS = [
-	"summary", "worktree", "branch", "base", "commit", "integration_intent",
-	"reviewer_tab_id", "reviewer_pane", "reviewer_agent", "coder_tab_id", "coder_pane", "coder_agent", "activity_started_at",
-	"review_command", "review_commit",
-] as const;
-const PR_HEALTH_KEYS = [
-	"status", "head", ...HEALTH_STRING_FIELDS, "actionable", "thread_ids", "checks", "resolved_thread_ids", "attempt", "review_round", "review_exit_code", "review_stdout", "review_stderr", "review_findings", "fixed_thread_ids", "blocked_role", "instruction_pending",
-] as const;
+/** Single source of truth for durable PR-health fields. */
+const HEALTH_OPTIONAL_FIELDS: Record<string, (value: unknown, label: string) => unknown> = {
+	summary: nonEmptyString,
+	worktree: nonEmptyString,
+	branch: nonEmptyString,
+	base: nonEmptyString,
+	commit: nonEmptyString,
+	integration_intent: nonEmptyString,
+	reviewer_tab_id: nonEmptyString,
+	reviewer_pane: nonEmptyString,
+	reviewer_agent: nonEmptyString,
+	coder_tab_id: nonEmptyString,
+	coder_pane: nonEmptyString,
+	coder_agent: nonEmptyString,
+	activity_started_at: timestamp,
+	review_command: nonEmptyString,
+	review_commit: nonEmptyString,
+	actionable: boolean,
+	thread_ids: stringArray,
+	checks: (value, label) => array(value, label).map((entry, index) => parseHealthCheckEvidence(entry, `${label}[${index}]`)),
+	resolved_thread_ids: stringArray,
+	attempt: positiveInteger,
+	review_round: nonNegativeInteger,
+	review_exit_code: nonNegativeInteger,
+	review_stdout: parseGateOutputEvidence,
+	review_stderr: parseGateOutputEvidence,
+	review_findings: stringArray,
+	fixed_thread_ids: stringArray,
+	blocked_role: (value, label) => oneOf(value, ["implementer", "reviewer"] as const, label),
+	instruction_pending: boolean,
+};
+const PR_HEALTH_KEYS = ["status", "head", ...Object.keys(HEALTH_OPTIONAL_FIELDS)];
 
 export type Uuid = () => string;
 
@@ -301,51 +352,12 @@ function parseGateCommandAmendments(value: unknown, graph: DeliveryGraph): GateC
 function parseRunTaskState(value: unknown, label: string): RunTaskState {
 	const input = object(value, label);
 	knownKeys(input, RUN_TASK_KEYS, label);
-	const task: RunTaskState = {
+	const result: RunTaskState = {
 		status: oneOf(input.status, RUN_TASK_STATUSES, `${label}.status`),
 		attempts: nonNegativeInteger(input.attempts, `${label}.attempts`),
 	};
-	if (input.block_reason !== undefined) task.block_reason = nonEmptyString(input.block_reason, `${label}.block_reason`);
-	if (input.wave_base !== undefined) task.wave_base = nonEmptyString(input.wave_base, `${label}.wave_base`);
-	if (input.worktree !== undefined) task.worktree = nonEmptyString(input.worktree, `${label}.worktree`);
-	if (input.branch !== undefined) task.branch = nonEmptyString(input.branch, `${label}.branch`);
-	if (input.tab_id !== undefined) task.tab_id = nonEmptyString(input.tab_id, `${label}.tab_id`);
-	if (input.implementer_provisioning_id !== undefined) task.implementer_provisioning_id = nonEmptyString(input.implementer_provisioning_id, `${label}.implementer_provisioning_id`);
-	if (input.implementer_pane !== undefined) task.implementer_pane = nonEmptyString(input.implementer_pane, `${label}.implementer_pane`);
-	if (input.implementer_agent !== undefined) task.implementer_agent = nonEmptyString(input.implementer_agent, `${label}.implementer_agent`);
-	if (input.reviewer_provisioning_id !== undefined) task.reviewer_provisioning_id = nonEmptyString(input.reviewer_provisioning_id, `${label}.reviewer_provisioning_id`);
-	if (input.reviewer_pane !== undefined) task.reviewer_pane = nonEmptyString(input.reviewer_pane, `${label}.reviewer_pane`);
-	if (input.reviewer_agent !== undefined) task.reviewer_agent = nonEmptyString(input.reviewer_agent, `${label}.reviewer_agent`);
-	if (input.activity_started_at !== undefined) task.activity_started_at = timestamp(input.activity_started_at, `${label}.activity_started_at`);
-	if (input.commit !== undefined) task.commit = nonEmptyString(input.commit, `${label}.commit`);
-	if (input.integration_intent !== undefined) task.integration_intent = nonEmptyString(input.integration_intent, `${label}.integration_intent`);
-	if (input.review_command !== undefined) task.review_command = nonEmptyString(input.review_command, `${label}.review_command`);
-	if (input.review_commit !== undefined) task.review_commit = nonEmptyString(input.review_commit, `${label}.review_commit`);
-	if (input.review_stdout !== undefined) task.review_stdout = parseGateOutputEvidence(input.review_stdout, `${label}.review_stdout`);
-	if (input.review_stderr !== undefined) task.review_stderr = parseGateOutputEvidence(input.review_stderr, `${label}.review_stderr`);
-	if (input.required_gate_invalidations !== undefined) {
-		task.required_gate_invalidations = array(input.required_gate_invalidations, `${label}.required_gate_invalidations`)
-			.map((entry, index) => parseRequiredGateInvalidation(entry, `${label}.required_gate_invalidations[${index}]`));
-	}
-	if (input.conflict_base !== undefined) task.conflict_base = nonEmptyString(input.conflict_base, `${label}.conflict_base`);
-	if (input.final_gate_head !== undefined) task.final_gate_head = nonEmptyString(input.final_gate_head, `${label}.final_gate_head`);
-	if (input.repair_issue_id !== undefined) task.repair_issue_id = nonEmptyString(input.repair_issue_id, `${label}.repair_issue_id`);
-	if (input.repair_base !== undefined) task.repair_base = nonEmptyString(input.repair_base, `${label}.repair_base`);
-	if (input.repair_commit !== undefined) task.repair_commit = nonEmptyString(input.repair_commit, `${label}.repair_commit`);
-	if (input.implementer_instruction_pending !== undefined) task.implementer_instruction_pending = boolean(input.implementer_instruction_pending, `${label}.implementer_instruction_pending`);
-	if (input.reviewer_instruction_pending !== undefined) task.reviewer_instruction_pending = boolean(input.reviewer_instruction_pending, `${label}.reviewer_instruction_pending`);
-	if (input.resolution_pending !== undefined) task.resolution_pending = boolean(input.resolution_pending, `${label}.resolution_pending`);
-	if (input.tab_cleanup_done !== undefined) task.tab_cleanup_done = boolean(input.tab_cleanup_done, `${label}.tab_cleanup_done`);
-	if (input.worktree_cleanup_done !== undefined) task.worktree_cleanup_done = boolean(input.worktree_cleanup_done, `${label}.worktree_cleanup_done`);
-	if (input.branch_cleanup_done !== undefined) task.branch_cleanup_done = boolean(input.branch_cleanup_done, `${label}.branch_cleanup_done`);
-	if (input.review_rounds !== undefined) task.review_rounds = nonNegativeInteger(input.review_rounds, `${label}.review_rounds`);
-	if (input.pending_action !== undefined) task.pending_action = oneOf(input.pending_action, ["initial", "revision", "replacement"] as const, `${label}.pending_action`);
-	if (input.blocked_role !== undefined) task.blocked_role = oneOf(input.blocked_role, ["implementer", "reviewer"] as const, `${label}.blocked_role`);
-	if (input.review_exit_code !== undefined) task.review_exit_code = nonNegativeInteger(input.review_exit_code, `${label}.review_exit_code`);
-	if (input.review_findings !== undefined) task.review_findings = stringArray(input.review_findings, `${label}.review_findings`);
-	if (input.final_gate_findings !== undefined) task.final_gate_findings = stringArray(input.final_gate_findings, `${label}.final_gate_findings`);
-	if (input.repair_attempt !== undefined) task.repair_attempt = positiveInteger(input.repair_attempt, `${label}.repair_attempt`);
-	return task;
+	applyOptionalFields(result as unknown as Record<string, unknown>, input, TASK_OPTIONAL_FIELDS, label);
+	return result;
 }
 
 function parseRunWave(value: unknown, label: string): RunWave {
@@ -382,40 +394,23 @@ function parsePullRequestIdentity(value: unknown, label: string): PullRequestIde
 function parsePrHealthState(value: unknown, label: string): PrHealthState {
 	const input = object(value, label);
 	knownKeys(input, PR_HEALTH_KEYS, label);
-	const health: PrHealthState = {
+	const result: PrHealthState = {
 		status: oneOf(input.status, PR_HEALTH_STATUSES, `${label}.status`),
 		head: nonEmptyString(input.head, `${label}.head`),
 	};
-	if (input.summary !== undefined) health.summary = nonEmptyString(input.summary, `${label}.summary`);
-	if (input.worktree !== undefined) health.worktree = nonEmptyString(input.worktree, `${label}.worktree`);
-	if (input.branch !== undefined) health.branch = nonEmptyString(input.branch, `${label}.branch`);
-	if (input.base !== undefined) health.base = nonEmptyString(input.base, `${label}.base`);
-	if (input.commit !== undefined) health.commit = nonEmptyString(input.commit, `${label}.commit`);
-	if (input.integration_intent !== undefined) health.integration_intent = nonEmptyString(input.integration_intent, `${label}.integration_intent`);
-	if (input.reviewer_tab_id !== undefined) health.reviewer_tab_id = nonEmptyString(input.reviewer_tab_id, `${label}.reviewer_tab_id`);
-	if (input.reviewer_pane !== undefined) health.reviewer_pane = nonEmptyString(input.reviewer_pane, `${label}.reviewer_pane`);
-	if (input.reviewer_agent !== undefined) health.reviewer_agent = nonEmptyString(input.reviewer_agent, `${label}.reviewer_agent`);
-	if (input.coder_tab_id !== undefined) health.coder_tab_id = nonEmptyString(input.coder_tab_id, `${label}.coder_tab_id`);
-	if (input.coder_pane !== undefined) health.coder_pane = nonEmptyString(input.coder_pane, `${label}.coder_pane`);
-	if (input.coder_agent !== undefined) health.coder_agent = nonEmptyString(input.coder_agent, `${label}.coder_agent`);
-	if (input.activity_started_at !== undefined) health.activity_started_at = timestamp(input.activity_started_at, `${label}.activity_started_at`);
-	if (input.actionable !== undefined) health.actionable = boolean(input.actionable, `${label}.actionable`);
-	if (input.thread_ids !== undefined) health.thread_ids = stringArray(input.thread_ids, `${label}.thread_ids`);
-	if (input.checks !== undefined) health.checks = array(input.checks, `${label}.checks`)
-		.map((entry, index) => parseHealthCheckEvidence(entry, `${label}.checks[${index}]`));
-	if (input.resolved_thread_ids !== undefined) health.resolved_thread_ids = stringArray(input.resolved_thread_ids, `${label}.resolved_thread_ids`);
-	if (input.attempt !== undefined) health.attempt = positiveInteger(input.attempt, `${label}.attempt`);
-	if (input.review_round !== undefined) health.review_round = nonNegativeInteger(input.review_round, `${label}.review_round`);
-	if (input.review_command !== undefined) health.review_command = nonEmptyString(input.review_command, `${label}.review_command`);
-	if (input.review_commit !== undefined) health.review_commit = nonEmptyString(input.review_commit, `${label}.review_commit`);
-	if (input.review_exit_code !== undefined) health.review_exit_code = nonNegativeInteger(input.review_exit_code, `${label}.review_exit_code`);
-	if (input.review_stdout !== undefined) health.review_stdout = parseGateOutputEvidence(input.review_stdout, `${label}.review_stdout`);
-	if (input.review_stderr !== undefined) health.review_stderr = parseGateOutputEvidence(input.review_stderr, `${label}.review_stderr`);
-	if (input.review_findings !== undefined) health.review_findings = stringArray(input.review_findings, `${label}.review_findings`);
-	if (input.fixed_thread_ids !== undefined) health.fixed_thread_ids = stringArray(input.fixed_thread_ids, `${label}.fixed_thread_ids`);
-	if (input.blocked_role !== undefined) health.blocked_role = oneOf(input.blocked_role, ["implementer", "reviewer"] as const, `${label}.blocked_role`);
-	if (input.instruction_pending !== undefined) health.instruction_pending = boolean(input.instruction_pending, `${label}.instruction_pending`);
-	return health;
+	applyOptionalFields(result as unknown as Record<string, unknown>, input, HEALTH_OPTIONAL_FIELDS, label);
+	return result;
+}
+
+function applyOptionalFields(
+	target: Record<string, unknown>,
+	input: Record<string, unknown>,
+	fields: Record<string, (value: unknown, label: string) => unknown>,
+	label: string,
+): void {
+	for (const [key, parse] of Object.entries(fields)) {
+		if (input[key] !== undefined) target[key] = parse(input[key], `${label}.${key}`);
+	}
 }
 
 function timestamp(value: unknown, label: string): string {

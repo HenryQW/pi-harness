@@ -1,6 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandOutput, recordedGateEvidence, restoreCleanCommit, type CommandRunner } from "./command.ts";
-import { configuredRole } from "./config.ts";
 import { promptManagedSubagent, reconcileManagedSubagentTab, startManagedSubagent } from "@henryqw/pi-subagent";
 import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredTaskGate } from "./final-gate.ts";
 import { acceptFinalRepairEnvelope, advanceFinalRepair, isFinalRepairActive, recoverFinalRepairIntegration } from "./final-repair.ts";
@@ -9,10 +8,18 @@ import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
-import { actionTicketPath, ensureActionTicket, reviewId, type ReviewKind } from "./review-ticket.ts";
+import { actionTicketPath, ensureActionTicket, type ReviewKind } from "./review-ticket.ts";
 import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
-import { replaceTask, task, writeRunState, type Uuid } from "./state.ts";
-import { createWorkerLaunch, workerAgentName, workerHost, workerHostOptions, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { replaceTask, task, type Uuid } from "./state.ts";
+import {
+	finalCheck,
+	lifecycleReviewId,
+	lifecycleWorkerLaunch,
+	matchesRound,
+	saveRunState as save,
+	timestamp,
+} from "./worker-protocol.ts";
+import { workerAgentName, workerHost, workerHostOptions, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { array, nonEmptyString, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 type PrLifecycleOptions = {
@@ -60,7 +67,7 @@ export async function acceptPrLifecycleEnvelope(
 	if (envelope.type === "submit_review" && current.status === "reviewing") {
 		return await submitFinalReview(state, issue, envelope, options);
 	}
-	if (envelope.type === "block_task" && current.status === "reviewing" && envelope.role === "reviewer" && matchesBlock(current, envelope, false)) {
+	if (envelope.type === "block_task" && current.status === "reviewing" && envelope.role === "reviewer" && matchesRound(envelope, current.attempts, current.review_rounds, false)) {
 		return await failFinalGate(state, issue, nonEmptyString(envelope.payload.reason, "final-check block reason"), options);
 	}
 	throw new Error(`Unexpected PR lifecycle event ${envelope.type} while final_check is ${current.status}`);
@@ -255,10 +262,6 @@ function allImplementationsCompleted(state: RunState): boolean {
 	return executionIssues(state.graph).filter((issue) => issue.role === "implementation").every((issue) => task(state, issue.id).status === "completed");
 }
 
-function finalCheck(state: RunState): LocalIssue {
-	return executionIssues(state.graph).at(-1)!;
-}
-
 async function workerLaunch(
 	state: RunState,
 	issue: LocalIssue,
@@ -266,34 +269,7 @@ async function workerLaunch(
 	role: WorkerRole,
 	options: PrLifecycleOptions,
 ): Promise<WorkerLaunch> {
-	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	return createWorkerLaunch({
-		resolveLaunch: options.resolveLaunch,
-		workerRole: role,
-		role: configuredRole(config, roleName),
-		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		run_id: state.run_id,
-		issue_id: finalCheck(state).id,
-		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle", role),
-		required_gate_timeout_ms: config.required_gate_timeout_ms,
-	});
-}
-
-function lifecycleReviewId(state: RunState, issue: LocalIssue, current: RunTaskState, kind: ReviewKind): string {
-	return reviewId({
-		run_id: state.run_id,
-		kind,
-		issue_id: issue.id,
-		commit: nonEmptyString(current.commit, `${kind} review commit`),
-		attempt: current.attempts,
-		review_round: positiveInteger(current.review_rounds, `${kind} review round`),
-	});
-}
-
-function matchesBlock(current: RunTaskState, envelope: WorkerEnvelope, implementer: boolean): boolean {
-	return envelope.attempt === current.attempts
-		&& envelope.review_round === (implementer ? (current.review_rounds ?? 0) + 1 : current.review_rounds);
+	return await lifecycleWorkerLaunch(state, issue, finalCheck(state).id, config, role, options, "lifecycle");
 }
 
 function finalReviewerLabel(state: RunState, attempt: number): string {
@@ -329,13 +305,4 @@ function finalGateWorktreePath(state: RunState): string {
 
 function finalGateBranch(state: RunState): string {
 	return `pi-auto-dag/${state.run_id}/final-gate`;
-}
-
-async function save(state: RunState, options: PrLifecycleOptions): Promise<RunState> {
-	await writeRunState(state.main_worktree, state, options.uuid);
-	return state;
-}
-
-function timestamp(options: PrLifecycleOptions): string {
-	return options.now?.() ?? new Date().toISOString();
 }

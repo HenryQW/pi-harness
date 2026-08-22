@@ -70,7 +70,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume,
 					...(isRetryableFinalGate(state) ? [ORCHESTRATOR_TOOLS.retryGate] : []),
 					ORCHESTRATOR_TOOLS.abort,
-					...(hasBlockedTask(state) ? [ORCHESTRATOR_TOOLS.resolve] : []),
+					...(hasActivePhaseBlock(state) ? [ORCHESTRATOR_TOOLS.resolve] : []),
 					...(state.health ? [ORCHESTRATOR_TOOLS.health] : [])]
 				: [ORCHESTRATOR_TOOLS.start, ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.health];
 			const active = pi.getActiveTools();
@@ -456,7 +456,7 @@ function workerEnvelopeInput(text: string): WorkerEnvelope | undefined {
 	return parseWorkerEnvelope(input);
 }
 
-function hasBlockedTask(state: RunState): boolean {
+function hasActivePhaseBlock(state: RunState): boolean {
 	return Object.values(state.tasks).some((task) => task.status === "blocked"
 		|| (state.phase === "blocked" && ["starting", "implementing", "reviewing", "repairing", "repair_reviewing"].includes(task.status)));
 }

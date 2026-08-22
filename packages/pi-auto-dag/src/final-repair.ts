@@ -1,6 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
-import { configuredRole } from "./config.ts";
 import {
 	findManagedSubagentTab,
 	managedSubagentTabExists,
@@ -12,13 +11,24 @@ import {
 } from "@henryqw/pi-subagent";
 import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredGateCommand, requiredTaskGate } from "./final-gate.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
-import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
-import { actionTicketPath, ensureActionTicket, reviewId, type ReviewKind } from "./review-ticket.ts";
+import { actionTicketPath, ensureActionTicket, type ReviewKind } from "./review-ticket.ts";
 import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
-import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
-import { createWorkerLaunch, workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, workerIssueContext, WORKER_ROLE_EVENTS, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
+import { issueById, replaceTask, task, type Uuid } from "./state.ts";
+import {
+	clearLifecycleCleanupBlock,
+	finalCheck,
+	hasReviewFindings,
+	lifecycleReviewId,
+	lifecycleWorkerLaunch,
+	matchesRound,
+	recordLifecycleCleanupBlock,
+	saveRunState as save,
+	timestamp,
+	verifyOneCommit,
+} from "./worker-protocol.ts";
+import { workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, workerIssueContext, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
 import { nonEmptyString, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export type FinalRepairOptions = {
@@ -62,10 +72,10 @@ export async function acceptFinalRepairEnvelope(
 	if (envelope.type === "submit_review" && current.status === "repair_reviewing") {
 		return await submitFinalRepairReview(state, issue, envelope, config, options);
 	}
-	if (envelope.type === "block_task" && current.status === "repairing" && envelope.role === "implementer" && matchesBlock(current, envelope, true)) {
+	if (envelope.type === "block_task" && current.status === "repairing" && envelope.role === "implementer" && matchesRound(envelope, current.attempts, current.review_rounds, true)) {
 		return await failFinalGate(state, issue, nonEmptyString(envelope.payload.reason, "final-gate repair block reason"), options);
 	}
-	if (envelope.type === "block_task" && current.status === "repair_reviewing" && envelope.role === "reviewer" && matchesBlock(current, envelope, false)) {
+	if (envelope.type === "block_task" && current.status === "repair_reviewing" && envelope.role === "reviewer" && matchesRound(envelope, current.attempts, current.review_rounds, false)) {
 		return await failFinalGate(state, issue, nonEmptyString(envelope.payload.reason, "final-gate repair review block reason"), options);
 	}
 	throw new Error(`Unexpected PR lifecycle event ${envelope.type} while final_check is ${current.status}`);
@@ -209,7 +219,7 @@ async function abortFinalRepairCherryPick(state: RunState, options: FinalRepairO
 			status: "repairing",
 			activity_started_at: timestamp(options),
 			integration_intent: undefined,
-			review_findings: [...reviewFindings(current), "Integration cherry-pick conflicted; produce a fresh repair commit."],
+			review_findings: [...(current.review_findings ?? []), "Integration cherry-pick conflicted; produce a fresh repair commit."],
 			implementer_instruction_pending: true,
 		}), options);
 	}
@@ -283,7 +293,7 @@ async function ensureFinalRepairCoder(
 	current = task(state, issue.id);
 	const needsInstruction = Boolean(current.implementer_instruction_pending) || mode !== "resume" || started !== "existing";
 	const promptMode = needsInstruction && mode === "resume"
-		? (hasFindings(current) ? "revision" : "initial")
+		? (hasReviewFindings(current) ? "revision" : "initial")
 		: mode;
 	const fullPrompt = mode === "initial" || started !== "existing" || (mode === "resume" && Boolean(current.implementer_instruction_pending));
 	const instruction = promptMode === "resume"
@@ -513,22 +523,6 @@ async function finishFinalRepair(state: RunState, issue: LocalIssue, options: Fi
 	return state;
 }
 
-async function recordLifecycleCleanupBlock(
-	state: RunState,
-	issueId: string,
-	operation: "tab" | "worktree",
-	reason: string,
-	options: FinalRepairOptions,
-): Promise<RunState> {
-	const blocks = [...(state.cleanup_blocks ?? []).filter((block) => block.issue_id !== issueId || block.operation !== operation), { issue_id: issueId, operation, reason }];
-	return await save({ ...state, cleanup_blocks: blocks }, options);
-}
-
-function clearLifecycleCleanupBlock(state: RunState, issueId: string, operation: "tab" | "worktree"): RunState {
-	const cleanupBlocks = (state.cleanup_blocks ?? []).filter((block) => block.issue_id !== issueId || block.operation !== operation);
-	return { ...state, ...(cleanupBlocks.length ? { cleanup_blocks: cleanupBlocks } : { cleanup_blocks: undefined }) };
-}
-
 async function ensureRepairWorktree(state: RunState, issue: LocalIssue, options: FinalRepairOptions): Promise<void> {
 	const current = task(state, issue.id);
 	await ensureChildWorktree(
@@ -552,19 +546,6 @@ async function verifyRepairCommit(state: RunState, issue: LocalIssue, commit: st
 		"Final-gate repair",
 		options,
 	);
-}
-
-async function verifyOneCommit(
-	state: RunState,
-	worktree: string,
-	branch: string,
-	base: string,
-	commit: string,
-	label: string,
-	options: FinalRepairOptions,
-): Promise<string> {
-	await assertAttachedBranch(options.runner, worktree, branch, `${label} child worktree`);
-	return await verifySingleCommit(options.runner, state.main_worktree, worktree, base, commit, label);
 }
 
 async function closeFinalTab(state: RunState, issue: LocalIssue, options: FinalRepairOptions): Promise<RunState> {
@@ -593,10 +574,6 @@ async function retireFinalRepair(state: RunState, issue: LocalIssue, options: Fi
 	return await save(replaceTask(state, issue.id, { ...current, worktree: undefined, worktree_cleanup_done: true }), options);
 }
 
-function hasFindings(value: unknown): boolean {
-	return reviewFindings(value).length > 0;
-}
-
 function isFinalRepair(current: RunTaskState): boolean {
 	return Boolean(current.repair_issue_id && current.repair_base && current.repair_attempt);
 }
@@ -609,17 +586,8 @@ function finalRepairBranch(state: RunState, current: RunTaskState): string {
 	);
 }
 
-function reviewFindings(value: unknown): string[] {
-	if (typeof value !== "object" || value === null || !Array.isArray((value as Record<string, unknown>).review_findings)) return [];
-	return (value as Record<string, unknown>).review_findings as string[];
-}
-
 function repairOwner(state: RunState, current: RunTaskState): LocalIssue {
 	return issueById(state, nonEmptyString(current.repair_issue_id, "final-gate repair owner Local Issue"));
-}
-
-function finalCheck(state: RunState): LocalIssue {
-	return executionIssues(state.graph).at(-1)!;
 }
 
 async function workerLaunch(
@@ -629,34 +597,7 @@ async function workerLaunch(
 	role: WorkerRole,
 	options: FinalRepairOptions,
 ): Promise<WorkerLaunch> {
-	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
-	return createWorkerLaunch({
-		resolveLaunch: options.resolveLaunch,
-		workerRole: role,
-		role: configuredRole(config, roleName),
-		events: WORKER_ROLE_EVENTS[role].filter((event) => event !== "submit_health"),
-		run_id: state.run_id,
-		issue_id: finalCheck(state).id,
-		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
-		action_ticket: actionTicketPath(state.main_worktree, state.run_id, finalCheck(state).id, "lifecycle", role),
-		required_gate_timeout_ms: config.required_gate_timeout_ms,
-	});
-}
-
-function lifecycleReviewId(state: RunState, issue: LocalIssue, current: RunTaskState, kind: ReviewKind): string {
-	return reviewId({
-		run_id: state.run_id,
-		kind,
-		issue_id: issue.id,
-		commit: nonEmptyString(current.commit, `${kind} review commit`),
-		attempt: current.attempts,
-		review_round: positiveInteger(current.review_rounds, `${kind} review round`),
-	});
-}
-
-function matchesBlock(current: RunTaskState, envelope: WorkerEnvelope, implementer: boolean): boolean {
-	return envelope.attempt === current.attempts
-		&& envelope.review_round === (implementer ? (current.review_rounds ?? 0) + 1 : current.review_rounds);
+	return await lifecycleWorkerLaunch(state, issue, finalCheck(state).id, config, role, options, "lifecycle");
 }
 
 function repairWorktreePath(state: RunState, owner: string, attempt: number): string {
@@ -665,13 +606,4 @@ function repairWorktreePath(state: RunState, owner: string, attempt: number): st
 
 function repairBranch(state: RunState, owner: string, attempt: number): string {
 	return `pi-auto-dag/${state.run_id}/final-repair/${owner}/${attempt}`;
-}
-
-async function save(state: RunState, options: FinalRepairOptions): Promise<RunState> {
-	await writeRunState(state.main_worktree, state, options.uuid);
-	return state;
-}
-
-function timestamp(options: FinalRepairOptions): string {
-	return options.now?.() ?? new Date().toISOString();
 }
