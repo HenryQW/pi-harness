@@ -211,17 +211,14 @@ export function resolveTaskModelRoute(ctx, route, agentDir = getAgentDir(), thin
     if (!model)
         return undefined;
     const levels = taskThinkingLevels(ctx, model);
-    // An explicit requested level wins over remembered and profile levels; a model
+    // An explicit requested level wins over the profile level; a model
     // that cannot honor it is skipped so later fallback routes get considered.
     if (thinking !== undefined) {
         return levels.includes(thinking) ? { model, thinkingLevel: thinking } : undefined;
     }
-    // Remembered per-model thinking (pi-model-thinking) wins over the profile level when supported.
-    const remembered = rememberedThinkingLevel(model, agentDir);
-    const thinkingLevel = remembered && levels.includes(remembered) ? remembered : route.thinkingLevel;
-    if (!levels.includes(thinkingLevel))
+    if (!levels.includes(route.thinkingLevel))
         return undefined;
-    return { model, thinkingLevel };
+    return { model, thinkingLevel: route.thinkingLevel };
 }
 export function resolveConfiguredTaskRoutes(ctx, task, agentDir = getAgentDir(), thinking) {
     let config;
