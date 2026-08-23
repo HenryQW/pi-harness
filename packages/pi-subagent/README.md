@@ -60,9 +60,12 @@ Do not edit files.
 | `tools` | no | Omit for Pi defaults; when present, base tools are listed and every loaded Role/caller extension tool is added automatically. `[]` leaves extension tools only. |
 | `extensions` | no | Absolute/`~/` paths or package sources. Package-declared Skills and Pi `resources_discover` Skill paths load automatically. Repository-relative paths are rejected. |
 | `skills` | no | Additional effective Pi Skill names, resolved from Main's registry |
+| `isolation` | no | Set to `worktree` to give each delegated child its own git worktree branched from Main's current `HEAD` |
 | Markdown body | yes | Role system instructions |
 
 Missing skills warn and skip; they do not block delegation. No repo-controlled `.pi/agents` roles. No package-local model picker.
+
+With `isolation: worktree`, each child runs in `<primary-workspace>/.worktrees/subagent-<hash>` on branch `pi-subagent/subagent-<hash>`, using a fixed hash of the child ID so parallel children never clobber each other's files. This stable root keeps children outside removable linked checkouts. Git submodules reject worktree isolation because parent cleanup can remove their Git metadata. Non-git directories and repositories with no commits silently share Main's working directory; worktree setup failures in a real git repository reject the delegation instead of silently losing isolation. The directory is excluded from git status through the repository-local exclude file. The child is told to work only inside its worktree and commit to its branch; after each run the parent sees a worktree report (path, branch, commits, dirty, pruned) appended to the result — including failures and preserved background work during session shutdown, so kept work is always locatable. Worktrees are discarded only when the dedicated branch has no commits, `HEAD` still names that branch, and the full tree including ignored files and submodules is clean; anything holding work stays for the parent to review and merge — children never merge.
 
 ## Library API
 

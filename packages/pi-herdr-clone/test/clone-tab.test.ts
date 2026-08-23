@@ -303,7 +303,7 @@ test("launch-attempt failures retain recovery artifacts while focus failure repo
 				await assert.rejects(app.command("", app.ctx), (error: Error) => {
 					assert.match(error.message, /could not be confirmed/);
 					assert.match(error.message, /tab-new/);
-					assert.match(error.message, /root pane_id/);
+					assert.match(error.message, /root_pane\.pane_id/);
 					return true;
 				});
 				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [

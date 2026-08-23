@@ -53,13 +53,7 @@ interface SearchDetails {
 function isAddedDir(value: unknown): value is AddedDir {
 	if (!value || typeof value !== "object") return false;
 	const dir = value as Partial<AddedDir>;
-	return (
-		typeof dir.absolutePath === "string" &&
-		isAbsolute(dir.absolutePath) &&
-		typeof dir.label === "string" &&
-		typeof dir.addedAt === "number" &&
-		Number.isFinite(dir.addedAt)
-	);
+	return typeof dir.absolutePath === "string" && isAbsolute(dir.absolutePath) && typeof dir.label === "string";
 }
 
 function readState(data: unknown): AddedDir[] {
@@ -91,7 +85,7 @@ function contextDetails(dirCtx: DirContext, absolutePath: string): AddDirectoryD
 		hasAgentsMd: dirCtx.agentsMd !== null,
 		hasClaudeMd: dirCtx.claudeMd !== null,
 		skillCount: dirCtx.skills.size,
-		skillNames: [...dirCtx.skills.keys()],
+		skillNames: [...dirCtx.skills],
 	};
 }
 
@@ -183,7 +177,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 
 		const context = scanDirContext(absolutePath);
 		const label = basename(absolutePath) || absolutePath;
-		addedDirs.push({ absolutePath, label, addedAt: Date.now() });
+		addedDirs.push({ absolutePath, label });
 		persistState();
 		updateWidget(ctx);
 
@@ -287,7 +281,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 				response.push(`\nCLAUDE.md instructions from ${absolutePath}:\n${context.claudeMd}`);
 			}
 			if (context.skills.size > 0) {
-				response.push(`\nDiscovered skills: ${[...context.skills.keys()].join(", ")}`);
+				response.push(`\nDiscovered skills: ${[...context.skills].join(", ")}`);
 				response.push("Run /reload to register skills as /skill:name commands.");
 			}
 			response.push(`\nYou can now access files at: ${absolutePath}`);

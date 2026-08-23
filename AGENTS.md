@@ -4,7 +4,7 @@ OBSIDIAN_PROJECT=`${OBSIDIAN_ROOT}/projects/Pi/Packages`
 
 ## Compatibility
 
-Do not consider migrations or backward compatibility. Both add unnecessary code.
+Extensions do not consider migrations or backward compatibility. Both add unnecessary code.
 
 ## Extension config paths
 
@@ -38,6 +38,7 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 
 - Bump package version when change affects published files, runtime behavior, public API, package metadata, or runtime dependencies.
 - Bump every affected package when one change touches multiple packages.
+- Bump each affected package's npm version only once per PR.
 - Do not bump version for root-only CI, Dependabot, development dependency, test-only, or repository documentation changes.
 - Use patch for fixes, minor for backward-compatible features, and major for breaking changes.
 - Bump with npm; do not edit versions by hand:

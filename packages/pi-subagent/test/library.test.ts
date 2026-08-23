@@ -40,13 +40,14 @@ test("child role policy keeps selected built-ins and activates loaded extension 
 		registerFlag(name: string) { assert.equal(name, ROLE_TOOL_POLICY_FLAG); },
 		getFlag(name: string) {
 			assert.equal(name, ROLE_TOOL_POLICY_FLAG);
-			return JSON.stringify(["read"]);
+			return JSON.stringify(["read", "ask_question"]);
 		},
 		on(event: string, handler: () => void) {
 			if (event === "session_start") sessionStart = handler;
 		},
 		getAllTools: () => [
 			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "delegate_task", sourceInfo: { source: "npm:pi-subagent" } },
 			{ name: "extension_tool", sourceInfo: { source: "npm:example-extension" } },
 			{ name: "sdk_tool", sourceInfo: { source: "sdk" } },
 			{ name: "inline_tool", sourceInfo: { source: "inline" } },
@@ -118,10 +119,14 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.equal(launch.model, model);
 	assert.equal(launch.thinkingLevel, "high");
 	assert.deepEqual(launch.missingSkills, ["missing"]);
-	assert.deepEqual(launch.args.slice(0, 3), ["--no-session", "--no-extensions", "--no-skills"]);
+	assert.deepEqual(launch.args.slice(0, 5), [
+		"--no-session", "--no-extensions", "--no-skills",
+		"--exclude-tools", "delegate_task,ask_question,auto_dag_approve,auto_dag_start",
+	]);
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
 	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
-	assert.match(valuesAfter(launch.args, "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
+	const extensionArgs = valuesAfter(launch.args, "--extension");
+	assert.match(extensionArgs.at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
 	assert.deepEqual(valuesAfter(launch.args, "--skill"), ["/effective/security/SKILL.md"]);
 	assert.equal(launch.args.includes("--tools"), false);
 	assert.equal(launch.args.includes("--no-tools"), false);
@@ -142,6 +147,7 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.equal(defaultTools.args.includes("--no-tools"), false);
 	assert.equal(defaultTools.args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
 	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
+	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,ask_question,auto_dag_approve,auto_dag_start");
 });
 
 test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retires", async () => {
