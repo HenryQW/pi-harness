@@ -89,13 +89,11 @@ test("renders checkout PR status, usage, and other extension statuses", async (t
 	const rendered = footer.render(100);
 	assert.match(rendered[0]!, /\x1b\]8;;vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\x1b\\/);
 	assert.ok(colors.some(([color, text]) => color === "accent" && text === "clear-field-f8d2"));
-	const usageText = "↑ 2.9k · ↓ 450 · ↺ 50.0% · $ 0.350 · ◔ 42.3%";
+	const usageText = "↑ 2.9k · ↓ 450 · ↺ 50.0% · ⚡ — · $ 0.350 · ◔ 42.3%";
 	const modelText = "gpt-5.6-luna • high";
-	assert.deepEqual(rendered.map(plain), [
-		"repo · clear-field-f8d2 · PR #123 · approved",
-		usageText + " ".repeat(100 - usageText.length - modelText.length) + modelText,
-		"Codex #1 · 50% · 7d 1d 1h 22m ●  🐴\tponytail: ⚡ FULL ready",
-	]);
+	assert.equal(plain(rendered[0]!), "repo · clear-field-f8d2 · PR #123 · approved");
+	assert.match(plain(rendered[1]!), new RegExp(`^${usageText.replace("$", "\\$")} +${modelText}$`));
+	assert.equal(plain(rendered[2]!), "Codex #1 · 50% · 7d 1d 1h 22m ●  🐴\tponytail: ⚡ FULL ready");
 	assert.match(rendered[0]!, /\x1b\[32mPR #123 · approved\x1b\[39m/);
 	assert.doesNotMatch(rendered[2]!, /PR #123/);
 
@@ -148,4 +146,32 @@ test("renders checkout PR status, usage, and other extension statuses", async (t
 	);
 	assert.equal(plain(submoduleFooter.render(100)[0]!), "child · main");
 	submoduleFooter.dispose();
+});
+
+test("shows TPS of last assistant response", async () => {
+	const handlers = new Map<string, (event: { message: { role: string; usage?: { output: number } } }) => unknown>();
+	footerExtension({
+		on(event: string, handler: never) {
+			handlers.set(event, handler);
+		},
+		exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+	} as unknown as ExtensionAPI);
+
+	let footerFactory: ((tui: unknown, theme: unknown, data: unknown) => { render(width: number): string[] }) | undefined;
+	await (handlers.get("session_start") as (event: unknown, ctx: ExtensionContext) => unknown)({}, {
+		mode: "tui",
+		cwd: "/repo",
+		sessionManager: { getEntries: () => [] },
+		getContextUsage: () => undefined,
+		ui: { setFooter: (factory: typeof footerFactory) => { footerFactory = factory; } },
+	} as unknown as ExtensionContext);
+	assert.ok(footerFactory);
+	const footer = footerFactory({}, { fg: (_c: string, text: string) => text }, { getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} });
+
+	assert.match(footer.render(100)[1]!, /⚡ — /);
+	const assistantMessage = { role: "assistant", usage: { output: 100 } };
+	await handlers.get("message_start")!({ message: assistantMessage });
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	await handlers.get("message_end")!({ message: assistantMessage });
+	assert.match(footer.render(100)[1]!, /⚡ [0-9.]+ t\/s/);
 });
