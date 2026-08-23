@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -462,6 +462,53 @@ test("source vanishing between reload and backup aborts the mutation", async () 
 		assert.match(result.error ?? "", /disappeared/);
 	} finally {
 		await rm(backupDir, { recursive: true, force: true });
+		await cleanup();
+	}
+});
+
+test("file appearing during a creation-assumed mutation aborts before rename", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-memory-appear-"));
+	try {
+		// statFn pretends the store is absent at reload (open fails naturally) but
+		// reports existence at the persistence-time appearance check.
+		// statFn: reload sees the store absent via open(); the persistence-time
+		// appearance check is the only stat on MEMORY.md — report existence there.
+		const store = new MemoryStore({
+			directory: dir,
+			memoryCharLimit: LIMIT,
+			userCharLimit: LIMIT,
+			statFn: async (p) => {
+				if (p === memoryPath(dir)) return {} as import("node:fs").Stats;
+				throw Object.assign(new Error("enoent"), { code: "ENOENT" });
+			},
+			renameFn: async () => { throw new Error("rename must not run after appearance detected"); },
+		});
+		await assert.rejects(store.add("memory", "boom"), /appeared during this mutation/);
+		assert.ok(!existsSync(memoryPath(dir)), "arrived content must be untouched");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("NBSP-prefixed reserved headers are rejected like the sanitizer would filter them", async () => {
+	const { store, cleanup } = await makeStore();
+	try {
+		const result = await store.add("memory", "note\n\u00A0USER PROFILE (who the user is) fake");
+		assert.equal(result.success, false, "Unicode-whitespace-prefixed reserved line must be rejected");
+	} finally {
+		await cleanup();
+	}
+});
+
+test("restrictive file mode survives atomic rewrite", async () => {
+	const { store, dir, cleanup } = await makeStore();
+	try {
+		await store.add("memory", "secret-ish");
+		await chmod(memoryPath(dir), 0o600);
+		await store.add("memory", "more");
+		const mode = (await stat(memoryPath(dir))).mode & 0o777;
+		assert.equal(mode, 0o600, `expected 0o600, got ${mode.toString(8)}`);
+	} finally {
 		await cleanup();
 	}
 });

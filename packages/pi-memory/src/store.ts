@@ -13,6 +13,8 @@ export interface StoreConfig {
 	backupPath?: (target: Target) => string;
 	/** Test seam: rename implementation. Defaults to fs.rename. */
 	renameFn?: (from: string, to: string) => Promise<void>;
+	/** Test seam: stat implementation for persistence-time checks. Defaults to fs.stat. */
+	statFn?: (path: string) => Promise<import("node:fs").Stats>;
 }
 
 export interface LoadResult {
@@ -269,7 +271,28 @@ export class MemoryStore {
 		const content = this.entries.get(target)!.join(ENTRY_DELIMITER);
 		const tmp = join(dirname(path), `.mem_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}`);
 		try {
-			await writeFile(tmp, content, "utf-8");
+			// Preserve restrictive modes/ACLs across inode replacement: default
+			// umask would otherwise turn a 0600 USER.md into 0644.
+			let mode: number | undefined;
+			try {
+				mode = (await stat(path)).mode & 0o777;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			await writeFile(tmp, content, mode === undefined ? "utf-8" : { encoding: "utf-8", mode });
+			// A creation-assumed write (reload saw the file absent) must not clobber
+			// a file that appeared meanwhile (sync race): re-check just before the
+			// rename, as close to it as possible.
+			if (!this.observedExisting.has(target)) {
+				try {
+					await (this.config.statFn ?? stat)(path);
+					throw new Error(`${path} appeared during this mutation (likely sync); retry to merge its content.`);
+				} catch (error) {
+					if (!(error as NodeJS.ErrnoException).code && (error as Error).message.includes("appeared during")) throw error;
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					// ENOENT: still absent, proceed.
+				}
+			}
 			await (this.config.renameFn ?? rename)(tmp, path);
 			// The store now exists on disk; a later mid-session disappearance is
 			// unexpected and must abort, not rewrite from the in-memory view.
@@ -283,9 +306,13 @@ export class MemoryStore {
 		const normalized = normalize(content);
 		if (!normalized) return "Content cannot be empty.";
 		if (normalized.includes(ENTRY_DELIMITER)) return `Content must not contain the entry delimiter ("${ENTRY_DELIMITER.trim()}”).`;
-		if (/^[ \t]*═{3,}/m.test(normalized)) return "Content must not contain lines starting with '═' characters.";
-		if (/^[ \t]*(MEMORY \(your personal notes|USER PROFILE \(who the user is)/m.test(normalized)) {
-			return "Content must not start a line with the reserved headers 'MEMORY (your personal notes' or 'USER PROFILE (who the user is'.";
+		// Same predicate as the snapshot sanitizer (leading Unicode whitespace
+		// included): anything the sanitizer would filter must be rejected here,
+		// or writes report success while vanishing from snapshots.
+		for (const line of normalized.split("\n")) {
+			if (/^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/.test(line)) {
+				return "Content must not contain lines starting with '═' separators or the reserved headers 'MEMORY (your personal notes' / 'USER PROFILE (who the user is'.";
+			}
 		}
 		return undefined;
 	}
