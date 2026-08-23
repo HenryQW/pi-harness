@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	getAgentDir,
@@ -12,117 +11,234 @@ import {
 export const MAX_NOTES = 4;
 const WIDGET_KEY = "pi-notes";
 
-const notesPath = () => join(getAgentDir(), "config", "pi-notes.json");
-
-/** Notes file is untrusted user data. Valid JSON parses to notes; anything else throws so callers can preserve the file. */
-export function parseNotes(raw: string): string[] {
-	const data: unknown = JSON.parse(raw);
-	if (
-		!Array.isArray(data)
-		|| data.length > MAX_NOTES
-		|| !data.every((note): note is string => typeof note === "string" && note.trim().length > 0)
-	) {
-		throw new TypeError(`notes config must be a JSON array of at most ${MAX_NOTES} non-empty strings`);
-	}
-	return data.map((note) => note.replace(/\s+/g, " ").trim());
+interface NotesRecord {
+	repository: string;
+	worktree: string;
+	notes: string[];
 }
 
-let invalidConfig = false;
+interface LoadedNotes {
+	notes: string[];
+	issue?: "malformed" | "stale";
+}
 
-function loadNotes(): string[] {
-	invalidConfig = false;
-	try {
-		return parseNotes(readFileSync(notesPath(), "utf8"));
-	} catch (error) {
-		// Missing file is fine; malformed content must not be silently overwritten.
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") invalidConfig = true;
-		return [];
+const configDir = () => join(getAgentDir(), "config", "pi-notes");
+// ponytail: path + repository identify a worktree; add a persisted UUID only if same-path recreation must reset notes.
+const notesPath = (worktree: string) => join(configDir(), `${createHash("sha256").update(worktree).digest("hex")}.json`);
+
+/** Notes files are untrusted user data. Invalid records throw so callers preserve them. */
+export function parseNotes(raw: string): NotesRecord {
+	const data: unknown = JSON.parse(raw);
+	if (!data || typeof data !== "object" || Array.isArray(data)) throw new TypeError("notes config must be an object");
+	const input = data as Record<string, unknown>;
+	if (Object.keys(input).sort().join(",") !== "notes,repository,worktree"
+		|| typeof input.repository !== "string" || !isAbsolute(input.repository)
+		|| typeof input.worktree !== "string" || !isAbsolute(input.worktree)
+		|| !Array.isArray(input.notes)
+		|| input.notes.length > MAX_NOTES
+		|| !input.notes.every((note): note is string => typeof note === "string" && note.trim().length > 0)) {
+		throw new TypeError(`notes config must identify one worktree and contain at most ${MAX_NOTES} non-empty strings`);
 	}
+	return {
+		repository: input.repository,
+		worktree: input.worktree,
+		notes: input.notes.map((note) => note.replace(/\s+/g, " ").trim()),
+	};
 }
 
 export function renderNotes(notes: string[]): string[] {
 	return notes.length ? notes.map((note, i) => `${i + 1}. ${note}`) : ["no notes"];
 }
 
-async function persist(notes: string[]): Promise<void> {
-	const path = notesPath();
-	const temp = `${path}.${randomUUID()}.tmp`;
-	await mkdir(dirname(path), { recursive: true });
+async function resolveWorktree(pi: ExtensionAPI, cwd: string): Promise<Omit<NotesRecord, "notes">> {
+	const result = await pi.exec(
+		"git",
+		["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+		{ cwd },
+	);
+	if (result.code !== 0 || result.killed) throw new Error("pi-notes requires a Git worktree");
+	const [worktree, repository, ...extra] = result.stdout.trim().split(/\r?\n/);
+	if (!worktree || !repository || extra.length) throw new Error("git returned an invalid worktree identity");
+	return { worktree: await realpath(worktree), repository: await realpath(repository) };
+}
+
+async function loadNotes(identity: Omit<NotesRecord, "notes">): Promise<LoadedNotes> {
+	let raw: string;
 	try {
-		await writeFile(temp, `${JSON.stringify(notes, null, "\t")}\n`);
+		raw = await readFile(notesPath(identity.worktree), "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { notes: [] };
+		throw error;
+	}
+	let record: NotesRecord;
+	try {
+		record = parseNotes(raw);
+	} catch {
+		return { notes: [], issue: "malformed" };
+	}
+	return record.worktree === identity.worktree && record.repository === identity.repository
+		? { notes: record.notes }
+		: { notes: [], issue: "stale" };
+}
+
+async function persist(identity: Omit<NotesRecord, "notes">, notes: string[]): Promise<void> {
+	const path = notesPath(identity.worktree);
+	const temp = `${path}.${randomUUID()}.tmp`;
+	await mkdir(configDir(), { recursive: true });
+	try {
+		await writeFile(temp, `${JSON.stringify({ ...identity, notes }, null, "\t")}\n`, { mode: 0o600 });
 		await rename(temp, path);
 	} finally {
 		await rm(temp, { force: true }).catch(() => {});
 	}
 }
 
+function issueMessage(issue: LoadedNotes["issue"]): string | undefined {
+	if (issue === "malformed") return "Worktree notes file is malformed; fix it or run /note-clear to reset.";
+	if (issue === "stale") return "Worktree notes belong to an old repository; run /note-prune or /note-clear.";
+	return undefined;
+}
+
+async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ identity: Omit<NotesRecord, "notes">; notes: string[] } | undefined> {
+	try {
+		const identity = await resolveWorktree(pi, ctx.cwd);
+		const loaded = await loadNotes(identity);
+		const message = issueMessage(loaded.issue);
+		if (message) {
+			ctx.ui.notify(message, "error");
+			return undefined;
+		}
+		return { identity, notes: loaded.notes };
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		return undefined;
+	}
+}
+
+async function refresh(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	try {
+		const identity = await resolveWorktree(pi, ctx.cwd);
+		const loaded = await loadNotes(identity);
+		ctx.ui.setWidget(WIDGET_KEY, issueMessage(loaded.issue) ? [issueMessage(loaded.issue)!] : renderNotes(loaded.notes));
+	} catch {
+		ctx.ui.setWidget(WIDGET_KEY, undefined);
+	}
+}
+
+async function pruneStale(pi: ExtensionAPI): Promise<{ removed: number; skipped: number }> {
+	let entries;
+	try {
+		entries = await readdir(configDir(), { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { removed: 0, skipped: 0 };
+		throw error;
+	}
+	let removed = 0;
+	let skipped = 0;
+	for (const entry of entries) {
+		if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+		const path = join(configDir(), entry.name);
+		let record: NotesRecord;
+		try {
+			record = parseNotes(await readFile(path, "utf8"));
+		} catch {
+			skipped++;
+			continue;
+		}
+		if (path !== notesPath(record.worktree)) {
+			skipped++;
+			continue;
+		}
+		const storedWorktree = await realpath(record.worktree).catch(() => undefined);
+		const current = storedWorktree === record.worktree
+			? await resolveWorktree(pi, record.worktree).catch(() => undefined)
+			: undefined;
+		if (!current || current.worktree !== record.worktree || current.repository !== record.repository) {
+			await rm(path, { force: true });
+			removed++;
+		}
+	}
+	return { removed, skipped };
+}
+
 export default function notesExtension(pi: ExtensionAPI): void {
-	const show = (ctx: ExtensionContext) => ctx.ui.setWidget(WIDGET_KEY, renderNotes(loadNotes()));
-
-	const MALFORMED = `pi-notes.json is malformed; fix or delete it, or run /note-clear to reset.`;
-
-	pi.on("session_start", (_event, ctx) => show(ctx));
+	pi.on("session_start", (_event, ctx) => refresh(pi, ctx));
 
 	pi.registerCommand("note", {
-		description: `Add a note to the widget (max ${MAX_NOTES})`,
+		description: `Add a note to this Git worktree (max ${MAX_NOTES})`,
 		handler: async (args, ctx) => {
-			const text = args.trim();
+			const text = args.replace(/\s+/g, " ").trim();
 			if (!text) {
-				ctx.ui.notify(`Usage: /note <text> — /note-rm picks one to remove, /note-clear removes all`, "warning");
+				ctx.ui.notify("Usage: /note <text>", "warning");
 				return;
 			}
-			const notes = loadNotes();
-			if (invalidConfig) {
-				ctx.ui.notify(MALFORMED, "error");
+			const current = await readCurrent(pi, ctx);
+			if (!current) return;
+			if (current.notes.length >= MAX_NOTES) {
+				ctx.ui.notify(`Widget full (${MAX_NOTES} notes). Remove one with /note-rm.`, "warning");
 				return;
 			}
-			if (notes.length >= MAX_NOTES) {
-				ctx.ui.notify(`Widget full (${MAX_NOTES} notes). Remove one with /note-rm <n>.`, "warning");
-				return;
-			}
-			notes.push(text);
-			await persist(notes);
-			show(ctx);
+			current.notes.push(text);
+			await persist(current.identity, current.notes);
+			ctx.ui.setWidget(WIDGET_KEY, renderNotes(current.notes));
 		},
 	});
 
 	pi.registerCommand("note-rm", {
-		description: "Pick a note to remove",
-		handler: async (_args, ctx) => {
-			const notes = loadNotes();
-			if (invalidConfig) {
-				ctx.ui.notify(MALFORMED, "error");
+		description: "Remove a note from this Git worktree",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /note-rm", "warning");
 				return;
 			}
-			if (!notes.length) {
+			const snapshot = await readCurrent(pi, ctx);
+			if (!snapshot) return;
+			if (!snapshot.notes.length) {
 				ctx.ui.notify("No notes to remove.", "info");
 				return;
 			}
-			const choice = await ctx.ui.select("Remove note:", renderNotes(notes));
+			const choice = await ctx.ui.select("Remove note:", renderNotes(snapshot.notes));
 			if (!choice) return;
-			// Re-read after the dialog: another Pi session may have written meanwhile.
-			// ponytail: narrows the race to milliseconds; lockfile only if multi-session edit conflicts ever surface.
-			const current = loadNotes();
-			if (invalidConfig) {
-				ctx.ui.notify(MALFORMED, "error");
-				return;
-			}
+			const current = await readCurrent(pi, ctx);
+			if (!current) return;
 			const index = Number.parseInt(/^(\d+)\./.exec(choice)?.[1] ?? "", 10) - 1;
-			if (!isDeepStrictEqual(current, notes) || !Number.isInteger(index) || index < 0 || index >= current.length) {
+			if (!isDeepStrictEqual(current, snapshot) || !Number.isInteger(index) || index < 0 || index >= current.notes.length) {
 				ctx.ui.notify("Notes changed elsewhere; try /note-rm again.", "warning");
 				return;
 			}
-			current.splice(index, 1);
-			await persist(current);
-			show(ctx);
+			current.notes.splice(index, 1);
+			await persist(current.identity, current.notes);
+			ctx.ui.setWidget(WIDGET_KEY, renderNotes(current.notes));
 		},
 	});
 
 	pi.registerCommand("note-clear", {
-		description: "Clear all notes (also resets a malformed pi-notes.json)",
-		handler: async (_args, ctx) => {
-			await persist([]);
-			show(ctx);
+		description: "Clear notes for this Git worktree",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /note-clear", "warning");
+				return;
+			}
+			try {
+				const identity = await resolveWorktree(pi, ctx.cwd);
+				await rm(notesPath(identity.worktree), { force: true });
+				ctx.ui.setWidget(WIDGET_KEY, renderNotes([]));
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("note-prune", {
+		description: "Delete notes for removed repositories and worktrees",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /note-prune", "warning");
+				return;
+			}
+			const { removed, skipped } = await pruneStale(pi);
+			ctx.ui.notify(`Removed ${removed} stale worktree note file${removed === 1 ? "" : "s"}; preserved ${skipped} invalid file${skipped === 1 ? "" : "s"}.`, "info");
+			await refresh(pi, ctx);
 		},
 	});
 }

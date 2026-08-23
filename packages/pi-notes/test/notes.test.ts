@@ -1,27 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import test from "node:test";
+import { join } from "node:path";
+import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import notesExtension, { MAX_NOTES, parseNotes, renderNotes } from "../extensions/notes.ts";
+import notesExtension, { parseNotes, renderNotes } from "../extensions/notes.ts";
 
-test("parseNotes validates untrusted file content", () => {
-	assert.deepEqual(parseNotes('[" a ","b","c","d"]'), ["a", "b", "c", "d"]);
-	assert.throws(() => parseNotes('["a","b","c","d","e"]'), TypeError);
-	assert.throws(() => parseNotes('["keep", {"draft":"recover"}]'), TypeError);
-	assert.throws(() => parseNotes('["keep", "  "]'), TypeError);
-	assert.throws(() => parseNotes('{"not":"an array"}'), TypeError);
-	assert.throws(() => parseNotes("not json"), SyntaxError);
-	assert.throws(() => parseNotes('{broken'), SyntaxError);
-});
+type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
+type Identity = { repository: string; worktree: string };
 
-test("renderNotes numbers entries and shows placeholder when empty", () => {
-	assert.deepEqual(renderNotes(["a"]), ["1. a"]);
-	assert.deepEqual(renderNotes([]), ["no notes"]);
-});
-
-test("note commands add, remove, and clear persisted notes", async (t) => {
+async function harness(t: TestContext) {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-notes-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -31,146 +19,144 @@ test("note commands add, remove, and clear persisted notes", async (t) => {
 		await rm(agentDir, { recursive: true, force: true });
 	});
 
-	const handlers: Record<string, (args: string, ctx: unknown) => Promise<void>> = {};
+	const repository = join(agentDir, "repo.git");
+	const first = join(agentDir, "first");
+	const second = join(agentDir, "second");
+	await Promise.all([repository, first, second].map((path) => mkdir(path, { recursive: true })));
+	const canonicalRepository = await realpath(repository);
+	const identities = new Map<string, Identity>([
+		[first, { repository: canonicalRepository, worktree: await realpath(first) }],
+		[second, { repository: canonicalRepository, worktree: await realpath(second) }],
+	]);
+	const handlers: Record<string, CommandHandler> = {};
+	let sessionStart: ((event: unknown, ctx: ExtensionContext) => Promise<void> | void) | undefined;
 	const pi = {
-		on(_event: string, _handler: unknown) { },
-		registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
-			handlers[name] = options.handler;
+		exec: async (_command: string, _args: string[], options: { cwd?: string }) => {
+			const identity = options.cwd
+				? identities.get(options.cwd) ?? [...identities.values()].find((candidate) => candidate.worktree === options.cwd)
+				: undefined;
+			return identity
+				? { code: 0, killed: false, stdout: `${identity.worktree}\n${identity.repository}\n`, stderr: "" }
+				: { code: 128, killed: false, stdout: "", stderr: "not a git worktree" };
 		},
-	} as unknown as ExtensionAPI;
-
-	let widget: string[] | undefined;
-	let picked: string | undefined;
-	const ctx = {
-		ui: {
-			setWidget(_key: string, content: string[]) { widget = content; },
-			notify(message: string) { throw new Error(message); },
-			select(_title: string, _options: string[]) { return Promise.resolve(picked ?? widget![1]); },
+		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) {
+			if (event === "session_start") sessionStart = handler;
 		},
-	} as unknown as ExtensionContext;
-
-	notesExtension(pi);
-	await handlers["note"]!("first", ctx);
-	await handlers["note"]!("second", ctx);
-	await handlers["note"]!("third", ctx);
-	await handlers["note"]!("fourth", ctx);
-	assert.deepEqual(widget, ["1. first", "2. second", "3. third", "4. fourth"]);
-
-	// Fifth note rejected.
-	await assert.rejects(handlers["note"]!("fifth", ctx), /full/i);
-
-	const path = join(agentDir, "config", "pi-notes.json");
-	assert.equal(JSON.parse(await readFile(path, "utf8")).length, MAX_NOTES);
-
-	// Menu picks second option for removal.
-	await handlers["note-rm"]!("", ctx);
-	assert.deepEqual(widget, ["1. first", "2. third", "3. fourth"]);
-	await handlers["note-clear"]!("", ctx);
-	assert.deepEqual(widget, ["no notes"]);
-	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), []);
-
-	await assert.rejects(handlers["note-rm"]!("", ctx), /no notes/i);
-});
-
-test("duplicate removal targets selected number and stale picks retry safely", async (t) => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-notes-dup-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = agentDir;
-	t.after(async () => {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(agentDir, { recursive: true, force: true });
-	});
-
-	const path = join(agentDir, "config", "pi-notes.json");
-	const handlers: Record<string, (args: string, ctx: unknown) => Promise<void>> = {};
-	const pi = {
-		on(_event: string, _handler: unknown) { },
-		registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+		registerCommand(name: string, options: { handler: CommandHandler }) {
 			handlers[name] = options.handler;
 		},
 	} as unknown as ExtensionAPI;
 
 	let widget: string[] | undefined;
 	let notified: string | undefined;
-	let picked: (() => Promise<string | undefined>) | undefined;
-	const ctx = {
+	let select: ((options: string[]) => Promise<string | undefined>) | undefined;
+	const context = (cwd: string) => ({
+		cwd,
 		ui: {
-			setWidget(_key: string, content: string[]) { widget = content; },
+			setWidget(_key: string, content: string[] | undefined) { widget = content; },
 			notify(message: string) { notified = message; },
-			select() { return picked ? picked() : Promise.resolve(undefined); },
+			select(_title: string, options: string[]) { return select ? select(options) : Promise.resolve(undefined); },
 		},
-	} as unknown as ExtensionContext;
+	}) as unknown as ExtensionContext;
 
 	notesExtension(pi);
-	for (const text of ["todo", "middle", "todo"]) await handlers["note"]!(text, ctx);
-
-	// Selecting "3. todo" removes the third entry, not the first matching value.
-	picked = () => Promise.resolve(widget![2]);
-	await handlers["note-rm"]!("", ctx);
-	assert.deepEqual(widget, ["1. todo", "2. middle"]);
-	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["todo", "middle"]);
-
-	// Another session reorders notes while the menu is open; in-range stale pick retries.
-	picked = async () => {
-		await writeFile(path, JSON.stringify(["middle", "replacement"]));
-		return "2. middle";
+	return {
+		agentDir,
+		first,
+		second,
+		identities,
+		handlers,
+		context,
+		runSessionStart: (ctx: ExtensionContext) => sessionStart!({}, ctx),
+		widget: () => widget,
+		notified: () => notified,
+		resetNotification: () => { notified = undefined; },
+		pickWith: (fn: (options: string[]) => Promise<string | undefined>) => { select = fn; },
 	};
-	notified = undefined;
-	await handlers["note-rm"]!("", ctx);
-	assert.match(notified!, /changed elsewhere/i);
-	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["middle", "replacement"]);
+}
+
+test("parseNotes validates worktree records", () => {
+	assert.deepEqual(
+		parseNotes('{"repository":"/repo/.git","worktree":"/repo","notes":[" a ","b"]}'),
+		{ repository: "/repo/.git", worktree: "/repo", notes: ["a", "b"] },
+	);
+	assert.throws(() => parseNotes('{"repository":"/repo/.git","worktree":"/repo","notes":["a","b","c","d","e"]}'), TypeError);
+	assert.throws(() => parseNotes('{"repository":"relative","worktree":"/repo","notes":[]}'), TypeError);
+	assert.throws(() => parseNotes('{"repository":"/repo/.git","worktree":"/repo","notes":["  "]}'), TypeError);
+	assert.throws(() => parseNotes('{broken'), SyntaxError);
 });
 
-test("mutating commands refuse to overwrite malformed notes file", async (t) => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-notes-bad-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = agentDir;
-	t.after(async () => {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(agentDir, { recursive: true, force: true });
+test("renderNotes numbers entries and shows placeholder when empty", () => {
+	assert.deepEqual(renderNotes(["a"]), ["1. a"]);
+	assert.deepEqual(renderNotes([]), ["no notes"]);
+});
+
+test("notes persist independently per worktree without startup writes", async (t) => {
+	const h = await harness(t);
+	const firstCtx = h.context(h.first);
+	const secondCtx = h.context(h.second);
+	await h.runSessionStart(firstCtx);
+	assert.deepEqual(h.widget(), ["no notes"]);
+	await assert.rejects(readdir(join(h.agentDir, "config", "pi-notes")), { code: "ENOENT" });
+
+	await h.handlers.note!("first note", firstCtx);
+	await h.runSessionStart(secondCtx);
+	assert.deepEqual(h.widget(), ["no notes"]);
+	await h.handlers.note!("second note", secondCtx);
+	assert.equal((await readdir(join(h.agentDir, "config", "pi-notes"))).filter((name) => name.endsWith(".json")).length, 2);
+
+	await h.runSessionStart(firstCtx);
+	assert.deepEqual(h.widget(), ["1. first note"]);
+	await h.runSessionStart(secondCtx);
+	assert.deepEqual(h.widget(), ["1. second note"]);
+});
+
+test("duplicate removal and stale selections preserve correct worktree notes", async (t) => {
+	const h = await harness(t);
+	const ctx = h.context(h.first);
+	for (const note of ["todo", "middle", "todo"]) await h.handlers.note!(note, ctx);
+	const dir = join(h.agentDir, "config", "pi-notes");
+	const path = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json"))!);
+
+	h.pickWith(async (options) => options[2]);
+	await h.handlers["note-rm"]!("", ctx);
+	assert.deepEqual(parseNotes(await readFile(path, "utf8")).notes, ["todo", "middle"]);
+
+	h.pickWith(async (options) => {
+		const record = parseNotes(await readFile(path, "utf8"));
+		await writeFile(path, JSON.stringify({ ...record, notes: ["middle", "replacement"] }));
+		return options[1];
 	});
+	h.resetNotification();
+	await h.handlers["note-rm"]!("", ctx);
+	assert.match(h.notified()!, /changed elsewhere/i);
+	assert.deepEqual(parseNotes(await readFile(path, "utf8")).notes, ["middle", "replacement"]);
+});
 
-	const path = join(agentDir, "config", "pi-notes.json");
-	await mkdir(dirname(path), { recursive: true });
-	const malformed = "{broken json from user data";
-	await writeFile(path, malformed);
+test("prune removes stale worktree records, preserves malformed files, and clear resets current file", async (t) => {
+	const h = await harness(t);
+	const firstCtx = h.context(h.first);
+	await h.handlers.note!("keep", firstCtx);
+	await h.handlers.note!("stale", h.context(h.second));
+	const dir = join(h.agentDir, "config", "pi-notes");
+	const malformedPath = join(dir, "malformed.json");
+	await writeFile(malformedPath, "{broken user data");
 
-	const handlers: Record<string, (args: string, ctx: unknown) => Promise<void>> = {};
-	const pi = {
-		on(_event: string, _handler: unknown) { },
-		registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
-			handlers[name] = options.handler;
-		},
-	} as unknown as ExtensionAPI;
+	h.identities.delete(h.second);
+	await h.handlers["note-prune"]!("", firstCtx);
+	assert.match(h.notified()!, /Removed 1 stale.*preserved 1 invalid/i);
+	assert.equal((await readdir(dir)).filter((name) => name.endsWith(".json")).length, 2);
+	assert.equal(await readFile(malformedPath, "utf8"), "{broken user data");
 
-	let widget: string[] | undefined;
-	let notified: string | undefined;
-	const ctx = {
-		ui: {
-			setWidget(_key: string, content: string[]) { widget = content; },
-			notify(message: string) { notified = message; },
-			select(_title: string, _options: string[]) { throw new Error("select must not open"); },
-		},
-	} as unknown as ExtensionContext;
+	const currentPath = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json") && name !== "malformed.json")!);
+	await writeFile(currentPath, "{broken current data");
+	h.resetNotification();
+	await h.handlers.note!("blocked", firstCtx);
+	assert.match(h.notified()!, /malformed/i);
+	assert.equal(await readFile(currentPath, "utf8"), "{broken current data");
 
-	notesExtension(pi);
-	await handlers["note"]!("x", ctx);
-	assert.match(notified!, /malformed/i);
-	await handlers["note-rm"]!("", ctx);
-	assert.match(notified!, /malformed/i);
-
-	// Malformed file preserved verbatim.
-	assert.equal(await readFile(path, "utf8"), malformed);
-
-	// /note-clear is the explicit reset.
-	await handlers["note-clear"]!("", ctx);
-	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), []);
-	assert.deepEqual(widget, ["no notes"]);
-
-	notified = undefined;
-	await handlers["note"]!("after reset", ctx);
-	assert.equal(notified, undefined);
-	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["after reset"]);
+	await h.handlers["note-clear"]!("", firstCtx);
+	assert.deepEqual(h.widget(), ["no notes"]);
+	await assert.rejects(readFile(currentPath, "utf8"), { code: "ENOENT" });
+	assert.equal(await readFile(malformedPath, "utf8"), "{broken user data");
 });

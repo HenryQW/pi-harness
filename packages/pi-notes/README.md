@@ -12,11 +12,14 @@ pi install npm:@henryqw/pi-notes
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/note <text>` | command | Add a note to the widget (max 4). |
-| `/note-rm` | command | Pick a note from a menu to remove. |
-| `/note-clear` | command | Remove all notes. |
+| `/note <text>` | command | Add a note for current Git worktree (max 4). |
+| `/note-rm` | command | Pick a note from current worktree to remove. |
+| `/note-clear` | command | Clear current worktree's notes. |
+| `/note-prune` | command | Delete notes for repositories and worktrees that no longer exist. |
 
-Notes render as a numbered widget above the editor and persist across sessions in `~/.pi/agent/config/pi-notes.json`. The file is validated on read; a malformed file blocks `/note` and `/note-rm` until it is fixed or reset via `/note-clear`.
+Notes are isolated per Git worktree, render as a numbered widget above editor, and persist across sessions under `~/.pi/agent/config/pi-notes/`. Startup only reads config. `/note-prune` is explicit stale-data cleanup.
+
+Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for affected worktree until fixed or reset with `/note-clear`; `/note-prune` reports but never deletes malformed files.
 
 ## Remove
 
