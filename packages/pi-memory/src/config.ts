@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
+// Repository-mandated single-extension config path boundary (root AGENTS.md).
+export const configPath = () => join(getAgentDir(), "config", "pi-memory.json");
+
 export interface MemoryConfig {
 	directory: string;
 	memoryCharLimit: number;
@@ -16,10 +19,13 @@ export const DEFAULT_MEMORY_CHAR_LIMIT = 8800;
 export const DEFAULT_USER_CHAR_LIMIT = 5500;
 
 export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
-	const configPath = explicitPath ?? join(getAgentDir(), "config", "pi-memory.json");
+	const path = explicitPath ?? configPath();
 	let raw: string;
 	try {
-		raw = readFileSync(configPath, "utf8");
+		// Fatal decode: invalid UTF-8 must surface as malformed config, not a
+		// U+FFFD-replaced view that could pass path checks and silently redirect
+		// the memory directory.
+		raw = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path));
 	} catch (error: unknown) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
 			return {
@@ -27,6 +33,9 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 				memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
 				userCharLimit: DEFAULT_USER_CHAR_LIMIT,
 			};
+		}
+		if (error instanceof TypeError) {
+			throw new Error(`Malformed memory config at ${path}: invalid UTF-8.`);
 		}
 		throw error;
 	}
@@ -36,11 +45,11 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 		parsed = JSON.parse(raw);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Malformed JSON in memory config at ${configPath}: ${message}`);
+		throw new Error(`Malformed JSON in memory config at ${path}: ${message}`);
 	}
 
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error(`Memory config at ${configPath} must be a JSON object.`);
+		throw new Error(`Memory config at ${path} must be a JSON object.`);
 	}
 
 	const obj = parsed as Record<string, unknown>;
@@ -50,17 +59,17 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 	const KNOWN_KEYS = ["directory", "memoryCharLimit", "userCharLimit"];
 	for (const key of Object.keys(obj)) {
 		if (!KNOWN_KEYS.includes(key)) {
-			throw new Error(`Unknown key '${key}' in memory config at ${configPath}. Expected: ${KNOWN_KEYS.join(", ")}.`);
+			throw new Error(`Unknown key '${key}' in memory config at ${path}. Expected: ${KNOWN_KEYS.join(", ")}.`);
 		}
 	}
 
 	let directory = DEFAULT_DIRECTORY();
 	if (obj.directory !== undefined) {
 		if (typeof obj.directory !== "string" || obj.directory.trim() === "") {
-			throw new Error(`Invalid 'directory' in memory config at ${configPath}: must be a non-empty string, got ${JSON.stringify(obj.directory)}`);
+			throw new Error(`Invalid 'directory' in memory config at ${path}: must be a non-empty string, got ${JSON.stringify(obj.directory)}`);
 		}
 		if (!isAbsolute(obj.directory)) {
-			throw new Error(`Invalid 'directory' in memory config at ${configPath}: must be an absolute path, got ${JSON.stringify(obj.directory)}`);
+			throw new Error(`Invalid 'directory' in memory config at ${path}: must be an absolute path, got ${JSON.stringify(obj.directory)}`);
 		}
 		directory = obj.directory;
 	}
@@ -69,7 +78,7 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 	if (obj.memoryCharLimit !== undefined) {
 		const val = obj.memoryCharLimit;
 		if (typeof val !== "number" || !Number.isSafeInteger(val) || val <= 0 || val > 100_000) {
-			throw new Error(`Invalid 'memoryCharLimit' in memory config at ${configPath}: must be a positive safe integer <= 100000, got ${JSON.stringify(val)}`);
+			throw new Error(`Invalid 'memoryCharLimit' in memory config at ${path}: must be a positive safe integer <= 100000, got ${JSON.stringify(val)}`);
 		}
 		memoryCharLimit = val;
 	}
@@ -78,7 +87,7 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 	if (obj.userCharLimit !== undefined) {
 		const val = obj.userCharLimit;
 		if (typeof val !== "number" || !Number.isSafeInteger(val) || val <= 0 || val > 100_000) {
-			throw new Error(`Invalid 'userCharLimit' in memory config at ${configPath}: must be a positive safe integer <= 100000, got ${JSON.stringify(val)}`);
+			throw new Error(`Invalid 'userCharLimit' in memory config at ${path}: must be a positive safe integer <= 100000, got ${JSON.stringify(val)}`);
 		}
 		userCharLimit = val;
 	}

@@ -174,17 +174,24 @@ export class MemoryStore {
 	 * rather than treat it as an empty store.
 	 */
 	private async readFileState(target: Target): Promise<FileState> {
-		// Bounded read: at most MAX_FILE_BYTES + 1 bytes leave the filesystem, so
-		// a huge synced file can't exhaust memory before the size check runs.
+		// Bounded, EOF-complete read: at most MAX_FILE_BYTES + 1 bytes leave the
+		// filesystem (so a huge synced file can't exhaust memory), and we keep
+		// reading until EOF so a short read from a network/synced filesystem can
+		// never be mistaken for the whole file.
 		let handle: import("node:fs/promises").FileHandle | undefined;
 		try {
 			handle = await open(this.pathFor(target), "r");
 			const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
-			const { bytesRead } = await handle.read(buffer, 0, MAX_FILE_BYTES + 1, 0);
-			if (bytesRead > MAX_FILE_BYTES) return { kind: "oversized", bytes: bytesRead };
+			let total = 0;
+			for (;;) {
+				if (total > MAX_FILE_BYTES) return { kind: "oversized", bytes: total };
+				const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
+				total += bytesRead;
+				if (bytesRead === 0) break; // EOF
+			}
 			// Fatal decode: invalid UTF-8 counts as unreadable — a lossy replacement
 			// view could get persisted back over the real bytes.
-			return { kind: "ok", raw: new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead)) };
+			return { kind: "ok", raw: new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)) };
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
 			return { kind: "unreadable" };

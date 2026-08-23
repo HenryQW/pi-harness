@@ -50,7 +50,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		const injected = await before({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.match(injected.systemPrompt, /MEMORY \(your personal notes\).*stable fact/s);
 		assert.match(injected.systemPrompt, /USER PROFILE.*likes concise replies/s);
-		assert.match(injected.systemPrompt, /unexpected file "MEMORY \(conflicted copy\)\.md" in the memory directory/);
+		assert.match(injected.systemPrompt, /1 unexpected file in the memory directory \("MEMORY \(conflicted copy\)\.md"\)/);
 
 		const saved = await memoryTool.execute("add", { action: "add", content: "new live fact" });
 		assert.deepEqual(JSON.parse(saved.content[0]!.text), {
@@ -223,6 +223,42 @@ test("init failure disables extension silently; oversized and capped snapshots w
 		} finally {
 			await rm(root2, { recursive: true, force: true });
 		}
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("first oversized entry is omitted with warning; unexpected-file warnings are bounded", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-cap2-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory.json"), JSON.stringify({ directory: memoryDir, memoryCharLimit: 50 }));
+		// Single entry far over cap.
+		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(500));
+		// Five stray files -> one bounded warning listing at most 3 names.
+		for (const name of ["a(1).md", "b(1).md", "c(1).md", "d(1).md", "e(1).md"]) {
+			await writeFile(join(memoryDir, name), "stray");
+		}
+		const handlers = new Map<string, Handler>();
+		let tool: CapturedTool | undefined;
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerTool(value: CapturedTool) { tool = value; },
+		} as unknown as ExtensionAPI);
+		await handlers.get("session_start")!({ type: "session_start" });
+		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
+		assert.ok(!injected.systemPrompt.includes("x".repeat(100)), "oversized single entry must not be injected");
+		assert.match(injected.systemPrompt, /1 entry was omitted/);
+		assert.match(injected.systemPrompt, /5 unexpected files in the memory directory \("a\(1\)\.md", "b\(1\)\.md", "c\(1\)\.md" and 2 more\)/);
+		assert.doesNotMatch(injected.systemPrompt, /"e\(1\)\.md"/);
+		void tool;
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

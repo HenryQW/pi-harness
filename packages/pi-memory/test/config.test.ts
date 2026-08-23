@@ -128,3 +128,15 @@ test("unknown keys fail fast instead of silently using defaults", async () => {
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+test("invalid UTF-8 in config fails as malformed instead of U+FFFD substitution", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-memory-config-"));
+	const badPath = join(dir, "pi-memory.json");
+	try {
+		const bytes = Buffer.concat([Buffer.from(JSON.stringify({ directory: "/tmp/" }), "utf-8"), Buffer.from([0xff])]);
+		await writeFile(badPath, bytes);
+		assert.throws(() => loadMemoryConfig(badPath), /invalid UTF-8/);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});

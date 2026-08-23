@@ -50,7 +50,9 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 	let omitted = 0;
 	for (const entry of entries) {
 		const cost = entry.length + (kept.length ? ENTRY_DELIMITER.length : 0);
-		if (used + cost > limit && kept.length > 0) {
+		// No kept.length exemption: a single oversized entry (manual edit or sync)
+		// must be omitted too, or it defeats the advertised context cap.
+		if (used + cost > limit) {
 			omitted = entries.length - kept.length;
 			break;
 		}
@@ -64,6 +66,9 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 	if (omitted > 0) {
 		warnings.push(`WARNING: ${target} store is over its character cap; ${omitted} entr${omitted === 1 ? "y was" : "ies were"} omitted from this snapshot. Consolidate stale entries via a memory batch.`);
 	}
+	// Everything omitted (e.g. one entry larger than the whole cap): no block,
+	// the standalone warning above still reaches the prompt.
+	if (!kept.length) return "";
 	const usage = `${Math.min(100, Math.floor((used / limit) * 100))}% — ${used.toLocaleString()}/${limit.toLocaleString()} chars`;
 	const header = target === "user" ? "USER PROFILE (who the user is)" : "MEMORY (your personal notes)";
 	return `${SEPARATOR}\n${header} [${usage}]\n${SEPARATOR}\n${content}`;
@@ -106,10 +111,15 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			]);
 			const conflictWarnings = [memory.conflictWarning, user.conflictWarning].filter((warning): warning is string => !!warning);
 			// Directory contract is exactly MEMORY.md + USER.md — warn on ANY other
-			// regular file (iCloud conflict copies, stray edits) without guessing
-			// its origin from the name.
-			for (const entry of siblings.filter((sibling) => sibling.isFile() && sibling.name !== "MEMORY.md" && sibling.name !== "USER.md").map((sibling) => sibling.name).sort()) {
-				conflictWarnings.push(`WARNING: unexpected file "${sanitizeName(entry)}" in the memory directory. Only MEMORY.md and USER.md are loaded; reconcile or remove the rest.`);
+			// regular file (iCloud conflict copies, stray edits) without guessing its
+			// origin from the name. Bound the list so pointing directory at a large
+			// existing folder can't flood the system prompt.
+			const MAX_LISTED_FILES = 3;
+			const unexpected = siblings.filter((sibling) => sibling.isFile() && sibling.name !== "MEMORY.md" && sibling.name !== "USER.md").map((sibling) => sibling.name).sort();
+			if (unexpected.length > 0) {
+				const listed = unexpected.slice(0, MAX_LISTED_FILES).map((name) => `"${sanitizeName(name)}"`).join(", ");
+				const more = unexpected.length > MAX_LISTED_FILES ? ` and ${unexpected.length - MAX_LISTED_FILES} more` : "";
+				conflictWarnings.push(`WARNING: ${unexpected.length} unexpected file${unexpected.length === 1 ? "" : "s"} in the memory directory (${listed}${more}). Only MEMORY.md and USER.md are loaded; reconcile or remove the rest.`);
 			}
 
 			state.config = config;
