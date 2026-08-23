@@ -26,9 +26,11 @@ Both commands wait until Pi is idle, then validate the current Herdr pane (`HERD
 ### `/clone-worktree` behavior
 
 1. Creates a Git worktree-backed workspace with `herdr worktree create --workspace <current-workspace> --no-focus`; Herdr creates the branch from `HEAD` unless the name exists, checks out the worktree under its configured `worktrees.directory`, and opens it as a grouped workspace.
-2. Copies the active path into a clone session stamped with the fresh checkout path as its working directory.
-3. Starts Pi in the new workspace's root pane (whose shell runs inside the checkout) with `--session <absolute-clone-file>`.
-4. Focuses the new tab after Pi starts successfully.
+2. Waits briefly for any worktree-layout plugin (for example `herdr-plus`) to start its own agent in the new workspace's root pane.
+3. If the root pane is occupied, creates an additional unfocused tab in the new workspace with the checkout as its working directory, so the plugin's agent and the clone coexist. Otherwise the clone uses the root pane.
+4. Copies the active path into a clone session stamped with the fresh checkout path as its working directory.
+5. Starts Pi in the chosen pane with `--session <absolute-clone-file>`.
+6. Focuses the clone's tab after Pi starts successfully.
 
 ### Failure semantics
 

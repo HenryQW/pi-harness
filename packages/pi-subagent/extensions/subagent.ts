@@ -4,23 +4,26 @@ import { basename } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import {
 	availableTaskModels,
+	THINKING_LEVELS,
+	type ThinkingLevel,
 	modelReference,
 	PROFILE_NAMES,
 	type ProfileName,
 	resolveAvailableModel,
+	resolveConfiguredTaskRoute,
 	type ResolvedTaskRoute,
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
 import { Type } from "typebox";
-import { createRoleLaunch, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute } from "@henryqw/pi-subagent";
+import { createRoleLaunch, isProfileName, loadRoles, resolveTaskRoute } from "@henryqw/pi-subagent";
 
 const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
-const MAX_ACTIVE_CHILDREN = 4;
 const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
 const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
 const WIDGET_KEY = "subagent-status";
@@ -35,6 +38,16 @@ const DEFAULT_TIMEOUT_POLICY = {
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type TimeoutPolicy = typeof DEFAULT_TIMEOUT_POLICY;
+
+/** Merge validated config-file timeout fields over defaults; absent keys keep defaults. */
+export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined): TimeoutPolicy {
+	const policy: TimeoutPolicy = { ...DEFAULT_TIMEOUT_POLICY };
+	if (!partial) return policy;
+	if (partial.softMinutes !== undefined) policy.softMs = partial.softMinutes * 60_000;
+	if (partial.graceMinutes !== undefined) policy.graceMs = partial.graceMinutes * 60_000;
+	if (partial.activeWindowSeconds !== undefined) policy.activeWindowMs = partial.activeWindowSeconds * 1_000;
+	return policy;
+}
 type ModelClass = ProfileName;
 class SubagentTimeoutError extends Error {}
 type ChildResult = {
@@ -429,17 +442,34 @@ const Parameters = Type.Object({
 	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
 		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning; fav for the user's favorite model when they ask for it. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
+	background: Type.Optional(Type.Boolean({
+		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles; the result cannot be waited on. Set only when the user explicitly asks for non-blocking delegation. Prefer blocking delegation whenever the parent needs the result to continue.",
+	})),
+	thinking: Type.Optional(StringEnum(THINKING_LEVELS, {
+		description: "Override the resolved route's thinking level (e.g. when the user asks for deeper or lighter reasoning). Must be supported by the resolved model.",
+	})),
 });
 
-function resolveDesignatedRoute(ctx: ExtensionContext, reference: string): ResolvedTaskRoute {
+function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinking?: ThinkingLevel): ResolvedTaskRoute {
 	const models = availableTaskModels(ctx);
 	const model = resolveAvailableModel(models, reference, ctx.model?.provider);
 	if (!model) {
 		throw new Error(`Unknown delegate_task model: ${reference}. Available models: ${models.map((candidate) => modelReference(candidate)).join(", ") || "none"}.`);
 	}
 	const levels = taskThinkingLevels(ctx, model);
+		if (thinking !== undefined) {
+		if (!levels.includes(thinking)) {
+			throw new Error(`delegate_task thinking ${thinking} is not usable for ${modelReference(model)} in this session. Usable levels here: ${levels.join(", ") || "none"}.`);
+		}
+		return { model, thinkingLevel: thinking };
+	}
+	if (!levels.length) {
+		throw new Error(`${modelReference(model)} has no usable thinking level in this session; pick another model or adjust the scoped thinking pin.`);
+	}
 	return { model, thinkingLevel: levels.includes("medium") ? "medium" : levels.at(-1)! };
 }
+
+const BACKGROUND_RESULT_TYPE = "subagent-background-result";
 
 const roleSummary = (): string => {
 	try {
@@ -452,14 +482,47 @@ const roleSummary = (): string => {
 
 export default function subagentExtension(
 	pi: ExtensionAPI,
-	timeoutPolicy: TimeoutPolicy = DEFAULT_TIMEOUT_POLICY,
+	overrideTimeoutPolicy?: TimeoutPolicy,
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
+	// Each child is a full Pi process issuing its own model calls; cap parallel
+	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent.json
+	// maxSubagents > default 5. Invalid config falls back to the default and is
+	// reported once the UI exists; an invalid env value fails fast.
+	const loadedConfig = readSubagentConfig();
+	const startupWarnings = [loadedConfig.error].filter((message): message is string => message !== undefined);
+	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
+	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+	if (maxSubagentsRaw !== undefined) {
+		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes —
+		// and digit strings that overflow to Infinity, which would disable the cap.
+		if (!/^\d+$/.test(maxSubagentsRaw) || !/^[1-9]\d*$/.test(maxSubagentsRaw)) {
+			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`);
+		}
+		const parsed = Number.parseInt(maxSubagentsRaw, 10);
+		if (!Number.isSafeInteger(parsed)) {
+			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS exceeds the supported range, got ${JSON.stringify(maxSubagentsRaw)}.`);
+		}
+		maxActiveSubagents = parsed;
+	}
+	let backgroundSequence = 0;
+	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
+	// config file over defaults.
+	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
+	// Background children outlive the launching tool call, so they get their own
+	// abort signal: tied to the session, not to the turn that started them.
+	const backgroundTasks = new Map<string, AbortController>();
+	// Latest known session context; refreshed on session lifecycle and model
+	// changes so queued background launches resolve against effective state.
+	let latestCtx: ExtensionContext | undefined;
+	// Bumped by session_start and session_shutdown; background tasks may only
+	// deliver into the exact session that launched them.
+	let sessionEpoch = 0;
 	let activeChildren = 0;
 	const queuedChildren: Array<() => void> = [];
 	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
 		if (signal?.aborted) return Promise.reject(new Error("Subagent was aborted."));
-		if (activeChildren < MAX_ACTIVE_CHILDREN) {
+		if (activeChildren < maxActiveSubagents) {
 			activeChildren++;
 			return Promise.resolve();
 		}
@@ -561,7 +624,10 @@ export default function subagentExtension(
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		sessionEpoch += 1;
+		latestCtx = ctx;
 		ensureWidget(ctx);
+		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		stopWidgetTimer();
@@ -569,18 +635,54 @@ export default function subagentExtension(
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
+		// Invalidate every outstanding background delivery: the aborting session
+		// is gone, and a later-settling child must not reach the next session.
+		sessionEpoch += 1;
+		for (const controller of backgroundTasks.values()) controller.abort();
+		backgroundTasks.clear();
 	});
+	// btw-style context refresh: model_select carries the new model on the event,
+	// agent_settled delivers the freshest full context after each turn.
+	pi.on("model_select", (event, ctx) => {
+		latestCtx = { ...ctx, model: event.model } as ExtensionContext;
+	});
+	pi.on("agent_settled", (_event, ctx) => {
+		latestCtx = ctx;
+	});
+
+	const reportBackground = async (
+		launchEpoch: number,
+		taskId: string,
+		details: { role: string; model?: string; thinkingLevel?: string },
+		outcome: "completed" | "failed" | "aborted",
+		text: string,
+	): Promise<void> => {
+		if (launchEpoch !== sessionEpoch) return;
+		// Custom messages convert to user-role LLM messages, so the parent agent
+		// sees the outcome on its next turn without a forced turn now.
+		try {
+			pi.sendMessage({
+				customType: BACKGROUND_RESULT_TYPE,
+				content: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}`,
+				display: true,
+				details: { ...details, taskId, outcome },
+			}, { triggerTurn: false });
+		} catch {
+			// Session may already be gone; the widget row still shows the outcome.
+		}
+	};
 
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, frontier for ambiguous and high-risk work, or fav when the user asks for their favorite model; omit modelClass to use shared task-model settings. When the user designates a specific model, pass it as provider/modelId in model.`,
+		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate one bounded, independently executable task to an isolated role",
 		promptGuidelines: [
 			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
 			"Each delegate_task task must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
 			"Use fav when the user explicitly asks for their favorite model. Otherwise, choose the least capable modelClass that can reliably complete the task: fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
 			"Submit independent delegate_task calls together for parallel execution. Parallel edits must own non-overlapping files; otherwise sequence them. Use the minimum number of Subagents needed.",
+			"Use background: true only when the user explicitly asks for non-blocking delegation (for example \"keep working while this runs\"); the result arrives as a message after the current turn and the parent must not assume it is available yet.",
 		],
 		parameters: Parameters,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -594,28 +696,104 @@ export default function subagentExtension(
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
 			}
-			const launch = params.model !== undefined
-				? createRoleLaunch(pi, ctx, { role, route: resolveDesignatedRoute(ctx, cleanText(params.model, "model", "delegate_task")) })
-				: params.modelClass === undefined
-					? resolveRoleLaunch(pi, ctx, { role, taskId: SUBAGENT_TASK })
-					: createRoleLaunch(pi, ctx, { role, route: resolveTaskRoute(ctx, params.modelClass) });
-			const modelReferenceValue = modelReference(launch.model);
-			const thinkingLevel = launch.thinkingLevel;
-			if (launch.missingSkills.length) {
-				ctx.ui.notify(
-					`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
-					"warning",
-				);
+			// Resolve against the latest known session context: a task queued past
+			// the cap must pick up model or Codex account changes that happened
+			// while it waited.
+			const launchCtx = () => latestCtx ?? ctx;
+			// The explicit thinking override participates in route resolution itself:
+			// routes that cannot honor it are skipped so fallback routes get considered.
+			const resolveLaunch = () => createRoleLaunch(pi, launchCtx(), {
+				role,
+				route: params.model !== undefined
+					? resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task"), params.thinking)
+					: params.modelClass === undefined
+						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK, undefined, params.thinking)
+						: resolveTaskRoute(launchCtx(), params.modelClass, undefined, params.thinking),
+			});
+			const notifyMissingSkills = (launch: ReturnType<typeof resolveLaunch>) => {
+				if (launch.missingSkills.length) {
+					ctx.ui.notify(
+						`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
+						"warning",
+					);
+				}
+			};
+
+			if (params.background) {
+				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
+				const controller = new AbortController();
+				backgroundTasks.set(taskId, controller);
+				// Freeze the launching session now: a task that settles after a
+				// reload must not deliver into whichever session is active then.
+				const launchEpoch = sessionEpoch;
+				void (async () => {
+					let acquired = false;
+					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
+					// Role is known up front; model/thinking join after launch resolution.
+					let details: { role: string; model?: string; thinkingLevel?: string } = { role: role.name };
+					try {
+						await acquireChildPermit(controller.signal);
+						acquired = true;
+						// Resolve resources only once launched: a task queued past the
+						// cap must not start with model routes or skills resolved before
+						// registries or accounts changed while it waited.
+						const launch = resolveLaunch();
+						notifyMissingSkills(launch);
+						details = { role: role.name, model: modelReference(launch.model), thinkingLevel: launch.thinkingLevel };
+						startWidgetItem(taskId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
+						const result = await runPi(
+							["--mode", "json", "-p", ...launch.args, `Task: ${task}`],
+							ctx.cwd,
+							controller.signal,
+							undefined,
+							(tokens) => updateWidgetTokens(taskId, tokens),
+							timeoutPolicy,
+						);
+						const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+						widgetStatus = result.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
+						const text = capOutput(failed
+							? result.errorMessage || result.stderr.trim() || result.output || `Subagent exited with code ${result.exitCode}.`
+							: result.output || "(no output)");
+						await reportBackground(
+							launchEpoch,
+							taskId,
+							details,
+							result.stopReason === "aborted" ? "aborted" : failed ? "failed" : "completed",
+							text,
+						);
+					} catch (error) {
+						const aborted = controller.signal.aborted && !(error instanceof SubagentTimeoutError);
+						widgetStatus = aborted ? "aborted" : "failure";
+						await reportBackground(
+							launchEpoch,
+							taskId,
+							details,
+							aborted ? "aborted" : "failed",
+							capOutput(error instanceof Error ? error.message : String(error)),
+						);
+					} finally {
+						if (acquired) releaseChildPermit();
+						finishWidgetItem(taskId, widgetStatus);
+						backgroundTasks.delete(taskId);
+					}
+				})();
+				return {
+					content: [{ type: "text" as const, text: `Background subagent ${taskId} started (${role.name}). The outcome arrives as a message when the task settles; keep working or end your turn.` }],
+					details: { role: role.name, taskId, background: true },
+				};
 			}
 
-			const args = ["--mode", "json", "-p", ...launch.args, `Task: ${task}`];
+			const launch = resolveLaunch();
+			notifyMissingSkills(launch);
+			const modelReferenceValue = modelReference(launch.model);
+			const details = { role: role.name, model: modelReferenceValue, thinkingLevel: launch.thinkingLevel };
+
 			await acquireChildPermit(signal);
 			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 			try {
-				startWidgetItem(toolCallId, role.name, launch.model.id, thinkingLevel, task, ctx);
-				const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
+				startWidgetItem(toolCallId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
 				const result = await runPi(
-					args,
+					["--mode", "json", "-p", ...launch.args, `Task: ${task}`],
 					ctx.cwd,
 					signal,
 					(text) => onUpdate?.({ content: [{ type: "text", text }], details }),
