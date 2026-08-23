@@ -1,0 +1,23 @@
+# 007. pi-auto-dag Trust Model
+
+- **Status:** accepted
+- **Date:** 2026-08-09, updated 2026-08-11 (migrated from Obsidian vault)
+
+## Context
+
+Auto DAG orchestrates planning review, user approval, worker execution, required test gates, and recovery. Semantic review, approval, execution, and recovery must all refer to the same validated plan, and capabilities must stay confined to the process responsible for each phase.
+
+## Decision
+
+- **Canonical graph.** Treat main-worktree `.context/issues/graph.json` as the sole canonical Delivery Graph; require a hash-bound Planning Review PASS before approval, and freeze the approved graph during execution. Graph changes require a new draft review and approval; Run State persists and verifies the approved graph hash. A mutable graph or review evidence not bound to graph content could execute work the reviewer or user never approved.
+- **Separate entry points.** Separate Auto DAG main-integration and worker entry points, granting workers only role- and phase-valid tools. The main profile loads `auto-dag.ts` only; Auto DAG injects `worker.ts` with scoped tools when launching workers, so reusable worker profiles do not depend on Auto DAG. One autoloaded extension would expose lifecycle control to workers or worker reporting tools to the main profile.
+- **Run-local main.** Treat the frozen integration branch and integration HEAD as run-local main. Moving default refs never invalidates an active run. Default branch freezes only as PR target; active boundary checks verify clean attached worktree, branch, HEAD, and graph hash.
+- **Auto DAG owns required gates.** Make Auto DAG, not reviewers, own every required test gate. The exact effective command — approved `issue.testing` text or latest user-confirmed Gate Command Amendment — is run with verified commit identity, exit code, stdout, and stderr; these are orchestration facts that model echoes cannot establish. Auto DAG executes the exact effective command unchanged in a clean isolated worktree before reviewer dispatch, persists commit-bound evidence, and rejects approval on nonzero exit. Reviewers may run extra diagnostics and submit only verdict and findings.
+- **Retain completed gate handoff until evidence is durable.** Removing process journals or output spools before atomic evidence persistence would let crash recovery rerun already-completed commands and lose output. The version 4 gate journal binds execution to task or health owner; the detached gate host owns deadline, output capture, child process-group cleanup, and completion recording, and the journal is acknowledged only after cleanup and Run State save. Resume reuses completed results; evidence copying leaves source spools intact until acknowledgment.
+- **Filesystem-boundary isolation of ignored gate resources.** Snapshots and copies reject absolute, dangling, protected-state, source-worktree-escaping, or unusable copied symlinks; final-gate provisioning cleans the destination before copying current ignored roots. Preserved escaping symlinks could mutate paths cleanup cannot restore, and retained final-gate worktrees can hold stale ignored resources after interruption.
+- **Bounded, ownership-aligned review handoffs.** Auto DAG owns deterministic Git verification. Fresh reviewers receive one canonical Review Packet; existing reviewers receive only changed gate/findings/resolution data; no-change resume sends only `auto_dag_resend`. Gate streams use bounded excerpts, with full truncated output retained in Run State and exposed through SHA-256-bound files. Reviewers still submit only verdict and findings.
+- **User-confirmed gate command amendments.** Permit user-confirmed Required Gate Command Amendments without mutating the approved Delivery Graph. Only persisted nonzero gate evidence before reviewer launch may be amended. The TUI displays the escaped exact run, issue, failed commit, old command, new command, and reason; confirmation is bound to current run, command, and commit. Auto DAG appends the amendment to Run State, atomically clears failed evidence, reruns the same commit, preserves graph/hash and commits, and applies the latest amendment to retries, Final Check repairs, and PR-health gates. Automatic or agent-selected replacements would weaken approval and evidence guarantees; replanning would lose active-run progress.
+
+## Notes
+
+Related files: `packages/pi-auto-dag/src/graph.ts`, `src/planning-review.ts`, `src/state.ts`, `extensions/auto-dag.ts`, `extensions/worker.ts`, `src/worker.ts`, `src/config.ts`, `src/model.ts`, `src/command.ts`, `src/final-gate.ts`, `src/orchestration.ts`, `src/pr-lifecycle.ts`, `src/pr-health.ts`, `src/review.ts`, `src/lifecycle.ts`, `src/orchestrator.ts`.

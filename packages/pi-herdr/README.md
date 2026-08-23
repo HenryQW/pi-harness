@@ -13,8 +13,7 @@ npm install @henryqw/pi-herdr
 ```ts
 import { createHerdrClient } from "@henryqw/pi-herdr";
 
-const herdr = createHerdrClient((command, args, options) =>
-	pi.exec(command, [...args], options));
+const herdr = createHerdrClient(pi.exec.bind(pi));
 const response = await herdr.json(["agent", "list"], { cwd: ctx.cwd });
 ```
 

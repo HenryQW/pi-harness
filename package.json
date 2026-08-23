@@ -31,7 +31,8 @@
       "./packages/pi-herdr-clone/extensions",
       "./packages/pi-herdr-done/extensions",
       "./packages/pi-multi-codex/extensions",
-      "./packages/pi-subagent/extensions/subagent.ts"
+      "./packages/pi-subagent/extensions/subagent.ts",
+      "./packages/pi-memory/extensions/memory.ts"
     ]
   },
   "scripts": {

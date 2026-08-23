@@ -2,10 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode } from "@henryqw/pi-herdr";
 import {
-	orderedProfileRoutes,
-	readTaskModelsConfig,
-	resolveTaskModelRoute,
+	resolveConfiguredTaskRoutes,
 	type ResolvedTaskRoute,
+	type TaskRouteError,
 } from "@henryqw/pi-task-models";
 import {
 	buildSessionContext,
@@ -51,7 +50,6 @@ import {
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
 
 const BTW_TASK = "pi-herdr-btw/btw";
-const DEFAULT_BTW_PROFILE = "fast" as const;
 const CHILD_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000;
 const LITERAL_DRAFT_PREFIX = "\u200b";
 const MERGE_POLL_INTERVAL_MS = 3_000;
@@ -96,20 +94,18 @@ function sameStringArray(a: string[], b: string[]): boolean {
 }
 
 function configuredBtwRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
-	let config;
 	try {
-		config = readTaskModelsConfig();
-	} catch {
-		throw new Error("Couldn't read task model config. Run /task-models.");
+		return resolveConfiguredTaskRoutes(ctx, BTW_TASK);
+	} catch (error) {
+		const { taskRouteCode, profileName } = error as TaskRouteError;
+		throw new Error(
+			taskRouteCode === "profile-missing"
+				? `BTW task profile ${profileName} is not configured. Run /task-models.`
+				: taskRouteCode === "no-route"
+					? `BTW task profile ${profileName} has no available route. Run /task-models.`
+					: "Couldn't read task model config. Run /task-models.",
+		);
 	}
-	const profileName = config.tasks[BTW_TASK] ?? DEFAULT_BTW_PROFILE;
-	const profile = config.profiles[profileName];
-	if (!profile) throw new Error(`BTW task profile ${profileName} is not configured. Run /task-models.`);
-	const routes = orderedProfileRoutes(profile)
-		.map((route) => resolveTaskModelRoute(ctx, route))
-		.filter((route): route is ResolvedTaskRoute => route !== undefined);
-	if (!routes.length) throw new Error(`BTW task profile ${profileName} has no available route. Run /task-models.`);
-	return routes;
 }
 
 /**
@@ -140,8 +136,7 @@ async function configureChild(
 	store: ContextStorePort,
 	payloadPath: string,
 ): Promise<void> {
-	const herdr = createHerdrClient<HerdrOptions>((command, args, options) =>
-		pi.exec(command, [...args], options));
+	const herdr = createHerdrClient<HerdrOptions>(pi.exec.bind(pi));
 	let payload: BtwPayload | undefined;
 	let payloadError: string | undefined;
 
@@ -410,8 +405,7 @@ export async function registerBtwExtension(
 	}
 
 	const configStore = options.configStore ?? new ConfigStore();
-	const herdr = createHerdrClient<HerdrOptions>((command, args, options) =>
-		pi.exec(command, [...args], options));
+	const herdr = createHerdrClient<HerdrOptions>(pi.exec.bind(pi));
 
 	// --- Parent-side merge coordination ---------------------------------
 	let sessionCtx:

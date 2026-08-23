@@ -8,8 +8,7 @@ type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
 type TabEntry = { tab_id?: unknown; workspace_id?: unknown; label?: unknown };
 
 export default function herdrDoneExtension(pi: ExtensionAPI): void {
-	const herdr = createHerdrClient<{ cwd: string }>((command, args, options) =>
-		pi.exec(command, [...args], options));
+	const herdr = createHerdrClient<{ cwd: string }>(pi.exec.bind(pi));
 
 	const execOrThrow = async (command: string, args: string[], cwd: string): Promise<string> => {
 		const result = await pi.exec(command, args, { cwd }) as unknown as ExecResult;

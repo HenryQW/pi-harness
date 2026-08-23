@@ -27,7 +27,7 @@
     "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "dependencies": {
-    "@henryqw/pi-herdr": "^0.2.0"
+    "@henryqw/pi-herdr": "^0.3.0"
   },
   "repository": {
     "type": "git",
