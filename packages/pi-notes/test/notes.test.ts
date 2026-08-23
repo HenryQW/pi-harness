@@ -9,7 +9,7 @@ import notesExtension, { MAX_NOTES, parseNotes, renderNotes } from "../extension
 test("parseNotes validates untrusted file content", () => {
 	assert.deepEqual(parseNotes('["a","b"]'), ["a", "b"]);
 	assert.deepEqual(parseNotes('["a", 42, null, "", "  ", "b", "c", "d", "e"]'), ["a", "b", "c", "d"]);
-	assert.deepEqual(parseNotes('{"not":"an array"}'), []);
+	assert.throws(() => parseNotes('{"not":"an array"}'), TypeError);
 	assert.throws(() => parseNotes("not json"), SyntaxError);
 	assert.throws(() => parseNotes('{broken'), SyntaxError);
 });
@@ -38,11 +38,12 @@ test("note commands add, remove, and clear persisted notes", async (t) => {
 	} as unknown as ExtensionAPI;
 
 	let widget: string[] | undefined;
+	let picked: string | undefined;
 	const ctx = {
 		ui: {
 			setWidget(_key: string, content: string[]) { widget = content; },
 			notify(message: string) { throw new Error(message); },
-			select(_title: string, options: string[]) { return Promise.resolve(options[1]); },
+			select(_title: string, _options: string[]) { return Promise.resolve(picked ?? widget![1]); },
 		},
 	} as unknown as ExtensionContext;
 
@@ -59,7 +60,7 @@ test("note commands add, remove, and clear persisted notes", async (t) => {
 	const path = join(agentDir, "config", "pi-notes.json");
 	assert.equal(JSON.parse(await readFile(path, "utf8")).length, MAX_NOTES);
 
-	// Menu picks second option ("2. second") for removal.
+	// Menu picks second option for removal.
 	await handlers["note-rm"]!("", ctx);
 	assert.deepEqual(widget, ["1. first", "2. third", "3. fourth"]);
 	await handlers["note-clear"]!("", ctx);
@@ -67,6 +68,56 @@ test("note commands add, remove, and clear persisted notes", async (t) => {
 	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), []);
 
 	await assert.rejects(handlers["note-rm"]!("", ctx), /no notes/i);
+});
+
+test("duplicate removal targets selected number and stale picks retry safely", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-notes-dup-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(async () => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	});
+
+	const path = join(agentDir, "config", "pi-notes.json");
+	const handlers: Record<string, (args: string, ctx: unknown) => Promise<void>> = {};
+	const pi = {
+		on(_event: string, _handler: unknown) { },
+		registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+			handlers[name] = options.handler;
+		},
+	} as unknown as ExtensionAPI;
+
+	let widget: string[] | undefined;
+	let notified: string | undefined;
+	let picked: (() => Promise<string | undefined>) | undefined;
+	const ctx = {
+		ui: {
+			setWidget(_key: string, content: string[]) { widget = content; },
+			notify(message: string) { notified = message; },
+			select() { return picked ? picked() : Promise.resolve(undefined); },
+		},
+	} as unknown as ExtensionContext;
+
+	notesExtension(pi);
+	for (const text of ["todo", "middle", "todo"]) await handlers["note"]!(text, ctx);
+
+	// Selecting "3. todo" removes the third entry, not the first matching value.
+	picked = () => Promise.resolve(widget![2]);
+	await handlers["note-rm"]!("", ctx);
+	assert.deepEqual(widget, ["1. todo", "2. middle"]);
+	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["todo", "middle"]);
+
+	// Another session rewrites the file while the menu is open; stale pick retries.
+	picked = async () => {
+		await writeFile(path, JSON.stringify(["from other session"]));
+		return "2. middle";
+	};
+	notified = undefined;
+	await handlers["note-rm"]!("", ctx);
+	assert.match(notified!, /changed elsewhere/i);
+	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["from other session"]);
 });
 
 test("mutating commands refuse to overwrite malformed notes file", async (t) => {

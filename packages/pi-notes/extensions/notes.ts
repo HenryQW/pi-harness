@@ -12,10 +12,10 @@ const WIDGET_KEY = "pi-notes";
 
 const notesPath = () => join(getAgentDir(), "config", "pi-notes.json");
 
-/** Notes file is untrusted user data. Valid JSON parses to notes; malformed JSON throws so callers can preserve the file. */
+/** Notes file is untrusted user data. Valid JSON parses to notes; anything else throws so callers can preserve the file. */
 export function parseNotes(raw: string): string[] {
 	const data: unknown = JSON.parse(raw);
-	if (!Array.isArray(data)) return [];
+	if (!Array.isArray(data)) throw new TypeError("notes config must be a JSON array");
 	return data
 		.filter((note): note is string => typeof note === "string")
 		.map((note) => note.replace(/\s+/g, " ").trim())
@@ -90,8 +90,20 @@ export default function notesExtension(pi: ExtensionAPI): void {
 			}
 			const choice = await ctx.ui.select("Remove note:", renderNotes(notes));
 			if (!choice) return;
-			notes.splice(notes.indexOf(choice.slice(3)), 1);
-			await persist(notes);
+			// Re-read after the dialog: another Pi session may have written meanwhile.
+			// ponytail: narrows the race to milliseconds; lockfile only if multi-session edit conflicts ever surface.
+			const current = loadNotes();
+			if (invalidConfig) {
+				ctx.ui.notify(MALFORMED, "error");
+				return;
+			}
+			const index = Number.parseInt(/^(\d+)\./.exec(choice)?.[1] ?? "", 10) - 1;
+			if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+				ctx.ui.notify("Notes changed elsewhere; try /note-rm again.", "warning");
+				return;
+			}
+			current.splice(index, 1);
+			await persist(current);
 			show(ctx);
 		},
 	});
