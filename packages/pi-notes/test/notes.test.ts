@@ -94,17 +94,17 @@ test("parseNotes validates safe worktree records", () => {
 	assert.throws(() => parseNotes('{broken'), SyntaxError);
 });
 
-test("renderNotes numbers entries and shows placeholder when empty", () => {
+test("renderNotes numbers entries", () => {
 	assert.deepEqual(renderNotes(["a"]), ["1. a"]);
-	assert.deepEqual(renderNotes([]), ["no notes"]);
+	assert.deepEqual(renderNotes([]), []);
 });
 
-test("notes persist independently per worktree without startup writes", async (t) => {
+test("notes persist independently per worktree without creating config on startup", async (t) => {
 	const h = await harness(t);
 	const firstCtx = h.context(h.first);
 	const secondCtx = h.context(h.second);
 	await h.runSessionStart(firstCtx);
-	assert.deepEqual(h.widget(), ["no notes"]);
+	assert.equal(h.widget(), undefined);
 	await assert.rejects(readdir(join(h.agentDir, "config", "pi-notes")), { code: "ENOENT" });
 
 	await h.handlers.note!("\u001b[2J", firstCtx);
@@ -113,7 +113,7 @@ test("notes persist independently per worktree without startup writes", async (t
 
 	await h.handlers.note!("first note", firstCtx);
 	await h.runSessionStart(secondCtx);
-	assert.deepEqual(h.widget(), ["no notes"]);
+	assert.equal(h.widget(), undefined);
 	await h.handlers.note!("second note", secondCtx);
 	assert.equal((await readdir(join(h.agentDir, "config", "pi-notes"))).filter((name) => name.endsWith(".json")).length, 2);
 
@@ -131,7 +131,7 @@ test("recreated worktree at same path does not inherit old notes", async (t) => 
 	await mkdir(h.firstGitDir, { recursive: true });
 
 	await h.runSessionStart(ctx);
-	assert.match(h.widget()![0]!, /old worktree/i);
+	assert.equal(h.widget(), undefined);
 });
 
 test("duplicate removal and stale selections preserve correct worktree notes", async (t) => {
@@ -156,25 +156,35 @@ test("duplicate removal and stale selections preserve correct worktree notes", a
 	assert.deepEqual(parseNotes(await readFile(path, "utf8")).notes, ["middle", "replacement"]);
 });
 
-test("prune removes stale worktree records, preserves malformed files, and clear resets current file", async (t) => {
+test("startup and mutations prune stale records, preserve malformed files, and clear current notes", async (t) => {
 	const h = await harness(t);
 	const firstCtx = h.context(h.first);
 	await h.handlers.note!("keep", firstCtx);
 	await h.handlers.note!("stale", h.context(h.second));
 	const dir = join(h.agentDir, "config", "pi-notes");
+	const records = await Promise.all((await readdir(dir)).filter((name) => name.endsWith(".json")).map(async (name) => ({
+		path: join(dir, name),
+		record: parseNotes(await readFile(join(dir, name), "utf8")),
+	})));
+	const stalePath = records.find(({ record }) => record.worktree === h.identities.get(h.second)!.worktree)!.path;
+	const staleRecord = await readFile(stalePath, "utf8");
 	const malformedPath = join(dir, "malformed.json");
 	await writeFile(malformedPath, "{broken user data");
 
 	h.identities.delete(h.second);
-	await h.handlers["note-prune"]!("", firstCtx);
-	assert.match(h.notified()!, /Removed 0 stale.*preserved 2 unchecked or invalid/i);
+	await h.runSessionStart(firstCtx);
 	assert.equal((await readdir(dir)).filter((name) => name.endsWith(".json")).length, 3);
 
 	await rm(h.second, { recursive: true });
-	await h.handlers["note-prune"]!("", firstCtx);
-	assert.match(h.notified()!, /Removed 1 stale.*preserved 1 unchecked or invalid/i);
+	await h.runSessionStart(firstCtx);
 	assert.equal((await readdir(dir)).filter((name) => name.endsWith(".json")).length, 2);
 	assert.equal(await readFile(malformedPath, "utf8"), "{broken user data");
+
+	await writeFile(stalePath, staleRecord);
+	await h.handlers.note!("mutation prunes", firstCtx);
+	await assert.rejects(readFile(stalePath, "utf8"), { code: "ENOENT" });
+	assert.equal(await readFile(malformedPath, "utf8"), "{broken user data");
+	assert.equal(h.handlers["note-prune"], undefined);
 
 	const currentPath = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json") && name !== "malformed.json")!);
 	await writeFile(currentPath, "{broken current data");
@@ -186,7 +196,7 @@ test("prune removes stale worktree records, preserves malformed files, and clear
 	assert.equal(await readFile(currentPath, "utf8"), "{broken current data");
 
 	await h.handlers["note-clear"]!("", firstCtx);
-	assert.deepEqual(h.widget(), ["no notes"]);
+	assert.equal(h.widget(), undefined);
 	await assert.rejects(readFile(currentPath, "utf8"), { code: "ENOENT" });
 	assert.equal(await readFile(malformedPath, "utf8"), "{broken user data");
 });
