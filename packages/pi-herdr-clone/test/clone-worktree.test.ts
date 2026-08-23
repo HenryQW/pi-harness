@@ -64,7 +64,7 @@ async function fixture() {
 function harness(
 	sessionManager: ExtensionCommandContext["sessionManager"],
 	cwd: string,
-	respond?: (args: string[]) => Promise<ExecResult> | ExecResult,
+	respond?: (args: string[]) => Promise<ExecResult | undefined> | ExecResult | undefined,
 ) {
 	let command: Command | undefined;
 	const calls: ExecCall[] = [];
@@ -77,6 +77,9 @@ function harness(
 		exec: async (executable: string, args: string[], options: { cwd: string }) => {
 			calls.push({ command: executable, args, options });
 			events.push(`exec:${args.slice(0, 2).join(" ")}`);
+			// Returning undefined from respond defers to the built-in responders.
+			const custom = respond ? await respond(args) : undefined;
+			if (custom) return custom;
 			if (args[0] === "workspace" && args[1] === "get") {
 				return success({
 					result: {
@@ -87,7 +90,6 @@ function harness(
 					},
 				});
 			}
-			if (respond) return await respond(args);
 			if (args[0] === "pane" && args[1] === "get") {
 				return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
 			}
@@ -159,7 +161,7 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: false }
 						: success();
 				}
-				return success();
+				return undefined;
 			});
 			await app.command("", app.ctx);
 
@@ -205,6 +207,64 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 	}
 });
 
+test("/clone-worktree inside a linked worktree creates the worktree from the repo parent workspace", async () => {
+	const data = await fixture();
+	try {
+		await mkdir(join(data.root, "wt"));
+		await withPane("pane-linked", async () => {
+			const app = harness(data.manager, data.cwd, (args) => {
+				if (args[0] === "pane") {
+					return success({ result: { pane: { pane_id: "pane-linked", workspace_id: "workspace-linked" } } });
+				}
+				if (args[0] === "workspace" && args[1] === "get") {
+					return success({
+						result: {
+							workspace: {
+								workspace_id: args[2],
+								worktree: {
+									checkout_path: join(data.root, "wt"),
+									repo_root: "/repos/main",
+									is_linked_worktree: true,
+								},
+							},
+						},
+					});
+				}
+				if (args[0] === "workspace" && args[1] === "list") {
+					return success({
+						result: {
+							type: "workspace_list",
+							workspaces: [
+								{ workspace_id: "workspace-parent", worktree: { checkout_path: "/repos/main", is_linked_worktree: false } },
+								{ workspace_id: "workspace-linked", worktree: { checkout_path: join(data.root, "wt"), repo_root: "/repos/main", is_linked_worktree: true } },
+							],
+						},
+					});
+				}
+				if (args[0] === "worktree" && args[1] === "create") {
+					return success({
+						result: {
+							workspace: { workspace_id: "workspace-new" },
+							tab: { tab_id: "tab-new" },
+							root_pane: { pane_id: "pane-root" },
+							worktree: { checkout_path: "/repos/wt-x" },
+						},
+					});
+				}
+				return undefined;
+			});
+			await app.command("", app.ctx);
+
+			const create = app.calls.find((call) => call.args[0] === "worktree" && call.args[1] === "create");
+			assert.deepEqual(create?.args, ["worktree", "create", "--workspace", "workspace-parent", "--no-focus"]);
+			assert.equal(app.notifications.length, 1);
+			assert.equal(app.notifications[0]?.type, "info");
+		});
+	} finally {
+		await rm(data.root, { recursive: true, force: true });
+	}
+});
+
 test("worktree creation failures happen before cloning and retain nothing of the clone", async (t) => {
 	await t.test("a definitively failed worktree create never creates a clone", async () => {
 		const data = await fixture();
@@ -213,7 +273,7 @@ test("worktree creation failures happen before cloning and retain nothing of the
 				const app = harness(data.manager, data.cwd, (args) => {
 					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
 					if (args[0] === "worktree") return { stdout: "", stderr: "worktree create denied", code: 1, killed: false };
-					return success();
+					return undefined;
 				});
 				await assert.rejects(app.command("", app.ctx), /worktree create denied/);
 				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
@@ -235,7 +295,7 @@ test("worktree creation failures happen before cloning and retain nothing of the
 				const app = harness(data.manager, data.cwd, (args) => {
 					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
 					if (args[0] === "worktree") return { stdout: "", stderr: "killed mid-create", code: 9, killed: true };
-					return success();
+					return undefined;
 				});
 				await assert.rejects(app.command("", app.ctx), (error: Error) => {
 					assert.match(error.message, /could not be confirmed/);
@@ -266,7 +326,7 @@ test("worktree creation failures happen before cloning and retain nothing of the
 							},
 						});
 					}
-					return success();
+					return undefined;
 				});
 				await assert.rejects(app.command("", app.ctx), (error: Error) => {
 					assert.match(error.message, /could not be confirmed/);
@@ -300,7 +360,7 @@ test("worktree creation failures happen before cloning and retain nothing of the
 						});
 					}
 					if (args[0] === "agent") return { stdout: "", stderr: "timed out", code: 9, killed: true };
-					return success();
+					return undefined;
 				});
 				await assert.rejects(app.command("", app.ctx), (error: Error) => {
 					assert.match(error.message, /could not be confirmed/);

@@ -18,7 +18,11 @@ import {
 
 type WorkspaceInfo = {
 	workspace_id?: unknown;
-	worktree?: { checkout_path?: unknown } | null;
+	worktree?: {
+		checkout_path?: unknown;
+		repo_root?: unknown;
+		is_linked_worktree?: unknown;
+	} | null;
 };
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -33,6 +37,8 @@ type SourceContext = {
 	leafId: string;
 	workspaceId: string;
 	checkout: string | undefined;
+	repoRoot: string | undefined;
+	isLinkedWorktree: boolean;
 };
 
 async function resolveSource(
@@ -70,7 +76,14 @@ async function resolveSource(
 	const checkout = workspace?.worktree == null
 		? undefined
 		: requiredString(workspace.worktree.checkout_path, "Herdr workspace response checkout_path");
-	return { sessionFile, leafId, workspaceId, checkout };
+	const repoRoot = typeof workspace?.worktree?.repo_root === "string" && workspace.worktree.repo_root.trim()
+		? workspace.worktree.repo_root
+		: undefined;
+	const isLinkedWorktree = workspace?.worktree?.is_linked_worktree === true;
+	if (isLinkedWorktree && !repoRoot) {
+		throw new Error("Herdr workspace response is missing worktree.repo_root for a linked worktree.");
+	}
+	return { sessionFile, leafId, workspaceId, checkout, repoRoot, isLinkedWorktree };
 }
 
 async function createBranchedClone(
@@ -195,10 +208,23 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 			await ctx.waitForIdle();
 			const source = await resolveSource("clone-worktree", herdr, ctx);
 
+			// Herdr only creates worktrees from the repo parent workspace; running
+			// /clone-worktree inside a linked worktree must retarget the parent.
+			let targetWorkspaceId = source.workspaceId;
+			if (source.isLinkedWorktree) {
+				const listing = await herdr.json(["workspace", "list"], { cwd: ctx.cwd });
+				const result = (listing as { result?: { workspaces?: WorkspaceInfo[] } }).result;
+				const parent = (Array.isArray(result?.workspaces) ? result.workspaces : []).find((entry) =>
+					entry.worktree != null && !entry.worktree.is_linked_worktree &&
+					entry.worktree.checkout_path === source.repoRoot);
+				targetWorkspaceId = typeof parent?.workspace_id === "string"
+					? parent.workspace_id
+					: requiredString(undefined, `Repo parent workspace for ${source.repoRoot} in herdr workspace list`);
+			}
 			// Create the worktree before the clone so the session header can be
 			// stamped with the fresh checkout cwd. A killed or incomplete create is
 			// ambiguous: Herdr may have retained partial worktree state.
-			const worktreeCreateArgs = ["worktree", "create", "--workspace", source.workspaceId, "--no-focus"] as const;
+			const worktreeCreateArgs = ["worktree", "create", "--workspace", targetWorkspaceId, "--no-focus"] as const;
 			const createdWorktree = await herdr.exec(worktreeCreateArgs, { cwd: ctx.cwd });
 			if (createdWorktree.code !== 0 && !createdWorktree.killed) {
 				throw new Error(herdrCommandFailure(worktreeCreateArgs, createdWorktree));
