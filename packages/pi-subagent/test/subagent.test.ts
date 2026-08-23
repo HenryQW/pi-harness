@@ -439,6 +439,17 @@ test("thinking override participates in route resolution across all paths", asyn
 			/supporting thinking max/,
 		);
 
+		// Explicit class path honors the override too.
+		const byClass = await app.tool.execute("call-5", { role: "worker", task: "work", modelClass: "balanced", thinking: "high" }, undefined, undefined, app.ctx);
+		const byClassArgs = JSON.parse(byClass.content[0].text) as string[];
+		assert.equal(byClassArgs[byClassArgs.indexOf("--model") + 1], "provider/b-model");
+		assert.equal(byClassArgs[byClassArgs.indexOf("--thinking") + 1], "high");
+
+		// Designated model path honors the override.
+		const designated = await app.tool.execute("call-6", { role: "worker", task: "work", model: "provider/b-model", thinking: "high" }, undefined, undefined, app.ctx);
+		const designatedArgs = JSON.parse(designated.content[0].text) as string[];
+		assert.equal(designatedArgs[designatedArgs.indexOf("--thinking") + 1], "high");
+
 		// Background delegation propagates the override to the child args.
 		const background = await app.tool.execute(
 			"call-4", { role: "worker", task: "work", thinking: "high", background: true }, undefined, undefined, app.ctx,
@@ -467,7 +478,7 @@ test("designated model with unusable scoped thinking pin rejects before launch",
 
 		await assert.rejects(
 			app.tool.execute("call-2", { role: "worker", task: "inspect code", model: "p/pinned", thinking: "low" }, undefined, undefined, app.ctx),
-			/not supported by p\/pinned/,
+			/not usable for p\/pinned in this session/,
 		);
 	});
 });

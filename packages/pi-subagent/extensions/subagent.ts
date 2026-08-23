@@ -457,14 +457,14 @@ function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinki
 		throw new Error(`Unknown delegate_task model: ${reference}. Available models: ${models.map((candidate) => modelReference(candidate)).join(", ") || "none"}.`);
 	}
 	const levels = taskThinkingLevels(ctx, model);
-	if (thinking !== undefined) {
+		if (thinking !== undefined) {
 		if (!levels.includes(thinking)) {
-			throw new Error(`delegate_task thinking ${thinking} is not supported by ${modelReference(model)}. Supported levels: ${levels.join(", ") || "none"}.`);
+			throw new Error(`delegate_task thinking ${thinking} is not usable for ${modelReference(model)} in this session. Usable levels here: ${levels.join(", ") || "none"}.`);
 		}
 		return { model, thinkingLevel: thinking };
 	}
 	if (!levels.length) {
-		throw new Error(`${modelReference(model)} has no usable thinking level; pass thinking explicitly or pick another model.`);
+		throw new Error(`${modelReference(model)} has no usable thinking level in this session; pick another model or adjust the scoped thinking pin.`);
 	}
 	return { model, thinkingLevel: levels.includes("medium") ? "medium" : levels.at(-1)! };
 }
