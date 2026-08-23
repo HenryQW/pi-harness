@@ -57,6 +57,9 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
     if (!root.stdout.trim())
         return undefined;
     const repoRoot = root.stdout.trim();
+    const prefix = await run(["rev-parse", "--show-prefix"], cwd);
+    if (prefix.code !== 0)
+        throw new Error(`git rev-parse --show-prefix failed (${prefix.stderr.trim().slice(0, 200)})`);
     const base = await run(["rev-parse", "HEAD"], repoRoot);
     if (base.code !== 0) {
         if (/ambiguous argument|unknown revision|bad revision/i.test(base.stderr))
@@ -74,7 +77,7 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
         throw new Error(`Could not create ${join(repoRoot, WORKTREES_DIRNAME)}: ${error instanceof Error ? error.message : String(error)}`);
     }
     await ensureLocalExclude(repoRoot, run);
-    const added = await run(["worktree", "add", path, "-b", branch, "HEAD"], repoRoot);
+    const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot);
     if (added.code !== 0) {
         // `worktree add -b` can leave the branch behind when checkout fails
         // (smudge filter, hooks). Roll back only what we can prove is ours:
@@ -86,7 +89,7 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
         }
         throw new Error(`git worktree add failed: ${added.stderr.trim().slice(0, 200)}`);
     }
-    return { path, branch, repoRoot, baseCommit };
+    return { path, cwd: join(path, prefix.stdout.trim()), branch, repoRoot, baseCommit };
 }
 /** Flags a payload whose state could not be measured (#88113): unmeasured is not zero. */
 function markUnproven(payload, reason, unmeasured = "commits/dirty") {

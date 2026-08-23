@@ -1,5 +1,6 @@
 export interface WorktreeInfo {
     path: string;
+    cwd: string;
     branch: string;
     repoRoot: string;
     baseCommit: string;

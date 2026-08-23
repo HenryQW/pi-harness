@@ -656,6 +656,7 @@ export default function subagentExtension(
 		details: { role: string; model?: string; thinkingLevel?: string },
 		outcome: "completed" | "failed" | "aborted",
 		text: string,
+		worktreePayloadLine?: string,
 	): Promise<void> => {
 		if (launchEpoch !== sessionEpoch) return;
 		// Custom messages convert to user-role LLM messages, so the parent agent
@@ -663,7 +664,7 @@ export default function subagentExtension(
 		try {
 			pi.sendMessage({
 				customType: BACKGROUND_RESULT_TYPE,
-				content: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}`,
+				content: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}${worktreePayloadLine ? `\n${worktreePayloadLine}` : ""}`,
 				display: true,
 				details: { ...details, taskId, outcome },
 			}, { triggerTurn: false });
@@ -742,7 +743,7 @@ export default function subagentExtension(
 						startWidgetItem(taskId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
 						const result = await runPi(
 							["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`],
-							worktree?.path ?? ctx.cwd,
+							worktree?.cwd ?? ctx.cwd,
 							controller.signal,
 							undefined,
 							(tokens) => updateWidgetTokens(taskId, tokens),
@@ -750,30 +751,30 @@ export default function subagentExtension(
 						);
 						const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 						widgetStatus = result.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
-						let text = capOutput(failed
+						const text = failed
 							? result.errorMessage || result.stderr.trim() || result.output || `Subagent exited with code ${result.exitCode}.`
-							: result.output || "(no output)");
+							: result.output || "(no output)";
 						const payloadLine = await finalizeWorktreePayload(worktree);
-						if (payloadLine) text += `\n${payloadLine}`;
 						await reportBackground(
 							launchEpoch,
 							taskId,
 							details,
 							result.stopReason === "aborted" ? "aborted" : failed ? "failed" : "completed",
 							text,
+							payloadLine,
 						);
 					} catch (error) {
 						const aborted = controller.signal.aborted && !(error instanceof SubagentTimeoutError);
 						widgetStatus = aborted ? "aborted" : "failure";
-						let failureText = capOutput(error instanceof Error ? error.message : String(error));
+						const failureText = error instanceof Error ? error.message : String(error);
 						const payloadLine = await finalizeWorktreePayload(worktree);
-						if (payloadLine) failureText += `\n${payloadLine}`;
 						await reportBackground(
 							launchEpoch,
 							taskId,
 							details,
 							aborted ? "aborted" : "failed",
 							failureText,
+							payloadLine,
 						);
 					} finally {
 						if (acquired) releaseChildPermit();
@@ -804,7 +805,7 @@ export default function subagentExtension(
 				startWidgetItem(toolCallId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
 				const child = await runPi(
 					["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`],
-					worktree?.path ?? ctx.cwd,
+					worktree?.cwd ?? ctx.cwd,
 					signal,
 					(text) => onUpdate?.({ content: [{ type: "text", text }], details }),
 					(tokens) => updateWidgetTokens(toolCallId, tokens),

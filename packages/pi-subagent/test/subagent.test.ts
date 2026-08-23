@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -61,6 +62,7 @@ function harness(options: {
 	availableModels?: any[];
 	currentModel?: any;
 	timeoutPolicy?: { softMs: number; graceMs: number; activeWindowMs: number };
+	cwd?: string;
 } = {}) {
 	let tool: Tool | undefined;
 	let widget: { render: (width: number) => string[] } | undefined;
@@ -87,7 +89,7 @@ function harness(options: {
 	} as unknown as ExtensionAPI;
 	subagentExtension(api, options.timeoutPolicy);
 	const ctx = {
-		cwd: "/tmp",
+		cwd: options.cwd ?? "/tmp",
 		model: options.currentModel ?? model,
 		thinkingLevel: "low",
 		hasUI: options.ui ?? false,
@@ -120,15 +122,29 @@ async function waitFor(check: () => boolean): Promise<void> {
 	}
 }
 
-async function writeWorkerRole(agentDir: string): Promise<void> {
+async function writeWorkerRole(agentDir: string, isolation = false): Promise<void> {
 	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 	await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
 name: worker
 description: Does bounded work
 tools: [read]
----
+${isolation ? "isolation: worktree\n" : ""}---
 Do bounded work.
 `);
+}
+
+async function initializedRepository(t: import("node:test").TestContext): Promise<string> {
+	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-repo-"));
+	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	await mkdir(join(repo, "packages", "worker"), { recursive: true });
+	await Promise.all([
+		writeFile(join(repo, "README.md"), "test\n"),
+		writeFile(join(repo, "packages", "worker", "package.json"), "{}\n"),
+	]);
+	execFileSync("git", ["add", "."], { cwd: repo });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "init"], { cwd: repo });
+	return repo;
 }
 
 async function blockedPiRunner(agentDir: string, activeTasks: string[] = []) {
@@ -239,6 +255,29 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			message: "Subagent role reviewer skipped unavailable Pi skills: unavailable-skill.",
 			type: "warning",
 		}]);
+	});
+});
+
+test("worktree isolation preserves the delegated repository subdirectory", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ cwd: process.cwd() }) }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: join(repo, "packages", "worker") });
+		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const [childLine, payloadLine] = result.content[0].text.split("\n");
+		const worktreeRoot = join(await realpath(repo), ".worktrees", "subagent-call-1");
+		assert.equal(JSON.parse(childLine!).cwd, join(worktreeRoot, "packages", "worker"));
+		assert.deepEqual(JSON.parse(payloadLine!), {
+			path: worktreeRoot,
+			branch: "pi-subagent/subagent-call-1",
+			commits: 0,
+			dirty: false,
+			pruned: true,
+		});
 	});
 });
 
@@ -1093,6 +1132,29 @@ test("background delegation returns immediately and reports the outcome as a mes
 		assert.match(message.content, /completed/);
 		assert.match(message.content, /done/);
 		assert.equal(options.triggerTurn, false);
+	});
+});
+
+test("background worktree report survives capped child output", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "x".repeat(60 * 1024) }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: repo });
+		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		await waitFor(() => app.sentMessages.length === 1);
+		const content = app.sentMessages[0]!.message.content as string;
+		assert.match(content, /\[Output truncated: \d+ bytes omitted\]/);
+		assert.deepEqual(JSON.parse(content.trim().split("\n").at(-1)!), {
+			path: join(await realpath(repo), ".worktrees", "subagent-call-1"),
+			branch: "pi-subagent/subagent-call-1",
+			commits: 0,
+			dirty: false,
+			pruned: true,
+		});
 	});
 });
 

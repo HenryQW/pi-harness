@@ -17,7 +17,7 @@ async function tempDir(t: import("node:test").TestContext): Promise<string> {
 }
 
 function worktreeInfo(path: string) {
-	return { path, branch: "pi-subagent/subagent-x", repoRoot: "/repo", baseCommit: "abc123" };
+	return { path, cwd: path, branch: "pi-subagent/subagent-x", repoRoot: "/repo", baseCommit: "abc123" };
 }
 
 function fakeGit(
@@ -116,9 +116,10 @@ test("createChildWorktree sanitizes child ids, degrades on non-git repos, and re
 	assert.ok(info);
 	assert.equal(info.branch, "pi-subagent/subagent-tool-1_abc_def");
 	assert.equal(info.path, join(repo, ".worktrees", "subagent-tool-1_abc_def"));
+	assert.equal(info.cwd, info.path);
 	assert.equal(info.repoRoot, repo);
 	assert.equal(info.baseCommit, "abc123");
-	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "add", info.path, "-b", info.branch, "HEAD"]);
+	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "add", info.path, "-b", info.branch, "abc123"]);
 	// Exclusion goes through the repository-local exclude file, never the tracked .gitignore.
 	assert.equal(await readFile(join(repo, ".git", "info", "exclude"), "utf8"), ".worktrees/\n");
 	assert.equal(await readFile(join(repo, ".gitignore"), "utf8").then(() => true, () => false), false);
