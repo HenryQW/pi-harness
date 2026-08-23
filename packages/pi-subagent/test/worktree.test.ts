@@ -142,9 +142,17 @@ test("finalizeChildWorktree keeps the worktree with inspection_failed on probe f
 	}));
 
 	assert.equal(payload.pruned, false);
+	assert.equal(payload.dirty, true);
 	assert.equal(payload.inspection_failed, true);
 	assert.match(payload.note!, /UNKNOWN/);
 	assert.match(payload.note!, /preserved/);
+
+	const statusFailed = await finalizeChildWorktree(info, fakeGit({
+		"rev-list --count abc123..pi-subagent/subagent-x": ok("3\n"),
+		"status --porcelain": fail("fatal: status failed"),
+	}));
+	assert.equal(statusFailed.commits, 3);
+	assert.equal(statusFailed.inspection_failed, true);
 });
 
 test("finalizeChildWorktree keeps the worktree when base_commit is missing", async (t) => {

@@ -42,14 +42,6 @@ function validateExtension(extension, source) {
 function extensionList(value, source) {
     return stringList(value, "extensions", source).map((extension) => validateExtension(extension, source));
 }
-function validateIsolation(value, source) {
-    if (value === undefined)
-        return undefined;
-    const isolation = cleanText(value, "isolation", source);
-    if (isolation !== "worktree")
-        throw new Error(`${source}: isolation must be "worktree".`);
-    return isolation;
-}
 export function loadRoles(agentDir = getAgentDir()) {
     const dir = join(agentDir, "config", "pi-subagent");
     let entries;
@@ -74,11 +66,14 @@ export function loadRoles(agentDir = getAgentDir()) {
             throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
         }
         const frontmatter = parsed.frontmatter;
+        const isolation = frontmatter.isolation === undefined ? undefined : cleanText(frontmatter.isolation, "isolation", file);
+        if (isolation !== undefined && isolation !== "worktree")
+            throw new Error(`${file}: isolation must be "worktree".`);
         return {
             name: cleanText(frontmatter.name, "name", file),
             description: cleanText(frontmatter.description, "description", file),
             tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
-            isolation: validateIsolation(frontmatter.isolation, file),
+            isolation,
             extensions: extensionList(frontmatter.extensions, file),
             skills: stringList(frontmatter.skills, "skills", file),
             systemPrompt: cleanText(parsed.body, "system prompt", file),
