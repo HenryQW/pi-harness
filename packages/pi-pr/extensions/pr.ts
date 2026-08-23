@@ -147,9 +147,11 @@ function statusFor(pullRequest: PullRequest, ci: CiStatus): Status {
 	return { text: "open", color: "accent" };
 }
 
-export function formatPullRequest(pullRequest: PullRequest, theme: ExtensionContext["ui"]["theme"]): string {
+export function formatPullRequest(pullRequest: PullRequest, theme: ExtensionContext["ui"]["theme"], unresolved = 0): string {
 	const link = hyperlink(theme.fg("text", `PR #${pullRequest.number}`), pullRequest.url);
-	const status = statusFor(pullRequest, ciStatus(pullRequest.statusCheckRollup));
+	const status = unresolved > 0
+		? { text: `${unresolved} unresolved`, color: "warning" as const }
+		: statusFor(pullRequest, ciStatus(pullRequest.statusCheckRollup));
 	return `${link} · ${theme.fg(status.color, status.text)}`;
 }
 
@@ -195,10 +197,16 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 			}
 
 			const pullRequest = parsePullRequest(JSON.parse(result.stdout));
-			ctx.ui.setStatus("pi-pr", pullRequest ? formatPullRequest(pullRequest, ctx.ui.theme) : undefined);
-			if (!pullRequest || pullRequest.lifecycle === "M" || pullRequest.lifecycle === "C") {
+			if (!pullRequest) {
 				reviewState = undefined;
 				reviewWindow = undefined;
+				ctx.ui.setStatus("pi-pr", undefined);
+				return;
+			}
+			if (pullRequest.lifecycle === "M" || pullRequest.lifecycle === "C") {
+				reviewState = undefined;
+				reviewWindow = undefined;
+				ctx.ui.setStatus("pi-pr", formatPullRequest(pullRequest, ctx.ui.theme));
 				return;
 			}
 			if (
@@ -214,6 +222,11 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 					until: Date.now() + REVIEW_POLL_WINDOW_MS,
 				};
 			}
+			ctx.ui.setStatus("pi-pr", formatPullRequest(
+				pullRequest,
+				ctx.ui.theme,
+				reviewState?.id === pullRequest.id ? reviewState.unresolved : 0,
+			));
 			if (Date.now() >= reviewWindow.until) return;
 
 			try {
@@ -232,6 +245,7 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(`PR #${pullRequest.number} has ${unresolved} unresolved review thread${unresolved === 1 ? "" : "s"}`, "warning");
 				}
 				reviewState = { id: pullRequest.id, unresolved };
+				ctx.ui.setStatus("pi-pr", formatPullRequest(pullRequest, ctx.ui.theme, unresolved));
 			} catch {
 				// Keep known PR status when review lookup fails.
 			}

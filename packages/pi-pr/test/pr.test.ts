@@ -25,14 +25,14 @@ const plain = (text: string) => text
 	.replace(/\x1b\]8;;.*?\x1b\\/g, "")
 	.replace(/<\/?[^>]+>/g, "");
 
-function render(value: Record<string, unknown>): string {
+function render(value: Record<string, unknown>, unresolved = 0): string {
 	const parsed = parsePullRequest(pullRequest(value));
 	assert.ok(parsed);
 	return formatPullRequest(parsed, {
 		fg(color: string, text: string) {
 			return `<${color}>${text}</${color}>`;
 		},
-	} as ExtensionContext["ui"]["theme"]);
+	} as ExtensionContext["ui"]["theme"], unresolved);
 }
 
 test("renders one plain-language PR state, prioritizing action", () => {
@@ -63,6 +63,7 @@ test("renders one plain-language PR state, prioritizing action", () => {
 		statusCheckRollup: [{ conclusion: "SUCCESS" }],
 	})), "PR #42 · approved");
 	assert.equal(plain(render({})), "PR #42 · open");
+	assert.equal(plain(render({}, 5)), "PR #42 · 5 unresolved");
 	assert.equal(plain(render({ state: "MERGED", statusCheckRollup: [{ conclusion: "FAILURE" }] })), "PR #42 · merged");
 	assert.equal(plain(render({ state: "CLOSED" })), "PR #42 · closed");
 	assert.equal(parsePullRequest(pullRequest({ url: "javascript:alert(1)" })), undefined);
@@ -182,7 +183,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	assert.deepEqual(calls[1]?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
 	assert.equal(calls[1]?.args.at(-1), "[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length");
 	assert.equal(interval?.delay, 30_000);
-	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · open");
+	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · 2 unresolved");
 	assert.deepEqual(notifications, [{ message: "PR #42 has 2 unresolved review threads", level: "warning" }]);
 
 	interval?.callback();
@@ -192,7 +193,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	reviewOutput = "invalid";
 	interval?.callback();
 	await flush();
-	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · open");
+	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · 2 unresolved");
 	reviewOutput = "2\n";
 
 	viewCode = 1;
@@ -208,6 +209,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	interval?.callback();
 	await flush();
 	assert.equal(reviewCallCount(), reviewsBeforeExpiry);
+	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · 2 unresolved");
 
 	updatedAt = "2026-08-25T12:01:00Z";
 	interval?.callback();
