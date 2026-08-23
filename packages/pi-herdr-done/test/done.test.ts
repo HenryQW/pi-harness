@@ -133,8 +133,8 @@ test("/done --force skips confirmation and dependents check, forwards force to g
 	});
 });
 
-test("/done refuses with blocking tab labels when another Herdr tab still uses the checkout or the parent", async () => {
-	for (const cwd of [checkout, `${checkout}/sub`, mainCheckoutDir, `${mainCheckoutDir}/sub`]) {
+test("/done refuses with blocking tab labels when another Herdr tab uses the checkout", async () => {
+	for (const cwd of [checkout, `${checkout}/sub`]) {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor({
 				panes: [{ tab_id: "w2:t9", cwd }, { tab_id: "w3:t4", cwd }],
@@ -147,6 +147,22 @@ test("/done refuses with blocking tab labels when another Herdr tab still uses t
 				app.command("", context()),
 				/still used by Herdr tabs Fix puid pgid, w3:t4/);
 			assert.equal(app.calls.length, 4);
+		});
+	}
+});
+
+test("/done removes the checkout, pulls the parent, and closes its tab when another tab uses the parent", async () => {
+	for (const cwd of [mainCheckoutDir, `${mainCheckoutDir}/sub`]) {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const app = harness(snapshotExecutor({ panes: [{ tab_id: "w2:t9", cwd }] }));
+			await app.command("", context());
+			assert.ok(app.calls.some((c) => c.args[0] === "worktree" && c.args[1] === "remove"));
+			assert.ok(app.calls.some((c) => c.args[0] === "pull"));
+			assert.deepEqual(app.calls.at(-1), {
+				command: "herdr",
+				args: ["tab", "close", "w1:t1"],
+				options: { cwd: tmpdir() },
+			});
 		});
 	}
 });

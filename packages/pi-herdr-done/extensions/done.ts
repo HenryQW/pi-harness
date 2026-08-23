@@ -52,13 +52,10 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 					const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
 					const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
 					if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
-					const guarded = mainCheckout === checkout ? [checkout] : [checkout, mainCheckout];
-					const isGuarded = (cwd: string) =>
-						guarded.some((root) => cwd === root || cwd.startsWith(`${root}/`));
 					const dependentIds = [...new Set(panes
 						.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
-							typeof pane.tab_id === "string" && pane.tab_id !== tabId &&
-							typeof pane.cwd === "string" && isGuarded(pane.cwd))
+							typeof pane.tab_id === "string" && pane.tab_id !== tabId && typeof pane.cwd === "string" &&
+							(pane.cwd === checkout || pane.cwd.startsWith(`${checkout}/`)))
 						.map((pane) => pane.tab_id))];
 					if (dependentIds.length > 0) {
 						const listing = await herdr.json(["tab", "list"], { cwd: ctx.cwd });
