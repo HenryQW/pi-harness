@@ -65,6 +65,8 @@ Package also exports config and route-resolution helpers for consumers.
 
 Each configured profile needs one primary model and thinking level. Fallback is optional. Model references use canonical `provider/model`; numbered `openai-codex-N` routes store as `openai-codex/model`.
 
+Profile thinking is authoritative for task routes. `pi-model-thinking.json` affects only active-session model selection and never overrides a task route.
+
 Reads are strict. Malformed or unknown values fail visibly and never rewrite the file. Only explicit `/task-models` actions write config.
 
 Consumers can call `resolveConfiguredTaskRoute(ctx, taskId)` for the first usable route or `resolveConfiguredTaskRoutes(ctx, taskId)` for primary and fallback routes. Both read strict shared config and fail with `/task-models` guidance when assignment, profile, or route is unavailable.

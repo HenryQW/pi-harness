@@ -8,6 +8,7 @@ import {
 	availableTaskModels,
 	DEFAULT_TASK_ASSIGNMENTS,
 	readTaskModelsConfig,
+	rememberedThinkingLevel,
 	resolveConfiguredTaskRoute,
 	resolveConfiguredTaskRoutes,
 	resolveTaskModelRoute,
@@ -356,47 +357,26 @@ test("task-models configures primary and fallback atomically in one profile flow
 	}
 });
 
-test("applies remembered pi-model-thinking level to resolved routes", () => {
+test("profile thinking stays authoritative over pi-model-thinking for task routes", () => {
 	const dir = tempDir();
 	try {
+		const route = { model: "provider/m", thinkingLevel: "low" } as const;
 		const model = { provider: "provider", id: "m", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low", high: "high", max: "max" } } as any;
 		const ctx = {
 			model,
 			scopedModels: [],
 			modelRegistry: { getAvailable: () => [model] },
 		} as any;
+		writeTaskModelsConfig({ profiles: { fast: { primary: route } }, tasks: { "pi-test/run": "fast" } }, dir);
+		writeFileSync(join(dir, "config", "pi-model-thinking.json"), JSON.stringify({ "provider/m": "high" }));
 
-		assert.equal(resolveTaskModelRoute(ctx, { model: "provider/m", thinkingLevel: "low" }, dir)?.thinkingLevel, "low");
+		assert.equal(rememberedThinkingLevel(model, dir), "high");
+		assert.deepEqual(resolveTaskModelRoute(ctx, route, dir), { model, thinkingLevel: "low" });
+		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-test/run", dir), [{ model, thinkingLevel: "low" }]);
 
-		mkdirSync(join(dir, "config"), { recursive: true });
-		const thinkingFile = join(dir, "config", "pi-model-thinking.json");
-		writeFileSync(thinkingFile, JSON.stringify({ "provider/m": "high" }));
-		assert.deepEqual(resolveTaskModelRoute(ctx, { model: "provider/m", thinkingLevel: "low" }, dir), {
-			model,
-			thinkingLevel: "high",
-		});
-
-		// Remembered level must be supported by the model.
-		writeFileSync(thinkingFile, JSON.stringify({ "provider/m": "xhigh" }));
-		assert.equal(resolveTaskModelRoute(ctx, { model: "provider/m", thinkingLevel: "low" }, dir)?.thinkingLevel, "low");
-
-		// Untrusted config: invalid entries and malformed JSON are ignored.
-		writeFileSync(thinkingFile, JSON.stringify({ "provider/m": "bogus", "other/x": 7 }));
-		assert.equal(resolveTaskModelRoute(ctx, { model: "provider/m", thinkingLevel: "low" }, dir)?.thinkingLevel, "low");
-		writeFileSync(thinkingFile, "{ broken");
-		assert.equal(resolveTaskModelRoute(ctx, { model: "provider/m", thinkingLevel: "low" }, dir)?.thinkingLevel, "low");
-
-		// Remembered level rescues a route whose profile level is unsupported (pinned to high only).
-		const pinnedCtx = {
-			model,
-			scopedModels: [{ model, thinkingLevel: "high" }],
-			modelRegistry: { getAvailable: () => [model] },
-		} as any;
-		writeFileSync(thinkingFile, JSON.stringify({ "provider/m": "high" }));
-		assert.deepEqual(resolveTaskModelRoute(pinnedCtx, { model: "provider/m", thinkingLevel: "low" }, dir), {
-			model,
-			thinkingLevel: "high",
-		});
+		const pinnedCtx = { ...ctx, scopedModels: [{ model, thinkingLevel: "high" }] } as any;
+		assert.equal(resolveTaskModelRoute(pinnedCtx, route, dir), undefined);
+		assert.deepEqual(resolveTaskModelRoute(ctx, route, dir, "max"), { model, thinkingLevel: "max" });
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
