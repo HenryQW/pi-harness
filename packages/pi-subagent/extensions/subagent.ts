@@ -497,6 +497,9 @@ export default function subagentExtension(
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, AbortController>();
+	// Latest known session context; refreshed on session lifecycle and model
+	// changes so queued background launches resolve against effective state.
+	let latestCtx: ExtensionContext | undefined;
 	// Bumped by session_start and session_shutdown; background tasks may only
 	// deliver into the exact session that launched them.
 	let sessionEpoch = 0;
@@ -607,6 +610,7 @@ export default function subagentExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionEpoch += 1;
+		latestCtx = ctx;
 		ensureWidget(ctx);
 		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
 	});
@@ -621,6 +625,14 @@ export default function subagentExtension(
 		sessionEpoch += 1;
 		for (const controller of backgroundTasks.values()) controller.abort();
 		backgroundTasks.clear();
+	});
+	// btw-style context refresh: model_select carries the new model on the event,
+	// agent_settled delivers the freshest full context after each turn.
+	pi.on("model_select", (event, ctx) => {
+		latestCtx = { ...ctx, model: event.model } as ExtensionContext;
+	});
+	pi.on("agent_settled", (_event, ctx) => {
+		latestCtx = ctx;
 	});
 
 	const reportBackground = async (
@@ -669,11 +681,15 @@ export default function subagentExtension(
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
 			}
+			// Resolve against the latest known session context: a task queued past
+			// the cap must pick up model or Codex account changes that happened
+			// while it waited.
+			const launchCtx = () => latestCtx ?? ctx;
 			const resolveLaunch = () => params.model !== undefined
-				? createRoleLaunch(pi, ctx, { role, route: resolveDesignatedRoute(ctx, cleanText(params.model, "model", "delegate_task")) })
+				? createRoleLaunch(pi, launchCtx(), { role, route: resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task")) })
 				: params.modelClass === undefined
-					? resolveRoleLaunch(pi, ctx, { role, taskId: SUBAGENT_TASK })
-					: createRoleLaunch(pi, ctx, { role, route: resolveTaskRoute(ctx, params.modelClass) });
+					? resolveRoleLaunch(pi, launchCtx(), { role, taskId: SUBAGENT_TASK })
+					: createRoleLaunch(pi, launchCtx(), { role, route: resolveTaskRoute(launchCtx(), params.modelClass) });
 			const notifyMissingSkills = (launch: ReturnType<typeof resolveLaunch>) => {
 				if (launch.missingSkills.length) {
 					ctx.ui.notify(

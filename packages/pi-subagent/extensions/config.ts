@@ -42,7 +42,7 @@ const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, number, string]> = [
  * Required single-extension config path form (AGENTS.md); agentDir is
  * injectable so tests can point at a temp directory.
  */
-export const subagentConfigPath = (agentDir = getAgentDir()): string =>
+export const configPath = (agentDir = getAgentDir()): string =>
 	join(agentDir, "config", "pi-subagent.json");
 
 /**
@@ -51,7 +51,7 @@ export const subagentConfigPath = (agentDir = getAgentDir()): string =>
  * reported instead of crashing the session; callers fall back to defaults.
  */
 export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConfig {
-	const path = subagentConfigPath(agentDir);
+	const path = configPath(agentDir);
 	let raw: string;
 	try {
 		raw = readFileSync(path, "utf8");

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { readSubagentConfig, subagentConfigPath } from "../extensions/config.ts";
+import { readSubagentConfig, configPath } from "../extensions/config.ts";
 
 async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-config-"));
@@ -126,7 +126,7 @@ test("non-safe maxSubagents values report an error", async () => {
 });
 
 test("config path follows the required single-config helper form", () => {
-	assert.equal(subagentConfigPath("/agents"), join("/agents", "config", "pi-subagent.json"));
+	assert.equal(configPath("/agents"), join("/agents", "config", "pi-subagent.json"));
 });
 
 test("unknown top-level keys report an error", async () => {
