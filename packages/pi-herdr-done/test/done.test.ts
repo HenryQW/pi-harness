@@ -62,7 +62,10 @@ function snapshotExecutor(options: {
 			return ok(JSON.stringify({ result: { snapshot: { panes: options.panes ?? [] } } }));
 		}
 		if (command === "herdr" && args[0] === "tab") {
-			return ok(JSON.stringify({ result: { tabs: options.tabs ?? [] } }));
+			return ok(JSON.stringify({ result: { tabs: [
+				{ tab_id: "w1:t1", workspace_id: "w1" },
+				...(options.tabs ?? []),
+			] } }));
 		}
 		if (command === "git" && args[0] === "worktree") return options.removeResult ?? ok();
 		if (command === "git" && args[0] === "pull") return options.pullResult ?? ok();
@@ -74,13 +77,17 @@ async function withHerdrEnvironment(
 	herdrEnv: string | undefined,
 	tabId: string | undefined,
 	run: () => Promise<void>,
+	workspaceId: string | null | undefined = "w1",
 ): Promise<void> {
 	const previousHerdrEnv = process.env.HERDR_ENV;
 	const previousTabId = process.env.HERDR_TAB_ID;
+	const previousWorkspaceId = process.env.HERDR_WORKSPACE_ID;
 	if (herdrEnv === undefined) delete process.env.HERDR_ENV;
 	else process.env.HERDR_ENV = herdrEnv;
 	if (tabId === undefined) delete process.env.HERDR_TAB_ID;
 	else process.env.HERDR_TAB_ID = tabId;
+	if (workspaceId == null) delete process.env.HERDR_WORKSPACE_ID;
+	else process.env.HERDR_WORKSPACE_ID = workspaceId;
 	try {
 		await run();
 	} finally {
@@ -88,6 +95,8 @@ async function withHerdrEnvironment(
 		else process.env.HERDR_ENV = previousHerdrEnv;
 		if (previousTabId === undefined) delete process.env.HERDR_TAB_ID;
 		else process.env.HERDR_TAB_ID = previousTabId;
+		if (previousWorkspaceId === undefined) delete process.env.HERDR_WORKSPACE_ID;
+		else process.env.HERDR_WORKSPACE_ID = previousWorkspaceId;
 	}
 }
 
@@ -108,17 +117,47 @@ test("/done resolves the checkout root, skips own tab, removes the checkout, the
 		const events: string[] = [];
 		await app.command("", context(events));
 		assert.deepEqual(events, [
-			"confirm:Done:Close and remove the current Herdr worktree?",
+			"confirm:Done:Close its Herdr tabs and remove the current worktree?",
 			"idle",
 		]);
 		assert.deepEqual(app.calls, [
 			{ command: "git", args: ["rev-parse", "--show-toplevel"], options: { cwd: "/repo/worktree/nested" } },
 			{ command: "git", args: ["worktree", "list", "--porcelain", "-z"], options: { cwd: checkout } },
 			{ command: "herdr", args: ["api", "snapshot"], options: { cwd: "/repo/worktree/nested" } },
+			{ command: "herdr", args: ["tab", "list"], options: { cwd: "/repo/worktree/nested" } },
 			{ command: "git", args: ["worktree", "remove", checkout], options: { cwd: "/repo/worktree/nested" } },
 			{ command: "git", args: ["pull", "--ff-only"], options: { cwd: mainCheckoutDir } },
 			{ command: "herdr", args: ["tab", "close", "w1:t1"], options: { cwd: tmpdir() } },
 		]);
+	});
+});
+
+test("/done closes all other tabs in its workspace", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const app = harness(snapshotExecutor({
+			panes: [
+				{ tab_id: "w1:t2", cwd: checkout },
+				{ tab_id: "w1:t3", cwd: `${checkout}/nested` },
+			],
+			tabs: [
+				{ tab_id: "w1:t2", workspace_id: "w1", label: "Implementer" },
+				{ tab_id: "w1:t3", workspace_id: "w1", label: "Reviewer" },
+				{ tab_id: "w1:t4", workspace_id: "w1", label: "Different checkout" },
+				{ tab_id: "w2:t1", workspace_id: "w2", label: "Other workspace" },
+			],
+		}));
+		await app.command("", context());
+		assert.deepEqual(
+			app.calls.filter((call) => call.command === "herdr" && call.args[0] === "tab").map((call) => call.args),
+			[
+				["tab", "list"],
+				["tab", "close", "w1:t2"],
+				["tab", "close", "w1:t3"],
+				["tab", "close", "w1:t4"],
+				["tab", "close", "w1:t1"],
+			],
+		);
+		assert.ok(app.calls.findIndex((call) => call.args[1] === "remove") < app.calls.findIndex((call) => call.args[2] === "w1:t2"));
 	});
 });
 
@@ -139,8 +178,8 @@ test("/done refuses with blocking tab labels when another Herdr tab uses the che
 			const app = harness(snapshotExecutor({
 				panes: [{ tab_id: "w2:t9", cwd }, { tab_id: "w3:t4", cwd }],
 				tabs: [
-					{ tab_id: "w2:t9", label: "Fix puid pgid" },
-					{ tab_id: "w3:t4" },
+					{ tab_id: "w2:t9", workspace_id: "w2", label: "Fix puid pgid" },
+					{ tab_id: "w3:t4", workspace_id: "w3" },
 				],
 			}));
 			await assert.rejects(
@@ -185,24 +224,33 @@ test("declined confirmation leaves the worktree untouched", async () => {
 		const app = harness();
 		const events: string[] = [];
 		await app.command("", context(events, false));
-		assert.deepEqual(events, ["confirm:Done:Close and remove the current Herdr worktree?"]);
+		assert.deepEqual(events, ["confirm:Done:Close its Herdr tabs and remove the current worktree?"]);
 		assert.deepEqual(app.calls, []);
 	});
 });
 
 test("/done fails safely before any execution and preserves removal errors", async (t) => {
 	await t.test("rejects arguments and missing Herdr context before execution", async () => {
-		for (const [args, herdrEnv, tabId, expected] of [
-			["--yes", "1", "w1:t1", /Usage: \/done \[--force\]/],
-			["", undefined, "w1:t1", /inside Herdr/],
-			["", "1", undefined, /HERDR_TAB_ID/],
+		for (const [args, herdrEnv, tabId, workspaceId, expected] of [
+			["--yes", "1", "w1:t1", "w1", /Usage: \/done \[--force\]/],
+			["", undefined, "w1:t1", "w1", /inside Herdr/],
+			["", "1", undefined, "w1", /HERDR_TAB_ID/],
+			["", "1", "w1:t1", null, /HERDR_WORKSPACE_ID/],
 		] as const) {
 			await withHerdrEnvironment(herdrEnv, tabId, async () => {
 				const app = harness();
 				await assert.rejects(app.command(args, context()), expected);
 				assert.deepEqual(app.calls, []);
-			});
+			}, workspaceId);
 		}
+	});
+
+	await t.test("rejects mismatched Herdr tab and workspace context before removal", async () => {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const app = harness(snapshotExecutor());
+			await assert.rejects(app.command("", context()), /does not belong to workspace w9/);
+			assert.equal(app.calls.some((call) => call.args[1] === "remove"), false);
+		}, "w9");
 	});
 
 	await t.test("skips the parent pull when the session is the main worktree", async () => {
@@ -224,25 +272,27 @@ test("/done fails safely before any execution and preserves removal errors", asy
 	await t.test("surfaces dirty-worktree refusal and skips tab close", async () => {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor({
+				tabs: [{ tab_id: "w1:t2", workspace_id: "w1" }],
 				removeResult: { stdout: "", stderr: "error: the following file is dirty", code: 1 },
 			}));
 			await assert.rejects(app.command("", context()), /dirty/);
-			assert.equal(app.calls.length, 4);
+			assert.equal(app.calls.length, 5);
+			assert.equal(app.calls.some((call) => call.args[1] === "close"), false);
 		});
 	});
 
 	await t.test("surfaces a failed parent pull but closes the removed checkout's tab", async () => {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor({
+				tabs: [{ tab_id: "w1:t2", workspace_id: "w1" }],
 				pullResult: { stdout: "", stderr: "error: Your local changes would be overwritten by merge", code: 1 },
 			}));
 			await assert.rejects(app.command("--force", context()), /overwritten by merge/);
 			// --force skips the dependents check, so no herdr api snapshot call.
-			assert.deepEqual(app.calls.at(-1), {
-				command: "herdr",
-				args: ["tab", "close", "w1:t1"],
-				options: { cwd: tmpdir() },
-			});
+			assert.deepEqual(
+				app.calls.filter((call) => call.args[1] === "close").map((call) => call.args[2]),
+				["w1:t2", "w1:t1"],
+			);
 		});
 	});
 
@@ -252,7 +302,7 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				removeResult: { stdout: "", stderr: "", code: 0, killed: true },
 			}));
 			await assert.rejects(app.command("", context()), /killed/);
-			assert.equal(app.calls.length, 4);
+			assert.equal(app.calls.length, 5);
 		});
 	});
 });

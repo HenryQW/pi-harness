@@ -5,7 +5,7 @@ import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 
 type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
-type TabEntry = { tab_id?: unknown; label?: unknown };
+type TabEntry = { tab_id?: unknown; workspace_id?: unknown; label?: unknown };
 
 export default function herdrDoneExtension(pi: ExtensionAPI): void {
 	const herdr = createHerdrClient<{ cwd: string }>((command, args, options) =>
@@ -20,7 +20,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("done", {
-		description: "Remove the current Herdr worktree, then fast-forward its parent workspace",
+		description: "Remove the current Herdr worktree and close its workspace tabs",
 		handler: async (args, ctx) => {
 			const option = args.trim();
 			if (option && option !== "--force") throw new Error("Usage: /done [--force]");
@@ -29,9 +29,11 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			}
 			const tabId = process.env.HERDR_TAB_ID?.trim();
 			if (!tabId) throw new Error("HERDR_TAB_ID is missing.");
+			const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
+			if (!workspaceId) throw new Error("HERDR_WORKSPACE_ID is missing.");
 
 			if (option !== "--force") {
-				const confirmed = await ctx.ui.confirm("Done", "Close and remove the current Herdr worktree?");
+				const confirmed = await ctx.ui.confirm("Done", "Close its Herdr tabs and remove the current worktree?");
 				if (!confirmed) return;
 			}
 
@@ -46,28 +48,40 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const parentIsBare = mainCheckout !== checkout &&
 				worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
 
+			let siblingTabIds: string[] = [];
 			await withWorktreeLock(checkout, async () => {
 				// With --force, skip the dependents check entirely and let git remove the checkout.
+				let dependentIds: string[] = [];
 				if (option !== "--force") {
 					const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
 					const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
 					if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
-					const dependentIds = [...new Set(panes
+					dependentIds = [...new Set(panes
 						.filter((pane): pane is SnapshotPane & { tab_id: string; cwd: string } =>
 							typeof pane.tab_id === "string" && pane.tab_id !== tabId && typeof pane.cwd === "string" &&
 							(pane.cwd === checkout || pane.cwd.startsWith(`${checkout}/`)))
 						.map((pane) => pane.tab_id))];
-					if (dependentIds.length > 0) {
-						const listing = await herdr.json(["tab", "list"], { cwd: ctx.cwd });
-						const tabs = (listing.result as { tabs?: TabEntry[] } | undefined)?.tabs;
-						const labels = new Map(
-							(Array.isArray(tabs) ? tabs : [])
-								.filter((tab): tab is TabEntry & { tab_id: string; label: string } =>
-									typeof tab.tab_id === "string" && typeof tab.label === "string")
-								.map((tab) => [tab.tab_id, tab.label]));
-						const names = [...new Set(dependentIds.map((id) => labels.get(id) ?? id))];
-						throw new Error(`Worktree still used by Herdr tabs ${names.join(", ")}; close them first.`);
-					}
+				}
+				const listing = await herdr.json(["tab", "list"], { cwd: ctx.cwd });
+				const tabs = (listing.result as { tabs?: TabEntry[] } | undefined)?.tabs;
+				if (!Array.isArray(tabs)) throw new Error("herdr tab list returned no tabs.");
+				const tabsById = new Map(tabs
+					.filter((tab): tab is TabEntry & { tab_id: string } => typeof tab.tab_id === "string")
+					.map((tab) => [tab.tab_id, tab]));
+				if (tabsById.get(tabId)?.workspace_id !== workspaceId) {
+					throw new Error(`Herdr tab ${tabId} does not belong to workspace ${workspaceId}.`);
+				}
+				siblingTabIds = tabs
+					.filter((tab): tab is TabEntry & { tab_id: string } =>
+						typeof tab.tab_id === "string" && tab.tab_id !== tabId && tab.workspace_id === workspaceId)
+					.map((tab) => tab.tab_id);
+				const blockers = dependentIds.filter((id) => tabsById.get(id)?.workspace_id !== workspaceId);
+				if (blockers.length > 0) {
+					const names = blockers.map((id) => {
+						const label = tabsById.get(id)?.label;
+						return typeof label === "string" ? label : id;
+					});
+					throw new Error(`Worktree still used by Herdr tabs ${names.join(", ")}; close them first.`);
 				}
 
 				await execOrThrow("git", [
@@ -75,13 +89,14 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 				], ctx.cwd);
 			});
 			try {
+				await Promise.all(siblingTabIds.map((id) => herdr.run(["tab", "close", id], { cwd: tmpdir() })));
 				if (!parentIsBare && mainCheckout !== checkout) {
 					// Serialize concurrent completions pulling the same parent checkout.
 					// Run outside the removed checkout because its directory no longer exists.
 					await withWorktreeLock(mainCheckout, () => execOrThrow("git", ["pull", "--ff-only"], mainCheckout));
 				}
 			} finally {
-				// Close only this session's tab once its checkout is removed, even if the parent pull fails.
+				// Close this session's tab last, even if sibling cleanup or the parent pull fails.
 				await herdr.run(["tab", "close", tabId], { cwd: tmpdir() });
 			}
 		},
