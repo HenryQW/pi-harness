@@ -53,6 +53,12 @@ export declare function rememberedThinkingLevel(model: {
     id: string;
 } | string, agentDir?: string): ThinkingLevel | undefined;
 export declare function resolveTaskModelRoute(ctx: ExtensionContext, route: TaskModelRoute, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute | undefined;
+export declare function resolveConfiguredTaskRoutes(ctx: ExtensionContext, task: string, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute[];
+export type TaskRouteErrorCode = "config-read" | "task-unassigned" | "profile-missing" | "no-route";
+export type TaskRouteError = Error & {
+    taskRouteCode: TaskRouteErrorCode;
+    profileName?: ProfileName;
+};
 export declare function resolveConfiguredTaskRoute(ctx: ExtensionContext, task: string, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute;
 export declare function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[];
 export declare function activeTaskPackages(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">, tasks?: Readonly<Record<string, ProfileName>>): ActiveTaskPackage[];

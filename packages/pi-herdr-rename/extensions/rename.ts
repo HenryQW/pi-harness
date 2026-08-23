@@ -5,10 +5,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import {
-	orderedProfileRoutes,
 	readTaskModelsConfig,
-	resolveTaskModelRoute,
+	resolveConfiguredTaskRoutes,
 	type ResolvedTaskRoute,
+	type TaskRouteError,
 } from "@henryqw/pi-task-models";
 
 const WIDGET_KEY = "pi-herdr-rename";
@@ -19,7 +19,6 @@ const DISPLAY_MAX_WORDS = 4;
 const DISPLAY_MAX_CHARS = 20;
 const SEMANTIC_TYPE_MAX_CHARS = 12;
 const RENAME_TASK = "pi-herdr-rename/rename";
-const DEFAULT_RENAME_PROFILE = "fast" as const;
 const TITLE_STATE_TYPE = "pi-herdr-rename/title";
 const HERDR_DEFAULT_WORKTREE_NAME = /^(?:worktree[-/])?(?:brave|calm|clear|green|lucky|quiet|rapid|silver)-(?:river|cloud|field|forest|harbor|meadow|stone|valley)-[0-9a-f]{4}$/;
 const SEMANTIC_BRANCH = /^[a-z][a-z0-9-]{0,11}\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -29,26 +28,18 @@ type GeneratedTitle = { display: string; branch: string };
 class RenameModelError extends Error {}
 
 function configuredRenameRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
-	let config;
 	try {
-		config = readTaskModelsConfig();
-	} catch {
-		throw new RenameModelError("Couldn't read task model config. Run /task-models.");
+		return resolveConfiguredTaskRoutes(ctx, RENAME_TASK);
+	} catch (error) {
+		const { taskRouteCode, profileName } = error as TaskRouteError;
+		throw new RenameModelError(
+			taskRouteCode === "profile-missing"
+				? `Rename task profile ${profileName} is not configured. Run /task-models.`
+				: taskRouteCode === "no-route"
+					? `Rename task profile ${profileName} has no available route. Run /task-models.`
+					: "Couldn't read task model config. Run /task-models.",
+		);
 	}
-
-	const profileName = config.tasks[RENAME_TASK] ?? DEFAULT_RENAME_PROFILE;
-	const profile = config.profiles[profileName];
-	if (!profile) {
-		throw new RenameModelError(`Rename task profile ${profileName} is not configured. Run /task-models.`);
-	}
-
-	const routes = orderedProfileRoutes(profile)
-		.map((route) => resolveTaskModelRoute(ctx, route))
-		.filter((route): route is ResolvedTaskRoute => route !== undefined);
-	if (!routes.length) {
-		throw new RenameModelError(`Rename task profile ${profileName} has no available route. Run /task-models.`);
-	}
-	return routes;
 }
 
 function parseGeneratedTitle(title: string): GeneratedTitle | undefined {
@@ -209,8 +200,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 }
 
 export default function herdrRenameExtension(pi: ExtensionAPI): void {
-	const herdr = createHerdrClient<{ signal: AbortSignal }>((command, args, options) =>
-		pi.exec(command, [...args], options));
+	const herdr = createHerdrClient<{ signal: AbortSignal }>(pi.exec.bind(pi));
 	let latestUserText: string | undefined;
 	let automaticStarted = false;
 	let automaticPending = false;
@@ -338,7 +328,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		latestUserText = latestSessionUserText(ctx);
 		try {
 			const taskModels = readTaskModelsConfig();
-			const profileName = taskModels.tasks[RENAME_TASK] ?? DEFAULT_RENAME_PROFILE;
+			const profileName = taskModels.tasks[RENAME_TASK];
 			if (!taskModels.profiles[profileName]) {
 				ctx.ui.notify(`Configure rename task profile ${profileName} with /task-models.`, "warning");
 			}

@@ -223,26 +223,36 @@ export function resolveTaskModelRoute(ctx, route, agentDir = getAgentDir(), thin
         return undefined;
     return { model, thinkingLevel };
 }
-export function resolveConfiguredTaskRoute(ctx, task, agentDir = getAgentDir(), thinking) {
+export function resolveConfiguredTaskRoutes(ctx, task, agentDir = getAgentDir(), thinking) {
     let config;
     try {
         config = readTaskModelsConfig(agentDir);
     }
     catch {
-        throw new Error("Couldn't read task model config. Run /task-models.");
+        throw taskRouteError("config-read", "Couldn't read task model config. Run /task-models.");
     }
     const profileName = config.tasks[task];
     if (!profileName)
-        throw new Error(`Task ${task} is not assigned to a profile. Run /task-models.`);
+        throw taskRouteError("task-unassigned", `Task ${task} is not assigned to a profile. Run /task-models.`);
     const profile = config.profiles[profileName];
     if (!profile)
-        throw new Error(`Task ${task} profile ${profileName} is not configured. Run /task-models.`);
+        throw taskRouteError("profile-missing", `Task ${task} profile ${profileName} is not configured. Run /task-models.`, profileName);
+    const routes = [];
     for (const route of orderedProfileRoutes(profile)) {
         const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
         if (resolved)
-            return resolved;
+            routes.push(resolved);
     }
-    throw new Error(`Task ${task} profile ${profileName} has no available route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`);
+    if (!routes.length) {
+        throw taskRouteError("no-route", `Task ${task} profile ${profileName} has no available route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`, profileName);
+    }
+    return routes;
+}
+function taskRouteError(taskRouteCode, message, profileName) {
+    return Object.assign(new Error(message), { taskRouteCode, ...(profileName ? { profileName } : {}) });
+}
+export function resolveConfiguredTaskRoute(ctx, task, agentDir = getAgentDir(), thinking) {
+    return resolveConfiguredTaskRoutes(ctx, task, agentDir, thinking)[0];
 }
 export function orderedProfileRoutes(profile) {
     return profile.fallback ? [profile.primary, profile.fallback] : [profile.primary];
