@@ -29,10 +29,10 @@ export type GitRunner = (args: string[], cwd: string) => Promise<{
 export declare function createChildWorktree(cwd: string, childId: string, run?: GitRunner): Promise<WorktreeInfo | undefined>;
 /**
  * Inspects and possibly prunes a child worktree after it finishes. Commit count
- * reads the dedicated branch (not the checkout's HEAD, which a child may have
- * detached); the clean-tree proof forces untracked files so repository config
- * cannot hide them. A worktree with zero branch commits and a clean tree is
- * removed only when both probes exited zero and base_commit was recorded; any
+ * reads the dedicated branch and refuses to prune when checkout HEAD no longer
+ * names it; the clean-tree proof forces untracked and submodule changes despite
+ * repository ignore config. A worktree with zero branch commits and a clean tree
+ * is removed only when every probe succeeds and base_commit was recorded; any
  * probe failure keeps everything and reports `inspection_failed` so unmeasured
  * state is never read as empty.
  */

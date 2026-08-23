@@ -9,8 +9,8 @@ export { createChildWorktree, finalizeChildWorktree, worktreeContextNote, } from
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
-const CHILD_POLICY_EXTENSION = fileURLToPath(new URL("../extensions/child-policy.ts", import.meta.url));
 const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
+const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question,auto_dag_approve,auto_dag_start";
 export const isProfileName = (value) => typeof value === "string" && PROFILE_NAMES.includes(value);
 const cleanText = (value, field, source) => {
     if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -138,7 +138,6 @@ export function createRoleLaunch(pi, ctx, input) {
         ...(input.extensions ?? []),
         ...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
         ...(tools === undefined ? [] : [ROLE_TOOLS_EXTENSION]),
-        CHILD_POLICY_EXTENSION,
     ].map((extension) => validateExtension(extension, `Role ${role.name}`));
     const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
@@ -147,7 +146,7 @@ export function createRoleLaunch(pi, ctx, input) {
             throw new Error(`Invalid launch environment value: ${key}`);
         return [key, value];
     }));
-    const args = ["--no-session", "--no-extensions", "--no-skills"];
+    const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
     for (const extension of new Set(extensions))
         args.push("--extension", extension);
     for (const skill of skills.paths)

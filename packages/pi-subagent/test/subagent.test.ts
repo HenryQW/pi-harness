@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -135,6 +136,8 @@ Do bounded work.
 `);
 }
 
+const childName = (id: string): string => `subagent-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
+
 async function initializedRepository(t: import("node:test").TestContext): Promise<string> {
 	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-repo-"));
 	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
@@ -236,14 +239,13 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(child.cwd, await realpath("/tmp"));
 		assert.equal(child.prompt, "Review only requested change.");
 		const extensionArgs = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension");
-		const policyExtension = extensionArgs.at(-2)!;
+		const policyExtension = extensionArgs.at(-1)!;
 		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
-		assert.match(extensionArgs.at(-1)!, /pi-subagent\/extensions\/child-policy\.ts$/);
 		assert.deepEqual(child.args, [
 			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
+			"--exclude-tools", "delegate_task,ask_question,auto_dag_approve,auto_dag_start",
 			"--extension", "/user/extensions/review.ts",
 			"--extension", policyExtension,
-			"--extension", extensionArgs.at(-1),
 			"--skill", "/effective/skills/security/SKILL.md",
 			`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(["read", "grep"]),
 			"--model", "test/text-model",
@@ -271,11 +273,12 @@ test("worktree isolation preserves the delegated repository subdirectory", async
 		const app = harness({ cwd: join(repo, "packages", "worker") });
 		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
 		const [childLine, payloadLine] = result.content[0].text.split("\n");
-		const worktreeRoot = join(await realpath(repo), ".worktrees", "subagent-call-1");
+		const name = childName("call-1");
+		const worktreeRoot = join(await realpath(repo), ".worktrees", name);
 		assert.equal(JSON.parse(childLine!).cwd, join(worktreeRoot, "packages", "worker"));
 		assert.deepEqual(JSON.parse(payloadLine!), {
 			path: worktreeRoot,
-			branch: "pi-subagent/subagent-call-1",
+			branch: `pi-subagent/${name}`,
 			commits: 0,
 			dirty: false,
 			pruned: true,
@@ -331,7 +334,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
 		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
-		assert.equal(args.filter((value: string, index: number) => args[index - 1] === "--extension").some((path: string) => path.endsWith("/pi-subagent/extensions/child-policy.ts")), true);
+		assert.equal(args[args.indexOf("--exclude-tools") + 1], "delegate_task,ask_question,auto_dag_approve,auto_dag_start");
 	});
 });
 
@@ -863,7 +866,7 @@ test("session shutdown aborts queued background subagents without unhandled reje
 				assert.match(second.content[0]!.text, /started/);
 				// Second task is queued; shutdown must abort it without an unhandled
 				// rejection from the discarded IIFE promise.
-				app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+				await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 				await new Promise((resolve) => setTimeout(resolve, 50));
 				assert.deepEqual(unhandled, []);
 			} finally {
@@ -884,7 +887,7 @@ test("background outcomes are not delivered after session shutdown", async () =>
 
 		const app = harness();
 		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
-		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.equal(app.sentMessages.length, 0);
 	});
@@ -1231,12 +1234,52 @@ test("background worktree report survives capped child output", async (t) => {
 		await waitFor(() => app.sentMessages.length === 1);
 		const content = app.sentMessages[0]!.message.content as string;
 		assert.match(content, /\[Output truncated: \d+ bytes omitted\]/);
+		const name = childName("call-1");
 		assert.deepEqual(JSON.parse(content.trim().split("\n").at(-1)!), {
-			path: join(await realpath(repo), ".worktrees", "subagent-call-1"),
-			branch: "pi-subagent/subagent-call-1",
+			path: join(await realpath(repo), ".worktrees", name),
+			branch: `pi-subagent/${name}`,
 			commits: 0,
 			dirty: false,
 			pruned: true,
+		});
+	});
+});
+
+test("session shutdown reports dirty isolated work without stale child output", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { writeFileSync } from "node:fs";
+const event = (value) => console.log(JSON.stringify(value));
+writeFileSync("dirty.txt", "recover me");
+event({ type: "message_start", message: { role: "assistant", content: [] } });
+event({ type: "message_update", usage: { totalTokens: 1 }, assistantMessageEvent: { type: "text_delta", delta: "DO NOT REPLAY" } });
+setInterval(() => {}, 1_000);
+`);
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: repo, timeoutPolicy: { softMs: 60_000, graceMs: 60_000, activeWindowMs: 60_000 } });
+		const started = await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		const name = childName("call-1");
+		const root = join(await realpath(repo), ".worktrees", name);
+		await waitFor(() => existsSync(join(root, "dirty.txt")));
+
+		await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
+
+		assert.equal(app.sentMessages.length, 1);
+		const { message, options } = app.sentMessages[0]!;
+		assert.equal(message.customType, "subagent-background-result");
+		assert.equal(message.details.taskId, started.details.taskId);
+		assert.equal(message.details.recovery, true);
+		assert.equal(options.triggerTurn, false);
+		assert.doesNotMatch(message.content, /DO NOT REPLAY|Subagent was aborted/);
+		assert.deepEqual(JSON.parse(message.content.trim().split("\n").at(-1)), {
+			path: root,
+			branch: `pi-subagent/${name}`,
+			commits: 0,
+			dirty: true,
+			pruned: false,
 		});
 	});
 });
@@ -1274,7 +1317,7 @@ test("background tasks deliver again after a new session starts", async () => {
 		const app = harness();
 		// First session: launch, shut down (task aborts, epoch advances).
 		await app.tool.execute("call-1", { role: "worker", task: "old", background: true }, undefined, undefined, app.ctx);
-		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 		app.handlers.get("session_start")?.({}, app.ctx);
 		// Second session: a fresh task must deliver normally.
 		const result = await app.tool.execute("call-2", { role: "worker", task: "new", background: true }, undefined, undefined, app.ctx);

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -41,7 +41,7 @@ const runGit: GitRunner = (args, cwd) =>
 	});
 
 const sanitizeShortId = (childId: string): string =>
-	childId.replace(/[^A-Za-z0-9._-]/g, "_") || randomBytes(4).toString("hex");
+	createHash("sha256").update(childId).digest("hex").slice(0, 24);
 
 const isAbsoluteish = (path: string): boolean => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
 
@@ -103,15 +103,7 @@ export async function createChildWorktree(
 	await ensureLocalExclude(repoRoot, run);
 	const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot);
 	if (added.code !== 0) {
-		// `worktree add -b` can leave the branch behind when checkout fails
-		// (smudge filter, hooks). Roll back only what we can prove is ours:
-		// a branch still pointing at the exact base commit we branched from.
-		const probe = await run(["rev-parse", "--verify", branch], repoRoot);
-		if (probe.code === 0 && probe.stdout.trim() === baseCommit) {
-			await run(["worktree", "remove", "--force", path], repoRoot);
-			await run(["branch", "-D", branch], repoRoot);
-		}
-		throw new Error(`git worktree add failed: ${added.stderr.trim().slice(0, 200)}`);
+		throw new Error(`git worktree add failed; preserved ${path} and ${branch}: ${added.stderr.trim().slice(0, 200)}`);
 	}
 	return { path, cwd: join(path, prefix.stdout.trim()), branch, repoRoot, baseCommit };
 }
@@ -121,16 +113,16 @@ function markUnproven(payload: WorktreePayload, reason: string, unmeasured = "co
 	payload.inspection_failed = true;
 	payload.note =
 		`git inspection failed (${reason}): ${unmeasured} UNKNOWN — not proven zero/clean. `
-		+ `The worktree and branch were preserved — inspect ${payload.path} (branch ${payload.branch}) before assuming no work.`;
+		+ `Any remaining worktree or branch was preserved — inspect ${payload.path} (branch ${payload.branch}) before assuming no work.`;
 	return payload;
 }
 
 /**
  * Inspects and possibly prunes a child worktree after it finishes. Commit count
- * reads the dedicated branch (not the checkout's HEAD, which a child may have
- * detached); the clean-tree proof forces untracked files so repository config
- * cannot hide them. A worktree with zero branch commits and a clean tree is
- * removed only when both probes exited zero and base_commit was recorded; any
+ * reads the dedicated branch and refuses to prune when checkout HEAD no longer
+ * names it; the clean-tree proof forces untracked and submodule changes despite
+ * repository ignore config. A worktree with zero branch commits and a clean tree
+ * is removed only when every probe succeeds and base_commit was recorded; any
  * probe failure keeps everything and reports `inspection_failed` so unmeasured
  * state is never read as empty.
  */
@@ -148,14 +140,17 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 		if (Number.isNaN(commits)) return markUnproven(payload, "rev-list produced non-numeric output", "commits");
 		payload.commits = commits;
 		if (commits > 0) return payload; // keep the branch for parent review
-		await run(["branch", "-D", info.branch], gitCwd);
+		const pruned = await run(["worktree", "prune", "--expire", "now"], gitCwd);
+		if (pruned.code !== 0) return markUnproven(payload, `worktree prune exit ${pruned.code}: ${pruned.stderr.trim().slice(0, 200)}`, "cleanup");
+		const deleted = await run(["branch", "-D", info.branch], gitCwd);
+		if (deleted.code !== 0) return markUnproven(payload, `branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`, "cleanup");
 		payload.pruned = true;
 		return payload;
 	}
 	if (!info.baseCommit) return markUnproven(payload, "no base_commit recorded — commit count unmeasurable", "commits");
 
 	const counted = await run(["rev-list", "--count", `${info.baseCommit}..${info.branch}`], info.path);
-	const status = await run(["status", "--porcelain", "--untracked-files=all"], info.path);
+	const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"], info.path);
 	const failed: string[] = [];
 	const unmeasured: string[] = [];
 	if (counted.code === 0) {
@@ -176,12 +171,16 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 	if (failed.length) return markUnproven(payload, failed.join("; "), unmeasured.join("/"));
 
 	if (payload.commits === 0 && !payload.dirty) {
+		const head = await run(["symbolic-ref", "--quiet", "HEAD"], info.path);
+		if (head.code !== 0 || head.stdout.trim() !== `refs/heads/${info.branch}`) {
+			return markUnproven(payload, "HEAD is detached, switched, or unreadable", "checked-out commits");
+		}
 		const cwd = info.repoRoot || info.path;
 		const removed = await run(["worktree", "remove", "--force", info.path], cwd);
-		if (removed.code === 0) {
-			await run(["branch", "-D", info.branch], cwd);
-			payload.pruned = true;
-		}
+		if (removed.code !== 0) return markUnproven(payload, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`, "cleanup");
+		const deleted = await run(["branch", "-D", info.branch], cwd);
+		if (deleted.code !== 0) return markUnproven(payload, `branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`, "cleanup");
+		payload.pruned = true;
 	}
 	return payload;
 }

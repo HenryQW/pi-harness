@@ -18,7 +18,7 @@ import {
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
 import { Type } from "typebox";
-import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveTaskRoute, worktreeContextNote, type WorktreeInfo } from "@henryqw/pi-subagent";
+import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveTaskRoute, worktreeContextNote, type WorktreeInfo, type WorktreePayload } from "@henryqw/pi-subagent";
 
 const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
@@ -147,11 +147,11 @@ function taskSummary(task: string): string {
 	return task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ");
 }
 
-/** Finalizes an isolated child's worktree; returns its report line, or undefined when absent/failed. */
-async function finalizeWorktreePayload(worktree: WorktreeInfo | undefined): Promise<string | undefined> {
+/** Finalizes an isolated child's worktree; returns its report, or undefined when absent/failed. */
+async function finalizeWorktreePayload(worktree: WorktreeInfo | undefined): Promise<WorktreePayload | undefined> {
 	if (!worktree) return undefined;
 	try {
-		return JSON.stringify(await finalizeChildWorktree(worktree));
+		return await finalizeChildWorktree(worktree);
 	} catch {
 		return undefined;
 	}
@@ -526,7 +526,7 @@ export default function subagentExtension(
 	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
-	const backgroundTasks = new Map<string, AbortController>();
+	const backgroundTasks = new Map<string, { controller: AbortController; settled: Promise<void> }>();
 	// Latest known session context; refreshed on session lifecycle and model
 	// changes so queued background launches resolve against effective state.
 	let latestCtx: ExtensionContext | undefined;
@@ -644,16 +644,18 @@ export default function subagentExtension(
 		ensureWidget(ctx);
 		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
 	});
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		stopWidgetTimer();
 		widgetItems.clear();
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
-		// Invalidate every outstanding background delivery: the aborting session
-		// is gone, and a later-settling child must not reach the next session.
+		// Invalidate ordinary outcomes, abort children, then let preserved isolated
+		// work report into the outgoing session before Pi tears it down.
 		sessionEpoch += 1;
-		for (const controller of backgroundTasks.values()) controller.abort();
+		const tasks = [...backgroundTasks.values()];
+		for (const { controller } of tasks) controller.abort();
+		await Promise.allSettled(tasks.map(({ settled }) => settled));
 		backgroundTasks.clear();
 	});
 	// btw-style context refresh: model_select carries the new model on the event,
@@ -671,17 +673,20 @@ export default function subagentExtension(
 		details: { role: string; model?: string; thinkingLevel?: string },
 		outcome: "completed" | "failed" | "aborted",
 		text: string,
-		worktreePayloadLine?: string,
+		worktreePayload?: WorktreePayload,
 	): Promise<void> => {
-		if (launchEpoch !== sessionEpoch) return;
+		const stale = launchEpoch !== sessionEpoch;
+		if (stale && (!worktreePayload || worktreePayload.pruned)) return;
 		// Custom messages convert to user-role LLM messages, so the parent agent
 		// sees the outcome on its next turn without a forced turn now.
 		try {
 			pi.sendMessage({
 				customType: BACKGROUND_RESULT_TYPE,
-				content: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}${worktreePayloadLine ? `\n${worktreePayloadLine}` : ""}`,
+				content: stale
+					? `Background subagent ${taskId} (${details.role}) left recoverable isolated work after session shutdown.\n${JSON.stringify(worktreePayload)}`
+					: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}${worktreePayload ? `\n${JSON.stringify(worktreePayload)}` : ""}`,
 				display: true,
-				details: { ...details, taskId, outcome },
+				details: { ...details, taskId, outcome, ...(stale ? { recovery: true } : {}) },
 			}, { triggerTurn: false });
 		} catch {
 			// Session may already be gone; the widget row still shows the outcome.
@@ -738,11 +743,10 @@ export default function subagentExtension(
 			if (params.background) {
 				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
 				const controller = new AbortController();
-				backgroundTasks.set(taskId, controller);
 				// Freeze the launching session now: a task that settles after a
 				// reload must not deliver into whichever session is active then.
 				const launchEpoch = sessionEpoch;
-				void (async () => {
+				const settled = (async () => {
 					let acquired = false;
 					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 					// Role is known up front; model/thinking join after launch resolution.
@@ -802,6 +806,8 @@ export default function subagentExtension(
 						backgroundTasks.delete(taskId);
 					}
 				})();
+				backgroundTasks.set(taskId, { controller, settled });
+				void settled;
 				return {
 					content: [{ type: "text" as const, text: `Background subagent ${taskId} started (${role.name}). The outcome arrives as a message when the task settles; keep working or end your turn.` }],
 					details: { role: role.name, taskId, background: true },
@@ -817,7 +823,7 @@ export default function subagentExtension(
 			let result: DelegateResult | undefined;
 			let worktree: WorktreeInfo | undefined;
 			let rethrow: unknown;
-			let worktreePayloadLine: string | undefined;
+			let worktreePayload: WorktreePayload | undefined;
 			try {
 				// Isolation is created only after preflight and permit acquisition so a
 				// rejected delegation cannot leak worktrees; setup failure fails closed.
@@ -844,14 +850,14 @@ export default function subagentExtension(
 			} finally {
 				releaseChildPermit();
 				finishWidgetItem(toolCallId, widgetStatus);
-				worktreePayloadLine = await finalizeWorktreePayload(worktree);
-				if (result && worktreePayloadLine) result.content[0].text += `\n${worktreePayloadLine}`;
+				worktreePayload = await finalizeWorktreePayload(worktree);
+				if (result && worktreePayload) result.content[0].text += `\n${JSON.stringify(worktreePayload)}`;
 			}
 			if (rethrow !== undefined) {
 				// A kept-but-unreported worktree is unrecoverable: attach the report
 				// locating it (path/branch/dirty state) to whatever failure escapes.
-				throw worktreePayloadLine
-					? new Error(`${rethrow instanceof Error ? rethrow.message : String(rethrow)}\n${worktreePayloadLine}`)
+				throw worktreePayload
+					? new Error(`${rethrow instanceof Error ? rethrow.message : String(rethrow)}\n${JSON.stringify(worktreePayload)}`)
 					: rethrow;
 			}
 			return result!;
