@@ -56,14 +56,14 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		let tps: number | undefined;
 		let assistantStartedAt: number | undefined;
 		pi.on("message_start", async (event) => {
-			if (event.message.role === "assistant") assistantStartedAt = Date.now();
+			if (event.message.role === "assistant") assistantStartedAt = performance.now();
 		});
 		pi.on("message_end", async (event) => {
 			if (event.message.role !== "assistant") return;
 			const output = event.message.usage?.output ?? 0;
-			const seconds = assistantStartedAt === undefined ? 0 : (Date.now() - assistantStartedAt) / 1000;
+			const seconds = assistantStartedAt === undefined ? 0 : (performance.now() - assistantStartedAt) / 1000;
 			assistantStartedAt = undefined;
-			tps = output > 0 && seconds > 0 ? output / seconds : undefined;
+			tps = seconds > 0 ? output / seconds : undefined;
 		});
 
 		// ponytail: keyed on length + last entry (sessions are append-only); revisit if entries ever mutate in place.

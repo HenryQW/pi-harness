@@ -169,9 +169,22 @@ test("shows TPS of last assistant response", async () => {
 	const footer = footerFactory({}, { fg: (_c: string, text: string) => text }, { getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} });
 
 	assert.match(footer.render(100)[1]!, /⚡ — /);
-	const assistantMessage = { role: "assistant", usage: { output: 100 } };
-	await handlers.get("message_start")!({ message: assistantMessage });
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	await handlers.get("message_end")!({ message: assistantMessage });
-	assert.match(footer.render(100)[1]!, /⚡ [0-9.]+ t\/s/);
+	let now = 0;
+	const realPerformance = globalThis.performance;
+	globalThis.performance = { now: () => now } as unknown as typeof performance;
+	try {
+		const assistantMessage = { role: "assistant", usage: { output: 100 } };
+		await handlers.get("message_start")!({ message: assistantMessage });
+		now = 2000;
+		await handlers.get("message_end")!({ message: assistantMessage });
+		assert.match(footer.render(100)[1]!, /⚡ 50\.0 t\/s/);
+
+		const zeroOutput = { role: "assistant", usage: { output: 0 } };
+		await handlers.get("message_start")!({ message: zeroOutput });
+		now = 4000;
+		await handlers.get("message_end")!({ message: zeroOutput });
+		assert.match(footer.render(100)[1]!, /⚡ 0\.0 t\/s/);
+	} finally {
+		globalThis.performance = realPerformance;
+	}
 });
