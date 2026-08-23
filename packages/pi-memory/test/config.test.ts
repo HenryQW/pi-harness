@@ -140,3 +140,18 @@ test("invalid UTF-8 in config fails as malformed instead of U+FFFD substitution"
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+test("rejects control characters and oversized config files", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-memory-config-"));
+	try {
+		const ctrlPath = join(dir, "ctrl.json");
+		await writeFile(ctrlPath, JSON.stringify({ directory: "/tmp/\nx" }));
+		assert.throws(() => loadMemoryConfig(ctrlPath), /must not contain control characters/);
+
+		const hugePath = join(dir, "huge.json");
+		await writeFile(hugePath, "x".repeat(65 * 1024));
+		assert.throws(() => loadMemoryConfig(hugePath), /too large/);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});

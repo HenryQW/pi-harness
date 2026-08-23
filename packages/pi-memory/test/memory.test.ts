@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -289,6 +289,66 @@ test("memory directory overlapping the backup directory fails init loudly", asyn
 		assert.match(injected.systemPrompt, /persistent memory is DISABLED/);
 		assert.match(injected.systemPrompt, /must not overlap the backup directory/);
 		void tool;
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("ambiguous old_text retries hit the consolidation cap; symlinked overlap rejected", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-amb-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory.json"), JSON.stringify({
+			directory: memoryDir,
+			memoryCharLimit: 5000,
+			userCharLimit: 5000,
+		}));
+		const handlers = new Map<string, Handler>();
+		let tool: CapturedTool | undefined;
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerTool(value: CapturedTool) { tool = value; },
+		} as unknown as ExtensionAPI);
+		await handlers.get("session_start")!({ type: "session_start" });
+		const memoryTool = tool!;
+		await memoryTool.execute("a", { action: "add", content: "alpha one shared" });
+		await memoryTool.execute("b", { action: "add", content: "alpha two shared" });
+
+		// Two ambiguous retries then the third must be terminal.
+		for (let i = 0; i < 2; i++) {
+			await assert.rejects(() => memoryTool.execute(`r${i}`, { action: "replace", old_text: "shared", content: "replacement" }), /[Mm]ultiple entries matched/);
+		}
+		await assert.rejects(
+			() => memoryTool.execute("r2", { action: "replace", old_text: "shared", content: "replacement" }),
+			/Stop retrying memory calls/,
+		);
+
+		// Symlinked overlap: memory dir is a symlink into memory-backups.
+		const root2 = await mkdtemp(join(tmpdir(), "pi-memory-sym-"));
+		try {
+			process.env.PI_CODING_AGENT_DIR = join(root2, "agent");
+			await mkdir(join(root2, "agent", "config"), { recursive: true });
+			await mkdir(join(root2, "agent", "memory-backups", "real"), { recursive: true });
+			await symlink(join(root2, "agent", "memory-backups", "real"), join(root2, "link"));
+			await writeFile(join(root2, "agent", "config", "pi-memory.json"), JSON.stringify({ directory: join(root2, "link") }));
+			const handlers3 = new Map<string, Handler>();
+			memoryExtension({
+				on(event: string, handler: Handler) { handlers3.set(event, handler); },
+				registerTool() {},
+			} as unknown as ExtensionAPI);
+			await handlers3.get("session_start")!({ type: "session_start" });
+			const injected = await handlers3.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
+			assert.match(injected.systemPrompt, /persistent memory is DISABLED/);
+		} finally {
+			await rm(root2, { recursive: true, force: true }).catch(() => {});
+		}
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

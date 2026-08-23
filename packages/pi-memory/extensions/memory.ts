@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -16,7 +16,7 @@ const FRAME_TOKEN_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFI
 const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
 // @henryqw/pi-herdr-btw does not export internal/core.ts from its package root.
 const BTW_CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
-const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched/i;
+const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched|[Mm]ultiple entries matched|matched multiple distinct/i;
 const MEMORY_DESCRIPTION = `Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.
 
 HOW: Prefer one operations batch for multiple changes or consolidation. A batch applies atomically and checks the character limit only on the final result, so it can remove or shorten stale entries and add new ones in one call. Use action/content/old_text only for one lone change. A successful response finishes the update; do not repeat it.
@@ -26,6 +26,8 @@ WHEN: Save proactively when the user states a preference, correction, or persona
 IF FULL: Reissue one batch that removes or shortens enough stale entries and adds the new entry together.
 
 TARGETS: user is who the user is (name, role, preferences, style). memory is your notes (environment, conventions, tool quirks, lessons).
+
+EXCLUDE: project- or repository-specific facts (build commands, repo conventions, architecture) do NOT belong here — this store is global across projects; put them in that repository's docs instead.
 
 SKIP: trivial or obvious information, easily rediscovered facts, raw dumps, task progress, completed-work logs, and temporary TODO state. Reusable procedures belong in a skill, not memory.`;
 
@@ -121,8 +123,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			await mkdir(config.directory, { recursive: true });
 			// The runtime contract keeps backups OUTSIDE the memory directory; reject
 			// overlap (equal, ancestor, descendant) so backup cleanup can never eat
-			// the store and .bak files can't be mistaken for memory files.
-			if (config.directory === BACKUP_DIR() || config.directory.startsWith(BACKUP_DIR() + sep) || BACKUP_DIR().startsWith(config.directory + sep)) {
+			// the store and .bak files can't be mistaken for memory files. Both dirs
+			// exist by now — resolve symlinks and '..' components via realpath.
+			const [realStore, realBackup] = await Promise.all([realpath(config.directory), realpath(BACKUP_DIR())]);
+			if (realStore === realBackup || realStore.startsWith(realBackup + sep) || realBackup.startsWith(realStore + sep)) {
 				throw new Error(`Memory directory must not overlap the backup directory (${BACKUP_DIR()}): got ${config.directory}`);
 			}
 			const backupPath = (target: Target) => join(BACKUP_DIR(), target === "user" ? "USER.md.bak" : "MEMORY.md.bak");
@@ -189,6 +193,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const store = state.stores[target];
 			// Serialize the entire mutation window against Pi's edit/write tools.
 			return withFileMutationQueue(join(state.config.directory, target === "user" ? "USER.md" : "MEMORY.md"), async () => {
+				// Recreate before locking: a cleaned-up backup dir would otherwise fail
+				// lock-file creation before persist() gets a chance to restore it.
+				await mkdir(BACKUP_DIR(), { recursive: true });
 				const release = await lock(join(BACKUP_DIR(), ".memory-lock"), {
 					realpath: false,
 					stale: 10_000,

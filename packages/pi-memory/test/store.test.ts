@@ -448,3 +448,20 @@ test("ambiguous-match previews are aggregate-bounded", async () => {
 		await cleanup();
 	}
 });
+
+test("source vanishing between reload and backup aborts the mutation", async () => {
+	const backupDir = await mkdtemp(join(tmpdir(), "pi-memory-backups-"));
+	const { store, dir, cleanup } = await makeStore((target) => join(backupDir, target === "user" ? "USER.md.bak" : "MEMORY.md.bak"));
+	try {
+		await store.add("memory", "precious");
+		await rm(memoryPath(dir));
+		// Disappearance guard (reloadTarget) fires before backup copy: aborts as a
+		// failure result, never rewriting from the stale view.
+		const result = await store.add("memory", "after disappearance");
+		assert.equal(result.success, false);
+		assert.match(result.error ?? "", /disappeared/);
+	} finally {
+		await rm(backupDir, { recursive: true, force: true });
+		await cleanup();
+	}
+});

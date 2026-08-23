@@ -257,6 +257,13 @@ export class MemoryStore {
 				await copyFile(path, backup);
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				// Backup dir now exists, so ENOENT means the SOURCE vanished after
+				// reloadTarget saw it — same divergence hazard as mid-session
+				// disappearance; never proceed from the stale view.
+				if (this.observedExisting.has(target)) {
+					this.disappearanceDetected = true;
+					throw new Error(`${path} vanished before its backup could be written; aborting to avoid a divergent store.`);
+				}
 			}
 		}
 		const content = this.entries.get(target)!.join(ENTRY_DELIMITER);

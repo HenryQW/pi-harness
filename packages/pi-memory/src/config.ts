@@ -22,10 +22,17 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 	const path = explicitPath ?? configPath();
 	let raw: string;
 	try {
+		// Bound the read: a config accidentally replaced with (or symlinked to) a
+		// huge file must not exhaust memory before validation. Real configs are
+		// tiny; 64 KiB is generous.
+		const bytes = readFileSync(path);
+		if (bytes.length > 64 * 1024) {
+			throw new Error(`Memory config at ${path} is too large (${bytes.length} bytes); expected < 64 KiB.`);
+		}
 		// Fatal decode: invalid UTF-8 must surface as malformed config, not a
 		// U+FFFD-replaced view that could pass path checks and silently redirect
 		// the memory directory.
-		raw = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path));
+		raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 	} catch (error: unknown) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
 			return {
@@ -70,6 +77,11 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 		}
 		if (!isAbsolute(obj.directory)) {
 			throw new Error(`Invalid 'directory' in memory config at ${path}: must be an absolute path, got ${JSON.stringify(obj.directory)}`);
+		}
+		// Untrusted config value gets embedded verbatim in prompt warnings;
+		// control characters could forge prompt lines.
+		if (/\p{C}/u.test(obj.directory)) {
+			throw new Error(`Invalid 'directory' in memory config at ${path}: must not contain control characters.`);
 		}
 		directory = obj.directory;
 	}
