@@ -67,7 +67,7 @@ Each configured profile needs one primary model and thinking level. Fallback is 
 
 Reads are strict. Malformed or unknown values fail visibly and never rewrite the file. Only explicit `/task-models` actions write config.
 
-Consumers can call `resolveConfiguredTaskRoute(ctx, taskId)` to read strict shared config, choose usable primary or fallback route, and fail with `/task-models` guidance when assignment, profile, or route is unavailable.
+Consumers can call `resolveConfiguredTaskRoute(ctx, taskId)` for the first usable route or `resolveConfiguredTaskRoutes(ctx, taskId)` for primary and fallback routes. Both read strict shared config and fail with `/task-models` guidance when assignment, profile, or route is unavailable.
 
 ## Remove
 

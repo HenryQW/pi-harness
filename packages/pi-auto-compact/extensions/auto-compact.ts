@@ -11,11 +11,9 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-	DEFAULT_TASK_ASSIGNMENTS,
-	orderedProfileRoutes,
-	readTaskModelsConfig,
-	resolveTaskModelRoute,
+	resolveConfiguredTaskRoutes,
 	type ResolvedTaskRoute,
+	type TaskRouteError,
 } from "@henryqw/pi-task-models";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
@@ -33,7 +31,6 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
 const AUTO_COMPACT_TASK = "pi-auto-compact/autoCompact";
-const DEFAULT_AUTO_COMPACT_PROFILE = DEFAULT_TASK_ASSIGNMENTS[AUTO_COMPACT_TASK];
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
 type Config = {
@@ -71,28 +68,18 @@ function writeConfig(config: Config): void {
 }
 
 function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
-	let config;
 	try {
-		config = readTaskModelsConfig();
-	} catch {
-		ctx.ui.notify("Couldn't read task model config; using current session model.", "error");
+		return resolveConfiguredTaskRoutes(ctx, AUTO_COMPACT_TASK);
+	} catch (error) {
+		const { taskRouteCode, profileName } = error as TaskRouteError;
+		const cause = taskRouteCode === "profile-missing"
+			? `Task model profile ${profileName} is not configured`
+			: taskRouteCode === "no-route"
+				? `No usable ${profileName} task model route`
+				: "Couldn't read task model config";
+		ctx.ui.notify(`${cause}; using current session model.`, "error");
 		return [];
 	}
-
-	const profileName = config.tasks[AUTO_COMPACT_TASK] ?? DEFAULT_AUTO_COMPACT_PROFILE;
-	const profile = config.profiles[profileName];
-	if (!profile) {
-		ctx.ui.notify(`Task model profile ${profileName} is not configured; using current session model.`, "error");
-		return [];
-	}
-
-	const routes = orderedProfileRoutes(profile)
-		.map((route) => resolveTaskModelRoute(ctx, route))
-		.filter((route): route is ResolvedTaskRoute => route !== undefined);
-	if (!routes.length) {
-		ctx.ui.notify(`No usable ${profileName} task model route; using current session model.`, "error");
-	}
-	return routes;
 }
 
 function withoutDeletedHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {

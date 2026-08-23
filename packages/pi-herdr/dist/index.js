@@ -4,7 +4,7 @@ export function createHerdrClient(execute) {
         if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
             throw new TypeError("Herdr command arguments must be an array of strings");
         }
-        return await execute("herdr", args, options);
+        return await execute("herdr", [...args], options);
     };
     const run = async (args, options) => {
         const result = await exec(args, options);

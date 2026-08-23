@@ -10,6 +10,10 @@ _Avoid_: Working-directory path, worktree path
 Cumulative session input, output, and estimated cost plus latest cache-hit rate and current context usage, followed by right-aligned active model and thinking level. `off` matches dim model text, active levels follow a distinct green-to-red gradient ending with red `max`, and `ultra` is rainbow when runtime supports it.
 _Avoid_: Token counter, status line
 
-**Extension status line**:
-Every non-empty status except `pi-pr`, sorted by status key and preserving producer text, ANSI styling, glyphs, and links. `pi-pr` belongs with footer identity.
-_Avoid_: Plugin summary, rewritten status
+**Family status line**:
+Third footer line, reserved for non-empty statuses from `@henryqw` extensions. `pi-pr` belongs with footer identity instead.
+_Avoid_: External extension status, plugin summary, rewritten status
+
+**External status line**:
+Fourth footer line for every non-empty status from extensions outside `@henryqw`, sorted by status key and preserving producer text, ANSI styling, glyphs, and links. It remains fourth even when family status line is empty.
+_Avoid_: Family extension status, rewritten status

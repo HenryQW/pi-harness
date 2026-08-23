@@ -349,7 +349,7 @@ tools: [read]
 Return concise findings.
 `);
 		const legacyConfig = JSON.stringify({ models: { frontier: { model: "legacy/model", thinkingLevel: "high" } } });
-		await writeFile(join(agentDir, "config", "pi-subagent.json"), legacyConfig);
+		await writeFile(join(agentDir, "config", "pi-subagent", "pi-subagent.json"), legacyConfig);
 		const availableModels = [
 			{ provider: "provider", id: "fast-model", input: ["text"], reasoning: false },
 			{ provider: "provider", id: "balanced-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
@@ -385,7 +385,7 @@ Return concise findings.
 		const omittedArgs = JSON.parse(omitted.content[0].text);
 		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/fast-model");
 		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "off");
-		assert.equal(await readFile(join(agentDir, "config", "pi-subagent.json"), "utf8"), legacyConfig);
+		assert.equal(await readFile(join(agentDir, "config", "pi-subagent", "pi-subagent.json"), "utf8"), legacyConfig);
 	});
 });
 
@@ -907,7 +907,7 @@ test("invalid PI_SUBAGENT_MAX_SUBAGENTS fails extension load", () => {
 test("config file maxSubagents applies and malformed config warns without failing load", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		const configDir = join(agentDir, "config");
+		const configDir = join(agentDir, "config", "pi-subagent");
 		await mkdir(configDir, { recursive: true });
 		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 1 }));
 
@@ -1053,7 +1053,7 @@ setInterval(() => {}, 1_000);
 test("config file timeout applies when no explicit policy is passed", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		const configDir = join(agentDir, "config");
+		const configDir = join(agentDir, "config", "pi-subagent");
 		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({
 			timeout: { softMinutes: 0.002, graceMinutes: 0.002, activeWindowSeconds: 0.01 },
 		}));
