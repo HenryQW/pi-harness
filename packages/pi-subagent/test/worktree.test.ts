@@ -42,11 +42,14 @@ function fakeGit(
 	responses: Record<string, { code?: number; stdout?: string; stderr?: string }>,
 	calls: string[][] = [],
 ): GitRunner {
-	return async (args) => {
+	return async (args, cwd) => {
 		calls.push(args);
 		const key = Object.keys(responses).find((candidate) => args.join(" ").startsWith(candidate));
 		const response = key === undefined ? undefined : responses[key];
-		return response ? { code: response.code ?? 0, stdout: response.stdout ?? "", stderr: response.stderr ?? "" } : ok();
+		if (response) return { code: response.code ?? 0, stdout: response.stdout ?? "", stderr: response.stderr ?? "" };
+		if (args.join(" ") === "rev-parse --git-dir") return ok(`${cwd}/.git\n`);
+		if (args.join(" ") === "worktree list --porcelain -z") return ok(`worktree ${cwd}\0\0`);
+		return ok();
 	};
 }
 
@@ -140,7 +143,7 @@ test("createChildWorktree sanitizes child ids, degrades on non-git repos, and re
 	assert.equal(info.cwd, info.path);
 	assert.equal(info.repoRoot, repo);
 	assert.equal(info.baseCommit, "abc123");
-	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "add", info.path, "-b", info.branch, "abc123"]);
+	assert.deepEqual(calls.find((args) => args[0] === "worktree" && args[1] === "add"), ["worktree", "add", info.path, "-b", info.branch, "abc123"]);
 	// Exclusion goes through the repository-local exclude file, never the tracked .gitignore.
 	assert.equal(await readFile(join(repo, ".git", "info", "exclude"), "utf8"), ".worktrees/\n");
 	assert.equal(await readFile(join(repo, ".gitignore"), "utf8").then(() => true, () => false), false);
@@ -231,6 +234,25 @@ test("createChildWorktree preserves whitespace in repository paths and cwd prefi
 	assert.equal(info.repoRoot, canonicalRepo);
 	assert.equal(info.path.startsWith(join(canonicalRepo, ".worktrees")), true);
 	assert.equal(info.cwd, `${join(info.path, " nested ")}${sep}`);
+	assert.equal((await finalizeChildWorktree(info)).pruned, true);
+});
+
+test("createChildWorktree resolves the primary checkout with a separate git directory", async (t) => {
+	const parent = await tempDir(t);
+	const repo = join(parent, "checkout");
+	const gitDir = join(parent, "metadata.git");
+	git(parent, "init", "-q", `--separate-git-dir=${gitDir}`, repo);
+	git(repo, "config", "user.name", "Test");
+	git(repo, "config", "user.email", "test@example.com");
+	await writeFile(join(repo, "README.md"), "test\n");
+	git(repo, "add", ".");
+	git(repo, "commit", "-qm", "init");
+
+	const info = await createChildWorktree(repo, "separate-git-dir");
+	assert.ok(info);
+	const primary = await realpath(repo);
+	assert.equal(info.repoRoot, primary);
+	assert.equal(info.path.startsWith(join(primary, ".worktrees")), true);
 	assert.equal((await finalizeChildWorktree(info)).pruned, true);
 });
 

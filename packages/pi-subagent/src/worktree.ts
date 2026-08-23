@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 export interface WorktreeInfo {
 	path: string;
@@ -89,12 +89,26 @@ export async function createChildWorktree(
 	}
 	const baseCommit = base.stdout.trim();
 	const common = await run(["rev-parse", "--git-common-dir"], repoRoot);
-	const rawGitDir = stripGitLineEnd(common.stdout);
-	if (common.code !== 0 || !rawGitDir) {
+	const rawCommonGitDir = stripGitLineEnd(common.stdout);
+	if (common.code !== 0 || !rawCommonGitDir) {
 		throw new Error(`git rev-parse --git-common-dir failed (${common.stderr.trim().slice(0, 200)})`);
 	}
-	const gitDir = isAbsoluteish(rawGitDir) ? rawGitDir : join(repoRoot, rawGitDir);
-	const stableRepoRoot = dirname(gitDir);
+	const current = await run(["rev-parse", "--git-dir"], repoRoot);
+	const rawCurrentGitDir = stripGitLineEnd(current.stdout);
+	if (current.code !== 0 || !rawCurrentGitDir) {
+		throw new Error(`git rev-parse --git-dir failed (${current.stderr.trim().slice(0, 200)})`);
+	}
+	const gitDir = isAbsoluteish(rawCommonGitDir) ? rawCommonGitDir : join(repoRoot, rawCommonGitDir);
+	const currentGitDir = isAbsoluteish(rawCurrentGitDir) ? rawCurrentGitDir : join(repoRoot, rawCurrentGitDir);
+	let stableRepoRoot = repoRoot;
+	if (currentGitDir !== gitDir) {
+		const worktrees = await run(["worktree", "list", "--porcelain", "-z"], repoRoot);
+		const primary = worktrees.stdout.split("\0", 1)[0];
+		if (worktrees.code !== 0 || !primary?.startsWith("worktree ") || primary.length === "worktree ".length) {
+			throw new Error(`git worktree list failed (${worktrees.stderr.trim().slice(0, 200)})`);
+		}
+		stableRepoRoot = primary.slice("worktree ".length);
+	}
 	const worktreesRoot = join(stableRepoRoot, WORKTREES_DIRNAME);
 	const name = `subagent-${sanitizeShortId(childId)}`;
 	const branch = `${BRANCH_NAMESPACE}/${name}`;
