@@ -15,7 +15,7 @@ import {
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
 import { Type } from "typebox";
-import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute, worktreeContextNote } from "@henryqw/pi-subagent";
+import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute, worktreeContextNote, type WorktreeInfo } from "@henryqw/pi-subagent";
 
 const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
@@ -142,6 +142,16 @@ function boundedText(target: BoundedText): string {
 
 function taskSummary(task: string): string {
 	return task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ");
+}
+
+/** Finalizes an isolated child's worktree; returns its report line, or undefined when absent/failed. */
+async function finalizeWorktreePayload(worktree: WorktreeInfo | undefined): Promise<string | undefined> {
+	if (!worktree) return undefined;
+	try {
+		return JSON.stringify(await finalizeChildWorktree(worktree));
+	} catch {
+		return undefined;
+	}
 }
 
 function formatTokens(tokens: number): string {
@@ -683,19 +693,6 @@ export default function subagentExtension(
 				throw new Error(`Unknown Subagent role: ${params.role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
 			}
 
-			// Opt-in per-child git worktree isolation; any failure degrades to the shared cwd.
-			const worktree = role.isolation === "worktree"
-				? await createChildWorktree(ctx.cwd, toolCallId).catch(() => undefined)
-				: undefined;
-			const finalizeWorktree = async (): Promise<string | undefined> => {
-				if (!worktree) return undefined;
-				try {
-					return JSON.stringify(await finalizeChildWorktree(worktree));
-				} catch {
-					return undefined;
-				}
-			};
-
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
 			}
@@ -729,9 +726,12 @@ export default function subagentExtension(
 					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 					// Role is known up front; model/thinking join after launch resolution.
 					let details: { role: string; model?: string; thinkingLevel?: string } = { role: role.name };
+					let worktree: WorktreeInfo | undefined;
 					try {
 						await acquireChildPermit(controller.signal);
 						acquired = true;
+						// Same contract as foreground: isolation only after the permit,
+						// setup failure fails closed via the catch below.
 						// Resolve resources only once launched: a task queued past the
 						// cap must not start with model routes or skills resolved before
 						// registries or accounts changed while it waited.
@@ -752,7 +752,7 @@ export default function subagentExtension(
 						let text = capOutput(failed
 							? result.errorMessage || result.stderr.trim() || result.output || `Subagent exited with code ${result.exitCode}.`
 							: result.output || "(no output)");
-						const payloadLine = await finalizeWorktree();
+						const payloadLine = await finalizeWorktreePayload(worktree);
 						if (payloadLine) text += `\n${payloadLine}`;
 						await reportBackground(
 							launchEpoch,
@@ -765,7 +765,7 @@ export default function subagentExtension(
 						const aborted = controller.signal.aborted && !(error instanceof SubagentTimeoutError);
 						widgetStatus = aborted ? "aborted" : "failure";
 						let failureText = capOutput(error instanceof Error ? error.message : String(error));
-						const payloadLine = await finalizeWorktree();
+						const payloadLine = await finalizeWorktreePayload(worktree);
 						if (payloadLine) failureText += `\n${payloadLine}`;
 						await reportBackground(
 							launchEpoch,
@@ -790,14 +790,19 @@ export default function subagentExtension(
 			notifyMissingSkills(launch);
 			const modelReferenceValue = modelReference(launch.model);
 			const details = { role: role.name, model: modelReferenceValue, thinkingLevel: launch.thinkingLevel };
-			const args = ["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`];
 			await acquireChildPermit(signal);
 			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 			let result: DelegateResult | undefined;
+			let worktree: WorktreeInfo | undefined;
+			let rethrow: unknown;
+			let worktreePayloadLine: string | undefined;
 			try {
+				// Isolation is created only after preflight and permit acquisition so a
+				// rejected delegation cannot leak worktrees; setup failure fails closed.
+				if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId);
 				startWidgetItem(toolCallId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
 				const child = await runPi(
-					args,
+					["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`],
 					worktree?.path ?? ctx.cwd,
 					signal,
 					(text) => onUpdate?.({ content: [{ type: "text", text }], details }),
@@ -813,15 +818,21 @@ export default function subagentExtension(
 				return result;
 			} catch (error) {
 				if (signal?.aborted && !(error instanceof SubagentTimeoutError)) widgetStatus = "aborted";
-				throw error;
+				rethrow = error;
 			} finally {
 				releaseChildPermit();
 				finishWidgetItem(toolCallId, widgetStatus);
-				if (worktree) {
-					const payloadLine = await finalizeWorktree();
-					if (result && payloadLine) result.content[0].text += `\n${payloadLine}`;
-				}
+				worktreePayloadLine = await finalizeWorktreePayload(worktree);
+				if (result && worktreePayloadLine) result.content[0].text += `\n${worktreePayloadLine}`;
 			}
+			if (rethrow !== undefined) {
+				// A kept-but-unreported worktree is unrecoverable: attach the report
+				// locating it (path/branch/dirty state) to whatever failure escapes.
+				throw worktreePayloadLine
+					? new Error(`${rethrow instanceof Error ? rethrow.message : String(rethrow)}\n${worktreePayloadLine}`)
+					: rethrow;
+			}
+			return result!;
 		},
 	});
 }

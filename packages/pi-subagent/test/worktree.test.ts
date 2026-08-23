@@ -37,26 +37,28 @@ test("finalizeChildWorktree prunes a worktree with zero commits and a clean tree
 	const { path } = info;
 	const calls: string[][] = [];
 	const payload = await finalizeChildWorktree(info, fakeGit({
-		"rev-list --count abc123..HEAD": ok("0\n"),
+		"rev-list --count abc123..pi-subagent/subagent-x": ok("0\n"),
 		"status --porcelain": ok(""),
 	}, calls));
 
 	assert.deepEqual(payload, { path, branch: info.branch, commits: 0, dirty: false, pruned: true });
 	assert.deepEqual(calls.filter((args) => args[0] === "worktree"), [["worktree", "remove", "--force", path]]);
 	assert.deepEqual(calls.filter((args) => args[0] === "branch"), [["branch", "-D", info.branch]]);
+	// Clean-tree proof must force untracked files so status.showUntrackedFiles=no cannot hide them.
+	assert.deepEqual(calls.find((args) => args[0] === "status"), ["status", "--porcelain", "--untracked-files=all"]);
 });
 
 test("finalizeChildWorktree keeps dirty and committed worktrees", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
 	const dirty = await finalizeChildWorktree(info, fakeGit({
-		"rev-list --count abc123..HEAD": ok("0\n"),
+		"rev-list --count abc123..pi-subagent/subagent-x": ok("0\n"),
 		"status --porcelain": ok(" M file.txt\n"),
 	}));
 	assert.equal(dirty.dirty, true);
 	assert.equal(dirty.pruned, false);
 
 	const committed = await finalizeChildWorktree(info, fakeGit({
-		"rev-list --count abc123..HEAD": ok("3\n"),
+		"rev-list --count abc123..pi-subagent/subagent-x": ok("3\n"),
 		"status --porcelain": ok(""),
 	}));
 	assert.equal(committed.commits, 3);
@@ -72,7 +74,7 @@ test("finalizeChildWorktree keeps the worktree when it is missing from disk", as
 test("finalizeChildWorktree keeps the worktree with inspection_failed on probe failure", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
 	const payload = await finalizeChildWorktree(info, fakeGit({
-		"rev-list --count abc123..HEAD": fail("fatal: bad revision"),
+		"rev-list --count abc123..pi-subagent/subagent-x": fail("fatal: bad revision"),
 		"status --porcelain": ok(" M file.txt\n"),
 	}));
 
@@ -100,6 +102,7 @@ test("createChildWorktree sanitizes child ids, degrades on non-git repos, and re
 	const run = fakeGit({
 		"rev-parse --show-toplevel": ok(`${repo}\n`),
 		"rev-parse HEAD": ok("abc123\n"),
+		"rev-parse --git-dir": ok(`${repo}/.git\n`),
 	}, calls);
 	const info = await createChildWorktree(repo, "tool-1/abc def", run);
 
@@ -109,14 +112,45 @@ test("createChildWorktree sanitizes child ids, degrades on non-git repos, and re
 	assert.equal(info.repoRoot, repo);
 	assert.equal(info.baseCommit, "abc123");
 	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "add", info.path, "-b", info.branch, "HEAD"]);
-	assert.equal(await readFile(join(repo, ".gitignore"), "utf8"), ".worktrees/\n");
+	// Exclusion goes through the repository-local exclude file, never the tracked .gitignore.
+	assert.equal(await readFile(join(repo, ".git", "info", "exclude"), "utf8"), ".worktrees/\n");
+	assert.equal(await readFile(join(repo, ".gitignore"), "utf8").then(() => true, () => false), false);
 
 	assert.equal(await createChildWorktree(repo, "x", fakeGit({ "rev-parse --show-toplevel": fail() })), undefined);
+});
+
+test("createChildWorktree degrades on unborn HEAD and fails closed on setup errors", async (t) => {
+	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-repo-"));
+	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
+
+	// Unborn HEAD: nothing to branch from — documented silent degradation.
 	assert.equal(await createChildWorktree(repo, "x", fakeGit({
 		"rev-parse --show-toplevel": ok(`${repo}\n`),
-		"rev-parse HEAD": ok("abc123\n"),
-		"worktree add": fail("fatal: not a valid object name: 'HEAD'"),
+		"rev-parse HEAD": fail("fatal: ambiguous argument 'HEAD'"),
 	})), undefined);
+
+	// Setup failure in a real git repository: reject instead of losing isolation.
+	await assert.rejects(
+		createChildWorktree(repo, "x", fakeGit({
+			"rev-parse --show-toplevel": ok(`${repo}\n`),
+			"rev-parse HEAD": ok("abc123\n"),
+			"rev-parse --git-dir": ok(`${repo}/.git\n`),
+			"worktree add": fail("fatal: branch already exists"),
+		}), ),
+		/worktree add failed/,
+	);
+});
+
+test("createChildWorktree counts the dedicated branch, not the checkout HEAD", async (t) => {
+	const info = worktreeInfo(await tempDir(t));
+	// Child detached HEAD back to base after committing: HEAD-based counting
+	// would read zero and branch -D would destroy the committed work.
+	const payload = await finalizeChildWorktree(info, fakeGit({
+		"rev-list --count abc123..pi-subagent/subagent-x": ok("2\n"),
+		"status --porcelain": ok(""),
+	}));
+	assert.equal(payload.commits, 2);
+	assert.equal(payload.pruned, false);
 });
 
 test("loadRoles accepts isolation worktree and rejects other values", async (t) => {

@@ -17,44 +17,56 @@ const runGit = (args, cwd) => new Promise((resolve) => {
     });
 });
 const sanitizeShortId = (childId) => childId.replace(/[^A-Za-z0-9._-]/g, "_") || randomBytes(4).toString("hex");
-async function ensureGitignoreEntry(repoRoot) {
+const isAbsoluteish = (path) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+/** Keeps ".worktrees/" out of git status via the repository-local exclude file; never dirties the checkout. */
+async function ensureLocalExclude(repoRoot, run) {
     const entry = `${WORKTREES_DIRNAME}/`;
-    const gitignore = join(repoRoot, ".gitignore");
+    const dir = await run(["rev-parse", "--git-dir"], repoRoot);
+    if (dir.code !== 0 || !dir.stdout.trim())
+        return;
+    const raw = dir.stdout.trim();
+    const gitDir = isAbsoluteish(raw) ? raw : join(repoRoot, raw);
+    const exclude = join(gitDir, "info", "exclude");
     try {
-        const existing = await readFile(gitignore, "utf8").catch(() => "");
+        await mkdir(join(gitDir, "info"), { recursive: true });
+        const existing = await readFile(exclude, "utf8").catch(() => "");
         if (existing.split("\n").some((line) => line.trim() === entry))
             return;
-        await appendFile(gitignore, `${existing && !existing.endsWith("\n") ? "\n" : ""}${entry}\n`);
+        await appendFile(exclude, `${existing && !existing.endsWith("\n") ? "\n" : ""}${entry}\n`);
     }
     catch {
-        // Best-effort: never fail launch over .gitignore.
+        // Best-effort: never fail launch over the exclude file.
     }
 }
 /**
- * Creates one worktree per child from parent HEAD. Returns undefined when the
- * workspace is not a git repository, HEAD is unborn, or creation fails —
- * callers degrade silently to the shared working directory.
+ * Creates one worktree per child from parent HEAD. Returns undefined only when
+ * the workspace is not a git repository or HEAD is unborn — callers degrade
+ * silently to the shared working directory. Setup failures in a real git
+ * repository (unwritable path, stale branch, git lock) throw so an isolated
+ * role never silently loses its isolation.
  */
 export async function createChildWorktree(cwd, childId, run = runGit) {
     const root = await run(["rev-parse", "--show-toplevel"], cwd);
     if (root.code !== 0 || !root.stdout.trim())
         return undefined;
     const repoRoot = root.stdout.trim();
+    const base = await run(["rev-parse", "HEAD"], repoRoot);
+    if (base.code !== 0)
+        return undefined; // unborn HEAD: nothing to branch from
+    const baseCommit = base.stdout.trim();
     const name = `subagent-${sanitizeShortId(childId)}`;
     const branch = `${BRANCH_NAMESPACE}/${name}`;
     const path = join(repoRoot, WORKTREES_DIRNAME, name);
     try {
         await mkdir(join(repoRoot, WORKTREES_DIRNAME), { recursive: true });
-        await ensureGitignoreEntry(repoRoot);
     }
-    catch {
-        return undefined;
+    catch (error) {
+        throw new Error(`Could not create ${join(repoRoot, WORKTREES_DIRNAME)}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const base = await run(["rev-parse", "HEAD"], repoRoot);
-    const baseCommit = base.code === 0 ? base.stdout.trim() : "";
+    await ensureLocalExclude(repoRoot, run);
     const added = await run(["worktree", "add", path, "-b", branch, "HEAD"], repoRoot);
     if (added.code !== 0)
-        return undefined;
+        throw new Error(`git worktree add failed: ${added.stderr.trim().slice(0, 200)}`);
     return { path, branch, repoRoot, baseCommit };
 }
 /** Flags a payload whose state could not be measured (#88113): unmeasured is not zero. */
@@ -66,10 +78,13 @@ function markUnproven(payload, reason, unmeasured = "commits/dirty") {
     return payload;
 }
 /**
- * Inspects and possibly prunes a child worktree after it finishes. A worktree
- * with zero commits and a clean tree is removed only when both probes exited
- * zero and base_commit was recorded; any probe failure keeps everything and
- * reports `inspection_failed` so unmeasured state is never read as empty.
+ * Inspects and possibly prunes a child worktree after it finishes. Commit count
+ * reads the dedicated branch (not the checkout's HEAD, which a child may have
+ * detached); the clean-tree proof forces untracked files so repository config
+ * cannot hide them. A worktree with zero branch commits and a clean tree is
+ * removed only when both probes exited zero and base_commit was recorded; any
+ * probe failure keeps everything and reports `inspection_failed` so unmeasured
+ * state is never read as empty.
  */
 export async function finalizeChildWorktree(info, run = runGit) {
     const payload = { path: info.path, branch: info.branch, commits: 0, dirty: false, pruned: false };
@@ -79,8 +94,8 @@ export async function finalizeChildWorktree(info, run = runGit) {
     }
     if (!info.baseCommit)
         return markUnproven(payload, "no base_commit recorded — commit count unmeasurable", "commits");
-    const counted = await run(["rev-list", "--count", `${info.baseCommit}..HEAD`], info.path);
-    const status = await run(["status", "--porcelain"], info.path);
+    const counted = await run(["rev-list", "--count", `${info.baseCommit}..${info.branch}`], info.path);
+    const status = await run(["status", "--porcelain", "--untracked-files=all"], info.path);
     const failed = [];
     const unmeasured = [];
     if (counted.code === 0) {

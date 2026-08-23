@@ -19,16 +19,21 @@ export type GitRunner = (args: string[], cwd: string) => Promise<{
     stderr: string;
 }>;
 /**
- * Creates one worktree per child from parent HEAD. Returns undefined when the
- * workspace is not a git repository, HEAD is unborn, or creation fails —
- * callers degrade silently to the shared working directory.
+ * Creates one worktree per child from parent HEAD. Returns undefined only when
+ * the workspace is not a git repository or HEAD is unborn — callers degrade
+ * silently to the shared working directory. Setup failures in a real git
+ * repository (unwritable path, stale branch, git lock) throw so an isolated
+ * role never silently loses its isolation.
  */
 export declare function createChildWorktree(cwd: string, childId: string, run?: GitRunner): Promise<WorktreeInfo | undefined>;
 /**
- * Inspects and possibly prunes a child worktree after it finishes. A worktree
- * with zero commits and a clean tree is removed only when both probes exited
- * zero and base_commit was recorded; any probe failure keeps everything and
- * reports `inspection_failed` so unmeasured state is never read as empty.
+ * Inspects and possibly prunes a child worktree after it finishes. Commit count
+ * reads the dedicated branch (not the checkout's HEAD, which a child may have
+ * detached); the clean-tree proof forces untracked files so repository config
+ * cannot hide them. A worktree with zero branch commits and a clean tree is
+ * removed only when both probes exited zero and base_commit was recorded; any
+ * probe failure keeps everything and reports `inspection_failed` so unmeasured
+ * state is never read as empty.
  */
 export declare function finalizeChildWorktree(info: WorktreeInfo, run?: GitRunner): Promise<WorktreePayload>;
 /** Context block telling the child to work inside its isolated worktree. */
