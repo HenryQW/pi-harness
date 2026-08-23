@@ -166,7 +166,7 @@ test("finalizeChildWorktree keeps the worktree when base_commit is missing", asy
 	assert.equal(calls.some((args) => args[0] === "rev-list"), false);
 });
 
-test("createChildWorktree sanitizes child ids, degrades on non-git repos, and records base commit", async (t) => {
+test("createChildWorktree sanitizes child ids and records the base commit", async (t) => {
 	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-repo-"));
 	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
 	const calls: string[][] = [];
@@ -185,12 +185,18 @@ test("createChildWorktree sanitizes child ids, degrades on non-git repos, and re
 	assert.equal(info.baseCommit, "abc123");
 	assert.deepEqual(calls.find((args) => args[0] === "worktree" && args[1] === "add"), ["worktree", "add", info.path, "-b", info.branch, "abc123"]);
 	// Exclusion goes through the repository-local exclude file, never the tracked .gitignore.
-	assert.equal(await readFile(join(repo, ".git", "info", "exclude"), "utf8"), ".worktrees/\n");
+	assert.equal(await readFile(join(repo, ".git", "info", "exclude"), "utf8"), "/.worktrees/\n");
 	assert.equal(await readFile(join(repo, ".gitignore"), "utf8").then(() => true, () => false), false);
+});
 
-	assert.equal(await createChildWorktree(repo, "x", fakeGit({
-		"rev-parse --show-toplevel": fail("fatal: not a git repository (or any of the parent directories)"),
-	})), undefined);
+test("createChildWorktree anchors its local exclude at the repository root", async (t) => {
+	const repo = await initializedRepository(t);
+	await mkdir(join(repo, "pkg", ".worktrees"), { recursive: true });
+	await writeFile(join(repo, "pkg", ".worktrees", "data.txt"), "keep visible\n");
+	assert.ok(await createChildWorktree(repo, "anchored-exclude"));
+
+	assert.equal((await readFile(join(repo, ".git", "info", "exclude"), "utf8")).endsWith("/.worktrees/\n"), true);
+	assert.match(git(repo, "status", "--porcelain", "--untracked-files=all"), /\?\? pkg\/\.worktrees\/data\.txt/);
 });
 
 test("createChildWorktree degrades on unborn HEAD and fails closed on setup errors", async (t) => {
@@ -200,18 +206,36 @@ test("createChildWorktree degrades on unborn HEAD and fails closed on setup erro
 	// Unborn HEAD: nothing to branch from — documented silent degradation.
 	assert.equal(await createChildWorktree(repo, "x", fakeGit({
 		"rev-parse --show-toplevel": ok(`${repo}\n`),
-		"rev-parse HEAD": fail("fatal: ambiguous argument 'HEAD'"),
+		"rev-parse HEAD": fail("fatal: unbekannte Revision HEAD"),
+		"symbolic-ref --quiet HEAD": ok("refs/heads/main\n"),
+		"show-ref --verify --quiet refs/heads/main": fail(),
 	})), undefined);
+	await assert.rejects(createChildWorktree(repo, "x", fakeGit({
+		"rev-parse --show-toplevel": ok(`${repo}\n`),
+		"rev-parse HEAD": fail("fatal: Zeitüberschreitung"),
+		"symbolic-ref --quiet HEAD": ok("refs/heads/main\n"),
+		"show-ref --verify --quiet refs/heads/main": { code: -1, stdout: "", stderr: "timed out" },
+	})), /Zeitüberschreitung/);
 
-	// Expected non-repository stderr degrades; every other probe failure fails closed.
+	// Localized non-repository diagnostics degrade; failures inside a discovered repository fail closed.
 	assert.equal(await createChildWorktree(repo, "x", fakeGit({
-		"rev-parse --show-toplevel": fail("fatal: not a git repository (or any of the parent directories)"),
+		"rev-parse --show-toplevel": fail("fatal: kein Git-Repository"),
+		"-c safe.directory=* rev-parse --show-toplevel": fail("fatal: kein Git-Repository"),
 	})), undefined);
+	await mkdir(join(repo, ".git"));
 	await assert.rejects(
 		createChildWorktree(repo, "x", fakeGit({
-			"rev-parse --show-toplevel": fail("fatal: detected dubious ownership in repository"),
+			"rev-parse --show-toplevel": fail("fatal: beschädigte Konfiguration"),
+			"-c safe.directory=* rev-parse --show-toplevel": fail("fatal: beschädigte Konfiguration"),
 		})),
-		/dubious ownership/,
+		/beschädigte Konfiguration/,
+	);
+	await assert.rejects(
+		createChildWorktree(repo, "x", fakeGit({
+			"rev-parse --show-toplevel": fail("fatal: fragwürdiger Besitz im Repository"),
+			"-c safe.directory=* rev-parse --show-toplevel": ok(`${repo}\n`),
+		})),
+		/fragwürdiger Besitz/,
 	);
 
 	// Setup failure in a real git repository: reject instead of losing isolation.
@@ -224,6 +248,25 @@ test("createChildWorktree degrades on unborn HEAD and fails closed on setup erro
 		}), ),
 		/worktree add failed/,
 	);
+});
+
+test("createChildWorktree never degrades aborted repository classification", async (t) => {
+	const repo = await tempDir(t);
+	const rootAbort = new AbortController();
+	await assert.rejects(createChildWorktree(repo, "root-abort", async (args) => {
+		if (args[0] === "-c") rootAbort.abort();
+		return fail();
+	}, rootAbort.signal), { name: "AbortError" });
+
+	const headAbort = new AbortController();
+	await assert.rejects(createChildWorktree(repo, "head-abort", async (args) => {
+		const command = args.join(" ");
+		if (command === "rev-parse --show-toplevel") return ok(`${repo}\n`);
+		if (command === "rev-parse HEAD") return fail();
+		if (command === "symbolic-ref --quiet HEAD") return ok("refs/heads/main\n");
+		if (command.startsWith("show-ref ")) headAbort.abort();
+		return command.startsWith("show-ref ") ? fail() : ok();
+	}, headAbort.signal), { name: "AbortError" });
 });
 
 test("createChildWorktree counts the dedicated branch, not the checkout HEAD", async (t) => {
@@ -387,11 +430,13 @@ test("finalizeChildWorktree removes only its stale metadata before deleting an e
 	assert.equal(listed.includes(unrelated.path), true);
 });
 
-test("finalizeChildWorktree prunes a clean worktree after deinitializing submodules", async (t) => {
+test("finalizeChildWorktree prunes a clean submodule worktree without changing shared config", async (t) => {
 	const source = await initializedRepository(t);
 	const repo = await initializedRepository(t);
 	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
 	git(repo, "commit", "-qm", "add submodule");
+	git(repo, "config", "submodule.mod.update", "rebase");
+	const config = git(repo, "config", "--get-regexp", "^submodule\\.");
 	const info = await createChildWorktree(repo, "clean-submodule");
 	assert.ok(info);
 	git(info.path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
@@ -400,6 +445,7 @@ test("finalizeChildWorktree prunes a clean worktree after deinitializing submodu
 	assert.equal(payload.pruned, true);
 	assert.equal(existsSync(info.path), false);
 	assert.equal(git(repo, "branch", "--list", info.branch), "");
+	assert.equal(git(repo, "config", "--get-regexp", "^submodule\\."), config);
 });
 
 test("finalizeChildWorktree preserves ignored files inside initialized submodules", async (t) => {

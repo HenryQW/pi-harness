@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 const GIT_TIMEOUT_MS = 30_000;
 const WORKTREES_DIRNAME = ".worktrees";
 const BRANCH_NAMESPACE = "pi-subagent";
@@ -13,7 +13,7 @@ class WorktreeSetupError extends Error {
 const runGit = (args, cwd, signal) => new Promise((resolve) => {
     execFile("git", args, { cwd, timeout: GIT_TIMEOUT_MS, signal }, (error, stdout, stderr) => {
         resolve({
-            code: error ? (typeof error.code === "number" ? error.code : 1) : 0,
+            code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
             stdout: String(stdout),
             stderr: String(stderr),
         });
@@ -21,9 +21,23 @@ const runGit = (args, cwd, signal) => new Promise((resolve) => {
 });
 const sanitizeShortId = (childId) => createHash("sha256").update(childId).digest("hex").slice(0, 24);
 const stripGitLineEnd = (value) => value.replace(/\r?\n$/, "");
+function hasRepositoryMarker(cwd) {
+    for (let directory = resolve(cwd);; directory = dirname(directory)) {
+        try {
+            lstatSync(join(directory, ".git"));
+            return true;
+        }
+        catch (error) {
+            if (!error || typeof error !== "object" || !("code" in error) || !["ENOENT", "ENOTDIR"].includes(String(error.code)))
+                return true;
+        }
+        if (dirname(directory) === directory)
+            return false;
+    }
+}
 /** Keeps ".worktrees/" out of git status via the common repository's exclude file; never dirties any checkout. */
 async function ensureLocalExclude(gitDir) {
-    const entry = `${WORKTREES_DIRNAME}/`;
+    const entry = `/${WORKTREES_DIRNAME}/`;
     const exclude = join(gitDir, "info", "exclude");
     try {
         await mkdir(join(gitDir, "info"), { recursive: true });
@@ -46,8 +60,11 @@ async function ensureLocalExclude(gitDir) {
 export async function createChildWorktree(cwd, childId, run = runGit, signal) {
     const root = await run(["rev-parse", "--show-toplevel"], cwd, signal);
     if (root.code !== 0) {
-        if (/not a git repository/i.test(root.stderr))
-            return undefined; // documented degradation
+        signal?.throwIfAborted();
+        const repository = await run(["-c", "safe.directory=*", "rev-parse", "--show-toplevel"], cwd, signal);
+        signal?.throwIfAborted();
+        if (repository.code !== 0 && !hasRepositoryMarker(cwd) && !process.env.GIT_DIR && !process.env.GIT_WORK_TREE)
+            return undefined;
         throw new Error(`git rev-parse failed (${root.stderr.trim().slice(0, 200)})`); // dubious ownership, timeout, …
     }
     const repoRoot = stripGitLineEnd(root.stdout);
@@ -59,8 +76,16 @@ export async function createChildWorktree(cwd, childId, run = runGit, signal) {
     const relativeCwd = stripGitLineEnd(prefix.stdout);
     const base = await run(["rev-parse", "HEAD"], repoRoot, signal);
     if (base.code !== 0) {
-        if (/ambiguous argument|unknown revision|bad revision/i.test(base.stderr))
-            return undefined; // unborn HEAD
+        signal?.throwIfAborted();
+        const head = await run(["symbolic-ref", "--quiet", "HEAD"], repoRoot, signal);
+        signal?.throwIfAborted();
+        const reference = stripGitLineEnd(head.stdout);
+        if (head.code === 0 && reference) {
+            const exists = await run(["show-ref", "--verify", "--quiet", reference], repoRoot, signal);
+            signal?.throwIfAborted();
+            if (exists.code === 1)
+                return undefined; // unborn HEAD
+        }
         throw new Error(`git rev-parse HEAD failed (${base.stderr.trim().slice(0, 200)})`);
     }
     const baseCommit = base.stdout.trim();
@@ -173,9 +198,6 @@ export async function finalizeChildWorktree(info, run = runGit) {
                 payload.dirty = true;
                 return payload;
             }
-            const deinitialized = await run(["submodule", "deinit", "--all", "--force"], info.path);
-            if (deinitialized.code !== 0)
-                return markUnproven(payload, `submodule deinit exit ${deinitialized.code}: ${deinitialized.stderr.trim().slice(0, 200)}`, "cleanup");
         }
         const rechecked = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], info.path);
         if (rechecked.code !== 0)

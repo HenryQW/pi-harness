@@ -338,12 +338,16 @@ async function runPi(
 			}
 		};
 
-		const killTree = (force: boolean) => {
+		const killTree = async (force: boolean): Promise<void> => {
 			if (!child.pid) return;
 			if (process.platform === "win32") {
-				spawn("taskkill", [...(force ? ["/F"] : []), "/T", "/PID", String(child.pid)], {
-					stdio: "ignore",
-					windowsHide: true,
+				await new Promise<void>((resolve) => {
+					const taskkill = spawn("taskkill", [...(force ? ["/F"] : []), "/T", "/PID", String(child.pid)], {
+						stdio: "ignore",
+						windowsHide: true,
+					});
+					taskkill.once("error", () => resolve());
+					taskkill.once("close", () => resolve());
 				});
 				return;
 			}
@@ -377,7 +381,7 @@ async function runPi(
 						lineBytes += Buffer.byteLength(part, "utf8");
 						if (lineBytes > MAX_JSON_EVENT_BYTES) {
 							protocolError = new Error(`Subagent JSON event exceeds ${MAX_JSON_EVENT_BYTES} bytes.`);
-							killTree(true);
+							void killTree(true);
 							return;
 						}
 						if (part) lineParts.push(part);
@@ -400,8 +404,8 @@ async function runPi(
 		child.on("error", (error) => { spawnError = error; });
 
 		const stop = () => {
-			killTree(false);
-			killTimer = setTimeout(() => killTree(true), 5_000);
+			void killTree(false);
+			killTimer = setTimeout(() => void killTree(true), 5_000);
 			killTimer.unref();
 		};
 		const abort = () => {
@@ -428,11 +432,11 @@ async function runPi(
 		signal?.addEventListener("abort", abort, { once: true });
 		if (signal?.aborted) abort();
 
-		child.on("close", (code) => {
+		child.on("close", async (code) => {
 			if (!protocolError && lineBytes) processLine(lineParts.join(""));
 			// Pi may exit while redirected background commands remain in its process
 			// group. Stop every descendant before callers inspect or prune its cwd.
-			killTree(true);
+			await killTree(true);
 			if (softDeadlineTimer) clearTimeout(softDeadlineTimer);
 			if (hardDeadlineTimer) clearTimeout(hardDeadlineTimer);
 			if (killTimer) clearTimeout(killTimer);

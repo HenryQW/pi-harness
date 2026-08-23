@@ -1157,8 +1157,7 @@ setInterval(() => {}, 1_000);
 	});
 });
 
-test("normal completion stops surviving child process descendants", async (t) => {
-	if (process.platform === "win32") return t.skip("Unix process groups only");
+test("normal completion stops surviving child process descendants", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const marker = join(agentDir, "normal-descendant-survived");
