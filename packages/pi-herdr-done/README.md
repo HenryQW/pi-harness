@@ -23,9 +23,9 @@ git -C <parent> pull --ff-only
 herdr tab close "$HERDR_TAB_ID"
 ```
 
-The parent pull runs only when this session ran in a linked worktree with a non-bare primary; it is skipped when the parent has diverged (`--ff-only` fails safely) or when another Herdr tab is working in the parent. Concurrent completions serialize on a lock around the parent checkout.
+The parent pull runs only when this session ran in a linked worktree with a non-bare primary. It fails safely when the parent has diverged. Parent tabs do not block worktree removal or the parent pull. Once removal succeeds, the current tab closes even when the parent pull fails. Concurrent completions serialize on a lock around the parent checkout.
 
-Only the current session's tab closes, so sibling tabs in the same workspace survive. When another Herdr tab still uses the checkout or its parent, `/done` refuses and lists the blocking tabs by name; use `/done --force` to remove the checkout regardless of other tabs. Command requires Pi running inside Herdr with `HERDR_ENV=1` and `HERDR_TAB_ID` set.
+Only the current session's tab closes, so sibling tabs in the same workspace survive. When another Herdr tab still uses the current checkout, `/done` refuses and lists the blocking tabs by name; use `/done --force` to remove the checkout regardless. Command requires Pi running inside Herdr with `HERDR_ENV=1` and `HERDR_TAB_ID` set.
 
 Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --force` to explicitly delete them.
 
