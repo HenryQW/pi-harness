@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { lock } from "proper-lockfile";
 
 export const TOOL_MODES = ["inherit", "all", "read-only", "none"] as const;
 export type BtwToolMode = (typeof TOOL_MODES)[number];
@@ -16,6 +16,7 @@ export type BtwConfig = {
 const CONFIG_LOCK_STALE_MS = 30_000;
 const CONFIG_LOCK_WAIT_MS = 10_000;
 const CONFIG_LOCK_RETRY_MS = 25;
+const CONFIG_LOCK_UPDATE_MS = 5_000;
 
 export const DEFAULT_CONFIG: Readonly<BtwConfig> = Object.freeze({
 	autoSubmit: false,
@@ -160,94 +161,27 @@ export class ConfigStore {
 	}
 
 	private async withLock<T>(operation: () => Promise<T>): Promise<T> {
-		const release = await this.acquireLock();
-		try {
-			return await operation();
-		} finally {
-			await release();
-		}
-	}
-
-	private async acquireLock(): Promise<() => Promise<void>> {
-		const lockPath = `${this.path}.lock`;
 		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-		const token = randomUUID();
-		const ownerPath = join(lockPath, `owner-${token}`);
 		const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
-
 		while (true) {
 			try {
-				await mkdir(lockPath, { mode: 0o700 });
+				const release = await lock(this.path, {
+					lockfilePath: `${this.path}.lock`,
+					realpath: false,
+					stale: CONFIG_LOCK_STALE_MS,
+					update: CONFIG_LOCK_UPDATE_MS,
+				});
 				try {
-					await writeFile(ownerPath, token, { encoding: "utf8", flag: "wx", mode: 0o600 });
-				} catch (error) {
-					await rm(ownerPath, { force: true }).catch(() => undefined);
-					await rmdir(lockPath).catch(() => undefined);
-					throw error;
+					return await operation();
+				} finally {
+					await release();
 				}
-				return async () => {
-					if ((await readFile(ownerPath, "utf8").catch(() => undefined)) !== token) return;
-					try {
-						await rm(ownerPath);
-					} catch (error) {
-						const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
-						if (code === "ENOENT") return;
-						throw error;
-					}
-					await rmdir(lockPath).catch((error) => {
-						const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
-						if (code !== "ENOENT" && code !== "ENOTEMPTY") throw error;
-					});
-				};
 			} catch (error) {
-				if (!error || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "EEXIST") {
-					throw error;
-				}
-				const info = await lstat(lockPath).catch(() => undefined);
-				if (!info || Date.now() - info.mtimeMs > CONFIG_LOCK_STALE_MS) {
-					if (!info) continue;
-					const ownerName = await this.readOwnerName(lockPath);
-					const currentInfo = await lstat(lockPath).catch(() => undefined);
-					const currentOwnerName = await this.readOwnerName(lockPath);
-					if (
-						!currentInfo ||
-						currentInfo.dev !== info.dev ||
-						currentInfo.ino !== info.ino ||
-						currentInfo.ctimeMs !== info.ctimeMs ||
-						currentOwnerName !== ownerName
-					) {
-						continue;
-					}
-					// Remove only observed owner's unique entry. Only the process that
-					// removes that entry may remove lockPath; this prevents a stale
-					// reclaimer from deleting a replacement created in between.
-					if (!ownerName) {
-						if (Date.now() >= deadline) throw new Error(`Timed out waiting for config lock: ${this.path}`);
-						await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
-						continue;
-					}
-					try {
-						await rm(join(lockPath, ownerName));
-					} catch (error) {
-						const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
-						if (code === "ENOENT") continue;
-						throw error;
-					}
-					await rmdir(lockPath).catch((error) => {
-						const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
-						if (code !== "ENOENT" && code !== "ENOTEMPTY") throw error;
-					});
-					continue;
-				}
+				const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
+				if (code !== "ELOCKED") throw error;
 				if (Date.now() >= deadline) throw new Error(`Timed out waiting for config lock: ${this.path}`);
 				await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
 			}
 		}
-	}
-
-	private async readOwnerName(lockPath: string): Promise<string | undefined> {
-		const entries = await readdir(lockPath, { withFileTypes: true }).catch(() => []);
-		const owners = entries.filter((entry) => entry.isFile() && entry.name.startsWith("owner-"));
-		return owners.length === 1 ? owners[0]?.name : undefined;
 	}
 }

@@ -4,7 +4,8 @@ export interface HerdrExecResult {
     stderr: string;
     killed?: boolean;
 }
-export type HerdrExecutor<Options> = (command: string, args: readonly string[], options: Options) => Promise<HerdrExecResult>;
+/** Mutable-array executor, compatible with a bound `pi.exec`. Args are copied by createHerdrClient. */
+export type HerdrExecutor<Options> = (command: string, args: string[], options: Options) => Promise<HerdrExecResult>;
 export interface HerdrClient<Options> {
     exec(args: readonly string[], options: Options): Promise<HerdrExecResult>;
     run(args: readonly string[], options: Options): Promise<string>;

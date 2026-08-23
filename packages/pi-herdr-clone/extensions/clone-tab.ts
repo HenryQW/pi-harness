@@ -194,8 +194,7 @@ async function launchCloneAgent(
 }
 
 export default function herdrCloneExtension(pi: ExtensionAPI): void {
-	const herdr = createHerdrClient<{ cwd: string }>((command, args, options) =>
-		pi.exec(command, [...args], options));
+	const herdr = createHerdrClient<{ cwd: string }>(pi.exec.bind(pi));
 
 	pi.registerCommand("clone-tab", {
 		description: "Clone the current conversation path into a new Herdr tab",
