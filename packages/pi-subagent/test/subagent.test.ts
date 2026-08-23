@@ -66,6 +66,7 @@ function harness(options: {
 	let widget: { render: (width: number) => string[] } | undefined;
 	let renders = 0;
 	const notifications: Array<{ message: string; type: string }> = [];
+	const sentMessages: Array<{ message: any; options: any }> = [];
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const commands = new Map<string, { handler: (...args: any[]) => any }>();
 	const tui = { requestRender: () => { renders++; } };
@@ -73,6 +74,7 @@ function harness(options: {
 	const api = {
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 		registerTool(candidate: Tool) { tool = candidate; },
+		sendMessage(message: any, options: any) { sentMessages.push({ message, options }); },
 		registerCommand(name: string, candidate: { handler: (...args: any[]) => any }) { commands.set(name, candidate); },
 		getCommands() {
 			return (options.skills ?? []).map((skill) => ({
@@ -103,6 +105,7 @@ function harness(options: {
 		get widget() { return widget; },
 		get renders() { return renders; },
 		notifications,
+		sentMessages,
 		ctx,
 		handlers,
 		commands,
@@ -647,7 +650,17 @@ Do work.
 
 test("runs four child delegations and starts queued children FIFO", async () => {
 	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "4";
+		try {
+			await runsQueuedChildrenFifo(agentDir);
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
+	});
+});
+
+async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
+	await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
 		const runner = await blockedPiRunner(agentDir);
 		const app = harness({ ui: true });
@@ -673,12 +686,137 @@ test("runs four child delegations and starts queued children FIFO", async () => 
 			await Promise.allSettled(calls);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
+}
+
+test("PI_SUBAGENT_MAX_SUBAGENTS overrides the default child cap", async () => {
+	await environment(async (agentDir) => {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "1";
+		try {
+			await writeWorkerRole(agentDir);
+			const tasks = ["task-1", "task-2"];
+			const runner = await blockedPiRunner(agentDir);
+			const app = harness({ ui: true });
+			const calls = tasks.map((task, index) => app.tool.execute(
+				`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx,
+			));
+			try {
+				await waitFor(() => runner.started().length === 1);
+				assert.deepEqual(runner.started(), ["task-1"]);
+				assert.equal(app.widget!.render(80).length, 1);
+				await runner.release("task-1");
+				await waitFor(() => runner.started().includes("task-2"));
+				for (const task of tasks) await runner.release(task);
+				assert.equal((await Promise.all(calls)).length, tasks.length);
+			} finally {
+				await Promise.all(tasks.map((task) => runner.release(task)));
+				await Promise.allSettled(calls);
+				await app.handlers.get("session_shutdown")?.({}, app.ctx);
+			}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
+	});
+});
+
+test("session shutdown aborts queued background subagents without unhandled rejections", async () => {
+	await environment(async (agentDir) => {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "1";
+		try {
+			const unhandled: unknown[] = [];
+			const onUnhandled = (error: unknown) => unhandled.push(error);
+			process.on("unhandledRejection", onUnhandled);
+			try {
+				await writeWorkerRole(agentDir);
+				const runner = join(agentDir, "fake-pi.mjs");
+				await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
+				process.argv[1] = runner;
+
+				const app = harness();
+				const first = await app.tool.execute("call-1", { role: "worker", task: "task-1", background: true }, undefined, undefined, app.ctx);
+				assert.match(first.content[0]!.text, /started/);
+				const second = await app.tool.execute("call-2", { role: "worker", task: "task-2", background: true }, undefined, undefined, app.ctx);
+				assert.match(second.content[0]!.text, /started/);
+				// Second task is queued; shutdown must abort it without an unhandled
+				// rejection from the discarded IIFE promise.
+				app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				assert.deepEqual(unhandled, []);
+			} finally {
+				process.off("unhandledRejection", onUnhandled);
+			}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
+	});
+});
+
+test("background outcomes are not delivered after session shutdown", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "late" }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(app.sentMessages.length, 0);
+	});
+});
+
+test("invalid PI_SUBAGENT_MAX_SUBAGENTS fails extension load", () => {
+	for (const invalid of ["zero", "2workers", "1.5", "1e3", "0", "-1"]) {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = invalid;
+		try {
+			assert.throws(() => harness(), /PI_SUBAGENT_MAX_SUBAGENTS/);
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
+	}
+});
+
+test("config file maxSubagents applies and malformed config warns without failing load", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const configDir = join(agentDir, "config");
+		await mkdir(configDir, { recursive: true });
+		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 1 }));
+
+		const configured = harness({ ui: true });
+		configured.handlers.get("session_start")?.({}, configured.ctx);
+		assert.deepEqual(configured.notifications, []);
+
+		const tasks = ["task-1", "task-2"];
+		const runner = await blockedPiRunner(agentDir);
+		const app = harness({ ui: true });
+		const calls = tasks.map((task, index) => app.tool.execute(
+			`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx,
+		));
+		try {
+			await waitFor(() => runner.started().length === 1);
+			await runner.release("task-1");
+			await waitFor(() => runner.started().includes("task-2"));
+		} finally {
+			await Promise.all(tasks.map((task) => runner.release(task)));
+			await Promise.allSettled(calls);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+
+		// Malformed file: session still loads; warning surfaces at session_start.
+		await writeFile(join(configDir, "pi-subagent.json"), "{ broken");
+		const warned = harness({ ui: true });
+		warned.handlers.get("session_start")?.({}, warned.ctx);
+		assert.equal(warned.notifications.length, 1);
+		assert.match(warned.notifications[0]!.message, /not valid JSON/);
 	});
 });
 
 test("drops an aborted queued delegation and transfers its permit", async () => {
 	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "4";
+		try {
+			await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
 		const runner = await blockedPiRunner(agentDir);
 		const app = harness({ ui: true });
@@ -711,12 +849,17 @@ test("drops an aborted queued delegation and transfers its permit", async () => 
 			await Promise.allSettled(calls);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
 	});
 });
 
 test("queued delegation does not consume its inactive-child timeout", async () => {
 	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "4";
+		try {
+			await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 5 }, (_, index) => `task-${index + 1}`);
 		const timeoutPolicy = { softMs: 250, graceMs: 1_000, activeWindowMs: 100 };
 		const runner = await blockedPiRunner(agentDir, tasks.slice(0, 4));
@@ -750,6 +893,9 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 			await Promise.allSettled(calls);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
 	});
 });
 
@@ -769,6 +915,28 @@ setInterval(() => {}, 1_000);
 `);
 		process.argv[1] = runner;
 		const app = harness({ timeoutPolicy: { softMs: 120, graceMs: 150, activeWindowMs: 10 } });
+		await assert.rejects(
+			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			/Subagent timed out.*without active status/,
+		);
+	});
+});
+
+test("config file timeout applies when no explicit policy is passed", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const configDir = join(agentDir, "config");
+		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({
+			timeout: { softMinutes: 0.002, graceMinutes: 0.002, activeWindowSeconds: 0.01 },
+		}));
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_start", message: { role: "user", content: [] } }));
+setInterval(() => {}, 1_000);
+`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		assert.equal(app.notifications.length, 0);
 		await assert.rejects(
 			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
 			/Subagent timed out.*without active status/,
@@ -902,4 +1070,77 @@ Do bounded work.
 		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
+});
+
+test("background delegation returns immediately and reports the outcome as a message", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		const result = await app.tool.execute(
+			"call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx,
+		);
+		assert.match(result.content[0]!.text, /bg-\d+-[a-z0-9]+ started \(worker/);
+		await waitFor(() => app.sentMessages.length === 1);
+		const { message, options } = app.sentMessages[0]!;
+		assert.equal(message.customType, "subagent-background-result");
+		assert.match(message.content, /completed/);
+		assert.match(message.content, /done/);
+		assert.equal(options.triggerTurn, false);
+	});
+});
+
+test("session shutdown aborts a running background subagent and suppresses delivery", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "message_start", message: { role: "assistant", content: [] } });
+setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 25);
+`);
+		process.argv[1] = runner;
+
+		const app = harness({ timeoutPolicy: { softMs: 60_000, graceMs: 60_000, activeWindowMs: 60_000 } });
+		const result = await app.tool.execute(
+			"call-1", { role: "worker", task: "long work", background: true }, undefined, undefined, app.ctx,
+		);
+		assert.match(result.content[0]!.text, /started/);
+		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		// The aborted child settles after shutdown; its outcome must not leak into
+		// a subsequent session.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(app.sentMessages.length, 0);
+	});
+});
+
+test("background tasks deliver again after a new session starts", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		// First session: launch, shut down (task aborts, epoch advances).
+		await app.tool.execute("call-1", { role: "worker", task: "old", background: true }, undefined, undefined, app.ctx);
+		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		app.handlers.get("session_start")?.({}, app.ctx);
+		// Second session: a fresh task must deliver normally.
+		const result = await app.tool.execute("call-2", { role: "worker", task: "new", background: true }, undefined, undefined, app.ctx);
+		assert.match(result.content[0]!.text, /started/);
+		await waitFor(() => app.sentMessages.length === 1);
+		assert.match(app.sentMessages[0]!.message.content, /completed/);
+	});
+});
+
+test("oversized PI_SUBAGENT_MAX_SUBAGENTS digit strings fail extension load", () => {
+	process.env.PI_SUBAGENT_MAX_SUBAGENTS = "9".repeat(309);
+	try {
+		assert.throws(() => harness(), /exceeds the supported range/);
+	} finally {
+		delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+	}
 });
