@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode } from "@henryqw/pi-herdr";
 import { modelReference, orderedProfileRoutes, PROFILE_NAMES, readTaskModelsConfig, resolveConfiguredTaskRoute, resolveTaskModelRoute, } from "@henryqw/pi-task-models";
+export { createChildWorktree, finalizeChildWorktree, worktreeContextNote, } from "./worktree.js";
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
+const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question,auto_dag_approve,auto_dag_start";
 export const isProfileName = (value) => typeof value === "string" && PROFILE_NAMES.includes(value);
 const cleanText = (value, field, source) => {
     if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -64,10 +66,14 @@ export function loadRoles(agentDir = getAgentDir()) {
             throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
         }
         const frontmatter = parsed.frontmatter;
+        const isolation = frontmatter.isolation === undefined ? undefined : cleanText(frontmatter.isolation, "isolation", file);
+        if (isolation !== undefined && isolation !== "worktree")
+            throw new Error(`${file}: isolation must be "worktree".`);
         return {
             name: cleanText(frontmatter.name, "name", file),
             description: cleanText(frontmatter.description, "description", file),
             tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
+            isolation,
             extensions: extensionList(frontmatter.extensions, file),
             skills: stringList(frontmatter.skills, "skills", file),
             systemPrompt: cleanText(parsed.body, "system prompt", file),
@@ -135,7 +141,7 @@ export function createRoleLaunch(pi, ctx, input) {
             throw new Error(`Invalid launch environment value: ${key}`);
         return [key, value];
     }));
-    const args = ["--no-session", "--no-extensions", "--no-skills"];
+    const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
     for (const extension of new Set(extensions))
         args.push("--extension", extension);
     for (const skill of skills.paths)

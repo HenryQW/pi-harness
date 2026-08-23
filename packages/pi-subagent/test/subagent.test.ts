@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -62,6 +64,7 @@ function harness(options: {
 	currentModel?: any;
 	scopedModels?: any[];
 	timeoutPolicy?: { softMs: number; graceMs: number; activeWindowMs: number };
+	cwd?: string;
 } = {}) {
 	let tool: Tool | undefined;
 	let widget: { render: (width: number) => string[] } | undefined;
@@ -88,7 +91,7 @@ function harness(options: {
 	} as unknown as ExtensionAPI;
 	subagentExtension(api, options.timeoutPolicy);
 	const ctx = {
-		cwd: "/tmp",
+		cwd: options.cwd ?? "/tmp",
 		model: options.currentModel ?? model,
 		thinkingLevel: "low",
 		hasUI: options.ui ?? false,
@@ -122,15 +125,31 @@ async function waitFor(check: () => boolean): Promise<void> {
 	}
 }
 
-async function writeWorkerRole(agentDir: string): Promise<void> {
+async function writeWorkerRole(agentDir: string, isolation = false): Promise<void> {
 	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 	await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
 name: worker
 description: Does bounded work
 tools: [read]
----
+${isolation ? "isolation: worktree\n" : ""}---
 Do bounded work.
 `);
+}
+
+const childName = (id: string): string => `subagent-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
+
+async function initializedRepository(t: import("node:test").TestContext): Promise<string> {
+	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-repo-"));
+	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	await mkdir(join(repo, "packages", "worker"), { recursive: true });
+	await Promise.all([
+		writeFile(join(repo, "README.md"), "test\n"),
+		writeFile(join(repo, "packages", "worker", "package.json"), "{}\n"),
+	]);
+	execFileSync("git", ["add", "."], { cwd: repo });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "init"], { cwd: repo });
+	return repo;
 }
 
 async function blockedPiRunner(agentDir: string, activeTasks: string[] = []) {
@@ -219,10 +238,12 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const child = JSON.parse(result.content[0].text);
 		assert.equal(child.cwd, await realpath("/tmp"));
 		assert.equal(child.prompt, "Review only requested change.");
-		const policyExtension = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension").at(-1)!;
+		const extensionArgs = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension");
+		const policyExtension = extensionArgs.at(-1)!;
 		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
 		assert.deepEqual(child.args, [
 			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
+			"--exclude-tools", "delegate_task,ask_question,auto_dag_approve,auto_dag_start",
 			"--extension", "/user/extensions/review.ts",
 			"--extension", policyExtension,
 			"--skill", "/effective/skills/security/SKILL.md",
@@ -238,6 +259,30 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			message: "Subagent role reviewer skipped unavailable Pi skills: unavailable-skill.",
 			type: "warning",
 		}]);
+	});
+});
+
+test("worktree isolation preserves the delegated repository subdirectory", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ cwd: process.cwd() }) }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: join(repo, "packages", "worker") });
+		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const [childLine, payloadLine] = result.content[0].text.split("\n");
+		const name = childName("call-1");
+		const worktreeRoot = join(await realpath(repo), ".worktrees", name);
+		assert.equal(JSON.parse(childLine!).cwd, join(worktreeRoot, "packages", "worker"));
+		assert.deepEqual(JSON.parse(payloadLine!), {
+			path: worktreeRoot,
+			branch: `pi-subagent/${name}`,
+			commits: 0,
+			dirty: false,
+			pruned: true,
+		});
 	});
 });
 
@@ -289,7 +334,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
 		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
-		assert.match(args.filter((value: string, index: number) => args[index - 1] === "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
+		assert.equal(args[args.indexOf("--exclude-tools") + 1], "delegate_task,ask_question,auto_dag_approve,auto_dag_start");
 	});
 });
 
@@ -821,7 +866,7 @@ test("session shutdown aborts queued background subagents without unhandled reje
 				assert.match(second.content[0]!.text, /started/);
 				// Second task is queued; shutdown must abort it without an unhandled
 				// rejection from the discarded IIFE promise.
-				app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+				await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 				await new Promise((resolve) => setTimeout(resolve, 50));
 				assert.deepEqual(unhandled, []);
 			} finally {
@@ -842,7 +887,7 @@ test("background outcomes are not delivered after session shutdown", async () =>
 
 		const app = harness();
 		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
-		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.equal(app.sentMessages.length, 0);
 	});
@@ -1112,6 +1157,31 @@ setInterval(() => {}, 1_000);
 	});
 });
 
+test("normal completion stops surviving child process descendants", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const marker = join(agentDir, "normal-descendant-survived");
+		const started = join(agentDir, "normal-descendant-started");
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300); setInterval(() => {}, 1000)`)}], { stdio: "ignore" });
+descendant.unref();
+const ready = setInterval(() => {
+	if (!existsSync(${JSON.stringify(started)})) return;
+	clearInterval(ready);
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));
+}, 5);
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		assert.equal(result.content[0].text, "done");
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		await assert.rejects(readFile(marker), /ENOENT/);
+	});
+});
+
 test("oversized unterminated stdout protocol line fails bounded", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
@@ -1176,6 +1246,102 @@ test("background delegation returns immediately and reports the outcome as a mes
 	});
 });
 
+test("background worktree report survives capped child output", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "x".repeat(60 * 1024) }], stopReason: "end" } }));`);
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: repo });
+		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		await waitFor(() => app.sentMessages.length === 1);
+		const content = app.sentMessages[0]!.message.content as string;
+		assert.match(content, /\[Output truncated: \d+ bytes omitted\]/);
+		const name = childName("call-1");
+		assert.deepEqual(JSON.parse(content.trim().split("\n").at(-1)!), {
+			path: join(await realpath(repo), ".worktrees", name),
+			branch: `pi-subagent/${name}`,
+			commits: 0,
+			dirty: false,
+			pruned: true,
+		});
+	});
+});
+
+test("session shutdown promptly reports preserved isolated setup failures", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const hook = join(repo, ".git", "hooks", "post-checkout");
+		await writeFile(hook, "#!/bin/sh\nsleep 5\nexit 1\n");
+		await chmod(hook, 0o755);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, "throw new Error('runner must not start');\n");
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: repo });
+		const started = await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		const name = childName("call-1");
+		const path = join(await realpath(repo), ".worktrees", name);
+		const branch = `pi-subagent/${name}`;
+		await waitFor(() => existsSync(path));
+		const shutdownAt = Date.now();
+		await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
+
+		assert.ok(Date.now() - shutdownAt < 2_000);
+		assert.equal(app.sentMessages.length, 1);
+		const { message, options } = app.sentMessages[0]!;
+		assert.equal(message.details.taskId, started.details.taskId);
+		assert.equal(message.details.recovery, true);
+		assert.equal(options.triggerTurn, false);
+		assert.match(message.content, /left recoverable isolated setup state/);
+		assert.equal(message.content.includes(path), true);
+		assert.equal(message.content.includes(branch), true);
+		assert.equal(existsSync(path), true);
+	});
+});
+
+test("session shutdown reports dirty isolated work without stale child output", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { writeFileSync } from "node:fs";
+const event = (value) => console.log(JSON.stringify(value));
+writeFileSync("dirty.txt", "recover me");
+event({ type: "message_start", message: { role: "assistant", content: [] } });
+event({ type: "message_update", usage: { totalTokens: 1 }, assistantMessageEvent: { type: "text_delta", delta: "DO NOT REPLAY" } });
+setInterval(() => {}, 1_000);
+`);
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: repo, timeoutPolicy: { softMs: 60_000, graceMs: 60_000, activeWindowMs: 60_000 } });
+		const started = await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		const name = childName("call-1");
+		const root = join(await realpath(repo), ".worktrees", name);
+		await waitFor(() => existsSync(join(root, "dirty.txt")));
+
+		await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
+
+		assert.equal(app.sentMessages.length, 1);
+		const { message, options } = app.sentMessages[0]!;
+		assert.equal(message.customType, "subagent-background-result");
+		assert.equal(message.details.taskId, started.details.taskId);
+		assert.equal(message.details.recovery, true);
+		assert.equal(options.triggerTurn, false);
+		assert.doesNotMatch(message.content, /DO NOT REPLAY|Subagent was aborted/);
+		assert.deepEqual(JSON.parse(message.content.trim().split("\n").at(-1)), {
+			path: root,
+			branch: `pi-subagent/${name}`,
+			commits: 0,
+			dirty: true,
+			pruned: false,
+		});
+	});
+});
+
 test("session shutdown aborts a running background subagent and suppresses delivery", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -1209,7 +1375,7 @@ test("background tasks deliver again after a new session starts", async () => {
 		const app = harness();
 		// First session: launch, shut down (task aborts, epoch advances).
 		await app.tool.execute("call-1", { role: "worker", task: "old", background: true }, undefined, undefined, app.ctx);
-		app.handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 		app.handlers.get("session_start")?.({}, app.ctx);
 		// Second session: a fresh task must deliver normally.
 		const result = await app.tool.execute("call-2", { role: "worker", task: "new", background: true }, undefined, undefined, app.ctx);

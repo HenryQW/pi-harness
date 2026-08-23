@@ -1,10 +1,12 @@
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type HerdrExecutor } from "@henryqw/pi-herdr";
 import { type AvailableModel, type ProfileName, type ResolvedTaskRoute, type ThinkingLevel } from "@henryqw/pi-task-models";
+export { createChildWorktree, finalizeChildWorktree, worktreeContextNote, type WorktreeInfo, type WorktreePayload, } from "./worktree.ts";
 export interface Role {
     name: string;
     description: string;
     tools?: string[];
+    isolation?: string;
     extensions: string[];
     skills: string[];
     systemPrompt: string;
