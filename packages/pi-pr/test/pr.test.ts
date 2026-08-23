@@ -9,6 +9,7 @@ import pullRequestExtension, { formatPullRequest, parsePullRequest } from "../ex
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
 const pullRequest = (overrides: Record<string, unknown> = {}) => ({
+	id: "PR_kwDOExample",
 	number: 42,
 	url: "https://github.com/acme/project/pull/42",
 	state: "OPEN",
@@ -75,8 +76,11 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	let interval: { callback: () => void; delay: number } | undefined;
 	let intervalHandle: ReturnType<typeof setInterval> | undefined;
 	let intervalCleared = false;
+	let now = 1_000;
 	const originalSetInterval = globalThis.setInterval;
 	const originalClearInterval = globalThis.clearInterval;
+	const originalDateNow = Date.now;
+	Date.now = () => now;
 	globalThis.setInterval = ((callback: () => void, delay: number) => {
 		interval = { callback, delay };
 		intervalHandle = {} as ReturnType<typeof setInterval>;
@@ -88,11 +92,16 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	t.after(() => {
 		globalThis.setInterval = originalSetInterval;
 		globalThis.clearInterval = originalClearInterval;
+		Date.now = originalDateNow;
 	});
 
 	const calls: Array<{ command: string; args: string[]; signal: AbortSignal | undefined }> = [];
+	const reviewCallCount = () => calls.filter(({ command: executable, args }) => executable === "gh" && args[0] === "api" && args[1] === "graphql").length;
 	const statuses: Array<string | undefined> = [];
+	const notifications: Array<{ message: string; level: string | undefined }> = [];
 	const messages: Array<{ content: string; options: unknown }> = [];
+	let reviewOutput = "1\n1\n";
+	let viewCode = 0;
 	let openPullRequest = true;
 	let foreignPullRequest = false;
 	let workflowAvailable = true;
@@ -118,8 +127,9 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 					hold = undefined;
 					return pending;
 				}
-				return result(good);
+				return result(good, viewCode);
 			}
+			if (executable === "gh" && args[0] === "api" && args[1] === "graphql") return result(reviewOutput);
 			if (executable === "git" && args.join(" ") === "branch --show-current") return result("feature/pr\n");
 			if (executable === "git" && args.join(" ") === "remote get-url --push origin") return result("https://github.com/acme/project\n");
 			if (executable === "gh" && args.join(" ") === "repo view https://github.com/acme/project --json nameWithOwner") {
@@ -154,6 +164,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 		isIdle() { return idle; },
 		ui: {
 			setStatus(_key: string, text: string | undefined) { statuses.push(text); },
+			notify(message: string, level?: string) { notifications.push({ message, level }); },
 			theme: { fg(_color: string, text: string) { return text; } },
 		},
 	} as unknown as ExtensionContext;
@@ -163,40 +174,78 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await sessionStart?.({} as never, noUi);
 	assert.equal(calls.length, 0);
 	await sessionStart?.({} as never, context);
-	assert.deepEqual(calls[0]?.args, ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]);
+	assert.deepEqual(calls[0]?.args, ["pr", "view", "--json", "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]);
+	assert.deepEqual(calls[1]?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
+	assert.equal(calls[1]?.args.at(-1), "[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length");
 	assert.equal(interval?.delay, 30_000);
 	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · open");
+	assert.deepEqual(notifications, [{ message: "PR #42 has 2 unresolved review threads", level: "warning" }]);
+
+	interval?.callback();
+	await flush();
+	assert.equal(notifications.length, 1);
+
+	reviewOutput = "invalid";
+	interval?.callback();
+	await flush();
+	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · open");
+	reviewOutput = "2\n";
+
+	viewCode = 1;
+	interval?.callback();
+	await flush();
+	viewCode = 0;
+	interval?.callback();
+	await flush();
+	assert.equal(notifications.length, 1);
+
+	now += 20 * 60_000;
+	const reviewsBeforeExpiry = reviewCallCount();
+	interval?.callback();
+	await flush();
+	assert.equal(reviewCallCount(), reviewsBeforeExpiry);
 
 	let release!: (value: ReturnType<typeof result>) => void;
 	hold = new Promise((resolve) => { release = resolve; });
 	interval?.callback();
-	assert.equal(calls.length, 2);
+	const callsBeforeCreate = calls.length;
 	await toolResult?.({
 		toolName: "bash",
 		input: { command: "git status && gh pr create --fill" },
 		isError: false,
 	} as never, context);
-	assert.equal(calls.length, 2);
+	assert.equal(calls.length, callsBeforeCreate);
 	release(result(good));
 	await flush();
-	assert.equal(calls.length, 3);
+	assert.equal(notifications.length, 2);
 
+	const callsAfterCreate = calls.length;
 	await toolResult?.({ toolName: "bash", input: { command: "echo gh pr create" }, isError: false } as never, context);
 	await toolResult?.({ toolName: "bash", input: { command: "gh pr create --fill" }, isError: true } as never, context);
-	assert.equal(calls.length, 3);
+	assert.equal(calls.length, callsAfterCreate);
+
+	now += 20 * 60_000;
+	interval?.callback();
+	await flush();
+	const reviewsBeforePush = reviewCallCount();
+	reviewOutput = "1\n";
+	await toolResult?.({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false } as never, context);
+	assert.equal(reviewCallCount(), reviewsBeforePush + 1);
+	assert.deepEqual(notifications.at(-1), { message: "PR #42 has 1 unresolved review thread", level: "warning" });
 
 	assert.ok(command);
 	calls.length = 0;
 	await command.handler("", context as ExtensionCommandContext);
 	await flush();
-	assert.deepEqual(calls.map(({ command: executable, args }) => [executable, args]), [
+	assert.deepEqual(calls.slice(0, -1).map(({ command: executable, args }) => [executable, args]), [
 		["git", ["branch", "--show-current"]],
 		["git", ["remote", "get-url", "--push", "origin"]],
 		["gh", ["repo", "view", "https://github.com/acme/project", "--json", "nameWithOwner"]],
 		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number,headRepository"]],
 		["gh", ["pr", "view", "42", "--web"]],
-		["gh", ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
+		["gh", ["pr", "view", "--json", "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
 	]);
+	assert.deepEqual(calls.at(-1)?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
 	assert.equal(calls[0]?.signal, commandSignal);
 
 	foreignPullRequest = true;
@@ -212,13 +261,14 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	messages.length = 0;
 	await command.handler("", context as ExtensionCommandContext);
 	await flush();
-	assert.deepEqual(calls.map(({ command: executable, args }) => [executable, args]), [
+	assert.deepEqual(calls.slice(0, -1).map(({ command: executable, args }) => [executable, args]), [
 		["git", ["branch", "--show-current"]],
 		["git", ["remote", "get-url", "--push", "origin"]],
 		["gh", ["repo", "view", "https://github.com/acme/project", "--json", "nameWithOwner"]],
 		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number,headRepository"]],
-		["gh", ["pr", "view", "--json", "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
+		["gh", ["pr", "view", "--json", "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
 	]);
+	assert.deepEqual(calls.at(-1)?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
 	assert.deepEqual(messages, [{ content: "/skill:pi-pr-create", options: { expandPromptTemplates: true } }]);
 
 	idle = false;

@@ -6,8 +6,11 @@ import {
 import { hyperlink } from "@earendil-works/pi-tui";
 
 const POLL_INTERVAL_MS = 30_000;
-const PR_FIELDS = "number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup";
+const REVIEW_POLL_WINDOW_MS = 20 * 60_000;
+const PR_FIELDS = "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup";
+const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
+const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
 const CREATE_PR_SKILL_COMMAND = "skill:pi-pr-create";
 const FAILED_CHECK_STATES = new Set(["ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "STALE", "STARTUP_FAILURE", "TIMED_OUT"]);
 const SUCCESSFUL_CHECK_STATES = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
@@ -15,6 +18,7 @@ const SUCCESSFUL_CHECK_STATES = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
 type Lifecycle = "D" | "O" | "M" | "C";
 type CiStatus = "success" | "running" | "failure" | "none";
 type PullRequest = {
+	id: string;
 	number: number;
 	url: string;
 	lifecycle: Lifecycle;
@@ -40,6 +44,7 @@ function pullRequestUrl(value: unknown): string | undefined {
 export function parsePullRequest(value: unknown): PullRequest | undefined {
 	if (!isRecord(value)) return undefined;
 
+	const id = value.id;
 	const number = value.number;
 	const url = pullRequestUrl(value.url);
 	const state = value.state;
@@ -48,6 +53,7 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	const reviewDecision = value.reviewDecision;
 	const statusCheckRollup = value.statusCheckRollup;
 	if (
+		typeof id !== "string" || !id ||
 		typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0 || !url || typeof state !== "string" ||
 		typeof isDraft !== "boolean" || typeof mergeable !== "string" ||
 		(reviewDecision !== null && typeof reviewDecision !== "string") ||
@@ -57,7 +63,17 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	const lifecycle = state === "MERGED" ? "M" : state === "CLOSED" ? "C" : state === "OPEN" ? isDraft ? "D" : "O" : undefined;
 	if (!lifecycle) return undefined;
 
-	return { number, url, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
+	return { id, number, url, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
+}
+
+function parseUnresolvedReviewCount(value: string): number {
+	if (!value.trim()) throw new Error("Read review comments failed: invalid GitHub CLI output");
+	const pages = value.trim().split(/\s+/).map(Number);
+	const count = pages.reduce((total, page) => total + page, 0);
+	if (pages.some((page) => !Number.isSafeInteger(page) || page < 0) || !Number.isSafeInteger(count)) {
+		throw new Error("Read review comments failed: invalid GitHub CLI output");
+	}
+	return count;
 }
 
 function parseRepositoryName(json: string): string {
@@ -136,10 +152,14 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let active: AbortController | undefined;
 	let queued = false;
+	let reviewState: { id: string; unresolved: number } | undefined;
+	let reviewWindow: { id: string; until: number } | undefined;
 
 	const stop = () => {
 		context = undefined;
 		queued = false;
+		reviewState = undefined;
+		reviewWindow = undefined;
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
 		active?.abort();
@@ -170,6 +190,35 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 
 			const pullRequest = parsePullRequest(JSON.parse(result.stdout));
 			ctx.ui.setStatus("pi-pr", pullRequest ? formatPullRequest(pullRequest, ctx.ui.theme) : undefined);
+			if (!pullRequest || pullRequest.lifecycle === "M" || pullRequest.lifecycle === "C") {
+				reviewState = undefined;
+				reviewWindow = undefined;
+				return;
+			}
+			if (reviewWindow?.id !== pullRequest.id) {
+				reviewWindow = { id: pullRequest.id, until: Date.now() + REVIEW_POLL_WINDOW_MS };
+			}
+			if (Date.now() >= reviewWindow.until) return;
+
+			try {
+				const reviews = await pi.exec(
+					"gh",
+					[
+						"api", "graphql", "--hostname", new URL(pullRequest.url).hostname, "--paginate",
+						"-f", `query=${REVIEW_THREADS_QUERY}`, "-F", `id=${pullRequest.id}`,
+						"--jq", "[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length",
+					],
+					{ cwd: ctx.cwd, signal: controller.signal, timeout: 10_000 },
+				);
+				if (controller.signal.aborted || context !== ctx || reviews.code !== 0) return;
+				const unresolved = parseUnresolvedReviewCount(reviews.stdout);
+				if (unresolved > 0 && (reviewState?.id !== pullRequest.id || unresolved > reviewState.unresolved)) {
+					ctx.ui.notify(`PR #${pullRequest.number} has ${unresolved} unresolved review thread${unresolved === 1 ? "" : "s"}`, "warning");
+				}
+				reviewState = { id: pullRequest.id, unresolved };
+			} catch {
+				// Keep known PR status when review lookup fails.
+			}
 		} catch {
 			if (!controller.signal.aborted && context === ctx) ctx.ui.setStatus("pi-pr", undefined);
 		} finally {
@@ -195,7 +244,11 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 	pi.on("tool_result", async (event, ctx) => {
 		if (!ctx.hasUI || event.isError || !isBashToolResult(event)) return;
 		const command = event.input.command;
-		if (typeof command === "string" && GH_PR_CREATE.test(command)) await refresh(true);
+		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_PUSH.test(command))) {
+			reviewState = undefined;
+			if (reviewWindow) reviewWindow.until = Date.now() + REVIEW_POLL_WINDOW_MS;
+			await refresh(true);
+		}
 	});
 
 	pi.registerCommand("pr", {
