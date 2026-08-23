@@ -51,9 +51,18 @@ type Result = {
 };
 
 const PREVIEW_WIDTH = 80;
+const MAX_PREVIEW_ITEMS = 20;
+const MAX_PREVIEW_CHARS = 1500;
 
 function previews(entries: string[]): string[] {
-	return entries.map((e) => (e.length > PREVIEW_WIDTH ? `${e.slice(0, PREVIEW_WIDTH)}...` : e));
+	let chars = 0;
+	const shown: string[] = [];
+	for (const entry of entries) {
+		if (shown.length >= MAX_PREVIEW_ITEMS || chars + PREVIEW_WIDTH > MAX_PREVIEW_CHARS) break;
+		shown.push(entry.length > PREVIEW_WIDTH ? `${entry.slice(0, PREVIEW_WIDTH)}...` : entry);
+		chars += PREVIEW_WIDTH;
+	}
+	return shown;
 }
 
 /**
@@ -83,6 +92,11 @@ export class MemoryStore {
 		["user", []],
 	]);
 	private consolidationFailures = 0;
+	// Targets whose file was observed on disk this session — used to detect
+	// unexpected mid-session disappearance before a mutation rewrites from an
+	// empty view.
+	private readonly observedExisting = new Set<Target>();
+	private disappearanceDetected = false;
 
 	constructor(config: StoreConfig) {
 		this.config = config;
@@ -126,7 +140,7 @@ export class MemoryStore {
 		return {
 			success: false,
 			error,
-			currentEntries: this.entries.get(target)!,
+			currentEntries: previews(this.entries.get(target)!),
 			usage: this.usage(target),
 			...extra,
 		};
@@ -150,6 +164,7 @@ export class MemoryStore {
 
 	async load(target: Target): Promise<LoadResult> {
 		const file = await this.readFileState(target);
+		if (file.kind === "ok") this.observedExisting.add(target);
 		if (file.kind === "unreadable") {
 			return {
 				entries: [],
@@ -218,6 +233,14 @@ export class MemoryStore {
 	private async reloadTarget(target: Target): Promise<boolean> {
 		const file = await this.readFileState(target);
 		if (file.kind !== "ok" && file.kind !== "absent") return false;
+		if (file.kind === "absent" && this.observedExisting.has(target)) {
+			// The store existed earlier this session and has vanished (sync
+			// conflict, cleanup, accident). Rewriting from the in-memory view would
+			// create a divergent store that hides the original when it reappears.
+			this.disappearanceDetected = true;
+			return false;
+		}
+		if (file.kind === "ok") this.observedExisting.add(target);
 		this.entries.set(target, file.kind === "ok" ? parseEntries(file.raw) : []);
 		return true;
 	}
@@ -241,6 +264,9 @@ export class MemoryStore {
 		try {
 			await writeFile(tmp, content, "utf-8");
 			await (this.config.renameFn ?? rename)(tmp, path);
+			// The store now exists on disk; a later mid-session disappearance is
+			// unexpected and must abort, not rewrite from the in-memory view.
+			this.observedExisting.add(target);
 		} finally {
 			await rm(tmp, { force: true }).catch(() => {});
 		}
@@ -261,7 +287,7 @@ export class MemoryStore {
 		return {
 			success: false,
 			error: `'${action}' needs old_text -- a short unique substring of the entry to ${action}. None was provided. Reissue the ${action} with old_text set to part of one of the current_entries below.`,
-			currentEntries: store.entries.get(target)!,
+			currentEntries: previews(store.entries.get(target)!),
 			usage: store.usage(target),
 		};
 	}
@@ -319,6 +345,13 @@ export class MemoryStore {
 	}
 
 	private unreadableAbort(target: Target): Result {
+		if (this.disappearanceDetected) {
+			this.disappearanceDetected = false;
+			return {
+				success: false,
+				error: `${this.pathFor(target)} existed earlier this session but has disappeared (sync conflict, cleanup, or accident). Writing now would create a divergent store that hides the original when it returns. Restore the file or delete it intentionally, then retry.`,
+			};
+		}
 		return {
 			success: false,
 			error: `${this.pathFor(target)} exists but could not be read (unreadable, or over the ${MAX_FILE_BYTES.toLocaleString()}-byte limit). The on-disk entries are unknown, so writing would `

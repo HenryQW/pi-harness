@@ -1,5 +1,5 @@
 import { mkdir, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { lock } from "proper-lockfile";
@@ -119,6 +119,12 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			await mkdir(BACKUP_DIR(), { recursive: true });
 			const config = loadMemoryConfig();
 			await mkdir(config.directory, { recursive: true });
+			// The runtime contract keeps backups OUTSIDE the memory directory; reject
+			// overlap (equal, ancestor, descendant) so backup cleanup can never eat
+			// the store and .bak files can't be mistaken for memory files.
+			if (config.directory === BACKUP_DIR() || config.directory.startsWith(BACKUP_DIR() + sep) || BACKUP_DIR().startsWith(config.directory + sep)) {
+				throw new Error(`Memory directory must not overlap the backup directory (${BACKUP_DIR()}): got ${config.directory}`);
+			}
 			const backupPath = (target: Target) => join(BACKUP_DIR(), target === "user" ? "USER.md.bak" : "MEMORY.md.bak");
 			const stores: Record<Target, MemoryStore> = {
 				memory: new MemoryStore({ ...config, backupPath }),

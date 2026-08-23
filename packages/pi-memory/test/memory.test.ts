@@ -267,3 +267,31 @@ test("first oversized entry is omitted with warning; unexpected-file warnings ar
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("memory directory overlapping the backup directory fails init loudly", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-overlap-"));
+	const agentDir = join(root, "agent");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config"), { recursive: true });
+		// Default BACKUP_DIR is <agentDir>/memory-backups; point the store inside it.
+		await mkdir(join(agentDir, "memory-backups", "store"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory.json"), JSON.stringify({ directory: join(agentDir, "memory-backups", "store") }));
+		const handlers = new Map<string, Handler>();
+		let tool: CapturedTool | undefined;
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerTool(value: CapturedTool) { tool = value; },
+		} as unknown as ExtensionAPI);
+		await handlers.get("session_start")!({ type: "session_start" });
+		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
+		assert.match(injected.systemPrompt, /persistent memory is DISABLED/);
+		assert.match(injected.systemPrompt, /must not overlap the backup directory/);
+		void tool;
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});

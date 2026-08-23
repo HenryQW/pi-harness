@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -415,6 +416,35 @@ test("backup parent is recreated when removed after init", async () => {
 		assert.match(backup, /first/, "pre-rewrite backup must exist even after backup dir removal");
 	} finally {
 		await rm(backupDir, { recursive: true, force: true });
+		await cleanup();
+	}
+});
+
+test("mid-session disappearance of an observed store aborts instead of diverging", async () => {
+	const { store, dir, cleanup } = await makeStore();
+	try {
+		await store.add("memory", "precious");
+		// File deleted but directory intact (sync conflict / cleanup scenario).
+		await rm(memoryPath(dir));
+		const result = await store.add("memory", "after disappearance");
+		assert.equal(result.success, false, "unexpected disappearance must not rewrite from empty view");
+		assert.match(result.error ?? "", /disappeared/);
+		assert.ok(!existsSync(memoryPath(dir)), "no divergent store file may be created");
+	} finally {
+		await cleanup();
+	}
+});
+
+test("ambiguous-match previews are aggregate-bounded", async () => {
+	const { store, cleanup } = await makeStore();
+	try {
+		// 50 entries all containing the search substring.
+		for (let i = 0; i < 50; i++) await store.add("memory", `shared-${i} unique tail ${i}`);
+		const result = await store.replace("memory", "shared", "x");
+		assert.equal(result.success, false);
+		const serialized = JSON.stringify(result.matches ?? []);
+		assert.ok(serialized.length < 3000, `previews must be bounded, got ${serialized.length}`);
+	} finally {
 		await cleanup();
 	}
 });
