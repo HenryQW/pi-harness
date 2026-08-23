@@ -211,28 +211,20 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				return { createdTab, cloneFile };
 			};
 			const { createdTab, cloneFile } = source.checkout ? await withWorktreeLock(source.checkout, mutate) : await mutate();
-			let tabId: string | undefined;
-			let rootPaneId: string | undefined;
+			let tab: ReturnType<typeof parseCreatedTab>;
 			try {
-				const tabResponse: unknown = JSON.parse(createdTab.stdout);
-				if (!tabResponse || typeof tabResponse !== "object" || Array.isArray(tabResponse)) {
-					throw new Error("Herdr tab create returned invalid JSON");
-				}
-				const result = (tabResponse as {
-					result?: { tab?: { tab_id?: unknown }; root_pane?: { pane_id?: unknown } };
-				}).result;
-				tabId = requiredString(result?.tab?.tab_id, "Herdr tab response tab_id");
-				rootPaneId = requiredString(result?.root_pane?.pane_id, `Herdr tab ${tabId} root pane_id`);
+				tab = parseCreatedTab(createdTab, source.workspaceId);
 			} catch (error) {
 				throw new Error(
-					`Clone launch could not be confirmed after creating a Herdr tab; retained${tabId ? ` Herdr tab ${tabId} and` : ""} session ${cloneFile}: ${errorMessage(error)}`,
+					`Clone launch could not be confirmed after creating a Herdr tab; retained session ${cloneFile}: ${errorMessage(error)}`,
 					{ cause: error },
 				);
 			}
-			const agentName = await launchCloneAgent(herdr, ctx, rootPaneId!, cloneFile, `Herdr tab ${tabId}, root pane ${rootPaneId}, and session ${cloneFile}`);
+			const { tabId, rootPaneId } = tab;
+			const agentName = await launchCloneAgent(herdr, ctx, rootPaneId, cloneFile, `Herdr tab ${tabId}, root pane ${rootPaneId}, and session ${cloneFile}`);
 
 			try {
-				await herdr.run(["tab", "focus", tabId!], { cwd: ctx.cwd });
+				await herdr.run(["tab", "focus", tabId], { cwd: ctx.cwd });
 			} catch (error) {
 				ctx.ui.notify(
 					`Clone agent ${agentName} started in Herdr tab ${tabId} (root pane ${rootPaneId}), but focus failed: ${errorMessage(error)}`,

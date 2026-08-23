@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
@@ -11,7 +12,6 @@ import {
 	type ThinkingLevel,
 	modelReference,
 	PROFILE_NAMES,
-	type ProfileName,
 	resolveAvailableModel,
 	resolveConfiguredTaskRoute,
 	type ResolvedTaskRoute,
@@ -20,7 +20,6 @@ import {
 import { Type } from "typebox";
 import { createRoleLaunch, isProfileName, loadRoles, resolveTaskRoute } from "@henryqw/pi-subagent";
 
-const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
@@ -48,7 +47,6 @@ export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined)
 	if (partial.activeWindowSeconds !== undefined) policy.activeWindowMs = partial.activeWindowSeconds * 1_000;
 	return policy;
 }
-type ModelClass = ProfileName;
 class SubagentTimeoutError extends Error {}
 type ChildResult = {
 	exitCode: number;
@@ -67,8 +65,6 @@ type WidgetItem = {
 	finishedAt?: number;
 	removeAt?: number;
 };
-
-const isModelClass = isProfileName;
 
 const cleanText = (value: unknown, field: string, file: string): string => {
 	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -103,15 +99,7 @@ function assistantText(message: unknown): string | undefined {
 }
 
 function utf8Prefix(text: string, maxBytes: number): string {
-	let low = 0;
-	let high = Math.min(text.length, maxBytes);
-	while (low < high) {
-		const middle = Math.ceil((low + high) / 2);
-		if (Buffer.byteLength(text.slice(0, middle), "utf8") <= maxBytes) low = middle;
-		else high = middle - 1;
-	}
-	if (low > 0 && low < text.length && /[\uD800-\uDBFF]/.test(text[low - 1]) && /[\uDC00-\uDFFF]/.test(text[low])) low--;
-	return text.slice(0, low);
+	return new StringDecoder().write(Buffer.from(text).subarray(0, maxBytes));
 }
 
 function cappedPrefix(text: string, totalBytes: number): string {
@@ -439,7 +427,7 @@ const Parameters = Type.Object({
 	model: Type.Optional(Type.String({
 		description: "Designated model as provider/modelId; overrides modelClass. Unknown references reject with the list of available models.",
 	})),
-	modelClass: Type.Optional(StringEnum(MODEL_CLASSES, {
+	modelClass: Type.Optional(StringEnum(PROFILE_NAMES, {
 		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning; fav for the user's favorite model when they ask for it. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
 	background: Type.Optional(Type.Boolean({
@@ -693,7 +681,7 @@ export default function subagentExtension(
 				throw new Error(`Unknown Subagent role: ${params.role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
 			}
 
-			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
+			if (params.modelClass !== undefined && !isProfileName(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
 			}
 			// Resolve against the latest known session context: a task queued past

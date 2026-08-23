@@ -470,6 +470,4 @@ async function selectThinkingLevel(
 	return { model: canonicalModelReference(model), thinkingLevel };
 }
 
-export default function taskModelsExtension(pi: ExtensionAPI): void {
-	createTaskModelsExtension(pi);
-}
+export default createTaskModelsExtension;

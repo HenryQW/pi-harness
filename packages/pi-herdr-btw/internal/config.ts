@@ -122,11 +122,6 @@ export class ConfigStore {
 		}
 	}
 
-	async save(config: BtwConfig): Promise<void> {
-		const validated = parseConfig(config);
-		await this.withLock(() => this.saveUnlocked(validated));
-	}
-
 	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
 		return this.withLock(async () => {
 			const next = parseConfig(mutator(await this.load()));
