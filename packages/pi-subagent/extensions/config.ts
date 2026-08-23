@@ -39,12 +39,19 @@ const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, number, string]> = [
 ];
 
 /**
+ * Required single-extension config path form (AGENTS.md); agentDir is
+ * injectable so tests can point at a temp directory.
+ */
+export const subagentConfigPath = (agentDir = getAgentDir()): string =>
+	join(agentDir, "config", "pi-subagent.json");
+
+/**
  * Read the optional user config at `<agentDir>/config/pi-subagent.json`.
  * Treated as untrusted user data: malformed files are preserved untouched and
  * reported instead of crashing the session; callers fall back to defaults.
  */
 export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConfig {
-	const path = join(agentDir, "config", "pi-subagent.json");
+	const path = subagentConfigPath(agentDir);
 	let raw: string;
 	try {
 		raw = readFileSync(path, "utf8");
@@ -74,10 +81,10 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 	}
 
 	if (record.maxSubagents !== undefined) {
-		if (typeof record.maxSubagents === "number" && Number.isInteger(record.maxSubagents) && record.maxSubagents >= 1) {
+		if (typeof record.maxSubagents === "number" && Number.isSafeInteger(record.maxSubagents) && record.maxSubagents >= 1) {
 			config.maxSubagents = record.maxSubagents;
 		} else {
-			problems.push(`maxSubagents must be an integer >= 1, got ${JSON.stringify(record.maxSubagents)}`);
+			problems.push(`maxSubagents must be a safe integer >= 1, got ${JSON.stringify(record.maxSubagents)}`);
 		}
 	}
 

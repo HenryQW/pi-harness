@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { readSubagentConfig } from "../extensions/config.ts";
+import { readSubagentConfig, subagentConfigPath } from "../extensions/config.ts";
 
 async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-config-"));
@@ -60,7 +60,7 @@ test("invalid maxSubagents value reports an error and preserves defaults", async
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 0 }));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /maxSubagents must be an integer >= 1, got 0/);
+		assert.match(loaded.error!, /maxSubagents must be a safe integer >= 1, got 0/);
 	});
 });
 
@@ -112,6 +112,21 @@ test("non-object config root reports an error", async () => {
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /must contain a JSON object/);
 	});
+});
+
+test("non-safe maxSubagents values report an error", async () => {
+	await withAgentDir(async (agentDir) => {
+		const dir = join(agentDir, "config");
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 1e100 }));
+		const loaded = readSubagentConfig(agentDir);
+		assert.deepEqual(loaded.config, {});
+		assert.match(loaded.error!, /maxSubagents must be a safe integer >= 1/);
+	});
+});
+
+test("config path follows the required single-config helper form", () => {
+	assert.equal(subagentConfigPath("/agents"), join("/agents", "config", "pi-subagent.json"));
 });
 
 test("unknown top-level keys report an error", async () => {
