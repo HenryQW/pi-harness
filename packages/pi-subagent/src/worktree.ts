@@ -67,11 +67,16 @@ async function ensureLocalExclude(gitDir: string): Promise<void> {
 	const exclude = join(gitDir, "info", "exclude");
 	try {
 		await mkdir(join(gitDir, "info"), { recursive: true });
-		const existing = await readFile(exclude, "utf8").catch(() => "");
+		let existing = "";
+		try {
+			existing = await readFile(exclude, "utf8");
+		} catch (error) {
+			if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+		}
 		if (existing.split("\n").some((line) => line.trim() === entry)) return;
 		await appendFile(exclude, `${existing && !existing.endsWith("\n") ? "\n" : ""}${entry}\n`);
-	} catch {
-		// Best-effort: never fail launch over the exclude file.
+	} catch (error) {
+		throw new WorktreeSetupError(`Could not update ${exclude}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -171,6 +176,22 @@ function markUnproven(payload: WorktreePayload, reason: string, unmeasured = "co
 	return payload;
 }
 
+async function inspectDirty(run: GitRunner, cwd: string): Promise<{ dirty: boolean; failure?: string }> {
+	const refreshed = await run(["update-index", "--really-refresh"], cwd);
+	if (refreshed.code !== 0 && refreshed.code !== 1) {
+		return { dirty: false, failure: `update-index exit ${refreshed.code}: ${refreshed.stderr.trim().slice(0, 200)}` };
+	}
+	const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], cwd);
+	if (status.code !== 0) return { dirty: false, failure: `status exit ${status.code}: ${status.stderr.trim().slice(0, 200)}` };
+	if (refreshed.code === 1 || status.stdout.trim()) return { dirty: true };
+	const flags = await run(["ls-files", "-v", "-z"], cwd);
+	if (flags.code !== 0) return { dirty: false, failure: `ls-files exit ${flags.code}: ${flags.stderr.trim().slice(0, 200)}` };
+	if (flags.stdout.split("\0").some((entry) => /^(?:[a-z]|S) /.test(entry))) {
+		return { dirty: false, failure: "assume-unchanged or skip-worktree index entries remain" };
+	}
+	return { dirty: false };
+}
+
 /**
  * Inspects and possibly prunes a child worktree after it finishes. Commit count
  * reads the dedicated branch and refuses to prune when checkout HEAD no longer
@@ -191,14 +212,11 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 	const countFailure = counted.code !== 0
 		? `rev-list exit ${counted.code}: ${counted.stderr.trim().slice(0, 200)}`
 		: Number.isNaN(commits) ? "rev-list produced non-numeric output" : undefined;
-	const status = checkoutExists
-		? await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], info.path)
-		: undefined;
-	const statusFailure = status && status.code !== 0 ? `status exit ${status.code}: ${status.stderr.trim().slice(0, 200)}` : undefined;
+	const inspection = checkoutExists ? await inspectDirty(run, info.path) : undefined;
 	if (!countFailure) payload.commits = commits;
-	if (status?.code === 0) payload.dirty = Boolean(status.stdout.trim());
-	if (countFailure || statusFailure) {
-		return markUnproven(payload, [countFailure, statusFailure].filter(Boolean).join("; "), [countFailure && "commits", statusFailure && "dirty"].filter(Boolean).join("/"));
+	if (inspection) payload.dirty = inspection.dirty;
+	if (countFailure || inspection?.failure) {
+		return markUnproven(payload, [countFailure, inspection?.failure].filter(Boolean).join("; "), [countFailure && "commits", inspection?.failure && "dirty"].filter(Boolean).join("/"));
 	}
 
 	let forceRemove = false;
@@ -213,19 +231,22 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 		if (modules.code !== 0) return markUnproven(payload, `submodule list exit ${modules.code}: ${modules.stderr.trim().slice(0, 200)}`, "dirty");
 		forceRemove = modules.stdout.split("\n").some((line) => line && !line.startsWith("-"));
 		if (forceRemove) {
-			const nested = await run([
-				"submodule", "foreach", "--recursive", "--quiet",
-				"git status --porcelain --untracked-files=all --ignored=matching --ignore-submodules=none",
-			], info.path);
-			if (nested.code !== 0) return markUnproven(payload, `submodule status exit ${nested.code}: ${nested.stderr.trim().slice(0, 200)}`, "dirty");
-			if (nested.stdout.trim()) {
-				payload.dirty = true;
-				return payload;
+			const listed = await run(["submodule", "foreach", "--recursive", "--quiet", "printf '%s\\0' \"$PWD\""], info.path);
+			if (listed.code !== 0) return markUnproven(payload, `submodule list exit ${listed.code}: ${listed.stderr.trim().slice(0, 200)}`, "dirty");
+			const paths = listed.stdout.split("\0").filter(Boolean);
+			if (!paths.length) return markUnproven(payload, "initialized submodule paths unavailable", "dirty");
+			for (const path of paths) {
+				const nested = await inspectDirty(run, path);
+				if (nested.failure) return markUnproven(payload, `submodule ${path}: ${nested.failure}`, "dirty");
+				if (nested.dirty) {
+					payload.dirty = true;
+					return payload;
+				}
 			}
 		}
-		const rechecked = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], info.path);
-		if (rechecked.code !== 0) return markUnproven(payload, `final status exit ${rechecked.code}: ${rechecked.stderr.trim().slice(0, 200)}`, "dirty");
-		if (rechecked.stdout.trim()) {
+		const rechecked = await inspectDirty(run, info.path);
+		if (rechecked.failure) return markUnproven(payload, `final ${rechecked.failure}`, "dirty");
+		if (rechecked.dirty) {
 			payload.dirty = true;
 			return payload;
 		}

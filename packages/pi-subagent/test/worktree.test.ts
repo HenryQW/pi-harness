@@ -153,6 +153,14 @@ test("finalizeChildWorktree keeps the worktree with inspection_failed on probe f
 	}));
 	assert.equal(statusFailed.commits, 3);
 	assert.equal(statusFailed.inspection_failed, true);
+
+	const refreshFailed = await finalizeChildWorktree(info, fakeGit({
+		"rev-list --count abc123..pi-subagent/subagent-x": ok("0\n"),
+		"update-index --really-refresh": { code: -1, stdout: "", stderr: "timed out" },
+	}));
+	assert.equal(refreshFailed.pruned, false);
+	assert.equal(refreshFailed.inspection_failed, true);
+	assert.match(refreshFailed.note!, /update-index/);
 });
 
 test("finalizeChildWorktree keeps the worktree when base_commit is missing", async (t) => {
@@ -197,6 +205,17 @@ test("createChildWorktree anchors its local exclude at the repository root", asy
 
 	assert.equal((await readFile(join(repo, ".git", "info", "exclude"), "utf8")).endsWith("/.worktrees/\n"), true);
 	assert.match(git(repo, "status", "--porcelain", "--untracked-files=all"), /\?\? pkg\/\.worktrees\/data\.txt/);
+});
+
+test("createChildWorktree rejects when its local exclusion cannot be established", async (t) => {
+	const repo = await initializedRepository(t);
+	const exclude = join(repo, ".git", "info", "exclude");
+	await rm(exclude, { force: true });
+	await mkdir(exclude);
+
+	await assert.rejects(createChildWorktree(repo, "exclude-failure"), /Could not update .*info.*exclude/);
+	assert.equal(git(repo, "branch", "--list", "pi-subagent/*"), "");
+	assert.equal(git(repo, "worktree", "list", "--porcelain").includes(join(repo, ".worktrees")), false);
 });
 
 test("createChildWorktree degrades on unborn HEAD and fails closed on setup errors", async (t) => {
@@ -448,6 +467,28 @@ test("finalizeChildWorktree prunes a clean submodule worktree without changing s
 	assert.equal(git(repo, "config", "--get-regexp", "^submodule\\."), config);
 });
 
+test("finalizeChildWorktree preserves submodule edits hidden by index flags", async (t) => {
+	const source = await initializedRepository(t);
+	await writeFile(join(source, "tracked.txt"), "original\n");
+	git(source, "add", ".");
+	git(source, "commit", "-qm", "submodule content");
+	const repo = await initializedRepository(t);
+	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
+	git(repo, "commit", "-qm", "add submodule");
+
+	for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+		const info = await createChildWorktree(repo, flag.slice(2));
+		assert.ok(info);
+		git(info.path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
+		git(join(info.path, "mod"), "update-index", flag, "tracked.txt");
+		await writeFile(join(info.path, "mod", "tracked.txt"), `${flag}\n`);
+
+		const payload = await finalizeChildWorktree(info);
+		assert.equal(payload.pruned, false);
+		assert.equal(await readFile(join(info.path, "mod", "tracked.txt"), "utf8"), `${flag}\n`);
+	}
+});
+
 test("finalizeChildWorktree preserves ignored files inside initialized submodules", async (t) => {
 	const source = await initializedRepository(t);
 	await writeFile(join(source, ".gitignore"), "*.cache\n");
@@ -480,6 +521,50 @@ test("finalizeChildWorktree preserves ignored files", async (t) => {
 	assert.equal(payload.dirty, true);
 	assert.equal(payload.pruned, false);
 	assert.equal(await readFile(join(info.path, "result.cache"), "utf8"), "keep me\n");
+});
+
+test("finalizeChildWorktree preserves tracked edits hidden by assume-unchanged", async (t) => {
+	const repo = await initializedRepository(t);
+	const info = await createChildWorktree(repo, "assume-unchanged");
+	assert.ok(info);
+	git(info.path, "update-index", "--assume-unchanged", "README.md");
+	await writeFile(join(info.path, "README.md"), "keep me\n");
+	assert.equal(git(info.path, "status", "--porcelain"), "");
+
+	const payload = await finalizeChildWorktree(info);
+	assert.equal(payload.dirty, true);
+	assert.equal(payload.pruned, false);
+	assert.equal(await readFile(join(info.path, "README.md"), "utf8"), "keep me\n");
+});
+
+test("finalizeChildWorktree preserves tracked edits hidden by skip-worktree", async (t) => {
+	const repo = await initializedRepository(t);
+	const info = await createChildWorktree(repo, "skip-worktree");
+	assert.ok(info);
+	git(info.path, "update-index", "--skip-worktree", "README.md");
+	await writeFile(join(info.path, "README.md"), "keep me\n");
+	assert.equal(git(info.path, "status", "--porcelain"), "");
+
+	const payload = await finalizeChildWorktree(info);
+	assert.equal(payload.pruned, false);
+	assert.equal(payload.inspection_failed, true);
+	assert.match(payload.note!, /skip-worktree/);
+	assert.equal(await readFile(join(info.path, "README.md"), "utf8"), "keep me\n");
+});
+
+test("finalizeChildWorktree refuses to prune while assume-unchanged remains", async (t) => {
+	const info = worktreeInfo(await tempDir(t));
+	const calls: string[][] = [];
+	const payload = await finalizeChildWorktree(info, fakeGit({
+		"rev-list --count abc123..pi-subagent/subagent-x": ok("0\n"),
+		"symbolic-ref --quiet HEAD": ok("refs/heads/pi-subagent/subagent-x\n"),
+		"ls-files -v -z": ok("h README.md\0"),
+	}, calls));
+
+	assert.equal(payload.pruned, false);
+	assert.equal(payload.inspection_failed, true);
+	assert.match(payload.note!, /assume-unchanged/);
+	assert.equal(calls.some((args) => args[0] === "worktree"), false);
 });
 
 test("finalizeChildWorktree detects edits hidden by submodule ignore config", async (t) => {
