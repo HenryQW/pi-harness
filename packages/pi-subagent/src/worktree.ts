@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface WorktreeInfo {
 	path: string;
@@ -44,16 +44,11 @@ const sanitizeShortId = (childId: string): string =>
 	createHash("sha256").update(childId).digest("hex").slice(0, 24);
 
 const isAbsoluteish = (path: string): boolean => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+const stripGitLineEnd = (value: string): string => value.replace(/\r?\n$/, "");
 
 /** Keeps ".worktrees/" out of git status via the common repository's exclude file; never dirties any checkout. */
-async function ensureLocalExclude(repoRoot: string, run: GitRunner): Promise<void> {
+async function ensureLocalExclude(gitDir: string): Promise<void> {
 	const entry = `${WORKTREES_DIRNAME}/`;
-	// Ignore rules live in the COMMON git dir: a linked worktree's --git-dir is
-	// its own administrative directory, which git does not read info/exclude from.
-	const dir = await run(["rev-parse", "--git-common-dir"], repoRoot);
-	if (dir.code !== 0 || !dir.stdout.trim()) return;
-	const raw = dir.stdout.trim();
-	const gitDir = isAbsoluteish(raw) ? raw : join(repoRoot, raw);
 	const exclude = join(gitDir, "info", "exclude");
 	try {
 		await mkdir(join(gitDir, "info"), { recursive: true });
@@ -82,30 +77,39 @@ export async function createChildWorktree(
 		if (/not a git repository/i.test(root.stderr)) return undefined; // documented degradation
 		throw new Error(`git rev-parse failed (${root.stderr.trim().slice(0, 200)})`); // dubious ownership, timeout, …
 	}
-	if (!root.stdout.trim()) return undefined;
-	const repoRoot = root.stdout.trim();
+	const repoRoot = stripGitLineEnd(root.stdout);
+	if (!repoRoot) return undefined;
 	const prefix = await run(["rev-parse", "--show-prefix"], cwd);
 	if (prefix.code !== 0) throw new Error(`git rev-parse --show-prefix failed (${prefix.stderr.trim().slice(0, 200)})`);
+	const relativeCwd = stripGitLineEnd(prefix.stdout);
 	const base = await run(["rev-parse", "HEAD"], repoRoot);
 	if (base.code !== 0) {
 		if (/ambiguous argument|unknown revision|bad revision/i.test(base.stderr)) return undefined; // unborn HEAD
 		throw new Error(`git rev-parse HEAD failed (${base.stderr.trim().slice(0, 200)})`);
 	}
 	const baseCommit = base.stdout.trim();
+	const common = await run(["rev-parse", "--git-common-dir"], repoRoot);
+	const rawGitDir = stripGitLineEnd(common.stdout);
+	if (common.code !== 0 || !rawGitDir) {
+		throw new Error(`git rev-parse --git-common-dir failed (${common.stderr.trim().slice(0, 200)})`);
+	}
+	const gitDir = isAbsoluteish(rawGitDir) ? rawGitDir : join(repoRoot, rawGitDir);
+	const stableRepoRoot = dirname(gitDir);
+	const worktreesRoot = join(stableRepoRoot, WORKTREES_DIRNAME);
 	const name = `subagent-${sanitizeShortId(childId)}`;
 	const branch = `${BRANCH_NAMESPACE}/${name}`;
-	const path = join(repoRoot, WORKTREES_DIRNAME, name);
+	const path = join(worktreesRoot, name);
 	try {
-		await mkdir(join(repoRoot, WORKTREES_DIRNAME), { recursive: true });
+		await mkdir(worktreesRoot, { recursive: true });
 	} catch (error) {
-		throw new Error(`Could not create ${join(repoRoot, WORKTREES_DIRNAME)}: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(`Could not create ${worktreesRoot}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	await ensureLocalExclude(repoRoot, run);
+	await ensureLocalExclude(gitDir);
 	const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot);
 	if (added.code !== 0) {
 		throw new Error(`git worktree add failed; preserved ${path} and ${branch}: ${added.stderr.trim().slice(0, 200)}`);
 	}
-	return { path, cwd: join(path, prefix.stdout.trim()), branch, repoRoot, baseCommit };
+	return { path, cwd: join(path, relativeCwd), branch, repoRoot: stableRepoRoot, baseCommit };
 }
 
 /** Flags a payload whose state could not be measured (#88113): unmeasured is not zero. */
@@ -120,10 +124,10 @@ function markUnproven(payload: WorktreePayload, reason: string, unmeasured = "co
 /**
  * Inspects and possibly prunes a child worktree after it finishes. Commit count
  * reads the dedicated branch and refuses to prune when checkout HEAD no longer
- * names it; the clean-tree proof forces untracked and submodule changes despite
- * repository ignore config. A worktree with zero branch commits and a clean tree
- * is removed only when every probe succeeds and base_commit was recorded; any
- * probe failure keeps everything and reports `inspection_failed` so unmeasured
+ * names it; the clean-tree proof includes untracked, ignored, and submodule
+ * changes despite repository config. A worktree with zero branch commits and a
+ * clean tree is removed only when every probe succeeds and base_commit was
+ * recorded; any probe failure keeps everything and reports `inspection_failed` so unmeasured
  * state is never read as empty.
  */
 export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner = runGit): Promise<WorktreePayload> {
@@ -150,7 +154,7 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 	if (!info.baseCommit) return markUnproven(payload, "no base_commit recorded — commit count unmeasurable", "commits");
 
 	const counted = await run(["rev-list", "--count", `${info.baseCommit}..${info.branch}`], info.path);
-	const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"], info.path);
+	const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], info.path);
 	const failed: string[] = [];
 	const unmeasured: string[] = [];
 	if (counted.code === 0) {

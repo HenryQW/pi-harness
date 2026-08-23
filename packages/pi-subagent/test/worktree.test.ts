@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
 import { createChildWorktree, finalizeChildWorktree, type GitRunner } from "../src/worktree.ts";
 import { loadRoles } from "../src/index.ts";
@@ -63,8 +63,10 @@ test("finalizeChildWorktree prunes a worktree with zero commits and a clean tree
 	assert.deepEqual(payload, { path, branch: info.branch, commits: 0, dirty: false, pruned: true });
 	assert.deepEqual(calls.filter((args) => args[0] === "worktree"), [["worktree", "remove", "--force", path]]);
 	assert.deepEqual(calls.filter((args) => args[0] === "branch"), [["branch", "-D", info.branch]]);
-	// Clean-tree proof must force untracked files so status.showUntrackedFiles=no cannot hide them.
-	assert.deepEqual(calls.find((args) => args[0] === "status"), ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
+	// Clean-tree proof must override config that hides untracked, ignored, or submodule changes.
+	assert.deepEqual(calls.find((args) => args[0] === "status"), [
+		"status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none",
+	]);
 });
 
 test("finalizeChildWorktree keeps dirty and committed worktrees", async (t) => {
@@ -210,6 +212,49 @@ test("createChildWorktree preserves ambiguous state after a failed worktree add"
 	assert.equal(calls.some((args) => args[0] === "branch"), false);
 });
 
+test("createChildWorktree preserves whitespace in repository paths and cwd prefixes", async (t) => {
+	const parent = await tempDir(t);
+	const repo = join(parent, "repo ");
+	const nested = join(repo, " nested ");
+	await mkdir(nested, { recursive: true });
+	git(repo, "init", "-q");
+	git(repo, "config", "user.name", "Test");
+	git(repo, "config", "user.email", "test@example.com");
+	await writeFile(join(repo, "README.md"), "test\n");
+	await writeFile(join(nested, "tracked.txt"), "test\n");
+	git(repo, "add", ".");
+	git(repo, "commit", "-qm", "init");
+
+	const info = await createChildWorktree(nested, "whitespace");
+	assert.ok(info);
+	const canonicalRepo = await realpath(repo);
+	assert.equal(info.repoRoot, canonicalRepo);
+	assert.equal(info.path.startsWith(join(canonicalRepo, ".worktrees")), true);
+	assert.equal(info.cwd, `${join(info.path, " nested ")}${sep}`);
+	assert.equal((await finalizeChildWorktree(info)).pruned, true);
+});
+
+test("createChildWorktree keeps children outside a removable linked checkout", async (t) => {
+	const repo = await initializedRepository(t);
+	const linked = `${repo}-linked`;
+	t.after(async () => { await rm(linked, { recursive: true, force: true }); });
+	git(repo, "worktree", "add", "-qb", "linked", linked);
+
+	const info = await createChildWorktree(linked, "linked-child");
+	const clean = await createChildWorktree(linked, "linked-clean-child");
+	assert.ok(info);
+	assert.ok(clean);
+	const primary = await realpath(repo);
+	assert.equal(info.repoRoot, primary);
+	assert.equal(info.path.startsWith(join(primary, ".worktrees")), true);
+	assert.equal(info.path.startsWith(await realpath(linked)), false);
+	await writeFile(join(info.path, "keep.txt"), "keep me\n");
+	git(repo, "worktree", "remove", "--force", linked);
+	assert.equal(await readFile(join(info.path, "keep.txt"), "utf8"), "keep me\n");
+	assert.equal((await finalizeChildWorktree(info)).dirty, true);
+	assert.equal((await finalizeChildWorktree(clean)).pruned, true);
+});
+
 test("createChildWorktree preserves a dirty existing worktree on ID collision", async (t) => {
 	const repo = await initializedRepository(t);
 	const first = await createChildWorktree(repo, "same-id");
@@ -259,6 +304,21 @@ test("finalizeChildWorktree prunes stale metadata before deleting an empty branc
 	assert.equal(payload.pruned, true);
 	assert.equal(git(repo, "branch", "--list", info.branch), "");
 	assert.equal(git(repo, "worktree", "list", "--porcelain").includes(info.path), false);
+});
+
+test("finalizeChildWorktree preserves ignored files", async (t) => {
+	const repo = await initializedRepository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	const info = await createChildWorktree(repo, "ignored");
+	assert.ok(info);
+	await writeFile(join(info.path, "result.cache"), "keep me\n");
+
+	const payload = await finalizeChildWorktree(info);
+	assert.equal(payload.dirty, true);
+	assert.equal(payload.pruned, false);
+	assert.equal(await readFile(join(info.path, "result.cache"), "utf8"), "keep me\n");
 });
 
 test("finalizeChildWorktree detects edits hidden by submodule ignore config", async (t) => {
