@@ -231,14 +231,18 @@ test("/done fails safely before any execution and preserves removal errors", asy
 		});
 	});
 
-	await t.test("surfaces a failed parent pull and skips tab close", async () => {
+	await t.test("surfaces a failed parent pull but closes the removed checkout's tab", async () => {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor({
 				pullResult: { stdout: "", stderr: "error: Your local changes would be overwritten by merge", code: 1 },
 			}));
 			await assert.rejects(app.command("--force", context()), /overwritten by merge/);
 			// --force skips the dependents check, so no herdr api snapshot call.
-			assert.equal(app.calls.length, 4);
+			assert.deepEqual(app.calls.at(-1), {
+				command: "herdr",
+				args: ["tab", "close", "w1:t1"],
+				options: { cwd: tmpdir() },
+			});
 		});
 	});
 

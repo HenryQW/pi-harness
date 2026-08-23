@@ -74,14 +74,16 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 					"worktree", "remove", ...(option === "--force" ? ["--force"] : []), checkout,
 				], ctx.cwd);
 			});
-			if (!parentIsBare && mainCheckout !== checkout) {
-				// Serialize concurrent completions pulling the same parent checkout.
-				// Run outside the removed checkout because its directory no longer exists.
-				await withWorktreeLock(mainCheckout, () => execOrThrow("git", ["pull", "--ff-only"], mainCheckout));
+			try {
+				if (!parentIsBare && mainCheckout !== checkout) {
+					// Serialize concurrent completions pulling the same parent checkout.
+					// Run outside the removed checkout because its directory no longer exists.
+					await withWorktreeLock(mainCheckout, () => execOrThrow("git", ["pull", "--ff-only"], mainCheckout));
+				}
+			} finally {
+				// Close only this session's tab once its checkout is removed, even if the parent pull fails.
+				await herdr.run(["tab", "close", tabId], { cwd: tmpdir() });
 			}
-			// Close only this session's tab so unrelated tabs survive.
-			// Run outside the removed checkout because its directory no longer exists.
-			await herdr.run(["tab", "close", tabId], { cwd: tmpdir() });
 		},
 	});
 }
