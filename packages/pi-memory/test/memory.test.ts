@@ -196,7 +196,9 @@ test("init failure disables extension silently; oversized and capped snapshots w
 		const before = handlers.get("before_agent_start")!;
 		const memoryTool = tool!;
 		await handlers.get("session_start")!({ type: "session_start" });
-		assert.equal(await before({ systemPrompt: "base" }), undefined);
+		// Failed init stays visible: warning injected every turn, never thrown.
+		const failed = await before({ systemPrompt: "base" }) as { systemPrompt: string };
+		assert.match(failed.systemPrompt, /persistent memory is DISABLED this session/);
 		await assert.rejects(memoryTool.execute("x", { action: "add", content: "x" }), /failed to initialize/);
 
 		// Case 2: valid config but on-disk file far over cap -> snapshot omits overflow with warning.

@@ -380,3 +380,41 @@ test("rejects fake frame lines smuggled via CR, U+2028, U+2029, or leading white
 	assert.equal(header.success, false, "whitespace-prefixed reserved header must be rejected");
 	await cleanup();
 });
+
+test("rejects lines merely starting with separator characters (sanitizer alignment)", async () => {
+	const { store, cleanup } = await makeStore();
+	try {
+		const result = await store.add("memory", "note\n═══ Important detail");
+		assert.equal(result.success, false, "prefix-separator line must be rejected or it would vanish from snapshots");
+	} finally {
+		await cleanup();
+	}
+});
+
+test("vanished memory directory aborts mutations instead of rewriting divergent store", async () => {
+	const { store, dir, cleanup } = await makeStore();
+	try {
+		await store.add("memory", "precious");
+		await rm(dir, { recursive: true, force: true });
+		const result = await store.add("memory", "after disappearance");
+		assert.equal(result.success, false, "missing directory must not be treated as an empty store");
+		assert.match(result.error ?? "", /could not be read/);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("backup parent is recreated when removed after init", async () => {
+	const backupDir = await mkdtemp(join(tmpdir(), "pi-memory-backups-"));
+	const { store, cleanup } = await makeStore((target) => join(backupDir, target === "user" ? "USER.md.bak" : "MEMORY.md.bak"));
+	try {
+		await store.add("memory", "first");
+		await rm(backupDir, { recursive: true, force: true });
+		await store.add("memory", "second");
+		const backup = await readFile(join(backupDir, "MEMORY.md.bak"), "utf-8");
+		assert.match(backup, /first/, "pre-rewrite backup must exist even after backup dir removal");
+	} finally {
+		await rm(backupDir, { recursive: true, force: true });
+		await cleanup();
+	}
+});

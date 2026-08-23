@@ -1,4 +1,4 @@
-import { copyFile, mkdir, open, rename, writeFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, open, rename, stat, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export const ENTRY_DELIMITER: string = "\n§\n";
@@ -193,7 +193,17 @@ export class MemoryStore {
 			// view could get persisted back over the real bytes.
 			return { kind: "ok", raw: new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)) };
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				// ENOENT on the FILE is "absent" only if the configured directory
+				// itself still exists — a vanished synced/mounted directory must not
+				// be mistaken for an empty store and rewritten divergently.
+				try {
+					await stat(this.config.directory);
+					return { kind: "absent" };
+				} catch {
+					return { kind: "unreadable" };
+				}
+			}
 			return { kind: "unreadable" };
 		} finally {
 			await handle?.close().catch(() => {});
@@ -217,6 +227,9 @@ export class MemoryStore {
 		const path = this.pathFor(target);
 		const backup = this.config.backupPath?.(target);
 		if (backup) {
+			// Recreate the backup parent so a cleaned-up backup directory can't be
+			// misread as "source absent" and silently skip the promised backup.
+			await mkdir(dirname(backup), { recursive: true });
 			try {
 				await copyFile(path, backup);
 			} catch (error) {
@@ -237,7 +250,7 @@ export class MemoryStore {
 		const normalized = normalize(content);
 		if (!normalized) return "Content cannot be empty.";
 		if (normalized.includes(ENTRY_DELIMITER)) return `Content must not contain the entry delimiter ("${ENTRY_DELIMITER.trim()}”).`;
-		if (/^[ \t]*═{3,}[ \t]*$/m.test(normalized)) return "Content must not contain lines made solely of '═' characters.";
+		if (/^[ \t]*═{3,}/m.test(normalized)) return "Content must not contain lines starting with '═' characters.";
 		if (/^[ \t]*(MEMORY \(your personal notes|USER PROFILE \(who the user is)/m.test(normalized)) {
 			return "Content must not start a line with the reserved headers 'MEMORY (your personal notes' or 'USER PROFILE (who the user is'.";
 		}

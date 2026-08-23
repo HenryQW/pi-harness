@@ -42,13 +42,17 @@ function sanitizeName(name: string): string {
 function renderBlock(target: Target, entries: string[], config: MemoryConfig, warnings: string[]): string {
 	if (!entries.length) return "";
 	const limit = target === "user" ? config.userCharLimit : config.memoryCharLimit;
+	// Sanitize BEFORE budgeting: expansion from frame-token replacement must
+	// count against the cap, or many short reserved lines could inflate the
+	// injected snapshot past it.
+	const sanitized = entries.map(sanitizeEntry);
 	// Cap the snapshot at the configured char budget even when the on-disk file
 	// exceeds it (external edit / sync). Omitted entries stay on disk; the
 	// warning tells the model to consolidate before anything new fits.
 	const kept: string[] = [];
 	let used = 0;
 	let omitted = 0;
-	for (const entry of entries) {
+	for (const entry of sanitized) {
 		const cost = entry.length + (kept.length ? ENTRY_DELIMITER.length : 0);
 		// No kept.length exemption: a single oversized entry (manual edit or sync)
 		// must be omitted too, or it defeats the advertised context cap.
@@ -59,7 +63,7 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 		kept.push(entry);
 		used += cost;
 	}
-	const content = kept.map(sanitizeEntry).join(ENTRY_DELIMITER);
+	const content = kept.join(ENTRY_DELIMITER);
 	if (content.includes(FRAME_TOKEN_REPLACEMENT)) {
 		warnings.push(`WARNING: frame-token-like lines were filtered out of the ${target} snapshot (see "${FRAME_TOKEN_REPLACEMENT}").`);
 	}
@@ -74,10 +78,26 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 	return `${SEPARATOR}\n${header} [${usage}]\n${SEPARATOR}\n${content}`;
 }
 
+// Bound aggregate preview size: thousands of short entries over cap must not
+// inject nearly the whole file into one tool error.
 function failureMessage(error: string, entries?: string[]): string {
 	if (!entries?.length) return error;
-	const preview = entries.map((entry) => entry.length > 120 ? `${entry.slice(0, 120)}...` : entry);
-	return `${error}\nCurrent entries: ${JSON.stringify(preview)}`;
+	const MAX_PREVIEW_ENTRIES = 20;
+	const MAX_PREVIEW_CHARS = 1500;
+	const shown: string[] = [];
+	let chars = 0;
+	let moreEntries = 0;
+	for (const entry of entries) {
+		const clipped = entry.length > 120 ? `${entry.slice(0, 120)}...` : entry;
+		if (shown.length >= MAX_PREVIEW_ENTRIES || chars + clipped.length > MAX_PREVIEW_CHARS) {
+			moreEntries = entries.length - shown.length;
+			break;
+		}
+		shown.push(clipped);
+		chars += clipped.length;
+	}
+	const suffix = moreEntries > 0 ? ` (and ${moreEntries} more entries)` : "";
+	return `${error}\nCurrent entries: ${JSON.stringify(shown)}${suffix}`;
 }
 
 export default function memoryExtension(pi: ExtensionAPI): void {
@@ -208,10 +228,14 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (event) => {
-		// Uninitialized or failed init: stay silent, never inject, never throw-loop.
-		if (state.initError || !state.config || !state.stores || !state.snapshotBlocks) return;
-		for (const store of Object.values(state.stores)) store.resetOnSuccess();
+		for (const store of Object.values(state.stores ?? {})) store.resetOnSuccess();
 		if (process.argv.includes(BTW_CHILD_PAYLOAD_ARG)) return;
+		// Failed init stays visible every turn (correctness-critical config must
+		// not vanish silently) but as a warning line, not a per-turn throw-loop.
+		if (state.initError) {
+			return { systemPrompt: `${event.systemPrompt}\n\nWARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix config/pi-memory.json and restart.` };
+		}
+		if (!state.config || !state.stores || !state.snapshotBlocks) return;
 		const blocks = [...state.snapshotBlocks, ...state.conflictWarnings].filter(Boolean).join("\n\n");
 		return { systemPrompt: `${event.systemPrompt}\n\n${blocks}` };
 	});
