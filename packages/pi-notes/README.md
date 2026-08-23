@@ -15,11 +15,10 @@ pi install npm:@henryqw/pi-notes
 | `/note <text>` | command | Add a note for current Git worktree (max 4). |
 | `/note-rm` | command | Pick a note from current worktree to remove. |
 | `/note-clear` | command | Clear current worktree's notes. |
-| `/note-prune` | command | Delete notes for repositories and worktrees that no longer exist. |
 
-Notes are isolated per Git worktree, render as a numbered widget above editor, and persist across sessions under `~/.pi/agent/config/pi-notes/`. Startup only reads config. `/note-prune` is explicit stale-data cleanup.
+Notes are isolated per Git worktree, render as a numbered widget above editor, and persist across sessions under `~/.pi/agent/config/pi-notes/`. Empty worktrees show no widget. Stale files for removed repositories and worktrees are deleted silently when a session starts or notes change.
 
-Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for affected worktree until fixed or reset with `/note-clear`; `/note-prune` reports but never deletes malformed files.
+Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for affected worktree until fixed or reset with `/note-clear`.
 
 ## Remove
 

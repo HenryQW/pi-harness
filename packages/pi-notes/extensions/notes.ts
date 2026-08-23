@@ -69,7 +69,11 @@ export function parseNotes(raw: string): NotesRecord {
 }
 
 export function renderNotes(notes: string[]): string[] {
-	return notes.length ? notes.map((note, i) => `${i + 1}. ${note}`) : ["no notes"];
+	return notes.map((note, i) => `${i + 1}. ${note}`);
+}
+
+function setNotesWidget(ctx: ExtensionContext, notes: string[]): void {
+	ctx.ui.setWidget(WIDGET_KEY, notes.length ? renderNotes(notes) : undefined);
 }
 
 async function resolveWorktree(pi: ExtensionAPI, cwd: string): Promise<WorktreeIdentity> {
@@ -151,22 +155,22 @@ async function refresh(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	try {
 		const identity = await resolveWorktree(pi, ctx.cwd);
 		const loaded = await loadNotes(identity);
-		ctx.ui.setWidget(WIDGET_KEY, issueMessage(loaded.issue) ? [issueMessage(loaded.issue)!] : renderNotes(loaded.notes));
+		const message = issueMessage(loaded.issue);
+		if (message) ctx.ui.setWidget(WIDGET_KEY, [message]);
+		else setNotesWidget(ctx, loaded.notes);
 	} catch {
 		ctx.ui.setWidget(WIDGET_KEY, undefined);
 	}
 }
 
-async function pruneStale(pi: ExtensionAPI): Promise<{ removed: number; skipped: number }> {
+async function pruneStale(pi: ExtensionAPI): Promise<void> {
 	let entries;
 	try {
 		entries = await readdir(configDir(), { withFileTypes: true });
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { removed: 0, skipped: 0 };
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
 		throw error;
 	}
-	let removed = 0;
-	let skipped = 0;
 	for (const entry of entries) {
 		if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 		const path = join(configDir(), entry.name);
@@ -174,13 +178,9 @@ async function pruneStale(pi: ExtensionAPI): Promise<{ removed: number; skipped:
 		try {
 			record = parseNotes(await readFile(path, "utf8"));
 		} catch {
-			skipped++;
 			continue;
 		}
-		if (path !== notesPath(record.worktree)) {
-			skipped++;
-			continue;
-		}
+		if (path !== notesPath(record.worktree)) continue;
 		let stale = false;
 		try {
 			const [worktree, repository, gitDir] = await Promise.all([
@@ -194,31 +194,34 @@ async function pruneStale(pi: ExtensionAPI): Promise<{ removed: number; skipped:
 				|| await worktreeGeneration(gitDir) !== record.generation;
 		} catch (error) {
 			if (isMissing(error)) stale = true;
-			else {
-				skipped++;
-				continue;
-			}
+			else continue;
 		}
 		if (!stale) {
 			let current: WorktreeIdentity;
 			try {
 				current = await resolveWorktree(pi, record.worktree);
 			} catch {
-				skipped++;
 				continue;
 			}
 			stale = !isDeepStrictEqual(current, recordIdentity(record));
 		}
-		if (stale) {
-			await rm(path, { force: true });
-			removed++;
-		}
+		if (stale) await rm(path, { force: true });
 	}
-	return { removed, skipped };
+}
+
+async function pruneStaleNotes(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	try {
+		await pruneStale(pi);
+	} catch (error) {
+		ctx.ui.notify(`Failed to prune stale notes: ${error instanceof Error ? error.message : String(error)}`, "error");
+	}
 }
 
 export default function notesExtension(pi: ExtensionAPI): void {
-	pi.on("session_start", (_event, ctx) => refresh(pi, ctx));
+	pi.on("session_start", async (_event, ctx) => {
+		await pruneStaleNotes(pi, ctx);
+		await refresh(pi, ctx);
+	});
 
 	pi.registerCommand("note", {
 		description: `Add a note to this Git worktree (max ${MAX_NOTES})`,
@@ -240,7 +243,8 @@ export default function notesExtension(pi: ExtensionAPI): void {
 			}
 			current.notes.push(text);
 			await persist(current.identity, current.notes);
-			ctx.ui.setWidget(WIDGET_KEY, renderNotes(current.notes));
+			setNotesWidget(ctx, current.notes);
+			await pruneStaleNotes(pi, ctx);
 		},
 	});
 
@@ -268,7 +272,8 @@ export default function notesExtension(pi: ExtensionAPI): void {
 			}
 			current.notes.splice(index, 1);
 			await persist(current.identity, current.notes);
-			ctx.ui.setWidget(WIDGET_KEY, renderNotes(current.notes));
+			setNotesWidget(ctx, current.notes);
+			await pruneStaleNotes(pi, ctx);
 		},
 	});
 
@@ -282,23 +287,11 @@ export default function notesExtension(pi: ExtensionAPI): void {
 			try {
 				const identity = await resolveWorktree(pi, ctx.cwd);
 				await rm(notesPath(identity.worktree), { force: true });
-				ctx.ui.setWidget(WIDGET_KEY, renderNotes([]));
+				setNotesWidget(ctx, []);
+				await pruneStaleNotes(pi, ctx);
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
-		},
-	});
-
-	pi.registerCommand("note-prune", {
-		description: "Delete notes for removed repositories and worktrees",
-		handler: async (args, ctx) => {
-			if (args.trim()) {
-				ctx.ui.notify("Usage: /note-prune", "warning");
-				return;
-			}
-			const { removed, skipped } = await pruneStale(pi);
-			ctx.ui.notify(`Removed ${removed} stale worktree note file${removed === 1 ? "" : "s"}; preserved ${skipped} unchecked or invalid file${skipped === 1 ? "" : "s"}.`, "info");
-			await refresh(pi, ctx);
 		},
 	});
 }
