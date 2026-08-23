@@ -76,7 +76,7 @@ export type ContextStorePort = Pick<
 	| "readMergeRequest"
 	| "removeIfNoPendingMerge"
 >;
-export type ConfigStorePort = Pick<ConfigStore, "load" | "save" | "update" | "reset">;
+export type ConfigStorePort = Pick<ConfigStore, "load" | "update" | "reset">;
 
 const SIDE_PANE_INSTRUCTIONS = `You are running in a focused /btw side pane spawned from another Pi session.
 
@@ -682,15 +682,7 @@ export async function registerBtwExtension(
 					return;
 				}
 				const splitOutcome = classifyLaunchResult(splitResult);
-				if (splitOutcome === "failed") {
-					await store.remove(payloadPath);
-					ctx.ui.notify(
-						`/btw failed: ${safeErrorText(splitResult.stdout, splitResult.stderr)}`,
-						"error",
-					);
-					return;
-				}
-				if (splitOutcome === "ambiguous") {
+				if (splitOutcome !== "success") {
 					await store.remove(payloadPath);
 					ctx.ui.notify(
 						`/btw failed: ${safeErrorText(splitResult.stdout, splitResult.stderr)}`,

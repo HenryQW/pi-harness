@@ -133,14 +133,9 @@ class FakeConfigStore implements ConfigStorePort {
 		return { ...this.config };
 	}
 
-	async save(config: BtwConfig): Promise<void> {
-		this.config = { ...config };
-		this.saved.push({ ...config });
-	}
-
 	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
-		const next = mutator({ ...this.config });
-		await this.save(next);
+		this.config = mutator({ ...this.config });
+		this.saved.push({ ...this.config });
 		return { ...this.config };
 	}
 

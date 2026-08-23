@@ -40,20 +40,20 @@ test("concurrent updates from two stores do not lose writes", async () => {
 	});
 });
 
-test("save persists config atomically and reset restores defaults", async () => {
+test("update persists config atomically and reset restores defaults", async () => {
 	await withStore(async (store) => {
-		await store.save({ autoSubmit: true, tools: "all", split: "down" });
+		await store.update(() => ({ autoSubmit: true, tools: "all", split: "down" }));
 		assert.deepEqual(await store.load(), { autoSubmit: true, tools: "all", split: "down" });
 		assert.deepEqual(await store.reset(), { autoSubmit: false, tools: "inherit", split: "right" });
 		assert.deepEqual(await store.load(), { autoSubmit: false, tools: "inherit", split: "right" });
 	});
 });
 
-test("save rejects invalid config without writing", async () => {
+test("update rejects invalid config without writing", async () => {
 	await withStore(async (store) => {
 		await assert.rejects(
 			// @ts-expect-error invalid value on purpose
-			store.save({ autoSubmit: "yes", tools: "all", split: "down" }),
+			store.update(() => ({ autoSubmit: "yes", tools: "all", split: "down" })),
 			/autoSubmit must be/,
 		);
 	});
@@ -65,7 +65,7 @@ test("stale lock file is reclaimed after the stale window", async () => {
 		await mkdir(`${store.path}.lock`, { recursive: true });
 		const old = new Date(Date.now() - 60_000);
 		await utimes(`${store.path}.lock`, old, old);
-		await store.save({ autoSubmit: true, tools: "none", split: "down" });
+		await store.update(() => ({ autoSubmit: true, tools: "none", split: "down" }));
 		assert.deepEqual(await store.load(), { autoSubmit: true, tools: "none", split: "down" });
 	});
 });

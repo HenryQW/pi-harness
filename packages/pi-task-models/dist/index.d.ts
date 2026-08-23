@@ -65,4 +65,4 @@ export declare function activeTaskPackages(pi: Pick<ExtensionAPI, "getCommands" 
 export declare function createTaskModelsExtension(pi: ExtensionAPI, options?: {
     agentDir?: string;
 }): void;
-export default function taskModelsExtension(pi: ExtensionAPI): void;
+export default createTaskModelsExtension;
