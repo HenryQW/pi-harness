@@ -264,10 +264,16 @@ export function resolveTaskModelRoute(
 	ctx: ExtensionContext,
 	route: TaskModelRoute,
 	agentDir = getAgentDir(),
+	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute | undefined {
 	const model = resolveAvailableModel(availableTaskModels(ctx), route.model, ctx.model?.provider);
 	if (!model) return undefined;
 	const levels = taskThinkingLevels(ctx, model);
+	// An explicit requested level wins over remembered and profile levels; a model
+	// that cannot honor it is skipped so later fallback routes get considered.
+	if (thinking !== undefined) {
+		return levels.includes(thinking) ? { model, thinkingLevel: thinking } : undefined;
+	}
 	// Remembered per-model thinking (pi-model-thinking) wins over the profile level when supported.
 	const remembered = rememberedThinkingLevel(model, agentDir);
 	const thinkingLevel = remembered && levels.includes(remembered) ? remembered : route.thinkingLevel;
@@ -279,6 +285,7 @@ export function resolveConfiguredTaskRoute(
 	ctx: ExtensionContext,
 	task: string,
 	agentDir = getAgentDir(),
+	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute {
 	let config: TaskModelsConfig;
 	try {
@@ -291,10 +298,10 @@ export function resolveConfiguredTaskRoute(
 	const profile = config.profiles[profileName];
 	if (!profile) throw new Error(`Task ${task} profile ${profileName} is not configured. Run /task-models.`);
 	for (const route of orderedProfileRoutes(profile)) {
-		const resolved = resolveTaskModelRoute(ctx, route, agentDir);
+		const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
 		if (resolved) return resolved;
 	}
-	throw new Error(`Task ${task} profile ${profileName} has no available route. Run /task-models.`);
+	throw new Error(`Task ${task} profile ${profileName} has no available route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`);
 }
 
 export function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[] {

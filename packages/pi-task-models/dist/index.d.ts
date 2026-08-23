@@ -52,8 +52,8 @@ export declare function rememberedThinkingLevel(model: {
     provider: string;
     id: string;
 } | string, agentDir?: string): ThinkingLevel | undefined;
-export declare function resolveTaskModelRoute(ctx: ExtensionContext, route: TaskModelRoute, agentDir?: string): ResolvedTaskRoute | undefined;
-export declare function resolveConfiguredTaskRoute(ctx: ExtensionContext, task: string, agentDir?: string): ResolvedTaskRoute;
+export declare function resolveTaskModelRoute(ctx: ExtensionContext, route: TaskModelRoute, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute | undefined;
+export declare function resolveConfiguredTaskRoute(ctx: ExtensionContext, task: string, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute;
 export declare function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[];
 export declare function activeTaskPackages(pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">, tasks?: Readonly<Record<string, ProfileName>>): ActiveTaskPackage[];
 export declare function createTaskModelsExtension(pi: ExtensionAPI, options?: {

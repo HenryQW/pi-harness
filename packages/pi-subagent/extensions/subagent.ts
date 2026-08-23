@@ -443,30 +443,29 @@ const Parameters = Type.Object({
 		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning; fav for the user's favorite model when they ask for it. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
 	background: Type.Optional(Type.Boolean({
-		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles. Prefer blocking delegation whenever the parent needs the result to continue.",
+		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles; the result cannot be waited on. Set only when the user explicitly asks for non-blocking delegation. Prefer blocking delegation whenever the parent needs the result to continue.",
 	})),
 	thinking: Type.Optional(StringEnum(THINKING_LEVELS, {
 		description: "Override the resolved route's thinking level (e.g. when the user asks for deeper or lighter reasoning). Must be supported by the resolved model.",
 	})),
 });
 
-/** Apply Main's explicit thinking override on top of the resolved route; reject unsupported levels instead of silently degrading. */
-function withThinkingOverride(ctx: ExtensionContext, route: ResolvedTaskRoute, thinking: ThinkingLevel | undefined): ResolvedTaskRoute {
-	if (!thinking || thinking === route.thinkingLevel) return route;
-	const levels = taskThinkingLevels(ctx, route.model);
-	if (!levels.includes(thinking)) {
-		throw new Error(`delegate_task thinking ${thinking} is not supported by ${modelReference(route.model)}. Supported levels: ${levels.join(", ") || "none"}.`);
-	}
-	return { ...route, thinkingLevel: thinking };
-}
-
-function resolveDesignatedRoute(ctx: ExtensionContext, reference: string): ResolvedTaskRoute {
+function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinking?: ThinkingLevel): ResolvedTaskRoute {
 	const models = availableTaskModels(ctx);
 	const model = resolveAvailableModel(models, reference, ctx.model?.provider);
 	if (!model) {
 		throw new Error(`Unknown delegate_task model: ${reference}. Available models: ${models.map((candidate) => modelReference(candidate)).join(", ") || "none"}.`);
 	}
 	const levels = taskThinkingLevels(ctx, model);
+	if (thinking !== undefined) {
+		if (!levels.includes(thinking)) {
+			throw new Error(`delegate_task thinking ${thinking} is not supported by ${modelReference(model)}. Supported levels: ${levels.join(", ") || "none"}.`);
+		}
+		return { model, thinkingLevel: thinking };
+	}
+	if (!levels.length) {
+		throw new Error(`${modelReference(model)} has no usable thinking level; pass thinking explicitly or pick another model.`);
+	}
 	return { model, thinkingLevel: levels.includes("medium") ? "medium" : levels.at(-1)! };
 }
 
@@ -701,14 +700,16 @@ export default function subagentExtension(
 			// the cap must pick up model or Codex account changes that happened
 			// while it waited.
 			const launchCtx = () => latestCtx ?? ctx;
-			const resolveLaunch = () => {
-				const route = params.model !== undefined
-					? resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task"))
+			// The explicit thinking override participates in route resolution itself:
+			// routes that cannot honor it are skipped so fallback routes get considered.
+			const resolveLaunch = () => createRoleLaunch(pi, launchCtx(), {
+				role,
+				route: params.model !== undefined
+					? resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task"), params.thinking)
 					: params.modelClass === undefined
-						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK)
-						: resolveTaskRoute(launchCtx(), params.modelClass);
-				return createRoleLaunch(pi, launchCtx(), { role, route: withThinkingOverride(launchCtx(), route, params.thinking) });
-			};
+						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK, undefined, params.thinking)
+						: resolveTaskRoute(launchCtx(), params.modelClass, undefined, params.thinking),
+			});
 			const notifyMissingSkills = (launch: ReturnType<typeof resolveLaunch>) => {
 				if (launch.missingSkills.length) {
 					ctx.ui.notify(

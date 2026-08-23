@@ -60,6 +60,7 @@ function harness(options: {
 	trusted?: boolean;
 	availableModels?: any[];
 	currentModel?: any;
+	scopedModels?: any[];
 	timeoutPolicy?: { softMs: number; graceMs: number; activeWindowMs: number };
 } = {}) {
 	let tool: Tool | undefined;
@@ -93,6 +94,7 @@ function harness(options: {
 		hasUI: options.ui ?? false,
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: { getAvailable: () => options.availableModels ?? [model] },
+		scopedModels: options.scopedModels ?? [],
 		ui: {
 			notify: (message: string, type: string) => notifications.push({ message, type }),
 			setWidget: (_key: string, content: any) => {
@@ -400,21 +402,72 @@ Return concise findings.
 	});
 });
 
-test("explicit thinking overrides route level and unsupported levels reject", async () => {
+test("thinking override participates in route resolution across all paths", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			profiles: { balanced: {
+				primary: { model: "provider/a-model", thinkingLevel: "off" },
+				fallback: { model: "provider/b-model", thinkingLevel: "high" },
+			} },
+			tasks: { "pi-subagent/delegateTask": "balanced" },
+		}));
+		const availableModels = [
+			{ provider: "provider", id: "a-model", input: ["text"], reasoning: false },
+			{ provider: "provider", id: "b-model", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } },
+		];
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
+		process.argv[1] = runner;
+		const app = harness({ availableModels });
+
+		// Omitted thinking keeps the primary route.
+		const primary = await app.tool.execute("call-1", { role: "worker", task: "inspect code" }, undefined, undefined, app.ctx);
+		const primaryArgs = JSON.parse(primary.content[0].text) as string[];
+		assert.equal(primaryArgs[primaryArgs.indexOf("--model") + 1], "provider/a-model");
+		assert.equal(primaryArgs[primaryArgs.indexOf("--thinking") + 1], "off");
+
+		// Explicit override skips the incompatible primary and uses the fallback.
+		const override = await app.tool.execute("call-2", { role: "worker", task: "inspect code", thinking: "high" }, undefined, undefined, app.ctx);
+		const overrideArgs = JSON.parse(override.content[0].text) as string[];
+		assert.equal(overrideArgs[overrideArgs.indexOf("--model") + 1], "provider/b-model");
+		assert.equal(overrideArgs[overrideArgs.indexOf("--thinking") + 1], "high");
+
+		// No route supports the requested level.
+		await assert.rejects(
+			app.tool.execute("call-3", { role: "worker", task: "inspect code", thinking: "max" }, undefined, undefined, app.ctx),
+			/supporting thinking max/,
+		);
+
+		// Background delegation propagates the override to the child args.
+		const background = await app.tool.execute(
+			"call-4", { role: "worker", task: "work", thinking: "high", background: true }, undefined, undefined, app.ctx,
+		);
+		assert.match(background.content[0]!.text, /started \(worker/);
+		await waitFor(() => app.sentMessages.length === 1);
+		const backgroundArgs = JSON.parse(app.sentMessages[0]!.message.content.split("\n").at(-1)) as string[];
+		assert.equal(backgroundArgs[backgroundArgs.indexOf("--thinking") + 1], "high");
+	});
+});
+
+test("designated model with unusable scoped thinking pin rejects before launch", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
 		process.argv[1] = runner;
-		const app = harness();
+		const pinned = { ...model, provider: "p", id: "pinned", reasoning: true, thinkingLevelMap: { high: "high" } };
+		const app = harness({ availableModels: [pinned], scopedModels: [{ model: pinned, thinkingLevel: "xhigh" }] });
 
-		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "balanced", thinking: "high" }, undefined, undefined, app.ctx);
-		const args = JSON.parse(result.content[0].text) as string[];
-		assert.equal(args[args.indexOf("--thinking") + 1], "high");
+		// The scoped pin allows no supported level; launching without --thinking must not bypass it.
+		await assert.rejects(
+			app.tool.execute("call-1", { role: "worker", task: "inspect code", model: "p/pinned" }, undefined, undefined, app.ctx),
+			/no usable thinking level/,
+		);
 
 		await assert.rejects(
-			app.tool.execute("call-2", { role: "worker", task: "inspect code", modelClass: "balanced", thinking: "xhigh" }, undefined, undefined, app.ctx),
-			/Supported levels/,
+			app.tool.execute("call-2", { role: "worker", task: "inspect code", model: "p/pinned", thinking: "low" }, undefined, undefined, app.ctx),
+			/not supported by p\/pinned/,
 		);
 	});
 });

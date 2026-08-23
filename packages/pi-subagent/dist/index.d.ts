@@ -35,7 +35,7 @@ export interface ResolvedRoleSkills {
 }
 export declare const isProfileName: (value: unknown) => value is ProfileName;
 export declare function loadRoles(agentDir?: string): Role[];
-export declare function resolveTaskRoute(ctx: ExtensionContext, profileName: ProfileName, agentDir?: string): ResolvedTaskRoute;
+export declare function resolveTaskRoute(ctx: ExtensionContext, profileName: ProfileName, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute;
 export declare function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: Role): ResolvedRoleSkills;
 export declare function createRoleLaunch(pi: Pick<ExtensionAPI, "getCommands">, ctx: Pick<ExtensionContext, "isProjectTrusted">, input: CreateRoleLaunchInput): ResolvedRoleLaunch;
 export declare function resolveRoleLaunch(pi: Pick<ExtensionAPI, "getCommands">, ctx: ExtensionContext, input: ResolveRoleLaunchInput): ResolvedRoleLaunch;
