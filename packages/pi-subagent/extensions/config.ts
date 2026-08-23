@@ -39,14 +39,14 @@ const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, number, string]> = [
 ];
 
 /**
- * Required single-extension config path form (AGENTS.md); agentDir is
- * injectable so tests can point at a temp directory.
+ * All pi-subagent config lives in its existing extension-named directory;
+ * agentDir is injectable so tests can point at a temp directory.
  */
 export const configPath = (agentDir = getAgentDir()): string =>
-	join(agentDir, "config", "pi-subagent.json");
+	join(agentDir, "config", "pi-subagent", "pi-subagent.json");
 
 /**
- * Read the optional user config at `<agentDir>/config/pi-subagent.json`.
+ * Read the optional user config at `<agentDir>/config/pi-subagent/pi-subagent.json`.
  * Treated as untrusted user data: malformed files are preserved untouched and
  * reported instead of crashing the session; callers fall back to defaults.
  */
