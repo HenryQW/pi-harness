@@ -400,6 +400,25 @@ Return concise findings.
 	});
 });
 
+test("explicit thinking overrides route level and unsupported levels reject", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
+		process.argv[1] = runner;
+		const app = harness();
+
+		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "balanced", thinking: "high" }, undefined, undefined, app.ctx);
+		const args = JSON.parse(result.content[0].text) as string[];
+		assert.equal(args[args.indexOf("--thinking") + 1], "high");
+
+		await assert.rejects(
+			app.tool.execute("call-2", { role: "worker", task: "inspect code", modelClass: "balanced", thinking: "xhigh" }, undefined, undefined, app.ctx),
+			/Supported levels/,
+		);
+	});
+});
+
 test("explicit unconfigured model class rejects with task-models guidance before child start", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });

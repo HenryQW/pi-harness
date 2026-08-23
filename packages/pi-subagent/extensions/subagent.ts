@@ -7,15 +7,18 @@ import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earend
 import { readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import {
 	availableTaskModels,
+	THINKING_LEVELS,
+	type ThinkingLevel,
 	modelReference,
 	PROFILE_NAMES,
 	type ProfileName,
 	resolveAvailableModel,
+	resolveConfiguredTaskRoute,
 	type ResolvedTaskRoute,
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
 import { Type } from "typebox";
-import { createRoleLaunch, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute } from "@henryqw/pi-subagent";
+import { createRoleLaunch, isProfileName, loadRoles, resolveTaskRoute } from "@henryqw/pi-subagent";
 
 const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
@@ -442,7 +445,20 @@ const Parameters = Type.Object({
 	background: Type.Optional(Type.Boolean({
 		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles. Prefer blocking delegation whenever the parent needs the result to continue.",
 	})),
+	thinking: Type.Optional(StringEnum(THINKING_LEVELS, {
+		description: "Override the resolved route's thinking level (e.g. when the user asks for deeper or lighter reasoning). Must be supported by the resolved model.",
+	})),
 });
+
+/** Apply Main's explicit thinking override on top of the resolved route; reject unsupported levels instead of silently degrading. */
+function withThinkingOverride(ctx: ExtensionContext, route: ResolvedTaskRoute, thinking: ThinkingLevel | undefined): ResolvedTaskRoute {
+	if (!thinking || thinking === route.thinkingLevel) return route;
+	const levels = taskThinkingLevels(ctx, route.model);
+	if (!levels.includes(thinking)) {
+		throw new Error(`delegate_task thinking ${thinking} is not supported by ${modelReference(route.model)}. Supported levels: ${levels.join(", ") || "none"}.`);
+	}
+	return { ...route, thinkingLevel: thinking };
+}
 
 function resolveDesignatedRoute(ctx: ExtensionContext, reference: string): ResolvedTaskRoute {
 	const models = availableTaskModels(ctx);
@@ -660,7 +676,7 @@ export default function subagentExtension(
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, frontier for ambiguous and high-risk work, or fav when the user asks for their favorite model; omit modelClass to use shared task-model settings. When the user designates a specific model, pass it as provider/modelId in model. Set background only when the user explicitly wants the task to run without blocking; background tasks report results later and cannot be waited on.`,
+		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate one bounded, independently executable task to an isolated role",
 		promptGuidelines: [
 			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
@@ -685,11 +701,14 @@ export default function subagentExtension(
 			// the cap must pick up model or Codex account changes that happened
 			// while it waited.
 			const launchCtx = () => latestCtx ?? ctx;
-			const resolveLaunch = () => params.model !== undefined
-				? createRoleLaunch(pi, launchCtx(), { role, route: resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task")) })
-				: params.modelClass === undefined
-					? resolveRoleLaunch(pi, launchCtx(), { role, taskId: SUBAGENT_TASK })
-					: createRoleLaunch(pi, launchCtx(), { role, route: resolveTaskRoute(launchCtx(), params.modelClass) });
+			const resolveLaunch = () => {
+				const route = params.model !== undefined
+					? resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task"))
+					: params.modelClass === undefined
+						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK)
+						: resolveTaskRoute(launchCtx(), params.modelClass);
+				return createRoleLaunch(pi, launchCtx(), { role, route: withThinkingOverride(launchCtx(), route, params.thinking) });
+			};
 			const notifyMissingSkills = (launch: ReturnType<typeof resolveLaunch>) => {
 				if (launch.missingSkills.length) {
 					ctx.ui.notify(
