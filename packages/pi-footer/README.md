@@ -23,13 +23,13 @@ pi install npm:@henryqw/pi-footer
 
 ```text
 pi-packages · clear-field-f8d2 · PR #123 · approved
-↑ 12.4k · ↓ 2.1k · ↺ 84.3% · $ 0.127 · ◔ 36.8%    gpt-5.6-luna • high
+↑ 12.4k · ↓ 2.1k · ↺ 84.3% · ⚡ 87.4 t/s · $ 0.127 · ◔ 36.8%    gpt-5.6-luna • high
 Codex #1 · 50% · 7d 1d 1h 22m
 ```
 
 First line shows repository, branch, and pull request status (`pi-pr`) after clickable checkout link. Linked-worktree branches drop generated `worktree/` prefix.
 
-Second line shows cumulative input tokens, output tokens, latest cache-hit rate, estimated cost, and context usage. Unavailable values render as `—` without a misleading percent sign. Active model and thinking level are right-aligned.
+Second line shows cumulative input tokens, output tokens, latest cache-hit rate, tokens per second of the most recent assistant response, estimated cost, and context usage. Unavailable values render as `—` without a misleading percent sign. Active model and thinking level are right-aligned.
 
 `off` uses the same dim grey as the model name. Active levels use an ANSI-256 gradient: green `minimal`, yellow-green `low`, lime `medium`, yellow `high`, orange `xhigh`, and red `max`. `ultra` renders as a rainbow when the runtime supplies it. Pi 0.84.2 does not yet accept `ultra`, so that footer path remains unreachable until Pi adds it.
 

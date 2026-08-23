@@ -7,15 +7,18 @@ import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earend
 import { readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import {
 	availableTaskModels,
+	THINKING_LEVELS,
+	type ThinkingLevel,
 	modelReference,
 	PROFILE_NAMES,
 	type ProfileName,
 	resolveAvailableModel,
+	resolveConfiguredTaskRoute,
 	type ResolvedTaskRoute,
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
 import { Type } from "typebox";
-import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute, worktreeContextNote, type WorktreeInfo } from "@henryqw/pi-subagent";
+import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveTaskRoute, worktreeContextNote, type WorktreeInfo } from "@henryqw/pi-subagent";
 
 const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
@@ -455,17 +458,29 @@ const Parameters = Type.Object({
 		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning; fav for the user's favorite model when they ask for it. Defaults to the shared pi-subagent/delegateTask assignment.",
 	})),
 	background: Type.Optional(Type.Boolean({
-		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles. Prefer blocking delegation whenever the parent needs the result to continue.",
+		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles; the result cannot be waited on. Set only when the user explicitly asks for non-blocking delegation. Prefer blocking delegation whenever the parent needs the result to continue.",
+	})),
+	thinking: Type.Optional(StringEnum(THINKING_LEVELS, {
+		description: "Override the resolved route's thinking level (e.g. when the user asks for deeper or lighter reasoning). Must be supported by the resolved model.",
 	})),
 });
 
-function resolveDesignatedRoute(ctx: ExtensionContext, reference: string): ResolvedTaskRoute {
+function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinking?: ThinkingLevel): ResolvedTaskRoute {
 	const models = availableTaskModels(ctx);
 	const model = resolveAvailableModel(models, reference, ctx.model?.provider);
 	if (!model) {
 		throw new Error(`Unknown delegate_task model: ${reference}. Available models: ${models.map((candidate) => modelReference(candidate)).join(", ") || "none"}.`);
 	}
 	const levels = taskThinkingLevels(ctx, model);
+		if (thinking !== undefined) {
+		if (!levels.includes(thinking)) {
+			throw new Error(`delegate_task thinking ${thinking} is not usable for ${modelReference(model)} in this session. Usable levels here: ${levels.join(", ") || "none"}.`);
+		}
+		return { model, thinkingLevel: thinking };
+	}
+	if (!levels.length) {
+		throw new Error(`${modelReference(model)} has no usable thinking level in this session; pick another model or adjust the scoped thinking pin.`);
+	}
 	return { model, thinkingLevel: levels.includes("medium") ? "medium" : levels.at(-1)! };
 }
 
@@ -676,7 +691,7 @@ export default function subagentExtension(
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}. Choose fast for narrow work, balanced for normal work, frontier for ambiguous and high-risk work, or fav when the user asks for their favorite model; omit modelClass to use shared task-model settings. When the user designates a specific model, pass it as provider/modelId in model. Set background only when the user explicitly wants the task to run without blocking; background tasks report results later and cannot be waited on.`,
+		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate one bounded, independently executable task to an isolated role",
 		promptGuidelines: [
 			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
@@ -701,11 +716,16 @@ export default function subagentExtension(
 			// the cap must pick up model or Codex account changes that happened
 			// while it waited.
 			const launchCtx = () => latestCtx ?? ctx;
-			const resolveLaunch = () => params.model !== undefined
-				? createRoleLaunch(pi, launchCtx(), { role, route: resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task")) })
-				: params.modelClass === undefined
-					? resolveRoleLaunch(pi, launchCtx(), { role, taskId: SUBAGENT_TASK })
-					: createRoleLaunch(pi, launchCtx(), { role, route: resolveTaskRoute(launchCtx(), params.modelClass) });
+			// The explicit thinking override participates in route resolution itself:
+			// routes that cannot honor it are skipped so fallback routes get considered.
+			const resolveLaunch = () => createRoleLaunch(pi, launchCtx(), {
+				role,
+				route: params.model !== undefined
+					? resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task"), params.thinking)
+					: params.modelClass === undefined
+						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK, undefined, params.thinking)
+						: resolveTaskRoute(launchCtx(), params.modelClass, undefined, params.thinking),
+			});
 			const notifyMissingSkills = (launch: ReturnType<typeof resolveLaunch>) => {
 				if (launch.missingSkills.length) {
 					ctx.ui.notify(

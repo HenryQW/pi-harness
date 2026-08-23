@@ -92,7 +92,7 @@ export function loadRoles(agentDir = getAgentDir()) {
     }
     return roles;
 }
-export function resolveTaskRoute(ctx, profileName, agentDir = getAgentDir()) {
+export function resolveTaskRoute(ctx, profileName, agentDir = getAgentDir(), thinking) {
     let config;
     try {
         config = readTaskModelsConfig(agentDir);
@@ -100,17 +100,17 @@ export function resolveTaskRoute(ctx, profileName, agentDir = getAgentDir()) {
     catch {
         throw new Error("Couldn't read task model config. Run /task-models.");
     }
-    return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName], agentDir);
+    return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName], agentDir, thinking);
 }
-function resolveConfiguredRoute(ctx, profileName, profile, agentDir = getAgentDir()) {
+function resolveConfiguredRoute(ctx, profileName, profile, agentDir = getAgentDir(), thinking) {
     if (!profile)
         throw new Error(`No ${profileName} task model profile is configured. Run /task-models.`);
     for (const route of orderedProfileRoutes(profile)) {
-        const resolved = resolveTaskModelRoute(ctx, route, agentDir);
+        const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
         if (resolved)
             return resolved;
     }
-    throw new Error(`No usable ${profileName} task model route. Run /task-models.`);
+    throw new Error(`No usable ${profileName} task model route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`);
 }
 export function resolveRoleSkills(pi, role) {
     const skills = new Map(pi.getCommands()

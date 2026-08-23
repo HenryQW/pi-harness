@@ -53,6 +53,19 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		const commonName = commonDir && basename(commonDir) === ".git" ? basename(dirname(commonDir)) : undefined;
 		const repo = git.code === 0 ? commonName && commonName !== rootName ? commonName : rootName : basename(ctx.cwd);
 
+		let tps: number | undefined;
+		let assistantStartedAt: number | undefined;
+		pi.on("message_start", async (event) => {
+			if (event.message.role === "assistant") assistantStartedAt = performance.now();
+		});
+		pi.on("message_end", async (event) => {
+			if (event.message.role !== "assistant") return;
+			const output = event.message.usage?.output ?? 0;
+			const seconds = assistantStartedAt === undefined ? 0 : (performance.now() - assistantStartedAt) / 1000;
+			assistantStartedAt = undefined;
+			tps = seconds > 0 ? output / seconds : undefined;
+		});
+
 		// ponytail: keyed on length + last entry (sessions are append-only); revisit if entries ever mutate in place.
 		let usageKey: string | undefined;
 		let input = 0;
@@ -115,7 +128,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						`↑ ${formatTokens(input)}`,
 						`↓ ${formatTokens(output)}`,
 						`↺ ${cacheRate === undefined ? "—" : `${cacheRate.toFixed(1)}%`}`,
-						`$ ${cost.toFixed(3)}`,
+						`⚡ ${tps === undefined ? "—" : `${tps.toFixed(1)} t/s`}`,
+					`$ ${cost.toFixed(3)}`,
 						`◔ ${context == null ? "—" : `${context.toFixed(1)}%`}`,
 					].join(" · "));
 					const thinkingText = thinking === "ultra"
