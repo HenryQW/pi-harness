@@ -14,7 +14,7 @@ export interface WorktreePayload {
     inspection_failed?: boolean;
     note?: string;
 }
-export type GitRunner = (args: string[], cwd: string) => Promise<{
+export type GitRunner = (args: string[], cwd: string, signal?: AbortSignal) => Promise<{
     code: number;
     stdout: string;
     stderr: string;
@@ -26,7 +26,7 @@ export type GitRunner = (args: string[], cwd: string) => Promise<{
  * repository (unwritable path, stale branch, git lock) throw so an isolated
  * role never silently loses its isolation.
  */
-export declare function createChildWorktree(cwd: string, childId: string, run?: GitRunner): Promise<WorktreeInfo | undefined>;
+export declare function createChildWorktree(cwd: string, childId: string, run?: GitRunner, signal?: AbortSignal): Promise<WorktreeInfo | undefined>;
 /**
  * Inspects and possibly prunes a child worktree after it finishes. Commit count
  * reads the dedicated branch and refuses to prune when checkout HEAD no longer

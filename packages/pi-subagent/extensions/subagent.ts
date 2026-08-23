@@ -762,7 +762,7 @@ export default function subagentExtension(
 						acquired = true;
 						// Same contract as foreground: isolation only after the permit,
 						// setup failure fails closed via the catch below.
-						if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId);
+						if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId, undefined, controller.signal);
 						// Resolve resources only once launched: a task queued past the
 						// cap must not start with model routes or skills resolved before
 						// registries or accounts changed while it waited.
@@ -833,7 +833,7 @@ export default function subagentExtension(
 			try {
 				// Isolation is created only after preflight and permit acquisition so a
 				// rejected delegation cannot leak worktrees; setup failure fails closed.
-				if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId);
+				if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId, undefined, signal);
 				startWidgetItem(toolCallId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
 				const child = await runPi(
 					["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`],

@@ -10,8 +10,8 @@ class WorktreeSetupError extends Error {
     name = "WorktreeSetupError";
 }
 /** Runs git, capturing output; never throws on non-zero exit or spawn failure. */
-const runGit = (args, cwd) => new Promise((resolve) => {
-    execFile("git", args, { cwd, timeout: GIT_TIMEOUT_MS }, (error, stdout, stderr) => {
+const runGit = (args, cwd, signal) => new Promise((resolve) => {
+    execFile("git", args, { cwd, timeout: GIT_TIMEOUT_MS, signal }, (error, stdout, stderr) => {
         resolve({
             code: error ? (typeof error.code === "number" ? error.code : 1) : 0,
             stdout: String(stdout),
@@ -43,8 +43,8 @@ async function ensureLocalExclude(gitDir) {
  * repository (unwritable path, stale branch, git lock) throw so an isolated
  * role never silently loses its isolation.
  */
-export async function createChildWorktree(cwd, childId, run = runGit) {
-    const root = await run(["rev-parse", "--show-toplevel"], cwd);
+export async function createChildWorktree(cwd, childId, run = runGit, signal) {
+    const root = await run(["rev-parse", "--show-toplevel"], cwd, signal);
     if (root.code !== 0) {
         if (/not a git repository/i.test(root.stderr))
             return undefined; // documented degradation
@@ -53,30 +53,30 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
     const repoRoot = stripGitLineEnd(root.stdout);
     if (!repoRoot)
         return undefined;
-    const prefix = await run(["rev-parse", "--show-prefix"], cwd);
+    const prefix = await run(["rev-parse", "--show-prefix"], cwd, signal);
     if (prefix.code !== 0)
         throw new Error(`git rev-parse --show-prefix failed (${prefix.stderr.trim().slice(0, 200)})`);
     const relativeCwd = stripGitLineEnd(prefix.stdout);
-    const base = await run(["rev-parse", "HEAD"], repoRoot);
+    const base = await run(["rev-parse", "HEAD"], repoRoot, signal);
     if (base.code !== 0) {
         if (/ambiguous argument|unknown revision|bad revision/i.test(base.stderr))
             return undefined; // unborn HEAD
         throw new Error(`git rev-parse HEAD failed (${base.stderr.trim().slice(0, 200)})`);
     }
     const baseCommit = base.stdout.trim();
-    const superproject = await run(["rev-parse", "--show-superproject-working-tree"], repoRoot);
+    const superproject = await run(["rev-parse", "--show-superproject-working-tree"], repoRoot, signal);
     if (superproject.code !== 0) {
         throw new Error(`git rev-parse --show-superproject-working-tree failed (${superproject.stderr.trim().slice(0, 200)})`);
     }
     if (stripGitLineEnd(superproject.stdout)) {
         throw new Error("Worktree isolation is unavailable inside Git submodules because parent cleanup can remove their Git metadata.");
     }
-    const common = await run(["rev-parse", "--git-common-dir"], repoRoot);
+    const common = await run(["rev-parse", "--git-common-dir"], repoRoot, signal);
     const rawCommonGitDir = stripGitLineEnd(common.stdout);
     if (common.code !== 0 || !rawCommonGitDir) {
         throw new Error(`git rev-parse --git-common-dir failed (${common.stderr.trim().slice(0, 200)})`);
     }
-    const current = await run(["rev-parse", "--git-dir"], repoRoot);
+    const current = await run(["rev-parse", "--git-dir"], repoRoot, signal);
     const rawCurrentGitDir = stripGitLineEnd(current.stdout);
     if (current.code !== 0 || !rawCurrentGitDir) {
         throw new Error(`git rev-parse --git-dir failed (${current.stderr.trim().slice(0, 200)})`);
@@ -85,13 +85,14 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
     const currentGitDir = isAbsolute(rawCurrentGitDir) ? rawCurrentGitDir : join(repoRoot, rawCurrentGitDir);
     let stableRepoRoot = repoRoot;
     if (currentGitDir !== gitDir) {
-        const worktrees = await run(["worktree", "list", "--porcelain", "-z"], repoRoot);
+        const worktrees = await run(["worktree", "list", "--porcelain", "-z"], repoRoot, signal);
         const primary = worktrees.stdout.split("\0", 1)[0];
         if (worktrees.code !== 0 || !primary?.startsWith("worktree ") || primary.length === "worktree ".length) {
             throw new Error(`git worktree list failed (${worktrees.stderr.trim().slice(0, 200)})`);
         }
         stableRepoRoot = primary.slice("worktree ".length);
     }
+    signal?.throwIfAborted();
     const worktreesRoot = join(stableRepoRoot, WORKTREES_DIRNAME);
     const name = `subagent-${sanitizeShortId(childId)}`;
     const branch = `${BRANCH_NAMESPACE}/${name}`;
@@ -103,7 +104,8 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
         throw new Error(`Could not create ${worktreesRoot}: ${error instanceof Error ? error.message : String(error)}`);
     }
     await ensureLocalExclude(gitDir);
-    const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot);
+    signal?.throwIfAborted();
+    const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot, signal);
     if (added.code !== 0) {
         throw new WorktreeSetupError(`git worktree add failed; preserved ${path} and ${branch}: ${added.stderr.trim().slice(0, 200)}`);
     }

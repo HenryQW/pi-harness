@@ -1271,12 +1271,12 @@ test("background worktree report survives capped child output", async (t) => {
 	});
 });
 
-test("session shutdown reports preserved isolated setup failures", async (t) => {
+test("session shutdown promptly reports preserved isolated setup failures", async (t) => {
 	const repo = await initializedRepository(t);
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir, true);
 		const hook = join(repo, ".git", "hooks", "post-checkout");
-		await writeFile(hook, "#!/bin/sh\nsleep 0.2\nexit 1\n");
+		await writeFile(hook, "#!/bin/sh\nsleep 5\nexit 1\n");
 		await chmod(hook, 0o755);
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, "throw new Error('runner must not start');\n");
@@ -1288,8 +1288,10 @@ test("session shutdown reports preserved isolated setup failures", async (t) => 
 		const path = join(await realpath(repo), ".worktrees", name);
 		const branch = `pi-subagent/${name}`;
 		await waitFor(() => existsSync(path));
+		const shutdownAt = Date.now();
 		await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
 
+		assert.ok(Date.now() - shutdownAt < 2_000);
 		assert.equal(app.sentMessages.length, 1);
 		const { message, options } = app.sentMessages[0]!;
 		assert.equal(message.details.taskId, started.details.taskId);
