@@ -1,5 +1,241 @@
 /**
  * pi-session-search entry point: config load, tool registration, mode dispatch.
  */
-// TODO(2): implement.
-export default function () {}
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
+import { getWindow, readSession } from "./hydrate.ts";
+import type { WindowMessage } from "./types.ts";
+
+const configPath = () => join(getAgentDir(), "config", "pi-session-search.json");
+const dbPath = () => join(getAgentDir(), "pi-session-search", "index.db");
+const sessionsDir = () => join(getAgentDir(), "sessions");
+
+const OUTPUT_CHAR_BUDGET = 50_000;
+
+interface Config {
+	backfillFiles: number;
+}
+
+/** Untrusted JSON: validate, log-and-default on malformed, never rewrite. */
+function readConfig(): Config {
+	const fallback = { backfillFiles: DEFAULT_SYNC_CAP };
+	let raw: string;
+	try {
+		raw = readFileSync(configPath(), "utf8");
+	} catch {
+		return fallback; // missing config = defaults
+	}
+	try {
+		const value = JSON.parse(raw);
+		if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+		const cap = (value as Record<string, unknown>).backfillFiles;
+		if (cap === undefined) return fallback;
+		if (typeof cap !== "number" || !Number.isInteger(cap) || cap < 1) {
+			console.error("[pi-session-search] invalid backfillFiles in config; using default");
+			return fallback;
+		}
+		return { backfillFiles: cap };
+	} catch {
+		console.error("[pi-session-search] malformed config; using default");
+		return fallback;
+	}
+}
+
+function clamp(n: number | undefined, min: number, max: number, dflt: number): number {
+	if (typeof n !== "number" || !Number.isFinite(n)) return dflt;
+	return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function truncateContent(msgs: WindowMessage[], maxChars: number): WindowMessage[] {
+	return msgs.map((m) =>
+		m.content.length > maxChars ? { ...m, content: m.content.slice(0, maxChars) + "…" } : m,
+	);
+}
+
+interface ToolParams {
+	query?: string;
+	sessionId?: string;
+	aroundMessageId?: string;
+	window?: number;
+	limit?: number;
+	detail?: "adaptive" | "full";
+}
+
+const DESCRIPTION = `Search past Pi sessions stored on disk (FTS5-backed over a local SQLite index), or inspect one session in detail. No LLM calls — every shape returns actual messages.
+
+FOUR CALLING SHAPES
+
+  1) DISCOVERY — pass \`query\`:
+     session_search(query="auth refactor", limit=3)
+     Runs FTS5 search and returns the top N sessions with metadata, match snippet, and messages around each match. Adaptive detail (default): the top-ranked result carries a ±5 message window plus first/last bookend messages; lower-ranked results carry only the anchor message. Pass \`detail="full"\` to hydrate every result fully.
+
+  2) SCROLL — pass \`sessionId\` + \`aroundMessageId\`:
+     session_search(sessionId="...", aroundMessageId="e07", window=10)
+     Returns ±window messages centered on the anchor (clamped to [1,20]). Use after discovery when you need more context than the default ±5 window. To scroll forward/backward, pass the last/first message entryId of the previous window back as aroundMessageId; messagesBefore/messagesAfter tell you where you are.
+
+  3) READ — pass \`sessionId\` only:
+     session_search(sessionId="...")
+     Returns the session's active branch (first 20 + last 10 messages when large).
+
+  4) BROWSE — no args:
+     session_search()
+     Returns recent sessions: name, cwd, start time, first-user-message preview. Use when asked "what was I working on" without a topic.
+
+Mode is inferred from args; precedence: scroll > read > browse > discovery.
+
+FTS5 SYNTAX
+  AND is the default — multi-word queries require all terms. Use OR for broader recall (\`alpha OR beta\`), quoted phrases for exact match (\`"docker networking"\`), NOT to exclude (\`python NOT java\`). Wildcards work only as stem expansion of tokens ≥3 chars (trigram tokenizer); very short terms fall back to substring matching. The index covers user/assistant message text only — thinking, tool calls/results are not searchable.`;
+
+export default function (pi: ExtensionAPI): void {
+	const config = readConfig();
+
+	// Fire-and-forget best-effort sync at startup.
+	pi.on("session_start", async (_event, _ctx) => {
+		try {
+			syncSessions(sessionsDir(), dbPath(), { cap: config.backfillFiles });
+		} catch {
+			// Index stays stale; next tool call retries.
+		}
+	});
+
+	pi.registerTool({
+		name: "session_search",
+		label: "Session Search",
+		description: DESCRIPTION,
+		promptSnippet: "Search past Pi sessions for prior decisions and context",
+		parameters: Type.Object({
+			query: Type.Optional(Type.String({ description: "Search query (discovery). FTS5 syntax supported." })),
+			sessionId: Type.Optional(Type.String({ description: "Absolute path of the session file." })),
+			aroundMessageId: Type.Optional(Type.String({ description: "Anchor entry id for scroll mode (with sessionId)." })),
+			window: Type.Optional(Type.Number({ description: "Scroll window radius, [1,20], default 5." })),
+			limit: Type.Optional(Type.Number({ description: "Max results, [1,10], default 3." })),
+			detail: Type.Optional(StringEnum(["adaptive", "full"] as const)),
+		}),
+		async execute(_toolCallId, rawParams: ToolParams, _signal, _onUpdate, ctx) {
+			try {
+				// LLMs sometimes send numeric ids/queries despite the string schema.
+				const params: ToolParams = {
+					query: rawParams.query != null ? String(rawParams.query) : undefined,
+					sessionId: rawParams.sessionId != null ? String(rawParams.sessionId) : undefined,
+					aroundMessageId: rawParams.aroundMessageId != null ? String(rawParams.aroundMessageId) : undefined,
+					window: rawParams.window,
+					limit: rawParams.limit,
+					detail: rawParams.detail,
+				};
+				const sessionId = params.sessionId?.trim() || undefined;
+				const anchor = params.aroundMessageId?.trim() || undefined;
+
+				// --- SCROLL ---
+				if (sessionId && anchor) {
+					const w = clamp(params.window, 1, 20, 5);
+					const win = getWindow(sessionId, anchor, w);
+					const result = { mode: "scroll", sessionId, ...win };
+					return textResult(result);
+				}
+
+				// --- READ ---
+				if (sessionId) {
+					const r = readSession(sessionId);
+					const result = { mode: "read", sessionId, ...r };
+					return textResult(result);
+				}
+
+				// --- BROWSE ---
+				if (!params.query?.trim()) {
+					const rows = getSessionRows(dbPath(), clamp(params.limit, 1, 10, 3));
+					return textResult({ mode: "browse", sessions: rows });
+				}
+
+				// --- DISCOVERY ---
+				const limit = clamp(params.limit, 1, 10, 3);
+				const full = params.detail === "full";
+
+				// Current-session guard: suppress hits on the live branch.
+				let liveIds: Set<string> | undefined;
+				let currentSessionPath: string | undefined;
+				try {
+					currentSessionPath = ctx.sessionManager.getSessionFile();
+					liveIds = new Set(
+						ctx.sessionManager
+							.buildContextEntries()
+							.filter((e) => e.type === "message")
+							.map((e) => e.id),
+					);
+				} catch {
+					// Guard unavailable → degrade gracefully, no suppression.
+				}
+
+				const { hits, backlogRemaining } = searchIndex(dbPath(), params.query, {
+					limit,
+					currentLiveEntryIds: liveIds,
+					currentSessionPath,
+				});
+
+				let budget = OUTPUT_CHAR_BUDGET;
+				const results = hits.map((hit) => {
+					const meta = {
+						path: hit.path,
+						snippet: hit.snippet,
+						rank: hit.rank,
+						matchMessageId: hit.entryId,
+						role: hit.role,
+						timestamp: hit.timestamp,
+					};
+					const hydrateFull = full || hit.rank === 0;
+					if (!hydrateFull) {
+						return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
+					}
+					try {
+						const win = getWindow(hit.path, hit.entryId, 5);
+						let bookends = { start: [], end: [] } as { start: WindowMessage[]; end: WindowMessage[] };
+						try {
+							const r = readSession(hit.path, 3, 3);
+							bookends = { start: r.messages.slice(0, 3), end: r.messages.slice(-3) };
+						} catch {
+							// Bookends optional.
+						}
+						budget -= JSON.stringify({ ...meta, win, bookends }).length;
+						return {
+							...meta,
+							detail: "full" as const,
+							messages: budget < 0 ? truncateContent(win.messages, 500) : win.messages,
+							bookends: budget < 0
+								? { start: truncateContent(bookends.start, 200), end: truncateContent(bookends.end, 200) }
+								: bookends,
+							messagesBefore: win.messagesBefore,
+							messagesAfter: win.messagesAfter,
+						};
+					} catch {
+						// Session file unreadable/moved since indexing → anchor-only.
+						return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
+					}
+				});
+
+				// Fill session meta (cwd/name/startedAt) from browse table.
+				const rows = getSessionRows(dbPath(), 1000);
+				for (const r of results) {
+					const row = rows.find((s) => s.path === (r as any).path);
+					Object.assign(r, { cwd: row?.cwd, name: row?.name, startedAt: row?.startedAt });
+				}
+
+				const result: Record<string, unknown> = { mode: "discovery", query: params.query, results, backlogRemaining };
+				return textResult(result);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return textResult({ success: false, error: message });
+			}
+		},
+	});
+}
+
+function textResult(result: unknown) {
+	return {
+		content: [{ type: "text" as const, text: JSON.stringify(result) }],
+		details: result,
+	};
+}
