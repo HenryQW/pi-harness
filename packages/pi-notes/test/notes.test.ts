@@ -7,8 +7,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import notesExtension, { MAX_NOTES, parseNotes, renderNotes } from "../extensions/notes.ts";
 
 test("parseNotes validates untrusted file content", () => {
-	assert.deepEqual(parseNotes('["a","b"]'), ["a", "b"]);
-	assert.deepEqual(parseNotes('["a", 42, null, "", "  ", "b", "c", "d", "e"]'), ["a", "b", "c", "d"]);
+	assert.deepEqual(parseNotes('[" a ","b","c","d","e"]'), ["a", "b", "c", "d"]);
+	assert.throws(() => parseNotes('["keep", {"draft":"recover"}]'), TypeError);
 	assert.throws(() => parseNotes('{"not":"an array"}'), TypeError);
 	assert.throws(() => parseNotes("not json"), SyntaxError);
 	assert.throws(() => parseNotes('{broken'), SyntaxError);
@@ -109,15 +109,15 @@ test("duplicate removal targets selected number and stale picks retry safely", a
 	assert.deepEqual(widget, ["1. todo", "2. middle"]);
 	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["todo", "middle"]);
 
-	// Another session rewrites the file while the menu is open; stale pick retries.
+	// Another session reorders notes while the menu is open; in-range stale pick retries.
 	picked = async () => {
-		await writeFile(path, JSON.stringify(["from other session"]));
+		await writeFile(path, JSON.stringify(["middle", "replacement"]));
 		return "2. middle";
 	};
 	notified = undefined;
 	await handlers["note-rm"]!("", ctx);
 	assert.match(notified!, /changed elsewhere/i);
-	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["from other session"]);
+	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["middle", "replacement"]);
 });
 
 test("mutating commands refuse to overwrite malformed notes file", async (t) => {

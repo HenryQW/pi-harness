@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
 	getAgentDir,
 	type ExtensionAPI,
@@ -15,9 +17,10 @@ const notesPath = () => join(getAgentDir(), "config", "pi-notes.json");
 /** Notes file is untrusted user data. Valid JSON parses to notes; anything else throws so callers can preserve the file. */
 export function parseNotes(raw: string): string[] {
 	const data: unknown = JSON.parse(raw);
-	if (!Array.isArray(data)) throw new TypeError("notes config must be a JSON array");
+	if (!Array.isArray(data) || !data.every((note): note is string => typeof note === "string")) {
+		throw new TypeError("notes config must be a JSON array of strings");
+	}
 	return data
-		.filter((note): note is string => typeof note === "string")
 		.map((note) => note.replace(/\s+/g, " ").trim())
 		.filter(Boolean)
 		.slice(0, MAX_NOTES);
@@ -42,8 +45,14 @@ export function renderNotes(notes: string[]): string[] {
 
 async function persist(notes: string[]): Promise<void> {
 	const path = notesPath();
+	const temp = `${path}.${randomUUID()}.tmp`;
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify(notes, null, "\t")}\n`);
+	try {
+		await writeFile(temp, `${JSON.stringify(notes, null, "\t")}\n`);
+		await rename(temp, path);
+	} finally {
+		await rm(temp, { force: true }).catch(() => {});
+	}
 }
 
 export default function notesExtension(pi: ExtensionAPI): void {
@@ -98,7 +107,7 @@ export default function notesExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const index = Number.parseInt(/^(\d+)\./.exec(choice)?.[1] ?? "", 10) - 1;
-			if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+			if (!isDeepStrictEqual(current, notes) || !Number.isInteger(index) || index < 0 || index >= current.length) {
 				ctx.ui.notify("Notes changed elsewhere; try /note-rm again.", "warning");
 				return;
 			}
