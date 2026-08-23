@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -508,6 +508,44 @@ test("restrictive file mode survives atomic rewrite", async () => {
 		await store.add("memory", "more");
 		const mode = (await stat(memoryPath(dir))).mode & 0o777;
 		assert.equal(mode, 0o600, `expected 0o600, got ${mode.toString(8)}`);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("external update between reload and rename aborts instead of overwriting V2", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-memory-v2-"));
+	try {
+		await writeFile(memoryPath(dir), "V1 content", "utf-8");
+		let statCalls = 0;
+		const store = new MemoryStore({
+			directory: dir,
+			memoryCharLimit: LIMIT,
+			userCharLimit: LIMIT,
+			statFn: async (p) => {
+				if (p !== memoryPath(dir)) throw Object.assign(new Error("enoent"), { code: "ENOENT" });
+				statCalls++;
+				// Fingerprint capture sees V1; pre-rename verify sees V2 (sync landed).
+				return statCalls === 1 ? { mtimeMs: 1, size: 11 } as import("node:fs").Stats : { mtimeMs: 999, size: 20 } as import("node:fs").Stats;
+			},
+			renameFn: async () => { throw new Error("rename must not run after change detected"); },
+		});
+		await assert.rejects(store.add("memory", "local mutation"), /changed during this mutation/);
+		assert.equal(await readFile(memoryPath(dir), "utf-8"), "V1 content", "synced V2 must be untouched");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("symlinked store file is rejected with a clear reason", async () => {
+	const { dir, cleanup } = await makeStore();
+	try {
+		await writeFile(join(dir, "real.md"), "elsewhere");
+		await symlink(join(dir, "real.md"), memoryPath(dir));
+		const store = new MemoryStore({ directory: dir, memoryCharLimit: LIMIT, userCharLimit: LIMIT });
+		const result = await store.add("memory", "boom");
+		assert.equal(result.success, false);
+		assert.match(result.error ?? "", /symlink/);
 	} finally {
 		await cleanup();
 	}

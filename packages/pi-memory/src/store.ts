@@ -1,4 +1,4 @@
-import { copyFile, mkdir, open, rename, stat, writeFile, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, rename, stat, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export const ENTRY_DELIMITER: string = "\n§\n";
@@ -99,6 +99,9 @@ export class MemoryStore {
 	// empty view.
 	private readonly observedExisting = new Set<Target>();
 	private disappearanceDetected = false;
+	private unreadableReason: string | undefined;
+	// mtime/size of the last successfully loaded file, per target.
+	private readonly loadedFingerprints = new Map<Target, { mtimeMs: number; size: number }>();
 
 	constructor(config: StoreConfig) {
 		this.config = config;
@@ -197,6 +200,14 @@ export class MemoryStore {
 		// never be mistaken for the whole file.
 		let handle: import("node:fs/promises").FileHandle | undefined;
 		try {
+			// Symlinked store files are rejected before anything follows the link:
+			// tmp+rename would replace the link itself and silently disconnect
+			// writes from the intended synced target.
+			const ls = await lstat(this.pathFor(target)).catch(() => null);
+			if (ls?.isSymbolicLink()) {
+				this.unreadableReason = `${this.pathFor(target)} is a symlink; symlinked store files are not supported because atomic rewrites replace the link. Point the memory directory at real files.`;
+				return { kind: "unreadable" };
+			}
 			handle = await open(this.pathFor(target), "r");
 			const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
 			let total = 0;
@@ -208,7 +219,17 @@ export class MemoryStore {
 			}
 			// Fatal decode: invalid UTF-8 counts as unreadable — a lossy replacement
 			// view could get persisted back over the real bytes.
-			return { kind: "ok", raw: new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)) };
+			const raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total));
+			// Fingerprint for the pre-rename change check: an external sync that
+			// lands V2 between this read and persist must not be silently replaced
+			// by V1-plus-mutation.
+			try {
+				const st = await (this.config.statFn ?? stat)(this.pathFor(target));
+				this.loadedFingerprints.set(target, { mtimeMs: st.mtimeMs, size: st.size });
+			} catch {
+				this.loadedFingerprints.delete(target);
+			}
+			return { kind: "ok", raw };
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 				// ENOENT on the FILE is "absent" only if the configured directory
@@ -291,6 +312,18 @@ export class MemoryStore {
 					if (!(error as NodeJS.ErrnoException).code && (error as Error).message.includes("appeared during")) throw error;
 					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 					// ENOENT: still absent, proceed.
+				}
+			}
+			// An existing store must not be replaced if the on-disk version changed
+			// since reload (external sync landed V2 after we read V1): compare
+			// fingerprint immediately before the rename.
+			if (this.observedExisting.has(target)) {
+				const fingerprint = this.loadedFingerprints.get(target);
+				if (fingerprint) {
+					const current = await (this.config.statFn ?? stat)(path);
+					if (current.mtimeMs !== fingerprint.mtimeMs || current.size !== fingerprint.size) {
+						throw new Error(`${path} changed during this mutation (likely sync); retry to merge its content.`);
+					}
 				}
 			}
 			await (this.config.renameFn ?? rename)(tmp, path);
@@ -379,11 +412,16 @@ export class MemoryStore {
 	}
 
 	private unreadableAbort(target: Target): Result {
+		if (this.unreadableReason) {
+			const reason = this.unreadableReason;
+			this.unreadableReason = undefined;
+			return { success: false, error: reason };
+		}
 		if (this.disappearanceDetected) {
 			this.disappearanceDetected = false;
 			return {
 				success: false,
-				error: `${this.pathFor(target)} existed earlier this session but has disappeared (sync conflict, cleanup, or accident). Writing now would create a divergent store that hides the original when it returns. Restore the file or delete it intentionally, then retry.`,
+				error: `${this.pathFor(target)} existed earlier this session but has disappeared (sync conflict, cleanup, or accident). Writing now would create a divergent store that hides the original when it returns. Restore the file (with the entries you want to keep) — once recreated, mutations work normally again.`,
 			};
 		}
 		return {
