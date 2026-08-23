@@ -12,6 +12,8 @@ const pullRequest = (overrides: Record<string, unknown> = {}) => ({
 	id: "PR_kwDOExample",
 	number: 42,
 	url: "https://github.com/acme/project/pull/42",
+	headRefOid: "abc123",
+	updatedAt: "2026-08-25T12:00:00Z",
 	state: "OPEN",
 	isDraft: false,
 	mergeable: "MERGEABLE",
@@ -108,7 +110,9 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	let idle = true;
 	let hold: Promise<ReturnType<typeof result>> | undefined;
 	let heldSignal: AbortSignal | undefined;
-	const good = JSON.stringify(pullRequest());
+	let headRefOid = "abc123";
+	let updatedAt = "2026-08-25T12:00:00Z";
+	const good = () => JSON.stringify(pullRequest({ headRefOid, updatedAt }));
 	pullRequestExtension({
 		on(event: string, handler: Handler) {
 			if (event === "session_start") sessionStart = handler;
@@ -127,7 +131,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 					hold = undefined;
 					return pending;
 				}
-				return result(good, viewCode);
+				return result(good(), viewCode);
 			}
 			if (executable === "gh" && args[0] === "api" && args[1] === "graphql") return result(reviewOutput);
 			if (executable === "git" && args.join(" ") === "branch --show-current") return result("feature/pr\n");
@@ -174,7 +178,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await sessionStart?.({} as never, noUi);
 	assert.equal(calls.length, 0);
 	await sessionStart?.({} as never, context);
-	assert.deepEqual(calls[0]?.args, ["pr", "view", "--json", "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]);
+	assert.deepEqual(calls[0]?.args, ["pr", "view", "--json", "id,number,url,headRefOid,updatedAt,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]);
 	assert.deepEqual(calls[1]?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
 	assert.equal(calls[1]?.args.at(-1), "[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length");
 	assert.equal(interval?.delay, 30_000);
@@ -205,6 +209,12 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await flush();
 	assert.equal(reviewCallCount(), reviewsBeforeExpiry);
 
+	updatedAt = "2026-08-25T12:01:00Z";
+	interval?.callback();
+	await flush();
+	assert.equal(reviewCallCount(), reviewsBeforeExpiry + 1);
+	now += 20 * 60_000;
+
 	let release!: (value: ReturnType<typeof result>) => void;
 	hold = new Promise((resolve) => { release = resolve; });
 	interval?.callback();
@@ -215,9 +225,10 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 		isError: false,
 	} as never, context);
 	assert.equal(calls.length, callsBeforeCreate);
-	release(result(good));
+	headRefOid = "ghi789";
+	release(result(good()));
 	await flush();
-	assert.equal(notifications.length, 2);
+	assert.equal(notifications.length, 3);
 
 	const callsAfterCreate = calls.length;
 	await toolResult?.({ toolName: "bash", input: { command: "echo gh pr create" }, isError: false } as never, context);
@@ -229,6 +240,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await flush();
 	const reviewsBeforePush = reviewCallCount();
 	reviewOutput = "1\n";
+	headRefOid = "jkl012";
 	await toolResult?.({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false } as never, context);
 	assert.equal(reviewCallCount(), reviewsBeforePush + 1);
 	assert.deepEqual(notifications.at(-1), { message: "PR #42 has 1 unresolved review thread", level: "warning" });
@@ -243,7 +255,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 		["gh", ["repo", "view", "https://github.com/acme/project", "--json", "nameWithOwner"]],
 		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number,headRepository"]],
 		["gh", ["pr", "view", "42", "--web"]],
-		["gh", ["pr", "view", "--json", "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
+		["gh", ["pr", "view", "--json", "id,number,url,headRefOid,updatedAt,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
 	]);
 	assert.deepEqual(calls.at(-1)?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
 	assert.equal(calls[0]?.signal, commandSignal);
@@ -266,7 +278,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 		["git", ["remote", "get-url", "--push", "origin"]],
 		["gh", ["repo", "view", "https://github.com/acme/project", "--json", "nameWithOwner"]],
 		["gh", ["pr", "list", "--head", "feature/pr", "--state", "open", "--limit", "100", "--json", "number,headRepository"]],
-		["gh", ["pr", "view", "--json", "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
+		["gh", ["pr", "view", "--json", "id,number,url,headRefOid,updatedAt,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]],
 	]);
 	assert.deepEqual(calls.at(-1)?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
 	assert.deepEqual(messages, [{ content: "/skill:pi-pr-create", options: { expandPromptTemplates: true } }]);
@@ -292,5 +304,5 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await sessionShutdown?.({} as never, context);
 	assert.equal(intervalCleared, true);
 	assert.equal(heldSignal.aborted, true);
-	releaseAbort(result(good));
+	releaseAbort(result(good()));
 });

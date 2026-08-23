@@ -7,7 +7,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 
 const POLL_INTERVAL_MS = 30_000;
 const REVIEW_POLL_WINDOW_MS = 20 * 60_000;
-const PR_FIELDS = "id,number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup";
+const PR_FIELDS = "id,number,url,headRefOid,updatedAt,state,isDraft,mergeable,reviewDecision,statusCheckRollup";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
@@ -21,6 +21,8 @@ type PullRequest = {
 	id: string;
 	number: number;
 	url: string;
+	headRefOid: string;
+	updatedAt: string;
 	lifecycle: Lifecycle;
 	mergeable: string;
 	reviewDecision: string | null;
@@ -47,6 +49,8 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	const id = value.id;
 	const number = value.number;
 	const url = pullRequestUrl(value.url);
+	const headRefOid = value.headRefOid;
+	const updatedAt = value.updatedAt;
 	const state = value.state;
 	const isDraft = value.isDraft;
 	const mergeable = value.mergeable;
@@ -54,7 +58,9 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	const statusCheckRollup = value.statusCheckRollup;
 	if (
 		typeof id !== "string" || !id ||
-		typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0 || !url || typeof state !== "string" ||
+		typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0 || !url ||
+		typeof headRefOid !== "string" || !headRefOid ||
+		typeof updatedAt !== "string" || Number.isNaN(Date.parse(updatedAt)) || typeof state !== "string" ||
 		typeof isDraft !== "boolean" || typeof mergeable !== "string" ||
 		(reviewDecision !== null && typeof reviewDecision !== "string") ||
 		(statusCheckRollup !== null && !Array.isArray(statusCheckRollup))
@@ -63,7 +69,7 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 	const lifecycle = state === "MERGED" ? "M" : state === "CLOSED" ? "C" : state === "OPEN" ? isDraft ? "D" : "O" : undefined;
 	if (!lifecycle) return undefined;
 
-	return { id, number, url, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
+	return { id, number, url, headRefOid, updatedAt, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
 }
 
 function parseUnresolvedReviewCount(value: string): number {
@@ -153,7 +159,7 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 	let active: AbortController | undefined;
 	let queued = false;
 	let reviewState: { id: string; unresolved: number } | undefined;
-	let reviewWindow: { id: string; until: number } | undefined;
+	let reviewWindow: { id: string; headRefOid: string; updatedAt: string; until: number } | undefined;
 
 	const stop = () => {
 		context = undefined;
@@ -195,8 +201,18 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 				reviewWindow = undefined;
 				return;
 			}
-			if (reviewWindow?.id !== pullRequest.id) {
-				reviewWindow = { id: pullRequest.id, until: Date.now() + REVIEW_POLL_WINDOW_MS };
+			if (
+				reviewWindow?.id !== pullRequest.id ||
+				reviewWindow.headRefOid !== pullRequest.headRefOid ||
+				reviewWindow.updatedAt !== pullRequest.updatedAt
+			) {
+				reviewState = undefined;
+				reviewWindow = {
+					id: pullRequest.id,
+					headRefOid: pullRequest.headRefOid,
+					updatedAt: pullRequest.updatedAt,
+					until: Date.now() + REVIEW_POLL_WINDOW_MS,
+				};
 			}
 			if (Date.now() >= reviewWindow.until) return;
 
@@ -244,11 +260,7 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 	pi.on("tool_result", async (event, ctx) => {
 		if (!ctx.hasUI || event.isError || !isBashToolResult(event)) return;
 		const command = event.input.command;
-		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_PUSH.test(command))) {
-			reviewState = undefined;
-			if (reviewWindow) reviewWindow.until = Date.now() + REVIEW_POLL_WINDOW_MS;
-			await refresh(true);
-		}
+		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_PUSH.test(command))) await refresh(true);
 	});
 
 	pi.registerCommand("pr", {
