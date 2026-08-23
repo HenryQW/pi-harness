@@ -16,7 +16,7 @@ pi install npm:@henryqw/pi-notes
 | `/note-rm` | command | Pick a note from a menu to remove. |
 | `/note-clear` | command | Remove all notes. |
 
-Notes render as a numbered widget above the editor and persist across sessions in `~/.pi/agent/config/pi-notes.json`. The file is validated on read; malformed files are treated as empty and only rewritten by an explicit command.
+Notes render as a numbered widget above the editor and persist across sessions in `~/.pi/agent/config/pi-notes.json`. The file is validated on read; a malformed file blocks `/note` and `/note-rm` until it is fixed or reset via `/note-clear`.
 
 ## Remove
 

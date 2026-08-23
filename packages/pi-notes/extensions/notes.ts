@@ -12,25 +12,26 @@ const WIDGET_KEY = "pi-notes";
 
 const notesPath = () => join(getAgentDir(), "config", "pi-notes.json");
 
-/** Notes file is untrusted user data: validate on read, never rewrite on load. */
+/** Notes file is untrusted user data. Valid JSON parses to notes; malformed JSON throws so callers can preserve the file. */
 export function parseNotes(raw: string): string[] {
-	try {
-		const data: unknown = JSON.parse(raw);
-		if (!Array.isArray(data)) return [];
-		return data
-			.filter((note): note is string => typeof note === "string")
-			.map((note) => note.replace(/\s+/g, " ").trim())
-			.filter(Boolean)
-			.slice(0, MAX_NOTES);
-	} catch {
-		return [];
-	}
+	const data: unknown = JSON.parse(raw);
+	if (!Array.isArray(data)) return [];
+	return data
+		.filter((note): note is string => typeof note === "string")
+		.map((note) => note.replace(/\s+/g, " ").trim())
+		.filter(Boolean)
+		.slice(0, MAX_NOTES);
 }
 
+let invalidConfig = false;
+
 function loadNotes(): string[] {
+	invalidConfig = false;
 	try {
 		return parseNotes(readFileSync(notesPath(), "utf8"));
-	} catch {
+	} catch (error) {
+		// Missing file is fine; malformed content must not be silently overwritten.
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") invalidConfig = true;
 		return [];
 	}
 }
@@ -48,6 +49,8 @@ async function persist(notes: string[]): Promise<void> {
 export default function notesExtension(pi: ExtensionAPI): void {
 	const show = (ctx: ExtensionContext) => ctx.ui.setWidget(WIDGET_KEY, renderNotes(loadNotes()));
 
+	const MALFORMED = `pi-notes.json is malformed; fix or delete it, or run /note-clear to reset.`;
+
 	pi.on("session_start", (_event, ctx) => show(ctx));
 
 	pi.registerCommand("note", {
@@ -59,6 +62,10 @@ export default function notesExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const notes = loadNotes();
+			if (invalidConfig) {
+				ctx.ui.notify(MALFORMED, "error");
+				return;
+			}
 			if (notes.length >= MAX_NOTES) {
 				ctx.ui.notify(`Widget full (${MAX_NOTES} notes). Remove one with /note-rm <n>.`, "warning");
 				return;
@@ -73,6 +80,10 @@ export default function notesExtension(pi: ExtensionAPI): void {
 		description: "Pick a note to remove",
 		handler: async (_args, ctx) => {
 			const notes = loadNotes();
+			if (invalidConfig) {
+				ctx.ui.notify(MALFORMED, "error");
+				return;
+			}
 			if (!notes.length) {
 				ctx.ui.notify("No notes to remove.", "info");
 				return;
@@ -86,7 +97,7 @@ export default function notesExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("note-clear", {
-		description: "Clear all notes",
+		description: "Clear all notes (also resets a malformed pi-notes.json)",
 		handler: async (_args, ctx) => {
 			await persist([]);
 			show(ctx);
