@@ -12,6 +12,7 @@ const THINKING_COLORS = {
 	xhigh: 208,
 	max: 196,
 } as const;
+const HENRY_STATUS_KEYS = new Set(["pi-multi-codex"]);
 
 function formatTokens(count: number): string {
 	if (count < 1_000) return `${count}`;
@@ -119,8 +120,14 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const statuses = [...extensionStatuses]
 						.filter(([key]) => key !== "pi-pr")
 						.sort(([a], [b]) => a.localeCompare(b))
-						.map(([, text]) => sanitizeStatus(text))
-						.filter(Boolean);
+						.map(([key, text]) => [key, sanitizeStatus(text)] as const)
+						.filter(([, text]) => Boolean(text));
+					const henryStatuses = statuses
+						.filter(([key]) => HENRY_STATUS_KEYS.has(key))
+						.map(([, text]) => text);
+					const externalStatuses = statuses
+						.filter(([key]) => !HENRY_STATUS_KEYS.has(key))
+						.map(([, text]) => text);
 					const thinking = String(ctx.thinkingLevel ?? "off");
 					const thinkingColor = THINKING_COLORS[thinking as keyof typeof THINKING_COLORS];
 					const ellipsis = theme.fg("dim", "…");
@@ -144,7 +151,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						firstLine,
 						align(usage, model, width, ellipsis),
 					];
-					if (statuses.length) lines.push(statuses.join(" "));
+					if (henryStatuses.length || externalStatuses.length) lines.push(henryStatuses.join(" "));
+					if (externalStatuses.length) lines.push(externalStatuses.join(" "));
 					return lines.map((line) => truncateToWidth(line, width, ellipsis));
 				},
 			};
