@@ -260,6 +260,87 @@ test("/clone-worktree starts the clone in the root pane when no plugin agent cla
 	}
 });
 
+test("/clone-worktree moves to an extra tab when the root pane becomes busy after polling", async () => {
+	const data = await fixture();
+	try {
+		await withPane("pane-alias", async () => {
+			const starts: string[] = [];
+			const app = harness(data.manager, data.cwd, (args) => {
+				if (args[0] === "pane") {
+					if (args[2] === "pane-root") {
+						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new" } } });
+					}
+					return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
+				}
+				if (args[0] === "worktree" && args[1] === "create") {
+					return success({
+						result: {
+							workspace: { workspace_id: "workspace-new" },
+							tab: { tab_id: "tab-new" },
+							root_pane: { pane_id: "pane-root" },
+							worktree: { checkout_path: "/repos/wt-x" },
+						},
+					});
+				}
+				if (args[0] === "tab" && args[1] === "create") {
+					return success({ result: { tab: { tab_id: "tab-clone" }, root_pane: { pane_id: "pane-clone" } } });
+				}
+				if (args[0] === "agent") {
+					starts.push(args[6]!);
+					return starts.length === 1
+						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: false }
+						: success();
+				}
+				return undefined;
+			});
+			await app.command("", app.ctx);
+
+			assert.deepEqual(starts, ["pane-root", "pane-clone"]);
+			assert.deepEqual(app.calls.at(-1)?.args, ["tab", "focus", "tab-clone"]);
+		});
+	} finally {
+		await rm(data.root, { recursive: true, force: true });
+	}
+});
+
+test("/clone-worktree reports recovered IDs from an incomplete extra-tab response", async () => {
+	const data = await fixture();
+	try {
+		await withPane("pane-alias", async () => {
+			const app = harness(data.manager, data.cwd, (args) => {
+				if (args[0] === "pane") {
+					if (args[2] === "pane-root") {
+						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new", agent: "pi" } } });
+					}
+					return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
+				}
+				if (args[0] === "worktree" && args[1] === "create") {
+					return success({
+						result: {
+							workspace: { workspace_id: "workspace-new" },
+							tab: { tab_id: "tab-new" },
+							root_pane: { pane_id: "pane-root" },
+							worktree: { checkout_path: "/repos/wt-x" },
+						},
+					});
+				}
+				if (args[0] === "tab" && args[1] === "create") {
+					return success({ result: { tab: { tab_id: "tab-clone" }, root_pane: {} } });
+				}
+				return undefined;
+			});
+			await assert.rejects(app.command("", app.ctx), (error: Error) => {
+				assert.match(error.message, /workspace workspace-new/);
+				assert.match(error.message, /tab tab-clone/);
+				assert.match(error.message, /missing root_pane\.pane_id/);
+				return true;
+			});
+		});
+	} finally {
+		await rm(data.root, { recursive: true, force: true });
+	}
+});
+
 test("/clone-worktree inside a linked worktree creates the worktree from the repo parent workspace", async () => {
 	const data = await fixture();
 	try {

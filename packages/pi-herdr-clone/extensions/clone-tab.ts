@@ -122,20 +122,26 @@ async function waitForRootPaneAgent(
 	return undefined;
 }
 
-function parseCreatedTab(createdTab: HerdrExecResult): { tabId: string; rootPaneId: string } {
-	let response: unknown;
+function parseCreatedTab(createdTab: HerdrExecResult, workspaceId: string): { tabId: string; rootPaneId: string } {
+	let tabId: string | undefined;
+	let rootPaneId: string | undefined;
 	try {
-		response = JSON.parse(createdTab.stdout);
+		const response: unknown = JSON.parse(createdTab.stdout);
 		if (!response || typeof response !== "object" || Array.isArray(response)) {
 			throw new Error("Herdr tab create returned invalid JSON");
 		}
 		const result = (response as { result?: { tab?: { tab_id?: unknown }; root_pane?: { pane_id?: unknown } } }).result;
-		return {
-			tabId: requiredString(result?.tab?.tab_id, "Herdr tab response tab_id"),
-			rootPaneId: requiredString(result?.root_pane?.pane_id, "Herdr tab response root pane_id"),
-		};
+		tabId = typeof result?.tab?.tab_id === "string" && result.tab.tab_id.trim() ? result.tab.tab_id : undefined;
+		rootPaneId = typeof result?.root_pane?.pane_id === "string" && result.root_pane.pane_id.trim()
+			? result.root_pane.pane_id
+			: undefined;
+		const missing = [!tabId && "tab_id", !rootPaneId && "root_pane.pane_id"].filter(Boolean).join(", ");
+		if (missing) throw new Error(`Herdr tab create response is missing ${missing}.`);
+		return { tabId: tabId!, rootPaneId: rootPaneId! };
 	} catch (error) {
-		throw new Error(`Herdr tab create response could not be parsed: ${errorMessage(error)}`, { cause: error });
+		const retained = [`workspace ${workspaceId}`, tabId && `tab ${tabId}`, rootPaneId && `root pane ${rootPaneId}`]
+			.filter(Boolean).join(", ");
+		throw new Error(`Herdr tab create response could not be parsed; retained ${retained}: ${errorMessage(error)}`, { cause: error });
 	}
 }
 
@@ -157,16 +163,22 @@ async function launchCloneAgent(
 	rootPaneId: string,
 	cloneFile: string,
 	retained: string,
+	onPaneBusy?: () => Promise<{ rootPaneId: string; retained: string }>,
 ): Promise<string> {
 	const agentName = `clone-${randomUUID().replaceAll("-", "").slice(0, 24)}`;
-	const startArgs = [
-		"agent", "start", agentName, "--kind", "pi", "--pane", rootPaneId,
-		"--", "--session", cloneFile,
-	];
 	try {
 		for (let attempt = 1; attempt <= 5; attempt += 1) {
+			const startArgs = [
+				"agent", "start", agentName, "--kind", "pi", "--pane", rootPaneId,
+				"--", "--session", cloneFile,
+			];
 			const result = await herdr.exec(startArgs, { cwd: ctx.cwd });
 			if (result.code === 0 && !result.killed) return agentName;
+			if (hasHerdrErrorCode(result, "agent_pane_busy") && onPaneBusy) {
+				({ rootPaneId, retained } = await onPaneBusy());
+				onPaneBusy = undefined;
+				continue;
+			}
 			if (!hasHerdrErrorCode(result, "agent_pane_busy") || attempt === 5) {
 				throw new Error(herdrCommandFailure(startArgs, result));
 			}
@@ -313,14 +325,15 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 			// own tab so both agents coexist.
 			let targetTabId = tabId!;
 			let targetPaneId = rootPaneId!;
-			if (await waitForRootPaneAgent(herdr, ctx, rootPaneId!)) {
+			const createCloneTab = async (): Promise<void> => {
 				const cloneTabArgs = ["tab", "create", "--workspace", workspaceId!, "--cwd", checkoutPath!, "--no-focus"] as const;
 				const createdTab = await herdr.exec(cloneTabArgs, { cwd: ctx.cwd });
 				if (createdTab.code !== 0 || createdTab.killed) {
 					throw new Error(herdrCommandFailure(cloneTabArgs, createdTab));
 				}
-				({ tabId: targetTabId, rootPaneId: targetPaneId } = parseCreatedTab(createdTab));
-			}
+				({ tabId: targetTabId, rootPaneId: targetPaneId } = parseCreatedTab(createdTab, workspaceId!));
+			};
+			if (await waitForRootPaneAgent(herdr, ctx, rootPaneId!)) await createCloneTab();
 
 			let cloneFile: string;
 			try {
@@ -336,6 +349,13 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 			const agentName = await launchCloneAgent(
 				herdr, ctx, targetPaneId, cloneFile,
 				`Herdr workspace ${workspaceId}, tab ${targetTabId}, root pane ${targetPaneId}, and session ${cloneFile}`,
+				targetPaneId === rootPaneId ? async () => {
+					await createCloneTab();
+					return {
+						rootPaneId: targetPaneId,
+						retained: `Herdr workspace ${workspaceId}, tab ${targetTabId}, root pane ${targetPaneId}, and session ${cloneFile}`,
+					};
+				} : undefined,
 			);
 
 			try {
