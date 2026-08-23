@@ -486,7 +486,7 @@ export default function subagentExtension(
 ): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
-	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent.json
+	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/pi-subagent.json
 	// maxSubagents > default 5. Invalid config falls back to the default and is
 	// reported once the UI exists; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();

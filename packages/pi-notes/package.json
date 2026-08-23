@@ -1,12 +1,12 @@
 {
-  "name": "@henryqw/pi-auto-compact",
-  "version": "1.1.2",
-  "description": "Proactively compact Pi context at a configurable threshold and resume the current task.",
+  "name": "@henryqw/pi-notes",
+  "version": "0.1.1",
+  "description": "Persistent notes in a Pi widget, managed with /note commands.",
   "keywords": [
     "pi-package",
     "pi",
-    "compaction",
-    "context"
+    "notes",
+    "widget"
   ],
   "type": "module",
   "engines": {
@@ -20,18 +20,16 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "test:live": "PI_AUTO_COMPACT_LIVE=1 node --test test/live.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/auto-compact.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-auto-compact"
+    "directory": "packages/pi-notes"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"
@@ -41,10 +39,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/notes.ts"
     ]
-  },
-  "dependencies": {
-    "@henryqw/pi-task-models": "^0.7.0"
   }
 }

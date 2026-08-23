@@ -7,9 +7,10 @@ export interface HerdrExecResult {
 	killed?: boolean;
 }
 
+/** Mutable-array executor, compatible with a bound `pi.exec`. Args are copied by createHerdrClient. */
 export type HerdrExecutor<Options> = (
 	command: string,
-	args: readonly string[],
+	args: string[],
 	options: Options,
 ) => Promise<HerdrExecResult>;
 
@@ -24,7 +25,7 @@ export function createHerdrClient<Options>(execute: HerdrExecutor<Options>): Her
 		if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
 			throw new TypeError("Herdr command arguments must be an array of strings");
 		}
-		return await execute("herdr", args, options);
+		return await execute("herdr", [...args], options);
 	};
 	const run = async (args: readonly string[], options: Options): Promise<string> => {
 		const result = await exec(args, options);

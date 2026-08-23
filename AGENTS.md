@@ -8,13 +8,13 @@ Do not consider migrations or backward compatibility. Both add unnecessary code.
 
 ## Extension config paths
 
-- Single extension config must use:
+- An extension with one config file and no extension-named config directory must use:
 
   ```ts
   const configPath = () => join(getAgentDir(), "config", "extension-name.json");
   ```
 
-- Multiple configs must use an extension-named directory, for example:
+- If an extension-named config directory exists, every config file owned by that extension must live in it. Multiple configs therefore require an extension-named directory, for example:
 
   ```ts
   join(getAgentDir(), "config", "pi-multi-codex", "usage.json");

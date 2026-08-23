@@ -22,6 +22,7 @@
       "./packages/pi-deps/extensions/deps.ts",
       "./packages/pi-model-thinking/extensions",
       "./packages/pi-footer/extensions/footer.ts",
+      "./packages/pi-notes/extensions/notes.ts",
       "./packages/pi-pr/extensions/pr.ts",
       "./packages/pi-task-models/extensions/task-models.ts",
       "./packages/pi-open-in/extensions",

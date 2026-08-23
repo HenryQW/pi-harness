@@ -281,27 +281,52 @@ export function resolveTaskModelRoute(
 	return { model, thinkingLevel };
 }
 
+export function resolveConfiguredTaskRoutes(
+	ctx: ExtensionContext,
+	task: string,
+	agentDir = getAgentDir(),
+	thinking?: ThinkingLevel,
+): ResolvedTaskRoute[] {
+	let config: TaskModelsConfig;
+	try {
+		config = readTaskModelsConfig(agentDir);
+	} catch {
+		throw taskRouteError("config-read", "Couldn't read task model config. Run /task-models.");
+	}
+	const profileName = config.tasks[task];
+	if (!profileName) throw taskRouteError("task-unassigned", `Task ${task} is not assigned to a profile. Run /task-models.`);
+	const profile = config.profiles[profileName];
+	if (!profile) throw taskRouteError("profile-missing", `Task ${task} profile ${profileName} is not configured. Run /task-models.`, profileName);
+	const routes: ResolvedTaskRoute[] = [];
+	for (const route of orderedProfileRoutes(profile)) {
+		const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
+		if (resolved) routes.push(resolved);
+	}
+	if (!routes.length) {
+		throw taskRouteError(
+			"no-route",
+			`Task ${task} profile ${profileName} has no available route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`,
+			profileName,
+		);
+	}
+	return routes;
+}
+
+// Machine-readable cause so consumers can render their own user-facing wording.
+export type TaskRouteErrorCode = "config-read" | "task-unassigned" | "profile-missing" | "no-route";
+export type TaskRouteError = Error & { taskRouteCode: TaskRouteErrorCode; profileName?: ProfileName };
+
+function taskRouteError(taskRouteCode: TaskRouteErrorCode, message: string, profileName?: ProfileName): TaskRouteError {
+	return Object.assign(new Error(message), { taskRouteCode, ...(profileName ? { profileName } : {}) });
+}
+
 export function resolveConfiguredTaskRoute(
 	ctx: ExtensionContext,
 	task: string,
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute {
-	let config: TaskModelsConfig;
-	try {
-		config = readTaskModelsConfig(agentDir);
-	} catch {
-		throw new Error("Couldn't read task model config. Run /task-models.");
-	}
-	const profileName = config.tasks[task];
-	if (!profileName) throw new Error(`Task ${task} is not assigned to a profile. Run /task-models.`);
-	const profile = config.profiles[profileName];
-	if (!profile) throw new Error(`Task ${task} profile ${profileName} is not configured. Run /task-models.`);
-	for (const route of orderedProfileRoutes(profile)) {
-		const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
-		if (resolved) return resolved;
-	}
-	throw new Error(`Task ${task} profile ${profileName} has no available route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`);
+	return resolveConfiguredTaskRoutes(ctx, task, agentDir, thinking)[0];
 }
 
 export function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[] {

@@ -9,6 +9,7 @@ import {
 	DEFAULT_TASK_ASSIGNMENTS,
 	readTaskModelsConfig,
 	resolveConfiguredTaskRoute,
+	resolveConfiguredTaskRoutes,
 	resolveTaskModelRoute,
 	taskThinkingLevels,
 	writeTaskModelsConfig,
@@ -116,6 +117,10 @@ test("resolves configured task routes through assignment, profile, and fallback"
 			},
 			tasks: { "pi-auto-dag/implement": "frontier" },
 		}));
+		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-auto-dag/implement", dir), [
+			{ model: primary, thinkingLevel: "off" },
+			{ model: fallback, thinkingLevel: "off" },
+		]);
 		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir), {
 			model: primary,
 			thinkingLevel: "off",
@@ -134,6 +139,9 @@ test("resolves configured task routes through assignment, profile, and fallback"
 			model: fallback,
 			thinkingLevel: "off",
 		});
+		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-auto-dag/implement", dir), [
+			{ model: fallback, thinkingLevel: "off" },
+		]);
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, "pi-other/run", dir),
 			/Task pi-other\/run is not assigned to a profile\. Run \/task-models\./,

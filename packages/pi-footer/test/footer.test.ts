@@ -18,7 +18,7 @@ const plain = (text: string) => text
 	.replace(/\x1b\]8;;.*?\x1b\\/g, "")
 	.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("renders checkout PR status, usage, and other extension statuses", async (t) => {
+test("renders checkout, usage, family statuses, and external statuses on separate lines", async (t) => {
 	type FooterFactory = (tui: { requestRender(): void }, theme: { fg(_color: string, text: string): string }, data: {
 		getGitBranch(): string;
 		getExtensionStatuses(): ReadonlyMap<string, string>;
@@ -71,17 +71,19 @@ test("renders checkout PR status, usage, and other extension statuses", async (t
 	await sessionStart?.({}, ctx);
 	assert.ok(footerFactory);
 	const colors: [string, string][] = [];
+	let extensionStatuses = new Map([
+		["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],
+		["pi-pr", "\x1b[32mPR #123 · approved\x1b[39m"],
+		["pi-multi-codex", "Codex #1 · 50% · 7d 1d 1h 22m"],
+		["pi-rewind", "↩ rewind"],
+		["hidden", ""],
+	]);
 	const footer = footerFactory(
 		{ requestRender() {} },
 		{ fg: (color, text) => { colors.push([color, text]); return text; } },
 		{
 			getGitBranch: () => "worktree/clear-field-f8d2",
-			getExtensionStatuses: () => new Map([
-				["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],
-				["pi-pr", "\x1b[32mPR #123 · approved\x1b[39m"],
-				["pi-multi-codex", "Codex #1 · 50% · 7d 1d 1h 22m"],
-				["hidden", ""],
-			]),
+			getExtensionStatuses: () => extensionStatuses,
 			onBranchChange: () => () => { disposed = true; },
 		},
 	);
@@ -93,9 +95,13 @@ test("renders checkout PR status, usage, and other extension statuses", async (t
 	const modelText = "gpt-5.6-luna • high";
 	assert.equal(plain(rendered[0]!), "repo · clear-field-f8d2 · PR #123 · approved");
 	assert.match(plain(rendered[1]!), new RegExp(`^${usageText.replace("$", "\\$")} +${modelText}$`));
-	assert.equal(plain(rendered[2]!), "Codex #1 · 50% · 7d 1d 1h 22m ●  🐴\tponytail: ⚡ FULL ready");
+	assert.equal(plain(rendered[2]!), "Codex #1 · 50% · 7d 1d 1h 22m");
+	assert.equal(plain(rendered[3]!), "↩ rewind ●  🐴\tponytail: ⚡ FULL ready");
 	assert.match(rendered[0]!, /\x1b\[32mPR #123 · approved\x1b\[39m/);
-	assert.doesNotMatch(rendered[2]!, /PR #123/);
+	assert.doesNotMatch(rendered[2]!, /PR #123|ponytail|rewind/);
+
+	extensionStatuses = new Map([["pi-rewind", "↩ rewind"]]);
+	assert.deepEqual(footer.render(100).slice(2).map(plain), ["", "↩ rewind"]);
 
 	await mkdir(join(agentDir, "config"));
 	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"codex"}');

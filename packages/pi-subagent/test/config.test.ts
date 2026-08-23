@@ -24,7 +24,7 @@ test("missing config file yields empty config", async () => {
 
 test("valid maxSubagents and timeout are accepted", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
 			maxSubagents: 3,
@@ -41,8 +41,8 @@ test("valid maxSubagents and timeout are accepted", async () => {
 
 test("malformed JSON reports an error and preserves defaults", async () => {
 	await withAgentDir(async (agentDir) => {
-		const path = join(agentDir, "config", "pi-subagent.json");
-		await mkdir(join(agentDir, "config"), { recursive: true });
+		const path = join(agentDir, "config", "pi-subagent", "pi-subagent.json");
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		const broken = "{ maxSubagents: ";
 		await writeFile(path, broken);
 		const loaded = readSubagentConfig(agentDir);
@@ -55,7 +55,7 @@ test("malformed JSON reports an error and preserves defaults", async () => {
 
 test("invalid maxSubagents value reports an error and preserves defaults", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 0 }));
 		const loaded = readSubagentConfig(agentDir);
@@ -66,7 +66,7 @@ test("invalid maxSubagents value reports an error and preserves defaults", async
 
 test("invalid timeout values report an error and preserve defaults", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
 			timeout: { softMinutes: -1, activeWindowSeconds: "ninety", unknownKey: 1 },
@@ -81,7 +81,7 @@ test("invalid timeout values report an error and preserve defaults", async () =>
 
 test("timeout values that overflow Node timers report an error", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
 			timeout: { softMinutes: 50_000_000 },
@@ -94,7 +94,7 @@ test("timeout values that overflow Node timers report an error", async () => {
 
 test("non-object timeout reports an error", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ timeout: 5 }));
 		const loaded = readSubagentConfig(agentDir);
@@ -105,7 +105,7 @@ test("non-object timeout reports an error", async () => {
 
 test("non-object config root reports an error", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), "[1, 2]");
 		const loaded = readSubagentConfig(agentDir);
@@ -116,7 +116,7 @@ test("non-object config root reports an error", async () => {
 
 test("non-safe maxSubagents values report an error", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 1e100 }));
 		const loaded = readSubagentConfig(agentDir);
@@ -125,13 +125,13 @@ test("non-safe maxSubagents values report an error", async () => {
 	});
 });
 
-test("config path follows the required single-config helper form", () => {
-	assert.equal(configPath("/agents"), join("/agents", "config", "pi-subagent.json"));
+test("config path uses the existing extension-named directory", () => {
+	assert.equal(configPath("/agents"), join("/agents", "config", "pi-subagent", "pi-subagent.json"));
 });
 
 test("unknown top-level keys report an error", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagent: 2 }));
 		const loaded = readSubagentConfig(agentDir);
@@ -142,7 +142,7 @@ test("unknown top-level keys report an error", async () => {
 
 test("combined soft plus grace deadline above the timer limit reports an error", async () => {
 	await withAgentDir(async (agentDir) => {
-		const dir = join(agentDir, "config");
+		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
 			timeout: { softMinutes: 20_000, graceMinutes: 20_000 },
