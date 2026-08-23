@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import notesExtension, { parseNotes, renderNotes } from "../extensions/notes.ts";
 
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
-type Identity = { repository: string; worktree: string };
+type Identity = { repository: string; worktree: string; gitDir: string };
 
 async function harness(t: TestContext) {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-notes-"));
@@ -22,11 +22,13 @@ async function harness(t: TestContext) {
 	const repository = join(agentDir, "repo.git");
 	const first = join(agentDir, "first");
 	const second = join(agentDir, "second");
-	await Promise.all([repository, first, second].map((path) => mkdir(path, { recursive: true })));
+	const firstGitDir = join(repository, "worktrees", "first");
+	const secondGitDir = join(repository, "worktrees", "second");
+	await Promise.all([first, second, firstGitDir, secondGitDir].map((path) => mkdir(path, { recursive: true })));
 	const canonicalRepository = await realpath(repository);
 	const identities = new Map<string, Identity>([
-		[first, { repository: canonicalRepository, worktree: await realpath(first) }],
-		[second, { repository: canonicalRepository, worktree: await realpath(second) }],
+		[first, { repository: canonicalRepository, worktree: await realpath(first), gitDir: await realpath(firstGitDir) }],
+		[second, { repository: canonicalRepository, worktree: await realpath(second), gitDir: await realpath(secondGitDir) }],
 	]);
 	const handlers: Record<string, CommandHandler> = {};
 	let sessionStart: ((event: unknown, ctx: ExtensionContext) => Promise<void> | void) | undefined;
@@ -36,7 +38,7 @@ async function harness(t: TestContext) {
 				? identities.get(options.cwd) ?? [...identities.values()].find((candidate) => candidate.worktree === options.cwd)
 				: undefined;
 			return identity
-				? { code: 0, killed: false, stdout: `${identity.worktree}\n${identity.repository}\n`, stderr: "" }
+				? { code: 0, killed: false, stdout: `${identity.worktree}\n${identity.repository}\n${identity.gitDir}\n`, stderr: "" }
 				: { code: 128, killed: false, stdout: "", stderr: "not a git worktree" };
 		},
 		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) {
@@ -64,6 +66,7 @@ async function harness(t: TestContext) {
 		agentDir,
 		first,
 		second,
+		firstGitDir,
 		identities,
 		handlers,
 		context,
@@ -75,14 +78,19 @@ async function harness(t: TestContext) {
 	};
 }
 
-test("parseNotes validates worktree records", () => {
-	assert.deepEqual(
-		parseNotes('{"repository":"/repo/.git","worktree":"/repo","notes":[" a ","b"]}'),
-		{ repository: "/repo/.git", worktree: "/repo", notes: ["a", "b"] },
-	);
-	assert.throws(() => parseNotes('{"repository":"/repo/.git","worktree":"/repo","notes":["a","b","c","d","e"]}'), TypeError);
-	assert.throws(() => parseNotes('{"repository":"relative","worktree":"/repo","notes":[]}'), TypeError);
-	assert.throws(() => parseNotes('{"repository":"/repo/.git","worktree":"/repo","notes":["  "]}'), TypeError);
+test("parseNotes validates safe worktree records", () => {
+	const valid = {
+		repository: "/repo/.git",
+		worktree: "/repo",
+		gitDir: "/repo/.git/worktrees/current",
+		generation: "1:2:3",
+		notes: [" a ", "b"],
+	};
+	assert.deepEqual(parseNotes(JSON.stringify(valid)), { ...valid, notes: ["a", "b"] });
+	assert.throws(() => parseNotes(JSON.stringify({ ...valid, notes: ["a", "b", "c", "d", "e"] })), TypeError);
+	assert.throws(() => parseNotes(JSON.stringify({ ...valid, repository: "relative" })), TypeError);
+	assert.throws(() => parseNotes(JSON.stringify({ ...valid, notes: ["  "] })), TypeError);
+	assert.throws(() => parseNotes(JSON.stringify({ ...valid, notes: ["safe", "\u001b]52;c;payload\u0007"] })), TypeError);
 	assert.throws(() => parseNotes('{broken'), SyntaxError);
 });
 
@@ -99,6 +107,10 @@ test("notes persist independently per worktree without startup writes", async (t
 	assert.deepEqual(h.widget(), ["no notes"]);
 	await assert.rejects(readdir(join(h.agentDir, "config", "pi-notes")), { code: "ENOENT" });
 
+	await h.handlers.note!("\u001b[2J", firstCtx);
+	assert.match(h.notified()!, /control characters/i);
+	await assert.rejects(readdir(join(h.agentDir, "config", "pi-notes")), { code: "ENOENT" });
+
 	await h.handlers.note!("first note", firstCtx);
 	await h.runSessionStart(secondCtx);
 	assert.deepEqual(h.widget(), ["no notes"]);
@@ -109,6 +121,17 @@ test("notes persist independently per worktree without startup writes", async (t
 	assert.deepEqual(h.widget(), ["1. first note"]);
 	await h.runSessionStart(secondCtx);
 	assert.deepEqual(h.widget(), ["1. second note"]);
+});
+
+test("recreated worktree at same path does not inherit old notes", async (t) => {
+	const h = await harness(t);
+	const ctx = h.context(h.first);
+	await h.handlers.note!("old generation", ctx);
+	await rm(h.firstGitDir, { recursive: true });
+	await mkdir(h.firstGitDir, { recursive: true });
+
+	await h.runSessionStart(ctx);
+	assert.match(h.widget()![0]!, /old worktree/i);
 });
 
 test("duplicate removal and stale selections preserve correct worktree notes", async (t) => {
@@ -144,12 +167,19 @@ test("prune removes stale worktree records, preserves malformed files, and clear
 
 	h.identities.delete(h.second);
 	await h.handlers["note-prune"]!("", firstCtx);
-	assert.match(h.notified()!, /Removed 1 stale.*preserved 1 invalid/i);
+	assert.match(h.notified()!, /Removed 0 stale.*preserved 2 unchecked or invalid/i);
+	assert.equal((await readdir(dir)).filter((name) => name.endsWith(".json")).length, 3);
+
+	await rm(h.second, { recursive: true });
+	await h.handlers["note-prune"]!("", firstCtx);
+	assert.match(h.notified()!, /Removed 1 stale.*preserved 1 unchecked or invalid/i);
 	assert.equal((await readdir(dir)).filter((name) => name.endsWith(".json")).length, 2);
 	assert.equal(await readFile(malformedPath, "utf8"), "{broken user data");
 
 	const currentPath = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json") && name !== "malformed.json")!);
 	await writeFile(currentPath, "{broken current data");
+	await h.runSessionStart(firstCtx);
+	assert.match(h.widget()![0]!, /malformed/i);
 	h.resetNotification();
 	await h.handlers.note!("blocked", firstCtx);
 	assert.match(h.notified()!, /malformed/i);

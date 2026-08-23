@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -11,9 +11,14 @@ import {
 export const MAX_NOTES = 4;
 const WIDGET_KEY = "pi-notes";
 
-interface NotesRecord {
+interface WorktreeIdentity {
 	repository: string;
 	worktree: string;
+	gitDir: string;
+	generation: string;
+}
+
+interface NotesRecord extends WorktreeIdentity {
 	notes: string[];
 }
 
@@ -23,25 +28,42 @@ interface LoadedNotes {
 }
 
 const configDir = () => join(getAgentDir(), "config", "pi-notes");
-// ponytail: path + repository identify a worktree; add a persisted UUID only if same-path recreation must reset notes.
 const notesPath = (worktree: string) => join(configDir(), `${createHash("sha256").update(worktree).digest("hex")}.json`);
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
+
+const isSafeNote = (note: unknown): note is string =>
+	typeof note === "string" && note.trim().length > 0 && !CONTROL_CHARACTERS.test(note);
+
+const recordIdentity = ({ repository, worktree, gitDir, generation }: NotesRecord): WorktreeIdentity =>
+	({ repository, worktree, gitDir, generation });
+
+const isMissing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
+
+async function worktreeGeneration(gitDir: string): Promise<string> {
+	const metadata = await stat(gitDir, { bigint: true });
+	return `${metadata.dev}:${metadata.ino}:${metadata.birthtimeNs}`;
+}
 
 /** Notes files are untrusted user data. Invalid records throw so callers preserve them. */
 export function parseNotes(raw: string): NotesRecord {
 	const data: unknown = JSON.parse(raw);
 	if (!data || typeof data !== "object" || Array.isArray(data)) throw new TypeError("notes config must be an object");
 	const input = data as Record<string, unknown>;
-	if (Object.keys(input).sort().join(",") !== "notes,repository,worktree"
+	if (Object.keys(input).sort().join(",") !== "generation,gitDir,notes,repository,worktree"
 		|| typeof input.repository !== "string" || !isAbsolute(input.repository)
 		|| typeof input.worktree !== "string" || !isAbsolute(input.worktree)
+		|| typeof input.gitDir !== "string" || !isAbsolute(input.gitDir)
+		|| typeof input.generation !== "string" || !/^\d+:\d+:\d+$/.test(input.generation)
 		|| !Array.isArray(input.notes)
 		|| input.notes.length > MAX_NOTES
-		|| !input.notes.every((note): note is string => typeof note === "string" && note.trim().length > 0)) {
-		throw new TypeError(`notes config must identify one worktree and contain at most ${MAX_NOTES} non-empty strings`);
+		|| !input.notes.every(isSafeNote)) {
+		throw new TypeError(`notes config must identify one worktree and contain at most ${MAX_NOTES} safe non-empty strings`);
 	}
 	return {
 		repository: input.repository,
 		worktree: input.worktree,
+		gitDir: input.gitDir,
+		generation: input.generation,
 		notes: input.notes.map((note) => note.replace(/\s+/g, " ").trim()),
 	};
 }
@@ -50,19 +72,29 @@ export function renderNotes(notes: string[]): string[] {
 	return notes.length ? notes.map((note, i) => `${i + 1}. ${note}`) : ["no notes"];
 }
 
-async function resolveWorktree(pi: ExtensionAPI, cwd: string): Promise<Omit<NotesRecord, "notes">> {
+async function resolveWorktree(pi: ExtensionAPI, cwd: string): Promise<WorktreeIdentity> {
 	const result = await pi.exec(
 		"git",
-		["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+		["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"],
 		{ cwd },
 	);
 	if (result.code !== 0 || result.killed) throw new Error("pi-notes requires a Git worktree");
-	const [worktree, repository, ...extra] = result.stdout.trim().split(/\r?\n/);
-	if (!worktree || !repository || extra.length) throw new Error("git returned an invalid worktree identity");
-	return { worktree: await realpath(worktree), repository: await realpath(repository) };
+	const [worktree, repository, gitDir, ...extra] = result.stdout.trim().split(/\r?\n/);
+	if (!worktree || !repository || !gitDir || extra.length) throw new Error("git returned an invalid worktree identity");
+	const [canonicalWorktree, canonicalRepository, canonicalGitDir] = await Promise.all([
+		realpath(worktree),
+		realpath(repository),
+		realpath(gitDir),
+	]);
+	return {
+		worktree: canonicalWorktree,
+		repository: canonicalRepository,
+		gitDir: canonicalGitDir,
+		generation: await worktreeGeneration(canonicalGitDir),
+	};
 }
 
-async function loadNotes(identity: Omit<NotesRecord, "notes">): Promise<LoadedNotes> {
+async function loadNotes(identity: WorktreeIdentity): Promise<LoadedNotes> {
 	let raw: string;
 	try {
 		raw = await readFile(notesPath(identity.worktree), "utf8");
@@ -76,12 +108,12 @@ async function loadNotes(identity: Omit<NotesRecord, "notes">): Promise<LoadedNo
 	} catch {
 		return { notes: [], issue: "malformed" };
 	}
-	return record.worktree === identity.worktree && record.repository === identity.repository
+	return isDeepStrictEqual(recordIdentity(record), identity)
 		? { notes: record.notes }
 		: { notes: [], issue: "stale" };
 }
 
-async function persist(identity: Omit<NotesRecord, "notes">, notes: string[]): Promise<void> {
+async function persist(identity: WorktreeIdentity, notes: string[]): Promise<void> {
 	const path = notesPath(identity.worktree);
 	const temp = `${path}.${randomUUID()}.tmp`;
 	await mkdir(configDir(), { recursive: true });
@@ -95,11 +127,11 @@ async function persist(identity: Omit<NotesRecord, "notes">, notes: string[]): P
 
 function issueMessage(issue: LoadedNotes["issue"]): string | undefined {
 	if (issue === "malformed") return "Worktree notes file is malformed; fix it or run /note-clear to reset.";
-	if (issue === "stale") return "Worktree notes belong to an old repository; run /note-prune or /note-clear.";
+	if (issue === "stale") return "Worktree notes belong to an old worktree; run /note-prune or /note-clear.";
 	return undefined;
 }
 
-async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ identity: Omit<NotesRecord, "notes">; notes: string[] } | undefined> {
+async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ identity: WorktreeIdentity; notes: string[] } | undefined> {
 	try {
 		const identity = await resolveWorktree(pi, ctx.cwd);
 		const loaded = await loadNotes(identity);
@@ -149,11 +181,35 @@ async function pruneStale(pi: ExtensionAPI): Promise<{ removed: number; skipped:
 			skipped++;
 			continue;
 		}
-		const storedWorktree = await realpath(record.worktree).catch(() => undefined);
-		const current = storedWorktree === record.worktree
-			? await resolveWorktree(pi, record.worktree).catch(() => undefined)
-			: undefined;
-		if (!current || current.worktree !== record.worktree || current.repository !== record.repository) {
+		let stale = false;
+		try {
+			const [worktree, repository, gitDir] = await Promise.all([
+				realpath(record.worktree),
+				realpath(record.repository),
+				realpath(record.gitDir),
+			]);
+			stale = worktree !== record.worktree
+				|| repository !== record.repository
+				|| gitDir !== record.gitDir
+				|| await worktreeGeneration(gitDir) !== record.generation;
+		} catch (error) {
+			if (isMissing(error)) stale = true;
+			else {
+				skipped++;
+				continue;
+			}
+		}
+		if (!stale) {
+			let current: WorktreeIdentity;
+			try {
+				current = await resolveWorktree(pi, record.worktree);
+			} catch {
+				skipped++;
+				continue;
+			}
+			stale = !isDeepStrictEqual(current, recordIdentity(record));
+		}
+		if (stale) {
 			await rm(path, { force: true });
 			removed++;
 		}
@@ -170,6 +226,10 @@ export default function notesExtension(pi: ExtensionAPI): void {
 			const text = args.replace(/\s+/g, " ").trim();
 			if (!text) {
 				ctx.ui.notify("Usage: /note <text>", "warning");
+				return;
+			}
+			if (!isSafeNote(text)) {
+				ctx.ui.notify("Notes cannot contain terminal control characters.", "warning");
 				return;
 			}
 			const current = await readCurrent(pi, ctx);
@@ -237,7 +297,7 @@ export default function notesExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const { removed, skipped } = await pruneStale(pi);
-			ctx.ui.notify(`Removed ${removed} stale worktree note file${removed === 1 ? "" : "s"}; preserved ${skipped} invalid file${skipped === 1 ? "" : "s"}.`, "info");
+			ctx.ui.notify(`Removed ${removed} stale worktree note file${removed === 1 ? "" : "s"}; preserved ${skipped} unchecked or invalid file${skipped === 1 ? "" : "s"}.`, "info");
 			await refresh(pi, ctx);
 		},
 	});
