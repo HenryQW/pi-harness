@@ -60,9 +60,12 @@ Do not edit files.
 | `tools` | no | Omit for Pi defaults; when present, base tools are listed and every loaded Role/caller extension tool is added automatically. `[]` leaves extension tools only. |
 | `extensions` | no | Absolute/`~/` paths or package sources. Package-declared Skills and Pi `resources_discover` Skill paths load automatically. Repository-relative paths are rejected. |
 | `skills` | no | Additional effective Pi Skill names, resolved from Main's registry |
+| `isolation` | no | Set to `worktree` to give each delegated child its own git worktree branched from Main's current `HEAD` |
 | Markdown body | yes | Role system instructions |
 
 Missing skills warn and skip; they do not block delegation. No repo-controlled `.pi/agents` roles. No package-local model picker.
+
+With `isolation: worktree`, each child runs in `<repo>/.worktrees/subagent-<id>` on branch `pi-subagent/subagent-<id>`, so parallel children never clobber each other's files. Non-git directories silently share Main's working directory. The child is told to work only inside its worktree and commit to its branch; after each run the parent sees a worktree report (path, branch, commits, dirty, pruned) appended to the result. Worktrees with no commits and a clean tree are discarded automatically; anything holding work stays for the parent to review and merge — children never merge.
 
 ## Library API
 

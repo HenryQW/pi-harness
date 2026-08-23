@@ -214,12 +214,15 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const child = JSON.parse(result.content[0].text);
 		assert.equal(child.cwd, await realpath("/tmp"));
 		assert.equal(child.prompt, "Review only requested change.");
-		const policyExtension = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension").at(-1)!;
+		const extensionArgs = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension");
+		const policyExtension = extensionArgs.at(-2)!;
 		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
+		assert.match(extensionArgs.at(-1)!, /pi-subagent\/extensions\/child-policy\.ts$/);
 		assert.deepEqual(child.args, [
 			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
 			"--extension", "/user/extensions/review.ts",
 			"--extension", policyExtension,
+			"--extension", extensionArgs.at(-1),
 			"--skill", "/effective/skills/security/SKILL.md",
 			`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(["read", "grep"]),
 			"--model", "test/text-model",
@@ -284,7 +287,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
 		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
-		assert.match(args.filter((value: string, index: number) => args[index - 1] === "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
+		assert.equal(args.filter((value: string, index: number) => args[index - 1] === "--extension").some((path: string) => path.endsWith("/pi-subagent/extensions/child-policy.ts")), true);
 	});
 });
 

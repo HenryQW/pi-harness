@@ -14,7 +14,7 @@ import {
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
 import { Type } from "typebox";
-import { createRoleLaunch, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute } from "@henryqw/pi-subagent";
+import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveRoleLaunch, resolveTaskRoute, worktreeContextNote } from "@henryqw/pi-subagent";
 
 const MODEL_CLASSES = PROFILE_NAMES;
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
@@ -43,6 +43,11 @@ type ChildResult = {
 	stderr: string;
 	stopReason?: string;
 	errorMessage?: string;
+};
+type DelegateResult = {
+	content: [{ type: "text"; text: string }];
+	details: Record<string, unknown>;
+	isError?: boolean;
 };
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
 type WidgetItem = {
@@ -591,6 +596,11 @@ export default function subagentExtension(
 				throw new Error(`Unknown Subagent role: ${params.role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
 			}
 
+			// Opt-in per-child git worktree isolation; any failure degrades to the shared cwd.
+			const worktree = role.isolation === "worktree"
+				? await createChildWorktree(ctx.cwd, toolCallId).catch(() => undefined)
+				: undefined;
+
 			if (params.modelClass !== undefined && !isModelClass(params.modelClass)) {
 				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
 			}
@@ -608,32 +618,43 @@ export default function subagentExtension(
 				);
 			}
 
-			const args = ["--mode", "json", "-p", ...launch.args, `Task: ${task}`];
+			const args = ["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`];
 			await acquireChildPermit(signal);
 			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
+			let result: DelegateResult | undefined;
 			try {
 				startWidgetItem(toolCallId, role.name, launch.model.id, thinkingLevel, task, ctx);
 				const details = { role: role.name, model: modelReferenceValue, thinkingLevel };
-				const result = await runPi(
+				const child = await runPi(
 					args,
-					ctx.cwd,
+					worktree?.path ?? ctx.cwd,
 					signal,
 					(text) => onUpdate?.({ content: [{ type: "text", text }], details }),
 					(tokens) => updateWidgetTokens(toolCallId, tokens),
 					timeoutPolicy,
 				);
-				const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-				widgetStatus = result.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
+				const failed = child.exitCode !== 0 || child.stopReason === "error" || child.stopReason === "aborted";
+				widgetStatus = child.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
 				const text = capOutput(failed
-					? result.errorMessage || result.stderr.trim() || result.output || `Subagent exited with code ${result.exitCode}.`
-					: result.output || "(no output)");
-				return { content: [{ type: "text" as const, text }], details, ...(failed ? { isError: true } : {}) };
+					? child.errorMessage || child.stderr.trim() || child.output || `Subagent exited with code ${child.exitCode}.`
+					: child.output || "(no output)");
+				result = { content: [{ type: "text" as const, text }], details, ...(failed ? { isError: true } : {}) };
+				return result;
 			} catch (error) {
 				if (signal?.aborted && !(error instanceof SubagentTimeoutError)) widgetStatus = "aborted";
 				throw error;
 			} finally {
 				releaseChildPermit();
 				finishWidgetItem(toolCallId, widgetStatus);
+				if (worktree) {
+					let payloadLine: string | undefined;
+					try {
+						payloadLine = JSON.stringify(await finalizeChildWorktree(worktree));
+					} catch {
+						payloadLine = undefined;
+					}
+					if (result && payloadLine) result.content[0].text += `\n${payloadLine}`;
+				}
 			}
 		},
 	});

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import childPolicy, { DENIED_TOOLS } from "../extensions/child-policy.ts";
 import childToolPolicy, { ROLE_TOOL_POLICY_FLAG } from "../extensions/role-tools.ts";
 import {
 	listManagedSubagents,
@@ -121,7 +122,9 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.deepEqual(launch.args.slice(0, 3), ["--no-session", "--no-extensions", "--no-skills"]);
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
 	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
-	assert.match(valuesAfter(launch.args, "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
+	const extensionArgs = valuesAfter(launch.args, "--extension");
+	assert.match(extensionArgs.at(-1)!, /pi-subagent\/extensions\/child-policy\.ts$/);
+	assert.ok(extensionArgs.some((path) => path.endsWith("pi-subagent/extensions/role-tools.ts")));
 	assert.deepEqual(valuesAfter(launch.args, "--skill"), ["/effective/security/SKILL.md"]);
 	assert.equal(launch.args.includes("--tools"), false);
 	assert.equal(launch.args.includes("--no-tools"), false);
@@ -142,6 +145,30 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.equal(defaultTools.args.includes("--no-tools"), false);
 	assert.equal(defaultTools.args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
 	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
+	assert.ok(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("pi-subagent/extensions/child-policy.ts")));
+});
+
+test("child policy strips denied tools on session start", () => {
+	let sessionStart: (() => void) | undefined;
+	let active: string[] = [];
+	const pi = {
+		on(event: string, handler: () => void) {
+			if (event === "session_start") sessionStart = handler;
+		},
+		getActiveTools: () => ["read", "bash", ...DENIED_TOOLS],
+		setActiveTools: (names: string[]) => { active = names; },
+	} as unknown as ExtensionAPI;
+
+	childPolicy(pi);
+	assert.ok(sessionStart);
+	sessionStart();
+	assert.deepEqual(active, ["read", "bash"]);
+	assert.deepEqual([...DENIED_TOOLS], [
+		"delegate_task",
+		"ask_question",
+		"auto_dag_approve",
+		"auto_dag_start",
+	]);
 });
 
 test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retires", async () => {

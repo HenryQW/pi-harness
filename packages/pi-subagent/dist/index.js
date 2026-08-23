@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode } from "@henryqw/pi-herdr";
 import { modelReference, orderedProfileRoutes, PROFILE_NAMES, readTaskModelsConfig, resolveConfiguredTaskRoute, resolveTaskModelRoute, } from "@henryqw/pi-task-models";
+export { createChildWorktree, finalizeChildWorktree, worktreeContextNote, } from "./worktree.js";
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
+const CHILD_POLICY_EXTENSION = fileURLToPath(new URL("../extensions/child-policy.ts", import.meta.url));
 const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const isProfileName = (value) => typeof value === "string" && PROFILE_NAMES.includes(value);
 const cleanText = (value, field, source) => {
@@ -40,6 +42,14 @@ function validateExtension(extension, source) {
 function extensionList(value, source) {
     return stringList(value, "extensions", source).map((extension) => validateExtension(extension, source));
 }
+function validateIsolation(value, source) {
+    if (value === undefined)
+        return undefined;
+    const isolation = cleanText(value, "isolation", source);
+    if (isolation !== "worktree")
+        throw new Error(`${source}: isolation must be "worktree".`);
+    return isolation;
+}
 export function loadRoles(agentDir = getAgentDir()) {
     const dir = join(agentDir, "config", "pi-subagent");
     let entries;
@@ -68,6 +78,7 @@ export function loadRoles(agentDir = getAgentDir()) {
             name: cleanText(frontmatter.name, "name", file),
             description: cleanText(frontmatter.description, "description", file),
             tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
+            isolation: validateIsolation(frontmatter.isolation, file),
             extensions: extensionList(frontmatter.extensions, file),
             skills: stringList(frontmatter.skills, "skills", file),
             systemPrompt: cleanText(parsed.body, "system prompt", file),
@@ -127,6 +138,7 @@ export function createRoleLaunch(pi, ctx, input) {
         ...(input.extensions ?? []),
         ...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
         ...(tools === undefined ? [] : [ROLE_TOOLS_EXTENSION]),
+        CHILD_POLICY_EXTENSION,
     ].map((extension) => validateExtension(extension, `Role ${role.name}`));
     const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
