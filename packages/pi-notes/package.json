@@ -1,0 +1,45 @@
+{
+  "name": "@henryqw/pi-notes",
+  "version": "0.1.0",
+  "description": "Persistent notes in a Pi widget, managed with /note commands.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "notes",
+    "widget"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-packages.git",
+    "directory": "packages/pi-notes"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-packages/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/notes.ts"
+    ]
+  }
+}
