@@ -17,13 +17,14 @@ const notesPath = () => join(getAgentDir(), "config", "pi-notes.json");
 /** Notes file is untrusted user data. Valid JSON parses to notes; anything else throws so callers can preserve the file. */
 export function parseNotes(raw: string): string[] {
 	const data: unknown = JSON.parse(raw);
-	if (!Array.isArray(data) || !data.every((note): note is string => typeof note === "string")) {
-		throw new TypeError("notes config must be a JSON array of strings");
+	if (
+		!Array.isArray(data)
+		|| data.length > MAX_NOTES
+		|| !data.every((note): note is string => typeof note === "string" && note.trim().length > 0)
+	) {
+		throw new TypeError(`notes config must be a JSON array of at most ${MAX_NOTES} non-empty strings`);
 	}
-	return data
-		.map((note) => note.replace(/\s+/g, " ").trim())
-		.filter(Boolean)
-		.slice(0, MAX_NOTES);
+	return data.map((note) => note.replace(/\s+/g, " ").trim());
 }
 
 let invalidConfig = false;

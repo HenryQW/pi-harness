@@ -7,8 +7,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import notesExtension, { MAX_NOTES, parseNotes, renderNotes } from "../extensions/notes.ts";
 
 test("parseNotes validates untrusted file content", () => {
-	assert.deepEqual(parseNotes('[" a ","b","c","d","e"]'), ["a", "b", "c", "d"]);
+	assert.deepEqual(parseNotes('[" a ","b","c","d"]'), ["a", "b", "c", "d"]);
+	assert.throws(() => parseNotes('["a","b","c","d","e"]'), TypeError);
 	assert.throws(() => parseNotes('["keep", {"draft":"recover"}]'), TypeError);
+	assert.throws(() => parseNotes('["keep", "  "]'), TypeError);
 	assert.throws(() => parseNotes('{"not":"an array"}'), TypeError);
 	assert.throws(() => parseNotes("not json"), SyntaxError);
 	assert.throws(() => parseNotes('{broken'), SyntaxError);
