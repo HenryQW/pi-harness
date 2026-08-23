@@ -1,4 +1,4 @@
-import { closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import * as path from "node:path";
@@ -6,15 +6,12 @@ import * as path from "node:path";
 export interface AddedDir {
 	absolutePath: string;
 	label: string;
-	addedAt: number;
 }
 
 export interface DirContext {
-	dir: string;
 	agentsMd: string | null;
 	claudeMd: string | null;
-	skillPaths: Map<string, string>;
-	skills: Map<string, string>;
+	skills: Set<string>;
 }
 
 const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
@@ -89,22 +86,11 @@ function skillFiles(dir: string): Array<{ name: string; path: string }> {
 }
 
 export function scanDirContext(dir: string): DirContext {
-	const ctx: DirContext = {
-		dir,
+	return {
 		agentsMd: readContextFile(dir, "AGENTS.md"),
 		claudeMd: readContextFile(dir, "CLAUDE.md"),
-		skillPaths: new Map(),
-		skills: new Map(),
+		skills: new Set(skillFiles(dir).map(({ name }) => name)),
 	};
-
-	for (const skill of skillFiles(dir)) {
-		const content = readFileSafe(skill.path);
-		if (content === null) continue;
-		ctx.skillPaths.set(skill.name, skill.path);
-		ctx.skills.set(skill.name, content);
-	}
-
-	return ctx;
 }
 
 export function collectSkillPaths(dirs: AddedDir[]): string[] {
@@ -121,36 +107,6 @@ export function collectSkillPaths(dirs: AddedDir[]): string[] {
 	return paths;
 }
 
-function skillDescription(content: string): string {
-	const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
-	const value = frontmatter?.match(/^description:\s*(.*?)\s*$/m)?.[1];
-	if (!value || value === ">" || value === "|") return "No description";
-	return value.replace(/^("|')|("|')$/g, "").trim() || "No description";
-}
-
-// ponytail: 8KB head is enough for SKILL.md frontmatter descriptions; full-body reads stay in scanDirContext
-function readHead(filePath: string, bytes = 8192): string | null {
-	let fd: number | undefined;
-	try {
-		fd = openSync(filePath, "r");
-		const buffer = Buffer.alloc(bytes);
-		const bytesRead = readSync(fd, buffer, 0, bytes, 0);
-		return buffer.toString("utf8", 0, bytesRead);
-	} catch {
-		return null;
-	} finally {
-		if (fd !== undefined) closeSync(fd);
-	}
-}
-
-// ponytail: 8KB head covers typical frontmatter; falls back to full read only when opener present but closer missing (rare)
-function readSkillFrontmatter(filePath: string): string | null {
-	const head = readHead(filePath, 8192);
-	if (head === null || !/^---\r?\n/.test(head)) return head;
-	if (/^---\r?\n[\s\S]*\r?\n---(?:\r?\n|$)/.test(head)) return head;
-	return readFileSafe(filePath);
-}
-
 export function buildContextInjection(dirs: AddedDir[]): string {
 	if (dirs.length === 0) return "";
 
@@ -159,7 +115,6 @@ export function buildContextInjection(dirs: AddedDir[]): string {
 		`\nThe following ${dirs.length} external director${dirs.length === 1 ? "y is" : "ies are"} included in this session. You can read, edit, and write files in these directories using absolute paths.\n`,
 	];
 
-	const registeredSkills = new Set<string>();
 	for (const dir of dirs) {
 		sections.push(`### ${dir.label} - \`${dir.absolutePath}\``);
 
@@ -167,16 +122,6 @@ export function buildContextInjection(dirs: AddedDir[]): string {
 		if (agentsMd) sections.push(`\n#### AGENTS.md (from ${dir.label})\n${agentsMd}`);
 		const claudeMd = readContextFile(dir.absolutePath, "CLAUDE.md");
 		if (claudeMd) sections.push(`\n#### CLAUDE.md (from ${dir.label})\n${claudeMd}`);
-
-		const skills = skillFiles(dir.absolutePath).filter((skill) => !registeredSkills.has(skill.name));
-		if (skills.length > 0) {
-			sections.push(`\n#### Skills from ${dir.label} (registered as /skill:name commands):`);
-			for (const skill of skills) {
-				registeredSkills.add(skill.name);
-				const description = skillDescription(readSkillFrontmatter(skill.path) ?? "");
-				sections.push(`- **${skill.name}**: ${description} - use \`/skill:${skill.name}\` or read \`${skill.path}\``);
-			}
-		}
 	}
 
 	return sections.join("\n");

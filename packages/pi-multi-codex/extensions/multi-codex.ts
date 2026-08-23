@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { lock } from "proper-lockfile";
 import {
 	createAssistantMessageEventStream,
@@ -259,32 +260,6 @@ function errorCode(error: unknown): string | undefined {
 	return error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
 }
 
-function sleepUnref(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) return reject(signal.reason);
-		let abort: () => void;
-		const cleanup = () => signal?.removeEventListener("abort", abort);
-		const timer = setTimeout(() => {
-			cleanup();
-			resolve();
-		}, ms);
-		timer.unref?.();
-		abort = () => {
-			clearTimeout(timer);
-			cleanup();
-			reject(signal?.reason);
-		};
-		signal?.addEventListener("abort", abort, { once: true });
-		if (signal?.aborted) abort();
-	});
-}
-
-function cleanupSignal(): AbortSignal {
-	const controller = new AbortController();
-	void sleepUnref(CLEANUP_TIMEOUT_MS).then(() => controller.abort());
-	return controller.signal;
-}
-
 async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 	signal?.throwIfAborted();
 	await mkdir(join(getAgentDir(), "config", "pi-multi-codex"), { recursive: true, mode: 0o700 });
@@ -310,7 +285,7 @@ async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>,
 			}
 		} catch (error) {
 			if (errorCode(error) !== "ELOCKED") throw error;
-			await sleepUnref(CACHE_MUTEX_RETRY_MS, signal);
+			await delay(CACHE_MUTEX_RETRY_MS, undefined, { signal, ref: false });
 		}
 	}
 	throw new Error("Cache mutex acquisition ended unexpectedly.");
@@ -694,7 +669,7 @@ class CodexQuotaStatus {
 		} finally {
 			if (owner) {
 				this.stopHeartbeat(slot, owner);
-				await this.release(slot, owner, session.signal.aborted ? cleanupSignal() : session.signal).catch(() => undefined);
+				await this.release(slot, owner, session.signal.aborted ? AbortSignal.timeout(CLEANUP_TIMEOUT_MS) : session.signal).catch(() => undefined);
 			}
 		}
 	}
