@@ -363,16 +363,54 @@ test("finalizeChildWorktree preserves a clean detached-HEAD commit", async (t) =
 	assert.equal(git(info.path, "rev-parse", "HEAD"), detachedCommit);
 });
 
-test("finalizeChildWorktree prunes stale metadata before deleting an empty branch", async (t) => {
+test("finalizeChildWorktree removes only its stale metadata before deleting an empty branch", async (t) => {
 	const repo = await initializedRepository(t);
 	const info = await createChildWorktree(repo, "missing");
+	const unrelated = await createChildWorktree(repo, "unrelated-missing");
 	assert.ok(info);
-	await rm(info.path, { recursive: true, force: true });
+	assert.ok(unrelated);
+	await Promise.all([info.path, unrelated.path].map((path) => rm(path, { recursive: true, force: true })));
 
 	const payload = await finalizeChildWorktree(info);
 	assert.equal(payload.pruned, true);
 	assert.equal(git(repo, "branch", "--list", info.branch), "");
-	assert.equal(git(repo, "worktree", "list", "--porcelain").includes(info.path), false);
+	const listed = git(repo, "worktree", "list", "--porcelain");
+	assert.equal(listed.includes(info.path), false);
+	assert.equal(listed.includes(unrelated.path), true);
+});
+
+test("finalizeChildWorktree prunes a clean worktree after deinitializing submodules", async (t) => {
+	const source = await initializedRepository(t);
+	const repo = await initializedRepository(t);
+	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
+	git(repo, "commit", "-qm", "add submodule");
+	const info = await createChildWorktree(repo, "clean-submodule");
+	assert.ok(info);
+	git(info.path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
+
+	const payload = await finalizeChildWorktree(info);
+	assert.equal(payload.pruned, true);
+	assert.equal(existsSync(info.path), false);
+	assert.equal(git(repo, "branch", "--list", info.branch), "");
+});
+
+test("finalizeChildWorktree preserves ignored files inside initialized submodules", async (t) => {
+	const source = await initializedRepository(t);
+	await writeFile(join(source, ".gitignore"), "*.cache\n");
+	git(source, "add", ".gitignore");
+	git(source, "commit", "-qm", "ignore cache files");
+	const repo = await initializedRepository(t);
+	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
+	git(repo, "commit", "-qm", "add submodule");
+	const info = await createChildWorktree(repo, "ignored-submodule");
+	assert.ok(info);
+	git(info.path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
+	await writeFile(join(info.path, "mod", "result.cache"), "keep me\n");
+
+	const payload = await finalizeChildWorktree(info);
+	assert.equal(payload.dirty, true);
+	assert.equal(payload.pruned, false);
+	assert.equal(await readFile(join(info.path, "mod", "result.cache"), "utf8"), "keep me\n");
 });
 
 test("finalizeChildWorktree preserves ignored files", async (t) => {
@@ -429,7 +467,7 @@ test("finalizeChildWorktree counts the dedicated branch when the checkout is gon
 	);
 	assert.equal(empty.commits, 0);
 	assert.equal(empty.pruned, true);
-	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "prune", "--expire", "now"]);
+	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "remove", path]);
 	assert.deepEqual(calls.find((args) => args[0] === "update-ref"), ["update-ref", "-d", "refs/heads/pi-subagent/subagent-x", "abc123"]);
 
 	// Unmeasurable count: keep everything and say so.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1268,6 +1268,37 @@ test("background worktree report survives capped child output", async (t) => {
 			dirty: false,
 			pruned: true,
 		});
+	});
+});
+
+test("session shutdown reports preserved isolated setup failures", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir, true);
+		const hook = join(repo, ".git", "hooks", "post-checkout");
+		await writeFile(hook, "#!/bin/sh\nsleep 0.2\nexit 1\n");
+		await chmod(hook, 0o755);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, "throw new Error('runner must not start');\n");
+		process.argv[1] = runner;
+
+		const app = harness({ cwd: repo });
+		const started = await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		const name = childName("call-1");
+		const path = join(await realpath(repo), ".worktrees", name);
+		const branch = `pi-subagent/${name}`;
+		await waitFor(() => existsSync(path));
+		await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
+
+		assert.equal(app.sentMessages.length, 1);
+		const { message, options } = app.sentMessages[0]!;
+		assert.equal(message.details.taskId, started.details.taskId);
+		assert.equal(message.details.recovery, true);
+		assert.equal(options.triggerTurn, false);
+		assert.match(message.content, /left recoverable isolated setup state/);
+		assert.equal(message.content.includes(path), true);
+		assert.equal(message.content.includes(branch), true);
+		assert.equal(existsSync(path), true);
 	});
 });
 

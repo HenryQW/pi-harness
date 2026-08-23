@@ -28,6 +28,10 @@ const GIT_TIMEOUT_MS = 30_000;
 const WORKTREES_DIRNAME = ".worktrees";
 const BRANCH_NAMESPACE = "pi-subagent";
 
+class WorktreeSetupError extends Error {
+	override name = "WorktreeSetupError";
+}
+
 /** Runs git, capturing output; never throws on non-zero exit or spawn failure. */
 const runGit: GitRunner = (args, cwd) =>
 	new Promise((resolve) => {
@@ -128,7 +132,7 @@ export async function createChildWorktree(
 	await ensureLocalExclude(gitDir);
 	const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot);
 	if (added.code !== 0) {
-		throw new Error(`git worktree add failed; preserved ${path} and ${branch}: ${added.stderr.trim().slice(0, 200)}`);
+		throw new WorktreeSetupError(`git worktree add failed; preserved ${path} and ${branch}: ${added.stderr.trim().slice(0, 200)}`);
 	}
 	return { path, cwd: join(path, relativeCwd), branch, repoRoot: stableRepoRoot, baseCommit };
 }
@@ -165,8 +169,8 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 		if (Number.isNaN(commits)) return markUnproven(payload, "rev-list produced non-numeric output", "commits");
 		payload.commits = commits;
 		if (commits > 0) return payload; // keep the branch for parent review
-		const pruned = await run(["worktree", "prune", "--expire", "now"], gitCwd);
-		if (pruned.code !== 0) return markUnproven(payload, `worktree prune exit ${pruned.code}: ${pruned.stderr.trim().slice(0, 200)}`, "cleanup");
+		const removed = await run(["worktree", "remove", info.path], gitCwd);
+		if (removed.code !== 0) return markUnproven(payload, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`, "cleanup");
 		const deleted = await run(["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit], gitCwd);
 		if (deleted.code !== 0) return markUnproven(payload, `branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`, "cleanup");
 		payload.pruned = true;
@@ -200,6 +204,22 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 		if (head.code !== 0 || head.stdout.trim() !== `refs/heads/${info.branch}`) {
 			return markUnproven(payload, "HEAD is detached, switched, or unreadable", "checked-out commits");
 		}
+		const modules = await run(["submodule", "status", "--recursive"], info.path);
+		if (modules.code !== 0) return markUnproven(payload, `submodule list exit ${modules.code}: ${modules.stderr.trim().slice(0, 200)}`, "dirty");
+		const hasInitializedSubmodules = modules.stdout.split("\n").some((line) => line && !line.startsWith("-"));
+		if (hasInitializedSubmodules) {
+			const nested = await run([
+				"submodule", "foreach", "--recursive", "--quiet",
+				"git status --porcelain --untracked-files=all --ignored=matching --ignore-submodules=none",
+			], info.path);
+			if (nested.code !== 0) return markUnproven(payload, `submodule status exit ${nested.code}: ${nested.stderr.trim().slice(0, 200)}`, "dirty");
+			if (nested.stdout.trim()) {
+				payload.dirty = true;
+				return payload;
+			}
+			const deinitialized = await run(["submodule", "deinit", "--all", "--force"], info.path);
+			if (deinitialized.code !== 0) return markUnproven(payload, `submodule deinit exit ${deinitialized.code}: ${deinitialized.stderr.trim().slice(0, 200)}`, "cleanup");
+		}
 		const rechecked = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], info.path);
 		if (rechecked.code !== 0) return markUnproven(payload, `final status exit ${rechecked.code}: ${rechecked.stderr.trim().slice(0, 200)}`, "dirty");
 		if (rechecked.stdout.trim()) {
@@ -207,7 +227,7 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 			return payload;
 		}
 		const cwd = info.repoRoot || info.path;
-		const removed = await run(["worktree", "remove", info.path], cwd);
+		const removed = await run(["worktree", "remove", ...(hasInitializedSubmodules ? ["--force"] : []), info.path], cwd);
 		if (removed.code !== 0) return markUnproven(payload, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`, "cleanup");
 		const deleted = await run(["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit], cwd);
 		if (deleted.code !== 0) return markUnproven(payload, `branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`, "cleanup");

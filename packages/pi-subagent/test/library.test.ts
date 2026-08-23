@@ -40,13 +40,14 @@ test("child role policy keeps selected built-ins and activates loaded extension 
 		registerFlag(name: string) { assert.equal(name, ROLE_TOOL_POLICY_FLAG); },
 		getFlag(name: string) {
 			assert.equal(name, ROLE_TOOL_POLICY_FLAG);
-			return JSON.stringify(["read"]);
+			return JSON.stringify(["read", "ask_question"]);
 		},
 		on(event: string, handler: () => void) {
 			if (event === "session_start") sessionStart = handler;
 		},
 		getAllTools: () => [
 			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "delegate_task", sourceInfo: { source: "npm:pi-subagent" } },
 			{ name: "extension_tool", sourceInfo: { source: "npm:example-extension" } },
 			{ name: "sdk_tool", sourceInfo: { source: "sdk" } },
 			{ name: "inline_tool", sourceInfo: { source: "inline" } },

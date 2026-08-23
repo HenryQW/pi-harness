@@ -676,16 +676,19 @@ export default function subagentExtension(
 		outcome: "completed" | "failed" | "aborted",
 		text: string,
 		worktreePayload?: WorktreePayload,
+		setupRecovery?: string,
 	): Promise<void> => {
 		const stale = launchEpoch !== sessionEpoch;
-		if (stale && (!worktreePayload || worktreePayload.pruned)) return;
+		if (stale && (!worktreePayload || worktreePayload.pruned) && !setupRecovery) return;
 		// Custom messages convert to user-role LLM messages, so the parent agent
 		// sees the outcome on its next turn without a forced turn now.
 		try {
 			pi.sendMessage({
 				customType: BACKGROUND_RESULT_TYPE,
 				content: stale
-					? `Background subagent ${taskId} (${details.role}) left recoverable isolated work after session shutdown.\n${JSON.stringify(worktreePayload)}`
+					? worktreePayload && !worktreePayload.pruned
+						? `Background subagent ${taskId} (${details.role}) left recoverable isolated work after session shutdown.\n${JSON.stringify(worktreePayload)}`
+						: `Background subagent ${taskId} (${details.role}) left recoverable isolated setup state after session shutdown.\n${setupRecovery}`
 					: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}${worktreePayload ? `\n${JSON.stringify(worktreePayload)}` : ""}`,
 				display: true,
 				details: { ...details, taskId, outcome, ...(stale ? { recovery: true } : {}) },
@@ -801,6 +804,7 @@ export default function subagentExtension(
 							aborted ? "aborted" : "failed",
 							failureText,
 							payloadLine,
+							error instanceof Error && error.name === "WorktreeSetupError" ? failureText : undefined,
 						);
 					} finally {
 						if (acquired) releaseChildPermit();
