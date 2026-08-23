@@ -147,11 +147,12 @@ function parseSessionFile(filePath: string): ParsedFile {
 				if (role !== "user" && role !== "assistant") break;
 				const text = truncateText(extractText(entry.message.content));
 				if (!text) break;
+				if (typeof entry.id !== "string" || !entry.id) break;
 				if (role === "user" && parsed.preview === null) {
 					parsed.preview = text.slice(0, 200);
 				}
 				parsed.messages.push({
-					entryId: String(entry.id ?? ""),
+					entryId: entry.id,
 					role,
 					timestamp: typeof entry.timestamp === "string" ? entry.timestamp : null,
 					text,
@@ -167,12 +168,6 @@ function parseSessionFile(filePath: string): ParsedFile {
 
 function isJunkEncodedDir(relSegments: string[]): boolean {
 	return relSegments.some((seg) => seg.startsWith("--private-tmp-"));
-}
-
-function isJunkCwd(cwd: string | null): boolean {
-	if (!cwd) return false;
-	const resolved = path.resolve(cwd);
-	return resolved.startsWith("/private/tmp/") || resolved.startsWith("/tmp/");
 }
 
 function walkJsonlFiles(sessionsDir: string): Map<string, fs.Stats> {
@@ -220,7 +215,8 @@ export function syncSessions(
 		(db.prepare("SELECT path, size, mtime_ms FROM session_files").all() as any[]).map((r) => [r.path, r]),
 	);
 
-	const deleted = [...watermarks.keys()].filter((p) => !all.some(([fp]) => fp === p));
+	const discovered = new Set(all.map(([fp]) => fp));
+	const deleted = [...watermarks.keys()].filter((p) => !discovered.has(p));
 	const changed: { path: string; stat: fs.Stats }[] = [];
 	for (const [p, stat] of all) {
 		const wm = watermarks.get(p);
@@ -251,6 +247,7 @@ export function syncSessions(
 		"INSERT INTO messages(path, entry_id, role, timestamp, text) VALUES (?, ?, ?, ?, ?)",
 	);
 
+	// Returns messages indexed for this file.
 	const tx = db.transaction((filePath: string, stat: fs.Stats) => {
 		const parsed = parseSessionFile(filePath);
 		delStmt.run(filePath);
@@ -261,7 +258,7 @@ export function syncSessions(
 			count++;
 		}
 		upsertFile.run(filePath, stat.size, Math.floor(stat.mtimeMs));
-		return { count, junk: isJunkCwd(parsed.cwd) };
+		return count;
 	});
 
 	let filesProcessed = 0;
@@ -269,14 +266,15 @@ export function syncSessions(
 	let filesSkipped = 0;
 
 	for (const { path: p, stat } of changed.slice(0, cap)) {
-		const res = tx(p, stat);
-		if (res.junk) {
-			// Watermarked so we don't re-parse junk every sync; rows already removed.
-			filesSkipped++;
-		} else {
-			filesProcessed++;
-			messagesIndexed += res.count;
+			let count: number;
+		try {
+			count = tx(p, stat);
+		} catch {
+			// One unreadable/malformed file must not abort the whole pass.
+			continue;
 		}
+		filesProcessed++;
+		messagesIndexed += count;
 	}
 	const changedRemaining = Math.max(0, changed.length - cap);
 
@@ -309,7 +307,14 @@ const TOKEN_RE = /"([^"]*)"|(\S+)/g;
 function collectTerms(query: string): string[] {
 	const terms: string[] = [];
 	for (const m of query.matchAll(TOKEN_RE)) {
-		const raw = m[1] ?? m[2] ?? "";
+		const phrase = m[1];
+		let raw = phrase ?? m[2] ?? "";
+		if (!raw) continue;
+		if (phrase === undefined) {
+			// Strip boundary punctuation from bare terms ("deployment?" →
+			// "deployment") while keeping quoted phrases verbatim.
+			raw = raw.replace(/^[^\p{L}\p{N}"']+|[^\p{L}\p{N}"']+$/gu, "");
+		}
 		if (raw) terms.push(raw);
 	}
 	return terms;
@@ -337,7 +342,7 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 	if (!query) return { ftsCandidates: [], forceLike: false };
 
 	const terms = collectTerms(query);
-	if (terms.every((t) => t.replace(/"/g, "").length < 3)) {
+	if (terms.some((t) => t.replace(/"/g, "").length < 3)) {
 		return { ftsCandidates: [], forceLike: true };
 	}
 
@@ -368,13 +373,37 @@ export interface SearchOptions {
 	currentSessionPath?: string;
 }
 
+// Dedup per file INSIDE SQL (best-ranked row per path) so one verbose
+// session cannot exhaust the scan ceiling and starve other sessions.
 const BASE_SELECT = `
-SELECT m.path, m.entry_id, m.role, m.timestamp, m.rowid,
-       snippet(session_fts, 0, '[', ']', '…', 16) AS snip
-FROM session_fts JOIN messages m ON m.rowid = session_fts.rowid
-WHERE session_fts MATCH ?
-ORDER BY rank
+SELECT path, entry_id, role, timestamp, snip, cwd, name, started_at FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY score) AS rn FROM (
+    SELECT m.path, m.entry_id, m.role, m.timestamp, s.cwd, s.name, s.started_at,
+           snippet(session_fts, 0, '[', ']', '…', 16) AS snip,
+           bm25(session_fts) AS score
+    FROM session_fts JOIN messages m ON m.rowid = session_fts.rowid
+    LEFT JOIN sessions s ON s.path = m.path
+    WHERE session_fts MATCH ?
+    ORDER BY score
+    LIMIT ${SCAN_LIMIT * 10}
+  )
+)
+WHERE rn = 1
+ORDER BY score
 LIMIT ${SCAN_LIMIT}`;
+
+/** Bounded excerpt around the first matched term for the LIKE fallback. */
+function likeSnippet(text: string, terms: string[]): string {
+	const lower = text.toLowerCase();
+	let at = -1;
+	for (const t of terms) {
+		const i = lower.indexOf(t.toLowerCase());
+		if (i >= 0 && (at < 0 || i < at)) at = i;
+	}
+	if (at < 0) return text.slice(0, 120);
+	const start = Math.max(0, at - 60);
+	return `${start > 0 ? "…" : ""}${text.slice(start, start + 120)}…`;
+}
 
 export function searchIndex(
 	dbPath: string,
@@ -395,6 +424,9 @@ export function searchIndex(
 			role: string;
 			timestamp: string | null;
 			snip: string;
+			cwd: string | null;
+			name: string | null;
+			started_at: string | null;
 		}
 		let rows: Omit<RawRow, "snip">[] = [];
 		let usedLike = plan.forceLike;
@@ -415,14 +447,28 @@ export function searchIndex(
 		if (usedLike) {
 			const terms = collectTerms(query.trim().slice(0, MAX_QUERY_CHARS)).map((t) => t.replace(/"/g, ""));
 			if (terms.length === 0) return { hits: [], backlogRemaining: getBacklog(db) };
-			const where = terms.map(() => "text LIKE ? ESCAPE '\\'").join(" AND ");
+			const where = terms.map(() => "m.text LIKE ? ESCAPE '\\'").join(" AND ");
 			rows = db
-				.prepare(`SELECT path, entry_id, role, timestamp FROM messages WHERE ${where} ORDER BY rowid DESC LIMIT ${SCAN_LIMIT}`)
+				.prepare(`SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at
+				          FROM messages m LEFT JOIN sessions s ON s.path = m.path
+				          WHERE ${where} ORDER BY m.rowid DESC LIMIT ${SCAN_LIMIT}`)
 				.all(...terms.map(likePattern)) as any;
+			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", terms);
 		}
 
-		// Current-session guard + one-hop lineage suppression + per-file dedup.
-		const hitPaths = new Set(rows.map((r) => r.path));
+		// Current-session guard FIRST (scoped to the current file — entry ids
+		// are only guaranteed unique within a file), then lineage suppression
+		// computed from surviving rows so a suppressed live hit on the current
+		// parent cannot suppress a matching child.
+		const guarded = (rows as RawRow[]).filter(
+			(r) =>
+				!(
+					opts?.currentSessionPath &&
+					r.path === opts.currentSessionPath &&
+					opts?.currentLiveEntryIds?.has(r.entry_id)
+				),
+		);
+		const hitPaths = new Set(guarded.map((r) => r.path));
 		const parentOf = new Map<string, string | null>();
 		const stmtParent = db.prepare("SELECT parent_session FROM sessions WHERE path = ?");
 		for (const p of hitPaths) {
@@ -433,11 +479,7 @@ export function searchIndex(
 		const seenFiles = new Set<string>();
 		const hits: SearchHit[] = [];
 		let rankCounter = 0;
-		for (const r of rows as RawRow[]) {
-			// Entry-level guard only: same-file hits outside the live branch
-			// (compacted away / inactive branch) stay discoverable per spec.
-			if (opts?.currentLiveEntryIds?.has(r.entry_id)) continue;
-
+		for (const r of guarded) {
 			// One hop: drop child hits when the named parent itself has hits.
 			const parent = parentOf.get(r.path);
 			if (parent && hitPaths.has(parent)) continue;
@@ -451,6 +493,9 @@ export function searchIndex(
 				timestamp: r.timestamp ?? "",
 				snippet: r.snip ?? "",
 				rank: rankCounter++,
+				cwd: r.cwd ?? undefined,
+				name: r.name ?? undefined,
+				startedAt: r.started_at ?? undefined,
 			});
 			if (hits.length >= limit) break;
 		}
@@ -468,7 +513,7 @@ export function getSessionRows(dbPath: string, limit: number): SessionRow[] {
 		const rows = db
 			.prepare("SELECT path, cwd, name, started_at, preview FROM sessions ORDER BY started_at DESC LIMIT ?")
 			.all(limit) as any[];
-		return rows.map((r) => ({ path: r.path, cwd: r.cwd ?? "", name: r.name ?? undefined, startedAt: r.startedAt ?? undefined, preview: r.preview ?? undefined }));
+		return rows.map((r) => ({ path: r.path, cwd: r.cwd ?? "", name: r.name ?? undefined, startedAt: r.started_at ?? undefined, preview: r.preview ?? undefined }));
 	} finally {
 		db.close();
 	}

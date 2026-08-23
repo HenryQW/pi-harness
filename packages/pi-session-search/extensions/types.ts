@@ -31,6 +31,10 @@ export interface SearchHit {
 	snippet: string;
 	/** BM25 rank position (0 = best). */
 	rank: number;
+	/** Session metadata joined from the sessions table. */
+	cwd?: string;
+	name?: string;
+	startedAt?: string;
 }
 
 export interface SyncResult {

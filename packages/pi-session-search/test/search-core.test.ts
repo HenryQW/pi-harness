@@ -142,13 +142,13 @@ describe("sync + BM25 search", () => {
 describe("sanitize ladder", () => {
 	it("natural language query is quoted term-by-term (implicit AND)", () => {
 		const plan = buildFtsQueryPlan('  what about "quoted phrases" and stuff?  ');
-		assert.deepEqual(plan.ftsCandidates[0], `"what" "about" "quoted phrases" "and" "stuff?"`);
+		assert.deepEqual(plan.ftsCandidates[0], `"what" "about" "quoted phrases" "and" "stuff"`);
 		assert.equal(plan.forceLike, false);
 	});
 
 	it("explicit operator queries pass raw with quoted recovery then OR", () => {
 		const plan = buildFtsQueryPlan("error AND NOT (unterminated");
-		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "(unterminated"`, `"error" OR "AND" OR "NOT" OR "(unterminated"`]);
+		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "unterminated"`, `"error" OR "AND" OR "NOT" OR "unterminated"`]);
 	});
 
 	it("parse-error recovery falls back through ladder without throwing", () => {
@@ -212,14 +212,89 @@ describe("lineage + guards", () => {
 		assert.equal(hits[0].path, childFile);
 	});
 
-	it("current-session guard skips live entries", () => {
+	it("current-session guard skips live entries only in the current file", () => {
 		const cur = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
 		const { hits } = searchIndex(dbPath, "deploy pipeline", {
+			currentSessionPath: cur,
 			currentLiveEntryIds: new Set(["u1"]),
 		});
 		for (const h of hits) {
 			assert.ok(!(h.path === cur && h.entryId === "u1"));
 		}
+	});
+
+	it("suppressed live hit on parent does not suppress a matching child (bhGOs)", () => {
+		const parentFile = writeFixture("--lg-parent--", "parent.jsonl", [
+			sessionHeader(),
+			msg("p1", "user", "guardlineage shared topic in the root session"),
+		], 30000);
+		writeFixture("--lg-child--", "child.jsonl", [
+			sessionHeader({ parentSession: parentFile }),
+			msg("c1", "assistant", "guardlineage shared topic answered in the fork"),
+		], 31000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		// Parent's only match is on its live branch → suppressed; child must survive.
+		const { hits } = searchIndex(dbPath, "guardlineage shared topic", {
+			currentSessionPath: parentFile,
+			currentLiveEntryIds: new Set(["p1"]),
+		});
+		assert.equal(hits.length, 1);
+		assert.equal(hits[0].path.endsWith("child.jsonl"), true);
+	});
+
+	it("entries without valid ids are skipped without aborting the pass (bhGOu)", () => {
+		writeFixture("--bad-ids--", "bad.jsonl", [
+			sessionHeader(),
+			JSON.stringify({ type: "message", parentId: null, timestamp: "t", message: { role: "user", content: [{ type: "text", text: "idless alpha message" }] } }),
+			msg("ok1", "assistant", "idless beta reply with good id"),
+		], 40000);
+		const res = syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(res.filesProcessed, 1);
+		const { hits } = searchIndex(dbPath, "idless beta");
+		assert.equal(hits.length, 1);
+	});
+});
+
+describe("sanitize ladder regression", () => {
+	it("mixed short-term query routes through LIKE and still matches (bhGOl)", () => {
+		writeFixture("--short-mix--", "mix.jsonl", [
+			sessionHeader(),
+			msg("m1", "user", "we chose the Go deployment strategy for the edge service"),
+		], 50000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		const plan = buildFtsQueryPlan("Go deployment");
+		assert.equal(plan.forceLike, true);
+		const { hits } = searchIndex(dbPath, "Go deployment");
+		assert.equal(hits.length, 1);
+	});
+
+	it("LIKE fallback results carry a snippet (bhGOt)", () => {
+		const { hits } = searchIndex(dbPath, "Go deployment");
+		assert.ok(hits[0].snippet.length > 0 && /Go deployment|deployment/i.test(hits[0].snippet));
+	});
+
+	it("boundary punctuation is stripped from NL terms end-to-end (bhGOw)", () => {
+		const { hits } = searchIndex(dbPath, "Go deployment strategy?");
+		assert.equal(hits.length, 1);
+	});
+
+	it("hits carry joined session metadata (bhGO0)", () => {
+		const { hits } = searchIndex(dbPath, "Go deployment");
+		assert.ok(hits[0].cwd && hits[0].startedAt);
+	});
+
+	it("verbose session cannot exhaust the scan ceiling (bhGOz)", () => {
+		const lines = [sessionHeader()];
+		for (let i = 0; i < 60; i++) lines.push(msg(`v${i}`, "assistant", `verbose-flood repeated marker text block number ${i}`));
+		writeFixture("--flood--", "flood.jsonl", lines, 60000);
+		writeFixture("--quiet--", "quiet.jsonl", [
+			sessionHeader(),
+			msg("q1", "user", "verbose-flood mentioned once here in a quiet session"),
+		], 61000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		const { hits } = searchIndex(dbPath, "verbose-flood", { limit: 5 });
+		const paths = new Set(hits.map((h) => h.path));
+		assert.equal(paths.size, 2, "both sessions must surface despite flood volume");
 	});
 });
 

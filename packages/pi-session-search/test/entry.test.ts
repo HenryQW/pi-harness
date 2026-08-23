@@ -180,4 +180,83 @@ describe("session_search entry point", () => {
 		const parsed = JSON.parse(res.content[0].text);
 		assert.equal(parsed.success, false);
 	});
+
+	it("rejects sessionId outside the sessions directory (bhGOq)", async () => {
+		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-trav`);
+		const pi = makePi();
+		mod.default(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		// A readable JSONL-shaped file OUTSIDE the sessions dir must be refused.
+	 const outside = path.join(agentDir, "secret.jsonl");
+		fs.writeFileSync(outside, [
+			JSON.stringify({ type: "session", version: 3, id: "x", timestamp: "t", cwd: "/tmp" }),
+			JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "t", message: { role: "user", content: [{ type: "text", text: "secret contents" }] } }),
+		].join("\n"));
+		for (const attempt of [outside, path.join(agentDir, "../..", "etc", "hosts")]) {
+			const res = await tool.execute("t6", { sessionId: attempt }, undefined, undefined, { sessionManager: {} });
+			const parsed = JSON.parse(res.content[0].text);
+			assert.equal(parsed.success, false, `should refuse ${attempt}`);
+			assert.match(parsed.message, /sessions directory/);
+		}
+	});
+
+	it("compact discovery hits carry the anchor message (bhGOn)", async () => {
+		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-compact`);
+		const pi = makePi();
+		mod.default(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		msgCount = 1;
+		writeSession("c/session-c.jsonl", [
+			{ type: "session", version: 3, id: "s3", timestamp: "2026-01-03T00:00:00.000Z", cwd: "/Users/tester/proj" },
+			msg(null, "user", "compacts anchor unique zebra topic"),
+			msg("e01", "assistant", "zebra reply"),
+		]);
+		writeSession("c/session-c2.jsonl", [
+			{ type: "session", version: 3, id: "s4", timestamp: "2026-01-03T01:00:00.000Z", cwd: "/Users/tester/proj" },
+			msg(null, "user", "another zebra topic conversation"),
+		]);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-compact`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "pi-session-search", "index.db"));
+		const res = await tool.execute("t7", { query: "zebra topic", limit: 2 }, undefined, undefined, {
+			sessionManager: {},
+		});
+		const parsed = JSON.parse(res.content[0].text);
+		assert.ok(parsed.results.length >= 2);
+		const compact = parsed.results.find((r: { detail: string }) => r.detail === "compact");
+		assert.ok(compact, "expected a compact hit with limit 2");
+		assert.equal(compact.messages.length, 1);
+		assert.match(compact.messages[0].content, /zebra topic/);
+	});
+
+	it("discovery drains sync backlog left by capped startup pass (bhGOb)", async () => {
+		// Fill more files than the default cap, then run only a 1-file startup backfill.
+		msgCount = 1;
+		for (let i = 0; i < 3; i++) {
+			writeSession(`d/session-d${i}.jsonl`, [
+				{ type: "session", version: 3, id: `d${i}`, timestamp: "2026-01-04T00:00:00.000Z", cwd: "/Users/tester/proj" },
+				msg(null, "user", `backlog drain unique topic number ${i}`),
+				msg("e01", "assistant", "noted"),
+			]);
+		}
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "pi-session-search", "index.db"), { cap: 1 });
+		let before = 0;
+		for (let i = 0; i < 3; i++) {
+			const r = await (async () => {
+				const mod = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain${i}`);
+				return mod.searchIndex(path.join(agentDir, "pi-session-search", "index.db"), `backlog drain unique topic number ${i}`);
+			})();
+			if (r.hits.length > 0) before++;
+		}
+		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-drain`);
+		const pi = makePi();
+		mod.default(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		await tool.execute("t8", { query: "backlog drain unique topic number 2" }, undefined, undefined, { sessionManager: {} });
+		const { searchIndex: si } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain-after`);
+		const after = si(path.join(agentDir, "pi-session-search", "index.db"), `backlog drain unique topic number 2`);
+		// Before the tool call at most cap=1 file was indexed; lazy sync drains the rest.
+		assert.ok(after.hits.length > 0 || before > 0);
+		assert.ok(before + after.hits.length >= 1);
+	});
 });

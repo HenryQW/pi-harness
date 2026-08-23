@@ -5,8 +5,9 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve, sep as pathSep } from "node:path";
+const path = { sep: pathSep };
 import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
@@ -129,6 +130,16 @@ export default function (pi: ExtensionAPI): void {
 				};
 				const sessionId = params.sessionId?.trim() || undefined;
 				const anchor = params.aroundMessageId?.trim() || undefined;
+				if (sessionId) {
+					// Trust boundary: only session files under the Pi sessions dir.
+					const resolved = resolve(sessionId);
+					if (!resolved.startsWith(sessionsDir() + path.sep) || !resolved.endsWith(".jsonl")) {
+						return textResult({ success: false, message: "sessionId must be a .jsonl file under the Pi sessions directory" });
+					}
+					if (!existsSync(resolved)) {
+						return textResult({ success: false, message: `session file not found: ${sessionId}` });
+					}
+				}
 
 				// --- SCROLL ---
 				if (sessionId && anchor) {
@@ -143,6 +154,13 @@ export default function (pi: ExtensionAPI): void {
 					const r = readSession(sessionId);
 					const result = { mode: "read", sessionId, ...r };
 					return textResult(result);
+				}
+
+				// Lazy sync: drains any backlog the capped session_start pass left.
+				try {
+					syncSessions(sessionsDir(), dbPath(), { cap: config.backfillFiles });
+				} catch {
+					// Serve from the possibly stale index rather than failing.
 				}
 
 				// --- BROWSE ---
@@ -188,7 +206,13 @@ export default function (pi: ExtensionAPI): void {
 					};
 					const hydrateFull = full || hit.rank === 0;
 					if (!hydrateFull) {
-						return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
+						// Compact hits still carry the matched anchor message.
+						try {
+							const win = getWindow(hit.path, hit.entryId, 0);
+							return { ...meta, detail: "compact", messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
+						} catch {
+							return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
+						}
 					}
 					try {
 						const win = getWindow(hit.path, hit.entryId, 5);
@@ -215,13 +239,6 @@ export default function (pi: ExtensionAPI): void {
 						return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
 					}
 				});
-
-				// Fill session meta (cwd/name/startedAt) from browse table.
-				const rows = getSessionRows(dbPath(), 1000);
-				for (const r of results) {
-					const row = rows.find((s) => s.path === (r as any).path);
-					Object.assign(r, { cwd: row?.cwd, name: row?.name, startedAt: row?.startedAt });
-				}
 
 				const result: Record<string, unknown> = { mode: "discovery", query: params.query, results, backlogRemaining };
 				return textResult(result);

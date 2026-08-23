@@ -1,4 +1,4 @@
-# @henryqw/pi-session-search
+# `@henryqw/pi-session-search`
 
 FTS5 search over past Pi sessions: single `session_search` tool with four arg-inferred modes, zero LLM calls, raw messages only.
 
@@ -10,25 +10,21 @@ pi install npm:@henryqw/pi-session-search
 
 ## Use
 
-| Call shape | Args | Returns |
+| Surface | Type | Purpose |
 | --- | --- | --- |
-| **Discovery** | `query` (+ optional `limit`, `detail`) | Top N sessions ranked by BM25; top hit hydrated with a ±5 message window and first/last-3 bookends; lower hits anchor + metadata (`detail:"full"` hydrates all) |
-| **Scroll** | `sessionId` + `aroundMessageId` (+ `window`, [1,20]) | ±N messages around the anchor on its branch |
-| **Read** | `sessionId` | Whole session; head 20 + tail 10 when large |
-| **Browse** | *(none)* | Recent sessions: path, name, cwd, started date, preview |
+| `session_search` | tool | Search past sessions or inspect one: discovery (`query`), scroll (`sessionId` + `aroundMessageId`), read (`sessionId`), browse (no args) |
 
-Scroll forward/backward by re-anchoring on the last/first message id of the returned window.
+**Discovery** — BM25-ranked top sessions; top hit hydrated with a ±5 message window and first/last-3 bookends; lower hits carry the matched anchor message plus metadata (`detail:"full"` hydrates all).
 
-### Query syntax
+**Scroll** — ±`window` messages ([1,20]) around the anchor on its branch; scroll forward/backward by re-anchoring on the last/first message id of the returned window.
 
-FTS5 over a trigram index: multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help for stems ≥3 chars. Only user/assistant text is indexed (thinking blocks and tool output are not searchable).
+**Read** — whole session; head 20 + tail 10 when large.
 
-## How it works
+**Browse** — recent sessions: path, name, cwd, started date, preview.
 
-- A SQLite FTS5 index (trigram tokenizer — handles CJK substring and English tokens alike) lives at `~/.pi/agent/pi-session-search/index.db`. It is derived state: delete it and it rebuilds from your session files.
-- Sync runs capped at `session_start` and lazily on each search call, newest files first.
-- Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable.
-- Forked sessions are collapsed into their parent when both match (one hop).
+Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help stems ≥3 chars. Only user/assistant text is indexed; thinking blocks and tool output are not searchable. `sessionId` must be a `.jsonl` file under the Pi sessions directory.
+
+Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
 
 ## Config
 
@@ -44,13 +40,22 @@ FTS5 over a trigram index: multi-word = AND by default, `OR` for breadth, quoted
 
 ## Storage & privacy
 
-Everything stays local: the index under `~/.pi/agent/pi-session-search/`, transcripts read in place. Nothing is sent anywhere by this extension beyond what the model already receives through tool results.
+The SQLite index lives at `~/.pi/agent/pi-session-search/index.db`. It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.
+
+## Remove
+
+```bash
+pi remove npm:@henryqw/pi-session-search
+```
+
+Delete `~/.pi/agent/pi-session-search/` to reclaim index disk space.
 
 ## Development
 
 ```bash
-npm run typecheck
-npm test
+npm test --workspace @henryqw/pi-session-search
+npm run typecheck --workspace @henryqw/pi-session-search
+npm run pack:check --workspace @henryqw/pi-session-search
 ```
 
 See [CONTEXT.md](CONTEXT.md) for design decisions and boundaries.
