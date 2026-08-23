@@ -18,10 +18,12 @@ const runGit = (args, cwd) => new Promise((resolve) => {
 });
 const sanitizeShortId = (childId) => childId.replace(/[^A-Za-z0-9._-]/g, "_") || randomBytes(4).toString("hex");
 const isAbsoluteish = (path) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
-/** Keeps ".worktrees/" out of git status via the repository-local exclude file; never dirties the checkout. */
+/** Keeps ".worktrees/" out of git status via the common repository's exclude file; never dirties any checkout. */
 async function ensureLocalExclude(repoRoot, run) {
     const entry = `${WORKTREES_DIRNAME}/`;
-    const dir = await run(["rev-parse", "--git-dir"], repoRoot);
+    // Ignore rules live in the COMMON git dir: a linked worktree's --git-dir is
+    // its own administrative directory, which git does not read info/exclude from.
+    const dir = await run(["rev-parse", "--git-common-dir"], repoRoot);
     if (dir.code !== 0 || !dir.stdout.trim())
         return;
     const raw = dir.stdout.trim();
@@ -47,12 +49,20 @@ async function ensureLocalExclude(repoRoot, run) {
  */
 export async function createChildWorktree(cwd, childId, run = runGit) {
     const root = await run(["rev-parse", "--show-toplevel"], cwd);
-    if (root.code !== 0 || !root.stdout.trim())
+    if (root.code !== 0) {
+        if (/not a git repository/i.test(root.stderr))
+            return undefined; // documented degradation
+        throw new Error(`git rev-parse failed (${root.stderr.trim().slice(0, 200)})`); // dubious ownership, timeout, …
+    }
+    if (!root.stdout.trim())
         return undefined;
     const repoRoot = root.stdout.trim();
     const base = await run(["rev-parse", "HEAD"], repoRoot);
-    if (base.code !== 0)
-        return undefined; // unborn HEAD: nothing to branch from
+    if (base.code !== 0) {
+        if (/ambiguous argument|unknown revision|bad revision/i.test(base.stderr))
+            return undefined; // unborn HEAD
+        throw new Error(`git rev-parse HEAD failed (${base.stderr.trim().slice(0, 200)})`);
+    }
     const baseCommit = base.stdout.trim();
     const name = `subagent-${sanitizeShortId(childId)}`;
     const branch = `${BRANCH_NAMESPACE}/${name}`;
@@ -65,8 +75,17 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
     }
     await ensureLocalExclude(repoRoot, run);
     const added = await run(["worktree", "add", path, "-b", branch, "HEAD"], repoRoot);
-    if (added.code !== 0)
+    if (added.code !== 0) {
+        // `worktree add -b` can leave the branch behind when checkout fails
+        // (smudge filter, hooks). Roll back only what we can prove is ours:
+        // a branch still pointing at the exact base commit we branched from.
+        const probe = await run(["rev-parse", "--verify", branch], repoRoot);
+        if (probe.code === 0 && probe.stdout.trim() === baseCommit) {
+            await run(["worktree", "remove", "--force", path], repoRoot);
+            await run(["branch", "-D", branch], repoRoot);
+        }
         throw new Error(`git worktree add failed: ${added.stderr.trim().slice(0, 200)}`);
+    }
     return { path, branch, repoRoot, baseCommit };
 }
 /** Flags a payload whose state could not be measured (#88113): unmeasured is not zero. */
@@ -88,8 +107,24 @@ function markUnproven(payload, reason, unmeasured = "commits/dirty") {
  */
 export async function finalizeChildWorktree(info, run = runGit) {
     const payload = { path: info.path, branch: info.branch, commits: 0, dirty: false, pruned: false };
+    const gitCwd = info.repoRoot || info.path;
     if (!existsSync(info.path)) {
-        payload.pruned = true; // nothing on disk to review
+        // Checkout directory gone (external cleanup, child rm): the dedicated
+        // branch may still hold all of the child's work — count it before
+        // reporting anything as pruned/empty.
+        if (!info.baseCommit)
+            return markUnproven(payload, "no base_commit recorded — commit count unmeasurable", "commits");
+        const counted = await run(["rev-list", "--count", `${info.baseCommit}..${info.branch}`], gitCwd);
+        if (counted.code !== 0)
+            return markUnproven(payload, `rev-list exit ${counted.code}: ${counted.stderr.trim().slice(0, 200)}`, "commits");
+        const commits = Number.parseInt(counted.stdout.trim(), 10);
+        if (Number.isNaN(commits))
+            return markUnproven(payload, "rev-list produced non-numeric output", "commits");
+        payload.commits = commits;
+        if (commits > 0)
+            return payload; // keep the branch for parent review
+        await run(["branch", "-D", info.branch], gitCwd);
+        payload.pruned = true;
         return payload;
     }
     if (!info.baseCommit)

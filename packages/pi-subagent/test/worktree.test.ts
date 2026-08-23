@@ -67,8 +67,15 @@ test("finalizeChildWorktree keeps dirty and committed worktrees", async (t) => {
 
 test("finalizeChildWorktree keeps the worktree when it is missing from disk", async (t) => {
 	const path = join(await tempDir(t), "gone");
-	const payload = await finalizeChildWorktree(worktreeInfo(path), fakeGit({}));
+	const calls: string[][] = [];
+	const payload = await finalizeChildWorktree(
+		{ ...worktreeInfo(path), repoRoot: "/repo" },
+		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": ok("0\n") }, calls),
+	);
 	assert.deepEqual(payload, { path, branch: "pi-subagent/subagent-x", commits: 0, dirty: false, pruned: true });
+	// The branch probe runs from the repo root even though the checkout is gone.
+	assert.equal(calls[0]![2], "abc123..pi-subagent/subagent-x");
+	assert.ok(calls.every((args) => !args.includes(path) || args[0] === "worktree"));
 });
 
 test("finalizeChildWorktree keeps the worktree with inspection_failed on probe failure", async (t) => {
@@ -102,7 +109,7 @@ test("createChildWorktree sanitizes child ids, degrades on non-git repos, and re
 	const run = fakeGit({
 		"rev-parse --show-toplevel": ok(`${repo}\n`),
 		"rev-parse HEAD": ok("abc123\n"),
-		"rev-parse --git-dir": ok(`${repo}/.git\n`),
+		"rev-parse --git-common-dir": ok(`${repo}/.git\n`),
 	}, calls);
 	const info = await createChildWorktree(repo, "tool-1/abc def", run);
 
@@ -116,7 +123,9 @@ test("createChildWorktree sanitizes child ids, degrades on non-git repos, and re
 	assert.equal(await readFile(join(repo, ".git", "info", "exclude"), "utf8"), ".worktrees/\n");
 	assert.equal(await readFile(join(repo, ".gitignore"), "utf8").then(() => true, () => false), false);
 
-	assert.equal(await createChildWorktree(repo, "x", fakeGit({ "rev-parse --show-toplevel": fail() })), undefined);
+	assert.equal(await createChildWorktree(repo, "x", fakeGit({
+		"rev-parse --show-toplevel": fail("fatal: not a git repository (or any of the parent directories)"),
+	})), undefined);
 });
 
 test("createChildWorktree degrades on unborn HEAD and fails closed on setup errors", async (t) => {
@@ -129,12 +138,23 @@ test("createChildWorktree degrades on unborn HEAD and fails closed on setup erro
 		"rev-parse HEAD": fail("fatal: ambiguous argument 'HEAD'"),
 	})), undefined);
 
+	// Expected non-repository stderr degrades; every other probe failure fails closed.
+	assert.equal(await createChildWorktree(repo, "x", fakeGit({
+		"rev-parse --show-toplevel": fail("fatal: not a git repository (or any of the parent directories)"),
+	})), undefined);
+	await assert.rejects(
+		createChildWorktree(repo, "x", fakeGit({
+			"rev-parse --show-toplevel": fail("fatal: detected dubious ownership in repository"),
+		})),
+		/dubious ownership/,
+	);
+
 	// Setup failure in a real git repository: reject instead of losing isolation.
 	await assert.rejects(
 		createChildWorktree(repo, "x", fakeGit({
 			"rev-parse --show-toplevel": ok(`${repo}\n`),
 			"rev-parse HEAD": ok("abc123\n"),
-			"rev-parse --git-dir": ok(`${repo}/.git\n`),
+			"rev-parse --git-common-dir": ok(`${repo}/.git\n`),
 			"worktree add": fail("fatal: branch already exists"),
 		}), ),
 		/worktree add failed/,
@@ -151,6 +171,70 @@ test("createChildWorktree counts the dedicated branch, not the checkout HEAD", a
 	}));
 	assert.equal(payload.commits, 2);
 	assert.equal(payload.pruned, false);
+});
+
+test("createChildWorktree rolls back the branch left by a failed worktree add", async (t) => {
+	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-repo-"));
+	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
+	const path = join(repo, ".worktrees", "subagent-x");
+	const responses = {
+		"rev-parse --show-toplevel": ok(`${repo}\n`),
+		"rev-parse HEAD": ok("abc123\n"),
+		"rev-parse --git-common-dir": ok(join(repo, ".git") + "\n"),
+		"worktree add": fail("error: smudge filter died"),
+	};
+	const calls: string[][] = [];
+	// Branch still at base (freshly created by -b): safe to delete.
+	await assert.rejects(
+		createChildWorktree(repo, "x", fakeGit({
+			...responses,
+			"rev-parse --verify pi-subagent/subagent-x": ok("abc123\n"),
+		}, calls)),
+		/worktree add failed/,
+	);
+	assert.ok(calls.some((args) => args.join(" ") === `worktree remove --force ${path}`));
+	assert.deepEqual(calls.find((args) => args[0] === "branch"), ["branch", "-D", "pi-subagent/subagent-x"]);
+
+	// Branch moved elsewhere after creation: state cannot be proven ours — keep it.
+	const keptCalls: string[][] = [];
+	await assert.rejects(
+		createChildWorktree(repo, "x", fakeGit({
+			...responses,
+			"rev-parse --verify pi-subagent/subagent-x": ok("deadbee\n"),
+		}, keptCalls)),
+		/worktree add failed/,
+	);
+	assert.equal(keptCalls.some((args) => args[0] === "branch"), false);
+});
+
+test("finalizeChildWorktree counts the dedicated branch when the checkout is gone", async (t) => {
+	const path = join(await tempDir(t), "gone");
+	// External cleanup removed the checkout but the child had committed:
+	// branch work must be reported, never read as empty.
+	const committed = await finalizeChildWorktree(
+		{ ...worktreeInfo(path), repoRoot: "/repo" },
+		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": ok("4\n") }),
+	);
+	assert.equal(committed.commits, 4);
+	assert.equal(committed.pruned, false);
+
+	// Genuinely empty: branch dropped, reported pruned.
+	const calls: string[][] = [];
+	const empty = await finalizeChildWorktree(
+		{ ...worktreeInfo(path), repoRoot: "/repo" },
+		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": ok("0\n") }, calls),
+	);
+	assert.equal(empty.commits, 0);
+	assert.equal(empty.pruned, true);
+	assert.deepEqual(calls.find((args) => args[0] === "branch"), ["branch", "-D", "pi-subagent/subagent-x"]);
+
+	// Unmeasurable count: keep everything and say so.
+	const unproven = await finalizeChildWorktree(
+		{ ...worktreeInfo(path), repoRoot: "/repo" },
+		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": fail("fatal: bad object") }),
+	);
+	assert.equal(unproven.pruned, false);
+	assert.equal(unproven.inspection_failed, true);
 });
 
 test("loadRoles accepts isolation worktree and rejects other values", async (t) => {

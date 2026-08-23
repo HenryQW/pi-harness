@@ -732,6 +732,7 @@ export default function subagentExtension(
 						acquired = true;
 						// Same contract as foreground: isolation only after the permit,
 						// setup failure fails closed via the catch below.
+						if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId);
 						// Resolve resources only once launched: a task queued past the
 						// cap must not start with model routes or skills resolved before
 						// registries or accounts changed while it waited.
