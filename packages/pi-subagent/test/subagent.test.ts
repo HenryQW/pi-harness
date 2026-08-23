@@ -1157,6 +1157,32 @@ setInterval(() => {}, 1_000);
 	});
 });
 
+test("normal completion stops surviving child process descendants", async (t) => {
+	if (process.platform === "win32") return t.skip("Unix process groups only");
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const marker = join(agentDir, "normal-descendant-survived");
+		const started = join(agentDir, "normal-descendant-started");
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300); setInterval(() => {}, 1000)`)}], { stdio: "ignore" });
+descendant.unref();
+const ready = setInterval(() => {
+	if (!existsSync(${JSON.stringify(started)})) return;
+	clearInterval(ready);
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));
+}, 5);
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		assert.equal(result.content[0].text, "done");
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		await assert.rejects(readFile(marker), /ENOENT/);
+	});
+});
+
 test("oversized unterminated stdout protocol line fails bounded", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });

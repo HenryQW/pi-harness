@@ -33,8 +33,8 @@ export declare function createChildWorktree(cwd: string, childId: string, run?: 
  * names it; the clean-tree proof includes untracked, ignored, and submodule
  * changes despite repository config. A worktree with zero branch commits and a
  * clean tree is removed only when every probe succeeds and base_commit was
- * recorded; any probe failure keeps everything and reports `inspection_failed` so unmeasured
- * state is never read as empty.
+ * recorded; any probe failure keeps everything and reports `inspection_failed`
+ * so unmeasured state is never read as empty.
  */
 export declare function finalizeChildWorktree(info: WorktreeInfo, run?: GitRunner): Promise<WorktreePayload>;
 /** Context block telling the child to work inside its isolated worktree. */

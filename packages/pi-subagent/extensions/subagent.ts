@@ -430,7 +430,9 @@ async function runPi(
 
 		child.on("close", (code) => {
 			if (!protocolError && lineBytes) processLine(lineParts.join(""));
-			if (aborted || timedOutAfterMs !== undefined) killTree(true);
+			// Pi may exit while redirected background commands remain in its process
+			// group. Stop every descendant before callers inspect or prune its cwd.
+			killTree(true);
 			if (softDeadlineTimer) clearTimeout(softDeadlineTimer);
 			if (hardDeadlineTimer) clearTimeout(hardDeadlineTimer);
 			if (killTimer) clearTimeout(killTimer);

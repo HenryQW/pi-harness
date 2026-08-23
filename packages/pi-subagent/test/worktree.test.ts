@@ -64,12 +64,44 @@ test("finalizeChildWorktree prunes a worktree with zero commits and a clean tree
 	}, calls));
 
 	assert.deepEqual(payload, { path, branch: info.branch, commits: 0, dirty: false, pruned: true });
-	assert.deepEqual(calls.filter((args) => args[0] === "worktree"), [["worktree", "remove", "--force", path]]);
-	assert.deepEqual(calls.filter((args) => args[0] === "branch"), [["branch", "-D", info.branch]]);
+	assert.deepEqual(calls.filter((args) => args[0] === "worktree"), [["worktree", "remove", path]]);
+	assert.deepEqual(calls.filter((args) => args[0] === "update-ref"), [["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit]]);
 	// Clean-tree proof must override config that hides untracked, ignored, or submodule changes.
 	assert.deepEqual(calls.find((args) => args[0] === "status"), [
 		"status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none",
 	]);
+});
+
+test("finalizeChildWorktree preserves work appearing during its final recheck", async (t) => {
+	const info = worktreeInfo(await tempDir(t));
+	const calls: string[][] = [];
+	let statusCalls = 0;
+	const run: GitRunner = async (args) => {
+		calls.push(args);
+		if (args[0] === "rev-list") return ok("0\n");
+		if (args[0] === "status") return ok(statusCalls++ === 0 ? "" : "?? late.txt\n");
+		if (args[0] === "symbolic-ref") return ok(`refs/heads/${info.branch}\n`);
+		return ok();
+	};
+
+	const payload = await finalizeChildWorktree(info, run);
+	assert.equal(payload.dirty, true);
+	assert.equal(payload.pruned, false);
+	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
+});
+
+test("finalizeChildWorktree preserves a branch updated during cleanup", async (t) => {
+	const info = worktreeInfo(await tempDir(t));
+	const payload = await finalizeChildWorktree(info, fakeGit({
+		"rev-list --count": ok("0\n"),
+		"status --porcelain": ok(""),
+		"symbolic-ref --quiet HEAD": ok(`refs/heads/${info.branch}\n`),
+		"update-ref -d": fail("cannot lock ref: reference already changed"),
+	}));
+
+	assert.equal(payload.pruned, false);
+	assert.equal(payload.inspection_failed, true);
+	assert.match(payload.note!, /reference already changed/);
 });
 
 test("finalizeChildWorktree keeps dirty and committed worktrees", async (t) => {
@@ -256,6 +288,21 @@ test("createChildWorktree resolves the primary checkout with a separate git dire
 	assert.equal((await finalizeChildWorktree(info)).pruned, true);
 });
 
+test("createChildWorktree rejects submodules whose parent cleanup can remove Git metadata", async (t) => {
+	const source = await initializedRepository(t);
+	const repo = await initializedRepository(t);
+	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
+	git(repo, "commit", "-qm", "add submodule");
+	const linked = `${repo}-linked-submodule`;
+	t.after(async () => { await rm(linked, { recursive: true, force: true }); });
+	git(repo, "worktree", "add", "-qb", "linked-submodule", linked);
+	git(linked, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
+
+	const submodule = join(linked, "mod");
+	await assert.rejects(createChildWorktree(submodule, "unsafe-submodule"), /unavailable inside Git submodules/);
+	assert.equal(git(submodule, "branch", "--list", "pi-subagent/*"), "");
+});
+
 test("createChildWorktree keeps children outside a removable linked checkout", async (t) => {
 	const repo = await initializedRepository(t);
 	const linked = `${repo}-linked`;
@@ -383,7 +430,7 @@ test("finalizeChildWorktree counts the dedicated branch when the checkout is gon
 	assert.equal(empty.commits, 0);
 	assert.equal(empty.pruned, true);
 	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "prune", "--expire", "now"]);
-	assert.deepEqual(calls.find((args) => args[0] === "branch"), ["branch", "-D", "pi-subagent/subagent-x"]);
+	assert.deepEqual(calls.find((args) => args[0] === "update-ref"), ["update-ref", "-d", "refs/heads/pi-subagent/subagent-x", "abc123"]);
 
 	// Unmeasurable count: keep everything and say so.
 	const unproven = await finalizeChildWorktree(

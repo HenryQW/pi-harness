@@ -62,6 +62,13 @@ export async function createChildWorktree(cwd, childId, run = runGit) {
         throw new Error(`git rev-parse HEAD failed (${base.stderr.trim().slice(0, 200)})`);
     }
     const baseCommit = base.stdout.trim();
+    const superproject = await run(["rev-parse", "--show-superproject-working-tree"], repoRoot);
+    if (superproject.code !== 0) {
+        throw new Error(`git rev-parse --show-superproject-working-tree failed (${superproject.stderr.trim().slice(0, 200)})`);
+    }
+    if (stripGitLineEnd(superproject.stdout)) {
+        throw new Error("Worktree isolation is unavailable inside Git submodules because parent cleanup can remove their Git metadata.");
+    }
     const common = await run(["rev-parse", "--git-common-dir"], repoRoot);
     const rawCommonGitDir = stripGitLineEnd(common.stdout);
     if (common.code !== 0 || !rawCommonGitDir) {
@@ -114,8 +121,8 @@ function markUnproven(payload, reason, unmeasured = "commits/dirty") {
  * names it; the clean-tree proof includes untracked, ignored, and submodule
  * changes despite repository config. A worktree with zero branch commits and a
  * clean tree is removed only when every probe succeeds and base_commit was
- * recorded; any probe failure keeps everything and reports `inspection_failed` so unmeasured
- * state is never read as empty.
+ * recorded; any probe failure keeps everything and reports `inspection_failed`
+ * so unmeasured state is never read as empty.
  */
 export async function finalizeChildWorktree(info, run = runGit) {
     const payload = { path: info.path, branch: info.branch, commits: 0, dirty: false, pruned: false };
@@ -138,7 +145,7 @@ export async function finalizeChildWorktree(info, run = runGit) {
         const pruned = await run(["worktree", "prune", "--expire", "now"], gitCwd);
         if (pruned.code !== 0)
             return markUnproven(payload, `worktree prune exit ${pruned.code}: ${pruned.stderr.trim().slice(0, 200)}`, "cleanup");
-        const deleted = await run(["branch", "-D", info.branch], gitCwd);
+        const deleted = await run(["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit], gitCwd);
         if (deleted.code !== 0)
             return markUnproven(payload, `branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`, "cleanup");
         payload.pruned = true;
@@ -176,11 +183,18 @@ export async function finalizeChildWorktree(info, run = runGit) {
         if (head.code !== 0 || head.stdout.trim() !== `refs/heads/${info.branch}`) {
             return markUnproven(payload, "HEAD is detached, switched, or unreadable", "checked-out commits");
         }
+        const rechecked = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], info.path);
+        if (rechecked.code !== 0)
+            return markUnproven(payload, `final status exit ${rechecked.code}: ${rechecked.stderr.trim().slice(0, 200)}`, "dirty");
+        if (rechecked.stdout.trim()) {
+            payload.dirty = true;
+            return payload;
+        }
         const cwd = info.repoRoot || info.path;
-        const removed = await run(["worktree", "remove", "--force", info.path], cwd);
+        const removed = await run(["worktree", "remove", info.path], cwd);
         if (removed.code !== 0)
             return markUnproven(payload, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`, "cleanup");
-        const deleted = await run(["branch", "-D", info.branch], cwd);
+        const deleted = await run(["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit], cwd);
         if (deleted.code !== 0)
             return markUnproven(payload, `branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`, "cleanup");
         payload.pruned = true;
