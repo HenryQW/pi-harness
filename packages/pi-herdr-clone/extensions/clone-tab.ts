@@ -105,6 +105,40 @@ async function createBranchedClone(
 	return cloneFile;
 }
 
+// A worktree layout plugin (e.g. herdr-plus) can start its own agent in a new
+// worktree's root pane right after creation. Give it a moment to appear so the
+// clone can move to its own tab instead of failing with agent_pane_busy.
+async function waitForRootPaneAgent(
+	herdr: HerdrClient<{ cwd: string }>,
+	ctx: ExtensionCommandContext,
+	paneId: string,
+): Promise<string | undefined> {
+	for (let attempt = 0; attempt < 12; attempt += 1) {
+		const response = await herdr.json(["pane", "get", paneId], { cwd: ctx.cwd });
+		const agent = (response as { result?: { pane?: { agent?: unknown } } }).result?.pane?.agent;
+		if (typeof agent === "string" && agent.trim()) return agent;
+		await delay(250);
+	}
+	return undefined;
+}
+
+function parseCreatedTab(createdTab: HerdrExecResult): { tabId: string; rootPaneId: string } {
+	let response: unknown;
+	try {
+		response = JSON.parse(createdTab.stdout);
+		if (!response || typeof response !== "object" || Array.isArray(response)) {
+			throw new Error("Herdr tab create returned invalid JSON");
+		}
+		const result = (response as { result?: { tab?: { tab_id?: unknown }; root_pane?: { pane_id?: unknown } } }).result;
+		return {
+			tabId: requiredString(result?.tab?.tab_id, "Herdr tab response tab_id"),
+			rootPaneId: requiredString(result?.root_pane?.pane_id, "Herdr tab response root pane_id"),
+		};
+	} catch (error) {
+		throw new Error(`Herdr tab create response could not be parsed: ${errorMessage(error)}`, { cause: error });
+	}
+}
+
 async function discardCloneOrAggregate(cloneFile: string, error: Error): Promise<never> {
 	try {
 		await unlink(cloneFile);
@@ -275,6 +309,19 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				);
 			}
 
+			// A layout plugin may have claimed the root pane; park the clone in its
+			// own tab so both agents coexist.
+			let targetTabId = tabId!;
+			let targetPaneId = rootPaneId!;
+			if (await waitForRootPaneAgent(herdr, ctx, rootPaneId!)) {
+				const cloneTabArgs = ["tab", "create", "--workspace", workspaceId!, "--cwd", checkoutPath!, "--no-focus"] as const;
+				const createdTab = await herdr.exec(cloneTabArgs, { cwd: ctx.cwd });
+				if (createdTab.code !== 0 || createdTab.killed) {
+					throw new Error(herdrCommandFailure(cloneTabArgs, createdTab));
+				}
+				({ tabId: targetTabId, rootPaneId: targetPaneId } = parseCreatedTab(createdTab));
+			}
+
 			let cloneFile: string;
 			try {
 				cloneFile = source.checkout
@@ -287,21 +334,21 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				);
 			}
 			const agentName = await launchCloneAgent(
-				herdr, ctx, rootPaneId!, cloneFile,
-				`Herdr workspace ${workspaceId}, tab ${tabId}, root pane ${rootPaneId}, and session ${cloneFile}`,
+				herdr, ctx, targetPaneId, cloneFile,
+				`Herdr workspace ${workspaceId}, tab ${targetTabId}, root pane ${targetPaneId}, and session ${cloneFile}`,
 			);
 
 			try {
-				await herdr.run(["tab", "focus", tabId!], { cwd: ctx.cwd });
+				await herdr.run(["tab", "focus", targetTabId], { cwd: ctx.cwd });
 			} catch (error) {
 				ctx.ui.notify(
-					`Clone agent ${agentName} started in Herdr worktree workspace ${workspaceId} (tab ${tabId}, checkout ${checkoutPath}), but focus failed: ${errorMessage(error)}`,
+					`Clone agent ${agentName} started in Herdr worktree workspace ${workspaceId} (tab ${targetTabId}, checkout ${checkoutPath}), but focus failed: ${errorMessage(error)}`,
 					"warning",
 				);
 				return;
 			}
 			ctx.ui.notify(
-				`Cloned current conversation into Herdr worktree workspace ${workspaceId} (tab ${tabId}, checkout ${checkoutPath}, agent ${agentName}).`,
+				`Cloned current conversation into Herdr worktree workspace ${workspaceId} (tab ${targetTabId}, checkout ${checkoutPath}, agent ${agentName}).`,
 				"info",
 			);
 		},

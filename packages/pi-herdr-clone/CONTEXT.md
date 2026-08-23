@@ -13,7 +13,7 @@ New Herdr tab whose root pane starts Pi with the active-path clone, then receive
 _Avoid_: worker tab, worktree tab
 
 **Worktree clone**:
-New Herdr Git worktree workspace (`herdr worktree create`) whose root pane starts Pi with the active-path clone inside the fresh checkout, then receives focus after successful agent start. Branch and checkout path are chosen by Herdr.
+New Herdr Git worktree workspace (`herdr worktree create`) whose root pane starts Pi with the active-path clone inside the fresh checkout, then receives focus after successful agent start. If a worktree-layout plugin already started its own agent in the root pane, the clone starts in an additional tab of that workspace instead so both agents coexist. Branch and checkout path are chosen by Herdr.
 _Avoid_: branch clone, repo copy
 
 **Ambiguous launch**:
