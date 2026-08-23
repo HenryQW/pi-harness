@@ -209,12 +209,13 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 				ctx.ui.setStatus("pi-pr", formatPullRequest(pullRequest, ctx.ui.theme));
 				return;
 			}
+			const changedPullRequest = reviewWindow?.id !== pullRequest.id;
 			if (
-				reviewWindow?.id !== pullRequest.id ||
-				reviewWindow.headRefOid !== pullRequest.headRefOid ||
-				reviewWindow.updatedAt !== pullRequest.updatedAt
+				changedPullRequest ||
+				reviewWindow?.headRefOid !== pullRequest.headRefOid ||
+				reviewWindow?.updatedAt !== pullRequest.updatedAt
 			) {
-				reviewState = undefined;
+				if (changedPullRequest) reviewState = undefined;
 				reviewWindow = {
 					id: pullRequest.id,
 					headRefOid: pullRequest.headRefOid,

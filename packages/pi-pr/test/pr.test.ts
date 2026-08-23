@@ -215,6 +215,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	interval?.callback();
 	await flush();
 	assert.equal(reviewCallCount(), reviewsBeforeExpiry + 1);
+	assert.equal(notifications.length, 1);
 	now += 20 * 60_000;
 
 	let release!: (value: ReturnType<typeof result>) => void;
@@ -230,7 +231,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	headRefOid = "ghi789";
 	release(result(good()));
 	await flush();
-	assert.equal(notifications.length, 3);
+	assert.equal(notifications.length, 1);
 
 	const callsAfterCreate = calls.length;
 	await toolResult?.({ toolName: "bash", input: { command: "echo gh pr create" }, isError: false } as never, context);
@@ -245,7 +246,8 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	headRefOid = "jkl012";
 	await toolResult?.({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false } as never, context);
 	assert.equal(reviewCallCount(), reviewsBeforePush + 1);
-	assert.deepEqual(notifications.at(-1), { message: "PR #42 has 1 unresolved review thread", level: "warning" });
+	assert.equal(notifications.length, 1);
+	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · 1 unresolved");
 
 	assert.ok(command);
 	calls.length = 0;
