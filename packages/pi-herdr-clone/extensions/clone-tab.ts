@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { stat, unlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import { stat, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+	CURRENT_SESSION_VERSION,
 	SessionManager,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
+	type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
 import {
 	createHerdrClient,
@@ -39,6 +41,8 @@ type SourceContext = {
 	checkout: string | undefined;
 	repoRoot: string | undefined;
 	isLinkedWorktree: boolean;
+	/** False while Pi has not flushed the session yet (no assistant entry on disk). */
+	persisted: boolean;
 };
 
 async function resolveSource(
@@ -56,13 +60,15 @@ async function resolveSource(
 	);
 	const leafId = requiredString(ctx.sessionManager.getLeafId(), "Current Pi session leaf");
 	const sessionFile = resolve(currentSessionFile);
-	let sourceStat;
+	let persisted = true;
 	try {
-		sourceStat = await stat(sessionFile);
+		if (!(await stat(sessionFile)).isFile()) throw new Error(`Persisted Pi session path is not a file: ${sessionFile}`);
 	} catch (error) {
-		throw new Error(`Persisted Pi session file does not exist: ${sessionFile}`, { cause: error });
+		// Pi defers all session-file writes until the first assistant message
+		// completes, so a fresh session mid-first-turn has no file on disk.
+		if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+		persisted = false;
 	}
-	if (!sourceStat.isFile()) throw new Error(`Persisted Pi session path is not a file: ${sessionFile}`);
 
 	const paneResponse = await herdr.json(["pane", "get", requestedPaneId], { cwd: ctx.cwd });
 	const pane = (paneResponse as { result?: { pane?: { pane_id?: unknown; workspace_id?: unknown } } }).result?.pane;
@@ -83,7 +89,34 @@ async function resolveSource(
 	if (isLinkedWorktree && !repoRoot) {
 		throw new Error("Herdr workspace response is missing worktree.repo_root for a linked worktree.");
 	}
-	return { sessionFile, leafId, workspaceId, checkout, repoRoot, isLinkedWorktree };
+	return { sessionFile, leafId, workspaceId, checkout, repoRoot, isLinkedWorktree, persisted };
+}
+
+// Mirror of SessionManager.createBranchedSession for sessions Pi has not
+// flushed to disk yet: serialize the live active path under a fresh header.
+async function writeCloneFromLiveState(
+	ctx: ExtensionCommandContext,
+	source: SourceContext,
+	cwd: string,
+): Promise<string> {
+	const sessionId = randomUUID();
+	const timestamp = new Date().toISOString();
+	const header: SessionHeader = {
+		type: "session",
+		version: CURRENT_SESSION_VERSION,
+		id: sessionId,
+		timestamp,
+		cwd,
+		parentSession: source.sessionFile,
+	};
+	const entries = ctx.sessionManager.getBranch(source.leafId);
+	if (entries.length === 0) throw new Error("Pi session has no entries to clone.");
+	const cloneFile = join(
+		ctx.sessionManager.getSessionDir(),
+		`${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`,
+	);
+	await writeFile(cloneFile, [JSON.stringify(header), ...entries.map((entry) => JSON.stringify(entry))].join("\n") + "\n");
+	return cloneFile;
 }
 
 async function createBranchedClone(
@@ -91,6 +124,7 @@ async function createBranchedClone(
 	source: SourceContext,
 	cwd: string,
 ): Promise<string> {
+	if (!source.persisted) return await writeCloneFromLiveState(ctx, source, cwd);
 	const session = SessionManager.open(source.sessionFile, ctx.sessionManager.getSessionDir(), cwd);
 	const createdClone = session.createBranchedSession(source.leafId);
 	if (!createdClone) throw new Error("Pi did not create a persisted clone session file.");
@@ -276,12 +310,13 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				if (!response || typeof response !== "object" || Array.isArray(response)) {
 					throw new Error("Herdr worktree create returned invalid JSON");
 				}
+				// Herdr nests checkout_path under workspace.worktree; the top-level
+				// result.worktree uses `path` instead.
 				const result = (response as {
 					result?: {
-						workspace?: { workspace_id?: unknown };
+						workspace?: { workspace_id?: unknown; worktree?: { checkout_path?: unknown } };
 						tab?: { tab_id?: unknown };
 						root_pane?: { pane_id?: unknown };
-						worktree?: { checkout_path?: unknown };
 					};
 				}).result;
 				// Collect every returned identifier before validating so recovery
@@ -289,12 +324,14 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				workspaceId = typeof result?.workspace?.workspace_id === "string" ? result.workspace.workspace_id : undefined;
 				tabId = typeof result?.tab?.tab_id === "string" ? result.tab.tab_id : undefined;
 				rootPaneId = typeof result?.root_pane?.pane_id === "string" ? result.root_pane.pane_id : undefined;
-				checkoutPath = typeof result?.worktree?.checkout_path === "string" ? result.worktree.checkout_path : undefined;
+				checkoutPath = typeof result?.workspace?.worktree?.checkout_path === "string" && result.workspace.worktree.checkout_path.trim()
+					? result.workspace.worktree.checkout_path
+					: undefined;
 				const missing = [
 					[workspaceId, "workspace_id"],
 					[tabId, "tab_id"],
 					[rootPaneId, "root_pane.pane_id"],
-					[checkoutPath, "worktree.checkout_path"],
+					[checkoutPath, "workspace.worktree.checkout_path"],
 				].filter(([value]) => !value).map(([, label]) => label);
 				if (missing.length > 0) {
 					throw new Error(`Herdr worktree create response is missing ${missing.join(", ")}.`);
