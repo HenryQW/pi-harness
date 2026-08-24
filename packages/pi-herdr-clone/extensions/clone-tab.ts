@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { stat, unlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import { stat, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+	CURRENT_SESSION_VERSION,
 	SessionManager,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
+	type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
 import {
 	createHerdrClient,
@@ -39,6 +41,8 @@ type SourceContext = {
 	checkout: string | undefined;
 	repoRoot: string | undefined;
 	isLinkedWorktree: boolean;
+	/** False while Pi has not flushed the session yet (no assistant entry on disk). */
+	persisted: boolean;
 };
 
 async function resolveSource(
@@ -56,13 +60,15 @@ async function resolveSource(
 	);
 	const leafId = requiredString(ctx.sessionManager.getLeafId(), "Current Pi session leaf");
 	const sessionFile = resolve(currentSessionFile);
-	let sourceStat;
+	let persisted = true;
 	try {
-		sourceStat = await stat(sessionFile);
+		if (!(await stat(sessionFile)).isFile()) throw new Error(`Persisted Pi session path is not a file: ${sessionFile}`);
 	} catch (error) {
-		throw new Error(`Persisted Pi session file does not exist: ${sessionFile}`, { cause: error });
+		// Pi defers all session-file writes until the first assistant message
+		// completes, so a fresh session mid-first-turn has no file on disk.
+		if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+		persisted = false;
 	}
-	if (!sourceStat.isFile()) throw new Error(`Persisted Pi session path is not a file: ${sessionFile}`);
 
 	const paneResponse = await herdr.json(["pane", "get", requestedPaneId], { cwd: ctx.cwd });
 	const pane = (paneResponse as { result?: { pane?: { pane_id?: unknown; workspace_id?: unknown } } }).result?.pane;
@@ -83,7 +89,34 @@ async function resolveSource(
 	if (isLinkedWorktree && !repoRoot) {
 		throw new Error("Herdr workspace response is missing worktree.repo_root for a linked worktree.");
 	}
-	return { sessionFile, leafId, workspaceId, checkout, repoRoot, isLinkedWorktree };
+	return { sessionFile, leafId, workspaceId, checkout, repoRoot, isLinkedWorktree, persisted };
+}
+
+// Mirror of SessionManager.createBranchedSession for sessions Pi has not
+// flushed to disk yet: serialize the live active path under a fresh header.
+async function writeCloneFromLiveState(
+	ctx: ExtensionCommandContext,
+	source: SourceContext,
+	cwd: string,
+): Promise<string> {
+	const sessionId = randomUUID();
+	const timestamp = new Date().toISOString();
+	const header: SessionHeader = {
+		type: "session",
+		version: CURRENT_SESSION_VERSION,
+		id: sessionId,
+		timestamp,
+		cwd,
+		parentSession: source.sessionFile,
+	};
+	const entries = ctx.sessionManager.getBranch(source.leafId);
+	if (entries.length === 0) throw new Error("Pi session has no entries to clone.");
+	const cloneFile = join(
+		ctx.sessionManager.getSessionDir(),
+		`${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`,
+	);
+	await writeFile(cloneFile, [JSON.stringify(header), ...entries.map((entry) => JSON.stringify(entry))].join("\n") + "\n");
+	return cloneFile;
 }
 
 async function createBranchedClone(
@@ -91,6 +124,7 @@ async function createBranchedClone(
 	source: SourceContext,
 	cwd: string,
 ): Promise<string> {
+	if (!source.persisted) return await writeCloneFromLiveState(ctx, source, cwd);
 	const session = SessionManager.open(source.sessionFile, ctx.sessionManager.getSessionDir(), cwd);
 	const createdClone = session.createBranchedSession(source.leafId);
 	if (!createdClone) throw new Error("Pi did not create a persisted clone session file.");
