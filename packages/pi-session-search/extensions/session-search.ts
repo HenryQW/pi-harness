@@ -7,7 +7,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import { DEFAULT_SYNC_CAP, MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
+import { DEFAULT_SYNC_CAP, MAX_BACKFILL_FILES, MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
@@ -37,7 +37,7 @@ function readConfig(): Config {
 		if (cap === undefined) return fallback;
 		// Safe integer rejects untrusted magnitudes like 1e100 that would
 		// defeat the sync work bound.
-		if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1) {
+		if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1 || cap > MAX_BACKFILL_FILES) {
 			console.error("[pi-session-search] invalid backfillFiles in config; using default");
 			return fallback;
 		}
@@ -251,9 +251,12 @@ export default function (pi: ExtensionAPI): void {
 					currentSessionPath,
 				});
 
-				let used = 0;
-				const results = hits.map((hit) => {
-					const remaining = OUTPUT_CHAR_BUDGET - used;
+				const resultQuery = params.query!.trim().slice(0, MAX_QUERY_CHARS);
+				// Reserve the complete response envelope and divide remaining space
+				// across hits so the first hydrated result cannot starve later metadata.
+				let used = JSON.stringify({ mode: "discovery", query: resultQuery, results: [], backlogRemaining }).length + Math.max(0, hits.length - 1);
+				const results = hits.map((hit, index) => {
+					const remaining = Math.floor((OUTPUT_CHAR_BUDGET - used) / (hits.length - index));
 					const meta = {
 						path: hit.path,
 						snippet: hit.snippet,
@@ -341,7 +344,7 @@ export default function (pi: ExtensionAPI): void {
 					}
 				});
 
-				const result: Record<string, unknown> = { mode: "discovery", query: params.query!.trim().slice(0, MAX_QUERY_CHARS), results, backlogRemaining };
+				const result: Record<string, unknown> = { mode: "discovery", query: resultQuery, results, backlogRemaining };
 				return textResult(result);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -352,8 +355,30 @@ export default function (pi: ExtensionAPI): void {
 }
 
 function textResult(result: unknown) {
+	let bounded = result;
+	let text = JSON.stringify(bounded);
+	if (text.length > OUTPUT_CHAR_BUDGET && bounded && typeof bounded === "object" && !Array.isArray(bounded)) {
+		const copy: Record<string, unknown> = { ...(bounded as Record<string, unknown>), contentTruncated: true };
+		for (const key of ["results", "sessions", "messages"] as const) {
+			if (Array.isArray(copy[key])) copy[key] = [...copy[key] as unknown[]];
+		}
+		bounded = copy;
+		text = JSON.stringify(bounded);
+		while (text.length > OUTPUT_CHAR_BUDGET) {
+			const array = ["results", "sessions", "messages"]
+				.map((key) => copy[key])
+				.find((value): value is unknown[] => Array.isArray(value) && value.length > 0);
+			if (!array) {
+				bounded = { success: false, error: "session_search result metadata exceeds output budget" };
+				text = JSON.stringify(bounded);
+				break;
+			}
+			array.pop();
+			text = JSON.stringify(bounded);
+		}
+	}
 	return {
-		content: [{ type: "text" as const, text: JSON.stringify(result) }],
-		details: result,
+		content: [{ type: "text" as const, text }],
+		details: bounded,
 	};
 }

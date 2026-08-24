@@ -2,6 +2,11 @@
 
 FTS5 search over past Pi sessions: single `session_search` tool with four arg-inferred modes, zero LLM calls, raw messages only.
 
+## Why
+
+- **Created for**: Pi users who need to recover decisions and context from prior sessions without keeping every transcript in the active prompt.
+- **Advantage**: Local FTS5 search gives fast, private recall with zero standing context cost and no model calls.
+
 ## Install
 
 ```bash
@@ -36,7 +41,7 @@ Hits inside the current session's live context are suppressed; compacted-away or
 }
 ```
 
-- `backfillFiles`: max session files indexed per sync pass (default 50). Malformed config is ignored with a warning and never rewritten.
+- `backfillFiles`: max session files attempted per sync pass, [1,500] (default 50). Malformed config is ignored with a warning and never rewritten; failed unchanged files are skipped until they change.
 
 ## Storage & privacy
 

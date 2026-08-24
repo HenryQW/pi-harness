@@ -190,7 +190,7 @@ describe("session_search entry point", () => {
 			]);
 		}
 		const disc = await tool.execute("td", { query: "capybara", limit: 3, detail: "full" }, undefined, undefined, { sessionManager: {} });
-		assert.ok(disc.content[0].text.length <= 52_000, "serialized DISCOVERY must respect the 50k budget (plus small envelope)");
+		assert.ok(disc.content[0].text.length <= 50_000, "complete serialized DISCOVERY must respect the 50k budget");
 		const discParsed = JSON.parse(disc.content[0].text);
 		assert.equal(discParsed.results.length, 3);
 		assert.ok(discParsed.results.some((r: { contentTruncated?: boolean }) => r.contentTruncated), "later hits truncated against cumulative budget");
@@ -205,6 +205,21 @@ describe("session_search entry point", () => {
 		core.syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
 		const { hits } = core.searchIndex(path.join(agentDir, "config", "pi-session-search", "index.db"), "pangolin migration");
 		assert.equal(hits.length, 0, "sessions under --private-tmp-* must not be indexed");
+	});
+
+	it("caps hydrated metadata at the JSONL trust boundary", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-metadata`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		const session = writeSession("metadata/session.jsonl", [
+			{ type: "session", version: 3, id: "meta", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp" },
+			{ type: "message", id: "m1", parentId: null, timestamp: "t".repeat(100_000), message: { role: "user", content: "bounded metadata" } },
+		]);
+		const response = await tool.execute("tm", { sessionId: session }, undefined, undefined, { sessionManager: {} });
+		assert.ok(response.content[0].text.length <= 50_000);
+		const parsed = JSON.parse(response.content[0].text);
+		assert.equal(parsed.messages[0].timestamp.length, 128);
 	});
 
 	it("config validation: malformed file logs-and-defaults, invalid backfillFiles rejected", async () => {
@@ -223,12 +238,13 @@ describe("session_search entry point", () => {
 			mod.default(pi as never); // must not throw
 			assert.equal(errors.length, 1);
 
-			fs.writeFileSync(configPath, JSON.stringify({ backfillFiles: -5 }));
-			errors.length = 0;
-			mod.default(makePi() as never);
-			assert.equal(errors.length, 1);
-			// Config file preserved untouched.
-			assert.equal(fs.readFileSync(configPath, "utf8"), JSON.stringify({ backfillFiles: -5 }));
+			for (const invalid of [-5, 501]) {
+				fs.writeFileSync(configPath, JSON.stringify({ backfillFiles: invalid }));
+				errors.length = 0;
+				mod.default(makePi() as never);
+				assert.equal(errors.length, 1);
+				assert.equal(fs.readFileSync(configPath, "utf8"), JSON.stringify({ backfillFiles: invalid }));
+			}
 		} finally {
 			console.error = origError;
 		}

@@ -12,7 +12,8 @@ export interface WindowResult {
 	messagesBefore: number;
 	messagesAfter: number;
 	/** Tip of the branch the window was resolved on — pass back as
-	 *  aroundMessageId to keep scrolling on this branch across forks. */
+	 *  aroundMessageId to keep scrolling on this branch across forks. May be a
+	 *  non-message entry id; windows center on its nearest message ancestor. */
 	branchTip: string;
 }
 
@@ -46,7 +47,13 @@ function parseSessionEntries(sessionPath: string): Entry[] {
 			continue; // skip malformed line
 		}
 		const e = obj as Entry;
-		if (e && typeof e.id === "string") entries.push(e);
+		if (
+			e &&
+			typeof e.id === "string" &&
+			e.id.length > 0 &&
+			e.id.length <= 256 &&
+			(e.parentId == null || (typeof e.parentId === "string" && e.parentId.length <= 256))
+		) entries.push(e);
 	}
 	return entries;
 }
@@ -98,9 +105,9 @@ function toWindowMessage(e: Entry): WindowMessage {
 					.join("\n");
 	return {
 		entryId: e.id,
-		role: m.role ?? "",
+		role: typeof m.role === "string" ? m.role.slice(0, 32) : "",
 		content,
-		timestamp: e.timestamp ?? "",
+		timestamp: typeof e.timestamp === "string" ? e.timestamp.slice(0, 128) : "",
 	};
 }
 
@@ -114,6 +121,25 @@ function branchMessages(
 		.map(toWindowMessage);
 }
 
+/** Resolve a scroll cursor to a message: the cursor itself when it is a
+ *  message, otherwise its nearest message ancestor. Throws when the cursor is
+ *  unknown or has no message ancestor. */
+function resolveMessageCursor(
+	entriesById: Map<string, Entry>,
+	anchorEntryId: string,
+): Entry {
+	const anchor = entriesById.get(anchorEntryId);
+	if (!anchor) throw new Error(`anchor entry ${anchorEntryId} not found in session`);
+	let cur: Entry | undefined = anchor;
+	const seen = new Set<string>();
+	while (cur && cur.type !== "message" && !seen.has(cur.id)) {
+		seen.add(cur.id);
+		cur = cur.parentId ? entriesById.get(cur.parentId) : undefined;
+	}
+	if (!cur || cur.type !== "message") throw new Error(`anchor entry ${anchorEntryId} has no message ancestor`);
+	return cur;
+}
+
 /** All messages on the anchor's branch, root→tip chronological (bnRnt). */
 export function getBranchMessages(
 	sessionPath: string,
@@ -121,10 +147,7 @@ export function getBranchMessages(
 ): WindowMessage[] {
 	const entries = parseSessionEntries(sessionPath);
 	const entriesById = new Map(entries.map((e) => [e.id, e]));
-	const anchor = entriesById.get(anchorEntryId);
-	if (!anchor) throw new Error(`anchor entry ${anchorEntryId} not found in ${sessionPath}`);
-	if (anchor.type !== "message")
-		throw new Error(`anchor entry ${anchorEntryId} is not a message entry`);
+	resolveMessageCursor(entriesById, anchorEntryId);
 	return branchMessages(entriesById, deepestDescendant(entriesById, entries, anchorEntryId));
 }
 
@@ -136,19 +159,19 @@ export function getWindow(
 	const n = Math.max(0, Math.min(50, windowN));
 	const entries = parseSessionEntries(sessionPath);
 	const entriesById = new Map(entries.map((e) => [e.id, e]));
-	const anchor = entriesById.get(anchorEntryId);
-	if (!anchor) throw new Error(`anchor entry ${anchorEntryId} not found in ${sessionPath}`);
-	if (anchor.type !== "message")
-		throw new Error(`anchor entry ${anchorEntryId} is not a message entry`);
+	// A non-message branch-tip cursor centers on its nearest message ancestor;
+	// the non-message tip itself stays branchTip so scrolling remains on branch.
+	const messageAnchor = resolveMessageCursor(entriesById, anchorEntryId);
+	const anchorEntryIdMsg = messageAnchor.id;
 
 	const tip = deepestDescendant(entriesById, entries, anchorEntryId);
 	const msgs = branchMessages(entriesById, tip);
-	const idx = msgs.findIndex((m) => m.entryId === anchorEntryId);
+	const idx = msgs.findIndex((m) => m.entryId === anchorEntryIdMsg);
 	const start = Math.max(0, idx - n);
 	const end = Math.min(msgs.length - 1, idx + n);
 	return {
 		messages: msgs.slice(start, end + 1).map((m) =>
-			m.entryId === anchorEntryId ? { ...m, anchor: true } : m,
+			m.entryId === anchorEntryIdMsg ? { ...m, anchor: true } : m,
 		),
 		messagesBefore: idx,
 		messagesAfter: msgs.length - 1 - idx,

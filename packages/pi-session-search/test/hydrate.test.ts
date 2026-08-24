@@ -107,15 +107,32 @@ test("interleaved non-message entries are transparent", () => {
 	assert.deepEqual(r.messages.map((m) => m.entryId), ["e01", "e02", "e03", "e04", "e05"]);
 });
 
-test("anchor missing or non-message throws", () => {
+test("non-message branch tip centers on its nearest message ancestor", () => {
 	const msg = mkMsgs();
 	const p = write("throw.jsonl", [
 		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
 		msg(null, "user", "q1"),
-		{ type: "model_change", id: "mc1", parentId: "e02", timestamp: "t", provider: "x", modelId: "y" },
+		{ type: "model_change", id: "mc1", parentId: "e01", timestamp: "t", provider: "x", modelId: "y" },
+		msg("e01", "assistant", "sibling branch"),
 	]);
 	assert.throws(() => getWindow(p, "nope", 1), /not found/);
-	assert.throws(() => getWindow(p, "mc1", 1), /not a message/);
+	const window = getWindow(p, "mc1", 1);
+	assert.deepEqual(window.messages.map((m) => m.entryId), ["e01"], "later sibling branch must stay excluded");
+	assert.equal(window.messages[0].anchor, true);
+	assert.equal(window.branchTip, "mc1");
+});
+
+test("oversized entry and parent ids are rejected without corrupting the branch", () => {
+	const msg = mkMsgs();
+	const p = write("oversized-ids.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "t", cwd: "/tmp/x" },
+		msg(null, "user", "root"),
+		{ type: "message", id: "x".repeat(257), parentId: "e01", timestamp: "t", message: { role: "assistant", content: "bad id" } },
+		{ type: "message", id: "bad-parent", parentId: "x".repeat(257), timestamp: "t", message: { role: "assistant", content: "bad parent" } },
+		msg("e01", "assistant", "valid child"),
+	]);
+	const result = readSession(p);
+	assert.deepEqual(result.messages.map((m) => m.entryId), ["e01", "e02"]);
 });
 
 test("parentId cycle terminates (corrupt file)", () => {

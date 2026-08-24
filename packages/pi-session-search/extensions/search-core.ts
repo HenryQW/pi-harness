@@ -10,6 +10,8 @@ import path from "node:path";
 import type { SearchHit, SessionRow, SyncResult } from "./types.ts";
 
 export const DEFAULT_SYNC_CAP = 50;
+/** Hard ceiling for the configured backfillFiles work bound. */
+export const MAX_BACKFILL_FILES = DEFAULT_SYNC_CAP * 10;
 export const MAX_QUERY_CHARS = 512;
 const MAX_TEXT_CHARS = 20000;
 const SCAN_LIMIT = 300;
@@ -18,6 +20,11 @@ const ROWS_PER_FILE = 1;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS session_files (
+  path TEXT PRIMARY KEY,
+  size INTEGER NOT NULL,
+  mtime_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_failures (
   path TEXT PRIMARY KEY,
   size INTEGER NOT NULL,
   mtime_ms INTEGER NOT NULL
@@ -89,14 +96,21 @@ interface ParsedFile {
 	messages: ParsedMessage[];
 }
 
-/** Middle-out truncation keeping head and tail. */
+/** Middle-out truncation keeping head and tail. Raw text only — no synthetic
+ *  notices: this string is FTS-indexed, so injected terms would pollute search
+ *  results and snippets. */
 function truncateText(text: string, max = MAX_TEXT_CHARS): string {
 	if (text.length <= max) return text;
-	const notice = `\n... (truncated, ${text.length} chars total)\n`;
-	const kept = Math.max(0, max - notice.length);
+	const kept = max - 1;
 	const head = Math.ceil(kept / 2);
 	const tail = Math.floor(kept / 2);
-	return `${text.slice(0, head)}${notice}${tail > 0 ? text.slice(-tail) : ""}`;
+	return `${text.slice(0, head)}\n${text.slice(-tail)}`;
+}
+
+/** Cap an untrusted string at a parse boundary so malformed JSONL cannot
+ *  produce unbounded metadata downstream. */
+function capStr(value: unknown, max: number): string | null {
+	return typeof value === "string" ? value.slice(0, max) : null;
 }
 
 function extractText(content: unknown): string {
@@ -136,9 +150,9 @@ function parseSessionFile(filePath: string): ParsedFile {
 			case "session":
 				// Untrusted header strings are capped here so every consumer
 				// (browse rows, discovery meta) inherits the bound.
-				parsed.cwd = typeof entry.cwd === "string" ? entry.cwd.slice(0, 500) : parsed.cwd;
-				parsed.startedAt = typeof entry.timestamp === "string" ? entry.timestamp : parsed.startedAt;
-				parsed.parentSession = typeof entry.parentSession === "string" ? entry.parentSession : parsed.parentSession;
+				parsed.cwd = capStr(entry.cwd, 500) ?? parsed.cwd;
+				parsed.startedAt = capStr(entry.timestamp, 128) ?? parsed.startedAt;
+				parsed.parentSession = capStr(entry.parentSession, 1024) ?? parsed.parentSession;
 				break;
 			case "session_info":
 				if (typeof entry.name === "string") parsed.name = entry.name.slice(0, 500);
@@ -148,14 +162,14 @@ function parseSessionFile(filePath: string): ParsedFile {
 				if (role !== "user" && role !== "assistant") break;
 				const text = truncateText(extractText(entry.message.content));
 				if (!text) break;
-				if (typeof entry.id !== "string" || !entry.id) break;
+				if (typeof entry.id !== "string" || !entry.id || entry.id.length > 256) break;
 				if (role === "user" && parsed.preview === null) {
 					parsed.preview = text.slice(0, 200);
 				}
 				parsed.messages.push({
 					entryId: entry.id,
 					role,
-					timestamp: typeof entry.timestamp === "string" ? entry.timestamp : null,
+					timestamp: capStr(entry.timestamp, 128),
 					text,
 				});
 				break;
@@ -219,7 +233,10 @@ export function syncSessions(
 	dbPath: string,
 	opts?: { cap?: number },
 ): SyncResult {
-	const cap = opts?.cap ?? DEFAULT_SYNC_CAP;
+	const requestedCap = opts?.cap ?? DEFAULT_SYNC_CAP;
+	const cap = Number.isFinite(requestedCap)
+		? Math.max(1, Math.min(MAX_BACKFILL_FILES, Math.floor(requestedCap)))
+		: DEFAULT_SYNC_CAP;
 	const db = openDb(dbPath);
 
 	// Junk dirs never reach the walk result: pruned during descent.
@@ -228,17 +245,28 @@ export function syncSessions(
 	const watermarks = new Map(
 		(db.prepare("SELECT path, size, mtime_ms FROM session_files").all() as any[]).map((r) => [r.path, r]),
 	);
+	const failures = new Map(
+		(db.prepare("SELECT path, size, mtime_ms FROM session_failures").all() as any[]).map((r) => [r.path, r]),
+	);
 
 	// An incomplete traversal proves nothing about absence: purging here would
 	// wipe healthy sessions over a transient readdir/stat failure. Changed/new
 	// files already discovered still process normally.
 	const discovered = new Set(all.map(([fp]) => fp));
 	const deleted = walk.complete ? [...watermarks.keys()].filter((p) => !discovered.has(p)) : [];
+	const deletedFailures = walk.complete ? [...failures.keys()].filter((p) => !discovered.has(p)) : [];
 
 	const changed: { path: string; stat: fs.Stats }[] = [];
+	let filesSkipped = 0;
 	for (const [p, stat] of all) {
+		const mtimeMs = Math.floor(stat.mtimeMs);
 		const wm = watermarks.get(p);
-		if (wm && wm.size === stat.size && wm.mtime_ms === Math.floor(stat.mtimeMs)) continue;
+		if (wm && wm.size === stat.size && wm.mtime_ms === mtimeMs) continue;
+		const failed = failures.get(p);
+		if (failed && failed.size === stat.size && failed.mtime_ms === mtimeMs) {
+			filesSkipped++;
+			continue;
+		}
 		changed.push({ path: p, stat });
 	}
 
@@ -253,6 +281,10 @@ export function syncSessions(
 	const delStmt = db.prepare("DELETE FROM messages WHERE path = ?");
 	const delSession = db.prepare("DELETE FROM sessions WHERE path = ?");
 	const delFile = db.prepare("DELETE FROM session_files WHERE path = ?");
+	const delFailure = db.prepare("DELETE FROM session_failures WHERE path = ?");
+	const upsertFailure = db.prepare(
+		"INSERT INTO session_failures(path, size, mtime_ms) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms",
+	);
 	const upsertFile = db.prepare(
 		"INSERT INTO session_files(path, size, mtime_ms) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms",
 	);
@@ -276,40 +308,38 @@ export function syncSessions(
 			count++;
 		}
 		upsertFile.run(filePath, stat.size, Math.floor(stat.mtimeMs));
+		delFailure.run(filePath);
 		return count;
 	});
 
 	let filesProcessed = 0;
 	let messagesIndexed = 0;
-	let filesSkipped = 0;
 
-	let filesFailed = 0;
-	// Count successes against the cap, not attempts: a permanently failing
-	// newest file must not monopolize the pass and starve older sessions.
-	for (const { path: p, stat } of changed) {
-		if (filesProcessed >= cap) break;
-		let count: number;
+	// The cap bounds total ATTEMPTS per pass, not successes: work per sync call
+	// stays bounded regardless of failures. An unchanged failure fingerprint is
+	// skipped on later passes until the file changes.
+	const batch = changed.slice(0, cap);
+	for (const { path: p, stat } of batch) {
 		try {
-			count = tx(p, stat);
+			messagesIndexed += tx(p, stat);
+			filesProcessed++;
 		} catch {
-			// One unreadable/malformed file must not abort the whole pass.
-			filesFailed++;
-			continue;
+			// Do not retry an unchanged permanent failure on every startup/search.
+			upsertFailure.run(p, stat.size, Math.floor(stat.mtimeMs));
 		}
-		filesProcessed++;
-		messagesIndexed += count;
 	}
-	const attempted = Math.min(changed.length, filesProcessed + filesFailed);
-	const changedRemaining = changed.length - attempted + filesFailed;
+	const changedRemaining = changed.length - batch.length;
 
 	let purged = 0;
 	for (const p of deleted.slice(0, cap)) {
 		delStmt.run(p);
 		delSession.run(p);
 		delFile.run(p);
+		delFailure.run(p);
 		purged++;
 	}
 	const deletedRemaining = Math.max(0, deleted.length - cap);
+	for (const p of deletedFailures.slice(0, cap)) delFailure.run(p);
 
 	const backlog = changedRemaining + deletedRemaining;
 	db.prepare("INSERT INTO meta(key, value) VALUES ('backlog', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(backlog));
@@ -441,12 +471,22 @@ function spaceParensOutsideQuotes(q: string): string {
 function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 	let query = rawQuery.trim();
 	if (!query) return null;
+	// Imbalance detection/recovery is quote-aware: parentheses inside quoted
+	// operands ("func(") are literals and must survive.
 	let depth = 0;
+	let inQuote = false;
 	for (const c of query) {
-		if (c === "(") depth++;
-		if (c === ")" && --depth < 0) break;
+		if (c === '"') inQuote = !inQuote;
+		else if (!inQuote && c === "(") depth++;
+		else if (!inQuote && c === ")" && --depth < 0) break;
 	}
-	if (depth !== 0) query = query.replace(/[()]/g, "");
+	if (depth !== 0) {
+		inQuote = false;
+		query = [...query].map((c) => {
+			if (c === '"') inQuote = !inQuote;
+			return !inQuote && (c === "(" || c === ")") ? " " : c;
+		}).join("");
+	}
 
 	const tokens = [...spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)]
 		.map((m) => (m[1] !== undefined ? { phrase: m[1] } : { word: m[2] ?? "" }))
@@ -515,18 +555,26 @@ const LIVE_FILTER_SQL = `NOT EXISTS (
   SELECT 1 FROM live_filter lf WHERE lf.path = m.path AND lf.entry_id = m.entry_id
 )`;
 const BASE_SELECT = `
-SELECT path, entry_id, role, timestamp, snip, cwd, name, started_at FROM (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY score) AS rn FROM (
-    SELECT m.path, m.entry_id, m.role, m.timestamp, s.cwd, s.name, s.started_at,
-           snippet(session_fts, 0, '[', ']', '…', 16) AS snip,
-           bm25(session_fts) AS score
-    FROM session_fts JOIN messages m ON m.rowid = session_fts.rowid
-    LEFT JOIN sessions s ON s.path = m.path
-    WHERE session_fts MATCH ? AND ${LIVE_FILTER_SQL}
-  )
+WITH matches AS (
+  SELECT m.path, m.entry_id, m.role, m.timestamp, s.cwd, s.name, s.started_at,
+         s.parent_session, m.rowid AS rid,
+         snippet(session_fts, 0, '[', ']', '…', 16) AS snip,
+         bm25(session_fts) AS score
+  FROM session_fts JOIN messages m ON m.rowid = session_fts.rowid
+  LEFT JOIN sessions s ON s.path = m.path
+  WHERE session_fts MATCH ? AND ${LIVE_FILTER_SQL}
+), ranked AS (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY score, rid) AS rn
+  FROM matches
 )
+SELECT path, entry_id, role, timestamp, snip, cwd, name, started_at
+FROM ranked r
 WHERE rn <= ${ROWS_PER_FILE}
-ORDER BY score
+  AND NOT EXISTS (
+    SELECT 1 FROM ranked parent
+    WHERE parent.path = r.parent_session AND parent.rn <= ${ROWS_PER_FILE}
+  )
+ORDER BY score, rid
 LIMIT ${SCAN_LIMIT}`;
 
 /** Bounded excerpt around the first matched term for the LIKE fallback. */
@@ -615,40 +663,32 @@ export function searchIndex(
 			const bool = buildBooleanLikeSql(trimmed);
 			const where = bool?.where ?? terms.map(() => "m.text LIKE ? ESCAPE '\\'").join(" AND ");
 			const params = bool?.params ?? terms.map(likePattern);
-			rows = db
-				// Sessions ranked by matching-row count (rowid only picks the anchor
-				// within one session), then deterministic started_at/path ties.
-				.prepare(`SELECT path, entry_id, role, timestamp, text, cwd, name, started_at FROM (
-				            SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at,
-				                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn,
-				                   COUNT(*) OVER (PARTITION BY m.path) AS matches
-				             FROM messages m LEFT JOIN sessions s ON s.path = m.path
-				             WHERE ${where} AND ${LIVE_FILTER_SQL}
-				            ) WHERE rn <= ${ROWS_PER_FILE} ORDER BY matches DESC, started_at DESC, path LIMIT ${SCAN_LIMIT}`)
-				.all(...params) as any;
+			rows = db.prepare(`WITH ranked AS (
+			            SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at,
+			                   s.parent_session,
+			                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn,
+			                   COUNT(*) OVER (PARTITION BY m.path) AS matches
+			             FROM messages m LEFT JOIN sessions s ON s.path = m.path
+			             WHERE ${where} AND ${LIVE_FILTER_SQL}
+			            )
+			            SELECT path, entry_id, role, timestamp, text, cwd, name, started_at
+			            FROM ranked r
+			            WHERE rn <= ${ROWS_PER_FILE}
+			              AND NOT EXISTS (
+			                SELECT 1 FROM ranked parent
+			                WHERE parent.path = r.parent_session AND parent.rn <= ${ROWS_PER_FILE}
+			              )
+			            ORDER BY matches DESC, started_at DESC, path
+			            LIMIT ${SCAN_LIMIT}`).all(...params) as any;
 			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", snippetTerms.length > 0 ? snippetTerms : terms);
 		}
 
-		// Live-entry suppression already happened in SQL; lineage suppression is
-		// computed from surviving rows so a suppressed live hit on the current
-		// parent cannot suppress a matching child.
-		const guarded = rows as RawRow[];
-		const hitPaths = new Set(guarded.map((r) => r.path));
-		const parentOf = new Map<string, string | null>();
-		const stmtParent = db.prepare("SELECT parent_session FROM sessions WHERE path = ?");
-		for (const p of hitPaths) {
-			const row = stmtParent.get(p) as { parent_session: string | null } | undefined;
-			parentOf.set(p, row?.parent_session ?? null);
-		}
-
+		// Live-entry and one-hop lineage suppression already happened in SQL,
+		// before the scan limit, so fork rows cannot starve unrelated matches.
 		const seenFiles = new Set<string>();
 		const hits: SearchHit[] = [];
 		let rankCounter = 0;
-		for (const r of guarded) {
-			// One hop: drop child hits when the named parent itself has hits.
-			const parent = parentOf.get(r.path);
-			if (parent && hitPaths.has(parent)) continue;
-
+		for (const r of rows as RawRow[]) {
 			if (seenFiles.has(r.path)) continue;
 			seenFiles.add(r.path);
 			hits.push({

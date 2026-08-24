@@ -230,6 +230,29 @@ describe("lineage + guards", () => {
 		assert.equal(hits[0].path, childFile);
 	});
 
+	it("collapses lineage before the scan limit", () => {
+		const parent = writeFixture("--lineage-cap-parent--", "parent.jsonl", [
+			sessionHeader(),
+			msg("lcp", "user", "lineagecap marker"),
+		], 21000);
+		for (let i = 0; i < 300; i++) {
+			writeFixture(`--lineage-cap-child-${i}--`, "child.jsonl", [
+				sessionHeader({ parentSession: parent }),
+				msg(`lcc${i}`, "assistant", "lineagecap marker"),
+			], 22000 + i);
+		}
+		for (let i = 0; i < 10; i++) {
+			writeFixture(`--lineage-cap-other-${i}--`, "other.jsonl", [
+				sessionHeader(),
+				msg(`lco${i}`, "user", `lineagecap marker unrelated ${i}`),
+			], 23000 + i);
+		}
+		syncSessions(sessionsDir, dbPath, { cap: 500 });
+		const { hits } = searchIndex(dbPath, "lineagecap marker", { limit: 10 });
+		assert.equal(hits.length, 10, "collapsed children must not consume the scan limit");
+		assert.ok(hits.every((h) => !h.path.includes("lineage-cap-child")));
+	});
+
 	it("current-session guard skips live entries only in the current file", () => {
 		const cur = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
 		const { hits } = searchIndex(dbPath, "deploy pipeline", {
@@ -260,8 +283,7 @@ describe("lineage + guards", () => {
 		assert.equal(hits[0].path.endsWith("child.jsonl"), true);
 	});
 
-	it("failing newest file does not monopolize the sync cap (bmSMo)", () => {
-		// Newest file permanently fails the transaction (duplicate entry id).
+	it("failed files consume one bounded attempt and are skipped until changed", () => {
 		const dup = JSON.stringify({ type: "message", id: "dup", parentId: null, timestamp: "t", message: { role: "user", content: [{ type: "text", text: "dup id one" }] } });
 		writeFixture("--cap-fail--", "bad.jsonl", [
 			sessionHeader(),
@@ -276,10 +298,12 @@ describe("lineage + guards", () => {
 			sessionHeader(),
 			msg("g2", "user", "capfail unique marker two"),
 		], 70000);
-		const res = syncSessions(sessionsDir, dbPath, { cap: 1 });
-		// Failed newest file doesn't consume the cap: one good file still indexes.
-		assert.equal(res.filesProcessed, 1);
-		assert.ok(res.backlogRemaining >= 1, "failed file must stay in the backlog");
+		const first = syncSessions(sessionsDir, dbPath, { cap: 1 });
+		assert.equal(first.filesProcessed, 0, "failed attempt must consume the cap");
+		assert.equal(first.backlogRemaining, 2);
+		const second = syncSessions(sessionsDir, dbPath, { cap: 1 });
+		assert.equal(second.filesSkipped, 1, "unchanged failure must not be reparsed");
+		assert.equal(second.filesProcessed, 1, "older healthy work must progress next pass");
 		assert.equal(searchIndex(dbPath, "capfail unique marker one").hits.length, 1);
 	});
 
@@ -330,17 +354,23 @@ describe("sanitize ladder regression", () => {
 		assert.equal(hits.length, 1, "`Go deploy*` must match 'Go deployment strategy'");
 	});
 
-	it("quoted LIKE operand keeps parens; snippets anchor on operands, not operators (qIq7/qIq3)", () => {
+	it("quoted LIKE operands keep parentheses during balance recovery", () => {
 		const abi = writeFixture("--abi--", "abi.jsonl", [
 			sessionHeader(),
 			msg("ab1", "user", "we call the runtime via C(ABI) from Zig here"),
 		], 58000);
+		const literal = writeFixture("--func-open--", "literal.jsonl", [sessionHeader(), msg("fo1", "user", "literal func( token")], 58100);
+		const falsePositive = writeFixture("--func-word--", "word.jsonl", [sessionHeader(), msg("fw1", "user", "plain func token")], 58200);
+		const attached = writeFixture("--attached-paren--", "attached.jsonl", [sessionHeader(), msg("ap1", "user", "foo bar operands")], 58300);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
 
-		// Short operand forces LIKE; the quoted phrase must survive tokenization.
 		const { hits } = searchIndex(dbPath, 'Go OR "C(ABI)"', { limit: 5 });
 		assert.ok(hits.some((h) => h.path === abi), "quoted `C(ABI)` must match literal parens text under LIKE");
 		assert.ok(hits.every((h) => !h.snippet.includes(" ( ")), "snippet must not anchor on operator words or mangled phrases");
+		const openParenHits = searchIndex(dbPath, 'Go OR "func("', { limit: 20 }).hits;
+		assert.ok(openParenHits.some((h) => h.path === literal));
+		assert.ok(!openParenHits.some((h) => h.path === falsePositive), "quoted `func(` must not broaden to `func`");
+		assert.ok(searchIndex(dbPath, "Qx OR foo(bar", { limit: 20 }).hits.some((h) => h.path === attached), "removed grouping parens must not merge operands");
 	});
 
 	it("LIKE fallback ranks sessions by matching messages, not insertion order", () => {
@@ -358,7 +388,7 @@ describe("sanitize ladder regression", () => {
 
 	it("untrusted header metadata is capped at parse time (qIqk)", () => {
 		writeFixture("--huge-meta--", "meta.jsonl", [
-			JSON.stringify({ type: "session", version: 3, id: "hm", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/".repeat(100_000) }),
+			JSON.stringify({ type: "session", version: 3, id: "hm", timestamp: "2".repeat(100_000), cwd: "/".repeat(100_000) }),
 			JSON.stringify({ type: "session_info", name: "n".repeat(100_000) }),
 			msg("hm1", "user", "metadata cap fixture text"),
 		], 59000);
@@ -368,6 +398,20 @@ describe("sanitize ladder regression", () => {
 		assert.ok(row.cwd.length <= 500, "cwd must be capped");
 		const named = rows.find((r) => r.name);
 		if (named) assert.ok(named.name!.length <= 500, "name must be capped");
+		const huge = rows.find((r) => r.path.endsWith("meta.jsonl"));
+		assert.ok((huge?.startedAt?.length ?? 0) <= 128, "session timestamp must be capped");
+	});
+
+	it("truncated indexed text contains no synthetic searchable text", () => {
+		const seamText = `${"x".repeat(9_984)}abc${"m".repeat(100)}def${"y".repeat(9_997)}`;
+		writeFixture("--raw-truncate--", "raw.jsonl", [
+			sessionHeader(),
+			msg("rt1", "user", `actualneedle ${seamText}`),
+		], 59100);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(searchIndex(dbPath, "actualneedle").hits.length, 1);
+		assert.equal(searchIndex(dbPath, "truncated").hits.filter((h) => h.path.endsWith("raw.jsonl")).length, 0);
+		assert.equal(searchIndex(dbPath, "abcdef").hits.filter((h) => h.path.endsWith("raw.jsonl")).length, 0, "truncation seam must not create a searchable token");
 	});
 
 	it("LIKE fallback results carry a snippet (bhGOt)", () => {

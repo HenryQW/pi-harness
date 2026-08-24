@@ -1,6 +1,6 @@
 {
 	"name": "@henryqw/pi-session-search",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "FTS5 search over past Pi sessions: single tool, four arg-inferred modes (discovery/scroll/read/browse), zero LLM calls.",
 	"keywords": [
 		"pi-package",
@@ -48,7 +48,7 @@
 	},
 	"pi": {
 		"extensions": [
-			"./extensions"
+			"./extensions/session-search.ts"
 		]
 	}
 }
