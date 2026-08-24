@@ -180,10 +180,10 @@ interface WalkResult {
 function walkJsonlFiles(sessionsDir: string): WalkResult {
 	const files = new Map<string, fs.Stats>();
 	if (!fs.existsSync(sessionsDir)) return { files, complete: false };
-	const stack = [sessionsDir];
+	const stack: { dir: string; rel: string[] }[] = [{ dir: sessionsDir, rel: [] }];
 	let complete = true;
 	while (stack.length > 0) {
-		const dir = stack.pop()!;
+		const { dir, rel } = stack.pop()!;;
 		let entries: fs.Dirent[];
 		try {
 			entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -194,7 +194,10 @@ function walkJsonlFiles(sessionsDir: string): WalkResult {
 		for (const ent of entries) {
 			const full = path.join(dir, ent.name);
 			if (ent.isDirectory()) {
-				stack.push(full);
+				// Junk dirs are pruned before descent so a large ignored tree never
+				// costs a walk + per-file stats on every sync pass.
+				if (isJunkEncodedDir([...rel, ent.name])) continue;
+				stack.push({ dir: full, rel: [...rel, ent.name] });
 			} else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
 				try {
 					files.set(full, fs.statSync(full));
@@ -217,9 +220,9 @@ export function syncSessions(
 	const cap = opts?.cap ?? DEFAULT_SYNC_CAP;
 	const db = openDb(dbPath);
 
-	// Junk dirs are excluded from the walk entirely.
+	// Junk dirs never reach the walk result: pruned during descent.
 	const walk = walkJsonlFiles(sessionsDir);
-	const all = [...walk.files].filter(([p]) => !isJunkEncodedDir(path.relative(sessionsDir, p).split(path.sep)));
+	const all = [...walk.files];
 	const watermarks = new Map(
 		(db.prepare("SELECT path, size, mtime_ms FROM session_files").all() as any[]).map((r) => [r.path, r]),
 	);

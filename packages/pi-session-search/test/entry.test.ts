@@ -162,6 +162,51 @@ describe("session_search entry point", () => {
 		assert.ok(parsed.messages.every((m: { content: string }) => m.content.length < 10_000));
 	});
 
+	it("SCROLL and DISCOVERY bound oversized content to the output budget (PR #135)", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-bound`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+
+		// SCROLL over a window with a multi-hundred-kB paste.
+		msgCount = 1;
+		const sBig = writeSession("e/session-e.jsonl", [
+			{ type: "session", version: 3, id: "se", timestamp: "2026-01-05T00:00:00.000Z", cwd: "/Users/tester/proj" },
+			...Array.from({ length: 6 }, (_, i) => msg(i === 0 ? null : `e${String(i).padStart(2, "0")}`, i % 2 ? "assistant" : "user", `quokka ${"y".repeat(200_000)}`)),
+		]);
+		const scroll = await tool.execute("ts", { sessionId: sBig, aroundMessageId: "e03", window: 5 }, undefined, undefined, { sessionManager: {} });
+		assert.ok(scroll.content[0].text.length <= 50_000, "serialized SCROLL must respect the 50k budget");
+		const scrollParsed = JSON.parse(scroll.content[0].text);
+		assert.equal(scrollParsed.mode, "scroll");
+		assert.equal(scrollParsed.branchTip, "e06", "branch tip exposed as scroll cursor");
+		assert.equal(scrollParsed.contentTruncated, true);
+
+		// Discovery with detail=full: every hit sized against the cumulative budget.
+		for (const dir of ["f1", "f2", "f3"]) {
+			msgCount = 1;
+			writeSession(`${dir}/session.jsonl`, [
+				{ type: "session", version: 3, id: dir, timestamp: "2026-01-06T00:00:00.000Z", cwd: "/Users/tester/proj" },
+				...Array.from({ length: 4 }, (_, i) => msg(i === 0 ? null : `e${String(i).padStart(2, "0")}`, i % 2 ? "assistant" : "user", `capybara ${"z".repeat(30_000)}`)),
+			]);
+		}
+		const disc = await tool.execute("td", { query: "capybara", limit: 3, detail: "full" }, undefined, undefined, { sessionManager: {} });
+		assert.ok(disc.content[0].text.length <= 52_000, "serialized DISCOVERY must respect the 50k budget (plus small envelope)");
+		const discParsed = JSON.parse(disc.content[0].text);
+		assert.equal(discParsed.results.length, 3);
+		assert.ok(discParsed.results.some((r: { contentTruncated?: boolean }) => r.contentTruncated), "later hits truncated against cumulative budget");
+
+		// Junk dirs are pruned during the walk, not after it.
+		msgCount = 1;
+		writeSession("--private-tmp-junk/junk.jsonl", [
+			{ type: "session", version: 3, id: "junk", timestamp: "2026-01-07T00:00:00.000Z", cwd: "/Users/tester/proj" },
+			msg(null, "user", "pangolin migration notes"),
+		]);
+		const core = await import("../extensions/search-core.ts");
+		core.syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
+		const { hits } = core.searchIndex(path.join(agentDir, "config", "pi-session-search", "index.db"), "pangolin migration");
+		assert.equal(hits.length, 0, "sessions under --private-tmp-* must not be indexed");
+	});
+
 	it("config validation: malformed file logs-and-defaults, invalid backfillFiles rejected", async () => {
 		const configDir = path.join(agentDir, "config", "pi-session-search");
 		fs.mkdirSync(configDir, { recursive: true });

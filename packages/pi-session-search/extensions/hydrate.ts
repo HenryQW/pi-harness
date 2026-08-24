@@ -11,6 +11,9 @@ export interface WindowResult {
 	messages: WindowMessage[];
 	messagesBefore: number;
 	messagesAfter: number;
+	/** Tip of the branch the window was resolved on — pass back as
+	 *  aroundMessageId to keep scrolling on this branch across forks. */
+	branchTip: string;
 }
 
 export interface ReadResult {
@@ -138,10 +141,8 @@ export function getWindow(
 	if (anchor.type !== "message")
 		throw new Error(`anchor entry ${anchorEntryId} is not a message entry`);
 
-	const msgs = branchMessages(
-		entriesById,
-		deepestDescendant(entriesById, entries, anchorEntryId),
-	);
+	const tip = deepestDescendant(entriesById, entries, anchorEntryId);
+	const msgs = branchMessages(entriesById, tip);
 	const idx = msgs.findIndex((m) => m.entryId === anchorEntryId);
 	const start = Math.max(0, idx - n);
 	const end = Math.min(msgs.length - 1, idx + n);
@@ -151,6 +152,7 @@ export function getWindow(
 		),
 		messagesBefore: idx,
 		messagesAfter: msgs.length - 1 - idx,
+		branchTip: tip,
 	};
 }
 

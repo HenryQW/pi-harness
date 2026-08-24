@@ -35,7 +35,9 @@ function readConfig(): Config {
 		if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
 		const cap = (value as Record<string, unknown>).backfillFiles;
 		if (cap === undefined) return fallback;
-		if (typeof cap !== "number" || !Number.isInteger(cap) || cap < 1) {
+		// Safe integer rejects untrusted magnitudes like 1e100 that would
+		// defeat the sync work bound.
+		if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1) {
 			console.error("[pi-session-search] invalid backfillFiles in config; using default");
 			return fallback;
 		}
@@ -57,6 +59,32 @@ function truncateContent(msgs: WindowMessage[], maxChars: number): WindowMessage
 	);
 }
 
+/** Binary-search the max uniform per-message content cap whose built result fits
+ *  the budget; null when even empty message arrays don't fit. */
+function maxFittingCap(maxLen: number, budget: number, build: (cap: number) => unknown): number | null {
+	const fits = (cap: number) => JSON.stringify(build(cap)).length <= budget;
+	if (!fits(0)) return null;
+	let lo = 0;
+	for (let hi = maxLen; lo < hi; ) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (fits(mid)) lo = mid;
+		else hi = mid - 1;
+	}
+	return lo;
+}
+
+/** Build a result bounded to `budget`: largest uniform per-message cap across
+ *  every WindowMessage array, or a metadata-only shape when nothing fits.
+ *  build(null) must return the metadata-only variant with empty arrays. */
+function boundContent(
+	build: (cap: number | null) => Record<string, unknown>,
+	maxLen: number,
+	budget: number,
+): Record<string, unknown> {
+	const cap = maxFittingCap(maxLen, budget, (c) => build(c));
+	return cap === null ? build(null) : { ...build(cap), contentTruncated: true };
+}
+
 interface ToolParams {
 	query?: string;
 	sessionId?: string;
@@ -76,7 +104,7 @@ FOUR CALLING SHAPES
 
   2) SCROLL — pass \`sessionId\` + \`aroundMessageId\`:
      session_search(sessionId="...", aroundMessageId="e07", window=10)
-     Returns ±window messages centered on the anchor (clamped to [1,20]). Use after discovery when you need more context than the default ±5 window. To scroll forward/backward, pass the last/first message entryId of the previous window back as aroundMessageId; messagesBefore/messagesAfter tell you where you are.
+     Returns ±window messages centered on the anchor (clamped to [1,20]). Use after discovery when you need more context than the default ±5 window. To scroll forward/backward, pass the last/first message entryId of the previous window back as aroundMessageId; messagesBefore/messagesAfter tell you where you are. Across forks, re-anchoring on a shared ancestor can jump branches — pass the previous response's branchTip as aroundMessageId instead to stay on the same branch.
 
   3) READ — pass \`sessionId\` only:
      session_search(sessionId="...")
@@ -150,7 +178,15 @@ export default function (pi: ExtensionAPI): void {
 				if (sessionId && anchor) {
 					const w = clamp(params.window, 1, 20, 5);
 					const win = getWindow(sessionId, anchor, w);
-					const result = { mode: "scroll", sessionId, ...win };
+					const base = { mode: "scroll", sessionId, branchTip: win.branchTip, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
+					let result: Record<string, unknown> = { ...base, messages: win.messages };
+					if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && win.messages.length > 0) {
+						result = boundContent(
+							(cap) => ({ ...base, messages: cap === null ? [] : truncateContent(win.messages, cap), contentTruncated: true }),
+							Math.max(...win.messages.map((m) => m.content.length), 0),
+							OUTPUT_CHAR_BUDGET,
+						);
+					}
 					return textResult(result);
 				}
 
@@ -159,23 +195,20 @@ export default function (pi: ExtensionAPI): void {
 					const r = readSession(sessionId);
 					let result: Record<string, unknown> = { mode: "read", sessionId, ...r };
 					if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && r.messages.length > 0) {
-						// Binary search the max uniform per-message content cap that
-						// fits the output budget; contentTruncated is character-level
-						// truncation, distinct from the message-count `truncated`.
-						const base = { mode: "read", sessionId, totalMessages: r.totalMessages, truncated: r.truncated };
-						const fits = (cap: number) =>
-							JSON.stringify({ ...base, messages: truncateContent(r.messages, cap), contentTruncated: true }).length <= OUTPUT_CHAR_BUDGET;
-						const maxLen = Math.max(...r.messages.map((m) => m.content.length), 0);
-						let lo = 0;
-						for (let hi = maxLen; lo < hi; ) {
-							const mid = Math.ceil((lo + hi) / 2);
-							if (fits(mid)) lo = mid;
-							else hi = mid - 1;
-						}
-						result = fits(lo)
-							? { ...base, messages: truncateContent(r.messages, lo), contentTruncated: true }
-							// Metadata alone exceeds budget → no messages, signal only.
-							: { ...base, messages: [], contentTruncated: true };
+						// contentTruncated is character-level truncation, distinct from
+						// the message-count `truncated`.
+						result = boundContent(
+							(cap) => ({
+								mode: "read",
+								sessionId,
+								totalMessages: r.totalMessages,
+								truncated: r.truncated,
+								messages: cap === null ? [] : truncateContent(r.messages, cap),
+								contentTruncated: true,
+							}),
+							Math.max(...r.messages.map((m) => m.content.length), 0),
+							OUTPUT_CHAR_BUDGET,
+						);
 					}
 					return textResult(result);
 				}
@@ -218,8 +251,9 @@ export default function (pi: ExtensionAPI): void {
 					currentSessionPath,
 				});
 
-				let budget = OUTPUT_CHAR_BUDGET;
+				let used = 0;
 				const results = hits.map((hit) => {
+					const remaining = OUTPUT_CHAR_BUDGET - used;
 					const meta = {
 						path: hit.path,
 						snippet: hit.snippet,
@@ -232,11 +266,45 @@ export default function (pi: ExtensionAPI): void {
 						startedAt: hit.startedAt,
 					};
 					const hydrateFull = full || hit.rank === 0;
+					// Every hit is sized against the cumulative remaining budget: keep
+					// as-is when it fits, else truncate to the largest uniform cap that
+					// fits across messages and bookends, else metadata-only.
+					// contentTruncated signals either case.
+					const fitOrTruncate = (
+						hitObj: Record<string, unknown>,
+						messages: WindowMessage[],
+						bookends?: { start: WindowMessage[]; end: WindowMessage[] },
+					): Record<string, unknown> => {
+						const out: Record<string, unknown> = { ...hitObj };
+						if (JSON.stringify(out).length > remaining) {
+							const pools = bookends ? [messages, bookends.start, bookends.end] : [messages];
+							const maxLen = Math.max(...pools.flatMap((a) => a.map((m) => m.content.length)), 0);
+							Object.assign(
+								out,
+								boundContent(
+									(cap) => ({
+										...hitObj,
+										messages: cap === null ? [] : truncateContent(messages, cap),
+										...(bookends && cap !== null
+											? { bookends: { start: truncateContent(bookends.start, cap), end: truncateContent(bookends.end, cap) } }
+											: bookends
+												? { bookends: { start: [], end: [] } }
+												: {}),
+										contentTruncated: true,
+									}),
+									maxLen,
+									remaining,
+								),
+							);
+						}
+						used += JSON.stringify(out).length;
+						return out;
+					};
 					if (!hydrateFull) {
 						// Compact hits still carry the matched anchor message.
 						try {
 							const win = getWindow(hit.path, hit.entryId, 0);
-							return { ...meta, detail: "compact", messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
+							return fitOrTruncate({ ...meta, detail: "compact", messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter }, win.messages);
 						} catch {
 							return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
 						}
@@ -252,19 +320,18 @@ export default function (pi: ExtensionAPI): void {
 						} catch {
 							// Bookends optional.
 						}
-						budget -= JSON.stringify({ ...meta, win, bookends }).length;
-						const overBudget = budget < 0;
-						return {
-							...meta,
-							detail: "full" as const,
-							...(overBudget ? { contentTruncated: true } : {}),
-							messages: overBudget ? truncateContent(win.messages, 500) : win.messages,
-							bookends: overBudget
-								? { start: truncateContent(bookends.start, 200), end: truncateContent(bookends.end, 200) }
-								: bookends,
-							messagesBefore: win.messagesBefore,
-							messagesAfter: win.messagesAfter,
-						};
+						return fitOrTruncate(
+							{
+								...meta,
+								detail: "full" as const,
+								messages: win.messages,
+								bookends,
+								messagesBefore: win.messagesBefore,
+								messagesAfter: win.messagesAfter,
+							},
+							win.messages,
+							bookends,
+						);
 					} catch {
 						// Session file unreadable/moved since indexing → anchor-only.
 						return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
