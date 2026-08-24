@@ -17,7 +17,7 @@ Provide validated user Roles, shared task-model Pi launch policy, generic manage
 
 ## Invariants
 
-- One Delegated Task creates one ephemeral child process and no saved session. Default timeouts: 10-minute soft deadline; active model/tool execution or activity within the last minute grants one 5-minute grace period before a hard stop. Every value is configurable via the `timeout` object in `~/.pi/agent/config/pi-subagent/pi-subagent.json` (`softMinutes`, `graceMinutes`, `activeWindowSeconds`).
+- One Delegated Task creates one ephemeral child process and no saved session. Timeout behavior: `deadline = min(last recognized Pi JSON event + idle timeout, child start + maximum runtime)` (recognized Pi events renew; raw bytes do not; max always terminates). Configurable via the `timeout` object in `~/.pi/agent/config/pi-subagent/pi-subagent.json` (`idleMinutes`, `maxMinutes`; defaults 10/30).
 - Up to five active ephemeral `delegate_task` children run per Main by default, configurable via `maxSubagents` in `~/.pi/agent/config/pi-subagent/pi-subagent.json` or the `PI_SUBAGENT_MAX_SUBAGENTS` environment variable; excess calls wait FIFO. Queued calls do not start a child or consume child timeout. Managed Herdr workers are unaffected.
 - Ambient child extensions and Skills stay disabled; Role explicitly selects extension sources and named Skills. Pi loads Skills supplied by those extension packages or their resource discovery. Omitted Role tools use Pi's effective `defaultTools`; an explicit list sets base tools while loaded extension tools activate automatically.
 - Role Skill names resolve through Main's effective Pi Skill registry; unavailable names warn and skip without blocking delegation.

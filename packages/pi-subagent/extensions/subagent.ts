@@ -5,7 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import {
 	availableTaskModels,
 	THINKING_LEVELS,
@@ -30,9 +30,8 @@ const WIDGET_INTERVAL_MS = 80;
 const TERMINAL_DISPLAY_MS = 1_000;
 const MAX_WIDGET_ROWS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
-	softMs: 10 * 60_000,
-	graceMs: 5 * 60_000,
-	activeWindowMs: 60_000,
+	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
+	maxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
 };
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -40,12 +39,10 @@ type TimeoutPolicy = typeof DEFAULT_TIMEOUT_POLICY;
 
 /** Merge validated config-file timeout fields over defaults; absent keys keep defaults. */
 export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined): TimeoutPolicy {
-	const policy: TimeoutPolicy = { ...DEFAULT_TIMEOUT_POLICY };
-	if (!partial) return policy;
-	if (partial.softMinutes !== undefined) policy.softMs = partial.softMinutes * 60_000;
-	if (partial.graceMinutes !== undefined) policy.graceMs = partial.graceMinutes * 60_000;
-	if (partial.activeWindowSeconds !== undefined) policy.activeWindowMs = partial.activeWindowSeconds * 1_000;
-	return policy;
+	return {
+		idleMs: partial?.idleMinutes === undefined ? DEFAULT_TIMEOUT_POLICY.idleMs : partial.idleMinutes * 60_000,
+		maxMs: partial?.maxMinutes === undefined ? DEFAULT_TIMEOUT_POLICY.maxMs : partial.maxMinutes * 60_000,
+	};
 }
 class SubagentTimeoutError extends Error {}
 type ChildResult = {
@@ -251,21 +248,38 @@ async function runPi(
 		let spawnError: Error | undefined;
 		let protocolError: Error | undefined;
 		let aborted = false;
+		const startedAt = Date.now();
+		const maxDeadline = startedAt + timeoutPolicy.maxMs;
+		let lastEventAt = startedAt;
+		let deadline = Math.min(startedAt + timeoutPolicy.idleMs, maxDeadline);
 		let timedOutAfterMs: number | undefined;
-		let graceGranted = false;
-		let lastActivityAt = Date.now();
-		let modelActive = false;
-		let activeTools = 0;
+		let timeoutReason: "idle" | "maximum" | undefined;
+		let childExited = false;
 		let completedTokens = 0;
 		let currentTokens = 0;
-		let softDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
-		let hardDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 
-		const observeEvent = (type: string) => {
-			lastActivityAt = Date.now();
-			if (type === "tool_execution_start") activeTools++;
-			else if (type === "tool_execution_end") activeTools = Math.max(0, activeTools - 1);
+		const scheduleDeadline = () => {
+			if (deadlineTimer) clearTimeout(deadlineTimer);
+			deadline = Math.min(lastEventAt + timeoutPolicy.idleMs, maxDeadline);
+			const scheduledDeadline = deadline;
+			deadlineTimer = setTimeout(
+				() => timeout(scheduledDeadline - startedAt, scheduledDeadline === maxDeadline ? "maximum" : "idle"),
+				Math.max(0, scheduledDeadline - Date.now()),
+			);
+			deadlineTimer.unref();
+		};
+
+		const observeEvent = () => {
+			if (aborted || timedOutAfterMs !== undefined || childExited) return;
+			const now = Date.now();
+			if (now >= deadline) {
+				timeout(deadline - startedAt, deadline === maxDeadline ? "maximum" : "idle");
+				return;
+			}
+			lastEventAt = now;
+			scheduleDeadline();
 		};
 
 		const processLine = (line: string) => {
@@ -279,15 +293,12 @@ async function runPi(
 			if (!event || typeof event !== "object" || Array.isArray(event)) return;
 			const record = event as Record<string, unknown>;
 			if (record.type === "message_start") {
-				if (record.message && typeof record.message === "object" && !Array.isArray(record.message)
-					&& (record.message as Record<string, unknown>).role === "assistant") modelActive = true;
 				partial.prefix = "";
 				partial.totalBytes = 0;
 				hasPartialText = false;
 				return;
 			}
 			if (record.type === "message_update") {
-				modelActive = true;
 				const tokens = usageTokens(record.usage);
 				if (tokens !== undefined) {
 					currentTokens = tokens;
@@ -316,7 +327,6 @@ async function runPi(
 			if (record.message && typeof record.message === "object" && !Array.isArray(record.message)) {
 				const message = record.message as Record<string, unknown>;
 				if (message.role === "assistant") {
-					modelActive = false;
 					completedTokens += usageTokens(message.usage) ?? currentTokens;
 					currentTokens = 0;
 					onTokens?.(completedTokens);
@@ -348,7 +358,6 @@ async function runPi(
 
 		child.stdout.on("data", (data: string) => {
 			if (protocolError) return;
-			lastActivityAt = Date.now();
 			let offset = 0;
 			while (offset < data.length) {
 				const newline = data.indexOf("\n", offset);
@@ -357,10 +366,7 @@ async function runPi(
 				if (!ignoreLine) {
 					linePrefix += part.slice(0, Math.max(0, 256 - linePrefix.length));
 					const eventType = JSON_EVENT_TYPE.exec(linePrefix)?.[1];
-					if (eventType && !lineEventType) {
-						lineEventType = eventType;
-						observeEvent(eventType);
-					}
+					if (eventType && !lineEventType) lineEventType = eventType;
 					if (eventType && !CONSUMED_JSON_EVENTS.has(eventType)) {
 						ignoreLine = true;
 						lineParts = [];
@@ -376,6 +382,7 @@ async function runPi(
 					}
 				}
 				if (newline === -1) return;
+				if (lineEventType) observeEvent();
 				if (!ignoreLine) processLine(lineParts.join(""));
 				lineParts = [];
 				lineBytes = 0;
@@ -386,52 +393,65 @@ async function runPi(
 			}
 		});
 		child.stderr.on("data", (data: string) => {
-			lastActivityAt = Date.now();
 			appendBounded(stderr, data);
 		});
 		child.on("error", (error) => { spawnError = error; });
 
-		const stop = () => {
+		const stop = (force = false) => {
+			if (force) {
+				void killTree(true);
+				return;
+			}
 			void killTree(false);
-			killTimer = setTimeout(() => void killTree(true), 5_000);
+			killTimer = setTimeout(
+				() => void killTree(true),
+				Math.min(5_000, Math.max(0, maxDeadline - Date.now())),
+			);
 			killTimer.unref();
 		};
 		const abort = () => {
-			if (timedOutAfterMs !== undefined) return;
+			if (timedOutAfterMs !== undefined || childExited) return;
 			aborted = true;
 			stop();
 		};
-		const timeout = (afterMs: number) => {
-			if (aborted || timedOutAfterMs !== undefined) return;
+		function timeout(afterMs: number, reason: "idle" | "maximum") {
+			if (timedOutAfterMs !== undefined || childExited) return;
+			if (reason === "maximum") {
+				if (!aborted) {
+					timedOutAfterMs = afterMs;
+					timeoutReason = reason;
+				}
+				stop(true);
+				return;
+			}
+			if (aborted) return;
 			timedOutAfterMs = afterMs;
+			timeoutReason = reason;
 			stop();
-		};
-		softDeadlineTimer = setTimeout(() => {
-			const active = modelActive || activeTools > 0 || Date.now() - lastActivityAt <= timeoutPolicy.activeWindowMs;
-			if (active && timeoutPolicy.graceMs > 0) graceGranted = true;
-			else timeout(timeoutPolicy.softMs);
-		}, timeoutPolicy.softMs);
-		softDeadlineTimer.unref();
-		hardDeadlineTimer = setTimeout(
-			() => timeout(timeoutPolicy.softMs + timeoutPolicy.graceMs),
-			timeoutPolicy.softMs + timeoutPolicy.graceMs,
-		);
-		hardDeadlineTimer.unref();
+		}
+		scheduleDeadline();
 		signal?.addEventListener("abort", abort, { once: true });
 		if (signal?.aborted) abort();
 
+		// `close` waits for stdio EOF, which descendants can hold after Pi exits.
+		// Kill the process group at Pi's exit boundary so `close` can settle.
+		child.once("exit", () => {
+			childExited = true;
+			if (deadlineTimer) clearTimeout(deadlineTimer);
+			signal?.removeEventListener("abort", abort);
+			void killTree(true);
+		});
 		child.on("close", async (code) => {
 			if (!protocolError && lineBytes) processLine(lineParts.join(""));
-			// Pi may exit while redirected background commands remain in its process
-			// group. Stop every descendant before callers inspect or prune its cwd.
 			await killTree(true);
-			if (softDeadlineTimer) clearTimeout(softDeadlineTimer);
-			if (hardDeadlineTimer) clearTimeout(hardDeadlineTimer);
+			if (deadlineTimer) clearTimeout(deadlineTimer);
 			if (killTimer) clearTimeout(killTimer);
 			signal?.removeEventListener("abort", abort);
 			if (aborted) reject(new Error("Subagent was aborted."));
 			else if (timedOutAfterMs !== undefined) reject(new SubagentTimeoutError(
-				`Subagent timed out after ${formatElapsed(0, timedOutAfterMs)}${graceGranted ? ` despite active status at the ${formatElapsed(0, timeoutPolicy.softMs)} soft deadline` : " without active status at the soft deadline"}.`,
+				timeoutReason === "maximum"
+					? `Subagent reached its maximum runtime after ${formatElapsed(0, timedOutAfterMs)}.`
+					: `Subagent timed out after ${formatElapsed(0, timeoutPolicy.idleMs)} without a recognized Pi event.`,
 			));
 			else if (protocolError) reject(protocolError);
 			else if (spawnError) reject(spawnError);
