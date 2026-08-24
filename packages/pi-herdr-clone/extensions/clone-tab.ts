@@ -310,12 +310,13 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				if (!response || typeof response !== "object" || Array.isArray(response)) {
 					throw new Error("Herdr worktree create returned invalid JSON");
 				}
+				// Herdr nests checkout_path under workspace.worktree; the top-level
+				// result.worktree uses `path` instead.
 				const result = (response as {
 					result?: {
-						workspace?: { workspace_id?: unknown };
+						workspace?: { workspace_id?: unknown; worktree?: { checkout_path?: unknown } };
 						tab?: { tab_id?: unknown };
 						root_pane?: { pane_id?: unknown };
-						worktree?: { checkout_path?: unknown };
 					};
 				}).result;
 				// Collect every returned identifier before validating so recovery
@@ -323,12 +324,14 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				workspaceId = typeof result?.workspace?.workspace_id === "string" ? result.workspace.workspace_id : undefined;
 				tabId = typeof result?.tab?.tab_id === "string" ? result.tab.tab_id : undefined;
 				rootPaneId = typeof result?.root_pane?.pane_id === "string" ? result.root_pane.pane_id : undefined;
-				checkoutPath = typeof result?.worktree?.checkout_path === "string" ? result.worktree.checkout_path : undefined;
+				checkoutPath = typeof result?.workspace?.worktree?.checkout_path === "string" && result.workspace.worktree.checkout_path.trim()
+					? result.workspace.worktree.checkout_path
+					: undefined;
 				const missing = [
 					[workspaceId, "workspace_id"],
 					[tabId, "tab_id"],
 					[rootPaneId, "root_pane.pane_id"],
-					[checkoutPath, "worktree.checkout_path"],
+					[checkoutPath, "workspace.worktree.checkout_path"],
 				].filter(([value]) => !value).map(([, label]) => label);
 				if (missing.length > 0) {
 					throw new Error(`Herdr worktree create response is missing ${missing.join(", ")}.`);
