@@ -201,8 +201,12 @@ export async function abortRun(state: RunState, options: OrchestrationOptions): 
 			if (await integrationBranchIsRecorded(state, options)) throw error;
 		}
 	}
-	const next = await save({ ...state, phase: "aborted" }, options);
-	return await cleanupRun(next, options);
+	const { abort_cleanup_complete: _abortCleanupComplete, ...pendingCleanup } = state;
+	const next = await save({ ...pendingCleanup, phase: "aborted" }, options);
+	const cleaned = await cleanupRun(next, options);
+	return cleaned.cleanup_blocks?.length
+		? cleaned
+		: await save({ ...cleaned, abort_cleanup_complete: true }, options);
 }
 
 export async function cleanupRun(state: RunState, options: OrchestrationOptions): Promise<RunState> {

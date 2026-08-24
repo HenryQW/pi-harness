@@ -126,7 +126,7 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 		async resolve() { throw new Error("unexpected resolve"); },
 		async abort() { throw new Error("unexpected abort"); },
 		async acknowledgeNotification() { throw new Error("unexpected acknowledgement"); },
-		async settleTerminal() { throw new Error("unexpected terminal settlement"); },
+		async settleTerminal() { return current!; },
 	};
 	const pi = {
 		registerCommand() {},
@@ -203,6 +203,16 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 		await readFile(join(project.root, ".context", "issues", "graph.json"), "utf8"),
 		`${JSON.stringify(canonical, null, 2)}\n`,
 	);
+
+	current = {
+		...current!,
+		phase: "completed",
+		pr: { number: 42, url: "https://example.test/pull/42", head_ref: "integration", base_ref: "main", head_oid: current!.integration_head },
+	};
+	await events.get("tool_execution_end")!({ toolName: ORCHESTRATOR_TOOLS.status }, context("tui", async () => true));
+	assert.ok(activeTools.includes(ORCHESTRATOR_TOOLS.resume));
+	assert.equal(activeTools.includes(ORCHESTRATOR_TOOLS.execute), false);
+	assert.equal(activeTools.includes(ORCHESTRATOR_TOOLS.abort), false);
 });
 
 test("startup rejects a changed confirmed boundary before persisting its graph", async (t) => {
@@ -268,6 +278,7 @@ test("abort retains an undelivered blocked notification until acknowledgement", 
 	const lifecycle = createCoreLifecycle({ uuid: () => "lifecycle", now: () => "2026-08-09T01:00:00.000Z" });
 	const aborted = await lifecycle.abort(project.root, "Cancelled by user");
 	assert.equal(aborted.phase, "aborted");
+	assert.equal(aborted.abort_cleanup_complete, true);
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	const resumed = await lifecycle.resume(project.root);
 	assert.equal(resumed.phase, "aborted");
@@ -275,6 +286,26 @@ test("abort retains an undelivered blocked notification until acknowledgement", 
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	await lifecycle.acknowledgeNotification(project.root, pending.event_id);
 	assert.equal(await readActiveRunId(project.root), undefined);
+});
+
+test("terminal settlement retains an aborted lock without cleanup proof", async (t) => {
+	const project = await setupProject(t);
+	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
+	const initial = createInitialRunState({
+		run_id: RUN_ID,
+		graph,
+		source_commit: await git(project.root, "rev-parse", "HEAD"),
+		main_worktree: project.root,
+		integration_branch: "integration",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	await createRun(project.root, initial, () => "create");
+	await writeRunState(project.root, { ...initial, phase: "aborted" }, () => "aborted-before-cleanup");
+	await createCoreLifecycle().settleTerminal(project.root);
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
 });
 
 test("terminal settlement releases a completed lock after acknowledgement persistence", async (t) => {

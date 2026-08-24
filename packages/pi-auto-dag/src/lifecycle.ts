@@ -206,8 +206,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				};
 				await writeRunState(state.main_worktree, next, uuid);
 				const cleaned = await abortRun(next, orchestration);
-				if (cleaned.cleanup_blocks?.length || cleaned.notifications.some((notification) => !notification.delivered_at)) return cleaned;
-				await releaseActiveRun(cleaned.main_worktree, cleaned.run_id);
+				await releaseTerminalRun(cleaned.main_worktree, cleaned);
 				return cleaned;
 			});
 		},
@@ -248,7 +247,7 @@ async function releaseTerminalRun(root: string, state: RunState): Promise<void> 
 	const delivered = state.notifications.every((notification) => notification.delivered_at);
 	const releasable = state.phase === "completed"
 		? runCleanupIsClear(state) && delivered
-		: state.phase === "aborted" && !state.cleanup_blocks?.length && delivered;
+		: state.phase === "aborted" && state.abort_cleanup_complete === true && delivered;
 	if (releasable && await readActiveRunId(root) === state.run_id) await releaseActiveRun(root, state.run_id);
 }
 

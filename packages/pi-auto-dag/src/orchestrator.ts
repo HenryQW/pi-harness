@@ -7,6 +7,7 @@ import { deriveDependencyWaves, FINAL_CHECK_ID, hashDeliveryGraph, parseDelivery
 import { assertSameLocalRunBoundary, preflightLocalRun, type LocalRunPreflight } from "./intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
+import { runCleanupIsClear } from "./state.ts";
 import type { DeliveryGraph, ProjectConfig, RunState, WorkerEnvelope } from "./model.ts";
 import { parseWorkerEnvelope } from "./orchestration.ts";
 import { nonEmptyString } from "./validate.ts";
@@ -587,6 +588,8 @@ function hasActivePhaseBlock(state: RunState): boolean {
 }
 
 function runRemainsActive(state: RunState): boolean {
-	if (state.phase !== "aborted" && state.phase !== "completed") return true;
-	return Boolean(state.cleanup_blocks?.length || state.notifications.some((notification) => !notification.delivered_at));
+	const pendingNotification = state.notifications.some((notification) => !notification.delivered_at);
+	if (state.phase === "completed") return !runCleanupIsClear(state) || pendingNotification;
+	if (state.phase === "aborted") return state.abort_cleanup_complete !== true || pendingNotification;
+	return true;
 }

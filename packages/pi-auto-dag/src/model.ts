@@ -202,6 +202,8 @@ export interface RunState {
 	created_at: string;
 	phase: RunPhase;
 	abort_reason?: string;
+	/** Persisted only after aborted-run cleanup completes without a cleanup block. */
+	abort_cleanup_complete?: true;
 	block_reason?: string;
 	tasks: Record<string, RunTaskState>;
 	resolutions: Record<string, string>;

@@ -28,7 +28,7 @@ const RUN_PHASES = ["execution", "blocked", "aborted", "completed"] as const;
 
 const RUN_STATE_KEYS = [
 	"version", "run_id", "graph_hash", "graph", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "gate_command_amendments", "main_pane", "workspace_id",
-	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "notifications", "current_notification_id", "accepted_events",
+	"abort_reason", "abort_cleanup_complete", "block_reason", "wave", "cleanup_blocks", "pr", "notifications", "current_notification_id", "accepted_events",
 ] as const;
 
 /** Single source of truth for durable task fields: key lists, parse branches, and labels derive from this table. */
@@ -259,6 +259,12 @@ export function parseRunState(value: unknown): RunState {
 	if (input.block_reason !== undefined) state.block_reason = nonEmptyString(input.block_reason, "run state.block_reason");
 	if (input.wave !== undefined) state.wave = parseRunWave(input.wave, "run state.wave");
 	if (input.cleanup_blocks !== undefined) state.cleanup_blocks = parseCleanupBlocks(input.cleanup_blocks, "run state.cleanup_blocks");
+	if (input.abort_cleanup_complete !== undefined) {
+		if (input.abort_cleanup_complete !== true || state.phase !== "aborted" || state.cleanup_blocks?.length) {
+			throw new Error("run state.abort_cleanup_complete requires an aborted run without cleanup blocks");
+		}
+		state.abort_cleanup_complete = true;
+	}
 	if (input.pr !== undefined) state.pr = parsePullRequestIdentity(input.pr, "run state.pr");
 	if (input.current_notification_id !== undefined) {
 		const eventId = nonEmptyString(input.current_notification_id, "run state.current_notification_id");
