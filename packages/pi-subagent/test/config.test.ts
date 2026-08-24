@@ -28,12 +28,12 @@ test("valid maxSubagents and timeout are accepted", async () => {
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
 			maxSubagents: 3,
-			timeout: { softMinutes: 20, graceMinutes: 10, activeWindowSeconds: 90 },
+			timeout: { idleMinutes: 15, maxMinutes: 60 },
 		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {
 			maxSubagents: 3,
-			timeout: { softMinutes: 20, graceMinutes: 10, activeWindowSeconds: 90 },
+			timeout: { idleMinutes: 15, maxMinutes: 60 },
 		});
 		assert.equal(loaded.error, undefined);
 	});
@@ -69,12 +69,12 @@ test("invalid timeout values report an error and preserve defaults", async () =>
 		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
-			timeout: { softMinutes: -1, activeWindowSeconds: "ninety", unknownKey: 1 },
+			timeout: { idleMinutes: -1, maxMinutes: Infinity, unknownKey: 1 },
 		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /timeout\.softMinutes must be a positive number of minutes, got -1/);
-		assert.match(loaded.error!, /timeout\.activeWindowSeconds must be a positive number of seconds/);
+		assert.match(loaded.error!, /timeout\.idleMinutes must be a positive number of minutes, got -1/);
+		assert.match(loaded.error!, /timeout\.maxMinutes must be a positive number of minutes/);
 		assert.match(loaded.error!, /unknown timeout\.unknownKey/);
 	});
 });
@@ -84,7 +84,7 @@ test("timeout values that overflow Node timers report an error", async () => {
 		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
-			timeout: { softMinutes: 50_000_000 },
+			timeout: { idleMinutes: 50_000_000 },
 		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
@@ -140,15 +140,15 @@ test("unknown top-level keys report an error", async () => {
 	});
 });
 
-test("combined soft plus grace deadline above the timer limit reports an error", async () => {
+test("effective maxMinutes must exceed idleMinutes when one field is omitted", async () => {
 	await withAgentDir(async (agentDir) => {
 		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
-			timeout: { softMinutes: 20_000, graceMinutes: 20_000 },
+			timeout: { idleMinutes: 30 },
 		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /softMinutes \+ graceMinutes must stay within/);
+		assert.match(loaded.error!, /timeout\.maxMinutes \(30\) must be greater than timeout\.idleMinutes \(30\)/);
 	});
 });

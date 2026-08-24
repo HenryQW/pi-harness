@@ -3,12 +3,10 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface SubagentTimeoutConfig {
-	/** Soft deadline in minutes; the child is asked to stop after this. */
-	softMinutes?: number;
-	/** Extra minutes past the soft deadline before a stuck child is killed. */
-	graceMinutes?: number;
-	/** Activity window in seconds that qualifies an active child for grace. */
-	activeWindowSeconds?: number;
+	/** Minutes a child may stay idle before it is asked to stop. */
+	idleMinutes?: number;
+	/** Hard cap in minutes before a child is killed regardless of activity. */
+	maxMinutes?: number;
 }
 
 export interface SubagentConfig {
@@ -28,14 +26,10 @@ const positive = (value: unknown): value is number =>
 // Node clamps setTimeout delays above 2^31 - 1 ms to 1 ms, which would kill
 // every child immediately instead of applying the configured deadline.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-// Defaults for fields the user left unset, used when bounding the combined
-// soft + grace hard-deadline delay.
-const DEFAULT_SOFT_MINUTES = 10;
-const DEFAULT_GRACE_MINUTES = 5;
-const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, number, string]> = [
-	["softMinutes", 60_000, "minutes"],
-	["graceMinutes", 60_000, "minutes"],
-	["activeWindowSeconds", 1_000, "seconds"],
+export const DEFAULT_TIMEOUT_CONFIG = { idleMinutes: 10, maxMinutes: 30 } as const;
+const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, string]> = [
+	["idleMinutes", "minutes"],
+	["maxMinutes", "minutes"],
 ];
 
 /**
@@ -94,15 +88,15 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 		} else {
 			const timeoutRecord = record.timeout as Record<string, unknown>;
 			const timeout: SubagentTimeoutConfig = {};
-			for (const [key, unitMs, unit] of TIMEOUT_FIELDS) {
+			for (const [key, unit] of TIMEOUT_FIELDS) {
 				const value = timeoutRecord[key];
 				if (value === undefined) continue;
 				if (!positive(value)) {
 					problems.push(`timeout.${key} must be a positive number of ${unit}, got ${JSON.stringify(value)}`);
-				} else if (value * unitMs > MAX_TIMER_DELAY_MS) {
+				} else if (value * 60_000 > MAX_TIMER_DELAY_MS) {
 					problems.push(`timeout.${key} exceeds the maximum supported delay of ${MAX_TIMER_DELAY_MS} ms, got ${JSON.stringify(value)} ${unit}`);
 				} else {
-					(timeout as Record<string, number>)[key] = value;
+					timeout[key] = value;
 				}
 			}
 			for (const key of Object.keys(timeoutRecord)) {
@@ -114,15 +108,14 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 		}
 	}
 
-	// The hard deadline schedules softMs + graceMs in one timer; the combination
-	// must stay inside Node's limit even when each field fits alone. Falling back
-	// to defaults drops the whole timeout object, matching other invalid values.
+	// The hard cap must exceed the idle deadline or every idle kill is
+	// unreachable. Falling back to defaults drops the whole timeout object,
+	// matching other invalid values.
 	if (config.timeout) {
-		const hardDeadlineMinutes =
-			(config.timeout.softMinutes ?? DEFAULT_SOFT_MINUTES) +
-			(config.timeout.graceMinutes ?? DEFAULT_GRACE_MINUTES);
-		if (hardDeadlineMinutes * 60_000 > MAX_TIMER_DELAY_MS) {
-			problems.push(`timeout softMinutes + graceMinutes must stay within ${MAX_TIMER_DELAY_MS} ms combined, got ${hardDeadlineMinutes} minutes`);
+		const idleMinutes = config.timeout.idleMinutes ?? DEFAULT_TIMEOUT_CONFIG.idleMinutes;
+		const maxMinutes = config.timeout.maxMinutes ?? DEFAULT_TIMEOUT_CONFIG.maxMinutes;
+		if (maxMinutes <= idleMinutes) {
+			problems.push(`timeout.maxMinutes (${maxMinutes}) must be greater than timeout.idleMinutes (${idleMinutes})`);
 			delete config.timeout;
 		}
 	}
