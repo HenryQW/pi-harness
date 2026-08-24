@@ -158,7 +158,7 @@ test("errors carry match previews/usage, snapshots filter frame tokens, backups 
 		// and the lock file never lands in the memory dir.
 		await mkdir(memoryDir, { recursive: true });
 		await memoryTool.execute("add", { action: "add", content: "fresh fact" });
-		assert.match(await readFile(join(agentDir, "memory-backups", "MEMORY.md.bak"), "utf8"), /prefers dark mode terminals/);
+		assert.match(await readFile(join(agentDir, "backups", "pi-memory", "MEMORY.md.bak"), "utf8"), /prefers dark mode terminals/);
 		const files = (await readdir(memoryDir)).sort();
 		assert.deepEqual(files.filter((name) => name !== "MEMORY (conflicted copy).md"), ["MEMORY.md", "USER.md"]);
 	} finally {
@@ -303,9 +303,9 @@ test("memory directory overlapping the backup directory fails init loudly", asyn
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
 		await mkdir(join(agentDir, "config"), { recursive: true });
-		// Default BACKUP_DIR is <agentDir>/memory-backups; point the store inside it.
-		await mkdir(join(agentDir, "memory-backups", "store"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-memory.json"), JSON.stringify({ directory: join(agentDir, "memory-backups", "store") }));
+		// Default BACKUP_DIR is <agentDir>/backups/pi-memory; point the store inside it.
+		await mkdir(join(agentDir, "backups", "pi-memory", "store"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory.json"), JSON.stringify({ directory: join(agentDir, "backups", "pi-memory", "store") }));
 		const handlers = new Map<string, Handler>();
 		let tool: CapturedTool | undefined;
 		memoryExtension({
@@ -358,13 +358,13 @@ test("ambiguous old_text retries hit the consolidation cap; symlinked overlap re
 			/Stop retrying memory calls/,
 		);
 
-		// Symlinked overlap: memory dir is a symlink into memory-backups.
+		// Symlinked overlap: memory dir is a symlink into the backup dir.
 		const root2 = await mkdtemp(join(tmpdir(), "pi-memory-sym-"));
 		try {
 			process.env.PI_CODING_AGENT_DIR = join(root2, "agent");
 			await mkdir(join(root2, "agent", "config"), { recursive: true });
-			await mkdir(join(root2, "agent", "memory-backups", "real"), { recursive: true });
-			await symlink(join(root2, "agent", "memory-backups", "real"), join(root2, "link"));
+			await mkdir(join(root2, "agent", "backups", "pi-memory", "real"), { recursive: true });
+			await symlink(join(root2, "agent", "backups", "pi-memory", "real"), join(root2, "link"));
 			await writeFile(join(root2, "agent", "config", "pi-memory.json"), JSON.stringify({ directory: join(root2, "link") }));
 			const handlers3 = new Map<string, Handler>();
 			memoryExtension({
