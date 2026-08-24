@@ -17,7 +17,6 @@ pi install npm:@henryqw/pi-multi-codex
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-model-thinking` | Improves. Thinking level follows the model across slots. |
 | `@henryqw/pi-task-models` | Improves. Numbered slots share one profile route. |
 | `@henryqw/pi-subagent` | Improves. Isolated children keep Main's active Codex slot. |
 

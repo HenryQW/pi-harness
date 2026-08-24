@@ -48,10 +48,6 @@ export declare function resolveAvailableModel(models: readonly AvailableModel[],
 export declare function supportedThinkingLevels(model: AvailableModel): ThinkingLevel[];
 export declare function availableTaskModels(ctx: ExtensionContext): AvailableModel[];
 export declare function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel): ThinkingLevel[];
-export declare function rememberedThinkingLevel(model: {
-    provider: string;
-    id: string;
-} | string, agentDir?: string): ThinkingLevel | undefined;
 export declare function resolveTaskModelRoute(ctx: ExtensionContext, route: TaskModelRoute, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute | undefined;
 export declare function resolveConfiguredTaskRoutes(ctx: ExtensionContext, task: string, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute[];
 export type TaskRouteErrorCode = "config-read" | "task-unassigned" | "profile-missing" | "no-route";

@@ -47,8 +47,6 @@ export type ActiveTaskPackage = {
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
-// Owned by @henryqw/pi-model-thinking; keys use the same canonical provider/model form.
-const MODEL_THINKING_CONFIG_FILE = "pi-model-thinking.json";
 
 const defaultTaskAssignments = (): Record<string, ProfileName> => ({ ...DEFAULT_TASK_ASSIGNMENTS });
 
@@ -243,21 +241,6 @@ export function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel)
 		scoped.provider === model.provider && scoped.id === model.id)?.thinkingLevel;
 	if (!pinned) return supported;
 	return supported.includes(pinned as ThinkingLevel) ? [pinned as ThinkingLevel] : [];
-}
-
-// pi-model-thinking's config is untrusted user data; keep only recognized levels for this model.
-export function rememberedThinkingLevel(
-	model: { provider: string; id: string } | string,
-	agentDir = getAgentDir(),
-): ThinkingLevel | undefined {
-	try {
-		const value: unknown = JSON.parse(readFileSync(join(agentDir, "config", MODEL_THINKING_CONFIG_FILE), "utf8"));
-		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-		const level = (value as Record<string, unknown>)[canonicalModelReference(model)];
-		return isThinkingLevel(level) ? level : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 export function resolveTaskModelRoute(
