@@ -292,6 +292,8 @@ async function runPi(
 			}
 			if (!event || typeof event !== "object" || Array.isArray(event)) return;
 			const record = event as Record<string, unknown>;
+			if (typeof record.type !== "string") return;
+			observeEvent();
 			if (record.type === "message_start") {
 				partial.prefix = "";
 				partial.totalBytes = 0;
@@ -367,22 +369,20 @@ async function runPi(
 					linePrefix += part.slice(0, Math.max(0, 256 - linePrefix.length));
 					const eventType = JSON_EVENT_TYPE.exec(linePrefix)?.[1];
 					if (eventType && !lineEventType) lineEventType = eventType;
-					if (eventType && !CONSUMED_JSON_EVENTS.has(eventType)) {
-						ignoreLine = true;
-						lineParts = [];
-						lineBytes = 0;
-					} else {
-						lineBytes += Buffer.byteLength(part, "utf8");
-						if (lineBytes > MAX_JSON_EVENT_BYTES) {
+					lineBytes += Buffer.byteLength(part, "utf8");
+					if (lineBytes > MAX_JSON_EVENT_BYTES) {
+						if (lineEventType && !CONSUMED_JSON_EVENTS.has(lineEventType)) {
+							ignoreLine = true;
+							lineParts = [];
+							lineBytes = 0;
+						} else {
 							protocolError = new Error(`Subagent JSON event exceeds ${MAX_JSON_EVENT_BYTES} bytes.`);
 							void killTree(true);
 							return;
 						}
-						if (part) lineParts.push(part);
-					}
+					} else if (part) lineParts.push(part);
 				}
 				if (newline === -1) return;
-				if (lineEventType) observeEvent();
 				if (!ignoreLine) processLine(lineParts.join(""));
 				lineParts = [];
 				lineBytes = 0;

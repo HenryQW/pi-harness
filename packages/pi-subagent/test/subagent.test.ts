@@ -1027,7 +1027,7 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 	});
 });
 
-test("raw child output does not renew the idle deadline", async () => {
+test("malformed JSON and stderr output do not renew the idle deadline", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -1040,7 +1040,7 @@ Do bounded work.
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `process.on("SIGTERM", () => {});
 setInterval(() => {
-	process.stdout.write('{"type":"message_update"');
+	process.stdout.write('{"type":"message_update"\\n');
 	process.stderr.write("still here\\n");
 }, 25);`);
 		process.argv[1] = runner;
