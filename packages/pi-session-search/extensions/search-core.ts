@@ -10,6 +10,9 @@ import path from "node:path";
 import type { SearchHit, SessionRow, SyncResult } from "./types.ts";
 
 export const DEFAULT_SYNC_CAP = 50;
+/** Hard byte ceiling per session file: larger files are skipped (and retried
+ *  behind fresh work) instead of being read whole into memory. */
+export const MAX_SESSION_FILE_BYTES = 32 * 1024 * 1024;
 /** Hard ceiling for the configured backfillFiles work bound. */
 export const MAX_BACKFILL_FILES = DEFAULT_SYNC_CAP * 10;
 export const MAX_QUERY_CHARS = 512;
@@ -115,15 +118,18 @@ interface ParsedFile {
 	messages: ParsedMessage[];
 }
 
-/** Middle-out truncation keeping head and tail. Raw text only — no synthetic
- *  notices: this string is FTS-indexed, so injected terms would pollute search
- *  results and snippets. */
-function truncateText(text: string, max = MAX_TEXT_CHARS): string {
-	if (text.length <= max) return text;
+/** Middle-out truncation keeping head and tail as SEPARATE index regions:
+ *  concatenating them would make boundary terms adjacent in the indexed text
+ *  and manufacture phrase/proximity matches across the elided middle. Raw
+ *  text only — no synthetic notices: this string is FTS-indexed, so injected
+ *  terms would pollute search results and snippets. */
+function truncateRegions(text: string, max = MAX_TEXT_CHARS): { head: string; tail: string } | null {
+	if (text.length <= max) return null;
 	const kept = max - 1;
-	const head = Math.ceil(kept / 2);
-	const tail = Math.floor(kept / 2);
-	return `${text.slice(0, head)}\n${text.slice(-tail)}`;
+	return {
+		head: text.slice(0, Math.ceil(kept / 2)),
+		tail: text.slice(-Math.floor(kept / 2)),
+	};
 }
 
 /** Cap an untrusted string at a parse boundary so malformed JSONL cannot
@@ -188,18 +194,27 @@ function parseSessionFile(filePath: string): ParsedFile {
 			case "message": {
 				const role = entry.message?.role;
 				if (role !== "user" && role !== "assistant") break;
-				const text = truncateText(extractText(entry.message.content));
-				if (!text) break;
+				const full = extractText(entry.message.content);
+				if (!full) break;
 				if (!hasValidId) break;
 				if (role === "user" && parsed.preview === null) {
-					parsed.preview = text.slice(0, 200);
+					parsed.preview = full.slice(0, 200);
 				}
-				parsed.messages.push({
-					entryId: entry.id,
-					role,
-					timestamp: capStr(entry.timestamp, 128),
-					text,
-				});
+				const regions = truncateRegions(full);
+				const fragments: Array<{ entryId: string; text: string }> = regions
+					? [
+						{ entryId: `${entry.id}#h`, text: regions.head },
+						{ entryId: `${entry.id}#t`, text: regions.tail },
+					]
+					: [{ entryId: entry.id, text: full }];
+				for (const fragment of fragments) {
+					parsed.messages.push({
+						entryId: fragment.entryId,
+						role,
+						timestamp: capStr(entry.timestamp, 128),
+						text: fragment.text,
+					});
+				}
 				break;
 			}
 			// compaction, branch_summary, custom, custom_message, label,
@@ -259,7 +274,7 @@ function walkJsonlFiles(sessionsDir: string): WalkResult {
 export function syncSessions(
 	sessionsDir: string,
 	dbPath: string,
-	opts?: { cap?: number },
+	opts?: { cap?: number; maxFileBytes?: number },
 ): SyncResult {
 	const requestedCap = opts?.cap ?? DEFAULT_SYNC_CAP;
 	const cap = Number.isFinite(requestedCap)
@@ -361,6 +376,10 @@ export function syncSessions(
 	const batch = changed.slice(0, cap);
 	for (const { path: p, stat } of batch) {
 		try {
+			// ponytail: byte-level work bound — skip instead of streaming files that
+			// are huge enough to block the event loop; raise the cap or stream the
+			// parser if real sessions ever hit it.
+			if (stat.size > (opts?.maxFileBytes ?? MAX_SESSION_FILE_BYTES)) throw new Error("session file exceeds size cap");
 			messagesIndexed += tx(p, stat);
 			filesProcessed++;
 		} catch {
@@ -488,7 +507,6 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 	if (!query) return { ftsCandidates: [], forceLike: false };
 
 	const queryTerms = collectQueryTerms(query);
-	const terms = queryTerms.filter((term) => !term.nearDistance).map((term) => term.text);
 	const hasOperator = OPERATOR_RE.test(query);
 	// Short terms vanish under trigram MATCH — for natural-language queries
 	// (AND semantics) that silently breaks the query. Explicit-operator queries
@@ -502,8 +520,11 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 		return { ftsCandidates: [], forceLike: true };
 	}
 
-	const natural = quoteTerms(terms, " ");
-	const orExpanded = terms.length > 1 ? quoteTerms(terms, " OR ") : null;
+	const operandTexts = queryTerms.filter((term) => !term.operator && !term.nearDistance).map((term) => term.text);
+	// Recovery operands exclude syntax operators so a malformed query can never
+	// broaden into matches on AND/OR/NOT/NEAR themselves.
+	const natural = quoteTerms(operandTexts, " ");
+	const orExpanded = operandTexts.length > 1 ? quoteTerms(operandTexts, " OR ") : null;
 
 	if (!hasOperator) {
 		// Quoted form cannot fail to parse; OR-expand only as breadth fallback.
@@ -611,7 +632,7 @@ function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 		}
 		if (word === "NEAR") return null;
 
-		const term = token.phrase ?? word?.replace(/^[.,!?;:]+|[.,!?;:]+$/g, "") ?? "";
+		const term = token.phrase ?? word?.replace(/^[.,!?;:]+|[.,!?;:]+$/g, "").replace(/"/g, "") ?? "";
 		const clause = likeClause(term);
 		if (clause === null) return null;
 		if (!expectingOperand) sql.push("AND");

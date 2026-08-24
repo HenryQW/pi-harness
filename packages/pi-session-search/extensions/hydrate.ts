@@ -67,10 +67,16 @@ function leafId(entries: Entry[]): string | null {
 	return entries.length ? entries[entries.length - 1].id : null;
 }
 
+/** Oversized messages are indexed as two region fragments (`id#h` / `id#t`);
+ *  anchors always use the real entry id. */
+function baseEntryId(entryId: string): string {
+	return entryId.replace(/#[ht]$/, "");
+}
+
 /** Walk parentId chain from entry to root, reversed (root→entry). */
 function branch(entriesById: Map<string, Entry>, entryId: string): Entry[] {
 	const chain: Entry[] = [];
-	let cur: Entry | undefined = entriesById.get(entryId);
+	let cur: Entry | undefined = entriesById.get(baseEntryId(entryId));
 	// ponytail: cycle guard for corrupt files — revisit only if real sessions ever contain cycles
 	const seen = new Set<string>();
 	while (cur && !seen.has(cur.id)) {
@@ -134,7 +140,7 @@ function resolveMessageCursor(
 	entriesById: Map<string, Entry>,
 	anchorEntryId: string,
 ): Entry {
-	const anchor = entriesById.get(anchorEntryId);
+	const anchor = entriesById.get(baseEntryId(anchorEntryId));
 	if (!anchor) throw new Error(`anchor entry ${anchorEntryId} not found in session`);
 	let cur: Entry | undefined = anchor;
 	const seen = new Set<string>();

@@ -149,7 +149,7 @@ describe("sanitize ladder", () => {
 
 	it("explicit operator queries pass raw with quoted recovery then OR", () => {
 		const plan = buildFtsQueryPlan("error AND NOT (unterminated");
-		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "unterminated"`, `"error" OR "AND" OR "NOT" OR "unterminated"`]);
+		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "unterminated"`, `"error" OR "unterminated"`]);
 	});
 
 	it("explicit operators with short terms route to boolean LIKE (bhZel)", () => {
@@ -461,6 +461,55 @@ describe("legacy schema migration", () => {
 	});
 
 	describe("sanitize ladder regressions from review", () => {
+		it("unmatched quote is stripped in the boolean LIKE path too", () => {
+			writeFixture("--quote-like--", "ql.jsonl", [
+				sessionHeader(),
+				msg("ql1", "user", "ordinary Zqxlang vocabulary notes"),
+			], 130000);
+			syncSessions(sessionsDir, dbPath, { cap: 10 });
+			assert.equal(searchIndex(dbPath, '"Zqxlang').hits.length, 1, 'short malformed query with unmatched quote must still match');
+		});
+
+		it("recovery operands exclude syntax operator words", () => {
+			writeFixture("--op-recovery--", "or.jsonl", [
+				sessionHeader(),
+				msg("or1", "user", "a quiet line with and but no marker word"),
+			], 131000);
+			syncSessions(sessionsDir, dbPath, { cap: 10 });
+			const hits = searchIndex(dbPath, "ZqMarker AND (").hits;
+			assert.equal(hits.length, 0, "malformed query must not match on the operator word itself");
+		});
+
+		it("truncated message indexes head/tail as separate regions; hydration resolves fragments", () => {
+			const filler = "filler ".repeat(200);
+			const big = "ZqHeadStart " + filler + " " + "x".repeat(21000) + " ZqTailEnd";
+			writeFixture("--regions--", "r.jsonl", [
+				sessionHeader(),
+				msg("rg1", "user", big),
+			], 132000);
+			syncSessions(sessionsDir, dbPath, { cap: 10 });
+			// A NEAR query across the elided middle must not match.
+			assert.equal(searchIndex(dbPath, "NEAR(ZqHeadStart ZqTailEnd)").hits.length, 0, "head and tail regions must not be adjacent in the index");
+			// Each region matches on its own.
+			assert.equal(searchIndex(dbPath, "ZqTailEnd").hits.length, 1, "tail region stays searchable");
+			const hit = searchIndex(dbPath, "ZqTailEnd").hits[0];
+			assert.ok(hit.entryId.endsWith("#t"), "fragment hit carries its region suffix");
+		});
+
+		it("files over the byte cap are skipped without reading, recorded as failures", async () => {
+			const { MAX_SESSION_FILE_BYTES } = await import("../extensions/search-core.ts");
+			const file = writeFixture("--toobig--", "big.jsonl", [
+				sessionHeader(),
+				msg("tb1", "user", "oversized file unique content"),
+			], 133000);
+			fs.appendFileSync(file, "x".repeat(64));
+			const res = syncSessions(sessionsDir, dbPath, { cap: 10, maxFileBytes: 32 });
+			assert.equal(res.filesProcessed, 0, "oversized file must not be read or indexed");
+			assert.equal(searchIndex(dbPath, "oversized file unique content").hits.length, 0);
+			void MAX_SESSION_FILE_BYTES;
+			void file;
+		});
+
 		it("unmatched quote is malformed syntax, not searchable text", () => {
 			writeFixture("--quote-fix--", "q.jsonl", [
 				sessionHeader(),
