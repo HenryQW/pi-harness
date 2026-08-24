@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -71,6 +71,35 @@ test("completion notification retains the active lock until idempotent acknowled
 	const acknowledged = await lifecycle.acknowledgeNotification(project.root, notification.event_id);
 	assert.equal(await readActiveRunId(project.root), undefined);
 	assert.deepEqual(await lifecycle.acknowledgeNotification(project.root, notification.event_id), acknowledged);
+});
+
+test("acknowledgement cannot clobber a concurrent lifecycle state update", async (t) => {
+	const project = await makeProject(t);
+	const lifecycle = makeLifecycle(combinedRunner(fakeHerdr(), fakeGh(project.root)));
+	await finishInitialRun(project.root, lifecycle);
+	const stateFile = join(project.root, ".context", "pi-auto-dag", "runs", RUN_ID, "state.json");
+	const state = (await lifecycle.status(project.root, RUN_ID))!;
+	const notification = state.notifications[0];
+
+	// Another Pi process lands a durable lifecycle update concurrently with delivery.
+	await writeRunState(project.root, { ...state, resolutions: { ...state.resolutions, alpha: "survives acknowledgement" } }, () => "concurrent");
+
+	const rawBeforeAck = await readFile(stateFile, "utf8");
+	const acknowledged = await lifecycle.acknowledgeNotification(project.root, notification.event_id);
+	// Delivery is recorded outside state.json, so acknowledgement performs no snapshot write that could erase it.
+	assert.equal(await readFile(stateFile, "utf8"), rawBeforeAck);
+	const settled = (await lifecycle.status(project.root, RUN_ID))!;
+	assert.equal(settled.resolutions.alpha, "survives acknowledgement");
+	assert.equal(settled.notifications[0].event_id, notification.event_id);
+	assert.ok(settled.notifications[0].delivered_at);
+
+	// Delivery stays durable even when a stale pre-acknowledgement snapshot is written back afterwards.
+	await writeRunState(project.root, state, () => "stale-snapshot");
+	const redelivered = (await lifecycle.status(project.root, RUN_ID))!;
+	assert.ok(redelivered.notifications[0].delivered_at);
+	assert.equal(redelivered.notifications[0].delivered_at, acknowledged.notifications[0].delivered_at);
+	await lifecycle.acknowledgeNotification(project.root, notification.event_id);
+	assert.equal((await readdir(join(project.root, ".context", "pi-auto-dag", "runs", RUN_ID, "delivered"))).length, 1);
 });
 
 test("final gate cleans ignored resources recovered into its retained worktree", async (t) => {

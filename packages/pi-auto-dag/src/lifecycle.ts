@@ -10,7 +10,7 @@ import type { DeliveryGraph, ProjectConfig, RequiredGateEvidence, RunState, RunT
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, preflightRunEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { WorkerEnvelopeRejectedError } from "./review-ticket.ts";
 import { recordGateExecution } from "./review.ts";
-import { notificationRunId, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, runCleanupIsClear, type Uuid, writeRunState } from "./state.ts";
+import { acknowledgeRunNotification, notificationRunId, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, runCleanupIsClear, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 import { workerHost, workerHostOptions, type RoleLaunchResolver } from "./worker.ts";
 
@@ -215,21 +215,15 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const id = nonEmptyString(eventId, "run notification event ID");
 				const runId = notificationRunId(id);
-				let state = await readRunState(root, runId);
+				const state = await readRunState(root, runId);
 				if (!state) throw new Error(`Run notification belongs to a missing run: ${id}`);
-				const notification = state.notifications.find((candidate) => candidate.event_id === id);
-				if (!notification) throw new Error(`Run notification is missing: ${id}`);
-				if (!notification.delivered_at) {
-					state = {
-						...state,
-						notifications: state.notifications.map((candidate) => candidate.event_id === id
-							? { ...candidate, delivered_at: options.now?.() ?? new Date().toISOString() }
-							: candidate),
-					};
-					await writeRunState(root, state, uuid);
+				if (!state.notifications.some((candidate) => candidate.event_id === id)) {
+					throw new Error(`Run notification is missing: ${id}`);
 				}
-				await releaseTerminalRun(root, state);
-				return state;
+				await acknowledgeRunNotification(root, runId, id, options.now?.() ?? new Date().toISOString(), uuid);
+				const latest = (await readRunState(root, runId))!;
+				await releaseTerminalRun(root, latest);
+				return latest;
 			});
 		},
 

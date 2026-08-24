@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { executionIssues, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
 import {
@@ -154,6 +154,51 @@ export async function claimActiveRun(mainWorktree: string, runId: string): Promi
 	}
 }
 
+/**
+ * Record notification delivery beside state.json; `link` publishes the receipt exclusively, so concurrent
+ * acknowledgements are idempotent and no process ever rewrites another's lifecycle snapshot to mark delivery.
+ */
+export async function acknowledgeRunNotification(mainWorktree: string, runId: string, eventId: string, deliveredAt: string, uuid: Uuid = randomUUID): Promise<void> {
+	assertRunId(runId);
+	if (!/^[A-Za-z0-9:._-]+$/.test(eventId)) throw new Error(`Unsafe run notification event ID: ${eventId}`);
+	const directory = join(runDirectory(mainWorktree, runId), "delivered");
+	await mkdir(directory, { recursive: true });
+	const temporary = join(directory, `.receipt-${uuid()}.tmp`);
+	await writeFile(temporary, `${JSON.stringify({ event_id: eventId, delivered_at: timestamp(deliveredAt, "run notification delivered_at") }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+	try {
+		await link(temporary, join(directory, `${eventId}.json`));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	} finally {
+		await unlink(temporary).catch(() => {});
+	}
+}
+
+async function readDeliveredAt(directory: string, eventId: string): Promise<string | undefined> {
+	let raw: string;
+	try {
+		raw = await readFile(join(directory, `${eventId}.json`), "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	const receipt = object(JSON.parse(raw), "run notification delivery receipt");
+	exactKeys(receipt, ["event_id", "delivered_at"], "run notification delivery receipt");
+	if (receipt.event_id !== eventId) throw new Error("run notification delivery receipt does not match its event ID");
+	return timestamp(receipt.delivered_at, "run notification delivery receipt.delivered_at");
+}
+
+/** Delivery receipts are the cross-process authority for delivery; persisted `delivered_at` values stay untouched. */
+async function mergeDeliveryReceipts(directory: string, state: RunState): Promise<RunState> {
+	if (!state.notifications.some((notification) => !notification.delivered_at)) return state;
+	const notifications = await Promise.all(state.notifications.map(async (notification) => {
+		if (notification.delivered_at) return notification;
+		const deliveredAt = await readDeliveredAt(directory, notification.event_id);
+		return deliveredAt === undefined ? notification : { ...notification, delivered_at: deliveredAt };
+	}));
+	return { ...state, notifications };
+}
+
 /** `rename` replaces state.json atomically within its one run directory. */
 export async function writeRunState(mainWorktree: string, state: RunState, uuid: Uuid = randomUUID): Promise<void> {
 	const persisted = parseRunState(queueRunNotification(state));
@@ -169,12 +214,14 @@ export async function writeRunState(mainWorktree: string, state: RunState, uuid:
 }
 
 export async function readRunState(mainWorktree: string, runId: string): Promise<RunState | undefined> {
+	let state: RunState;
 	try {
-		return parseRunState(JSON.parse(await readFile(join(runDirectory(mainWorktree, runId), "state.json"), "utf8")));
+		state = parseRunState(JSON.parse(await readFile(join(runDirectory(mainWorktree, runId), "state.json"), "utf8")));
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
 	}
+	return await mergeDeliveryReceipts(join(runDirectory(mainWorktree, runId), "delivered"), state);
 }
 
 export async function readActiveRunId(mainWorktree: string): Promise<string | undefined> {
