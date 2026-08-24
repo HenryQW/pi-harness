@@ -306,7 +306,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				const confirmedBoundary = await preflightLocalRun(ctx.cwd, runner);
 				assertSameExecutionBoundary(boundary, confirmedBoundary);
 				await writeDeliveryGraph(confirmedBoundary.main_worktree, graph);
-				return await lifecycleResult(ctx, async () => await lifecycle.start(confirmedBoundary.main_worktree, mainPane));
+				return await lifecycleResult(ctx, async () => await lifecycle.start(confirmedBoundary.main_worktree, mainPane, hash));
 			},
 		}));
 

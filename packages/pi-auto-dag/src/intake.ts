@@ -17,6 +17,7 @@ export interface IntakeOptions {
 	now?: () => string;
 	mainPane: string;
 	workspaceId: string;
+	expectedGraphHash?: string;
 }
 
 export interface LocalRunPreflight {
@@ -45,6 +46,9 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const uuid = options.uuid ?? randomUUID;
 	const mainPane = nonEmptyString(options.mainPane, "main Herdr pane");
 	const graph = await readDeliveryGraph(mainWorktree);
+	if (options.expectedGraphHash !== undefined && hashDeliveryGraph(graph) !== options.expectedGraphHash) {
+		throw new Error("Delivery Graph changed after execution confirmation");
+	}
 
 	const state = createInitialRunState({
 		run_id: uuid(),

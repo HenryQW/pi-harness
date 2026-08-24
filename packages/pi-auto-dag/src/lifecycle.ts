@@ -24,7 +24,7 @@ export interface CoreLifecycleOptions {
 }
 
 export interface CoreLifecycle {
-	start(mainWorktree: string, mainPane?: string): Promise<RunState>;
+	start(mainWorktree: string, mainPane?: string, expectedGraphHash?: string): Promise<RunState>;
 	status(mainWorktree: string, runId?: string): Promise<RunState | undefined>;
 	resume(mainWorktree: string, envelope?: unknown): Promise<RunState>;
 	retryGate(mainWorktree: string, reason: string, expectedEvidence: RequiredGateEvidence): Promise<RunState>;
@@ -48,7 +48,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		resolveLaunch: options.resolveLaunch ?? (() => { throw new Error("Auto DAG launch resolver is unavailable"); }),
 	};
 	return {
-		async start(mainWorktree, mainPane) {
+		async start(mainWorktree, mainPane, expectedGraphHash) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				const pane = nonEmptyString(mainPane ?? options.mainPane?.(), "main Herdr pane");
 				const workspaceId = await managedSubagentWorkspaceId(root, pane, { execute: runner });
@@ -59,6 +59,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 					now: options.now,
 					mainPane: pane,
 					workspaceId,
+					expectedGraphHash,
 				});
 				return await completeSuccessfulRun(await blockOnFailure(state, uuid, async () => await initializeOrchestration(state, pane, orchestration)), orchestration);
 			});
@@ -84,9 +85,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				const next = state.phase === "aborted"
 					? await resumeRun(state, undefined, orchestration)
 					: await blockOnFailure(state, uuid, async () => await resumeRun(state, workerEnvelope, orchestration));
-				if (next.phase === "aborted" && !next.cleanup_blocks?.length) {
-					await releaseActiveRun(next.main_worktree, next.run_id);
-				}
+				if (next.phase === "aborted") await releaseTerminalRun(next.main_worktree, next);
 				return await completeSuccessfulRun(next, orchestration);
 			});
 		},

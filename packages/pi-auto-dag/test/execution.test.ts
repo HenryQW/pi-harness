@@ -6,7 +6,8 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { parseProjectConfig } from "../src/config.ts";
-import { deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph, readDeliveryGraph } from "../src/graph.ts";
+import { deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "../src/graph.ts";
+import { startLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import type { RunState } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
@@ -101,10 +102,10 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 	const events = new Map<string, Function>();
 	let activeTools = ["read", ...Object.values(ORCHESTRATOR_TOOLS)];
 	let current: RunState | undefined;
-	const starts: Array<{ root: string; pane?: string }> = [];
+	const starts: Array<{ root: string; pane?: string; expectedGraphHash?: string }> = [];
 	const lifecycle: CoreLifecycle = {
-		async start(root, pane) {
-			starts.push({ root, pane });
+		async start(root, pane, expectedGraphHash) {
+			starts.push({ root, pane, expectedGraphHash });
 			const graph = await readDeliveryGraph(root);
 			current = createInitialRunState({
 				run_id: RUN_ID,
@@ -185,12 +186,24 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 
 	const result = await execute.execute("approve", { graph: graphInput }, undefined, undefined, context("tui", async () => true));
 	assert.equal(result.details?.graph_hash, hashDeliveryGraph(canonical));
-	assert.deepEqual(starts, [{ root: project.root, pane: "main-pane" }]);
+	assert.deepEqual(starts, [{ root: project.root, pane: "main-pane", expectedGraphHash: hashDeliveryGraph(canonical) }]);
 	assert.deepEqual(await readDeliveryGraph(project.root), canonical);
 	assert.equal(
 		await readFile(join(project.root, ".context", "issues", "graph.json"), "utf8"),
 		`${JSON.stringify(canonical, null, 2)}\n`,
 	);
+});
+
+test("startup rejects a graph changed after confirmation before creating a run", async (t) => {
+	const project = await setupProject(t, true);
+	await writeDeliveryGraph(project.root, graphInput);
+	await assert.rejects(startLocalRun({
+		mainWorktree: project.root,
+		mainPane: "main-pane",
+		workspaceId: "main-workspace",
+		expectedGraphHash: "0".repeat(64),
+	}), /Delivery Graph changed after execution confirmation/);
+	assert.equal(await readActiveRunId(project.root), undefined);
 });
 
 test("abort retains an undelivered blocked notification until acknowledgement", async (t) => {
@@ -221,6 +234,10 @@ test("abort retains an undelivered blocked notification until acknowledgement", 
 	const lifecycle = createCoreLifecycle({ uuid: () => "lifecycle", now: () => "2026-08-09T01:00:00.000Z" });
 	const aborted = await lifecycle.abort(project.root, "Cancelled by user");
 	assert.equal(aborted.phase, "aborted");
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+	const resumed = await lifecycle.resume(project.root);
+	assert.equal(resumed.phase, "aborted");
+	assert.equal(resumed.notifications.find(({ event_id }) => event_id === pending.event_id)?.delivered_at, undefined);
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	await lifecycle.acknowledgeNotification(project.root, pending.event_id);
 	assert.equal(await readActiveRunId(project.root), undefined);
