@@ -134,12 +134,14 @@ function parseSessionFile(filePath: string): ParsedFile {
 		}
 		switch (entry?.type) {
 			case "session":
-				parsed.cwd = typeof entry.cwd === "string" ? entry.cwd : parsed.cwd;
+				// Untrusted header strings are capped here so every consumer
+				// (browse rows, discovery meta) inherits the bound.
+				parsed.cwd = typeof entry.cwd === "string" ? entry.cwd.slice(0, 500) : parsed.cwd;
 				parsed.startedAt = typeof entry.timestamp === "string" ? entry.timestamp : parsed.startedAt;
 				parsed.parentSession = typeof entry.parentSession === "string" ? entry.parentSession : parsed.parentSession;
 				break;
 			case "session_info":
-				if (typeof entry.name === "string") parsed.name = entry.name;
+				if (typeof entry.name === "string") parsed.name = entry.name.slice(0, 500);
 				break;
 			case "message": {
 				const role = entry.message?.role;
@@ -424,6 +426,18 @@ interface LikeSql {
 	params: string[];
 }
 
+/** Space out parens that act as grouping syntax while leaving quoted phrases
+ *  like "C(ABI)" intact. */
+function spaceParensOutsideQuotes(q: string): string {
+	let out = "";
+	let inQuote = false;
+	for (const c of q) {
+		if (c === '"') inQuote = !inQuote;
+		out += !inQuote && (c === "(" || c === ")") ? ` ${c} ` : c;
+	}
+	return out;
+}
+
 function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 	let query = rawQuery.trim();
 	if (!query) return null;
@@ -434,7 +448,7 @@ function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 	}
 	if (depth !== 0) query = query.replace(/[()]/g, "");
 
-	const tokens = [...query.replace(/\(/g, " ( ").replace(/\)/g, " ) ").matchAll(TOKEN_RE)]
+	const tokens = [...spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)]
 		.map((m) => (m[1] !== undefined ? { phrase: m[1] } : { word: m[2] ?? "" }))
 		.filter((t) => (t.phrase !== undefined ? t.phrase !== "" : t.word !== ""));
 	const sql: string[] = [];
@@ -537,8 +551,9 @@ export function searchIndex(
 	const db = openDb(dbPath);
 	try {
 		// Per-connection TEMP table of (path, entry_id) pairs to suppress —
-		// parameterized, immune to SQLite variable limits.
-		db.exec("CREATE TEMP TABLE IF NOT EXISTS live_filter (path TEXT NOT NULL, entry_id TEXT NOT NULL)");
+		// parameterized, immune to SQLite variable limits. Primary key indexes
+		// the correlated NOT EXISTS probe and dedupes inserts.
+		db.exec("CREATE TEMP TABLE IF NOT EXISTS live_filter (path TEXT NOT NULL, entry_id TEXT NOT NULL, PRIMARY KEY (path, entry_id))");
 		if (opts?.currentSessionPath && opts?.currentLiveEntryIds?.size) {
 			const ins = db.prepare("INSERT INTO live_filter(path, entry_id) VALUES (?, ?)");
 			db.transaction(() => {
@@ -592,6 +607,9 @@ export function searchIndex(
 				.map((t) => normalizeLikeTerm(t.replace(/"/g, "")))
 				.filter(Boolean);
 			if (terms.length === 0) return { hits: [], backlogRemaining: getBacklog(db) };
+			// Snippets anchor on operand terms only — operator words like OR would
+			// otherwise match common substrings and hide the real match.
+			const snippetTerms = terms.filter((t) => !/^(?:OR|AND|NOT|NEAR)$/.test(t));
 			// Boolean LIKE preserves simple AND/OR/NOT; unsupported shapes degrade
 			// to AND-of-terms. Both forms are fully parameterized.
 			const bool = buildBooleanLikeSql(trimmed);
@@ -608,7 +626,7 @@ export function searchIndex(
 				             WHERE ${where} AND ${LIVE_FILTER_SQL}
 				            ) WHERE rn <= ${ROWS_PER_FILE} ORDER BY matches DESC, started_at DESC, path LIMIT ${SCAN_LIMIT}`)
 				.all(...params) as any;
-			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", terms);
+			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", snippetTerms.length > 0 ? snippetTerms : terms);
 		}
 
 		// Live-entry suppression already happened in SQL; lineage suppression is

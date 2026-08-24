@@ -7,7 +7,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
+import { DEFAULT_SYNC_CAP, MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
@@ -304,7 +304,10 @@ export default function (pi: ExtensionAPI): void {
 						// Compact hits still carry the matched anchor message.
 						try {
 							const win = getWindow(hit.path, hit.entryId, 0);
-							return fitOrTruncate({ ...meta, detail: "compact", messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter }, win.messages);
+							// Mark when the fixed compact cap already removed content, so a
+							// hit that still fits the budget isn't mistaken for complete.
+							const overCompactCap = win.messages.some((m) => m.content.length > 2000);
+							return fitOrTruncate({ ...meta, detail: "compact", ...(overCompactCap ? { contentTruncated: true } : {}), messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter }, win.messages);
 						} catch {
 							return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
 						}
@@ -338,7 +341,7 @@ export default function (pi: ExtensionAPI): void {
 					}
 				});
 
-				const result: Record<string, unknown> = { mode: "discovery", query: params.query, results, backlogRemaining };
+				const result: Record<string, unknown> = { mode: "discovery", query: params.query!.trim().slice(0, MAX_QUERY_CHARS), results, backlogRemaining };
 				return textResult(result);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

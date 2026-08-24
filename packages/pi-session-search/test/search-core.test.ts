@@ -330,6 +330,19 @@ describe("sanitize ladder regression", () => {
 		assert.equal(hits.length, 1, "`Go deploy*` must match 'Go deployment strategy'");
 	});
 
+	it("quoted LIKE operand keeps parens; snippets anchor on operands, not operators (qIq7/qIq3)", () => {
+		const abi = writeFixture("--abi--", "abi.jsonl", [
+			sessionHeader(),
+			msg("ab1", "user", "we call the runtime via C(ABI) from Zig here"),
+		], 58000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+
+		// Short operand forces LIKE; the quoted phrase must survive tokenization.
+		const { hits } = searchIndex(dbPath, 'Go OR "C(ABI)"', { limit: 5 });
+		assert.ok(hits.some((h) => h.path === abi), "quoted `C(ABI)` must match literal parens text under LIKE");
+		assert.ok(hits.every((h) => !h.snippet.includes(" ( ")), "snippet must not anchor on operator words or mangled phrases");
+	});
+
 	it("LIKE fallback ranks sessions by matching messages, not insertion order", () => {
 		const frequent = writeFixture("--like-frequent--", "frequent.jsonl", [
 			sessionHeader(),
@@ -341,6 +354,20 @@ describe("sanitize ladder regression", () => {
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
 		const { hits } = searchIndex(dbPath, "Qx", { limit: 5 });
 		assert.equal(hits[0].path, frequent);
+	});
+
+	it("untrusted header metadata is capped at parse time (qIqk)", () => {
+		writeFixture("--huge-meta--", "meta.jsonl", [
+			JSON.stringify({ type: "session", version: 3, id: "hm", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/".repeat(100_000) }),
+			JSON.stringify({ type: "session_info", name: "n".repeat(100_000) }),
+			msg("hm1", "user", "metadata cap fixture text"),
+		], 59000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		const rows = getSessionRows(dbPath, 10);
+		const row = rows.find((r) => r.cwd && r.cwd.length > 2)!;
+		assert.ok(row.cwd.length <= 500, "cwd must be capped");
+		const named = rows.find((r) => r.name);
+		if (named) assert.ok(named.name!.length <= 500, "name must be capped");
 	});
 
 	it("LIKE fallback results carry a snippet (bhGOt)", () => {
