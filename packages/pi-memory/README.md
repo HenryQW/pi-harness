@@ -47,6 +47,8 @@ Invalid configuration fails fast; malformed config files are never rewritten.
 
 Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault acts as a dumb sync pipe: pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
 
+Backups and the lock file live outside `directory`, under `~/.pi/agent/backups/pi-memory/`.
+
 ## Threat model
 
 Because the directory can be a globally synced location readable outside Pi, review [`ADR 006 — pi-memory global store threat model`](https://github.com/HenryQW/pi-packages/blob/main/docs/adr/006-pi-memory-global-store-threat-model.md) before pointing it at a shared or cloud-synced path.
