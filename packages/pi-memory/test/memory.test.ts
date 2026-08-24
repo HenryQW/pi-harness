@@ -76,6 +76,21 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		assert.match(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), /new live fact/);
 		assert.doesNotMatch((await before({ systemPrompt: "base" }) as { systemPrompt: string }).systemPrompt, /new live fact/);
 
+		const batch = await memoryTool.execute("batch", {
+			operations: [
+				{ action: "add", content: "obsolete" },
+				{ action: "replace", old_text: "obsolete", content: "final\u001b[31m" },
+			],
+		});
+		const batchLines = memoryTool.renderResult(
+			batch,
+			{ expanded: false },
+			{ fg: (_color, text) => text },
+			{ args: {} },
+		).render(200).map((line) => line.trimEnd());
+		assert.deepEqual(batchLines, ["✓ Applied 2 operation(s).", "  final\\u001b[31m"]);
+		assert.doesNotMatch(batchLines.join("\n"), /\u001b/);
+
 		for (let attempt = 0; attempt < 2; attempt++) {
 			await assert.rejects(() => memoryTool.execute("remove", { action: "remove", old_text: "missing" }), /No entry matched/);
 		}

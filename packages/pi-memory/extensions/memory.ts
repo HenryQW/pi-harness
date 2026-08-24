@@ -15,6 +15,7 @@ const BACKUP_DIR = () => join(getAgentDir(), "memory-backups");
 // Defense-in-depth against snapshot frame spoofing by poisoned on-disk entries.
 const FRAME_TOKEN_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/;
 const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
+const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
 // @henryqw/pi-herdr-btw does not export internal/core.ts from its package root.
 const BTW_CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched|[Mm]ultiple entries matched|matched multiple distinct/i;
@@ -40,6 +41,16 @@ function sanitizeEntry(entry: string): string {
 // prompt structure into warnings.
 function sanitizeName(name: string): string {
 	return name.replace(/[\p{C}]/gu, "").slice(0, 120);
+}
+
+function escapeDisplayControls(text: string): string {
+	return text.replace(DISPLAY_CONTROL_CHARACTER, (character) => {
+		if (character === "\n") return character;
+		const codePoint = character.codePointAt(0)!;
+		return codePoint <= 0xffff
+			? `\\u${codePoint.toString(16).padStart(4, "0")}`
+			: `\\u{${codePoint.toString(16)}}`;
+	});
 }
 
 function renderBlock(target: Target, entries: string[], config: MemoryConfig, warnings: string[]): string {
@@ -232,7 +243,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 								message: "Write saved. This update is complete — do not repeat it.",
 							}),
 						}],
-						details: { status: result.message ?? "Write saved." },
+						details: { status: result.message ?? "Write saved.", entries: result.writtenEntries ?? [] },
 					};
 				} finally {
 					await release();
@@ -240,20 +251,16 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			});
 		},
 
-		renderResult(result, _options, theme, context) {
-			const details = result.details as { status: string } | undefined;
+		renderResult(result, _options, theme, _context) {
+			const details = result.details as { status: string; entries: string[] } | undefined;
 			if (!details) {
 				const content = result.content[0];
 				return new Text(content?.type === "text" ? content.text : "", 0, 0);
 			}
 			let text = theme.fg("success", `✓ ${details.status}`);
-			const entries = context.args.operations
-				? context.args.operations.flatMap((operation) =>
-					(operation.action === "add" || operation.action === "replace") && operation.content ? [operation.content] : [])
-				: (context.args.action === "add" || context.args.action === "replace") && context.args.content
-					? [context.args.content]
-					: [];
-			for (const entry of entries) text += `\n  ${theme.fg("accent", entry.trim().replaceAll("\n", "\n  "))}`;
+			for (const entry of details.entries) {
+				text += `\n  ${theme.fg("accent", escapeDisplayControls(entry).replaceAll("\n", "\n  "))}`;
+			}
 			return new Text(text, 0, 0);
 		},
 	});
