@@ -6,7 +6,6 @@ Persistent notes shown in a Pi widget, managed with slash commands.
 
 - **Created for**: Keeping persistent scratch notes visible per worktree without leaving the Pi session.
 - **Advantage**: Slash-command-managed notes render in a widget and survive across sessions without leaking between worktrees.
-- **Inspired by**: Per-worktree reminders that plain chat history could not keep continuously visible.
 
 ## Install
 

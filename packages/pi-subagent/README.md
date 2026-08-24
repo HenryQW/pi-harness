@@ -6,7 +6,6 @@ Delegate one bounded task to one isolated Pi process, or reuse validated Role la
 
 - **Created for**: Delegating bounded tasks to isolated child Pi processes while Main retains integration decisions.
 - **Advantage**: Validated Roles, capped concurrency, timeouts, and managed Herdr hosting make delegation predictable.
-- **Inspired by**: Pi's example Role conventions and the need to isolate child work from Main.
 
 ## Install
 

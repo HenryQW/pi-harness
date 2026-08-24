@@ -6,7 +6,6 @@ Pi extension that clones the current conversation path into a new Pi process in 
 
 - **Created for**: Spawning a new Pi process that continues the current conversation, either as a workspace tab or in a fresh Git worktree.
 - **Advantage**: Clones copy only the active root-to-leaf session path, leaving sibling branches and the original session untouched.
-- **Inspired by**: Needing parallel work on the same conversation history across Herdr tabs and worktrees without losing context.
 
 ## Install
 

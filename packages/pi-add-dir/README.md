@@ -6,7 +6,6 @@ Add external directories to the current Pi session: inject context files, load s
 
 - **Created for**: Extending Pi context and skill discovery beyond the current working directory.
 - **Advantage**: Inject files and load skills from external trees without copying them into the repo.
-- **Inspired by**: Pi's built-in context and skill discovery mechanisms.
 
 ## Install
 

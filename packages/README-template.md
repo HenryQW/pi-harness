@@ -8,7 +8,9 @@
 
 - **Created for**: <One sentence: who needs this and what problem it solves.>
 - **Advantage**: <One sentence: what makes it better than alternatives or doing without.>
-- **Inspired by**: <One sentence: the idea, project, or mechanism it builds on.>
+
+<!-- Optional: include only when the package was learned from or adapted from another project. -->
+- **Inspired by**: <One sentence naming the source project and the idea borrowed from it.>
 
 ## Install
 

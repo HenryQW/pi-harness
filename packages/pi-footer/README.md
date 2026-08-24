@@ -6,7 +6,6 @@ Henry's opinionated Pi footer style: concise checkout identity plus essential us
 
 - **Created for**: Showing concise checkout identity plus usage and extension status in the Pi footer.
 - **Advantage**: Keeps repository, PR, usage, model, and extension state visible without separate status commands.
-- **Inspired by**: Terminal status lines and Pi's footer/status extension surfaces.
 
 ## Install
 

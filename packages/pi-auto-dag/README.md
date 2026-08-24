@@ -6,7 +6,6 @@ Plan and run a local Delivery Graph with Pi and Herdr: review, approve, execute 
 
 - **Created for**: Planning and executing a local Delivery Graph of dependent tasks through review and approval gates.
 - **Advantage**: Validates one immutable plan before dependency-aware workers run in parallel and integrate into one PR.
-- **Inspired by**: DAG schedulers, isolated Git worktrees, and explicit approval gates.
 
 ## Install
 
