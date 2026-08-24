@@ -18,6 +18,9 @@ interface QuestionOption {
 type DisplayOption = QuestionOption & { isOther?: boolean };
 
 const CUSTOM_OPTION_LABEL = "Something else.";
+// Models are told to omit "(Recommended)" from labels but don't always comply; normalize instead of duplicating.
+const RECOMMENDED_SUFFIX = /\s*\(recommended\)\s*$/i;
+const withRecommended = (label: string): string => `${label.replace(RECOMMENDED_SUFFIX, "")} (Recommended)`;
 const NUMBER_KEYS = ["1", "2", "3", "4"] as const;
 
 interface QuestionDetails {
@@ -175,7 +178,7 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 							const option = allOptions[index]!;
 							const selected = index === optionIndex;
 							const prefix = selected ? theme.fg("accent", "> ") : "  ";
-							const label = `${index + 1}. ${option.label}${index === 0 ? " (Recommended)" : ""}${option.isOther && editMode ? " ✎" : ""}`;
+							const label = `${index + 1}. ${index === 0 ? withRecommended(option.label) : option.label}${option.isOther && editMode ? " ✎" : ""}`;
 							addWrappedWithPrefix(prefix, theme.fg(selected || (option.isOther && editMode) ? "accent" : "text", label));
 							if (option.description) addWrappedWithPrefix("     ", theme.fg("muted", option.description));
 						}
@@ -230,7 +233,7 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 			const options = Array.isArray(args.options) ? args.options : [];
 			if (options.length) {
 				const labels = options.map((option: QuestionOption) => option.label);
-				const numbered = [...labels, CUSTOM_OPTION_LABEL].map((option, index) => `${index + 1}. ${option}${index === 0 ? " (Recommended)" : ""}`);
+				const numbered = [...labels, CUSTOM_OPTION_LABEL].map((option, index) => `${index + 1}. ${index === 0 ? withRecommended(option) : option}`);
 				text += `\n${theme.fg("dim", `  Options: ${numbered.join(", ")}`)}`;
 			}
 			return new Text(text, 0, 0);
