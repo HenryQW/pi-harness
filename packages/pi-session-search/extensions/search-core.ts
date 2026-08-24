@@ -356,11 +356,15 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 
 	const terms = collectTerms(query);
 	const hasOperator = OPERATOR_RE.test(query);
-	// Short terms vanish under trigram MATCH. For natural-language queries
-	// (AND semantics) that silently breaks the query — route to LIKE. Explicit
-	// operator queries keep FTS candidates so boolean semantics are preserved;
-	// LIKE remains their last-resort candidate below.
-	if (!hasOperator && terms.some((t) => t.replace(/"/g, "").length < 3)) {
+	// Short terms vanish under trigram MATCH — for natural-language queries
+	// (AND semantics) that silently breaks the query. Explicit-operator queries
+	// route there too (`Go OR Rust` silently drops the Go side); the boolean
+	// LIKE fallback preserves their AND/OR/NOT semantics.
+	if (
+		terms.some(
+			(t) => !/^(?:OR|AND|NOT|NEAR)$/.test(t) && t.replace(/["()*]/g, "").length < 3,
+		)
+	) {
 		return { ftsCandidates: [], forceLike: true };
 	}
 
@@ -377,8 +381,90 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 	return { ftsCandidates: candidates, forceLike: false };
 }
 
+function normalizeLikeTerm(term: string): string {
+	// Trailing * is FTS5 prefix syntax; in LIKE it folds into the % suffix
+	// ("deploy*" must match "deployment", not a literal asterisk).
+	return term.endsWith("*") ? term.slice(0, -1) : term;
+}
+
 function likePattern(term: string): string {
 	return `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
+// --- Boolean LIKE fallback ---
+// Parameterized translation of simple AND/OR/NOT queries to SQL LIKE so short
+// operands (trigram floor) keep boolean semantics. Unsupported/malformed
+// expressions return null and the caller uses plain AND-of-terms — user input
+// only ever reaches SQL as a bound parameter.
+
+function likeClause(term: string): { clause: string; param: string } | null {
+	term = normalizeLikeTerm(term);
+	if (!term) return null;
+	return { clause: "m.text LIKE ? ESCAPE '\\'", param: likePattern(term) };
+}
+
+interface LikeSql {
+	where: string;
+	params: string[];
+}
+
+function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
+	let query = rawQuery.trim();
+	if (!query) return null;
+	let depth = 0;
+	for (const c of query) {
+		if (c === "(") depth++;
+		if (c === ")" && --depth < 0) break;
+	}
+	if (depth !== 0) query = query.replace(/[()]/g, "");
+
+	const tokens = [...query.replace(/\(/g, " ( ").replace(/\)/g, " ) ").matchAll(TOKEN_RE)]
+		.map((m) => (m[1] !== undefined ? { phrase: m[1] } : { word: m[2] ?? "" }))
+		.filter((t) => (t.phrase !== undefined ? t.phrase !== "" : t.word !== ""));
+	const sql: string[] = [];
+	const params: string[] = [];
+	let expectingOperand = true;
+	depth = 0;
+
+	for (const token of tokens) {
+		const word = token.word;
+		if (word === "(") {
+			if (!expectingOperand) sql.push("AND");
+			sql.push("(");
+			depth++;
+			expectingOperand = true;
+			continue;
+		}
+		if (word === ")") {
+			if (expectingOperand || depth-- === 0) return null;
+			sql.push(")");
+			expectingOperand = false;
+			continue;
+		}
+		if (word === "AND" || word === "OR") {
+			if (expectingOperand) return null;
+			sql.push(word);
+			expectingOperand = true;
+			continue;
+		}
+		if (word === "NOT") {
+			if (!expectingOperand) sql.push("AND");
+			sql.push("NOT");
+			expectingOperand = true;
+			continue;
+		}
+		if (word === "NEAR") return null;
+
+		const term = token.phrase ?? word?.replace(/^[.,!?;:]+|[.,!?;:]+$/g, "") ?? "";
+		const clause = likeClause(term);
+		if (clause === null) return null;
+		if (!expectingOperand) sql.push("AND");
+		sql.push(clause.clause);
+		params.push(clause.param);
+		expectingOperand = false;
+	}
+
+	return expectingOperand || depth !== 0 ? null : { where: sql.join(" "), params };
 }
 
 // --- Search ---
@@ -450,22 +536,36 @@ export function searchIndex(
 		let usedLike = plan.forceLike;
 
 		if (!plan.forceLike) {
+			// A candidate that parses but matches zero rows must not mask later
+			// recovery candidates — keep going so malformed syntax can be
+			// recovered by the ladder and ultimately the LIKE fallback.
 			for (const cand of plan.ftsCandidates) {
 				try {
-					rows = db.prepare(BASE_SELECT).all(cand) as any;
-					usedLike = false;
-					break;
-				} catch (err: any) {
-					// Last candidate exhausted → LIKE fallback below.
-					if (cand === plan.ftsCandidates[plan.ftsCandidates.length - 1]) usedLike = true;
+					const got = db.prepare(BASE_SELECT).all(cand) as any;
+					if (got.length > 0) {
+						rows = got;
+						usedLike = false;
+						break;
+					}
+				} catch {
+					// Malformed FTS5 syntax → try the next candidate.
 				}
 			}
 		}
+		// Every candidate threw or matched zero rows → LIKE fallback.
+		usedLike = usedLike || rows.length === 0;
 
 		if (usedLike) {
-			const terms = collectTerms(query.trim().slice(0, MAX_QUERY_CHARS)).map((t) => t.replace(/"/g, ""));
+			const trimmed = query.trim().slice(0, MAX_QUERY_CHARS);
+			const terms = collectTerms(trimmed)
+				.map((t) => normalizeLikeTerm(t.replace(/"/g, "")))
+				.filter(Boolean);
 			if (terms.length === 0) return { hits: [], backlogRemaining: getBacklog(db) };
-			const where = terms.map(() => "m.text LIKE ? ESCAPE '\\'").join(" AND ");
+			// Boolean LIKE preserves simple AND/OR/NOT; unsupported shapes degrade
+			// to AND-of-terms. Both forms are fully parameterized.
+			const bool = buildBooleanLikeSql(trimmed);
+			const where = bool?.where ?? terms.map(() => "m.text LIKE ? ESCAPE '\\'").join(" AND ");
+			const params = bool?.params ?? terms.map(likePattern);
 			rows = db
 				.prepare(`SELECT path, entry_id, role, timestamp, text, cwd, name, started_at FROM (
 				            SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at,
@@ -474,7 +574,7 @@ export function searchIndex(
 				             FROM messages m LEFT JOIN sessions s ON s.path = m.path
 				             WHERE ${where}
 				            ) WHERE rn <= ${ROWS_PER_FILE} ORDER BY rn, rid DESC LIMIT ${SCAN_LIMIT}`)
-				.all(...terms.map(likePattern)) as any;
+				.all(...params) as any;
 			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", terms);
 		}
 

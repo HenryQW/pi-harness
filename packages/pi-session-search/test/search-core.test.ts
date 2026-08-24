@@ -151,10 +151,10 @@ describe("sanitize ladder", () => {
 		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "(unterminated"`, `"error" OR "AND" OR "NOT" OR "(unterminated"`]);
 	});
 
-	it("explicit operators keep FTS candidates even with short terms (bhZel)", () => {
+	it("explicit operators with short terms route to boolean LIKE (bhZel)", () => {
 		const plan = buildFtsQueryPlan("Go OR Rust");
-		assert.equal(plan.forceLike, false);
-		assert.deepEqual(plan.ftsCandidates[0], `Go OR Rust`);
+		assert.equal(plan.forceLike, true);
+		assert.equal(plan.ftsCandidates.length, 0);
 	});
 
 	it("trailing wildcard keeps FTS5 prefix syntax (bnRnk)", () => {
@@ -169,12 +169,11 @@ describe("sanitize ladder", () => {
 		assert.match(plan.ftsCandidates[0], /"C\+\+"/);
 	});
 
-	it("parse-error recovery falls back through ladder without throwing", () => {
-		// raw form is an FTS5 syntax error; recovery paths must still work
-		const { hits } = searchIndex(dbPath, "deploy AND NOT (\"unterminated");
-		// OR-expanded fallback includes "AND"/"NOT"/"(unterminated" which match nothing real;
-		// key assertion: no throw, valid result shape
-		assert.ok(Array.isArray(hits));
+	it("parse-error recovery falls back through ladder to deploy hits (bhZf0)", () => {
+		// raw form is an FTS5 syntax error; recovery candidates and the LIKE
+		// fallback must still surface existing deploy hits
+		const { hits } = searchIndex(dbPath, 'deploy AND NOT ("unterminated');
+		assert.ok(hits.length >= 1, "malformed query must recover an existing deploy hit");
 	});
 
 	it("queries with every term <3 chars use LIKE fallback", () => {
@@ -188,6 +187,7 @@ describe("sanitize ladder", () => {
 		assert.equal(buildFtsQueryPlan(".y").forceLike, true);
 		const like = searchIndex(dbPath, ".y");
 		assert.ok(like.hits.length >= 1, "LIKE fallback must match short substrings");
+		assert.equal(searchIndex(dbPath, "*").hits.length, 0, "empty wildcard must not match every session");
 	});
 
 	it("512 char cap truncates query", () => {
@@ -307,6 +307,27 @@ describe("sanitize ladder regression", () => {
 		assert.equal(plan.forceLike, true);
 		const { hits } = searchIndex(dbPath, "Go deployment");
 		assert.equal(hits.length, 1);
+	});
+
+	it("boolean LIKE fallback surfaces both sides of OR with short operands (bhZey)", () => {
+		writeFixture("--rust-proj--", "rust.jsonl", [
+			sessionHeader(),
+			msg("r1", "user", "we picked Rust for the CLI renderer rewrite"),
+		], 55000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		const { hits } = searchIndex(dbPath, "Go OR Rust", { limit: 5 });
+		const paths = hits.map((h) => h.path);
+		assert.ok(paths.some((p) => p.includes("--short-mix--")), "Go-only session must surface for `Go OR Rust`");
+		assert.ok(paths.some((p) => p.includes("--rust-proj--")), "Rust-only session must surface for `Go OR Rust`");
+
+		const filtered = searchIndex(dbPath, "Go OR (Rust NOT renderer)", { limit: 5 }).hits;
+		assert.ok(filtered.some((h) => h.path.includes("--short-mix--")), "parenthesized OR must keep the Go side");
+		assert.ok(!filtered.some((h) => h.path.includes("--rust-proj--")), "NOT must exclude the Rust renderer session");
+	});
+
+	it("LIKE fallback treats trailing FTS wildcard as prefix, not literal (bhZf1)", () => {
+		const { hits } = searchIndex(dbPath, "Go deploy*");
+		assert.equal(hits.length, 1, "`Go deploy*` must match 'Go deployment strategy'");
 	});
 
 	it("LIKE fallback results carry a snippet (bhGOt)", () => {

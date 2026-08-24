@@ -28,7 +28,7 @@ Hits inside the current session's live context are suppressed; compacted-away or
 
 ## Config
 
-`~/.pi/agent/config/pi-session-search.json`
+`~/.pi/agent/config/pi-session-search/pi-session-search.json`
 
 ```json
 {
@@ -48,7 +48,7 @@ The SQLite index lives at `~/.pi/agent/config/pi-session-search/index.db`. It is
 pi remove npm:@henryqw/pi-session-search
 ```
 
-Delete `~/.pi/agent/pi-session-search/` to reclaim index disk space.
+Delete `~/.pi/agent/config/pi-session-search/` to reclaim index disk space.
 
 ## Development
 

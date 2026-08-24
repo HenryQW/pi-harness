@@ -11,7 +11,7 @@ import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "./s
 import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
-const configPath = () => join(getAgentDir(), "config", "pi-session-search.json");
+const configPath = () => join(getAgentDir(), "config", "pi-session-search", "pi-session-search.json");
 const dbPath = () => join(getAgentDir(), "config", "pi-session-search", "index.db");
 const sessionsDir = () => join(getAgentDir(), "sessions");
 

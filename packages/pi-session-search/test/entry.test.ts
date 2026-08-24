@@ -143,7 +143,7 @@ describe("session_search entry point", () => {
 	});
 
 	it("config validation: malformed file logs-and-defaults, invalid backfillFiles rejected", async () => {
-		const configDir = path.join(agentDir, "config");
+		const configDir = path.join(agentDir, "config", "pi-session-search");
 		fs.mkdirSync(configDir, { recursive: true });
 		const configPath = path.join(configDir, "pi-session-search.json");
 
