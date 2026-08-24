@@ -17,13 +17,16 @@ Public Pi packages under `@henryqw` scope.
 | [`@henryqw/pi-herdr-clone`](./packages/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |
 | [`@henryqw/pi-herdr-done`](./packages/pi-herdr-done) | Close and remove current Herdr worktree. |
 | [`@henryqw/pi-herdr-rename`](./packages/pi-herdr-rename) | Generate short chat titles and rename current Herdr location. |
-| [`@henryqw/pi-model-thinking`](./packages/pi-model-thinking) | Remember chosen thinking level per model. |
 | [`@henryqw/pi-multi-codex`](./packages/pi-multi-codex) | Use multiple ChatGPT Codex OAuth accounts in Pi. |
 | [`@henryqw/pi-open-in`](./packages/pi-open-in) | Open current working directory with configurable command. |
 | [`@henryqw/pi-footer`](./packages/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
 | [`@henryqw/pi-pr`](./packages/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
 | [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate one task to an isolated role with explicit extensions and skills. |
 | [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
+
+## Deprecated
+
+Retired extensions and their replacements are recorded under [`deprecated/`](./deprecated).
 
 ## Development
 
