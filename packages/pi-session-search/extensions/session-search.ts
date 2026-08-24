@@ -157,7 +157,26 @@ export default function (pi: ExtensionAPI): void {
 				// --- READ ---
 				if (sessionId) {
 					const r = readSession(sessionId);
-					const result = { mode: "read", sessionId, ...r };
+					let result: Record<string, unknown> = { mode: "read", sessionId, ...r };
+					if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && r.messages.length > 0) {
+						// Binary search the max uniform per-message content cap that
+						// fits the output budget; contentTruncated is character-level
+						// truncation, distinct from the message-count `truncated`.
+						const base = { mode: "read", sessionId, totalMessages: r.totalMessages, truncated: r.truncated };
+						const fits = (cap: number) =>
+							JSON.stringify({ ...base, messages: truncateContent(r.messages, cap), contentTruncated: true }).length <= OUTPUT_CHAR_BUDGET;
+						const maxLen = Math.max(...r.messages.map((m) => m.content.length), 0);
+						let lo = 0;
+						for (let hi = maxLen; lo < hi; ) {
+							const mid = Math.ceil((lo + hi) / 2);
+							if (fits(mid)) lo = mid;
+							else hi = mid - 1;
+						}
+						result = fits(lo)
+							? { ...base, messages: truncateContent(r.messages, lo), contentTruncated: true }
+							// Metadata alone exceeds budget → no messages, signal only.
+							: { ...base, messages: [], contentTruncated: true };
+					}
 					return textResult(result);
 				}
 

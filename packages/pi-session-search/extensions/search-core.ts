@@ -595,13 +595,15 @@ export function searchIndex(
 			const where = bool?.where ?? terms.map(() => "m.text LIKE ? ESCAPE '\\'").join(" AND ");
 			const params = bool?.params ?? terms.map(likePattern);
 			rows = db
+				// Sessions ranked by matching-row count (rowid only picks the anchor
+				// within one session), then deterministic started_at/path ties.
 				.prepare(`SELECT path, entry_id, role, timestamp, text, cwd, name, started_at FROM (
 				            SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at,
-				                   m.rowid AS rid,
-				                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn
+				                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn,
+				                   COUNT(*) OVER (PARTITION BY m.path) AS matches
 				             FROM messages m LEFT JOIN sessions s ON s.path = m.path
 				             WHERE ${where} AND ${LIVE_FILTER_SQL}
-				            ) WHERE rn <= ${ROWS_PER_FILE} ORDER BY rn, rid DESC LIMIT ${SCAN_LIMIT}`)
+				            ) WHERE rn <= ${ROWS_PER_FILE} ORDER BY matches DESC, started_at DESC, path LIMIT ${SCAN_LIMIT}`)
 				.all(...params) as any;
 			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", terms);
 		}

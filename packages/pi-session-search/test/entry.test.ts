@@ -142,6 +142,26 @@ describe("session_search entry point", () => {
 		assert.equal(scrollResult.messagesBefore, 2);
 	});
 
+	it("READ clamps oversized content to the output budget (PR #135)", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-read`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		msgCount = 1;
+		const s = writeSession("d/session-d.jsonl", [
+			{ type: "session", version: 3, id: "sd", timestamp: "2026-01-04T00:00:00.000Z", cwd: "/Users/tester/proj" },
+			...Array.from({ length: 8 }, (_, i) => msg(i === 0 ? null : `e${String(i).padStart(2, "0")}`, i % 2 ? "assistant" : "user", "x".repeat(10_000))),
+		]);
+		const res = await tool.execute("tr", { sessionId: s }, undefined, undefined, { sessionManager: {} });
+		assert.ok(res.content[0].text.length <= 50_000, "serialized READ must respect the 50k budget");
+		const parsed = JSON.parse(res.content[0].text); // valid JSON
+		assert.equal(parsed.mode, "read");
+		assert.equal(parsed.totalMessages, 8);
+		assert.equal(parsed.truncated, false, "message-count truncation untouched");
+		assert.equal(parsed.contentTruncated, true, "character-level truncation signaled");
+		assert.ok(parsed.messages.every((m: { content: string }) => m.content.length < 10_000));
+	});
+
 	it("config validation: malformed file logs-and-defaults, invalid backfillFiles rejected", async () => {
 		const configDir = path.join(agentDir, "config", "pi-session-search");
 		fs.mkdirSync(configDir, { recursive: true });

@@ -18,7 +18,7 @@ pi install npm:@henryqw/pi-session-search
 
 **Scroll** — ±`window` messages ([1,20]) around the anchor on its branch; scroll forward/backward by re-anchoring on the last/first message id of the returned window.
 
-**Read** — whole session; head 20 + tail 10 when large.
+**Read** — whole session; head 20 + tail 10 when large, with oversized content bounded to 50k characters and flagged by `contentTruncated`.
 
 **Browse** — recent sessions: path, name, cwd, started date, preview.
 

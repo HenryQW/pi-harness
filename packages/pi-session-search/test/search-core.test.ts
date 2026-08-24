@@ -330,6 +330,19 @@ describe("sanitize ladder regression", () => {
 		assert.equal(hits.length, 1, "`Go deploy*` must match 'Go deployment strategy'");
 	});
 
+	it("LIKE fallback ranks sessions by matching messages, not insertion order", () => {
+		const frequent = writeFixture("--like-frequent--", "frequent.jsonl", [
+			sessionHeader(),
+			msg("lf1", "user", "Qx first match"),
+			msg("lf2", "assistant", "Qx second match"),
+			msg("lf3", "user", "Qx third match"),
+		], 57000);
+		writeFixture("--like-recent--", "recent.jsonl", [sessionHeader(), msg("lr1", "user", "Qx only match")], 56000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		const { hits } = searchIndex(dbPath, "Qx", { limit: 5 });
+		assert.equal(hits[0].path, frequent);
+	});
+
 	it("LIKE fallback results carry a snippet (bhGOt)", () => {
 		const { hits } = searchIndex(dbPath, "Go deployment");
 		assert.ok(hits[0].snippet.length > 0 && /Go deployment|deployment/i.test(hits[0].snippet));
