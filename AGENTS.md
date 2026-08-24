@@ -1,7 +1,5 @@
 # Agent instructions
 
-OBSIDIAN_PROJECT=`${OBSIDIAN_ROOT}/projects/Pi/Packages`
-
 ## Compatibility
 
 Extensions do not consider migrations or backward compatibility. Both add unnecessary code.
@@ -67,6 +65,8 @@ Triage uses default canonical labels. See `docs/agents/triage-labels.md`.
 
 Multi-context layout uses root `CONTEXT-MAP.md` and per-package `CONTEXT.md` files. See `docs/agents/domain.md`.
 
-### Project memory
+### Knowledge tiers
 
-Repository-wide memory lives under `${OBSIDIAN_PROJECT}/Agent/Memory/index.md`. Each package `AGENTS.md` declares its package-specific Obsidian project.
+- `pi-memory` (`MEMORY.md` and `USER.md`) is global cross-project memory; never store project-specific facts there.
+- Durable repository knowledge belongs in git: `docs/adr/`, `AGENTS.md`, and `CONTEXT.md` files.
+- Resumable per-worktree task state belongs in `.context/progress.md`.
