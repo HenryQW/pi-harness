@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-btw",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Open and merge tool-enabled Pi side threads in Herdr panes.",
   "keywords": [
     "pi-package",
@@ -26,8 +26,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "^0.84.2",
-    "@earendil-works/pi-coding-agent": "^0.84.2"
+    "@earendil-works/pi-agent-core": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3"
   },
   "repository": {
     "type": "git",
@@ -47,7 +47,7 @@
   },
   "dependencies": {
     "@henryqw/pi-herdr": "^0.3.0",
-    "@henryqw/pi-task-models": "^0.7.0",
+    "@henryqw/pi-task-models": "^1.0.0",
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {

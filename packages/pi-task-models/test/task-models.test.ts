@@ -8,7 +8,6 @@ import {
 	availableTaskModels,
 	DEFAULT_TASK_ASSIGNMENTS,
 	readTaskModelsConfig,
-	rememberedThinkingLevel,
 	resolveConfiguredTaskRoute,
 	resolveConfiguredTaskRoutes,
 	resolveTaskModelRoute,
@@ -352,31 +351,6 @@ test("task-models configures primary and fallback atomically in one profile flow
 		await handler!([], ctx);
 		assert.ok(notifications.includes("Couldn't save task model config."));
 		chmodSync(file, 0o644);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("profile thinking stays authoritative over pi-model-thinking for task routes", () => {
-	const dir = tempDir();
-	try {
-		const route = { model: "provider/m", thinkingLevel: "low" } as const;
-		const model = { provider: "provider", id: "m", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low", high: "high", max: "max" } } as any;
-		const ctx = {
-			model,
-			scopedModels: [],
-			modelRegistry: { getAvailable: () => [model] },
-		} as any;
-		writeTaskModelsConfig({ profiles: { fast: { primary: route } }, tasks: { "pi-test/run": "fast" } }, dir);
-		writeFileSync(join(dir, "config", "pi-model-thinking.json"), JSON.stringify({ "provider/m": "high" }));
-
-		assert.equal(rememberedThinkingLevel(model, dir), "high");
-		assert.deepEqual(resolveTaskModelRoute(ctx, route, dir), { model, thinkingLevel: "low" });
-		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-test/run", dir), [{ model, thinkingLevel: "low" }]);
-
-		const pinnedCtx = { ...ctx, scopedModels: [{ model, thinkingLevel: "high" }] } as any;
-		assert.equal(resolveTaskModelRoute(pinnedCtx, route, dir), undefined);
-		assert.deepEqual(resolveTaskModelRoute(ctx, route, dir, "max"), { model, thinkingLevel: "max" });
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

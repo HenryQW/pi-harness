@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-multi-codex",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "Use multiple ChatGPT Codex OAuth accounts in Pi.",
   "keywords": [
     "pi-package",
@@ -24,8 +24,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3"
   },
   "repository": {
     "type": "git",

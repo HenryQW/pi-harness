@@ -13,11 +13,24 @@ const THINKING_COLORS = {
 	max: 196,
 } as const;
 const HENRY_STATUS_KEYS = new Set(["pi-multi-codex"]);
+const AGENT_TIME_ENTRY = "pi-footer:agent-work";
+
+function isValidMilliseconds(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
 
 function formatTokens(count: number): string {
 	if (count < 1_000) return `${count}`;
 	if (count < 1_000_000) return `${(count / 1_000).toFixed(1)}k`;
 	return `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+function formatDuration(milliseconds: number): string {
+	const totalSeconds = Math.floor(milliseconds / 1_000);
+	const hours = Math.floor(totalSeconds / 3_600);
+	const minutes = Math.floor(totalSeconds % 3_600 / 60);
+	const seconds = totalSeconds % 60;
+	return hours ? `${hours}h ${minutes}m ${seconds}s` : minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 function sanitizeStatus(text: string): string {
@@ -31,6 +44,13 @@ function align(left: string, right: string, width: number, ellipsis: string): st
 	return left + " ".repeat(width - visibleWidth(left) - visibleWidth(clippedRight)) + clippedRight;
 }
 
+// Mirrors align but reserves the right side (runtime) and truncates the left status first.
+function alignRightReserved(left: string, right: string, width: number, ellipsis: string): string {
+	const available = Math.max(width - visibleWidth(right) - 2, 0);
+	const clippedLeft = truncateToWidth(left, available, ellipsis);
+	return clippedLeft + " ".repeat(Math.max(width - visibleWidth(clippedLeft) - visibleWidth(right), 0)) + truncateToWidth(right, width, "");
+}
+
 function color(text: string, ansi256: number): string {
 	return `\x1b[38;5;${ansi256}m${text}\x1b[39m`;
 }
@@ -41,7 +61,50 @@ function rainbow(text: string): string {
 }
 
 export default function footerExtension(pi: ExtensionAPI): void {
+	let activeMilliseconds = 0;
+	let activeStartedAt: number | undefined;
+	let runtimeTimer: ReturnType<typeof setInterval> | undefined;
+	let requestRuntimeRender: (() => void) | undefined;
+	const stopRuntimeTimer = () => {
+		if (runtimeTimer === undefined) return;
+		clearInterval(runtimeTimer);
+		runtimeTimer = undefined;
+	};
+
+	const startActive = () => {
+		if (activeStartedAt !== undefined) return;
+		activeStartedAt = performance.now();
+		if (requestRuntimeRender) runtimeTimer = setInterval(requestRuntimeRender, 1_000);
+		requestRuntimeRender?.();
+	};
+	const finalizeActive = (): boolean => {
+		if (activeStartedAt === undefined) return false;
+		activeMilliseconds += performance.now() - activeStartedAt;
+		activeStartedAt = undefined;
+		stopRuntimeTimer();
+		requestRuntimeRender?.();
+		return true;
+	};
+
+	pi.on("agent_start", (_event) => {
+		startActive();
+	});
+	pi.on("agent_settled", (_event, ctx) => {
+		if (ctx.isIdle() && finalizeActive()) pi.appendEntry(AGENT_TIME_ENTRY, activeMilliseconds);
+	});
+	pi.on("session_shutdown", () => stopRuntimeTimer());
+
 	pi.on("session_start", async (_event, ctx) => {
+		stopRuntimeTimer();
+		activeStartedAt = undefined;
+		requestRuntimeRender = undefined;
+		// Latest valid entry wins; stored data is untrusted.
+		activeMilliseconds = 0;
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type === "custom" && entry.customType === AGENT_TIME_ENTRY && isValidMilliseconds(entry.data)) {
+				activeMilliseconds = entry.data;
+			}
+		}
 		if (ctx.mode !== "tui") return;
 
 		const git = await pi.exec(
@@ -100,9 +163,14 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		};
 
 		ctx.ui.setFooter((tui, theme, data) => {
-			const unsubscribe = data.onBranchChange(() => tui.requestRender());
+			requestRuntimeRender = () => tui.requestRender();
+			const unsubscribe = data.onBranchChange(requestRuntimeRender);
 			return {
-				dispose: unsubscribe,
+				dispose() {
+					unsubscribe();
+					requestRuntimeRender = undefined;
+					stopRuntimeTimer();
+				},
 				invalidate() { },
 				render(width: number): string[] {
 					const entries = ctx.sessionManager.getEntries();
@@ -143,6 +211,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						? rainbow(thinking)
 						: thinkingColor === undefined ? theme.fg("dim", thinking) : color(thinking, thinkingColor);
 					const model = theme.fg("dim", `${ctx.model?.id ?? "no-model"} • `) + thinkingText;
+					const elapsed = activeMilliseconds + (activeStartedAt === undefined ? 0 : performance.now() - activeStartedAt);
+					const runtime = theme.fg("dim", `◷ ${formatDuration(elapsed)}`);
 					const identity = branch ? theme.fg("dim", `${repo} · `) : "";
 					const checkout = branch ?? repo;
 					const checkoutLink = openUri ? hyperlink(theme.fg("accent", checkout), openUri) : theme.fg("dim", checkout);
@@ -150,8 +220,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const lines = [
 						firstLine,
 						align(usage, model, width, ellipsis),
+						alignRightReserved(henryStatuses.join(" "), runtime, width, ellipsis),
 					];
-					if (henryStatuses.length || externalStatuses.length) lines.push(henryStatuses.join(" "));
 					if (externalStatuses.length) lines.push(externalStatuses.join(" "));
 					return lines.map((line) => truncateToWidth(line, width, ellipsis));
 				},
