@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS session_files (
 CREATE TABLE IF NOT EXISTS session_failures (
   path TEXT PRIMARY KEY,
   size INTEGER NOT NULL,
-  mtime_ms INTEGER NOT NULL
+  mtime_ms INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
   path TEXT PRIMARY KEY,
@@ -73,18 +74,22 @@ CREATE TABLE IF NOT EXISTS meta (
 
 function openDb(dbPath: string): DatabaseSync {
 	fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-	const db = new DatabaseSync(dbPath);
+	let db = new DatabaseSync(dbPath);
 	try {
 		db.exec("PRAGMA journal_mode = WAL");
 		db.exec("PRAGMA busy_timeout = 5000");
-		db.exec(SCHEMA_SQL);
-		// Migration for index.db files created by 0.1.2: session_failures lacked
-		// attempts. Fails harmlessly (duplicate column) on fresh DBs.
-		try {
-			db.exec("ALTER TABLE session_failures ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0");
-		} catch {
-			// already migrated
+		// The index is disposable derived state with no migration path: an
+		// incompatible older schema is discarded and rebuilt from scratch.
+		const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_failures'").get();
+		const stale = Boolean(table) && !db.prepare("PRAGMA table_info(session_failures)").all().some((column: any) => column.name === "attempts");
+		if (stale) {
+			db.close();
+			for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(dbPath + suffix, { force: true });
+			db = new DatabaseSync(dbPath);
+			db.exec("PRAGMA journal_mode = WAL");
+			db.exec("PRAGMA busy_timeout = 5000");
 		}
+		db.exec(SCHEMA_SQL);
 	} catch (err) {
 		db.close();
 		throw err;
@@ -408,7 +413,7 @@ function collectQueryTerms(query: string): QueryTerm[] {
 	let afterNearComma = false;
 	for (const match of spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)) {
 		const phrase = match[1];
-		const raw = phrase ?? match[2] ?? "";
+		let raw = phrase ?? match[2] ?? "";
 		if (phrase === undefined && raw === "(") {
 			depth++;
 			if (pendingNear) {
@@ -426,13 +431,25 @@ function collectQueryTerms(query: string): QueryTerm[] {
 			continue;
 		}
 		const hasNearComma = phrase === undefined && nearDepth > 0 && raw.endsWith(",");
-		const text = phrase ?? raw.replace(/^[.,!?;:()]+|[.,!?;:()]+$/g, "");
+		// An attached distance like `NEAR(Go Rust,10)` has no standalone comma
+		// token; split it so the numeric tail is recognized as the distance.
+		let attachedDistance: string | undefined;
+		if (!hasNearComma && phrase === undefined && nearDepth > 0) {
+			const attached = /^(.+),(\d+)$/.exec(raw);
+			if (attached) {
+				raw = attached[1];
+				attachedDistance = attached[2];
+			}
+		}
+		// Unmatched quote delimiters are malformed syntax, not searchable text.
+		const text = phrase ?? raw.replace(/^[.,!?;:()]+|[.,!?;:()]+$/g, "").replace(/"/g, "");
 		if (text) {
 			const operator = phrase === undefined && /^(?:OR|AND|NOT|NEAR)$/.test(text);
 			const nearDistance = nearDepth > 0 && afterNearComma && /^\d+$/.test(text);
 			terms.push({ text, operator, nearDistance });
 			if (operator && text === "NEAR") pendingNear = true;
 		}
+		if (attachedDistance !== undefined) terms.push({ text: attachedDistance, operator: false, nearDistance: true });
 		if (hasNearComma) afterNearComma = true;
 	}
 	return terms;

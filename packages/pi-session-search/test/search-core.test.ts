@@ -431,7 +431,7 @@ describe("lineage + guards", () => {
 });
 
 describe("legacy schema migration", () => {
-	it("adds attempts column to 0.1.2-era index.db without losing failures (regression)", () => {
+	it("discards and rebuilds an incompatible 0.1.2-era index.db (regression)", () => {
 		const legacyDir = path.join(tmp, "legacy-sessions");
 		const legacyDb = path.join(tmp, "legacy-index.db");
 		fs.mkdirSync(legacyDir, { recursive: true });
@@ -458,6 +458,28 @@ describe("legacy schema migration", () => {
 		const res = syncSessions(legacyDir, legacyDb);
 		assert.equal(res.filesProcessed, 1);
 		assert.equal(searchIndex(legacyDb, "legacy schema migration unique marker").hits.length, 1);
+	});
+
+	describe("sanitize ladder regressions from review", () => {
+		it("unmatched quote is malformed syntax, not searchable text", () => {
+			writeFixture("--quote-fix--", "q.jsonl", [
+				sessionHeader(),
+				msg("uq1", "user", "we finished the zqxlaunch on Friday morning"),
+			], 120000);
+			syncSessions(sessionsDir, dbPath, { cap: 10 });
+			const plan = buildFtsQueryPlan('"zqxlaunch');
+			assert.ok(!plan.ftsCandidates.some((candidate) => candidate.includes('""')), "unmatched quote must not become literal quote text");
+			assert.equal(searchIndex(dbPath, '"zqxlaunch').hits.length, 1, 'query with unmatched opening quote must match ordinary text');
+		});
+
+		it("NEAR distance attached to the operand comma is recognized as syntax", () => {
+			writeFixture("--near-comma--", "n.jsonl", [
+				sessionHeader(),
+				msg("nc1", "user", "first Go ZqRust then zqxwrap"),
+			], 121000);
+			syncSessions(sessionsDir, dbPath, { cap: 10 });
+			assert.equal(searchIndex(dbPath, "NEAR(Go ZqRust,10)").hits.length, 1, "attached NEAR distance must not be searched as literal text");
+		});
 	});
 });
 
