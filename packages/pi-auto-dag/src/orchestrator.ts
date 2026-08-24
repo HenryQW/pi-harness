@@ -3,8 +3,8 @@ import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-
 import { listManagedSubagents, loadRoles, resolveRoleLaunch, type ResolveRoleLaunchInput, type ResolvedRoleLaunch } from "@henryqw/pi-subagent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import { isRetryableFinalGate, requiredGateCommandAmendmentRequest, retryableFinalGate } from "./final-gate.ts";
-import { deriveDependencyWaves, FINAL_CHECK_ID, hashDeliveryGraph, parseDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
-import { preflightLocalRun, type LocalRunPreflight } from "./intake.ts";
+import { deriveDependencyWaves, FINAL_CHECK_ID, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
+import { assertSameLocalRunBoundary, preflightLocalRun, type LocalRunPreflight } from "./intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
 import type { DeliveryGraph, ProjectConfig, RunState, WorkerEnvelope } from "./model.ts";
@@ -87,7 +87,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume,
 					...(isRetryableFinalGate(state) ? [ORCHESTRATOR_TOOLS.retryGate] : []),
-					ORCHESTRATOR_TOOLS.abort,
+					...(["aborted", "completed"].includes(state.phase) ? [] : [ORCHESTRATOR_TOOLS.abort]),
 					...(hasActivePhaseBlock(state) ? [ORCHESTRATOR_TOOLS.resolve] : [])]
 				: [ORCHESTRATOR_TOOLS.execute, ORCHESTRATOR_TOOLS.status];
 			const active = pi.getActiveTools();
@@ -303,10 +303,8 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 					content: [{ type: "text" as const, text: "Auto DAG execution cancelled." }],
 					details: undefined,
 				};
-				const confirmedBoundary = await preflightLocalRun(ctx.cwd, runner);
-				assertSameExecutionBoundary(boundary, confirmedBoundary);
-				await writeDeliveryGraph(confirmedBoundary.main_worktree, graph);
-				return await lifecycleResult(ctx, async () => await lifecycle.start(confirmedBoundary.main_worktree, mainPane, hash));
+				assertSameLocalRunBoundary(boundary, await preflightLocalRun(ctx.cwd, runner));
+				return await lifecycleResult(ctx, async () => await lifecycle.start(graph, boundary, mainPane));
 			},
 		}));
 
@@ -465,16 +463,6 @@ function executionConfirmation(
 		`  Testing (${quotedConfirmationValue(roles.reviewer)}): ${quotedConfirmationValue(graph.final_check.testing)}`,
 	);
 	return lines.join("\n");
-}
-
-function assertSameExecutionBoundary(before: LocalRunPreflight, after: LocalRunPreflight): void {
-	if (before.main_worktree !== after.main_worktree
-		|| before.branch !== after.branch
-		|| before.head !== after.head
-		|| before.default_branch !== after.default_branch
-		|| JSON.stringify(before.config) !== JSON.stringify(after.config)) {
-		throw new Error("Auto DAG execution boundary changed during confirmation");
-	}
 }
 
 interface WorkerWidgetEntry {

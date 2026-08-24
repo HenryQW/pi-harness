@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { loadProjectConfig } from "./config.ts";
 import { runCommand, type CommandRunner } from "./command.ts";
-import { hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
+import { hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
 import { inspectActiveIntegrationWorktree, inspectIntegrationCandidate, resolveGitTopLevel } from "./git.ts";
-import type { ProjectConfig, RunState } from "./model.ts";
+import type { DeliveryGraph, ProjectConfig, RunState } from "./model.ts";
 import { createInitialRunState, createRun, readActiveRunId, type Uuid } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 
@@ -11,13 +11,13 @@ const LOCAL_GRAPH_PATH = ".context/issues/graph.json";
 const LOCAL_CONTEXT_PATH = ".context/";
 
 export interface IntakeOptions {
-	mainWorktree: string;
+	graph: DeliveryGraph;
+	confirmedBoundary: LocalRunPreflight;
 	runner?: CommandRunner;
 	uuid?: Uuid;
 	now?: () => string;
 	mainPane: string;
 	workspaceId: string;
-	expectedGraphHash?: string;
 }
 
 export interface LocalRunPreflight {
@@ -30,39 +30,50 @@ export interface LocalRunPreflight {
 
 /** Read-only validation shared by confirmation and the final start boundary. */
 export async function preflightLocalRun(mainWorktree: string, runner: CommandRunner = runCommand): Promise<LocalRunPreflight> {
-	const root = await resolveGitTopLevel(mainWorktree, runner);
-	const source = await inspectIntegrationCandidate(root, runner);
-	await assertIgnoredLocalContext(root, runner);
-	const active = await readActiveRunId(root);
+	const boundary = await inspectLocalRunBoundary(mainWorktree, runner);
+	const active = await readActiveRunId(boundary.main_worktree);
 	if (active) throw new Error(`An active pi-auto-dag run already exists: ${active}`);
-	return { main_worktree: root, ...source, config: await loadProjectConfig() };
+	return boundary;
 }
 
-/** Validate local authority once, then persist the normalized graph and integration facts. */
+/** Claim the run, then bind its graph and integration facts to the confirmed boundary. */
 export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const runner = options.runner ?? runCommand;
-	const boundary = await preflightLocalRun(options.mainWorktree, runner);
-	const mainWorktree = boundary.main_worktree;
+	const boundary = options.confirmedBoundary;
 	const uuid = options.uuid ?? randomUUID;
-	const mainPane = nonEmptyString(options.mainPane, "main Herdr pane");
-	const graph = await readDeliveryGraph(mainWorktree);
-	if (options.expectedGraphHash !== undefined && hashDeliveryGraph(graph) !== options.expectedGraphHash) {
-		throw new Error("Delivery Graph changed after execution confirmation");
-	}
-
 	const state = createInitialRunState({
 		run_id: uuid(),
-		graph,
+		graph: options.graph,
 		source_commit: boundary.head,
-		main_worktree: mainWorktree,
+		main_worktree: boundary.main_worktree,
 		integration_branch: boundary.branch,
 		default_branch: boundary.default_branch,
 		created_at: (options.now ?? (() => new Date().toISOString()))(),
-		main_pane: mainPane,
+		main_pane: nonEmptyString(options.mainPane, "main Herdr pane"),
 		workspace_id: nonEmptyString(options.workspaceId, "Herdr workspace id"),
 	});
-	await createRun(mainWorktree, state, uuid);
+	await createRun(boundary.main_worktree, state, uuid, async () => {
+		assertSameLocalRunBoundary(boundary, await inspectLocalRunBoundary(boundary.main_worktree, runner));
+		await writeDeliveryGraph(boundary.main_worktree, state.graph);
+	});
 	return state;
+}
+
+export function assertSameLocalRunBoundary(before: LocalRunPreflight, after: LocalRunPreflight): void {
+	if (before.main_worktree !== after.main_worktree
+		|| before.branch !== after.branch
+		|| before.head !== after.head
+		|| before.default_branch !== after.default_branch
+		|| JSON.stringify(before.config) !== JSON.stringify(after.config)) {
+		throw new Error("Auto DAG execution boundary changed during confirmation");
+	}
+}
+
+async function inspectLocalRunBoundary(mainWorktree: string, runner: CommandRunner): Promise<LocalRunPreflight> {
+	const root = await resolveGitTopLevel(mainWorktree, runner);
+	const source = await inspectIntegrationCandidate(root, runner);
+	await assertIgnoredLocalContext(root, runner);
+	return { main_worktree: root, ...source, config: await loadProjectConfig() };
 }
 
 /** Local inputs and all generated run state must stay outside Git's dirty-worktree boundary. */

@@ -5,8 +5,8 @@ import { findManagedSubagentTab, managedSubagentWorkspaceId, retireManagedSubage
 import { amendRequiredGateCommand, isRetryableFinalGate, retryableFinalGate, type GateCommandAmendmentRequest } from "./final-gate.ts";
 import { resolveFinalRepair } from "./final-repair.ts";
 import { resolveGitTopLevel } from "./git.ts";
-import { assertRunBoundary, startLocalRun } from "./intake.ts";
-import type { ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
+import { assertRunBoundary, startLocalRun, type LocalRunPreflight } from "./intake.ts";
+import type { DeliveryGraph, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, preflightRunEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { WorkerEnvelopeRejectedError } from "./review-ticket.ts";
 import { recordGateExecution } from "./review.ts";
@@ -24,7 +24,7 @@ export interface CoreLifecycleOptions {
 }
 
 export interface CoreLifecycle {
-	start(mainWorktree: string, mainPane?: string, expectedGraphHash?: string): Promise<RunState>;
+	start(graph: DeliveryGraph, confirmedBoundary: LocalRunPreflight, mainPane?: string): Promise<RunState>;
 	status(mainWorktree: string, runId?: string): Promise<RunState | undefined>;
 	resume(mainWorktree: string, envelope?: unknown): Promise<RunState>;
 	retryGate(mainWorktree: string, reason: string, expectedEvidence: RequiredGateEvidence): Promise<RunState>;
@@ -48,18 +48,18 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		resolveLaunch: options.resolveLaunch ?? (() => { throw new Error("Auto DAG launch resolver is unavailable"); }),
 	};
 	return {
-		async start(mainWorktree, mainPane, expectedGraphHash) {
-			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
+		async start(graph, confirmedBoundary, mainPane) {
+			return await withLifecycleMutation(confirmedBoundary.main_worktree, runner, async (root) => {
 				const pane = nonEmptyString(mainPane ?? options.mainPane?.(), "main Herdr pane");
 				const workspaceId = await managedSubagentWorkspaceId(root, pane, { execute: runner });
 				const state = await startLocalRun({
-					mainWorktree: root,
+					graph,
+					confirmedBoundary,
 					runner,
 					uuid,
 					now: options.now,
 					mainPane: pane,
 					workspaceId,
-					expectedGraphHash,
 				});
 				return await completeSuccessfulRun(await blockOnFailure(state, uuid, async () => await initializeOrchestration(state, pane, orchestration)), orchestration);
 			});
@@ -197,6 +197,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		async abort(mainWorktree, reason) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
 				let state = await readActiveRun(root);
+				if (state.phase === "completed") throw new Error("Cannot abort a completed run");
 				state = await reconcileGate(state, orchestration);
 				const next: RunState = {
 					...state,

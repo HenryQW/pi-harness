@@ -7,9 +7,9 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { parseProjectConfig } from "../src/config.ts";
 import { deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "../src/graph.ts";
-import { startLocalRun } from "../src/intake.ts";
+import { preflightLocalRun, startLocalRun, type LocalRunPreflight } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
-import type { RunState } from "../src/model.ts";
+import type { DeliveryGraph, RunState } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import {
 	createInitialRunState,
@@ -102,18 +102,18 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 	const events = new Map<string, Function>();
 	let activeTools = ["read", ...Object.values(ORCHESTRATOR_TOOLS)];
 	let current: RunState | undefined;
-	const starts: Array<{ root: string; pane?: string; expectedGraphHash?: string }> = [];
+	const starts: Array<{ graph: DeliveryGraph; boundary: LocalRunPreflight; pane?: string }> = [];
 	const lifecycle: CoreLifecycle = {
-		async start(root, pane, expectedGraphHash) {
-			starts.push({ root, pane, expectedGraphHash });
-			const graph = await readDeliveryGraph(root);
+		async start(graph, boundary, pane) {
+			starts.push({ graph, boundary, pane });
+			await writeDeliveryGraph(boundary.main_worktree, graph);
 			current = createInitialRunState({
 				run_id: RUN_ID,
 				graph,
-				source_commit: await git(root, "rev-parse", "HEAD"),
-				main_worktree: root,
-				integration_branch: "integration",
-				default_branch: "main",
+				source_commit: boundary.head,
+				main_worktree: boundary.main_worktree,
+				integration_branch: boundary.branch,
+				default_branch: boundary.default_branch,
 				created_at: "2026-08-09T00:00:00.000Z",
 				main_pane: pane!,
 				workspace_id: "main-workspace",
@@ -186,7 +186,18 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 
 	const result = await execute.execute("approve", { graph: graphInput }, undefined, undefined, context("tui", async () => true));
 	assert.equal(result.details?.graph_hash, hashDeliveryGraph(canonical));
-	assert.deepEqual(starts, [{ root: project.root, pane: "main-pane", expectedGraphHash: hashDeliveryGraph(canonical) }]);
+	assert.equal(starts.length, 1);
+	assert.deepEqual(starts[0], {
+		graph: canonical,
+		boundary: {
+			main_worktree: project.root,
+			branch: "integration",
+			head: await git(project.root, "rev-parse", "HEAD"),
+			default_branch: "main",
+			config: { version: 5, max_parallel_tasks: 2, max_review_rounds: 3, required_gate_timeout_ms: 60_000 },
+		},
+		pane: "main-pane",
+	});
 	assert.deepEqual(await readDeliveryGraph(project.root), canonical);
 	assert.equal(
 		await readFile(join(project.root, ".context", "issues", "graph.json"), "utf8"),
@@ -194,16 +205,39 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 	);
 });
 
-test("startup rejects a graph changed after confirmation before creating a run", async (t) => {
+test("startup rejects a changed confirmed boundary before persisting its graph", async (t) => {
 	const project = await setupProject(t, true);
-	await writeDeliveryGraph(project.root, graphInput);
+	const boundary = await preflightLocalRun(project.root);
+	await writeFile(join(project.agentDir!, "config", "pi-auto-dag.json"), JSON.stringify({
+		...boundary.config,
+		max_parallel_tasks: boundary.config.max_parallel_tasks + 1,
+	}));
 	await assert.rejects(startLocalRun({
-		mainWorktree: project.root,
+		graph: parseDeliveryGraph(graphInput),
+		confirmedBoundary: boundary,
 		mainPane: "main-pane",
 		workspaceId: "main-workspace",
-		expectedGraphHash: "0".repeat(64),
-	}), /Delivery Graph changed after execution confirmation/);
+	}), /execution boundary changed during confirmation/);
 	assert.equal(await readActiveRunId(project.root), undefined);
+	await assert.rejects(readFile(join(project.root, ".context", "issues", "graph.json")), /ENOENT/);
+});
+
+test("concurrent starts cannot replace the winning run graph", async (t) => {
+	const project = await setupProject(t, true);
+	const boundary = await preflightLocalRun(project.root);
+	const graphs = [parseDeliveryGraph(graphInput), parseDeliveryGraph({ ...graphInput, goal: "Execute the other graph." })];
+	const runIds = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
+	const results = await Promise.allSettled(graphs.map((graph, index) => startLocalRun({
+		graph,
+		confirmedBoundary: boundary,
+		mainPane: "main-pane",
+		workspaceId: "main-workspace",
+		uuid: () => runIds[index],
+	})));
+	const winners = results.filter((result): result is PromiseFulfilledResult<RunState> => result.status === "fulfilled");
+	assert.equal(winners.length, 1, results.map((result) => result.status === "rejected" ? String(result.reason) : result.value.run_id).join("\n"));
+	assert.deepEqual(await readDeliveryGraph(project.root), winners[0].value.graph);
+	assert.equal(await readActiveRunId(project.root), winners[0].value.run_id);
 });
 
 test("abort retains an undelivered blocked notification until acknowledgement", async (t) => {
@@ -271,6 +305,8 @@ test("terminal settlement releases a completed lock after acknowledgement persis
 		},
 	}, () => "completed");
 	const completed = (await readRunState(project.root, RUN_ID))!;
+	await assert.rejects(createCoreLifecycle().abort(project.root, "Too late"), /Cannot abort a completed run/);
+	assert.equal((await readRunState(project.root, RUN_ID))!.phase, "completed");
 	await writeRunState(project.root, {
 		...completed,
 		notifications: completed.notifications.map((notification) => ({
@@ -311,8 +347,9 @@ test("durable blocked/completed notifications retain stable IDs and release comp
 	const firstBlocked = (await readRunState(project.root, RUN_ID))!;
 	const blockedId = firstBlocked.notifications[0].event_id;
 	assert.match(blockedId, new RegExp(`^auto-dag:${RUN_ID}:blocked:[a-f0-9]{64}$`));
+	assert.equal(blocked.current_notification_id, blockedId);
 	assert.deepEqual(parseRunState(JSON.parse(JSON.stringify(firstBlocked))), firstBlocked);
-	await writeRunState(project.root, firstBlocked, () => "blocked-two");
+	await writeRunState(project.root, blocked, () => "blocked-two");
 	const blockedRoundTrip = (await readRunState(project.root, RUN_ID))!;
 	assert.deepEqual(blockedRoundTrip.notifications.map(({ event_id }) => event_id), [blockedId]);
 
@@ -324,16 +361,35 @@ test("durable blocked/completed notifications retain stable IDs and release comp
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 
 	const { block_reason: _blockReason, ...unblocked } = acknowledgedAgain;
-	const completed: RunState = {
+	await writeRunState(project.root, {
 		...unblocked,
+		phase: "execution",
+		tasks: { ...unblocked.tasks, api: { status: "pending", attempts: 2 } },
+	}, () => "unblocked");
+	const rearmed = (await readRunState(project.root, RUN_ID))!;
+	await writeRunState(project.root, {
+		...rearmed,
+		phase: "blocked",
+		block_reason: blocked.block_reason,
+		tasks: blocked.tasks,
+	}, () => "blocked-again");
+	const blockedAgain = (await readRunState(project.root, RUN_ID))!;
+	const blockedIds = blockedAgain.notifications.filter(({ kind }) => kind === "blocked").map(({ event_id }) => event_id);
+	assert.equal(blockedIds.length, 2);
+	assert.notEqual(blockedIds[0], blockedIds[1]);
+	const acknowledgedAgainBlock = await lifecycle.acknowledgeNotification(project.root, blockedIds[1]);
+
+	const { block_reason: _secondBlockReason, ...unblockedAgain } = acknowledgedAgainBlock;
+	const completed: RunState = {
+		...unblockedAgain,
 		phase: "completed",
-		tasks: Object.fromEntries(Object.entries(unblocked.tasks).map(([id, task]) => [id, { status: "completed", attempts: task.attempts }])),
+		tasks: Object.fromEntries(Object.entries(unblockedAgain.tasks).map(([id, task]) => [id, { status: "completed", attempts: task.attempts }])),
 		pr: {
 			number: 42,
 			url: "https://example.test/pull/42",
 			head_ref: "integration",
 			base_ref: "main",
-			head_oid: unblocked.integration_head,
+			head_oid: unblockedAgain.integration_head,
 		},
 	};
 	await writeRunState(project.root, completed, () => "completed-one");
@@ -344,7 +400,7 @@ test("durable blocked/completed notifications retain stable IDs and release comp
 	await writeRunState(project.root, parseRunState(JSON.parse(JSON.stringify(firstCompleted))), () => "completed-two");
 	const completedRoundTrip = (await readRunState(project.root, RUN_ID))!;
 	assert.equal(completedRoundTrip.notifications.find(({ kind }) => kind === "completed")!.event_id, completedId);
-	assert.equal(completedRoundTrip.notifications.length, 2);
+	assert.equal(completedRoundTrip.notifications.length, 3);
 
 	const delivered = await lifecycle.acknowledgeNotification(project.root, completedId);
 	assert.equal(await readActiveRunId(project.root), undefined);

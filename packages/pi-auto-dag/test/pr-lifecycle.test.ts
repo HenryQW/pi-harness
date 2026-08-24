@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
 import { testLaunchResolver } from "./support/roles.ts";
 import { recordedGateEvidence, type CommandRunner, runCommand } from "../src/command.ts";
+import { readDeliveryGraph } from "../src/graph.ts";
+import { preflightLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
 import { actionTicketPath, readWorkerReceipt, reviewId, type ActionTicket } from "../src/review-ticket.ts";
@@ -498,13 +500,13 @@ test("a pre-existing PR with mismatched identity blocks before push", async (t) 
 	assert.equal(gh.gitPushes, 0);
 });
 
-async function finishInitialRun(root: string, lifecycle: CoreLifecycle): Promise<RunState> {
+async function finishInitialRun(root: string, lifecycle: TestLifecycle): Promise<RunState> {
 	let state = await advanceToFinalReview(root, lifecycle);
 	state = await lifecycle.resume(root, reviewEvent(state, "final-check", "approved", []));
 	return state;
 }
 
-async function advanceToFinalReview(root: string, lifecycle: CoreLifecycle): Promise<RunState> {
+async function advanceToFinalReview(root: string, lifecycle: TestLifecycle): Promise<RunState> {
 	let state = await lifecycle.start(root, "main-pane");
 	const implementation = await commit(state.tasks.alpha.worktree!, "alpha.txt", "alpha\n", "alpha");
 	state = await lifecycle.resume(root, requestReviewEvent(state, "alpha", implementation));
@@ -513,13 +515,21 @@ async function advanceToFinalReview(root: string, lifecycle: CoreLifecycle): Pro
 	return state;
 }
 
-function makeLifecycle(runner: CommandRunner): CoreLifecycle {
-	return createCoreLifecycle({
+type TestLifecycle = Omit<CoreLifecycle, "start"> & { start(root: string, mainPane?: string): Promise<RunState> };
+
+function makeLifecycle(runner: CommandRunner): TestLifecycle {
+	const lifecycle = createCoreLifecycle({
 		runner,
 		uuid: () => RUN_ID,
 		now: () => "2026-08-09T00:00:00.000Z",
 		resolveLaunch: testLaunchResolver,
 	});
+	return {
+		...lifecycle,
+		async start(root, mainPane) {
+			return await lifecycle.start(await readDeliveryGraph(root), await preflightLocalRun(root, runner), mainPane);
+		},
+	};
 }
 
 function graph() {

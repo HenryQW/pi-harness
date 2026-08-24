@@ -10,6 +10,8 @@ import { fakeHerdr } from "./support/fake-herdr.ts";
 import { testLaunchResolver } from "./support/roles.ts";
 import { recordedGateEvidence, type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
+import { readDeliveryGraph } from "../src/graph.ts";
+import { preflightLocalRun } from "../src/intake.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
@@ -1017,14 +1019,22 @@ test("a dirty child worktree is preserved instead of reset after a cherry-pick c
 	assert.notEqual(await git(betaWorktree, "status", "--porcelain"), "");
 });
 
-function makeLifecycle(runner: CommandRunner, delay?: (milliseconds: number) => Promise<void>): CoreLifecycle {
-	return createCoreLifecycle({
+type TestLifecycle = Omit<CoreLifecycle, "start"> & { start(root: string, mainPane?: string): Promise<RunState> };
+
+function makeLifecycle(runner: CommandRunner, delay?: (milliseconds: number) => Promise<void>): TestLifecycle {
+	const lifecycle = createCoreLifecycle({
 		runner,
 		uuid: () => RUN_ID,
 		now: () => "2026-08-09T00:00:00.000Z",
 		delay,
 		resolveLaunch: testLaunchResolver,
 	});
+	return {
+		...lifecycle,
+		async start(root, mainPane) {
+			return await lifecycle.start(await readDeliveryGraph(root), await preflightLocalRun(root, runner), mainPane);
+		},
+	};
 }
 
 async function writeRoleFile(agentDir: string, name: string): Promise<void> {

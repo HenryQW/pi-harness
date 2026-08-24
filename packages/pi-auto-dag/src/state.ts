@@ -28,7 +28,7 @@ const RUN_PHASES = ["execution", "blocked", "aborted", "completed"] as const;
 
 const RUN_STATE_KEYS = [
 	"version", "run_id", "graph_hash", "graph", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "gate_command_amendments", "main_pane", "workspace_id",
-	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "notifications", "accepted_events",
+	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "notifications", "current_notification_id", "accepted_events",
 ] as const;
 
 /** Single source of truth for durable task fields: key lists, parse branches, and labels derive from this table. */
@@ -120,7 +120,7 @@ export function createInitialRunState(input: {
 }
 
 /** The active lock is exclusive; it is deliberately not removed by a failed cleanup. */
-export async function createRun(mainWorktree: string, state: RunState, uuid: Uuid = randomUUID): Promise<void> {
+export async function createRun(mainWorktree: string, state: RunState, uuid: Uuid = randomUUID, afterClaim?: () => Promise<void>): Promise<void> {
 	const root = stateRoot(mainWorktree);
 	await mkdir(join(root, "runs"), { recursive: true });
 	if (!(await claimActiveRun(mainWorktree, state.run_id))) {
@@ -128,6 +128,7 @@ export async function createRun(mainWorktree: string, state: RunState, uuid: Uui
 	}
 
 	try {
+		await afterClaim?.();
 		await mkdir(runDirectory(mainWorktree, state.run_id));
 		await writeRunState(mainWorktree, state, uuid);
 	} catch (error) {
@@ -158,6 +159,8 @@ export async function writeRunState(mainWorktree: string, state: RunState, uuid:
 	const persisted = parseRunState(queueRunNotification(state));
 	// Existing save helpers return their input object, so keep its durable outbox in sync.
 	state.notifications = persisted.notifications;
+	if (persisted.current_notification_id) state.current_notification_id = persisted.current_notification_id;
+	else delete state.current_notification_id;
 	const directory = runDirectory(mainWorktree, persisted.run_id);
 	const temporary = join(directory, `.state-${uuid()}.tmp`);
 	const destination = join(directory, "state.json");
@@ -257,6 +260,12 @@ export function parseRunState(value: unknown): RunState {
 	if (input.wave !== undefined) state.wave = parseRunWave(input.wave, "run state.wave");
 	if (input.cleanup_blocks !== undefined) state.cleanup_blocks = parseCleanupBlocks(input.cleanup_blocks, "run state.cleanup_blocks");
 	if (input.pr !== undefined) state.pr = parsePullRequestIdentity(input.pr, "run state.pr");
+	if (input.current_notification_id !== undefined) {
+		const eventId = nonEmptyString(input.current_notification_id, "run state.current_notification_id");
+		const notification = state.notifications.find((candidate) => candidate.event_id === eventId);
+		if (!notification || notification.kind !== state.phase) throw new Error("run state.current_notification_id does not match its active notification phase");
+		state.current_notification_id = eventId;
+	}
 	if (input.accepted_events !== undefined) state.accepted_events = parseAcceptedEvents(input.accepted_events);
 	return state;
 }
@@ -272,7 +281,7 @@ function parseRunNotifications(value: unknown, runId: string): RunNotification[]
 			? parseBlockedNotificationPayload(input.payload, `${label}.payload`)
 			: parseCompletedNotificationPayload(input.payload, `${label}.payload`);
 		const eventId = nonEmptyString(input.event_id, `${label}.event_id`);
-		if (eventId !== runNotificationId(runId, kind, payload)) throw new Error(`${label}.event_id does not match its immutable payload`);
+		if (eventId !== runNotificationId(runId, kind, payload, index)) throw new Error(`${label}.event_id does not match its immutable payload`);
 		if (seen.has(eventId)) throw new Error(`Duplicate run notification event ID: ${eventId}`);
 		seen.add(eventId);
 		const common = {
@@ -490,21 +499,18 @@ function queueRunNotification(state: RunState): RunState {
 		kind = "completed";
 		payload = completedNotificationPayload(state);
 	} else {
-		return state;
+		if (!state.current_notification_id) return state;
+		const { current_notification_id: _currentNotificationId, ...inactive } = state;
+		return inactive;
 	}
-	const eventId = runNotificationId(state.run_id, kind, payload);
-	const existing = state.notifications.find((notification) => notification.event_id === eventId);
-	if (existing) {
-		if (existing.kind !== kind || JSON.stringify(existing.payload) !== JSON.stringify(payload)) {
-			throw new Error(`Run notification ${eventId} payload changed after creation`);
-		}
-		return state;
-	}
+	const current = state.notifications.find((notification) => notification.event_id === state.current_notification_id);
+	if (current?.kind === kind && JSON.stringify(current.payload) === JSON.stringify(payload)) return state;
+	const eventId = runNotificationId(state.run_id, kind, payload, state.notifications.length);
 	const common = { event_id: eventId, created_at: new Date().toISOString() };
 	const notification: RunNotification = kind === "blocked"
 		? { ...common, kind, payload: payload as BlockedNotificationPayload }
 		: { ...common, kind, payload: payload as CompletedNotificationPayload };
-	return { ...state, notifications: [...state.notifications, notification] };
+	return { ...state, current_notification_id: eventId, notifications: [...state.notifications, notification] };
 }
 
 function blockedNotificationPayload(state: RunState): BlockedNotificationPayload {
@@ -543,8 +549,9 @@ function runNotificationId(
 	runId: string,
 	kind: RunNotification["kind"],
 	payload: BlockedNotificationPayload | CompletedNotificationPayload,
+	sequence: number,
 ): string {
-	const fingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+	const fingerprint = createHash("sha256").update(JSON.stringify({ sequence, payload })).digest("hex");
 	return `auto-dag:${runId}:${kind}:${fingerprint}`;
 }
 

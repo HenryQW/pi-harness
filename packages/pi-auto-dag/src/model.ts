@@ -212,6 +212,8 @@ export interface RunState {
 	cleanup_blocks?: CleanupBlock[];
 	pr?: PullRequestIdentity;
 	notifications: RunNotification[];
+	/** Notification representing the current blocked/completed transition. */
+	current_notification_id?: string;
 	/** Worker event IDs bound to SHA-256 hashes of envelopes whose lifecycle transition was persisted. */
 	accepted_events?: Record<string, string>;
 }
