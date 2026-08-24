@@ -6,9 +6,6 @@ on:
       - main
     paths:
       - 'packages/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/publish.yml'
 
 permissions:
   contents: read
