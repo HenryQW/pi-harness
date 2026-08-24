@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionEvent, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import {
@@ -23,6 +23,31 @@ import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfile
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
+const PI_JSON_EVENTS = {
+	agent_start: true,
+	agent_end: true,
+	agent_settled: true,
+	turn_start: true,
+	turn_end: true,
+	message_start: true,
+	message_update: true,
+	message_end: true,
+	tool_execution_start: true,
+	tool_execution_update: true,
+	tool_execution_end: true,
+	queue_update: true,
+	compaction_start: true,
+	compaction_end: true,
+	entry_appended: true,
+	session_info_changed: true,
+	thinking_level_changed: true,
+	auto_retry_start: true,
+	auto_retry_end: true,
+	summarization_retry_scheduled: true,
+	summarization_retry_attempt_start: true,
+	summarization_retry_finished: true,
+	bash_execution_update: true,
+} satisfies Record<AgentSessionEvent["type"], true>;
 const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
 const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
 const WIDGET_KEY = "subagent-status";
@@ -292,7 +317,7 @@ async function runPi(
 			}
 			if (!event || typeof event !== "object" || Array.isArray(event)) return;
 			const record = event as Record<string, unknown>;
-			if (typeof record.type !== "string") return;
+			if (typeof record.type !== "string" || !Object.hasOwn(PI_JSON_EVENTS, record.type)) return;
 			observeEvent();
 			if (record.type === "message_start") {
 				partial.prefix = "";
