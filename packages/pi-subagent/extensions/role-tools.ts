@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-const CHILD_EXCLUDED_TOOLS = new Set(["delegate_task", "ask_question", "auto_dag_approve", "auto_dag_start"]);
+const CHILD_EXCLUDED_TOOLS = new Set(["delegate_task", "ask_question", "auto_dag_execute"]);
 
 function configuredTools(value: unknown): string[] | undefined {
 	if (value === undefined) return;

@@ -6,14 +6,13 @@ import { createInitialRunState } from "../../src/state.ts";
 const state = createInitialRunState({
 	run_id: "00000000-0000-4000-8000-000000000001",
 	graph: parseDeliveryGraph({
-		status: "approved",
 		id: "worker-ui-demo",
 		goal: "Preview active workers.",
 		constraints: [],
 		non_goals: [],
 		issues: [
-			{ id: "api", title: "API", profile: "backend", objective: "Build API.", acceptance: ["API works."], testing: "npm test", depends_on: [] },
-			{ id: "web", title: "Web", profile: "frontend", objective: "Build UI.", acceptance: ["UI works."], testing: "npm test", depends_on: [] },
+			{ id: "api", title: "API", objective: "Build API.", acceptance: ["API works."], testing: "npm test", depends_on: [] },
+			{ id: "web", title: "Web", objective: "Build UI.", acceptance: ["UI works."], testing: "npm test", depends_on: [] },
 		],
 		final_check: { acceptance: ["Checks pass."], testing: "npm test" },
 	}),
@@ -47,7 +46,8 @@ const lifecycle: CoreLifecycle = {
 	retryGate: async () => state,
 	resolve: async () => state,
 	abort: async () => state,
-	health: async () => state,
+	acknowledgeNotification: async () => state,
+	settleTerminal: async () => state,
 };
 
 export default createOrchestratorExtension({

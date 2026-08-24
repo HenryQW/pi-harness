@@ -8,10 +8,9 @@ import { resolveGitTopLevel } from "./git.ts";
 import { assertRunBoundary, startLocalRun } from "./intake.ts";
 import type { ProjectConfig, RequiredGateEvidence, RunState, RunTaskState, WorkerEnvelope } from "./model.ts";
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, preflightRunEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
-import { preflightPrHealthEnvelope, runPrHealth } from "./pr-health.ts";
-import { WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
+import { WorkerEnvelopeRejectedError } from "./review-ticket.ts";
 import { recordGateExecution } from "./review.ts";
-import { claimActiveRun, hasAcceptedWorkerEvent, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, type Uuid, writeRunState } from "./state.ts";
+import { notificationRunId, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, runCleanupIsClear, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 import { workerHost, workerHostOptions, type RoleLaunchResolver } from "./worker.ts";
 
@@ -31,7 +30,8 @@ export interface CoreLifecycle {
 	retryGate(mainWorktree: string, reason: string, expectedEvidence: RequiredGateEvidence): Promise<RunState>;
 	resolve(mainWorktree: string, issueId: string, resolution: string, amendment?: GateCommandAmendmentRequest): Promise<RunState>;
 	abort(mainWorktree: string, reason?: string): Promise<RunState>;
-	health(mainWorktree: string, runId: string, envelope?: unknown): Promise<RunState>;
+	acknowledgeNotification(mainWorktree: string, eventId: string): Promise<RunState>;
+	settleTerminal(mainWorktree: string): Promise<RunState>;
 }
 
 // ponytail: same-process serialization; add a cross-process lock only if callers span processes.
@@ -76,29 +76,11 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				if (state.phase !== "aborted" && envelope !== undefined) {
 					await blockOnFailure(state, uuid, async () => {
 						workerEnvelope = parseWorkerEnvelope(parseEnvelope(envelope));
-						return state;
-					});
-					if (state.health && hasAcceptedWorkerEvent(state, workerEnvelope!)
-						&& state.graph.issues.some((issue) => issue.id === workerEnvelope!.issue_id)) {
-						const { receiptPath } = await preflightRunEnvelope(state, workerEnvelope!, orchestration);
-						await writeWorkerReceipt(receiptPath, { event_id: workerEnvelope!.event_id, status: "accepted" }, uuid);
-						return state.health.status === "completed"
-							? await releaseCompletedHealth(state, uuid, orchestration)
-							: state;
-					}
-					await blockOnFailure(state, uuid, async () => {
-						if (state.health) await preflightPrHealthEnvelope(state, workerEnvelope!, orchestration);
-						else await preflightRunEnvelope(state, workerEnvelope!, orchestration);
+						await preflightRunEnvelope(state, workerEnvelope, orchestration);
 						return state;
 					});
 				}
 				state = await reconcileGate(state, orchestration);
-				if (state.phase !== "aborted" && state.health) {
-					if (state.health.status === "completed" && !workerEnvelope) {
-						return await releaseCompletedHealth(state, uuid, orchestration);
-					}
-					return await continueRetainedHealth(state, workerEnvelope, orchestration);
-				}
 				const next = state.phase === "aborted"
 					? await resumeRun(state, undefined, orchestration)
 					: await blockOnFailure(state, uuid, async () => await resumeRun(state, workerEnvelope, orchestration));
@@ -224,45 +206,50 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				};
 				await writeRunState(state.main_worktree, next, uuid);
 				const cleaned = await abortRun(next, orchestration);
-				if (cleaned.cleanup_blocks?.length) return cleaned;
+				if (cleaned.cleanup_blocks?.length || cleaned.notifications.some((notification) => !notification.delivered_at)) return cleaned;
 				await releaseActiveRun(cleaned.main_worktree, cleaned.run_id);
 				return cleaned;
 			});
 		},
 
-		async health(mainWorktree, runId, envelope) {
+		async acknowledgeNotification(mainWorktree, eventId) {
 			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
-				const id = nonEmptyString(runId, "health run_id");
-				const active = await readActiveRunId(root);
-				if (active && active !== id) throw new Error(`Cannot run PR health for retained run ${id} while active run ${active} exists`);
-				let state = await readRunState(root, id);
-				if (!state) throw new Error(`No pi-auto-dag run found: ${runId}`);
-				const cleanupPending = state.phase === "blocked" && Boolean(state.cleanup_blocks?.length);
-				if (!state.pr || (state.phase !== "completed" && !cleanupPending && !(state.phase === "blocked" && state.health))) {
-					throw new Error("PR health requires a completed retained run with an integration PR");
+				const id = nonEmptyString(eventId, "run notification event ID");
+				const runId = notificationRunId(id);
+				let state = await readRunState(root, runId);
+				if (!state) throw new Error(`Run notification belongs to a missing run: ${id}`);
+				const notification = state.notifications.find((candidate) => candidate.event_id === id);
+				if (!notification) throw new Error(`Run notification is missing: ${id}`);
+				if (!notification.delivered_at) {
+					state = {
+						...state,
+						notifications: state.notifications.map((candidate) => candidate.event_id === id
+							? { ...candidate, delivered_at: options.now?.() ?? new Date().toISOString() }
+							: candidate),
+					};
+					await writeRunState(root, state, uuid);
 				}
-				let workerEnvelope: WorkerEnvelope | undefined;
-				if (envelope !== undefined) {
-					const preflightState = state;
-					await blockOnFailure(preflightState, uuid, async () => {
-						workerEnvelope = parseWorkerEnvelope(parseEnvelope(envelope));
-						await preflightPrHealthEnvelope(preflightState, workerEnvelope, orchestration);
-						return preflightState;
-					});
-				}
-				if (active === id) state = await reconcileGate(state, orchestration);
-				if (active === id && state.health?.status === "completed" && !workerEnvelope) {
-					return await releaseCompletedHealth(state, uuid, orchestration);
-				}
-				await claimActiveRun(root, id);
-				return await continueRetainedHealth(
-					state,
-					workerEnvelope,
-					orchestration,
-				);
+				await releaseTerminalRun(root, state);
+				return state;
+			});
+		},
+
+		async settleTerminal(mainWorktree) {
+			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
+				const state = await readActiveRun(root);
+				await releaseTerminalRun(root, state);
+				return state;
 			});
 		},
 	};
+}
+
+async function releaseTerminalRun(root: string, state: RunState): Promise<void> {
+	const delivered = state.notifications.every((notification) => notification.delivered_at);
+	const releasable = state.phase === "completed"
+		? runCleanupIsClear(state) && delivered
+		: state.phase === "aborted" && !state.cleanup_blocks?.length && delivered;
+	if (releasable && await readActiveRunId(root) === state.run_id) await releaseActiveRun(root, state.run_id);
 }
 
 async function withLifecycleMutation<T>(mainWorktree: string, runner: CommandRunner, action: (root: string) => Promise<T>): Promise<T> {
@@ -318,8 +305,8 @@ async function reconcileGate(state: RunState, options: OrchestrationOptions): Pr
 	const execution = await reconcileRequiredGateProcess(options.runner, path, options.delay);
 	if (!execution?.handoff) return state;
 	const target = execution.handoff.target;
-	const owner = target.kind === "task" ? state.tasks[target.issue_id] : state.health;
-	if (!owner) throw new Error(`Completed required gate target is missing: ${target.kind} ${target.issue_id}`);
+	const owner = state.tasks[target.issue_id];
+	if (!owner) throw new Error(`Completed required gate target is missing: ${target.issue_id}`);
 	const evidence = recordedGateEvidence(owner, execution.commit);
 	if (evidence) {
 		if (evidence.command !== execution.command || evidence.exit_code !== execution.exit_code) {
@@ -345,31 +332,6 @@ async function guardBoundary(
 	}
 }
 
-async function continueRetainedHealth(
-	state: RunState,
-	envelope: WorkerEnvelope | undefined,
-	orchestration: OrchestrationOptions,
-): Promise<RunState> {
-	if (state.phase === "completed" || state.cleanup_blocks?.length) {
-		state = await retryCompletedRunCleanup(state, orchestration.uuid, orchestration);
-		if (state.cleanup_blocks?.length) return state;
-	}
-	if (state.phase === "blocked") {
-		const { block_reason: _blockReason, ...unblocked } = state;
-		state = { ...unblocked, phase: "completed" };
-		await writeRunState(state.main_worktree, state, orchestration.uuid);
-	}
-	state = await runPrHealth(state, envelope, orchestration);
-	return state.health?.status === "completed" ? await releaseCompletedHealth(state, orchestration.uuid, orchestration) : state;
-}
-
-async function releaseCompletedHealth(state: RunState, uuid: Uuid, orchestration: OrchestrationOptions): Promise<RunState> {
-	state = await retryCompletedRunCleanup(state, uuid, orchestration);
-	if (state.phase !== "completed" || state.cleanup_blocks?.length) return state;
-	await releaseActiveRun(state.main_worktree, state.run_id);
-	return state;
-}
-
 async function blockOnFailure(state: RunState, uuid: Uuid, action: () => Promise<RunState>): Promise<RunState> {
 	try {
 		return await action();
@@ -384,16 +346,12 @@ async function blockOnFailure(state: RunState, uuid: Uuid, action: () => Promise
 }
 
 async function completeSuccessfulRun(state: RunState, orchestration: OrchestrationOptions): Promise<RunState> {
-	if (state.phase !== "completed") return state;
-	const cleaned = await retryCompletedRunCleanup(state, orchestration.uuid, orchestration);
-	if (cleaned.phase !== "completed" || cleaned.cleanup_blocks?.length) return cleaned;
-	if (await readActiveRunId(cleaned.main_worktree) === cleaned.run_id) {
-		await releaseActiveRun(cleaned.main_worktree, cleaned.run_id);
-	}
-	return cleaned;
+	return state.phase === "completed"
+		? await retryCompletedRunCleanup(state, orchestration.uuid, orchestration)
+		: state;
 }
 
-/** A completed run stays retained until its ordinary task cleanup has finished. */
+/** A completed run stays retained until cleanup and notification delivery finish. */
 async function retryCompletedRunCleanup(state: RunState, uuid: Uuid, orchestration: OrchestrationOptions): Promise<RunState> {
 	if (state.phase !== "completed" && !state.cleanup_blocks?.length) return state;
 	state = await cleanupRun(state, orchestration);

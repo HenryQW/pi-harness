@@ -13,12 +13,13 @@ Numbered ADRs for durable decisions and guidance across the pi-packages monorepo
 
 ## pi-auto-dag
 
-- [007 — Trust Model](007-pi-auto-dag-trust-model.md)
+- [007 — Trust Model](007-pi-auto-dag-trust-model.md) (partially superseded by 022)
 - [008 — Config-Defined Worker Profiles](008-pi-auto-dag-config-defined-worker-profiles.md) (superseded by 009)
-- [009 — Subagent-Owned Worker Infrastructure](009-pi-auto-dag-subagent-owned-worker-infrastructure.md)
+- [009 — Subagent-Owned Worker Infrastructure](009-pi-auto-dag-subagent-owned-worker-infrastructure.md) (partially superseded by 022)
 - [010 — Widget Entry Lifecycle](010-pi-auto-dag-widget-entry-lifecycle.md)
 - [011 — Required Gate Process Ownership](011-pi-auto-dag-required-gate-process-ownership.md)
 - [012 — Durable Worker Receipts](012-pi-auto-dag-durable-worker-receipts.md)
+- [022 — Execution Boundary](022-pi-auto-dag-execution-boundary.md)
 
 ## pi-auto-compact
 

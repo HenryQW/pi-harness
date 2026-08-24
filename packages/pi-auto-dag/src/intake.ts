@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { loadProjectConfig } from "./config.ts";
 import { runCommand, type CommandRunner } from "./command.ts";
-import { assertDeliveryGraphRoles, hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
+import { hashDeliveryGraph, readDeliveryGraph } from "./graph.ts";
 import { inspectActiveIntegrationWorktree, inspectIntegrationCandidate, resolveGitTopLevel } from "./git.ts";
 import type { ProjectConfig, RunState } from "./model.ts";
-import { createInitialRunState, createRun, type Uuid } from "./state.ts";
+import { createInitialRunState, createRun, readActiveRunId, type Uuid } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 
 const LOCAL_GRAPH_PATH = ".context/issues/graph.json";
@@ -19,26 +19,40 @@ export interface IntakeOptions {
 	workspaceId: string;
 }
 
+export interface LocalRunPreflight {
+	main_worktree: string;
+	branch: string;
+	head: string;
+	default_branch: string;
+	config: ProjectConfig;
+}
+
+/** Read-only validation shared by confirmation and the final start boundary. */
+export async function preflightLocalRun(mainWorktree: string, runner: CommandRunner = runCommand): Promise<LocalRunPreflight> {
+	const root = await resolveGitTopLevel(mainWorktree, runner);
+	const source = await inspectIntegrationCandidate(root, runner);
+	await assertIgnoredLocalContext(root, runner);
+	const active = await readActiveRunId(root);
+	if (active) throw new Error(`An active pi-auto-dag run already exists: ${active}`);
+	return { main_worktree: root, ...source, config: await loadProjectConfig() };
+}
+
 /** Validate local authority once, then persist the normalized graph and integration facts. */
 export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	const runner = options.runner ?? runCommand;
-	const mainWorktree = await resolveGitTopLevel(options.mainWorktree, runner);
+	const boundary = await preflightLocalRun(options.mainWorktree, runner);
+	const mainWorktree = boundary.main_worktree;
 	const uuid = options.uuid ?? randomUUID;
 	const mainPane = nonEmptyString(options.mainPane, "main Herdr pane");
-	const source = await inspectIntegrationCandidate(mainWorktree, runner);
-	await assertIgnoredLocalContext(mainWorktree, runner);
-	const config = await loadProjectConfig();
 	const graph = await readDeliveryGraph(mainWorktree);
-	assertDeliveryGraphRoles(graph, config.implementation_roles);
-	if (graph.status !== "approved") throw new Error("Delivery Graph must be approved before starting a run");
 
 	const state = createInitialRunState({
 		run_id: uuid(),
 		graph,
-		source_commit: source.head,
+		source_commit: boundary.head,
 		main_worktree: mainWorktree,
-		integration_branch: source.branch,
-		default_branch: source.default_branch,
+		integration_branch: boundary.branch,
+		default_branch: boundary.default_branch,
 		created_at: (options.now ?? (() => new Date().toISOString()))(),
 		main_pane: mainPane,
 		workspace_id: nonEmptyString(options.workspaceId, "Herdr workspace id"),
@@ -75,7 +89,5 @@ export async function assertRunBoundary(
 	if (hashDeliveryGraph(graph) !== state.graph_hash) {
 		throw new Error("Delivery Graph changed during the run; execution is blocked");
 	}
-	const config = await loadProjectConfig();
-	assertDeliveryGraphRoles(graph, config.implementation_roles);
-	return config;
+	return await loadProjectConfig();
 }

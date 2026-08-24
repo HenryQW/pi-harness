@@ -3,6 +3,7 @@
 - **Status:** accepted
 - **Date:** 2026-08-17, updated 2026-08-19 (migrated from Obsidian vault)
 - **Supersedes:** ADR 008 (config-defined worker profiles)
+- **Partially superseded:** the config-referenced Roles (`implementation_roles`, `reviewer_role`, `repair_role`) are replaced by package-fixed implementer/reviewer Roles in [ADR 022](022-pi-auto-dag-execution-boundary.md). Subagent-owned hosting, mailbox IPC, receipts, and opaque worker IDs remain valid.
 
 ## Context
 
@@ -10,7 +11,7 @@ Config-defined worker profiles (ADR 008) had Auto DAG itself defining agent dire
 
 ## Decision
 
-Pi Auto DAG configuration version 4 references user-owned `@henryqw/pi-subagent` Roles through `implementation_roles`, `reviewer_role`, and `repair_role`. Auto DAG does not define agent directories, Skills, tools, extensions, or models.
+Pi Auto DAG references user-owned `@henryqw/pi-subagent` infrastructure. _(ADR 022 replaces config-selected Roles with package-fixed implementer and reviewer Roles.)_ Auto DAG does not define agent directories, Skills, tools, extensions, or models.
 
 `@henryqw/pi-subagent` resolves Roles against Pi's effective Skill registry, resolves shared `@henryqw/pi-task-models` assignments, creates isolated Pi launch arguments, owns generic managed worker hosting, and provides durable mailbox IPC. Auto DAG task IDs are `pi-auto-dag/implement` and `pi-auto-dag/review`.
 

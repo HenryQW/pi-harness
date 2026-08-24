@@ -4,7 +4,6 @@ import { promptManagedSubagent, reconcileManagedSubagentTab, startManagedSubagen
 import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredTaskGate } from "./final-gate.ts";
 import { acceptFinalRepairEnvelope, advanceFinalRepair, isFinalRepairActive, recoverFinalRepairIntegration } from "./final-repair.ts";
 import { deleteExpectedBranch, ensureChildWorktree, retireChildWorktree } from "./git.ts";
-import { executionIssues } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
@@ -112,7 +111,7 @@ async function ensureFinalReviewer(
 		return await failFinalGate(state, issue, `Required gate exited with code ${gate.exit_code}; reviewer was not launched`, options, [], true);
 	}
 	const label = nonEmptyString(current.implementer_provisioning_id, "final reviewer provisioning identity");
-	let launch = await workerLaunch(state, issue, config, "reviewer", options);
+	let launch = await workerLaunch(state, config, "reviewer", options);
 	const resource = await reconcileManagedSubagentTab(workerHost(state), {
 		tabId: current.tab_id,
 		paneId: current.reviewer_pane,
@@ -130,7 +129,7 @@ async function ensureFinalReviewer(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, "final reviewer agent");
-	launch = await workerLaunch(state, issue, config, "reviewer", options);
+	launch = await workerLaunch(state, config, "reviewer", options);
 	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(current.reviewer_pane, "final reviewer pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
@@ -245,8 +244,8 @@ async function matchingOpenPr(state: RunState, options: PrLifecycleOptions): Pro
 }
 
 function prBody(state: RunState): string {
-	const completed = executionIssues(state.graph)
-		.filter((issue) => issue.role === "implementation" && task(state, issue.id).status === "completed")
+	const completed = state.graph.issues
+		.filter((issue) => task(state, issue.id).status === "completed")
 		.map((issue) => issue.id)
 		.sort();
 	return [
@@ -259,17 +258,16 @@ function prBody(state: RunState): string {
 }
 
 function allImplementationsCompleted(state: RunState): boolean {
-	return executionIssues(state.graph).filter((issue) => issue.role === "implementation").every((issue) => task(state, issue.id).status === "completed");
+	return state.graph.issues.every((issue) => task(state, issue.id).status === "completed");
 }
 
 async function workerLaunch(
 	state: RunState,
-	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
 	options: PrLifecycleOptions,
 ): Promise<WorkerLaunch> {
-	return await lifecycleWorkerLaunch(state, issue, finalCheck(state).id, config, role, options, "lifecycle");
+	return await lifecycleWorkerLaunch(state, finalCheck(state).id, config, role, options, "lifecycle");
 }
 
 function finalReviewerLabel(state: RunState, attempt: number): string {

@@ -1,14 +1,9 @@
-import type { Role } from "@henryqw/pi-subagent";
-
-export const CONFIG_VERSION = 4;
-export const RUN_STATE_VERSION = 4;
+export const CONFIG_VERSION = 5;
+export const RUN_STATE_VERSION = 5;
 export const DEFAULT_MAX_PARALLEL_TASKS = 5;
 export const DEFAULT_MAX_REVIEW_ROUNDS = 5;
 export const DEFAULT_REQUIRED_GATE_TIMEOUT_MS = 30 * 60 * 1_000;
 export const MAX_REQUIRED_GATE_TIMEOUT_MS = 2_147_483_647;
-
-export type RoleName = string;
-export type IssueRole = "implementation" | "final_check";
 
 export interface GateOutputReference {
 	path: string;
@@ -47,25 +42,16 @@ export interface GateCommandAmendment {
 	approved_at: string;
 }
 
-export interface RoleRoutingConfig {
+export interface ProjectConfig {
 	version: typeof CONFIG_VERSION;
-	implementation_roles: RoleName[];
-	reviewer_role: RoleName;
-	repair_role: RoleName;
 	max_parallel_tasks: number;
 	max_review_rounds: number;
 	required_gate_timeout_ms: number;
 }
 
-export type ProjectConfig = RoleRoutingConfig & {
-	roles: Record<RoleName, Role>;
-};
-
 export interface LocalIssue {
 	id: string;
 	title: string;
-	role: IssueRole;
-	profile: RoleName | null;
 	purpose: string;
 	acceptance: string[];
 	testing: string;
@@ -75,7 +61,6 @@ export interface LocalIssue {
 export interface DeliveryIssue {
 	id: string;
 	title: string;
-	profile: RoleName;
 	objective: string;
 	acceptance: string[];
 	testing: string;
@@ -89,7 +74,6 @@ export interface DeliveryFinalCheck {
 
 /** Exact user-authored Delivery Graph contract. Execution-only fields are derived. */
 export interface DeliveryGraph {
-	status: "draft" | "approved";
 	id: string;
 	goal: string;
 	constraints: string[];
@@ -170,52 +154,39 @@ export interface PullRequestIdentity {
 	head_oid: string;
 }
 
-export interface HealthCheckEvidence {
-	name: string;
-	link?: string;
-	output?: string;
-}
+export type BlockedNotificationPayload = Readonly<{
+	graph_id: string;
+	graph_hash: string;
+	integration_head: string;
+	block_reason: string;
+	blocked_tasks: readonly Readonly<{
+		issue_id: string;
+		block_reason: string;
+		attempts: number;
+		review_rounds?: number;
+		blocked_role?: "implementer" | "reviewer";
+	}>[];
+	cleanup_blocks: readonly Readonly<CleanupBlock>[];
+}>;
 
-export interface PrHealthState {
-	status: "triaging" | "repairing" | "reviewing" | "applying" | "pushing" | "post_push_cleanup" | "blocked" | "completed";
-	head: string;
-	summary?: string;
-	actionable?: boolean;
-	thread_ids?: string[];
-	checks?: HealthCheckEvidence[];
-	resolved_thread_ids?: string[];
-	worktree?: string;
-	branch?: string;
-	base?: string;
-	commit?: string;
-	attempt?: number;
-	review_round?: number;
-	review_command?: string;
-	review_commit?: string;
-	review_exit_code?: number;
-	review_stdout?: GateOutputEvidence;
-	review_stderr?: GateOutputEvidence;
-	review_findings?: string[];
-	blocked_role?: "implementer" | "reviewer";
-	/** A repair commit persisted before the lifecycle-owned cherry-pick starts. */
-	integration_intent?: string;
-	/** Reviewer-declared fixed thread IDs persisted before applying the repair. */
-	fixed_thread_ids?: string[];
-	reviewer_tab_id?: string;
-	reviewer_pane?: string;
-	reviewer_agent?: string;
-	coder_tab_id?: string;
-	coder_pane?: string;
-	coder_agent?: string;
-	activity_started_at?: string;
-	instruction_pending?: boolean;
-}
+export type CompletedNotificationPayload = Readonly<{
+	graph_id: string;
+	graph_hash: string;
+	integration_head: string;
+	pr: Readonly<PullRequestIdentity>;
+}>;
 
-export interface HealthFastForwardIntent {
-	expected_head: string;
-	remote_head: string;
-	pr: PullRequestIdentity;
-}
+export type RunNotification = Readonly<{
+	event_id: string;
+	created_at: string;
+	delivered_at?: string;
+} & ({
+	kind: "blocked";
+	payload: BlockedNotificationPayload;
+} | {
+	kind: "completed";
+	payload: CompletedNotificationPayload;
+})>;
 
 /** Core fields are fixed; later lifecycle phases may add durable evidence. */
 export interface RunState {
@@ -240,10 +211,7 @@ export interface RunState {
 	wave?: RunWave;
 	cleanup_blocks?: CleanupBlock[];
 	pr?: PullRequestIdentity;
-	health?: PrHealthState;
-	health_history?: PrHealthState[];
-	/** A verified PR-head fast-forward persisted before its local merge starts. */
-	health_fast_forward_intent?: HealthFastForwardIntent;
+	notifications: RunNotification[];
 	/** Worker event IDs bound to SHA-256 hashes of envelopes whose lifecycle transition was persisted. */
 	accepted_events?: Record<string, string>;
 }
@@ -275,5 +243,5 @@ export interface SubmitReviewEnvelope extends WorkerEnvelopeBase {
 }
 
 export type WorkerEnvelope = RequestReviewEnvelope | SubmitReviewEnvelope | (WorkerEnvelopeBase & {
-	type: "submit_health" | "block_task";
+	type: "block_task";
 });

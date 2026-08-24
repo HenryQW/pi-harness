@@ -7,15 +7,15 @@ import {
 	RUN_TASK_STATUSES,
 	type CleanupBlock,
 	type DeliveryGraph,
-	type HealthCheckEvidence,
 	type GateCommandAmendment,
 	type GateOutputEvidence,
-	type HealthFastForwardIntent,
+	type BlockedNotificationPayload,
+	type CompletedNotificationPayload,
 	type LocalIssue,
-	type PrHealthState,
 	type PullRequestIdentity,
 	type RequiredGateEvidence,
 	type RequiredGateInvalidation,
+	type RunNotification,
 	type RunState,
 	type RunTaskState,
 	type RunWave,
@@ -25,11 +25,10 @@ import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, strin
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RUN_PHASES = ["execution", "blocked", "aborted", "completed"] as const;
-const PR_HEALTH_STATUSES = ["triaging", "repairing", "reviewing", "applying", "pushing", "post_push_cleanup", "blocked", "completed"] as const;
 
 const RUN_STATE_KEYS = [
 	"version", "run_id", "graph_hash", "graph", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "gate_command_amendments", "main_pane", "workspace_id",
-	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "health", "health_history", "health_fast_forward_intent", "accepted_events",
+	"abort_reason", "block_reason", "wave", "cleanup_blocks", "pr", "notifications", "accepted_events",
 ] as const;
 
 /** Single source of truth for durable task fields: key lists, parse branches, and labels derive from this table. */
@@ -75,39 +74,6 @@ const TASK_OPTIONAL_FIELDS: Record<string, (value: unknown, label: string) => un
 };
 const RUN_TASK_KEYS = ["status", "attempts", ...Object.keys(TASK_OPTIONAL_FIELDS)];
 
-/** Single source of truth for durable PR-health fields. */
-const HEALTH_OPTIONAL_FIELDS: Record<string, (value: unknown, label: string) => unknown> = {
-	summary: nonEmptyString,
-	worktree: nonEmptyString,
-	branch: nonEmptyString,
-	base: nonEmptyString,
-	commit: nonEmptyString,
-	integration_intent: nonEmptyString,
-	reviewer_tab_id: nonEmptyString,
-	reviewer_pane: nonEmptyString,
-	reviewer_agent: nonEmptyString,
-	coder_tab_id: nonEmptyString,
-	coder_pane: nonEmptyString,
-	coder_agent: nonEmptyString,
-	activity_started_at: timestamp,
-	review_command: nonEmptyString,
-	review_commit: nonEmptyString,
-	actionable: boolean,
-	thread_ids: stringArray,
-	checks: (value, label) => array(value, label).map((entry, index) => parseHealthCheckEvidence(entry, `${label}[${index}]`)),
-	resolved_thread_ids: stringArray,
-	attempt: positiveInteger,
-	review_round: nonNegativeInteger,
-	review_exit_code: nonNegativeInteger,
-	review_stdout: parseGateOutputEvidence,
-	review_stderr: parseGateOutputEvidence,
-	review_findings: stringArray,
-	fixed_thread_ids: stringArray,
-	blocked_role: (value, label) => oneOf(value, ["implementer", "reviewer"] as const, label),
-	instruction_pending: boolean,
-};
-const PR_HEALTH_KEYS = ["status", "head", ...Object.keys(HEALTH_OPTIONAL_FIELDS)];
-
 export type Uuid = () => string;
 
 export function stateRoot(mainWorktree: string): string {
@@ -147,6 +113,7 @@ export function createInitialRunState(input: {
 		phase: "execution",
 		tasks: Object.fromEntries(executionIssues(graph).map((issue) => [issue.id, { status: "pending", attempts: 0 }])),
 		resolutions: {},
+		notifications: [],
 		main_pane: nonEmptyString(input.main_pane, "main Herdr pane"),
 		workspace_id: nonEmptyString(input.workspace_id, "Herdr workspace id"),
 	};
@@ -188,7 +155,9 @@ export async function claimActiveRun(mainWorktree: string, runId: string): Promi
 
 /** `rename` replaces state.json atomically within its one run directory. */
 export async function writeRunState(mainWorktree: string, state: RunState, uuid: Uuid = randomUUID): Promise<void> {
-	const persisted = parseRunState(state);
+	const persisted = parseRunState(queueRunNotification(state));
+	// Existing save helpers return their input object, so keep its durable outbox in sync.
+	state.notifications = persisted.notifications;
 	const directory = runDirectory(mainWorktree, persisted.run_id);
 	const temporary = join(directory, `.state-${uuid()}.tmp`);
 	const destination = join(directory, "state.json");
@@ -276,6 +245,7 @@ export function parseRunState(value: unknown): RunState {
 		phase: oneOf(input.phase, RUN_PHASES, "run state.phase"),
 		tasks: parseTasks(input.tasks, graph),
 		resolutions: parseResolutions(input.resolutions, graph),
+		notifications: parseRunNotifications(input.notifications, runId),
 		main_pane: nonEmptyString(input.main_pane, "run state.main_pane"),
 		workspace_id: nonEmptyString(input.workspace_id, "run state.workspace_id"),
 	};
@@ -287,14 +257,68 @@ export function parseRunState(value: unknown): RunState {
 	if (input.wave !== undefined) state.wave = parseRunWave(input.wave, "run state.wave");
 	if (input.cleanup_blocks !== undefined) state.cleanup_blocks = parseCleanupBlocks(input.cleanup_blocks, "run state.cleanup_blocks");
 	if (input.pr !== undefined) state.pr = parsePullRequestIdentity(input.pr, "run state.pr");
-	if (input.health !== undefined) state.health = parsePrHealthState(input.health, "run state.health");
-	if (input.health_history !== undefined) state.health_history = array(input.health_history, "run state.health_history")
-		.map((entry, index) => parsePrHealthState(entry, `run state.health_history[${index}]`));
-	if (input.health_fast_forward_intent !== undefined) {
-		state.health_fast_forward_intent = parseHealthFastForwardIntent(input.health_fast_forward_intent, "run state.health_fast_forward_intent");
-	}
 	if (input.accepted_events !== undefined) state.accepted_events = parseAcceptedEvents(input.accepted_events);
 	return state;
+}
+
+function parseRunNotifications(value: unknown, runId: string): RunNotification[] {
+	const seen = new Set<string>();
+	return array(value, "run state.notifications").map((entry, index) => {
+		const label = `run state.notifications[${index}]`;
+		const input = object(entry, label);
+		knownKeys(input, ["event_id", "kind", "created_at", "payload", "delivered_at"], label);
+		const kind = oneOf(input.kind, ["blocked", "completed"] as const, `${label}.kind`);
+		const payload = kind === "blocked"
+			? parseBlockedNotificationPayload(input.payload, `${label}.payload`)
+			: parseCompletedNotificationPayload(input.payload, `${label}.payload`);
+		const eventId = nonEmptyString(input.event_id, `${label}.event_id`);
+		if (eventId !== runNotificationId(runId, kind, payload)) throw new Error(`${label}.event_id does not match its immutable payload`);
+		if (seen.has(eventId)) throw new Error(`Duplicate run notification event ID: ${eventId}`);
+		seen.add(eventId);
+		const common = {
+			event_id: eventId,
+			created_at: timestamp(input.created_at, `${label}.created_at`),
+			...(input.delivered_at === undefined ? {} : { delivered_at: timestamp(input.delivered_at, `${label}.delivered_at`) }),
+		};
+		return kind === "blocked"
+			? { ...common, kind, payload: payload as BlockedNotificationPayload }
+			: { ...common, kind, payload: payload as CompletedNotificationPayload };
+	});
+}
+
+function parseBlockedNotificationPayload(value: unknown, label: string): BlockedNotificationPayload {
+	const input = object(value, label);
+	exactKeys(input, ["graph_id", "graph_hash", "integration_head", "block_reason", "blocked_tasks", "cleanup_blocks"], label);
+	return {
+		graph_id: nonEmptyString(input.graph_id, `${label}.graph_id`),
+		graph_hash: sha256(input.graph_hash, `${label}.graph_hash`),
+		integration_head: nonEmptyString(input.integration_head, `${label}.integration_head`),
+		block_reason: nonEmptyString(input.block_reason, `${label}.block_reason`),
+		blocked_tasks: array(input.blocked_tasks, `${label}.blocked_tasks`).map((entry, index) => {
+			const taskLabel = `${label}.blocked_tasks[${index}]`;
+			const task = object(entry, taskLabel);
+			knownKeys(task, ["issue_id", "block_reason", "attempts", "review_rounds", "blocked_role"], taskLabel);
+			return {
+				issue_id: nonEmptyString(task.issue_id, `${taskLabel}.issue_id`),
+				block_reason: nonEmptyString(task.block_reason, `${taskLabel}.block_reason`),
+				attempts: nonNegativeInteger(task.attempts, `${taskLabel}.attempts`),
+				...(task.review_rounds === undefined ? {} : { review_rounds: nonNegativeInteger(task.review_rounds, `${taskLabel}.review_rounds`) }),
+				...(task.blocked_role === undefined ? {} : { blocked_role: oneOf(task.blocked_role, ["implementer", "reviewer"] as const, `${taskLabel}.blocked_role`) }),
+			};
+		}),
+		cleanup_blocks: parseCleanupBlocks(input.cleanup_blocks, `${label}.cleanup_blocks`),
+	};
+}
+
+function parseCompletedNotificationPayload(value: unknown, label: string): CompletedNotificationPayload {
+	const input = object(value, label);
+	exactKeys(input, ["graph_id", "graph_hash", "integration_head", "pr"], label);
+	return {
+		graph_id: nonEmptyString(input.graph_id, `${label}.graph_id`),
+		graph_hash: sha256(input.graph_hash, `${label}.graph_hash`),
+		integration_head: nonEmptyString(input.integration_head, `${label}.integration_head`),
+		pr: parsePullRequestIdentity(input.pr, `${label}.pr`),
+	};
 }
 
 function parseAcceptedEvents(value: unknown): Record<string, string> {
@@ -391,17 +415,6 @@ function parsePullRequestIdentity(value: unknown, label: string): PullRequestIde
 	};
 }
 
-function parsePrHealthState(value: unknown, label: string): PrHealthState {
-	const input = object(value, label);
-	knownKeys(input, PR_HEALTH_KEYS, label);
-	const result: PrHealthState = {
-		status: oneOf(input.status, PR_HEALTH_STATUSES, `${label}.status`),
-		head: nonEmptyString(input.head, `${label}.head`),
-	};
-	applyOptionalFields(result as unknown as Record<string, unknown>, input, HEALTH_OPTIONAL_FIELDS, label);
-	return result;
-}
-
 function applyOptionalFields(
 	target: Record<string, unknown>,
 	input: Record<string, unknown>,
@@ -467,23 +480,91 @@ function parseGateOutputEvidence(value: unknown, label: string): GateOutputEvide
 	return evidence;
 }
 
-function parseHealthCheckEvidence(value: unknown, label: string): HealthCheckEvidence {
-	const input = object(value, label);
-	knownKeys(input, ["name", "link", "output"], label);
-	const check: HealthCheckEvidence = { name: nonEmptyString(input.name, `${label}.name`) };
-	if (input.link !== undefined) check.link = nonEmptyString(input.link, `${label}.link`);
-	if (input.output !== undefined) check.output = nonEmptyString(input.output, `${label}.output`);
-	return check;
+function queueRunNotification(state: RunState): RunState {
+	let kind: RunNotification["kind"];
+	let payload: BlockedNotificationPayload | CompletedNotificationPayload;
+	if (state.phase === "blocked") {
+		kind = "blocked";
+		payload = blockedNotificationPayload(state);
+	} else if (state.phase === "completed" && runCleanupIsClear(state)) {
+		kind = "completed";
+		payload = completedNotificationPayload(state);
+	} else {
+		return state;
+	}
+	const eventId = runNotificationId(state.run_id, kind, payload);
+	const existing = state.notifications.find((notification) => notification.event_id === eventId);
+	if (existing) {
+		if (existing.kind !== kind || JSON.stringify(existing.payload) !== JSON.stringify(payload)) {
+			throw new Error(`Run notification ${eventId} payload changed after creation`);
+		}
+		return state;
+	}
+	const common = { event_id: eventId, created_at: new Date().toISOString() };
+	const notification: RunNotification = kind === "blocked"
+		? { ...common, kind, payload: payload as BlockedNotificationPayload }
+		: { ...common, kind, payload: payload as CompletedNotificationPayload };
+	return { ...state, notifications: [...state.notifications, notification] };
 }
 
-function parseHealthFastForwardIntent(value: unknown, label: string): HealthFastForwardIntent {
-	const input = object(value, label);
-	exactKeys(input, ["expected_head", "remote_head", "pr"], label);
+function blockedNotificationPayload(state: RunState): BlockedNotificationPayload {
 	return {
-		expected_head: nonEmptyString(input.expected_head, `${label}.expected_head`),
-		remote_head: nonEmptyString(input.remote_head, `${label}.remote_head`),
-		pr: parsePullRequestIdentity(input.pr, `${label}.pr`),
+		graph_id: state.graph.id,
+		graph_hash: state.graph_hash,
+		integration_head: state.integration_head,
+		block_reason: nonEmptyString(state.block_reason, "blocked run notification reason"),
+		blocked_tasks: Object.entries(state.tasks)
+			.filter(([, current]) => current.status === "blocked")
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([issueId, current]) => ({
+				issue_id: issueId,
+				block_reason: nonEmptyString(current.block_reason, `blocked Run Task ${issueId} reason`),
+				attempts: current.attempts,
+				...(current.review_rounds === undefined ? {} : { review_rounds: current.review_rounds }),
+				...(current.blocked_role === undefined ? {} : { blocked_role: current.blocked_role }),
+			})),
+		cleanup_blocks: [...(state.cleanup_blocks ?? [])]
+			.map((block) => ({ ...block }))
+			.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
 	};
+}
+
+function completedNotificationPayload(state: RunState): CompletedNotificationPayload {
+	if (!state.pr) throw new Error("Completed run notification requires integration PR identity");
+	return {
+		graph_id: state.graph.id,
+		graph_hash: state.graph_hash,
+		integration_head: state.integration_head,
+		pr: { ...state.pr },
+	};
+}
+
+function runNotificationId(
+	runId: string,
+	kind: RunNotification["kind"],
+	payload: BlockedNotificationPayload | CompletedNotificationPayload,
+): string {
+	const fingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+	return `auto-dag:${runId}:${kind}:${fingerprint}`;
+}
+
+export function notificationRunId(eventId: string): string {
+	const value = nonEmptyString(eventId, "run notification event ID");
+	const match = /^auto-dag:([^:]+):(blocked|completed):[a-f0-9]{64}$/.exec(value);
+	if (!match) throw new Error(`Invalid run notification event ID: ${value}`);
+	assertRunId(match[1]);
+	return match[1];
+}
+
+export function runCleanupIsClear(state: RunState): boolean {
+	if (state.cleanup_blocks?.length) return false;
+	return Object.values(state.tasks).every((current) => {
+		const tabOwned = current.tab_id || current.implementer_provisioning_id || current.reviewer_provisioning_id || current.implementer_pane || current.reviewer_pane;
+		return current.status === "completed"
+			&& (!tabOwned || current.tab_cleanup_done)
+			&& (!current.worktree || current.worktree_cleanup_done)
+			&& (!current.branch || current.branch_cleanup_done);
+	});
 }
 
 function knownKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
@@ -500,6 +581,12 @@ function boolean(value: unknown, label: string): boolean {
 function text(value: unknown, label: string): string {
 	if (typeof value !== "string") throw new Error(`${label} must be a string`);
 	return value;
+}
+
+function sha256(value: unknown, label: string): string {
+	const digest = nonEmptyString(value, label);
+	if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error(`${label} must be a SHA-256 hash`);
+	return digest;
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {

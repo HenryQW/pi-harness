@@ -2,6 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-09, updated 2026-08-11 (migrated from Obsidian vault)
+- **Partially superseded:** planning review and hash approval portions by [ADR 022](022-pi-auto-dag-execution-boundary.md); the remaining decisions stay valid.
 
 ## Context
 
@@ -9,7 +10,7 @@ Auto DAG orchestrates planning review, user approval, worker execution, required
 
 ## Decision
 
-- **Canonical graph.** Treat main-worktree `.context/issues/graph.json` as the sole canonical Delivery Graph; require a hash-bound Planning Review PASS before approval, and freeze the approved graph during execution. Graph changes require a new draft review and approval; Run State persists and verifies the approved graph hash. A mutable graph or review evidence not bound to graph content could execute work the reviewer or user never approved.
+- **Canonical graph.** Treat main-worktree `.context/issues/graph.json` as the sole canonical Delivery Graph, and freeze the exact graph content for a run: Run State persists and verifies the approved graph hash, and graph changes require a new run. _(The draft Planning Review PASS and hash-approval flow this decision originally described is superseded by [ADR 022](022-pi-auto-dag-execution-boundary.md): approval is now one hash-bound TUI confirmation on `auto_dag_execute`.)_ A mutable graph or unverified plan content could execute work the user never confirmed.
 - **Separate entry points.** Separate Auto DAG main-integration and worker entry points, granting workers only role- and phase-valid tools. The main profile loads `auto-dag.ts` only; Auto DAG injects `worker.ts` with scoped tools when launching workers, so reusable worker profiles do not depend on Auto DAG. One autoloaded extension would expose lifecycle control to workers or worker reporting tools to the main profile.
 - **Run-local main.** Treat the frozen integration branch and integration HEAD as run-local main. Moving default refs never invalidates an active run. Default branch freezes only as PR target; active boundary checks verify clean attached worktree, branch, HEAD, and graph hash.
 - **Auto DAG owns required gates.** Make Auto DAG, not reviewers, own every required test gate. The exact effective command — approved `issue.testing` text or latest user-confirmed Gate Command Amendment — is run with verified commit identity, exit code, stdout, and stderr; these are orchestration facts that model echoes cannot establish. Auto DAG executes the exact effective command unchanged in a clean isolated worktree before reviewer dispatch, persists commit-bound evidence, and rejects approval on nonzero exit. Reviewers may run extra diagnostics and submit only verdict and findings.

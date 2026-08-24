@@ -10,7 +10,7 @@ import {
 	startManagedSubagent,
 } from "@henryqw/pi-subagent";
 import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
-import { executionIssues } from "./graph.ts";
+import { executionIssues, FINAL_CHECK_ID } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
 import type { LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
@@ -41,7 +41,7 @@ export function childBranch(runId: string, issueId: string): string {
 }
 
 export async function reconcileWorkers(state: RunState, config: ProjectConfig, options: ImplementationWorkerOptions): Promise<RunState> {
-	const active = executionIssues(state.graph).filter((issue) => issue.role === "implementation" && ["starting", "implementing", "reviewing"].includes(task(state, issue.id).status));
+	const active = executionIssues(state.graph).filter((issue) => issue.id !== FINAL_CHECK_ID && ["starting", "implementing", "reviewing"].includes(task(state, issue.id).status));
 	if (!active.length) return state;
 	for (const issue of active.sort((left, right) => left.id.localeCompare(right.id))) {
 		const current = task(state, issue.id);
@@ -309,7 +309,7 @@ async function workerLaunch(
 	role: WorkerRole,
 	options: ImplementationWorkerOptions,
 ): Promise<WorkerLaunch> {
-	return await lifecycleWorkerLaunch(state, issue, issue.id, config, role, options, "implementation");
+	return await lifecycleWorkerLaunch(state, issue.id, config, role, options, "implementation");
 }
 
 function implementerPrompt(

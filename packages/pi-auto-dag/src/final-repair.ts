@@ -10,6 +10,7 @@ import {
 	startManagedSubagent,
 } from "@henryqw/pi-subagent";
 import { ensureRecordedGate, failFinalGate, gateCommandAmendments, requiredGateCommand, requiredTaskGate } from "./final-gate.ts";
+import { FINAL_CHECK_ID } from "./graph.ts";
 import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAppliedCherryPick, retireChildWorktree, verifySingleCommit } from "./git.ts";
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
@@ -97,7 +98,7 @@ export async function resolveFinalRepair(
 		throw new Error("Final-gate failure must be resolved against its owning completed implementation Local Issue");
 	}
 	const owner = issueById(state, issueId);
-	if (owner.role !== "implementation" || task(state, owner.id).status !== "completed") {
+	if (owner.id === FINAL_CHECK_ID || task(state, owner.id).status !== "completed") {
 		throw new Error(`Final-gate resolution must name a completed implementation Local Issue: ${issueId}`);
 	}
 	const attempt = (finalTask.repair_attempt ?? 0) + 1;
@@ -269,7 +270,7 @@ async function ensureFinalRepairCoder(
 ): Promise<RunState> {
 	await ensureRepairWorktree(state, issue, options);
 	let current = task(state, issue.id);
-	let launch = await workerLaunch(state, owner, config, "implementer", options);
+	let launch = await workerLaunch(state, config, "implementer", options);
 	const label = nonEmptyString(current.implementer_provisioning_id, "final repair implementer provisioning identity");
 	const resource = await reconcileManagedSubagentTab(workerHost(state), {
 		tabId: current.tab_id,
@@ -283,7 +284,7 @@ async function ensureFinalRepairCoder(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.implementer_agent, "final repair implementer agent");
-	launch = await workerLaunch(state, owner, config, "implementer", options);
+	launch = await workerLaunch(state, config, "implementer", options);
 	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(current.implementer_pane, "final repair implementer pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
@@ -365,7 +366,7 @@ async function ensureFinalRepairReviewer(
 			tabId: undefined,
 			paneId: undefined,
 			cwd: nonEmptyString(current.worktree, "final repair worktree"),
-			launch: await workerLaunch(state, owner, config, "implementer", options),
+			launch: await workerLaunch(state, config, "implementer", options),
 			label,
 		}, workerHostOptions(options));
 		state = await save(replaceTask(state, issue.id, {
@@ -376,7 +377,7 @@ async function ensureFinalRepairReviewer(
 		}), options);
 		current = task(state, issue.id);
 	}
-	let launch = await workerLaunch(state, owner, config, "reviewer", options);
+	let launch = await workerLaunch(state, config, "reviewer", options);
 	if (!current.reviewer_pane) {
 		const tab = nonEmptyString(current.tab_id, "final repair tab id");
 		const root = nonEmptyString(current.implementer_pane, "final repair implementer pane");
@@ -386,7 +387,7 @@ async function ensureFinalRepairReviewer(
 		current = task(state, issue.id);
 	}
 	const agent = nonEmptyString(current.reviewer_agent, "final repair reviewer agent");
-	launch = await workerLaunch(state, owner, config, "reviewer", options);
+	launch = await workerLaunch(state, config, "reviewer", options);
 	const started = await startManagedSubagent(workerHost(state), agent, nonEmptyString(current.reviewer_pane, "final repair reviewer pane"), launch, workerHostOptions(options), {
 		beforeStart: async () => {
 			const latest = task(state, issue.id);
@@ -592,12 +593,11 @@ function repairOwner(state: RunState, current: RunTaskState): LocalIssue {
 
 async function workerLaunch(
 	state: RunState,
-	issue: LocalIssue,
 	config: ProjectConfig,
 	role: WorkerRole,
 	options: FinalRepairOptions,
 ): Promise<WorkerLaunch> {
-	return await lifecycleWorkerLaunch(state, issue, finalCheck(state).id, config, role, options, "lifecycle");
+	return await lifecycleWorkerLaunch(state, finalCheck(state).id, config, role, options, "lifecycle");
 }
 
 function repairWorktreePath(state: RunState, owner: string, attempt: number): string {

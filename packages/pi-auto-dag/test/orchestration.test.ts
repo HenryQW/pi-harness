@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
-import { createTestRoles, testLaunchResolver, testRoleConfig } from "./support/roles.ts";
+import { testLaunchResolver } from "./support/roles.ts";
 import { recordedGateEvidence, type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
@@ -695,6 +695,7 @@ test("reviewer Role deletion mid-review blocks, then resolution launches a fresh
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(reviewPrompts(herdr).length, 1);
 
+
 	await rm(join(project.agentDir, "config", "pi-subagent", "reviewer.md"));
 	await assert.rejects(lifecycle.resume(project.root), /Configured Subagent Role is unavailable: reviewer/);
 	state = (await lifecycle.status(project.root))!;
@@ -704,7 +705,8 @@ test("reviewer Role deletion mid-review blocks, then resolution launches a fresh
 	const gateRuns = herdr.calls.filter((call) => call.command === "sh").length;
 	assert.equal(state.tasks.alpha.review_commit, commit);
 
-	await createTestRoles(project.agentDir);
+	await writeRoleFile(project.agentDir, "implementer");
+	await writeRoleFile(project.agentDir, "reviewer");
 	state = await lifecycle.resolve(project.root, "alpha", "Reviewer Role restored; restart review.");
 	assert.equal(state.phase, "execution");
 	assert.equal(state.tasks.alpha.status, "reviewing");
@@ -1025,9 +1027,21 @@ function makeLifecycle(runner: CommandRunner, delay?: (milliseconds: number) => 
 	});
 }
 
+async function writeRoleFile(agentDir: string, name: string): Promise<void> {
+	await writeFile(join(agentDir, "config", "pi-subagent", `${name}.md`), [
+		"---",
+		`name: ${name}`,
+		`description: ${name} test Role`,
+		"tools: read,bash,edit,write,grep,find,ls,web_search",
+		"---",
+		"",
+		`${name} test instructions.`,
+		"",
+	].join("\n"));
+}
+
 function graph(ids: string[]) {
 	return {
-		status: "approved",
 		id: "orchestration-test",
 		goal: "Exercise native orchestration.",
 		constraints: ["local"],
@@ -1035,7 +1049,6 @@ function graph(ids: string[]) {
 		issues: ids.map((id, index) => ({
 			id,
 			title: id,
-			profile: "backend",
 			objective: `Build ${id}.`,
 			acceptance: [id],
 			testing: `npm test -- ${id}`,
@@ -1059,12 +1072,13 @@ async function makeProject(
 	await git(root, "config", "user.name", "Test User");
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-auto-dag-agent-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
-	await mkdir(join(agentDir, "config"), { recursive: true });
-	await createTestRoles(agentDir);
-	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify(testRoleConfig({
-		maxParallel,
-		maxReviews,
-	})));
+	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+	await Promise.all(["implementer", "reviewer"].map((name) => writeRoleFile(agentDir, name)));
+	await writeFile(join(agentDir, "config", "pi-auto-dag.json"), JSON.stringify({
+		version: 5,
+		max_parallel_tasks: maxParallel,
+		max_review_rounds: maxReviews,
+	}));
 	useAgentDir(t, agentDir);
 	await writeFile(join(root, ".gitignore"), ".context/\n");
 	if (shared !== undefined) await writeFile(join(root, "shared.txt"), shared);

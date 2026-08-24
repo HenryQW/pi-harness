@@ -121,7 +121,7 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.deepEqual(launch.missingSkills, ["missing"]);
 	assert.deepEqual(launch.args.slice(0, 5), [
 		"--no-session", "--no-extensions", "--no-skills",
-		"--exclude-tools", "delegate_task,ask_question,auto_dag_approve,auto_dag_start",
+		"--exclude-tools", "delegate_task,ask_question,auto_dag_execute",
 	]);
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
 	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
@@ -147,7 +147,7 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.equal(defaultTools.args.includes("--no-tools"), false);
 	assert.equal(defaultTools.args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
 	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
-	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,ask_question,auto_dag_approve,auto_dag_start");
+	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,ask_question,auto_dag_execute");
 });
 
 test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retires", async () => {
