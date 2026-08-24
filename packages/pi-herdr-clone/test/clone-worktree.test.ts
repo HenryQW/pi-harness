@@ -96,10 +96,9 @@ function harness(
 			if (args[0] === "worktree" && args[1] === "create") {
 				return success({
 					result: {
-						workspace: { workspace_id: "workspace-new" },
+						workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/tmp/checkout" } },
 						tab: { tab_id: "tab-new" },
 						root_pane: { pane_id: "pane-root" },
-						worktree: { checkout_path: "/tmp/checkout" },
 					},
 				});
 			}
@@ -151,10 +150,10 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 				if (args[0] === "worktree" && args[1] === "create") {
 					return success({
 						result: {
-							workspace: { workspace_id: "workspace-new" },
+							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/pi-packages/.herdr-checkouts/wt-x" } },
 							tab: { tab_id: "tab-new" },
 							root_pane: { pane_id: "pane-root" },
-							worktree: { checkout_path: "/repos/pi-packages/.herdr-checkouts/wt-x" },
+							worktree: { path: "/repos/pi-packages/.herdr-checkouts/wt-x" },
 						},
 					});
 				}
@@ -238,10 +237,9 @@ test("/clone-worktree starts the clone in the root pane when no plugin agent cla
 				if (args[0] === "worktree" && args[1] === "create") {
 					return success({
 						result: {
-							workspace: { workspace_id: "workspace-new" },
+							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
 							tab: { tab_id: "tab-new" },
 							root_pane: { pane_id: "pane-root" },
-							worktree: { checkout_path: "/repos/wt-x" },
 						},
 					});
 				}
@@ -275,10 +273,9 @@ test("/clone-worktree moves to an extra tab when the root pane becomes busy afte
 				if (args[0] === "worktree" && args[1] === "create") {
 					return success({
 						result: {
-							workspace: { workspace_id: "workspace-new" },
+							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
 							tab: { tab_id: "tab-new" },
 							root_pane: { pane_id: "pane-root" },
-							worktree: { checkout_path: "/repos/wt-x" },
 						},
 					});
 				}
@@ -317,10 +314,9 @@ test("/clone-worktree reports recovered IDs from an incomplete extra-tab respons
 				if (args[0] === "worktree" && args[1] === "create") {
 					return success({
 						result: {
-							workspace: { workspace_id: "workspace-new" },
+							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
 							tab: { tab_id: "tab-new" },
 							root_pane: { pane_id: "pane-root" },
-							worktree: { checkout_path: "/repos/wt-x" },
 						},
 					});
 				}
@@ -386,10 +382,9 @@ test("/clone-worktree inside a linked worktree creates the worktree from the rep
 				if (args[0] === "worktree" && args[1] === "create") {
 					return success({
 						result: {
-							workspace: { workspace_id: "workspace-new" },
+							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
 							tab: { tab_id: "tab-new" },
 							root_pane: { pane_id: "pane-root" },
-							worktree: { checkout_path: "/repos/wt-x" },
 						},
 					});
 				}
@@ -452,6 +447,31 @@ test("worktree creation failures happen before cloning and retain nothing of the
 		}
 	});
 
+	await t.test("a whitespace-only checkout_path is treated as missing and creates no clone", async () => {
+		const data = await fixture();
+		try {
+			await withPane("pane-current", async () => {
+				const app = harness(data.manager, data.cwd, (args) => {
+					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
+					if (args[0] === "worktree") {
+						return success({
+							result: {
+								workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "   " } },
+								tab: { tab_id: "tab-new" },
+								root_pane: { pane_id: "pane-root" },
+							},
+						});
+					}
+					return undefined;
+				});
+				await assert.rejects(app.command("", app.ctx), /missing workspace\.worktree\.checkout_path/);
+				assert.equal(app.calls.some((call) => call.args[0] === "agent"), false);
+			});
+		} finally {
+			await rm(data.root, { recursive: true, force: true });
+		}
+	});
+
 	await t.test("an incomplete worktree response retains the worktree IDs and creates no clone", async () => {
 		const data = await fixture();
 		try {
@@ -461,10 +481,9 @@ test("worktree creation failures happen before cloning and retain nothing of the
 					if (args[0] === "worktree") {
 						return success({
 							result: {
-								workspace: {},
+								workspace: { worktree: { checkout_path: "/repos/wt-x" } },
 								tab: { tab_id: "tab-new" },
 								root_pane: { pane_id: "pane-root" },
-								worktree: { checkout_path: "/repos/wt-x" },
 							},
 						});
 					}
@@ -475,6 +494,7 @@ test("worktree creation failures happen before cloning and retain nothing of the
 					assert.match(error.message, /tab-new/);
 					assert.match(error.message, /pane-root/);
 					assert.match(error.message, /missing workspace_id/);
+					assert.match(error.message, /checkout \/repos\/wt-x/);
 					return true;
 				});
 				assert.equal(app.calls.some((call) => call.args[0] === "agent"), false);
@@ -504,10 +524,9 @@ test("worktree creation failures happen before cloning and retain nothing of the
 					if (args[0] === "worktree") {
 						return success({
 							result: {
-								workspace: { workspace_id: "workspace-new" },
+								workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
 								tab: { tab_id: "tab-new" },
 								root_pane: { pane_id: "pane-root" },
-								worktree: { checkout_path: "/repos/wt-x" },
 							},
 						});
 					}

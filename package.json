@@ -21,7 +21,6 @@
       "./packages/pi-auto-dag/extensions/auto-dag.ts",
       "./packages/pi-session-search/extensions/session-search.ts",
       "./packages/pi-deps/extensions/deps.ts",
-      "./packages/pi-model-thinking/extensions",
       "./packages/pi-footer/extensions/footer.ts",
       "./packages/pi-notes/extensions/notes.ts",
       "./packages/pi-pr/extensions/pr.ts",

@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-// Repository-mandated single-extension config path boundary (root AGENTS.md).
-export const configPath = () => join(getAgentDir(), "config", "pi-memory.json");
+// Repository-mandated extension config directory boundary (root AGENTS.md):
+// all pi-memory state lives under config/pi-memory/.
+export const configPath = () => join(getAgentDir(), "config", "pi-memory", "config.json");
 
 export interface MemoryConfig {
 	directory: string;
@@ -12,7 +13,7 @@ export interface MemoryConfig {
 }
 
 export function DEFAULT_DIRECTORY(): string {
-	return join(getAgentDir(), "memory");
+	return join(getAgentDir(), "config", "pi-memory", "memory");
 }
 
 export const DEFAULT_MEMORY_CHAR_LIMIT = 8800;

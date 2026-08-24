@@ -22,4 +22,4 @@ Bad optional config does not block unrelated Pi use or get silently destroyed, w
 
 ## Notes
 
-Applies when adding or changing any Pi extension config file under `getAgentDir()/config`. Related files: `packages/pi-auto-compact/extensions/auto-compact.ts`, `packages/pi-auto-dag/src/config.ts`, `packages/pi-herdr-rename/extensions/rename.ts`, `packages/pi-model-thinking/extensions/model-thinking.ts`, `packages/pi-open-in/extensions/open.ts`.
+Applies when adding or changing any Pi extension config file under `getAgentDir()/config`. Related files: `packages/pi-auto-compact/extensions/auto-compact.ts`, `packages/pi-auto-dag/src/config.ts`, `packages/pi-herdr-rename/extensions/rename.ts`, `packages/pi-open-in/extensions/open.ts`.

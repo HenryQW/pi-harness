@@ -15,7 +15,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-btw
 ```
 
-Requires Pi Coding Agent 0.84.2+, Herdr 0.7.4+, and a Herdr-managed pane.
+Requires Pi Coding Agent 0.84.3+, Herdr 0.7.4+, and a Herdr-managed pane.
 
 ## With
 
