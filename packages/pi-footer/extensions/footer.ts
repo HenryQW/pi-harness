@@ -74,7 +74,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	const startActive = () => {
 		if (activeStartedAt !== undefined) return;
 		activeStartedAt = performance.now();
-		runtimeTimer = setInterval(() => requestRuntimeRender?.(), 1_000);
+		if (requestRuntimeRender) runtimeTimer = setInterval(requestRuntimeRender, 1_000);
 		requestRuntimeRender?.();
 	};
 	const finalizeActive = (): boolean => {
@@ -95,9 +95,9 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => stopRuntimeTimer());
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
 		stopRuntimeTimer();
 		activeStartedAt = undefined;
+		requestRuntimeRender = undefined;
 		// Latest valid entry wins; stored data is untrusted.
 		activeMilliseconds = 0;
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -105,7 +105,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 				activeMilliseconds = entry.data;
 			}
 		}
-		requestRuntimeRender = undefined;
+		if (ctx.mode !== "tui") return;
 
 		const git = await pi.exec(
 			"git",

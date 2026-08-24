@@ -299,6 +299,20 @@ test("restores cumulative agent time on resume and appends updated totals", asyn
 		await handlers.get("agent_settled")!(undefined, ctx);
 		assert.deepEqual(appended, [["pi-footer:agent-work", 67_500]]);
 		assert.equal(footer.render(100)[2]!.trim(), "◷ 1m 7s");
+
+		// Non-TUI sessions restore their own total before global agent handlers append.
+		now = 10_000;
+		await handlers.get("session_start")!({}, {
+			mode: "rpc",
+			sessionManager: { getEntries: () => entries },
+		} as unknown as ExtensionContext);
+		await handlers.get("agent_start")!(undefined, ctx);
+		now = 11_500;
+		await handlers.get("agent_settled")!(undefined, ctx);
+		assert.deepEqual(appended, [
+			["pi-footer:agent-work", 67_500],
+			["pi-footer:agent-work", 66_500],
+		]);
 	} finally {
 		await handlers.get("session_shutdown")?.(undefined, undefined as never);
 		globalThis.performance = realPerformance;
