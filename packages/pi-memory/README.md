@@ -2,6 +2,12 @@
 
 Auto-managed markdown memory for Pi: two size-capped entry stores (`MEMORY.md`, `USER.md`) with a frozen system-prompt snapshot per session.
 
+## Why
+
+- **Created for**: Giving Pi compact global notes and user facts that survive across sessions.
+- **Advantage**: Size-capped, auto-managed Markdown stores provide predictable prompt cost without a hand-maintained knowledge tree.
+- **Inspired by**: [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its bounded `MEMORY.md`/`USER.md` cross-session memory pattern.
+
 ## Install
 
 ```bash

@@ -2,6 +2,12 @@
 
 Pi extension that closes and removes the current Herdr-managed linked worktree. Requires Pi Coding Agent 0.84.x (minimum 0.84.2) running inside Herdr.
 
+## Why
+
+- **Created for**: Automating safe cleanup after finishing worktree-based tasks instead of manually removing checkouts, closing tabs, and pulling parents.
+- **Advantage**: `/done` removes the checkout, closes workspace tabs, fast-forwards the parent with `--ff-only`, and refuses unsafe cases unless forced.
+- **Inspired by**: The repeated multi-step ritual of ending worktree sessions correctly across many short-lived Herdr workspaces.
+
 ## Install
 
 ```bash

@@ -2,6 +2,12 @@
 
 Open a focused Pi side thread in a Herdr pane, then merge its transcript and follow-up prompt into Main.
 
+## Why
+
+- **Created for**: Asking quick side questions in a dedicated Pi thread without derailing Main's conversation or context.
+- **Advantage**: `/btw merge` returns the side transcript and follow-up to Main without manually copying context.
+- **Inspired by**: "By the way" questions that deserve a separate pane but not a separate long-lived session.
+
 ## Install
 
 ```bash

@@ -2,6 +2,12 @@
 
 Give each conversation one short human title across Pi and Herdr while keeping semantic naming for Git branches.
 
+## Why
+
+- **Created for**: Replacing generated labels like `worktree-brave-meadow-4aa8` with human-readable display titles for every conversation.
+- **Advantage**: Titles stay natural (≤4 words), map to semantic Git branch names, and are reapplied on resume without another model request.
+- **Inspired by**: Generated conversation and worktree names being hard to scan when choosing among tabs and branches.
+
 ## Install
 
 ```bash

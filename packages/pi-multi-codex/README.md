@@ -2,6 +2,12 @@
 
 Use multiple ChatGPT Codex OAuth accounts in Pi.
 
+## Why
+
+- **Created for**: Using multiple ChatGPT Codex OAuth accounts from one Pi installation.
+- **Advantage**: Before work starts, quota-aware routing selects the managed slot with the most remaining seven-day quota without changing in-progress sessions.
+- **Inspired by**: Reaching per-account usage caps during sustained Codex work.
+
 ## Install
 
 ```bash

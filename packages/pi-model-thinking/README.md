@@ -2,6 +2,12 @@
 
 Remember the thinking level for each model and restore it when that model becomes active.
 
+## Why
+
+- **Created for**: Stopping repeated thinking-level selection whenever a previously configured model becomes active again.
+- **Advantage**: Each model's chosen thinking level is remembered and restored automatically across sessions.
+- **Inspired by**: Repeated manual thinking-level changes while switching between models in Pi.
+
 ## Install
 
 ```bash

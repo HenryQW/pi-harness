@@ -4,6 +4,12 @@
 
 <One sentence describing user-visible value.>
 
+## Why
+
+- **Created for**: <One sentence: who needs this and what problem it solves.>
+- **Advantage**: <One sentence: what makes it better than alternatives or doing without.>
+- **Inspired by**: <One sentence: the idea, project, or mechanism it builds on.>
+
 ## Install
 
 ```bash

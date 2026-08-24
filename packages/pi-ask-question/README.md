@@ -2,6 +2,12 @@
 
 Ask the user one interactive question with up to three choices, or a custom answer.
 
+## Why
+
+- **Created for**: Asking the user one interactive question with up to three choices during a Pi session.
+- **Advantage**: Offers a keyboard-selectable prompt and returns one explicit answer instead of relying on free-form chat parsing.
+- **Inspired by**: Terminal choice prompts, implemented through Pi's TUI and tool APIs.
+
 ## Install
 
 ```bash
