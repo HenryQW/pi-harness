@@ -29,7 +29,7 @@ pi install npm:@henryqw/pi-footer
 ```text
 pi-packages · clear-field-f8d2 · PR #123 · approved
 ↑ 12.4k · ↓ 2.1k · ↺ 84.3% · ⚡ 87.4 t/s · $ 0.127 · ◔ 36.8%    gpt-5.6-luna • high
-Codex #1 · 50% · 7d 1d 1h 22m
+Codex #1 · 50% · 7d 1d 1h 22m                                             ◷ 12m 34s
 ●  🐴 ponytail: ⚡ FULL
 ```
 
@@ -39,7 +39,9 @@ Second line shows cumulative input tokens, output tokens, latest cache-hit rate,
 
 `off` uses the same dim grey as the model name. Active levels use an ANSI-256 gradient: green `minimal`, yellow-green `low`, lime `medium`, yellow `high`, orange `xhigh`, and red `max`. `ultra` renders as a rainbow when the runtime supplies it. Pi 0.84.2 does not yet accept `ultra`, so that footer path remains unreachable until Pi adds it.
 
-Third line is reserved for non-empty statuses from `@henryqw` extensions, currently Codex quota. Fourth line renders statuses from all other extensions, including Ponytail and `pi-rewind`. If only external statuses exist, third line stays blank so external output remains on line four. Statuses are sorted by key; producer text, spacing, colors, links, and glyphs are preserved.
+Third line shows cumulative agent-work time right-aligned beneath the model. It counts each run from `agent_start` through the final idle `agent_settled`, including automatic retries and auto-compaction inside that run, and excludes idle waits between runs. Standalone `/compact` is excluded because it runs outside the agent-run lifecycle and emits no `agent_start`. Non-empty statuses from `@henryqw` extensions, currently Codex quota, share the left side.
+
+Fourth line renders statuses from all other extensions, including Ponytail and `pi-rewind`. Statuses are sorted by key; producer text, spacing, colors, links, and glyphs are preserved.
 
 ## Clickable checkout
 
