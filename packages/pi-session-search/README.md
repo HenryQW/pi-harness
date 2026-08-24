@@ -40,7 +40,7 @@ Hits inside the current session's live context are suppressed; compacted-away or
 
 ## Storage & privacy
 
-The SQLite index lives at `~/.pi/agent/pi-session-search/index.db`. It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.
+The SQLite index lives at `~/.pi/agent/config/pi-session-search/index.db`. It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.
 
 ## Remove
 

@@ -8,11 +8,11 @@ import { Type } from "typebox";
 import { readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
-import { getWindow, readSession } from "./hydrate.ts";
+import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
 const configPath = () => join(getAgentDir(), "config", "pi-session-search.json");
-const dbPath = () => join(getAgentDir(), "pi-session-search", "index.db");
+const dbPath = () => join(getAgentDir(), "config", "pi-session-search", "index.db");
 const sessionsDir = () => join(getAgentDir(), "sessions");
 
 const OUTPUT_CHAR_BUDGET = 50_000;
@@ -226,8 +226,10 @@ export default function (pi: ExtensionAPI): void {
 						const win = getWindow(hit.path, hit.entryId, 5);
 						let bookends = { start: [], end: [] } as { start: WindowMessage[]; end: WindowMessage[] };
 						try {
-							const r = readSession(hit.path, 3, 3);
-							bookends = { start: r.messages.slice(0, 3), end: r.messages.slice(-3) };
+							// Same branch as the anchor — readSession would follow the
+							// file's final leaf and attach unrelated sibling messages.
+							const branchMsgs = getBranchMessages(hit.path, hit.entryId);
+							bookends = { start: branchMsgs.slice(0, 3), end: branchMsgs.slice(-3) };
 						} catch {
 							// Bookends optional.
 						}

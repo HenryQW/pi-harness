@@ -96,7 +96,7 @@ describe("session_search entry point", () => {
 
 		// Sync via exported core, then browse.
 		const { syncSessions } = await import("../extensions/search-core.ts");
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "pi-session-search", "index.db"));
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
 
 		const ctx = { sessionManager: {} };
 
@@ -216,7 +216,7 @@ describe("session_search entry point", () => {
 			msg(null, "user", "another zebra topic conversation"),
 		]);
 		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-compact`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "pi-session-search", "index.db"));
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
 		const res = await tool.execute("t7", { query: "zebra topic", limit: 2 }, undefined, undefined, {
 			sessionManager: {},
 		});
@@ -239,12 +239,12 @@ describe("session_search entry point", () => {
 			]);
 		}
 		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "pi-session-search", "index.db"), { cap: 1 });
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"), { cap: 1 });
 		let before = 0;
 		for (let i = 0; i < 3; i++) {
 			const r = await (async () => {
 				const mod = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain${i}`);
-				return mod.searchIndex(path.join(agentDir, "pi-session-search", "index.db"), `backlog drain unique topic number ${i}`);
+				return mod.searchIndex(path.join(agentDir, "config", "pi-session-search", "index.db"), `backlog drain unique topic number ${i}`);
 			})();
 			if (r.hits.length > 0) before++;
 		}
@@ -254,7 +254,7 @@ describe("session_search entry point", () => {
 		const tool = (pi as any).tool as CapturedTool;
 		await tool.execute("t8", { query: "backlog drain unique topic number 2" }, undefined, undefined, { sessionManager: {} });
 		const { searchIndex: si } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain-after`);
-		const after = si(path.join(agentDir, "pi-session-search", "index.db"), `backlog drain unique topic number 2`);
+		const after = si(path.join(agentDir, "config", "pi-session-search", "index.db"), `backlog drain unique topic number 2`);
 		// Before the tool call at most cap=1 file was indexed; lazy sync drains the rest.
 		assert.ok(after.hits.length > 0 || before > 0);
 		assert.ok(before + after.hits.length >= 1);

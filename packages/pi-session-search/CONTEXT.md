@@ -16,7 +16,7 @@ Complementary to pi-memory: memory keeps high-signal distillations in-context at
 
 ## Key decisions
 
-- **Derived disposable index** (`~/.pi/agent/pi-session-search/index.db`): rebuild = delete file + rescan. No migrations, no recovery machinery — unlike Hermes, whose FTS lives inside a migrated live DB.
+- **Derived disposable index** (`~/.pi/agent/config/pi-session-search/index.db`): rebuild = delete file + rescan. No migrations, no recovery machinery — unlike Hermes, whose FTS lives inside a migrated live DB.
 - **Single trigram-tokenizer external-content FTS5 table**: CJK substring + English token search in one table; <3-char terms degrade to LIKE automatically.
 - **No `SessionManager.open()`**: it can rewrite legacy-versioned foreign files in place. Hydration parses JSONL directly with pure functions; leaf = last entry in file order.
 - **No `message_end` hooks**: pi emits the event before writing the JSONL entry. Sync happens lazily at tool call plus a capped fire-and-forget backfill at `session_start`.

@@ -111,6 +111,20 @@ function branchMessages(
 		.map(toWindowMessage);
 }
 
+/** All messages on the anchor's branch, root→tip chronological (bnRnt). */
+export function getBranchMessages(
+	sessionPath: string,
+	anchorEntryId: string,
+): WindowMessage[] {
+	const entries = parseSessionEntries(sessionPath);
+	const entriesById = new Map(entries.map((e) => [e.id, e]));
+	const anchor = entriesById.get(anchorEntryId);
+	if (!anchor) throw new Error(`anchor entry ${anchorEntryId} not found in ${sessionPath}`);
+	if (anchor.type !== "message")
+		throw new Error(`anchor entry ${anchorEntryId} is not a message entry`);
+	return branchMessages(entriesById, deepestDescendant(entriesById, entries, anchorEntryId));
+}
+
 export function getWindow(
 	sessionPath: string,
 	anchorEntryId: string,

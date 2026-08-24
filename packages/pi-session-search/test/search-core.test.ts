@@ -157,6 +157,13 @@ describe("sanitize ladder", () => {
 		assert.deepEqual(plan.ftsCandidates[0], `Go OR Rust`);
 	});
 
+	it("trailing wildcard keeps FTS5 prefix syntax (bnRnk)", () => {
+		const plan = buildFtsQueryPlan("deploy*");
+		assert.deepEqual(plan.ftsCandidates[0], `"deploy"*`);
+		const { hits } = searchIndex(dbPath, "deploy*");
+		assert.ok(hits.length >= 1, "prefix query must match indexed deploy text");
+	});
+
 	it("technical sigils survive boundary normalization (bhZeo)", () => {
 		const plan = buildFtsQueryPlan("C++ templates");
 		assert.match(plan.ftsCandidates[0], /"C\+\+"/);

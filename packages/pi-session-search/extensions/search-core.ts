@@ -326,8 +326,15 @@ function collectTerms(query: string): string[] {
 	return terms;
 }
 
+function quoteTerm(t: string): string {
+	// Trailing * is FTS5 prefix syntax; the quote must close before it
+	// ("deploy"*), never wrap it ("deploy*" = literal asterisk).
+	if (t.endsWith("*")) return `"${t.slice(0, -1).replace(/"/g, '""')}"*`;
+	return `"${t.replace(/"/g, '""')}"`;
+}
+
 function quoteTerms(terms: string[], sep: string): string {
-	return terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(sep);
+	return terms.map(quoteTerm).join(sep);
 }
 
 export interface FtsQueryPlan {
