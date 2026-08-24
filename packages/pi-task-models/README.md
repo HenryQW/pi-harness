@@ -2,6 +2,11 @@
 
 Shared `fast`, `balanced`, `frontier`, and `fav` model profiles for HenryQW Pi extensions.
 
+## Why
+
+- **Created for**: Deduplicating model pickers and catalogs that each extension previously owned separately.
+- **Advantage**: One shared source of `fast`/`balanced`/`frontier`/`fav` profiles keeps routing consistent across consumers.
+
 ## Install
 
 ```bash

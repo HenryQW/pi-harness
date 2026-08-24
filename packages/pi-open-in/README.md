@@ -2,6 +2,11 @@
 
 Open the current working directory with a configurable command. Default is `code`.
 
+## Why
+
+- **Created for**: Replacing manually typed editor launcher commands with one configurable action for the working directory.
+- **Advantage**: `/open` works while the agent is busy and supports any simple launcher command, defaulting to `code`.
+
 ## Install
 
 ```bash

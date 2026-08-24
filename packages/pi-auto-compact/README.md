@@ -2,6 +2,11 @@
 
 Compact context before it hits the configured threshold, then resume the current task.
 
+## Why
+
+- **Created for**: Compacting session context automatically before it reaches the configured threshold.
+- **Advantage**: Triggers early, uses a dedicated model, and resumes the interrupted task without manual intervention.
+
 ## Install
 
 ```bash

@@ -2,6 +2,11 @@
 
 Show the current branch pull request's lifecycle, CI, mergeability, and review state in the Pi footer.
 
+## Why
+
+- **Created for**: Avoiding repeated `gh` commands just to check pull-request status during work.
+- **Advantage**: Branch lifecycle, CI, mergeability, and review state appear at a glance in the footer.
+
 ## Install
 
 ```bash

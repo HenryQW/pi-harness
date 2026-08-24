@@ -2,6 +2,11 @@
 
 Prepare locked Node and uv dependencies whenever Git creates a new worktree for an opted-in repository.
 
+## Why
+
+- **Created for**: Installing locked dependencies whenever Git creates a new worktree in an opted-in repository.
+- **Advantage**: Prepares each checkout regardless of which tool created it, without paying install cost at every Pi startup.
+
 ## Install
 
 ```bash

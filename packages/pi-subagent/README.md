@@ -2,6 +2,11 @@
 
 Delegate one bounded task to one isolated Pi process, or reuse validated Role launch and managed Herdr hosting for durable workers. Main chooses Role and may override shared task-model effort per call.
 
+## Why
+
+- **Created for**: Delegating bounded tasks to isolated child Pi processes while Main retains integration decisions.
+- **Advantage**: Validated Roles, capped concurrency, timeouts, and managed Herdr hosting make delegation predictable.
+
 ## Install
 
 ```bash
