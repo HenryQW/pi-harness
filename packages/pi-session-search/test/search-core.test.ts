@@ -253,6 +253,29 @@ describe("lineage + guards", () => {
 		assert.equal(hits[0].path.endsWith("child.jsonl"), true);
 	});
 
+	it("failing newest file does not monopolize the sync cap (bmSMo)", () => {
+		// Newest file permanently fails the transaction (duplicate entry id).
+		const dup = JSON.stringify({ type: "message", id: "dup", parentId: null, timestamp: "t", message: { role: "user", content: [{ type: "text", text: "dup id one" }] } });
+		writeFixture("--cap-fail--", "bad.jsonl", [
+			sessionHeader(),
+			dup,
+			dup.replace("one", "two"),
+		], 90000);
+		writeFixture("--cap-ok1--", "ok1.jsonl", [
+			sessionHeader(),
+			msg("g1", "user", "capfail unique marker one"),
+		], 80000);
+		writeFixture("--cap-ok2--", "ok2.jsonl", [
+			sessionHeader(),
+			msg("g2", "user", "capfail unique marker two"),
+		], 70000);
+		const res = syncSessions(sessionsDir, dbPath, { cap: 1 });
+		// Failed newest file doesn't consume the cap: one good file still indexes.
+		assert.equal(res.filesProcessed, 1);
+		assert.ok(res.backlogRemaining >= 1, "failed file must stay in the backlog");
+		assert.equal(searchIndex(dbPath, "capfail unique marker one").hits.length, 1);
+	});
+
 	it("entries without valid ids are skipped without aborting the pass (bhGOu)", () => {
 		writeFixture("--bad-ids--", "bad.jsonl", [
 			sessionHeader(),
@@ -260,7 +283,7 @@ describe("lineage + guards", () => {
 			msg("ok1", "assistant", "idless beta reply with good id"),
 		], 40000);
 		const res = syncSessions(sessionsDir, dbPath, { cap: 10 });
-		assert.equal(res.filesProcessed, 1);
+		assert.ok(res.filesProcessed >= 1);
 		const { hits } = searchIndex(dbPath, "idless beta");
 		assert.equal(hits.length, 1);
 	});

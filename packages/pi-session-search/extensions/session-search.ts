@@ -94,13 +94,16 @@ FTS5 SYNTAX
 export default function (pi: ExtensionAPI): void {
 	const config = readConfig();
 
-	// Fire-and-forget best-effort sync at startup.
-	pi.on("session_start", async (_event, _ctx) => {
-		try {
-			syncSessions(sessionsDir(), dbPath(), { cap: config.backfillFiles });
-		} catch {
-			// Index stays stale; next tool call retries.
-		}
+	// Best-effort sync at startup, deferred so the synchronous walk + SQLite
+	// writes never block session start. The lazy in-tool-call sync retries.
+	pi.on("session_start", (_event, _ctx) => {
+		setTimeout(() => {
+			try {
+				syncSessions(sessionsDir(), dbPath(), { cap: config.backfillFiles });
+			} catch {
+				// Index stays stale; next tool call retries.
+			}
+		}, 0);
 	});
 
 	pi.registerTool({
@@ -205,6 +208,9 @@ export default function (pi: ExtensionAPI): void {
 						matchMessageId: hit.entryId,
 						role: hit.role,
 						timestamp: hit.timestamp,
+						cwd: hit.cwd,
+						name: hit.name,
+						startedAt: hit.startedAt,
 					};
 					const hydrateFull = full || hit.rank === 0;
 					if (!hydrateFull) {

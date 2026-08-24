@@ -265,18 +265,24 @@ export function syncSessions(
 	let messagesIndexed = 0;
 	let filesSkipped = 0;
 
-	for (const { path: p, stat } of changed.slice(0, cap)) {
-			let count: number;
+	let filesFailed = 0;
+	// Count successes against the cap, not attempts: a permanently failing
+	// newest file must not monopolize the pass and starve older sessions.
+	for (const { path: p, stat } of changed) {
+		if (filesProcessed >= cap) break;
+		let count: number;
 		try {
 			count = tx(p, stat);
 		} catch {
 			// One unreadable/malformed file must not abort the whole pass.
+			filesFailed++;
 			continue;
 		}
 		filesProcessed++;
 		messagesIndexed += count;
 	}
-	const changedRemaining = Math.max(0, changed.length - cap);
+	const attempted = Math.min(changed.length, filesProcessed + filesFailed);
+	const changedRemaining = changed.length - attempted + filesFailed;
 
 	let purged = 0;
 	for (const p of deleted.slice(0, cap)) {
