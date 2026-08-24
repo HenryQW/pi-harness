@@ -13,6 +13,11 @@ const THINKING_COLORS = {
 	max: 196,
 } as const;
 const HENRY_STATUS_KEYS = new Set(["pi-multi-codex"]);
+const AGENT_TIME_ENTRY = "pi-footer:agent-work";
+
+function isValidMilliseconds(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
 
 function formatTokens(count: number): string {
 	if (count < 1_000) return `${count}`;
@@ -72,28 +77,34 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		runtimeTimer = setInterval(() => requestRuntimeRender?.(), 1_000);
 		requestRuntimeRender?.();
 	};
-	const finalizeActive = () => {
-		if (activeStartedAt === undefined) return;
+	const finalizeActive = (): boolean => {
+		if (activeStartedAt === undefined) return false;
 		activeMilliseconds += performance.now() - activeStartedAt;
 		activeStartedAt = undefined;
 		stopRuntimeTimer();
 		requestRuntimeRender?.();
+		return true;
 	};
 
 	pi.on("agent_start", (_event) => {
 		startActive();
 	});
 	pi.on("agent_settled", (_event, ctx) => {
-		if (!ctx.isIdle()) return;
-		finalizeActive();
+		if (ctx.isIdle() && finalizeActive()) pi.appendEntry(AGENT_TIME_ENTRY, activeMilliseconds);
 	});
 	pi.on("session_shutdown", () => stopRuntimeTimer());
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		stopRuntimeTimer();
-		activeMilliseconds = 0;
 		activeStartedAt = undefined;
+		// Latest valid entry wins; stored data is untrusted.
+		activeMilliseconds = 0;
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type === "custom" && entry.customType === AGENT_TIME_ENTRY && isValidMilliseconds(entry.data)) {
+				activeMilliseconds = entry.data;
+			}
+		}
 		requestRuntimeRender = undefined;
 
 		const git = await pi.exec(

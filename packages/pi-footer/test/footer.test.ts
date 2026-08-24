@@ -164,6 +164,8 @@ test("shows TPS and active session time", async () => {
 		on(event: string, handler: never) {
 			handlers.set(event, handler);
 		},
+		appendEntry() {
+		},
 		exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
 	} as unknown as ExtensionAPI);
 
@@ -215,6 +217,8 @@ test("counts one agent run across duplicate starts and stale settled", async () 
 		on(event: string, handler: never) {
 			handlers.set(event, handler);
 		},
+		appendEntry() {
+		},
 		exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
 	} as unknown as ExtensionAPI);
 
@@ -250,6 +254,53 @@ test("counts one agent run across duplicate starts and stale settled", async () 
 	} finally {
 		// Clear the active interval before restoring globals so assertion failures cannot hang.
 		await handlers.get("session_shutdown")?.(undefined);
+		globalThis.performance = realPerformance;
+	}
+});
+
+test("restores cumulative agent time on resume and appends updated totals", async () => {
+	const handlers = new Map<string, (event: unknown, ctx?: ExtensionContext) => unknown>();
+	const appended: Array<[string, unknown]> = [];
+	footerExtension({
+		on(event: string, handler: never) {
+			handlers.set(event, handler);
+		},
+		appendEntry(customType: string, data: unknown) {
+			appended.push([customType, data]);
+		},
+		exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+	} as unknown as ExtensionAPI);
+
+	let footerFactory: ((tui: unknown, theme: unknown, data: unknown) => { render(width: number): string[] }) | undefined;
+	const entries = [
+		{ type: "custom", customType: "pi-footer:agent-work", data: 1_000 },
+		{ type: "custom", customType: "pi-footer:agent-work", data: -5 },
+		{ type: "custom", customType: "other", data: 999_999 },
+		{ type: "custom", customType: "pi-footer:agent-work", data: 65_000 },
+	];
+	await (handlers.get("session_start") as (event: unknown, ctx: ExtensionContext) => unknown)({}, {
+		mode: "tui",
+		cwd: "/repo",
+		sessionManager: { getEntries: () => entries },
+		getContextUsage: () => undefined,
+		ui: { setFooter: (factory: typeof footerFactory) => { footerFactory = factory; } },
+	} as unknown as ExtensionContext);
+	assert.ok(footerFactory);
+	const footer = footerFactory({ requestRender() {} }, { fg: (_c: string, text: string) => text }, { getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} });
+	assert.equal(footer.render(100)[2]!.trim(), "◷ 1m 5s");
+
+	let now = 0;
+	const realPerformance = globalThis.performance;
+	globalThis.performance = { now: () => now } as unknown as typeof performance;
+	try {
+		const ctx = { isIdle: () => true } as unknown as ExtensionContext;
+		await handlers.get("agent_start")!(undefined, ctx);
+		now = 2_500;
+		await handlers.get("agent_settled")!(undefined, ctx);
+		assert.deepEqual(appended, [["pi-footer:agent-work", 67_500]]);
+		assert.equal(footer.render(100)[2]!.trim(), "◷ 1m 7s");
+	} finally {
+		await handlers.get("session_shutdown")?.(undefined, undefined as never);
 		globalThis.performance = realPerformance;
 	}
 });
