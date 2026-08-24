@@ -11,7 +11,7 @@ import { ENTRY_DELIMITER, MemoryStore, type Target } from "../src/store.ts";
 const SEPARATOR = "═".repeat(46);
 // Backups and the lock file live OUTSIDE config.directory (which may be
 // iCloud-synced) so the memory dir holds exactly MEMORY.md and USER.md (ADR 005).
-const BACKUP_DIR = () => join(getAgentDir(), "backups", "pi-memory");
+const BACKUP_DIR = () => join(getAgentDir(), "config", "pi-memory", "backups");
 // Defense-in-depth against snapshot frame spoofing by poisoned on-disk entries.
 const FRAME_TOKEN_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/;
 const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
