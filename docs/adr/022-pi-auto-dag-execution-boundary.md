@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-24
-- **Supersedes:** the planning, approval, and interactive-lifecycle portions of ADR 007 and ADR 009 (see those ADRs for the still-valid worker and process trust decisions)
+- **Supersedes:** the planning, approval, and interactive-lifecycle portions of ADR 007 and ADR 009, plus the `/dag-plan` planning-command decision in ADR 010 (see those ADRs for the still-valid worker and process trust decisions)
 
 ## Context
 
