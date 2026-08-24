@@ -2,6 +2,7 @@ import { mkdir, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
 import { loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
@@ -231,12 +232,29 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 								message: "Write saved. This update is complete — do not repeat it.",
 							}),
 						}],
-						details: {},
+						details: { status: result.message ?? "Write saved." },
 					};
 				} finally {
 					await release();
 				}
 			});
+		},
+
+		renderResult(result, _options, theme, context) {
+			const details = result.details as { status: string } | undefined;
+			if (!details) {
+				const content = result.content[0];
+				return new Text(content?.type === "text" ? content.text : "", 0, 0);
+			}
+			let text = theme.fg("success", `✓ ${details.status}`);
+			const entries = context.args.operations
+				? context.args.operations.flatMap((operation) =>
+					(operation.action === "add" || operation.action === "replace") && operation.content ? [operation.content] : [])
+				: (context.args.action === "add" || context.args.action === "replace") && context.args.content
+					? [context.args.content]
+					: [];
+			for (const entry of entries) text += `\n  ${theme.fg("accent", entry.trim().replaceAll("\n", "\n  "))}`;
+			return new Text(text, 0, 0);
 		},
 	});
 

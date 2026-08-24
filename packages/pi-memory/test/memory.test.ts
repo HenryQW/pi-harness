@@ -11,7 +11,13 @@ const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 type Handler = (event: any, ctx?: any) => unknown | Promise<unknown>;
 type CapturedTool = {
 	description: string;
-	execute(toolCallId: string, params: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }> }>;
+	execute(toolCallId: string, params: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
+	renderResult(
+		result: unknown,
+		options: { expanded: boolean },
+		theme: { fg(color: string, text: string): string },
+		context: { args: Record<string, unknown> },
+	): { render(width: number): string[] };
 };
 
 test("extension loads a frozen snapshot, dispatches writes, caps retries, and skips btw children", async () => {
@@ -60,6 +66,13 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 			entryCount: 2,
 			message: "Write saved. This update is complete — do not repeat it.",
 		});
+		const rendered = memoryTool.renderResult(
+			saved,
+			{ expanded: false },
+			{ fg: (_color, text) => text },
+			{ args: { action: "add", content: "new live fact" } },
+		);
+		assert.deepEqual(rendered.render(200).map((line) => line.trimEnd()), ["✓ Entry added.", "  new live fact"]);
 		assert.match(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), /new live fact/);
 		assert.doesNotMatch((await before({ systemPrompt: "base" }) as { systemPrompt: string }).systemPrompt, /new live fact/);
 
