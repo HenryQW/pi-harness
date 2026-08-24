@@ -345,9 +345,11 @@ describe("sanitize ladder regression", () => {
 		assert.ok(hits[0].cwd && hits[0].startedAt);
 	});
 
-	it("verbose session cannot exhaust the scan ceiling (bhGOz)", () => {
+	it("3000+ row verbose session cannot starve a quiet matching session (bhGOz)", () => {
 		const lines = [sessionHeader()];
-		for (let i = 0; i < 60; i++) lines.push(msg(`v${i}`, "assistant", `verbose-flood repeated marker text block number ${i}`));
+		// Shorter rows rank above the quiet file and used to fill the 3000-row
+		// pre-partition limit before that second session could enter the window.
+		for (let i = 0; i < 3100; i++) lines.push(msg(`v${i}`, "assistant", "verbose-flood"));
 		writeFixture("--flood--", "flood.jsonl", lines, 60000);
 		writeFixture("--quiet--", "quiet.jsonl", [
 			sessionHeader(),
@@ -357,6 +359,56 @@ describe("sanitize ladder regression", () => {
 		const { hits } = searchIndex(dbPath, "verbose-flood", { limit: 5 });
 		const paths = new Set(hits.map((h) => h.path));
 		assert.equal(paths.size, 2, "both sessions must surface despite flood volume");
+	});
+});
+
+describe("SQL prefilter + parse semantics + walk safety", () => {
+	it("live-entry prefilter lets lower-ranked historical entry on same file surface", () => {
+		const file = writeFixture("--live-guard--", "lg.jsonl", [
+			sessionHeader(),
+			...Array.from({ length: 8 }, (_, i) => msg(`lg${i}`, "assistant", `Go livesearch unique marker instance ${i}`)),
+		], 70000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		// Seven matches are live; the historical one must survive the per-file
+		// cap because suppression runs before ranking in both FTS and LIKE paths.
+		const opts = {
+			currentSessionPath: file,
+			currentLiveEntryIds: new Set(["lg0", "lg1", "lg2", "lg3", "lg4", "lg5", "lg6"]),
+		};
+		const ftsHits = searchIndex(dbPath, "livesearch unique marker", opts).hits;
+		assert.equal(ftsHits.length, 1);
+		assert.equal(ftsHits[0].entryId, "lg7");
+		const likeHits = searchIndex(dbPath, "Go livesearch", opts).hits;
+		assert.equal(likeHits.length, 1);
+		assert.equal(likeHits[0].entryId, "lg7");
+	});
+
+	it("parsed query with zero rows stays empty; malformed recovers via LIKE", () => {
+		const none = searchIndex(dbPath, "nonexistent AND deploy");
+		assert.equal(none.hits.length, 0, "zero-row parsed candidate must not broaden to OR/LIKE");
+		const recovered = searchIndex(dbPath, 'deploy AND NOT ("unterminated');
+		assert.ok(recovered.hits.length >= 1, "malformed query must still recover deploy hits");
+	});
+
+	it("readdir failure in an indexed subdir preserves indexed data and indexes other dirs", () => {
+		const target = path.join(sessionsDir, "--flood--");
+		const origReaddir = fs.readdirSync;
+		writeFixture("--walk-ok--", "ok.jsonl", [sessionHeader(), msg("w1", "user", "walksafety unique survivor marker")], 72000);
+		try {
+			fs.readdirSync = ((dir: any, opts?: any) => {
+				if (dir === target) throw new Error("EACCES simulated");
+				return origReaddir.call(fs, dir, opts);
+			}) as typeof fs.readdirSync;
+			syncSessions(sessionsDir, dbPath, { cap: 50 });
+			// Deterministic: only --flood-- fails; every other directory is fully read.
+			assert.ok(searchIndex(dbPath, "walksafety unique survivor").hits.length === 1,
+				"new file discovered around the failure must still be processed");
+		} finally {
+			fs.readdirSync = origReaddir;
+		}
+		// Data preservation: incomplete walk must not purge --flood--'s rows.
+		const { hits } = searchIndex(dbPath, "verbose-flood");
+		assert.ok(hits.some((hit) => hit.path.startsWith(target)), "indexed rows from the unreadable directory must survive");
 	});
 });
 

@@ -13,9 +13,8 @@ export const DEFAULT_SYNC_CAP = 50;
 export const MAX_QUERY_CHARS = 512;
 const MAX_TEXT_CHARS = 20000;
 const SCAN_LIMIT = 300;
-/** Rows retained per file so the live-entry guard can fall back to
- *  off-branch (compacted/inactive) matches on the same file. */
-const ROWS_PER_FILE = 5;
+/** Best-ranked candidate retained per session after live-entry filtering. */
+const ROWS_PER_FILE = 1;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS session_files (
@@ -170,16 +169,26 @@ function isJunkEncodedDir(relSegments: string[]): boolean {
 	return relSegments.some((seg) => seg.startsWith("--private-tmp-"));
 }
 
-function walkJsonlFiles(sessionsDir: string): Map<string, fs.Stats> {
-	const found = new Map<string, fs.Stats>();
-	if (!fs.existsSync(sessionsDir)) return found;
+/** Walk result. `complete: false` means the tree could not be fully read
+ *  (missing root, readdir/stat failure) — callers must not treat unseen
+ *  indexed paths as deleted. */
+interface WalkResult {
+	files: Map<string, fs.Stats>;
+	complete: boolean;
+}
+
+function walkJsonlFiles(sessionsDir: string): WalkResult {
+	const files = new Map<string, fs.Stats>();
+	if (!fs.existsSync(sessionsDir)) return { files, complete: false };
 	const stack = [sessionsDir];
+	let complete = true;
 	while (stack.length > 0) {
 		const dir = stack.pop()!;
 		let entries: fs.Dirent[];
 		try {
 			entries = fs.readdirSync(dir, { withFileTypes: true });
 		} catch {
+			complete = false;
 			continue;
 		}
 		for (const ent of entries) {
@@ -188,14 +197,14 @@ function walkJsonlFiles(sessionsDir: string): Map<string, fs.Stats> {
 				stack.push(full);
 			} else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
 				try {
-					found.set(full, fs.statSync(full));
+					files.set(full, fs.statSync(full));
 				} catch {
-					/* vanished mid-walk */
+					complete = false; // vanished or became unreadable mid-walk
 				}
 			}
 		}
 	}
-	return found;
+	return { files, complete };
 }
 
 // --- Sync ---
@@ -209,14 +218,18 @@ export function syncSessions(
 	const db = openDb(dbPath);
 
 	// Junk dirs are excluded from the walk entirely.
-	const all = [...walkJsonlFiles(sessionsDir)].filter(([p]) => !isJunkEncodedDir(path.relative(sessionsDir, p).split(path.sep)));
-
+	const walk = walkJsonlFiles(sessionsDir);
+	const all = [...walk.files].filter(([p]) => !isJunkEncodedDir(path.relative(sessionsDir, p).split(path.sep)));
 	const watermarks = new Map(
 		(db.prepare("SELECT path, size, mtime_ms FROM session_files").all() as any[]).map((r) => [r.path, r]),
 	);
 
+	// An incomplete traversal proves nothing about absence: purging here would
+	// wipe healthy sessions over a transient readdir/stat failure. Changed/new
+	// files already discovered still process normally.
 	const discovered = new Set(all.map(([fp]) => fp));
-	const deleted = [...watermarks.keys()].filter((p) => !discovered.has(p));
+	const deleted = walk.complete ? [...watermarks.keys()].filter((p) => !discovered.has(p)) : [];
+
 	const changed: { path: string; stat: fs.Stats }[] = [];
 	for (const [p, stat] of all) {
 		const wm = watermarks.get(p);
@@ -477,8 +490,13 @@ export interface SearchOptions {
 	currentSessionPath?: string;
 }
 
-// Dedup per file INSIDE SQL (best-ranked row per path) so one verbose
-// session cannot exhaust the scan ceiling and starve other sessions.
+// Live-entry suppression happens INSIDE SQL (before ROW_NUMBER/caps) so
+// inactive matches on the current file compete only against each other, and
+// there is no pre-partition LIMIT: one verbose session cannot starve others.
+// live_filter is a per-connection TEMP table populated from SearchOptions.
+const LIVE_FILTER_SQL = `NOT EXISTS (
+  SELECT 1 FROM live_filter lf WHERE lf.path = m.path AND lf.entry_id = m.entry_id
+)`;
 const BASE_SELECT = `
 SELECT path, entry_id, role, timestamp, snip, cwd, name, started_at FROM (
   SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY score) AS rn FROM (
@@ -487,9 +505,7 @@ SELECT path, entry_id, role, timestamp, snip, cwd, name, started_at FROM (
            bm25(session_fts) AS score
     FROM session_fts JOIN messages m ON m.rowid = session_fts.rowid
     LEFT JOIN sessions s ON s.path = m.path
-    WHERE session_fts MATCH ?
-    ORDER BY score
-    LIMIT ${SCAN_LIMIT * 10}
+    WHERE session_fts MATCH ? AND ${LIVE_FILTER_SQL}
   )
 )
 WHERE rn <= ${ROWS_PER_FILE}
@@ -517,6 +533,16 @@ export function searchIndex(
 	const limit = opts?.limit ?? 3;
 	const db = openDb(dbPath);
 	try {
+		// Per-connection TEMP table of (path, entry_id) pairs to suppress —
+		// parameterized, immune to SQLite variable limits.
+		db.exec("CREATE TEMP TABLE IF NOT EXISTS live_filter (path TEXT NOT NULL, entry_id TEXT NOT NULL)");
+		if (opts?.currentSessionPath && opts?.currentLiveEntryIds?.size) {
+			const ins = db.prepare("INSERT INTO live_filter(path, entry_id) VALUES (?, ?)");
+			db.transaction(() => {
+				for (const id of opts.currentLiveEntryIds!) ins.run(opts.currentSessionPath, id);
+			})();
+		}
+
 		const plan = buildFtsQueryPlan(query);
 		if (plan.ftsCandidates.length === 0 && !plan.forceLike) {
 			return { hits: [], backlogRemaining: getBacklog(db) };
@@ -536,24 +562,26 @@ export function searchIndex(
 		let usedLike = plan.forceLike;
 
 		if (!plan.forceLike) {
-			// A candidate that parses but matches zero rows must not mask later
-			// recovery candidates — keep going so malformed syntax can be
-			// recovered by the ladder and ultimately the LIKE fallback.
+			// Recovery candidates run only after an FTS5 PARSE error. A candidate
+			// that parses defines the result even with zero rows (`a AND b` with
+			// no co-occurrence stays empty instead of degrading to OR/LIKE).
+			let parseFailed = false;
 			for (const cand of plan.ftsCandidates) {
 				try {
-					const got = db.prepare(BASE_SELECT).all(cand) as any;
-					if (got.length > 0) {
-						rows = got;
+					rows = db.prepare(BASE_SELECT).all(cand) as any;
+					// First/raw success defines the result even with zero rows. After a
+					// parse error, an empty recovery candidate keeps trying later ones.
+					if (!parseFailed || rows.length > 0) {
 						usedLike = false;
 						break;
 					}
+					usedLike = true;
 				} catch {
-					// Malformed FTS5 syntax → try the next candidate.
+					parseFailed = true;
+					usedLike = true; // malformed syntax → try next candidate
 				}
 			}
 		}
-		// Every candidate threw or matched zero rows → LIKE fallback.
-		usedLike = usedLike || rows.length === 0;
 
 		if (usedLike) {
 			const trimmed = query.trim().slice(0, MAX_QUERY_CHARS);
@@ -572,25 +600,16 @@ export function searchIndex(
 				                   m.rowid AS rid,
 				                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn
 				             FROM messages m LEFT JOIN sessions s ON s.path = m.path
-				             WHERE ${where}
+				             WHERE ${where} AND ${LIVE_FILTER_SQL}
 				            ) WHERE rn <= ${ROWS_PER_FILE} ORDER BY rn, rid DESC LIMIT ${SCAN_LIMIT}`)
 				.all(...params) as any;
 			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", terms);
 		}
 
-		// Current-session guard FIRST (scoped to the current file — entry ids
-		// are only guaranteed unique within a file), then lineage suppression
+		// Live-entry suppression already happened in SQL; lineage suppression is
 		// computed from surviving rows so a suppressed live hit on the current
 		// parent cannot suppress a matching child.
-		const isLiveHit = (r: RawRow): boolean =>
-			!!(
-				opts?.currentSessionPath &&
-				r.path === opts.currentSessionPath &&
-				opts?.currentLiveEntryIds?.has(r.entry_id)
-			);
-		// hitPaths from rows surviving the guard so a suppressed live hit on the
-		// current parent cannot suppress a matching child.
-		const guarded = (rows as RawRow[]).filter((r) => !isLiveHit(r));
+		const guarded = rows as RawRow[];
 		const hitPaths = new Set(guarded.map((r) => r.path));
 		const parentOf = new Map<string, string | null>();
 		const stmtParent = db.prepare("SELECT parent_session FROM sessions WHERE path = ?");
