@@ -5,7 +5,7 @@ import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil
 import { Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
-import { loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
+import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
 import { ENTRY_DELIMITER, MemoryStore, type Target } from "../src/store.ts";
 
 const SEPARATOR = "═".repeat(46);
@@ -271,7 +271,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		// Failed init stays visible every turn (correctness-critical config must
 		// not vanish silently) but as a warning line, not a per-turn throw-loop.
 		if (state.initError) {
-			return { systemPrompt: `${event.systemPrompt}\n\nWARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix config/pi-memory.json and restart.` };
+			return { systemPrompt: `${event.systemPrompt}\n\nWARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configPath()} and restart.` };
 		}
 		if (!state.config || !state.stores || !state.snapshotBlocks) return;
 		const blocks = [...state.snapshotBlocks, ...state.conflictWarnings].filter(Boolean).join("\n\n");
