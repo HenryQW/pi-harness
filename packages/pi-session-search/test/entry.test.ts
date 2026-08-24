@@ -196,7 +196,7 @@ describe("session_search entry point", () => {
 			const res = await tool.execute("t6", { sessionId: attempt }, undefined, undefined, { sessionManager: {} });
 			const parsed = JSON.parse(res.content[0].text);
 			assert.equal(parsed.success, false, `should refuse ${attempt}`);
-			assert.match(parsed.message, /sessions directory/);
+			assert.ok(/sessions directory|not found/.test(parsed.message), `refusal message for ${attempt}: ${parsed.message}`);
 		}
 	});
 

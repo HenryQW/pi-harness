@@ -5,9 +5,8 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve, sep as pathSep } from "node:path";
-const path = { sep: pathSep };
+import { readFileSync, realpathSync } from "node:fs";
+import { join, sep } from "node:path";
 import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
@@ -131,12 +130,15 @@ export default function (pi: ExtensionAPI): void {
 				const sessionId = params.sessionId?.trim() || undefined;
 				const anchor = params.aroundMessageId?.trim() || undefined;
 				if (sessionId) {
-					// Trust boundary: only session files under the Pi sessions dir.
-					const resolved = resolve(sessionId);
-					if (!resolved.startsWith(sessionsDir() + path.sep) || !resolved.endsWith(".jsonl")) {
-						return textResult({ success: false, message: "sessionId must be a .jsonl file under the Pi sessions directory" });
-					}
-					if (!existsSync(resolved)) {
+					// Trust boundary: canonical target must live under the real
+					// sessions dir (realpath defeats symlink escapes).
+					try {
+						const resolved = realpathSync(sessionId);
+						const root = realpathSync(sessionsDir());
+						if (!resolved.startsWith(root + sep) || !resolved.endsWith(".jsonl")) {
+							return textResult({ success: false, message: "sessionId must be a .jsonl file under the Pi sessions directory" });
+						}
+					} catch {
 						return textResult({ success: false, message: `session file not found: ${sessionId}` });
 					}
 				}
@@ -224,11 +226,13 @@ export default function (pi: ExtensionAPI): void {
 							// Bookends optional.
 						}
 						budget -= JSON.stringify({ ...meta, win, bookends }).length;
+						const overBudget = budget < 0;
 						return {
 							...meta,
 							detail: "full" as const,
-							messages: budget < 0 ? truncateContent(win.messages, 500) : win.messages,
-							bookends: budget < 0
+							...(overBudget ? { contentTruncated: true } : {}),
+							messages: overBudget ? truncateContent(win.messages, 500) : win.messages,
+							bookends: overBudget
 								? { start: truncateContent(bookends.start, 200), end: truncateContent(bookends.end, 200) }
 								: bookends,
 							messagesBefore: win.messagesBefore,

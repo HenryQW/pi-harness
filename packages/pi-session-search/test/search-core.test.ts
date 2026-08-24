@@ -148,7 +148,18 @@ describe("sanitize ladder", () => {
 
 	it("explicit operator queries pass raw with quoted recovery then OR", () => {
 		const plan = buildFtsQueryPlan("error AND NOT (unterminated");
-		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "unterminated"`, `"error" OR "AND" OR "NOT" OR "unterminated"`]);
+		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "(unterminated"`, `"error" OR "AND" OR "NOT" OR "(unterminated"`]);
+	});
+
+	it("explicit operators keep FTS candidates even with short terms (bhZel)", () => {
+		const plan = buildFtsQueryPlan("Go OR Rust");
+		assert.equal(plan.forceLike, false);
+		assert.deepEqual(plan.ftsCandidates[0], `Go OR Rust`);
+	});
+
+	it("technical sigils survive boundary normalization (bhZeo)", () => {
+		const plan = buildFtsQueryPlan("C++ templates");
+		assert.match(plan.ftsCandidates[0], /"C\+\+"/);
 	});
 
 	it("parse-error recovery falls back through ladder without throwing", () => {

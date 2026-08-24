@@ -13,6 +13,9 @@ export const DEFAULT_SYNC_CAP = 50;
 export const MAX_QUERY_CHARS = 512;
 const MAX_TEXT_CHARS = 20000;
 const SCAN_LIMIT = 300;
+/** Rows retained per file so the live-entry guard can fall back to
+ *  off-branch (compacted/inactive) matches on the same file. */
+const ROWS_PER_FILE = 5;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS session_files (
@@ -119,12 +122,9 @@ function parseSessionFile(filePath: string): ParsedFile {
 		preview: null,
 		messages: [],
 	};
-	let content: string;
-	try {
-		content = fs.readFileSync(filePath, "utf-8");
-	} catch {
-		return parsed;
-	}
+	// Unreadable file must throw so the sync transaction rolls back instead of
+	// wiping previously indexed rows and advancing the watermark over a hole.
+	const content = fs.readFileSync(filePath, "utf-8");
 	for (const line of content.split("\n")) {
 		if (!line.trim()) continue;
 		let entry: any;
@@ -311,9 +311,9 @@ function collectTerms(query: string): string[] {
 		let raw = phrase ?? m[2] ?? "";
 		if (!raw) continue;
 		if (phrase === undefined) {
-			// Strip boundary punctuation from bare terms ("deployment?" →
-			// "deployment") while keeping quoted phrases verbatim.
-			raw = raw.replace(/^[^\p{L}\p{N}"']+|[^\p{L}\p{N}"']+$/gu, "");
+			// Strip sentence punctuation from bare terms ("deployment?" →
+			// "deployment") while keeping technical sigils (C++, C#) intact.
+			raw = raw.replace(/^[.,!?;:]+|[.,!?;:]+$/g, "");
 		}
 		if (raw) terms.push(raw);
 	}
@@ -342,14 +342,19 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 	if (!query) return { ftsCandidates: [], forceLike: false };
 
 	const terms = collectTerms(query);
-	if (terms.some((t) => t.replace(/"/g, "").length < 3)) {
+	const hasOperator = OPERATOR_RE.test(query);
+	// Short terms vanish under trigram MATCH. For natural-language queries
+	// (AND semantics) that silently breaks the query — route to LIKE. Explicit
+	// operator queries keep FTS candidates so boolean semantics are preserved;
+	// LIKE remains their last-resort candidate below.
+	if (!hasOperator && terms.some((t) => t.replace(/"/g, "").length < 3)) {
 		return { ftsCandidates: [], forceLike: true };
 	}
 
 	const natural = quoteTerms(terms, " ");
 	const orExpanded = terms.length > 1 ? quoteTerms(terms, " OR ") : null;
 
-	if (!OPERATOR_RE.test(query)) {
+	if (!hasOperator) {
 		// Quoted form cannot fail to parse; OR-expand only as breadth fallback.
 		return { ftsCandidates: orExpanded ? [natural, orExpanded] : [natural], forceLike: false };
 	}
@@ -388,7 +393,7 @@ SELECT path, entry_id, role, timestamp, snip, cwd, name, started_at FROM (
     LIMIT ${SCAN_LIMIT * 10}
   )
 )
-WHERE rn = 1
+WHERE rn <= ${ROWS_PER_FILE}
 ORDER BY score
 LIMIT ${SCAN_LIMIT}`;
 
@@ -449,9 +454,13 @@ export function searchIndex(
 			if (terms.length === 0) return { hits: [], backlogRemaining: getBacklog(db) };
 			const where = terms.map(() => "m.text LIKE ? ESCAPE '\\'").join(" AND ");
 			rows = db
-				.prepare(`SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at
-				          FROM messages m LEFT JOIN sessions s ON s.path = m.path
-				          WHERE ${where} ORDER BY m.rowid DESC LIMIT ${SCAN_LIMIT}`)
+				.prepare(`SELECT path, entry_id, role, timestamp, text, cwd, name, started_at FROM (
+				            SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at,
+				                   m.rowid AS rid,
+				                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn
+				             FROM messages m LEFT JOIN sessions s ON s.path = m.path
+				             WHERE ${where}
+				            ) WHERE rn <= ${ROWS_PER_FILE} ORDER BY rn, rid DESC LIMIT ${SCAN_LIMIT}`)
 				.all(...terms.map(likePattern)) as any;
 			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", terms);
 		}
@@ -460,14 +469,15 @@ export function searchIndex(
 		// are only guaranteed unique within a file), then lineage suppression
 		// computed from surviving rows so a suppressed live hit on the current
 		// parent cannot suppress a matching child.
-		const guarded = (rows as RawRow[]).filter(
-			(r) =>
-				!(
-					opts?.currentSessionPath &&
-					r.path === opts.currentSessionPath &&
-					opts?.currentLiveEntryIds?.has(r.entry_id)
-				),
-		);
+		const isLiveHit = (r: RawRow): boolean =>
+			!!(
+				opts?.currentSessionPath &&
+				r.path === opts.currentSessionPath &&
+				opts?.currentLiveEntryIds?.has(r.entry_id)
+			);
+		// hitPaths from rows surviving the guard so a suppressed live hit on the
+		// current parent cannot suppress a matching child.
+		const guarded = (rows as RawRow[]).filter((r) => !isLiveHit(r));
 		const hitPaths = new Set(guarded.map((r) => r.path));
 		const parentOf = new Map<string, string | null>();
 		const stmtParent = db.prepare("SELECT parent_session FROM sessions WHERE path = ?");
