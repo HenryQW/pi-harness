@@ -10,21 +10,36 @@ import {
 const DEFAULT_COMMAND = "code";
 const configPath = () => join(getAgentDir(), "config", "pi-open-in.json");
 
-function configuredCommand(): string {
+function loadCommand(): string {
+	let raw: string;
 	try {
-		const config: unknown = JSON.parse(readFileSync(configPath(), "utf8"));
-		if (config && typeof config === "object" && !Array.isArray(config)) {
-			const command = (config as { command?: unknown }).command;
-			if (typeof command === "string" && command.trim()) return command.trim();
-		}
-	} catch {
-		// Missing or malformed config uses default command.
+		raw = readFileSync(configPath(), "utf8");
+	} catch (error) {
+		// Only a missing file falls back to the default command.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return DEFAULT_COMMAND;
+		throw error;
 	}
-	return DEFAULT_COMMAND;
+	let config: unknown;
+	try {
+		config = JSON.parse(raw);
+	} catch {
+		throw new Error(`Invalid ${configPath()}: not valid JSON`);
+	}
+	const isObject = (value: unknown): value is Record<string, unknown> =>
+		typeof value === "object" && value !== null && !Array.isArray(value);
+	if (!isObject(config) || Object.keys(config).length !== 1 || typeof config.command !== "string" || !config.command.trim()) {
+		throw new Error(`Invalid ${configPath()}: expected exactly one non-empty string "command" property`);
+	}
+	return config.command.trim();
 }
 
 export function configuredOpenUri(path: string): string | undefined {
-	if (configuredCommand() !== "code") return undefined;
+	try {
+		if (loadCommand() !== "code") return undefined;
+	} catch {
+		// Invalid config must not break footer render; just omit the URI.
+		return undefined;
+	}
 	if (path.startsWith("\\\\")) {
 		const [host, ...parts] = path.slice(2).split("\\");
 		const uri = new URL(`file://${host}`);
@@ -47,7 +62,7 @@ export default function openInExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("open", {
 		description: "Open the current path with the configured command",
 		handler: async (_args, ctx) => {
-			const [executable, ...args] = configuredCommand().split(/\s+/);
+			const [executable, ...args] = loadCommand().split(/\s+/);
 			const result = await pi.exec(executable, [...args, ctx.cwd]);
 			if (result.code !== 0) {
 				throw new Error(`Open command failed: ${result.stderr.trim() || `exit code ${result.code}`}`);
