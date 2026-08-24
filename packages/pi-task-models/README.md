@@ -2,6 +2,11 @@
 
 Shared `fast`, `balanced`, `frontier`, and `fav` model profiles for HenryQW Pi extensions.
 
+## Why
+
+- **Created for**: Deduplicating model pickers and catalogs that each extension previously owned separately.
+- **Advantage**: One shared source of `fast`/`balanced`/`frontier`/`fav` profiles keeps routing consistent across consumers.
+
 ## Install
 
 ```bash
@@ -64,6 +69,8 @@ Package also exports config and route-resolution helpers for consumers.
 ```
 
 Each configured profile needs one primary model and thinking level. Fallback is optional. Model references use canonical `provider/model`; numbered `openai-codex-N` routes store as `openai-codex/model`.
+
+Profile thinking is authoritative for task routes. `pi-model-thinking.json` affects only active-session model selection and never overrides a task route.
 
 Reads are strict. Malformed or unknown values fail visibly and never rewrite the file. Only explicit `/task-models` actions write config.
 

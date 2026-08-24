@@ -2,6 +2,11 @@
 
 Open the current working directory with a configurable command. Default is `code`.
 
+## Why
+
+- **Created for**: Replacing manually typed editor launcher commands with one configurable action for the working directory.
+- **Advantage**: `/open` works while the agent is busy and supports any simple launcher command, defaulting to `code`.
+
 ## Install
 
 ```bash
@@ -26,6 +31,8 @@ pi install npm:@henryqw/pi-open-in
 ```
 
 The command is split on whitespace; tokens cannot contain spaces (no quoting). Use a wrapper script for executables in spaced paths.
+
+A missing config file falls back to `code`. An existing file must be a JSON object with exactly one non-empty string `command` property; otherwise `/open` fails with a visible error. The file is never rewritten by this extension except via `/set-open-in`. When the config is invalid, no open URI is offered.
 
 ## Remove
 

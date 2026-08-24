@@ -2,6 +2,11 @@
 
 Run Herdr CLI commands from Node through one thin client. Callers keep orchestration and command-specific checks.
 
+## Why
+
+- **Created for**: Calling Herdr CLI commands from Node without duplicating wrapper logic across extensions that each needed `exec`, `run`, and JSON parsing.
+- **Advantage**: One thin client keeps orchestration local while the Herdr CLI stays the single source of truth for commands and response shapes.
+
 ## Install
 
 ```bash

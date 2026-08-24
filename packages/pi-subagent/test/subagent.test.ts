@@ -63,7 +63,7 @@ function harness(options: {
 	availableModels?: any[];
 	currentModel?: any;
 	scopedModels?: any[];
-	timeoutPolicy?: { softMs: number; graceMs: number; activeWindowMs: number };
+	timeoutPolicy?: { idleMs: number; maxMs: number };
 	cwd?: string;
 } = {}) {
 	let tool: Tool | undefined;
@@ -989,7 +989,7 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 		try {
 			await writeWorkerRole(agentDir);
 		const tasks = Array.from({ length: 5 }, (_, index) => `task-${index + 1}`);
-		const timeoutPolicy = { softMs: 250, graceMs: 1_000, activeWindowMs: 100 };
+		const timeoutPolicy = { idleMs: 250, maxMs: 1_250 };
 		const runner = await blockedPiRunner(agentDir, tasks.slice(0, 4));
 		const app = harness({ timeoutPolicy });
 		const active = tasks.slice(0, 4).map((task, index) => app.tool.execute(
@@ -1008,12 +1008,12 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 			calls.push(fifth);
 			let fifthSettled = false;
 			void fifth.then(() => { fifthSettled = true; }, () => { fifthSettled = true; });
-			await waitFor(() => Date.now() >= queuedAt + timeoutPolicy.softMs + timeoutPolicy.activeWindowMs);
+			await waitFor(() => Date.now() >= queuedAt + timeoutPolicy.idleMs + 100);
 			assert.deepEqual(runner.started(), tasks.slice(0, 4));
 			assert.equal(fifthSettled, false);
 			await runner.release(tasks[0]!);
 			await waitFor(() => runner.started().includes(tasks[4]!));
-			await assert.rejects(fifth, /Subagent timed out.*without active status/);
+			await assert.rejects(fifth, /Subagent timed out.*without a recognized Pi event/);
 			for (const task of tasks.slice(1, 4)) await runner.release(task);
 			await Promise.all(active);
 		} finally {
@@ -1027,7 +1027,7 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 	});
 });
 
-test("inactive Subagent times out", async () => {
+test("malformed JSON, unknown events, and stderr do not renew the idle deadline", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -1038,15 +1038,20 @@ tools: [read]
 Do bounded work.
 `);
 		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_start", message: { role: "user", content: [] } }));
-setInterval(() => {}, 1_000);
-`);
+		await writeFile(runner, `process.on("SIGTERM", () => {});
+setInterval(() => {
+	process.stdout.write('{"type":"message_update"\\n');
+	console.log(JSON.stringify({ type: "heartbeat" }));
+	process.stderr.write("still here\\n");
+}, 25);`);
 		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { softMs: 120, graceMs: 150, activeWindowMs: 10 } });
+		const app = harness({ timeoutPolicy: { idleMs: 120, maxMs: 270 } });
+		const startedAt = Date.now();
 		await assert.rejects(
 			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
-			/Subagent timed out.*without active status/,
+			/Subagent timed out.*without a recognized Pi event/,
 		);
+		assert.ok(Date.now() - startedAt < 600, "idle timeout escalation exceeded the maximum runtime");
 	});
 });
 
@@ -1055,7 +1060,7 @@ test("config file timeout applies when no explicit policy is passed", async () =
 		await writeWorkerRole(agentDir);
 		const configDir = join(agentDir, "config", "pi-subagent");
 		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({
-			timeout: { softMinutes: 0.002, graceMinutes: 0.002, activeWindowSeconds: 0.01 },
+			timeout: { idleMinutes: 0.002, maxMinutes: 0.004 },
 		}));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `console.log(JSON.stringify({ type: "message_start", message: { role: "user", content: [] } }));
@@ -1067,12 +1072,12 @@ setInterval(() => {}, 1_000);
 		assert.equal(app.notifications.length, 0);
 		await assert.rejects(
 			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
-			/Subagent timed out.*without active status/,
+			/Subagent timed out.*without a recognized Pi event/,
 		);
 	});
 });
 
-test("active Subagent gets one grace period", async () => {
+test("recognized Pi events extend the idle deadline", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -1084,16 +1089,31 @@ Do bounded work.
 `);
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
-event({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} });
+setTimeout(() => event({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} }), 80);
 setTimeout(() => {
 	event({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", result: {}, isError: false });
 	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
 }, 180);
 `);
 		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { softMs: 120, graceMs: 150, activeWindowMs: 10 } });
+		const app = harness({ timeoutPolicy: { idleMs: 120, maxMs: 270 } });
 		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
 		assert.equal(result.content[0].text, "done");
+	});
+});
+
+test("maximum runtime stops a child that keeps emitting Pi events", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `process.on("SIGTERM", () => {});
+setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } })), 25);`);
+		process.argv[1] = runner;
+		const app = harness({ timeoutPolicy: { idleMs: 80, maxMs: 180 } });
+		await assert.rejects(
+			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			/Subagent reached its maximum runtime/,
+		);
 	});
 });
 
@@ -1112,7 +1132,7 @@ Do bounded work.
 setInterval(() => {}, 1_000);
 `);
 		process.argv[1] = runner;
-		const app = harness({ ui: true, timeoutPolicy: { softMs: 120, graceMs: 150, activeWindowMs: 10 } });
+		const app = harness({ ui: true, timeoutPolicy: { idleMs: 120, maxMs: 270 } });
 		const abort = new AbortController();
 		const running = app.tool.execute("call-1", { role: "worker", task: "work" }, abort.signal, undefined, app.ctx);
 		setTimeout(() => abort.abort(), 150);
@@ -1157,7 +1177,7 @@ setInterval(() => {}, 1_000);
 	});
 });
 
-test("normal completion stops surviving child process descendants", async () => {
+test("normal completion stops surviving child process descendants with inherited output", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const marker = join(agentDir, "normal-descendant-survived");
@@ -1165,7 +1185,7 @@ test("normal completion stops surviving child process descendants", async () => 
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300); setInterval(() => {}, 1000)`)}], { stdio: "ignore" });
+const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300); setInterval(() => {}, 1000)`)}], { stdio: "inherit" });
 descendant.unref();
 const ready = setInterval(() => {
 	if (!existsSync(${JSON.stringify(started)})) return;
@@ -1174,7 +1194,7 @@ const ready = setInterval(() => {
 }, 5);
 `);
 		process.argv[1] = runner;
-		const app = harness();
+		const app = harness({ timeoutPolicy: { idleMs: 120, maxMs: 270 } });
 		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
 		assert.equal(result.content[0].text, "done");
 		await new Promise((resolve) => setTimeout(resolve, 400));
@@ -1317,7 +1337,7 @@ setInterval(() => {}, 1_000);
 `);
 		process.argv[1] = runner;
 
-		const app = harness({ cwd: repo, timeoutPolicy: { softMs: 60_000, graceMs: 60_000, activeWindowMs: 60_000 } });
+		const app = harness({ cwd: repo, timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
 		const started = await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
 		const name = childName("call-1");
 		const root = join(await realpath(repo), ".worktrees", name);
@@ -1352,7 +1372,7 @@ setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 
 `);
 		process.argv[1] = runner;
 
-		const app = harness({ timeoutPolicy: { softMs: 60_000, graceMs: 60_000, activeWindowMs: 60_000 } });
+		const app = harness({ timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
 		const result = await app.tool.execute(
 			"call-1", { role: "worker", task: "long work", background: true }, undefined, undefined, app.ctx,
 		);

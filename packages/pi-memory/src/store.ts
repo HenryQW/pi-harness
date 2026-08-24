@@ -45,6 +45,7 @@ type Result = {
 	error?: string;
 	usage?: string;
 	entryCount?: number;
+	writtenEntries?: string[];
 	currentEntries?: string[];
 	matches?: string[];
 	done?: boolean;
@@ -127,7 +128,7 @@ export class MemoryStore {
 		return `${pct}% — ${current.toLocaleString()}/${limit.toLocaleString()} chars`;
 	}
 
-	private successResponse(target: Target, message?: string): Result {
+	private successResponse(target: Target, message?: string, writtenEntries: string[] = []): Result {
 		this.resetOnSuccess();
 		return {
 			success: true,
@@ -136,6 +137,7 @@ export class MemoryStore {
 			message,
 			usage: this.usage(target),
 			entryCount: this.entries.get(target)!.length,
+			writtenEntries,
 			note: "Write saved. This update is complete — do not repeat it.",
 		};
 	}
@@ -392,7 +394,7 @@ export class MemoryStore {
 		const entries = this.entries.get(target)!;
 
 		if (entries.includes(text)) {
-			return this.successResponse(target, "Entry already exists (no duplicate added).");
+			return this.successResponse(target, "Entry already exists (no duplicate added).", [text]);
 		}
 
 		const newTotal = [...entries, text].join(ENTRY_DELIMITER).length;
@@ -408,7 +410,7 @@ export class MemoryStore {
 
 		entries.push(text);
 		await this.persist(target);
-		return this.successResponse(target, "Entry added.");
+		return this.successResponse(target, "Entry added.", [text]);
 	}
 
 	private unreadableAbort(target: Target): Result {
@@ -467,7 +469,7 @@ export class MemoryStore {
 
 		this.entries.set(target, deduped);
 		await this.persist(target);
-		return this.successResponse(target, "Entry replaced.");
+		return this.successResponse(target, "Entry replaced.", [text]);
 	}
 
 	async remove(target: Target, oldText: string): Promise<Result> {
@@ -557,6 +559,10 @@ export class MemoryStore {
 
 		this.entries.set(target, working);
 		await this.persist(target);
-		return this.successResponse(target, `Applied ${operations.length} operation(s).`);
+		const writtenEntries = [...new Set(operations.flatMap((operation) => {
+			const content = normalize(operation.content ?? operation.new_text ?? "");
+			return (operation.action === "add" || operation.action === "replace") && working.includes(content) ? [content] : [];
+		}))];
+		return this.successResponse(target, `Applied ${operations.length} operation(s).`, writtenEntries);
 	}
 }

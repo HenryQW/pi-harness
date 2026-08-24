@@ -2,6 +2,11 @@
 
 Delegate one bounded task to one isolated Pi process, or reuse validated Role launch and managed Herdr hosting for durable workers. Main chooses Role and may override shared task-model effort per call.
 
+## Why
+
+- **Created for**: Delegating bounded tasks to isolated child Pi processes while Main retains integration decisions.
+- **Advantage**: Validated Roles, capped concurrency, timeouts, and managed Herdr hosting make delegation predictable.
+
 ## Install
 
 ```bash
@@ -27,9 +32,9 @@ An explicit `model` (`provider/modelId`) overrides `modelClass` and resolves aga
 
 `modelClass` is `fast`, `balanced`, `frontier`, or `fav`. Omitted class uses the shared `pi-subagent/delegateTask` assignment, which defaults to `balanced`. Primary route is resolved against current scoped text models; fallback is tried only before launch. If no route is usable, delegation rejects with `Run /task-models`. A started child is never retried.
 
-Main splits broad work into independent bounded tasks and keeps integration and cross-cutting decisions. Each `task` states its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation. Each call uses the least capable `modelClass` that can reliably complete its task. Independent sibling calls can run concurrently; concurrent edit tasks must own non-overlapping files. Up to five active ephemeral `delegate_task` subagents run per Main; excess calls wait FIFO. Configure the cap with `"maxSubagents"` (positive integer) in `~/.pi/agent/config/pi-subagent/pi-subagent.json`, or override per session with the `PI_SUBAGENT_MAX_SUBAGENTS` environment variable. Child timeouts are configurable with a `"timeout"` object: `{ "softMinutes": 20, "graceMinutes": 10, "activeWindowSeconds": 90 }` (all keys optional; defaults 10/5/60). Invalid config values fall back to the default with a warning; an invalid environment variable fails fast. Queued calls do not start a child or consume child timeout. Managed Herdr workers are unaffected.
+Main splits broad work into independent bounded tasks and keeps integration and cross-cutting decisions. Each `task` states its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation. Each call uses the least capable `modelClass` that can reliably complete its task. Independent sibling calls can run concurrently; concurrent edit tasks must own non-overlapping files. Up to five active ephemeral `delegate_task` subagents run per Main; excess calls wait FIFO. Configure the cap with `"maxSubagents"` (positive integer) in `~/.pi/agent/config/pi-subagent/pi-subagent.json`, or override per session with the `PI_SUBAGENT_MAX_SUBAGENTS` environment variable. Child timeouts are configurable with a `"timeout"` object: `{ "idleMinutes": 10, "maxMinutes": 30 }` (all keys optional; defaults 10/30; the effective maximum must exceed the idle timeout). Invalid config values fall back to the default with a warning; an invalid environment variable fails fast. Queued calls do not start a child or consume child timeout. Managed Herdr workers are unaffected.
 
-Each call starts one isolated child (`pi --mode json -p --no-session`). Ambient extensions and Skills are off. Role/caller extensions load; those packages' tools and Skills auto-load, plus any extra `skills` names. Child uses the delegated working directory and Main's project approval. Abort kills the child process group. An inactive child times out after 10 minutes; current model/tool execution or activity in the last minute grants one 5-minute grace period, then the child stops. Streaming output is capped at 50 KiB. Unused JSON event types are discarded before payload buffering; consumed or unclassifiable events above 1 MiB fail delegation.
+Each call starts one isolated child (`pi --mode json -p --no-session`). Ambient extensions and Skills are off. Role/caller extensions load; those packages' tools and Skills auto-load, plus any extra `skills` names. Child uses the delegated working directory and Main's project approval. Abort kills the child process group. Child timeout behavior uses `deadline = min(last recognized Pi JSON event + idle timeout, child start + maximum runtime)`: recognized Pi events renew; raw bytes do not; max always terminates. Streaming output is capped at 50 KiB. Unused JSON event types are discarded before payload buffering; consumed or unclassifiable events above 1 MiB fail delegation.
 
 TUI shows one row per Subagent with role, route, task, tokens, and elapsed time. Terminal rows drop after one second.
 

@@ -2,6 +2,11 @@
 
 Pi extension that clones the current conversation path into a new Pi process in a new tab of the current Herdr workspace, or into a new Herdr Git worktree workspace. Requires Pi Coding Agent 0.84.x (minimum 0.84.2) and a Pi session running inside Herdr.
 
+## Why
+
+- **Created for**: Spawning a new Pi process that continues the current conversation, either as a workspace tab or in a fresh Git worktree.
+- **Advantage**: Clones copy only the active root-to-leaf session path, leaving sibling branches and the original session untouched.
+
 ## Install
 
 ```bash

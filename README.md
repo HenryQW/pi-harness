@@ -2,6 +2,8 @@
 
 Public Pi packages under `@henryqw` scope.
 
+![Pi packages in use](./example.png)
+
 ## Packages
 
 | Package | Purpose |
