@@ -5,13 +5,13 @@ import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil
 import { Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
-import { loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
+import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
 import { ENTRY_DELIMITER, MemoryStore, type Target } from "../src/store.ts";
 
 const SEPARATOR = "═".repeat(46);
 // Backups and the lock file live OUTSIDE config.directory (which may be
 // iCloud-synced) so the memory dir holds exactly MEMORY.md and USER.md (ADR 005).
-const BACKUP_DIR = () => join(getAgentDir(), "backups", "pi-memory");
+const BACKUP_DIR = () => join(getAgentDir(), "config", "pi-memory", "backups");
 // Defense-in-depth against snapshot frame spoofing by poisoned on-disk entries.
 const FRAME_TOKEN_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/;
 const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
@@ -271,7 +271,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		// Failed init stays visible every turn (correctness-critical config must
 		// not vanish silently) but as a warning line, not a per-turn throw-loop.
 		if (state.initError) {
-			return { systemPrompt: `${event.systemPrompt}\n\nWARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix config/pi-memory.json and restart.` };
+			return { systemPrompt: `${event.systemPrompt}\n\nWARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configPath()} and restart.` };
 		}
 		if (!state.config || !state.stores || !state.snapshotBlocks) return;
 		const blocks = [...state.snapshotBlocks, ...state.conflictWarnings].filter(Boolean).join("\n\n");

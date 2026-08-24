@@ -28,7 +28,7 @@ To inspect live state, read `<directory>/MEMORY.md`.
 
 ## Config
 
-`~/.pi/agent/config/pi-memory.json`
+`~/.pi/agent/config/pi-memory/config.json`
 
 ```json
 {
@@ -38,7 +38,7 @@ To inspect live state, read `<directory>/MEMORY.md`.
 }
 ```
 
-- `directory`: absolute path where `MEMORY.md` and `USER.md` live. Required only when overriding the default (`~/.pi/agent/memory`). Point it at an iCloud- or Obsidian-synced folder to sync across machines.
+- `directory`: absolute path where `MEMORY.md` and `USER.md` live. Required only when overriding the default (`~/.pi/agent/config/pi-memory/memory`). Point it at an iCloud- or Obsidian-synced folder to sync across machines.
 - `memoryCharLimit` / `userCharLimit`: positive integers, maximum 100000.
 
 Invalid configuration fails fast; malformed config files are never rewritten.
@@ -47,7 +47,7 @@ Invalid configuration fails fast; malformed config files are never rewritten.
 
 Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault acts as a dumb sync pipe: pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
 
-Backups and the lock file live outside `directory`, under `~/.pi/agent/backups/pi-memory/`.
+Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi-memory/backups/`.
 
 ## Threat model
 
