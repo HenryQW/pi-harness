@@ -21,7 +21,7 @@ pi install npm:@henryqw/pi-session-search
 
 **Discovery** — BM25-ranked top sessions; top hit hydrated with a ±5 message window and first/last-3 bookends; lower hits carry the matched anchor message plus metadata (`detail:"full"` hydrates all).
 
-**Scroll** — ±`window` messages ([1,20]) around the anchor on its branch; scroll forward/backward by re-anchoring on the last/first message id of the returned window.
+**Scroll** — ±`window` messages ([1,20]) around the anchor on its branch; scroll forward/backward by re-anchoring on the last/first message id of the returned window. Across forks, pass the previous response's `branchTip` to select the branch — `aroundMessageId` only centers the window and must lie on that branch.
 
 **Read** — whole session; head 20 + tail 10 when large, with oversized content bounded to 50k characters and flagged by `contentTruncated`.
 

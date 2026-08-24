@@ -11,9 +11,8 @@ export interface WindowResult {
 	messages: WindowMessage[];
 	messagesBefore: number;
 	messagesAfter: number;
-	/** Tip of the branch the window was resolved on — pass back as
-	 *  aroundMessageId to keep scrolling on this branch across forks. May be a
-	 *  non-message entry id; windows center on its nearest message ancestor. */
+	/** Tip of the branch the window was resolved on — pass back as branchTip to
+	 *  keep scrolling on this branch across forks. May be a non-message entry id. */
 	branchTip: string;
 }
 
@@ -38,6 +37,7 @@ interface Entry {
 function parseSessionEntries(sessionPath: string): Entry[] {
 	const raw = readFileSync(sessionPath, "utf8");
 	const entries: Entry[] = [];
+	const seenIds = new Set<string>();
 	for (const line of raw.split("\n")) {
 		if (!line.trim()) continue;
 		let obj: unknown;
@@ -52,8 +52,12 @@ function parseSessionEntries(sessionPath: string): Entry[] {
 			typeof e.id === "string" &&
 			e.id.length > 0 &&
 			e.id.length <= 256 &&
+			!seenIds.has(e.id) &&
 			(e.parentId == null || (typeof e.parentId === "string" && e.parentId.length <= 256))
-		) entries.push(e);
+		) {
+			seenIds.add(e.id);
+			entries.push(e);
+		}
 	}
 	return entries;
 }
@@ -155,6 +159,7 @@ export function getWindow(
 	sessionPath: string,
 	anchorEntryId: string,
 	windowN: number,
+	opts?: { branchTip?: string },
 ): WindowResult {
 	const n = Math.max(0, Math.min(50, windowN));
 	const entries = parseSessionEntries(sessionPath);
@@ -164,7 +169,18 @@ export function getWindow(
 	const messageAnchor = resolveMessageCursor(entriesById, anchorEntryId);
 	const anchorEntryIdMsg = messageAnchor.id;
 
-	const tip = deepestDescendant(entriesById, entries, anchorEntryId);
+	let tip: string;
+	if (opts?.branchTip) {
+		// Explicit branch selection: resolve the branch from its tip (deepest
+		// descendant), independent of where the window centers.
+		resolveMessageCursor(entriesById, opts.branchTip); // unknown tip → throw
+		tip = deepestDescendant(entriesById, entries, opts.branchTip);
+		if (!branch(entriesById, tip).some((e) => e.id === messageAnchor.id)) {
+			throw new Error(`anchor entry ${anchorEntryId} is not on branch ${opts.branchTip}`);
+		}
+	} else {
+		tip = deepestDescendant(entriesById, entries, anchorEntryId);
+	}
 	const msgs = branchMessages(entriesById, tip);
 	const idx = msgs.findIndex((m) => m.entryId === anchorEntryIdMsg);
 	const start = Math.max(0, idx - n);

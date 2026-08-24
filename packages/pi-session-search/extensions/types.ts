@@ -40,7 +40,6 @@ export interface SearchHit {
 export interface SyncResult {
 	filesProcessed: number;
 	messagesIndexed: number;
-	filesSkipped: number;
-	/** Changed files not yet indexed because the per-call cap was hit. */
+	/** Changed files still unindexed after this pass, including failures. */
 	backlogRemaining: number;
 }

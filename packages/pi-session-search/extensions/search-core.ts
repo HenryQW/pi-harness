@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS session_files (
   size INTEGER NOT NULL,
   mtime_ms INTEGER NOT NULL
 );
+-- Retry markers affect ordering only: unchanged failures move behind fresh work,
+-- but remain eligible on every pass once fresh work is drained.
 CREATE TABLE IF NOT EXISTS session_failures (
   path TEXT PRIMARY KEY,
   size INTEGER NOT NULL,
@@ -127,6 +129,7 @@ function extractText(content: unknown): string {
 }
 
 function parseSessionFile(filePath: string): ParsedFile {
+	const seenEntryIds = new Set<string>();
 	const parsed: ParsedFile = {
 		cwd: null,
 		name: null,
@@ -146,6 +149,14 @@ function parseSessionFile(filePath: string): ParsedFile {
 		} catch {
 			continue; // skip malformed lines
 		}
+		const hasValidId = typeof entry?.id === "string" && entry.id.length > 0 && entry.id.length <= 256
+			&& (entry.parentId == null || (typeof entry.parentId === "string" && entry.parentId.length <= 256));
+		if (hasValidId) {
+			// Hydration is first-wins across every entry type; reserve IDs at the
+			// same boundary so discovery can never point at a different duplicate.
+			if (seenEntryIds.has(entry.id)) continue;
+			seenEntryIds.add(entry.id);
+		}
 		switch (entry?.type) {
 			case "session":
 				// Untrusted header strings are capped here so every consumer
@@ -162,7 +173,7 @@ function parseSessionFile(filePath: string): ParsedFile {
 				if (role !== "user" && role !== "assistant") break;
 				const text = truncateText(extractText(entry.message.content));
 				if (!text) break;
-				if (typeof entry.id !== "string" || !entry.id || entry.id.length > 256) break;
+				if (!hasValidId) break;
 				if (role === "user" && parsed.preview === null) {
 					parsed.preview = text.slice(0, 200);
 				}
@@ -248,7 +259,6 @@ export function syncSessions(
 	const failures = new Map(
 		(db.prepare("SELECT path, size, mtime_ms FROM session_failures").all() as any[]).map((r) => [r.path, r]),
 	);
-
 	// An incomplete traversal proves nothing about absence: purging here would
 	// wipe healthy sessions over a transient readdir/stat failure. Changed/new
 	// files already discovered still process normally.
@@ -257,21 +267,23 @@ export function syncSessions(
 	const deletedFailures = walk.complete ? [...failures.keys()].filter((p) => !discovered.has(p)) : [];
 
 	const changed: { path: string; stat: fs.Stats }[] = [];
-	let filesSkipped = 0;
 	for (const [p, stat] of all) {
 		const mtimeMs = Math.floor(stat.mtimeMs);
 		const wm = watermarks.get(p);
 		if (wm && wm.size === stat.size && wm.mtime_ms === mtimeMs) continue;
-		const failed = failures.get(p);
-		if (failed && failed.size === stat.size && failed.mtime_ms === mtimeMs) {
-			filesSkipped++;
-			continue;
-		}
 		changed.push({ path: p, stat });
 	}
 
-	// Newest-first: crash-recovery priority.
-	changed.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+	// Newest-first, but an unchanged prior failure moves behind untouched work.
+	// This retries transient failures without letting one persistent failure
+	// monopolize a small cap forever.
+	changed.sort((a, b) => {
+		const aFailure = failures.get(a.path);
+		const bFailure = failures.get(b.path);
+		const aRetry = aFailure?.size === a.stat.size && aFailure.mtime_ms === Math.floor(a.stat.mtimeMs);
+		const bRetry = bFailure?.size === b.stat.size && bFailure.mtime_ms === Math.floor(b.stat.mtimeMs);
+		return Number(aRetry) - Number(bRetry) || b.stat.mtimeMs - a.stat.mtimeMs;
+	});
 	deleted.sort((a, b) => {
 		const ma = watermarks.get(a)!.mtime_ms;
 		const mb = watermarks.get(b)!.mtime_ms;
@@ -315,37 +327,34 @@ export function syncSessions(
 	let filesProcessed = 0;
 	let messagesIndexed = 0;
 
-	// The cap bounds total ATTEMPTS per pass, not successes: work per sync call
-	// stays bounded regardless of failures. An unchanged failure fingerprint is
-	// skipped on later passes until the file changes.
+	// The cap bounds total indexing attempts per pass, not successes.
 	const batch = changed.slice(0, cap);
 	for (const { path: p, stat } of batch) {
 		try {
 			messagesIndexed += tx(p, stat);
 			filesProcessed++;
 		} catch {
-			// Do not retry an unchanged permanent failure on every startup/search.
+			// Keep the file retryable, but put this unchanged fingerprint behind
+			// untouched work on the next pass.
 			upsertFailure.run(p, stat.size, Math.floor(stat.mtimeMs));
 		}
 	}
-	const changedRemaining = changed.length - batch.length;
 
-	let purged = 0;
+	const deletedRemaining = Math.max(0, deleted.length - cap);
 	for (const p of deleted.slice(0, cap)) {
 		delStmt.run(p);
 		delSession.run(p);
 		delFile.run(p);
 		delFailure.run(p);
-		purged++;
 	}
-	const deletedRemaining = Math.max(0, deleted.length - cap);
-	for (const p of deletedFailures.slice(0, cap)) delFailure.run(p);
+	for (const p of deletedFailures) delFailure.run(p);
 
-	const backlog = changedRemaining + deletedRemaining;
+	// Attempted failures remain unsynced and therefore remain in the backlog.
+	const backlog = changed.length - filesProcessed + deletedRemaining;
 	db.prepare("INSERT INTO meta(key, value) VALUES ('backlog', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(backlog));
 	db.close();
 
-	return { filesProcessed, messagesIndexed, filesSkipped, backlogRemaining: backlog };
+	return { filesProcessed, messagesIndexed, backlogRemaining: backlog };
 }
 
 function getBacklog(db: BetterSqlite3.Database): number {
@@ -358,20 +367,52 @@ function getBacklog(db: BetterSqlite3.Database): number {
 const OPERATOR_RE = /\b(OR|AND|NOT|NEAR)\b/;
 const TOKEN_RE = /"([^"]*)"|(\S+)/g;
 
-function collectTerms(query: string): string[] {
-	const terms: string[] = [];
-	for (const m of query.matchAll(TOKEN_RE)) {
-		const phrase = m[1];
-		let raw = phrase ?? m[2] ?? "";
-		if (!raw) continue;
-		if (phrase === undefined) {
-			// Strip sentence punctuation from bare terms ("deployment?" →
-			// "deployment") while keeping technical sigils (C++, C#) intact.
-			raw = raw.replace(/^[.,!?;:]+|[.,!?;:]+$/g, "");
+interface QueryTerm {
+	text: string;
+	operator: boolean;
+	nearDistance: boolean;
+}
+
+function collectQueryTerms(query: string): QueryTerm[] {
+	const terms: QueryTerm[] = [];
+	let depth = 0;
+	let pendingNear = false;
+	let nearDepth = 0;
+	let afterNearComma = false;
+	for (const match of spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)) {
+		const phrase = match[1];
+		const raw = phrase ?? match[2] ?? "";
+		if (phrase === undefined && raw === "(") {
+			depth++;
+			if (pendingNear) {
+				nearDepth = depth;
+				pendingNear = false;
+			}
+			continue;
 		}
-		if (raw) terms.push(raw);
+		if (phrase === undefined && raw === ")") {
+			if (depth === nearDepth) {
+				nearDepth = 0;
+				afterNearComma = false;
+			}
+			depth = Math.max(0, depth - 1);
+			continue;
+		}
+		const hasNearComma = phrase === undefined && nearDepth > 0 && raw.endsWith(",");
+		const text = phrase ?? raw.replace(/^[.,!?;:()]+|[.,!?;:()]+$/g, "");
+		if (text) {
+			const operator = phrase === undefined && /^(?:OR|AND|NOT|NEAR)$/.test(text);
+			const nearDistance = nearDepth > 0 && afterNearComma && /^\d+$/.test(text);
+			terms.push({ text, operator, nearDistance });
+			if (operator && text === "NEAR") pendingNear = true;
+		}
+		if (hasNearComma) afterNearComma = true;
 	}
 	return terms;
+}
+
+function collectTerms(query: string): string[] {
+	return collectQueryTerms(query).filter((term) => !term.nearDistance).map((term) => term.text);
 }
 
 function quoteTerm(t: string): string {
@@ -402,15 +443,16 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 	if (query.length > MAX_QUERY_CHARS) query = query.slice(0, MAX_QUERY_CHARS);
 	if (!query) return { ftsCandidates: [], forceLike: false };
 
-	const terms = collectTerms(query);
+	const queryTerms = collectQueryTerms(query);
+	const terms = queryTerms.filter((term) => !term.nearDistance).map((term) => term.text);
 	const hasOperator = OPERATOR_RE.test(query);
 	// Short terms vanish under trigram MATCH — for natural-language queries
 	// (AND semantics) that silently breaks the query. Explicit-operator queries
 	// route there too (`Go OR Rust` silently drops the Go side); the boolean
 	// LIKE fallback preserves their AND/OR/NOT semantics.
 	if (
-		terms.some(
-			(t) => !/^(?:OR|AND|NOT|NEAR)$/.test(t) && t.replace(/["()*]/g, "").length < 3,
+		queryTerms.some(
+			(term) => !term.operator && !term.nearDistance && [...term.text.replace(/["()*]/g, "")].length < 3,
 		)
 	) {
 		return { ftsCandidates: [], forceLike: true };
@@ -651,13 +693,17 @@ export function searchIndex(
 
 		if (usedLike) {
 			const trimmed = query.trim().slice(0, MAX_QUERY_CHARS);
-			const terms = collectTerms(trimmed)
-				.map((t) => normalizeLikeTerm(t.replace(/"/g, "")))
+			// Keep quoted operator words as operands and omit NEAR's optional numeric
+			// distance; only unquoted syntax tokens are excluded.
+			const operandTerms = collectQueryTerms(trimmed)
+				.filter((term) => !term.operator && !term.nearDistance)
+				.map((term) => normalizeLikeTerm(term.text))
 				.filter(Boolean);
-			if (terms.length === 0) return { hits: [], backlogRemaining: getBacklog(db) };
+			if (operandTerms.length === 0) return { hits: [], backlogRemaining: getBacklog(db) };
+			const terms = operandTerms;
 			// Snippets anchor on operand terms only — operator words like OR would
 			// otherwise match common substrings and hide the real match.
-			const snippetTerms = terms.filter((t) => !/^(?:OR|AND|NOT|NEAR)$/.test(t));
+			const snippetTerms = terms;
 			// Boolean LIKE preserves simple AND/OR/NOT; unsupported shapes degrade
 			// to AND-of-terms. Both forms are fully parameterized.
 			const bool = buildBooleanLikeSql(trimmed);

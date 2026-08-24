@@ -142,6 +142,33 @@ describe("session_search entry point", () => {
 		assert.equal(scrollResult.messagesBefore, 2);
 	});
 
+	it("SCROLL keeps position and branch as separate cursors", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-branch-scroll`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		msgCount = 1;
+		const session = writeSession("fork-scroll/session.jsonl", [
+			{ type: "session", version: 3, id: "fork-scroll", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp" },
+			msg(null, "user", "q1"),
+			msg("e01", "assistant", "a1"),
+			msg("e02", "user", "q2"),
+			msg("e03", "assistant", "branch A"),
+			msg("e04", "user", "branch A tail"),
+			msg("e03", "assistant", "branch B"),
+			msg("e06", "user", "branch B tail"),
+		]);
+		const response = await tool.execute("tb", {
+			sessionId: session,
+			aroundMessageId: "e01",
+			branchTip: "e05",
+			window: 5,
+		}, undefined, undefined, { sessionManager: {} });
+		const parsed = JSON.parse(response.content[0].text);
+		assert.deepEqual(parsed.messages.map((m: { entryId: string }) => m.entryId), ["e01", "e02", "e03", "e04", "e05"]);
+		assert.equal(parsed.branchTip, "e05");
+	});
+
 	it("READ clamps oversized content to the output budget (PR #135)", async () => {
 		const pi = makePi();
 		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-read`);

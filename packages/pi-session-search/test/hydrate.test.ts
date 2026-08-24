@@ -88,6 +88,31 @@ test("fork tree: window counts only messages on anchor branch", () => {
 	assert.deepEqual(r.messages.map((m) => m.entryId), ["e01", "e02", "e06", "e07"]);
 });
 
+test("branchTip selects branch independently of aroundMessageId center", () => {
+	const msg = mkMsgs();
+	// e01..e03 shared, branch A e04,e05; branch B e06,e07 (leaf).
+	const p = write("fork.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		msg(null, "user", "q1"), // e01
+		msg("e01", "assistant", "a1"), // e02
+		msg("e02", "user", "q2"), // e03
+		msg("e03", "assistant", "A-a1"), // e04 branch A
+		msg("e04", "user", "A-q2"), // e05
+		msg("e03", "assistant", "B-a1"), // e06 branch B
+		msg("e06", "user", "B-q2"), // e07 leaf
+	]);
+	// Scroll backward on inactive branch A: anchor moves to shared root while
+	// branchTip keeps the window on A instead of jumping to leaf branch B.
+	const w = getWindow(p, "e01", 5, { branchTip: "e05" });
+	assert.deepEqual(w.messages.map((m) => m.entryId), ["e01", "e02", "e03", "e04", "e05"]);
+	assert.equal(w.messagesBefore, 0);
+	assert.equal(w.messagesAfter, 4);
+	assert.equal(w.branchTip, "e05");
+	// Anchor on the other branch must be rejected.
+	assert.throws(() => getWindow(p, "e06", 5, { branchTip: "e05" }), /not on branch/);
+	assert.throws(() => getWindow(p, "e01", 5, { branchTip: "nope" }), /not found/);
+});
+
 test("interleaved non-message entries are transparent", () => {
 	const msg = mkMsgs();
 	const p = write("interleaved.jsonl", [
@@ -120,6 +145,17 @@ test("non-message branch tip centers on its nearest message ancestor", () => {
 	assert.deepEqual(window.messages.map((m) => m.entryId), ["e01"], "later sibling branch must stay excluded");
 	assert.equal(window.messages[0].anchor, true);
 	assert.equal(window.branchTip, "mc1");
+});
+
+test("duplicate ids use the first entry consistently with indexing", () => {
+	const p = write("duplicate.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		{ type: "custom", id: "dup", parentId: null, timestamp: "2024-01-01T00:00:01.000Z" },
+		{ type: "message", id: "dup", parentId: null, timestamp: "2024-01-01T00:00:02.000Z", message: { role: "user", content: [{ type: "text", text: "duplicate searchable copy" }] } },
+		{ type: "message", id: "child", parentId: "dup", timestamp: "2024-01-01T00:00:03.000Z", message: { role: "assistant", content: [{ type: "text", text: "child" }] } },
+	]);
+	const result = readSession(p);
+	assert.deepEqual(result.messages.map((m) => m.content), ["child"]);
 });
 
 test("oversized entry and parent ids are rejected without corrupting the branch", () => {

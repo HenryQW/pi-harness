@@ -148,7 +148,7 @@ describe("sanitize ladder", () => {
 
 	it("explicit operator queries pass raw with quoted recovery then OR", () => {
 		const plan = buildFtsQueryPlan("error AND NOT (unterminated");
-		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "(unterminated"`, `"error" OR "AND" OR "NOT" OR "(unterminated"`]);
+		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "AND" "NOT" "unterminated"`, `"error" OR "AND" OR "NOT" OR "unterminated"`]);
 	});
 
 	it("explicit operators with short terms route to boolean LIKE (bhZel)", () => {
@@ -283,28 +283,113 @@ describe("lineage + guards", () => {
 		assert.equal(hits[0].path.endsWith("child.jsonl"), true);
 	});
 
-	it("failed files consume one bounded attempt and are skipped until changed", () => {
-		const dup = JSON.stringify({ type: "message", id: "dup", parentId: null, timestamp: "t", message: { role: "user", content: [{ type: "text", text: "dup id one" }] } });
+	it("duplicate ids are first-wins across entry types", () => {
 		writeFixture("--cap-fail--", "bad.jsonl", [
 			sessionHeader(),
-			dup,
-			dup.replace("one", "two"),
+			JSON.stringify({ type: "custom", id: "dup", parentId: null, timestamp: "t" }),
+			msg("dup", "user", "duplicate searchable text must not index"),
+			msg("unique", "assistant", "unique searchable text indexes"),
 		], 90000);
 		writeFixture("--cap-ok1--", "ok1.jsonl", [
 			sessionHeader(),
 			msg("g1", "user", "capfail unique marker one"),
 		], 80000);
-		writeFixture("--cap-ok2--", "ok2.jsonl", [
-			sessionHeader(),
-			msg("g2", "user", "capfail unique marker two"),
-		], 70000);
-		const first = syncSessions(sessionsDir, dbPath, { cap: 1 });
-		assert.equal(first.filesProcessed, 0, "failed attempt must consume the cap");
-		assert.equal(first.backlogRemaining, 2);
-		const second = syncSessions(sessionsDir, dbPath, { cap: 1 });
-		assert.equal(second.filesSkipped, 1, "unchanged failure must not be reparsed");
-		assert.equal(second.filesProcessed, 1, "older healthy work must progress next pass");
+		const res = syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(res.filesProcessed, 2, "duplicate ids must not fail the transaction");
+		assert.equal(searchIndex(dbPath, "duplicate searchable text").hits.length, 0);
+		assert.equal(searchIndex(dbPath, "unique searchable text").hits.length, 1);
 		assert.equal(searchIndex(dbPath, "capfail unique marker one").hits.length, 1);
+	});
+
+	it("transient read failure is retried on the next pass without file changes (regression)", () => {
+		const target = writeFixture("--transient--", "t.jsonl", [
+			sessionHeader(),
+			msg("tr1", "user", "transient retry unique marker text"),
+		], 95000);
+		const origRead = fs.readFileSync;
+		let failed = false;
+		try {
+			fs.readFileSync = ((p: any, ...rest: any[]) => {
+				if (p === target && !failed) {
+					failed = true; // stat succeeded, first read fails once
+					throw new Error("EIO simulated");
+				}
+				return (origRead as any).call(fs, p, ...rest);
+			}) as typeof fs.readFileSync;
+			const first = syncSessions(sessionsDir, dbPath);
+			assert.equal(first.filesProcessed, 0, "simulated transient read must fail the pass");
+		} finally {
+			fs.readFileSync = origRead;
+		}
+		// File is unchanged — no fingerprint cache may block the retry.
+		const second = syncSessions(sessionsDir, dbPath);
+		assert.equal(second.filesProcessed, 1, "unchanged file must be retried and indexed");
+		assert.equal(searchIndex(dbPath, "transient retry unique marker").hits.length, 1);
+	});
+
+	it("persistent failures retry without starving older healthy files", () => {
+		const failing = writeFixture("--retry-order--", "fail.jsonl", [
+			sessionHeader(),
+			msg("rf", "user", "retry order eventually indexed"),
+		], 99500);
+		writeFixture("--retry-order--", "ok1.jsonl", [sessionHeader(), msg("ro1", "user", "retry order healthy one")], 99400);
+		writeFixture("--retry-order--", "ok2.jsonl", [sessionHeader(), msg("ro2", "user", "retry order healthy two")], 99300);
+		const origRead = fs.readFileSync;
+		let fail = true;
+		try {
+			fs.readFileSync = ((p: any, ...rest: any[]) => {
+				if (p === failing && fail) throw new Error("persistent EIO simulated");
+				return (origRead as any).call(fs, p, ...rest);
+			}) as typeof fs.readFileSync;
+			const first = syncSessions(sessionsDir, dbPath, { cap: 1 });
+			assert.equal(first.filesProcessed, 0);
+			assert.equal(first.backlogRemaining, 3, "attempted failure remains backlog");
+			assert.equal(syncSessions(sessionsDir, dbPath, { cap: 1 }).filesProcessed, 1);
+			const third = syncSessions(sessionsDir, dbPath, { cap: 1 });
+			assert.equal(third.filesProcessed, 1, "second healthy file must not starve");
+			assert.equal(third.backlogRemaining, 1);
+			fail = false;
+			assert.equal(syncSessions(sessionsDir, dbPath, { cap: 1 }).backlogRemaining, 0);
+		} finally {
+			fs.readFileSync = origRead;
+		}
+		assert.equal(searchIndex(dbPath, "retry order healthy one", { limit: 5 }).hits.length, 1);
+		assert.equal(searchIndex(dbPath, "retry order healthy two", { limit: 5 }).hits.length, 1);
+	});
+
+	it("grouping parens outside quotes are stripped from terms before planning (regression)", () => {
+		const plan = buildFtsQueryPlan("(deploy pipeline)");
+		assert.deepEqual(plan.ftsCandidates[0], `"deploy" "pipeline"`);
+		assert.equal(plan.forceLike, false);
+		const { hits } = searchIndex(dbPath, "(deploy pipeline)");
+		assert.ok(hits.length >= 1, "parenthesized natural query must match deploy pipeline hits");
+	});
+
+	it("NEAR with short operands falls back to LIKE over operand terms, not literal NEAR (regression)", () => {
+		writeFixture("--near-proj--", "near.jsonl", [
+			sessionHeader(),
+			msg("n1", "user", "we wrote the CLI in Go AND kept the parser in Rust here"),
+		], 96000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(buildFtsQueryPlan("NEAR(Go Rust)").forceLike, true);
+		const { hits } = searchIndex(dbPath, "NEAR(Go Rust)");
+		assert.equal(hits.length, 1, "NEAR operands must be searched via LIKE fallback");
+		assert.ok(!hits[0].snippet.includes("NEAR"), "snippet terms must not anchor on the operator");
+		assert.equal(searchIndex(dbPath, "NEAR(Go Rust, 5)").hits.length, 1, "NEAR distance is syntax, not an operand");
+		assert.equal(searchIndex(dbPath, "NEAR(Go \"AND\")").hits.length, 1, "quoted operator word remains an operand");
+	});
+
+	it("short-term floor counts Unicode code points, not UTF-16 units (two-emoji term)", () => {
+		writeFixture("--emoji-proj--", "emoji.jsonl", [
+			sessionHeader(),
+			msg("em1", "user", "ship it \u{1F680}\u{1F680} today please"),
+		], 97000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		// Two emoji = 4 UTF-16 units but 2 code points → below trigram floor → LIKE.
+		const plan = buildFtsQueryPlan("\u{1F680}\u{1F680}");
+		assert.equal(plan.forceLike, true);
+		const { hits } = searchIndex(dbPath, "\u{1F680}\u{1F680}");
+		assert.equal(hits.length, 1, "two-emoji term must match via LIKE fallback");
 	});
 
 	it("entries without valid ids are skipped without aborting the pass (bhGOu)", () => {

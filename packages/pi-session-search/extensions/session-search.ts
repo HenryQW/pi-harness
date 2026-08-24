@@ -89,6 +89,7 @@ interface ToolParams {
 	query?: string;
 	sessionId?: string;
 	aroundMessageId?: string;
+	branchTip?: string;
 	window?: number;
 	limit?: number;
 	detail?: "adaptive" | "full";
@@ -104,7 +105,7 @@ FOUR CALLING SHAPES
 
   2) SCROLL — pass \`sessionId\` + \`aroundMessageId\`:
      session_search(sessionId="...", aroundMessageId="e07", window=10)
-     Returns ±window messages centered on the anchor (clamped to [1,20]). Use after discovery when you need more context than the default ±5 window. To scroll forward/backward, pass the last/first message entryId of the previous window back as aroundMessageId; messagesBefore/messagesAfter tell you where you are. Across forks, re-anchoring on a shared ancestor can jump branches — pass the previous response's branchTip as aroundMessageId instead to stay on the same branch.
+     Returns ±window messages centered on the anchor (clamped to [1,20]). Use after discovery when you need more context than the default ±5 window. To scroll forward/backward, pass the last/first message entryId of the previous window back as aroundMessageId; messagesBefore/messagesAfter tell you where you are. Across forks, re-anchoring on a shared ancestor can jump branches — pass the previous response's branchTip as the branchTip argument (aroundMessageId only moves the center) to stay on that branch.
 
   3) READ — pass \`sessionId\` only:
      session_search(sessionId="...")
@@ -142,7 +143,8 @@ export default function (pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Search query (discovery). FTS5 syntax supported." })),
 			sessionId: Type.Optional(Type.String({ description: "Absolute path of the session file." })),
-			aroundMessageId: Type.Optional(Type.String({ description: "Anchor entry id for scroll mode (with sessionId)." })),
+			aroundMessageId: Type.Optional(Type.String({ description: "Anchor entry id for scroll mode — centers the window (with sessionId)." })),
+			branchTip: Type.Optional(Type.String({ description: "Branch tip entry id from a previous response — selects which branch of a forked session to scroll; aroundMessageId must lie on it." })),
 			window: Type.Optional(Type.Number({ description: "Scroll window radius, [1,20], default 5." })),
 			limit: Type.Optional(Type.Number({ description: "Max results, [1,10], default 3." })),
 			detail: Type.Optional(StringEnum(["adaptive", "full"] as const)),
@@ -154,6 +156,7 @@ export default function (pi: ExtensionAPI): void {
 					query: rawParams.query != null ? String(rawParams.query) : undefined,
 					sessionId: rawParams.sessionId != null ? String(rawParams.sessionId) : undefined,
 					aroundMessageId: rawParams.aroundMessageId != null ? String(rawParams.aroundMessageId) : undefined,
+					branchTip: rawParams.branchTip != null ? String(rawParams.branchTip) : undefined,
 					window: rawParams.window,
 					limit: rawParams.limit,
 					detail: rawParams.detail,
@@ -177,7 +180,8 @@ export default function (pi: ExtensionAPI): void {
 				// --- SCROLL ---
 				if (sessionId && anchor) {
 					const w = clamp(params.window, 1, 20, 5);
-					const win = getWindow(sessionId, anchor, w);
+					const branchTip = params.branchTip?.trim() || undefined;
+					const win = getWindow(sessionId, anchor, w, branchTip ? { branchTip } : undefined);
 					const base = { mode: "scroll", sessionId, branchTip: win.branchTip, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
 					let result: Record<string, unknown> = { ...base, messages: win.messages };
 					if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && win.messages.length > 0) {
