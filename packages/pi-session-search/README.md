@@ -41,7 +41,9 @@ Hits inside the current session's live context are suppressed; compacted-away or
 }
 ```
 
-- `backfillFiles`: max session files attempted per sync pass, [1,500] (default 50). Malformed config is ignored with a warning and never rewritten; failed unchanged files are skipped until they change.
+- `backfillFiles`: max session files attempted per sync pass, [1,500] (default 50). Malformed config is ignored with a warning and never rewritten; failed files are retried on later passes but ordered behind fresh work.
+
+Deliberate exclusion: session directories whose encoded path starts with `--private-tmp-` (sessions run from `/tmp` or `/private/tmp`) are never indexed.
 
 ## Storage & privacy
 

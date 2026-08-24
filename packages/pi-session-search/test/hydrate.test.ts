@@ -224,3 +224,15 @@ test("legacy version 1 file: parsed fine, bytes unchanged after both calls", () 
 	assert.equal(w.messages.length, 2);
 	assert.equal(r.totalMessages, 2);
 });
+
+test("malformed message content: object and non-string text parts yield empty string, not throw", () => {
+	const p = write("bad-content.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		{ type: "message", id: "e01", parentId: null, timestamp: "2024-01-01T00:00:01.000Z", message: { role: "user", content: {} } },
+		{ type: "message", id: "e02", parentId: "e01", timestamp: "2024-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text" }, { type: "text", text: 123 }] } },
+	]);
+	const r = readSession(p);
+	assert.deepEqual(r.messages.map((m) => m.content), ["", ""]);
+	const w = getWindow(p, "e01", 1);
+	assert.equal(w.messages[0].content, "");
+});

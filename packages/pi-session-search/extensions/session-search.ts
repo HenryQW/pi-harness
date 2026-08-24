@@ -161,7 +161,7 @@ export default function (pi: ExtensionAPI): void {
 					limit: rawParams.limit,
 					detail: rawParams.detail,
 				};
-				const sessionId = params.sessionId?.trim() || undefined;
+				let sessionId = params.sessionId?.trim() || undefined;
 				const anchor = params.aroundMessageId?.trim() || undefined;
 				if (sessionId) {
 					// Trust boundary: canonical target must live under the real
@@ -172,6 +172,9 @@ export default function (pi: ExtensionAPI): void {
 						if (!resolved.startsWith(root + sep) || !resolved.endsWith(".jsonl")) {
 							return textResult({ success: false, message: "sessionId must be a .jsonl file under the Pi sessions directory" });
 						}
+						// Rebind to the validated canonical path so downstream reads cannot
+						// be redirected by a symlink swapped in after validation (TOCTOU).
+						sessionId = resolved;
 					} catch {
 						return textResult({ success: false, message: `session file not found: ${sessionId}` });
 					}

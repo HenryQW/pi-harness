@@ -2,9 +2,9 @@
  * Index engine: SQLite schema (WAL, external-content trigram FTS5), capped
  * incremental sync from Pi session JSONL files, query sanitize ladder,
  * discovery search with one-hop lineage suppression. No pi runtime imports —
- * pure Node + better-sqlite3 so it is testable headless.
+ * pure Node + node:sqlite so it is testable headless.
  */
-import BetterSqlite3 from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import type { SearchHit, SessionRow, SyncResult } from "./types.ts";
@@ -71,12 +71,24 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
-function openDb(dbPath: string): BetterSqlite3.Database {
+function openDb(dbPath: string): DatabaseSync {
 	fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-	const db = new BetterSqlite3(dbPath);
-	db.pragma("journal_mode = WAL");
-	db.pragma("busy_timeout = 5000");
-	db.exec(SCHEMA_SQL);
+	const db = new DatabaseSync(dbPath);
+	try {
+		db.exec("PRAGMA journal_mode = WAL");
+		db.exec("PRAGMA busy_timeout = 5000");
+		db.exec(SCHEMA_SQL);
+		// Migration for index.db files created by 0.1.2: session_failures lacked
+		// attempts. Fails harmlessly (duplicate column) on fresh DBs.
+		try {
+			db.exec("ALTER TABLE session_failures ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0");
+		} catch {
+			// already migrated
+		}
+	} catch (err) {
+		db.close();
+		throw err;
+	}
 	return db;
 }
 
@@ -249,6 +261,7 @@ export function syncSessions(
 		? Math.max(1, Math.min(MAX_BACKFILL_FILES, Math.floor(requestedCap)))
 		: DEFAULT_SYNC_CAP;
 	const db = openDb(dbPath);
+	try {
 
 	// Junk dirs never reach the walk result: pruned during descent.
 	const walk = walkJsonlFiles(sessionsDir);
@@ -257,7 +270,7 @@ export function syncSessions(
 		(db.prepare("SELECT path, size, mtime_ms FROM session_files").all() as any[]).map((r) => [r.path, r]),
 	);
 	const failures = new Map(
-		(db.prepare("SELECT path, size, mtime_ms FROM session_failures").all() as any[]).map((r) => [r.path, r]),
+		(db.prepare("SELECT path, size, mtime_ms, attempts FROM session_failures").all() as any[]).map((r) => [r.path, r]),
 	);
 	// An incomplete traversal proves nothing about absence: purging here would
 	// wipe healthy sessions over a transient readdir/stat failure. Changed/new
@@ -275,14 +288,19 @@ export function syncSessions(
 	}
 
 	// Newest-first, but an unchanged prior failure moves behind untouched work.
-	// This retries transient failures without letting one persistent failure
+	// Among retries, fewest attempts first so one persistent failure cannot
 	// monopolize a small cap forever.
+	const retryAttempts = (p: string, stat: fs.Stats): number | null => {
+		const f = failures.get(p);
+		return f && f.size === stat.size && f.mtime_ms === Math.floor(stat.mtimeMs) ? (f.attempts ?? 0) : null;
+	};
 	changed.sort((a, b) => {
-		const aFailure = failures.get(a.path);
-		const bFailure = failures.get(b.path);
-		const aRetry = aFailure?.size === a.stat.size && aFailure.mtime_ms === Math.floor(a.stat.mtimeMs);
-		const bRetry = bFailure?.size === b.stat.size && bFailure.mtime_ms === Math.floor(b.stat.mtimeMs);
-		return Number(aRetry) - Number(bRetry) || b.stat.mtimeMs - a.stat.mtimeMs;
+		const aRetry = retryAttempts(a.path, a.stat);
+		const bRetry = retryAttempts(b.path, b.stat);
+		if (aRetry !== null && bRetry !== null) return aRetry - bRetry || b.stat.mtimeMs - a.stat.mtimeMs;
+		if (aRetry !== null) return 1;
+		if (bRetry !== null) return -1;
+		return b.stat.mtimeMs - a.stat.mtimeMs;
 	});
 	deleted.sort((a, b) => {
 		const ma = watermarks.get(a)!.mtime_ms;
@@ -295,7 +313,7 @@ export function syncSessions(
 	const delFile = db.prepare("DELETE FROM session_files WHERE path = ?");
 	const delFailure = db.prepare("DELETE FROM session_failures WHERE path = ?");
 	const upsertFailure = db.prepare(
-		"INSERT INTO session_failures(path, size, mtime_ms) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms",
+		"INSERT INTO session_failures(path, size, mtime_ms, attempts) VALUES (?, ?, ?, 1) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms, attempts=CASE WHEN size=excluded.size AND mtime_ms=excluded.mtime_ms THEN attempts+1 ELSE 1 END",
 	);
 	const upsertFile = db.prepare(
 		"INSERT INTO session_files(path, size, mtime_ms) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms",
@@ -310,19 +328,26 @@ export function syncSessions(
 	);
 
 	// Returns messages indexed for this file.
-	const tx = db.transaction((filePath: string, stat: fs.Stats) => {
-		const parsed = parseSessionFile(filePath);
-		delStmt.run(filePath);
-		upsertSession.run(filePath, parsed.cwd, parsed.name, parsed.startedAt, parsed.preview, parsed.parentSession);
-		let count = 0;
-		for (const msg of parsed.messages) {
-			insertMsg.run(filePath, msg.entryId, msg.role, msg.timestamp, msg.text);
-			count++;
+	const tx = (filePath: string, stat: fs.Stats): number => {
+		db.exec("BEGIN");
+		try {
+			const parsed = parseSessionFile(filePath);
+			delStmt.run(filePath);
+			upsertSession.run(filePath, parsed.cwd, parsed.name, parsed.startedAt, parsed.preview, parsed.parentSession);
+			let count = 0;
+			for (const msg of parsed.messages) {
+				insertMsg.run(filePath, msg.entryId, msg.role, msg.timestamp, msg.text);
+				count++;
+			}
+			upsertFile.run(filePath, stat.size, Math.floor(stat.mtimeMs));
+			delFailure.run(filePath);
+			db.exec("COMMIT");
+			return count;
+		} catch (err) {
+			db.exec("ROLLBACK");
+			throw err;
 		}
-		upsertFile.run(filePath, stat.size, Math.floor(stat.mtimeMs));
-		delFailure.run(filePath);
-		return count;
-	});
+	};
 
 	let filesProcessed = 0;
 	let messagesIndexed = 0;
@@ -352,12 +377,14 @@ export function syncSessions(
 	// Attempted failures remain unsynced and therefore remain in the backlog.
 	const backlog = changed.length - filesProcessed + deletedRemaining;
 	db.prepare("INSERT INTO meta(key, value) VALUES ('backlog', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(backlog));
-	db.close();
 
 	return { filesProcessed, messagesIndexed, backlogRemaining: backlog };
+	} finally {
+		db.close();
+	}
 }
 
-function getBacklog(db: BetterSqlite3.Database): number {
+function getBacklog(db: DatabaseSync): number {
 	const row = db.prepare("SELECT value FROM meta WHERE key = 'backlog'").get() as { value: string } | undefined;
 	return row ? Number(row.value) : 0;
 }
@@ -646,9 +673,14 @@ export function searchIndex(
 		db.exec("CREATE TEMP TABLE IF NOT EXISTS live_filter (path TEXT NOT NULL, entry_id TEXT NOT NULL, PRIMARY KEY (path, entry_id))");
 		if (opts?.currentSessionPath && opts?.currentLiveEntryIds?.size) {
 			const ins = db.prepare("INSERT INTO live_filter(path, entry_id) VALUES (?, ?)");
-			db.transaction(() => {
-				for (const id of opts.currentLiveEntryIds!) ins.run(opts.currentSessionPath, id);
-			})();
+			db.exec("BEGIN");
+			try {
+				for (const id of opts.currentLiveEntryIds!) ins.run(opts.currentSessionPath!, id);
+				db.exec("COMMIT");
+			} catch (err) {
+				db.exec("ROLLBACK");
+				throw err;
+			}
 		}
 
 		const plan = buildFtsQueryPlan(query);

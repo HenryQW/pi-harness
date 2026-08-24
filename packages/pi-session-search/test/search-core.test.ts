@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
 import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, searchIndex, syncSessions } from "../extensions/search-core.ts";
 
@@ -357,6 +358,30 @@ describe("lineage + guards", () => {
 		assert.equal(searchIndex(dbPath, "retry order healthy two", { limit: 5 }).hits.length, 1);
 	});
 
+	it("persistent failures rotate under a small cap instead of retrying only the newest (regression)", () => {
+		const oldFail = writeFixture("--rotation--", "old-fail.jsonl", [sessionHeader(), msg("of", "user", "rotation marker old")], 80000);
+		const newFail = writeFixture("--rotation--", "new-fail.jsonl", [sessionHeader(), msg("nf", "user", "rotation marker new")], 90000);
+		const origRead = fs.readFileSync;
+		const reads = new Set<string>();
+		try {
+			fs.readFileSync = ((p: any, ...rest: any[]) => {
+				if (p === oldFail || p === newFail) {
+					reads.add(p as string);
+					throw new Error("persistent EIO simulated");
+				}
+				return (origRead as any).call(fs, p, ...rest);
+			}) as typeof fs.readFileSync;
+			// Seed BOTH failure rows in one pass (cap >= 2) so neither file is
+			// "fresh" afterward — only retry rotation can reach the older one.
+			syncSessions(sessionsDir, dbPath, { cap: 2 });
+			reads.clear();
+			for (let i = 0; i < 3; i++) syncSessions(sessionsDir, dbPath, { cap: 1 });
+		} finally {
+			fs.readFileSync = origRead;
+		}
+		assert.ok(reads.has(oldFail), "older persistent failure must eventually be attempted, not starve behind the newest");
+	});
+
 	it("grouping parens outside quotes are stripped from terms before planning (regression)", () => {
 		const plan = buildFtsQueryPlan("(deploy pipeline)");
 		assert.deepEqual(plan.ftsCandidates[0], `"deploy" "pipeline"`);
@@ -402,6 +427,37 @@ describe("lineage + guards", () => {
 		assert.ok(res.filesProcessed >= 1);
 		const { hits } = searchIndex(dbPath, "idless beta");
 		assert.equal(hits.length, 1);
+	});
+});
+
+describe("legacy schema migration", () => {
+	it("adds attempts column to 0.1.2-era index.db without losing failures (regression)", () => {
+		const legacyDir = path.join(tmp, "legacy-sessions");
+		const legacyDb = path.join(tmp, "legacy-index.db");
+		fs.mkdirSync(legacyDir, { recursive: true });
+		const file = path.join(legacyDir, "l.jsonl");
+		fs.writeFileSync(file, [sessionHeader(), msg("lg1", "user", "legacy schema migration unique marker")].join("\n") + "\n");
+		// Build a database with the OLD (0.1.2) schema: no attempts column.
+		const db = new DatabaseSync(legacyDb);
+		db.exec(`
+			CREATE TABLE session_files (
+				path TEXT PRIMARY KEY,
+				size INTEGER NOT NULL,
+				mtime_ms INTEGER NOT NULL
+			);
+			CREATE TABLE session_failures (
+				path TEXT PRIMARY KEY,
+				size INTEGER NOT NULL,
+				mtime_ms INTEGER NOT NULL
+			);
+		`);
+		const stat = fs.statSync(file);
+		db.prepare("INSERT INTO session_failures(path, size, mtime_ms) VALUES (?, ?, ?)").run(file, stat.size, Math.floor(stat.mtimeMs));
+		db.close();
+
+		const res = syncSessions(legacyDir, legacyDb);
+		assert.equal(res.filesProcessed, 1);
+		assert.equal(searchIndex(legacyDb, "legacy schema migration unique marker").hits.length, 1);
 	});
 });
 
@@ -578,6 +634,46 @@ describe("SQL prefilter + parse semantics + walk safety", () => {
 		// Data preservation: incomplete walk must not purge --flood--'s rows.
 		const { hits } = searchIndex(dbPath, "verbose-flood");
 		assert.ok(hits.some((hit) => hit.path.startsWith(target)), "indexed rows from the unreadable directory must survive");
+	});
+});
+
+describe("transaction atomicity", () => {
+	it("failure after in-transaction delete rolls back; prior rows stay searchable and retry succeeds", () => {
+		const file = writeFixture("--rollback--", "r.jsonl", [
+			sessionHeader(),
+			msg("rb1", "user", "rollback survivor marker one"),
+			msg("rb2", "assistant", "rollback survivor marker two"),
+		]);
+		syncSessions(sessionsDir, dbPath);
+		assert.equal(searchIndex(dbPath, "rollback survivor marker").hits.length, 1);
+
+		// Change the file so it re-syncs, then sabotage message inserts so the
+		// transaction fails AFTER the existing rows were deleted inside it.
+		fs.appendFileSync(file, msg("rb3", "user", "rollback newcomer never indexed\n"));
+		const t = new Date();
+		fs.utimesSync(file, t, t);
+		const origPrepare = DatabaseSync.prototype.prepare;
+		try {
+			(DatabaseSync.prototype as any).prepare = function (sql: string) {
+				if (sql.startsWith("INSERT INTO messages")) {
+					return { run: () => { throw new Error("simulated mid-transaction insert failure"); } };
+				}
+				return origPrepare.call(this, sql);
+			};
+			const res = syncSessions(sessionsDir, dbPath);
+			assert.equal(res.filesProcessed, 0, "sabotaged insert must fail the pass");
+		} finally {
+			DatabaseSync.prototype.prepare = origPrepare;
+		}
+
+		// Rollback preserved the previously indexed rows.
+		assert.equal(searchIndex(dbPath, "rollback survivor marker").hits.length, 1);
+		assert.equal(searchIndex(dbPath, "rollback newcomer").hits.length, 0);
+
+		// Fault removed: retry re-indexes the file.
+		const second = syncSessions(sessionsDir, dbPath);
+		assert.equal(second.filesProcessed, 1);
+		assert.equal(searchIndex(dbPath, "rollback newcomer").hits.length, 1);
 	});
 });
 

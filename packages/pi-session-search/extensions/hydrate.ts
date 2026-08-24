@@ -103,10 +103,12 @@ function toWindowMessage(e: Entry): WindowMessage {
 	const content =
 		typeof m.content === "string"
 			? m.content
-			: (m.content ?? [])
-					.filter((p) => p?.type === "text")
-					.map((p) => p.text ?? "")
-					.join("\n");
+			: Array.isArray(m.content)
+				? m.content
+						.filter((p) => p?.type === "text" && typeof p.text === "string")
+						.map((p) => p.text)
+						.join("\n")
+				: "";
 	return {
 		entryId: e.id,
 		role: typeof m.role === "string" ? m.role.slice(0, 32) : "",
