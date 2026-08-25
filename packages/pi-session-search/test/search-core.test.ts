@@ -628,6 +628,19 @@ describe("sanitize ladder regression", () => {
 		}
 	});
 
+	it("LIKE folds Greek final sigma: ΟΣ text matches οσ query", () => {
+		// Word-final Σ lowercases to ς, so plain toLowerCase breaks ΟΣ ↔ οσ.
+		const file = writeFixture("--greek-sigma--", "gs.jsonl", [
+			sessionHeader(),
+			msg("gs1", "user", "the oracle answered ΟΣ plainly"),
+		], 61000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		for (const q of ["οσ", "ος"]) {
+			const { hits } = searchIndex(dbPath, q);
+			assert.ok(hits.some((h) => h.path === file), `\`${q}\` must match word-final Σ via LIKE`);
+		}
+	});
+
 	it("quoted LIKE operands keep parentheses during balance recovery", () => {
 		const abi = writeFixture("--abi--", "abi.jsonl", [
 			sessionHeader(),

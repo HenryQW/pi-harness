@@ -103,10 +103,10 @@ function openDb(dbPath: string): DatabaseSync {
 		}
 		// SQLite's LIKE folds ASCII only, missing é/É, Greek, Cyrillic, …; every
 		// LIKE below wraps columns in ulower and binds pre-folded operands so
-		// both sides case-fold through the same Unicode-aware JS toLowerCase.
+		// both sides case-fold through the same foldCase helper.
 		// Registered after any stale-schema reopen so the returned connection
 		// always has the function.
-		db.function("ulower", (s: SQLOutputValue): string => typeof s === "string" ? s.toLowerCase() : "");
+		db.function("ulower", (s: SQLOutputValue): string => typeof s === "string" ? foldCase(s) : "");
 		db.exec(SCHEMA_SQL);
 	} catch (err) {
 		db.close();
@@ -545,6 +545,15 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 	return { ftsCandidates: candidates, forceLike: false };
 }
 
+/** Unicode-aware case fold for all LIKE comparisons (column values via ulower,
+ *  bound operand patterns, snippet matching). toLowerCase alone is not an
+ *  equivalence for Greek: word-final Σ lowercases to ς while a typed query uses
+ *  σ. ponytail: normalizes final sigma only, not full Unicode CaseFolding.txt
+ *  (e.g. ß→ss stays unmatched); add a fold table if that ever matters. */
+function foldCase(s: string): string {
+	return s.toLowerCase().replaceAll("ς", "σ");
+}
+
 function normalizeLikeTerm(term: string): string {
 	// Trailing * is FTS5 prefix syntax; in LIKE it folds into the % suffix
 	// ("deploy*" must match "deployment", not a literal asterisk).
@@ -553,7 +562,7 @@ function normalizeLikeTerm(term: string): string {
 
 function likePattern(term: string): string {
 	// Fold here too: escaping is unaffected because % _ \ have no case variants.
-	return `%${term.toLowerCase().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+	return `%${foldCase(term).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
 // --- Boolean LIKE fallback ---
@@ -702,10 +711,10 @@ LIMIT ${SCAN_LIMIT}`;
  *  searching head then tail. */
 function likeSnippet(head: string, tail: string, terms: string[]): string {
 	for (const text of [head, tail]) {
-		const lower = text.toLowerCase();
+		const lower = foldCase(text);
 		let at = -1;
 		for (const t of terms) {
-			const i = lower.indexOf(t.toLowerCase());
+			const i = lower.indexOf(foldCase(t));
 			if (i >= 0 && (at < 0 || i < at)) at = i;
 		}
 		if (at >= 0) {
