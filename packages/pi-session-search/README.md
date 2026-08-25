@@ -27,7 +27,7 @@ pi install npm:@henryqw/pi-session-search
 
 **Browse** — recent sessions: path, name, cwd, started date, preview.
 
-Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help stems ≥3 chars. Only user/assistant text is indexed; thinking blocks and tool output are not searchable. `sessionId` must be a `.jsonl` file under the Pi sessions directory.
+Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help stems ≥3 chars. Only user/assistant text is indexed; thinking blocks and tool output are not searchable. For message text over the 20,000-character indexing budget, only first/last regions are indexed and the middle is omitted; phrases and `NEAR` cannot cross those regions, but ordinary AND terms can. `sessionId` must be a `.jsonl` file under the Pi sessions directory.
 
 Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
 
@@ -43,7 +43,7 @@ Hits inside the current session's live context are suppressed; compacted-away or
 
 - `backfillFiles`: max session files attempted per sync pass, [1,500] (default 50). Malformed config is ignored with a warning and never rewritten; failed files are retried on later passes but ordered behind fresh work.
 
-Deliberate exclusion: session directories whose encoded path starts with `--tmp-` or `--private-tmp-` (sessions run from `/tmp` or `/private/tmp`) are never indexed.
+Deliberate exclusions: session directories whose encoded path starts with `--tmp-` or `--private-tmp-` (sessions run from `/tmp` or `/private/tmp`) are never indexed. Session files over 32 MiB are excluded from indexing and hydration: discovery cannot newly find them; READ/SCROLL return an explicit size error, while a stale discovery hit retained from before the file grew is returned as metadata with empty messages and that error.
 
 ## Storage & privacy
 
