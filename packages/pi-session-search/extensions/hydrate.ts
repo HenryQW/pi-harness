@@ -67,16 +67,10 @@ function leafId(entries: Entry[]): string | null {
 	return entries.length ? entries[entries.length - 1].id : null;
 }
 
-/** Oversized messages are indexed as two region fragments (`id#h` / `id#t`);
- *  anchors always use the real entry id. */
-function baseEntryId(entryId: string): string {
-	return entryId.replace(/#[ht]$/, "");
-}
-
 /** Walk parentId chain from entry to root, reversed (root→entry). */
 function branch(entriesById: Map<string, Entry>, entryId: string): Entry[] {
 	const chain: Entry[] = [];
-	let cur: Entry | undefined = entriesById.get(baseEntryId(entryId));
+	let cur: Entry | undefined = entriesById.get(entryId);
 	// ponytail: cycle guard for corrupt files — revisit only if real sessions ever contain cycles
 	const seen = new Set<string>();
 	while (cur && !seen.has(cur.id)) {
@@ -140,7 +134,7 @@ function resolveMessageCursor(
 	entriesById: Map<string, Entry>,
 	anchorEntryId: string,
 ): Entry {
-	const anchor = entriesById.get(baseEntryId(anchorEntryId));
+	const anchor = entriesById.get(anchorEntryId);
 	if (!anchor) throw new Error(`anchor entry ${anchorEntryId} not found in session`);
 	let cur: Entry | undefined = anchor;
 	const seen = new Set<string>();
@@ -159,10 +153,8 @@ export function getBranchMessages(
 ): WindowMessage[] {
 	const entries = parseSessionEntries(sessionPath);
 	const entriesById = new Map(entries.map((e) => [e.id, e]));
-	// Descendants hang off the real entry id, never a synthetic #h/#t fragment.
-	const realAnchorId = baseEntryId(anchorEntryId);
 	resolveMessageCursor(entriesById, anchorEntryId);
-	return branchMessages(entriesById, deepestDescendant(entriesById, entries, realAnchorId));
+	return branchMessages(entriesById, deepestDescendant(entriesById, entries, anchorEntryId));
 }
 
 export function getWindow(
@@ -189,7 +181,7 @@ export function getWindow(
 			throw new Error(`anchor entry ${anchorEntryId} is not on branch ${opts.branchTip}`);
 		}
 	} else {
-		tip = deepestDescendant(entriesById, entries, baseEntryId(anchorEntryId));
+		tip = deepestDescendant(entriesById, entries, anchorEntryId);
 	}
 	const msgs = branchMessages(entriesById, tip);
 	const idx = msgs.findIndex((m) => m.entryId === anchorEntryIdMsg);

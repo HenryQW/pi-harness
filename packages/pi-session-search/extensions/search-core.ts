@@ -5,10 +5,10 @@
  * pure Node + node:sqlite so it is testable headless.
  */
 import { DatabaseSync } from "node:sqlite";
+import type { SQLOutputValue } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import type { SearchHit, SessionRow, SyncResult } from "./types.ts";
-
 export const DEFAULT_SYNC_CAP = 50;
 /** Hard byte ceiling per session file: larger files are skipped (and retried
  *  behind fresh work) instead of being read whole into memory. */
@@ -43,31 +43,37 @@ CREATE TABLE IF NOT EXISTS sessions (
   preview TEXT,
   parent_session TEXT
 );
+-- Oversized messages split into head/tail columns: one row per source
+-- message keeps AND matching across both retained regions (FTS5 implicit AND
+-- spans columns) while phrases and NEAR cannot cross column boundaries, so
+-- truncation never manufactures proximity matches over the elided middle.
 CREATE TABLE IF NOT EXISTS messages (
   rowid INTEGER PRIMARY KEY,
   path TEXT NOT NULL,
   entry_id TEXT NOT NULL,
   role TEXT NOT NULL,
   timestamp TEXT,
-  text TEXT NOT NULL,
+  head TEXT NOT NULL,
+  tail TEXT NOT NULL,
   UNIQUE(path, entry_id)
 );
 CREATE INDEX IF NOT EXISTS messages_path ON messages(path);
 CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
-  text,
+  head,
+  tail,
   content='messages',
   content_rowid='rowid',
   tokenize='trigram'
 );
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-  INSERT INTO session_fts(rowid, text) VALUES (new.rowid, new.text);
+  INSERT INTO session_fts(rowid, head, tail) VALUES (new.rowid, new.head, new.tail);
 END;
 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-  INSERT INTO session_fts(session_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+  INSERT INTO session_fts(session_fts, rowid, head, tail) VALUES ('delete', old.rowid, old.head, old.tail);
 END;
 CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
-  INSERT INTO session_fts(session_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-  INSERT INTO session_fts(rowid, text) VALUES (new.rowid, new.text);
+  INSERT INTO session_fts(session_fts, rowid, head, tail) VALUES ('delete', old.rowid, old.head, old.tail);
+  INSERT INTO session_fts(rowid, head, tail) VALUES (new.rowid, new.head, new.tail);
 END;
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -83,8 +89,11 @@ function openDb(dbPath: string): DatabaseSync {
 		db.exec("PRAGMA busy_timeout = 5000");
 		// The index is disposable derived state with no migration path: an
 		// incompatible older schema is discarded and rebuilt from scratch.
-		const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_failures'").get();
-		const stale = Boolean(table) && !db.prepare("PRAGMA table_info(session_failures)").all().some((column: any) => column.name === "attempts");
+		const needsRebuild = (table: string, column: string): boolean => {
+			const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+			return Boolean(exists) && !db.prepare(`PRAGMA table_info(${table})`).all().some((c: any) => c.name === column);
+		};
+		const stale = needsRebuild("session_failures", "attempts") || needsRebuild("messages", "head");
 		if (stale) {
 			db.close();
 			for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(dbPath + suffix, { force: true });
@@ -92,6 +101,12 @@ function openDb(dbPath: string): DatabaseSync {
 			db.exec("PRAGMA journal_mode = WAL");
 			db.exec("PRAGMA busy_timeout = 5000");
 		}
+		// SQLite's LIKE folds ASCII only, missing é/É, Greek, Cyrillic, …; every
+		// LIKE below wraps columns in ulower and binds pre-folded operands so
+		// both sides case-fold through the same Unicode-aware JS toLowerCase.
+		// Registered after any stale-schema reopen so the returned connection
+		// always has the function.
+		db.function("ulower", (s: SQLOutputValue): string => typeof s === "string" ? s.toLowerCase() : "");
 		db.exec(SCHEMA_SQL);
 	} catch (err) {
 		db.close();
@@ -106,7 +121,8 @@ interface ParsedMessage {
 	entryId: string;
 	role: string;
 	timestamp: string | null;
-	text: string;
+	head: string;
+	tail: string;
 }
 
 interface ParsedFile {
@@ -118,11 +134,11 @@ interface ParsedFile {
 	messages: ParsedMessage[];
 }
 
-/** Middle-out truncation keeping head and tail as SEPARATE index regions:
- *  concatenating them would make boundary terms adjacent in the indexed text
- *  and manufacture phrase/proximity matches across the elided middle. Raw
- *  text only — no synthetic notices: this string is FTS-indexed, so injected
- *  terms would pollute search results and snippets. */
+/** Middle-out truncation into SEPARATE head/tail index columns: concatenating
+ *  them would make boundary terms adjacent and manufacture phrase/proximity
+ *  matches across the elided middle. Raw text only — no synthetic notices:
+ *  these strings are FTS-indexed, so injected terms would pollute search
+ *  results and snippets. */
 function truncateRegions(text: string, max = MAX_TEXT_CHARS): { head: string; tail: string } | null {
 	if (text.length <= max) return null;
 	const kept = max - 1;
@@ -201,20 +217,13 @@ function parseSessionFile(filePath: string): ParsedFile {
 					parsed.preview = full.slice(0, 200);
 				}
 				const regions = truncateRegions(full);
-				const fragments: Array<{ entryId: string; text: string }> = regions
-					? [
-						{ entryId: `${entry.id}#h`, text: regions.head },
-						{ entryId: `${entry.id}#t`, text: regions.tail },
-					]
-					: [{ entryId: entry.id, text: full }];
-				for (const fragment of fragments) {
-					parsed.messages.push({
-						entryId: fragment.entryId,
-						role,
-						timestamp: capStr(entry.timestamp, 128),
-						text: fragment.text,
-					});
-				}
+				parsed.messages.push({
+					entryId: entry.id,
+					role,
+					timestamp: capStr(entry.timestamp, 128),
+					head: regions ? regions.head : full,
+					tail: regions ? regions.tail : "",
+				});
 				break;
 			}
 			// compaction, branch_summary, custom, custom_message, label,
@@ -344,7 +353,7 @@ export function syncSessions(
 		 preview=excluded.preview, parent_session=excluded.parent_session`,
 	);
 	const insertMsg = db.prepare(
-		"INSERT INTO messages(path, entry_id, role, timestamp, text) VALUES (?, ?, ?, ?, ?)",
+		"INSERT INTO messages(path, entry_id, role, timestamp, head, tail) VALUES (?, ?, ?, ?, ?, ?)",
 	);
 
 	// Returns messages indexed for this file.
@@ -356,7 +365,7 @@ export function syncSessions(
 			upsertSession.run(filePath, parsed.cwd, parsed.name, parsed.startedAt, parsed.preview, parsed.parentSession);
 			let count = 0;
 			for (const msg of parsed.messages) {
-				insertMsg.run(filePath, msg.entryId, msg.role, msg.timestamp, msg.text);
+				insertMsg.run(filePath, msg.entryId, msg.role, msg.timestamp, msg.head, msg.tail);
 				count++;
 			}
 			upsertFile.run(filePath, stat.size, Math.floor(stat.mtimeMs));
@@ -543,7 +552,8 @@ function normalizeLikeTerm(term: string): string {
 }
 
 function likePattern(term: string): string {
-	return `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+	// Fold here too: escaping is unaffected because % _ \ have no case variants.
+	return `%${term.toLowerCase().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
 // --- Boolean LIKE fallback ---
@@ -552,10 +562,14 @@ function likePattern(term: string): string {
 // expressions return null and the caller uses plain AND-of-terms — user input
 // only ever reaches SQL as a bound parameter.
 
-function likeClause(term: string): { clause: string; param: string } | null {
+function likeClause(term: string): { clause: string; params: string[] } | null {
 	term = normalizeLikeTerm(term);
 	if (!term) return null;
-	return { clause: "m.text LIKE ? ESCAPE '\\'", param: likePattern(term) };
+	const pattern = likePattern(term);
+	return {
+		clause: "(ulower(m.head) LIKE ? ESCAPE '\\' OR ulower(m.tail) LIKE ? ESCAPE '\\')",
+		params: [pattern, pattern],
+	};
 }
 
 interface LikeSql {
@@ -637,7 +651,7 @@ function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 		if (clause === null) return null;
 		if (!expectingOperand) sql.push("AND");
 		sql.push(clause.clause);
-		params.push(clause.param);
+		params.push(...clause.params);
 		expectingOperand = false;
 	}
 
@@ -665,7 +679,7 @@ const BASE_SELECT = `
 WITH matches AS (
   SELECT m.path, m.entry_id, m.role, m.timestamp, s.cwd, s.name, s.started_at,
          s.parent_session, m.rowid AS rid,
-         snippet(session_fts, 0, '[', ']', '…', 16) AS snip,
+         snippet(session_fts, -1, '[', ']', '…', 16) AS snip,
          bm25(session_fts) AS score
   FROM session_fts JOIN messages m ON m.rowid = session_fts.rowid
   LEFT JOIN sessions s ON s.path = m.path
@@ -684,17 +698,22 @@ WHERE rn <= ${ROWS_PER_FILE}
 ORDER BY score, rid
 LIMIT ${SCAN_LIMIT}`;
 
-/** Bounded excerpt around the first matched term for the LIKE fallback. */
-function likeSnippet(text: string, terms: string[]): string {
-	const lower = text.toLowerCase();
-	let at = -1;
-	for (const t of terms) {
-		const i = lower.indexOf(t.toLowerCase());
-		if (i >= 0 && (at < 0 || i < at)) at = i;
+/** Bounded excerpt around the first matched term for the LIKE fallback,
+ *  searching head then tail. */
+function likeSnippet(head: string, tail: string, terms: string[]): string {
+	for (const text of [head, tail]) {
+		const lower = text.toLowerCase();
+		let at = -1;
+		for (const t of terms) {
+			const i = lower.indexOf(t.toLowerCase());
+			if (i >= 0 && (at < 0 || i < at)) at = i;
+		}
+		if (at >= 0) {
+			const start = Math.max(0, at - 60);
+			return `${start > 0 ? "…" : ""}${text.slice(start, start + 120)}…`;
+		}
 	}
-	if (at < 0) return text.slice(0, 120);
-	const start = Math.max(0, at - 60);
-	return `${start > 0 ? "…" : ""}${text.slice(start, start + 120)}…`;
+	return head.slice(0, 120);
 }
 
 export function searchIndex(
@@ -713,12 +732,7 @@ export function searchIndex(
 			const ins = db.prepare("INSERT INTO live_filter(path, entry_id) VALUES (?, ?)");
 			db.exec("BEGIN");
 			try {
-				// Oversized messages index as `id#h`/`id#t` fragments; suppress those too.
-				for (const id of opts.currentLiveEntryIds!) {
-					ins.run(opts.currentSessionPath!, id);
-					ins.run(opts.currentSessionPath!, `${id}#h`);
-					ins.run(opts.currentSessionPath!, `${id}#t`);
-				}
+				for (const id of opts.currentLiveEntryIds!) ins.run(opts.currentSessionPath!, id);
 				db.exec("COMMIT");
 			} catch (err) {
 				db.exec("ROLLBACK");
@@ -782,17 +796,17 @@ export function searchIndex(
 			// Boolean LIKE preserves simple AND/OR/NOT; unsupported shapes degrade
 			// to AND-of-terms. Both forms are fully parameterized.
 			const bool = buildBooleanLikeSql(trimmed);
-			const where = bool?.where ?? terms.map(() => "m.text LIKE ? ESCAPE '\\'").join(" AND ");
-			const params = bool?.params ?? terms.map(likePattern);
+			const where = bool?.where ?? terms.map(() => "(ulower(m.head) LIKE ? ESCAPE '\\' OR ulower(m.tail) LIKE ? ESCAPE '\\')").join(" AND ");
+			const params = bool?.params ?? terms.flatMap((t) => [likePattern(t), likePattern(t)]);
 			rows = db.prepare(`WITH ranked AS (
-			            SELECT m.path, m.entry_id, m.role, m.timestamp, m.text, s.cwd, s.name, s.started_at,
+			            SELECT m.path, m.entry_id, m.role, m.timestamp, m.head, m.tail, s.cwd, s.name, s.started_at,
 			                   s.parent_session,
 			                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn,
 			                   COUNT(*) OVER (PARTITION BY m.path) AS matches
 			             FROM messages m LEFT JOIN sessions s ON s.path = m.path
 			             WHERE ${where} AND ${LIVE_FILTER_SQL}
 			            )
-			            SELECT path, entry_id, role, timestamp, text, cwd, name, started_at
+			            SELECT path, entry_id, role, timestamp, head, tail, cwd, name, started_at
 			            FROM ranked r
 			            WHERE rn <= ${ROWS_PER_FILE}
 			              AND NOT EXISTS (
@@ -801,7 +815,7 @@ export function searchIndex(
 			              )
 			            ORDER BY matches DESC, started_at DESC, path
 			            LIMIT ${SCAN_LIMIT}`).all(...params) as any;
-			for (const r of rows as any[]) r.snip = likeSnippet((r as any).text ?? "", snippetTerms.length > 0 ? snippetTerms : terms);
+			for (const r of rows as any[]) r.snip = likeSnippet((r as any).head ?? "", (r as any).tail ?? "", snippetTerms.length > 0 ? snippetTerms : terms);
 		}
 
 		// Live-entry and one-hop lineage suppression already happened in SQL,

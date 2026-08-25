@@ -9,6 +9,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
 import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, searchIndex, syncSessions } from "../extensions/search-core.ts";
+import { getWindow } from "../extensions/hydrate.ts";
 
 let tmp: string;
 let sessionsDir: string;
@@ -265,7 +266,7 @@ describe("lineage + guards", () => {
 		}
 	});
 
-	it("current-session guard suppresses oversized-message fragments (#h/#t)", () => {
+	it("current-session guard suppresses oversized messages by their real entry id", () => {
 		const big = "x".repeat(20000);
 		const fragFile = writeFixture("--lg-frag--", "frag.jsonl", [
 			sessionHeader(),
@@ -276,7 +277,22 @@ describe("lineage + guards", () => {
 			currentSessionPath: fragFile,
 			currentLiveEntryIds: new Set(["f1"]),
 		});
-		assert.ok(!hits.some((h) => h.path === fragFile), "fragment hits on the live entry must be suppressed");
+		assert.ok(!hits.some((h) => h.path === fragFile), "live oversized-message hits must be suppressed");
+	});
+
+	it("real entry ids ending in #h/#t survive search and hydration untouched", () => {
+		writeFixture("--suffix-ids--", "sid.jsonl", [
+			sessionHeader(),
+			msg("u1#t", "user", "suffixid unique marker alpha"),
+			msg("u2#h", "assistant", "suffixid reply beta"),
+		], 140000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		const hit = searchIndex(dbPath, "suffixid beta").hits[0];
+		assert.ok(hit, "message with #h-suffixed real id is found");
+		assert.equal(hit.entryId, "u2#h", "hit carries the exact source id");
+		// The exact hit id anchors a window (the discovery→scroll flow).
+		const w = getWindow(path.join(sessionsDir, "--suffix-ids--", "sid.jsonl"), hit.entryId, 5);
+		assert.ok(w.messages.some((m) => m.entryId === "u2#h" && m.anchor === true));
 	});
 
 	it("suppressed live hit on parent does not suppress a matching child (bhGOs)", () => {
@@ -464,14 +480,26 @@ describe("legacy schema migration", () => {
 				size INTEGER NOT NULL,
 				mtime_ms INTEGER NOT NULL
 			);
+			CREATE TABLE messages (
+				id TEXT PRIMARY KEY,
+				session_path TEXT NOT NULL,
+				role TEXT NOT NULL,
+				text TEXT NOT NULL
+			);
 		`);
+		db.prepare("INSERT INTO messages(id, session_path, role, text) VALUES (?, ?, ?, ?)").run("stale1", file, "user", "stale old-schema ghost marker");
 		const stat = fs.statSync(file);
 		db.prepare("INSERT INTO session_failures(path, size, mtime_ms) VALUES (?, ?, ?)").run(file, stat.size, Math.floor(stat.mtimeMs));
 		db.close();
 
+		// Regression: a forced-LIKE query must not throw even though opening the
+		// stale-schema db closes and reopens it (ulower must survive the reopen).
+		assert.ok(Array.isArray(searchIndex(legacyDb, ".g").hits));
+
 		const res = syncSessions(legacyDir, legacyDb);
 		assert.equal(res.filesProcessed, 1);
 		assert.equal(searchIndex(legacyDb, "legacy schema migration unique marker").hits.length, 1);
+		assert.equal(searchIndex(legacyDb, "ghost marker").hits.length, 0, "stale old-schema row must be discarded on rebuild");
 	});
 
 	describe("sanitize ladder regressions from review", () => {
@@ -494,20 +522,27 @@ describe("legacy schema migration", () => {
 			assert.equal(hits.length, 0, "malformed query must not match on the operator word itself");
 		});
 
-		it("truncated message indexes head/tail as separate regions; hydration resolves fragments", () => {
+		it("oversized message indexes head/tail columns; AND crosses regions, phrase/NEAR cannot", () => {
 			const filler = "filler ".repeat(200);
-			const big = "ZqHeadStart " + filler + " " + "x".repeat(21000) + " ZqTailEnd";
+			const big = "ZqHeadStart k7" + filler + " " + "x".repeat(21000) + " m9 ZqTailEnd";
 			writeFixture("--regions--", "r.jsonl", [
 				sessionHeader(),
 				msg("rg1", "user", big),
 			], 132000);
 			syncSessions(sessionsDir, dbPath, { cap: 10 });
-			// A NEAR query across the elided middle must not match.
-			assert.equal(searchIndex(dbPath, "NEAR(ZqHeadStart ZqTailEnd)").hits.length, 0, "head and tail regions must not be adjacent in the index");
-			// Each region matches on its own.
-			assert.equal(searchIndex(dbPath, "ZqTailEnd").hits.length, 1, "tail region stays searchable");
-			const hit = searchIndex(dbPath, "ZqTailEnd").hits[0];
-			assert.ok(hit.entryId.endsWith("#t"), "fragment hit carries its region suffix");
+			// Phrase/NEAR must not match across the elided middle.
+			assert.equal(searchIndex(dbPath, '"ZqHeadStart ZqTailEnd"').hits.length, 0, "phrase cannot span the elided middle");
+			assert.equal(searchIndex(dbPath, "NEAR(ZqHeadStart ZqTailEnd)").hits.length, 0, "NEAR cannot span the elided middle");
+			// Each region stays searchable on its own.
+			assert.equal(searchIndex(dbPath, "ZqTailEnd").hits.length, 1, "tail column stays searchable");
+			// Ordinary Boolean AND matches terms across both retained regions of one row.
+			const hit = searchIndex(dbPath, "ZqHeadStart ZqTailEnd").hits[0];
+			assert.ok(hit, "AND matches across head and tail columns");
+			assert.equal(hit.entryId, "rg1", "source entry id preserved exactly");
+			// Forced-LIKE path (every term <3 code points) must also AND across regions.
+			const likeHit = searchIndex(dbPath, "k7 AND m9").hits[0];
+			assert.ok(likeHit, "boolean LIKE fallback matches across head and tail columns");
+			assert.equal(likeHit.entryId, "rg1", "LIKE fallback preserves source entry id exactly");
 		});
 
 		it("files over the byte cap are skipped without reading, recorded as failures", async () => {
@@ -578,6 +613,19 @@ describe("sanitize ladder regression", () => {
 	it("LIKE fallback treats trailing FTS wildcard as prefix, not literal (bhZf1)", () => {
 		const { hits } = searchIndex(dbPath, "Go deploy*");
 		assert.equal(hits.length, 1, "`Go deploy*` must match 'Go deployment strategy'");
+	});
+
+	it("short lowercase non-ASCII query matches uppercase text via Unicode-aware LIKE", () => {
+		writeFixture("--unicode-case--", "uni.jsonl", [
+			sessionHeader(),
+			msg("uc1", "user", "ÉX report ΣΟΦΙΑ notes ПРИВЕТ log"),
+		], 60000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(buildFtsQueryPlan("éx").forceLike, true, "two-code-point term must take the LIKE path");
+		for (const q of ["éx", "σοφ", "прив"]) {
+			const { hits } = searchIndex(dbPath, q);
+			assert.equal(hits.length, 1, `\`${q}\` must match its uppercase form (SQLite LIKE folds ASCII only)`);
+		}
 	});
 
 	it("quoted LIKE operands keep parentheses during balance recovery", () => {
