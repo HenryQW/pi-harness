@@ -2,6 +2,11 @@
 
 Delegate bounded work to isolated Pi child processes. The `delegate_task` tool has one flat contract with exactly one selected mode: single, parallel, or chain. Package authors can reuse the same Role launch policy and active-Pi executor from JavaScript.
 
+## Why
+
+- **Created for**: Pi users who need to delegate bounded work to isolated child Pi processes without losing Main's context.
+- **Advantage**: One flat `delegate_task` tool contract with single, parallel, and chain modes, plus reusable Role launch policies for package authors.
+
 ## Install
 
 ```bash
@@ -10,12 +15,20 @@ pi install npm:@henryqw/pi-multi-codex
 pi install npm:@henryqw/pi-subagent
 ```
 
+## With
+
 | Package | Why |
 | --- | --- |
 | `@henryqw/pi-task-models` | Required shared `fast` / `balanced` / `frontier` / `fav` routes. |
 | `@henryqw/pi-multi-codex` | Required so children can use Main's active Codex slot. |
 
-## `delegate_task`
+## Use
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `delegate_task` | tool | Delegate bounded work to one or more isolated Pi child processes. |
+
+### `delegate_task`
 
 Select exactly one shape:
 
