@@ -609,7 +609,6 @@ async function runPi(prepared, input, timeoutPolicy, invocation) {
                 callbackFailure ??= new EphemeralSubagentError("callback", "Subagent callback did not settle before the post-exit drain deadline.");
                 signalCallbackFailure();
             }, Math.min(5_000, Math.max(0, maxDeadline - Date.now())));
-            drainTimer.unref();
             await Promise.race([Promise.all(pendingCallbacks), callbackFailed]);
             clearTimeout(drainTimer);
             if (deadlineTimer)

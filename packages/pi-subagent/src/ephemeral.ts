@@ -647,7 +647,6 @@ async function runPi(
 				);
 				signalCallbackFailure();
 			}, Math.min(5_000, Math.max(0, maxDeadline - Date.now())));
-			drainTimer.unref();
 			await Promise.race([Promise.all(pendingCallbacks), callbackFailed]);
 			clearTimeout(drainTimer);
 			if (deadlineTimer) clearTimeout(deadlineTimer);
