@@ -45,7 +45,6 @@ export declare function modelReference(model: {
 }): string;
 export declare function dedupeAvailableModels(models: readonly AvailableModel[], preferredProvider?: string): AvailableModel[];
 export declare function resolveAvailableModel(models: readonly AvailableModel[], reference: string, preferredProvider?: string): AvailableModel | undefined;
-export declare function supportedThinkingLevels(model: AvailableModel): ThinkingLevel[];
 export declare function availableTaskModels(ctx: ExtensionContext): AvailableModel[];
 export declare function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel): ThinkingLevel[];
 export declare function resolveTaskModelRoute(ctx: ExtensionContext, route: TaskModelRoute, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute | undefined;

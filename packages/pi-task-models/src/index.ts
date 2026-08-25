@@ -48,8 +48,6 @@ export type ActiveTaskPackage = {
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
 
-const defaultTaskAssignments = (): Record<string, ProfileName> => ({ ...DEFAULT_TASK_ASSIGNMENTS });
-
 export const configPath = (agentDir = getAgentDir()): string => join(agentDir, "config", CONFIG_FILE);
 
 function isCodexProvider(provider: string | undefined): boolean {
@@ -114,7 +112,7 @@ function parseConfig(value: unknown): TaskModelsConfig {
 	const record = value as Record<string, unknown>;
 	if (!hasOnlyKeys(record, ["profiles", "tasks"])) throw new Error("Config contains unknown settings.");
 	const profiles: TaskModelsConfig["profiles"] = {};
-	const tasks: Record<string, ProfileName> = defaultTaskAssignments();
+	const tasks: Record<string, ProfileName> = { ...DEFAULT_TASK_ASSIGNMENTS };
 
 	if (record.profiles !== undefined) {
 		if (!record.profiles || typeof record.profiles !== "object" || Array.isArray(record.profiles)) {
@@ -151,7 +149,7 @@ export function readTaskModelsConfig(agentDir = getAgentDir()): TaskModelsConfig
 		return parseConfig(value);
 	} catch (error) {
 		if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-			return { profiles: {}, tasks: defaultTaskAssignments() };
+			return { profiles: {}, tasks: { ...DEFAULT_TASK_ASSIGNMENTS } };
 		}
 		throw error;
 	}
@@ -222,10 +220,6 @@ export function resolveAvailableModel(
 		?? models.find((model) => model.provider === "openai-codex" && model.id === id);
 }
 
-export function supportedThinkingLevels(model: AvailableModel): ThinkingLevel[] {
-	return getSupportedThinkingLevels(model) as ThinkingLevel[];
-}
-
 export function availableTaskModels(ctx: ExtensionContext): AvailableModel[] {
 	const scopedModels = ctx.scopedModels ?? [];
 	return dedupeAvailableModels(
@@ -236,7 +230,7 @@ export function availableTaskModels(ctx: ExtensionContext): AvailableModel[] {
 }
 
 export function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel): ThinkingLevel[] {
-	const supported = supportedThinkingLevels(model);
+	const supported = getSupportedThinkingLevels(model) as ThinkingLevel[];
 	const pinned = (ctx.scopedModels ?? []).find(({ model: scoped }) =>
 		scoped.provider === model.provider && scoped.id === model.id)?.thinkingLevel;
 	if (!pinned) return supported;
