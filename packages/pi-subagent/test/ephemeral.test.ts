@@ -222,6 +222,21 @@ if (task === "Task: first") {
 	}
 });
 
+test("a never-settling callback cannot hold run or its permit after child exit", async (t) => {
+	const cwd = await useRunner(t, successfulRunner);
+	const executorInstance = executor();
+	const first = executorInstance.run({
+		onUpdate: () => new Promise<void>(() => {}),
+		prepare: async () => prepared(cwd, "first"),
+	});
+	const settled = await Promise.race([
+		first.then(() => "settled" as const),
+		new Promise<"hung">((resolve) => { setTimeout(resolve, 4_500); }),
+	]);
+	assert.equal(settled, "settled");
+	assert.equal((await executorInstance.run({ prepare: async () => prepared(cwd, "second") })).output, "done");
+});
+
 test("async token callback rejection is a typed executor failure", async (t) => {
 	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } })); setInterval(() => {}, 1_000);\n`);
 	const cause = new Error("token observer failed");
