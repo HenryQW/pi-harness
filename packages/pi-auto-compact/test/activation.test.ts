@@ -137,7 +137,7 @@ test("configures threshold and ignores obsolete model fields", async () => {
 
 		input = "20";
 		await commands.get("auto-compact")?.("", ctx);
-		assert.equal(notices.at(-1), "Auto-compact threshold below 25% is not meaningful.");
+		assert.equal(notices.at(-1), "Threshold must be at least 25% and below 100%.");
 
 		await commands.get("auto-compact")?.("model", ctx);
 		assert.equal(notices.at(-1), "Usage: /auto-compact");
