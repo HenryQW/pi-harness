@@ -5,7 +5,7 @@
  * pure Node + node:sqlite so it is testable headless.
  */
 import { DatabaseSync } from "node:sqlite";
-import type { SQLOutputValue } from "node:sqlite";
+import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import type { SearchHit, SessionRow, SyncResult } from "./types.ts";
@@ -138,6 +138,7 @@ function openDb(dbPath: string): DatabaseSync {
 		// LIKE below wraps columns in ulower and binds pre-folded operands so
 		// both sides case-fold through the same foldCase helper.
 		db.function("ulower", (s: SQLOutputValue): string => typeof s === "string" ? foldCase(s) : "");
+		db.function("unear", nearLike);
 		db.exec(SCHEMA_SQL);
 	} catch (err) {
 		db.close();
@@ -509,6 +510,7 @@ interface QueryTerm {
 	text: string;
 	operator: boolean;
 	nearDistance: boolean;
+	quoted: boolean;
 }
 
 function collectQueryTerms(query: string): QueryTerm[] {
@@ -541,7 +543,7 @@ function collectQueryTerms(query: string): QueryTerm[] {
 		// token; split it so the numeric tail is recognized as the distance.
 		let attachedDistance: string | undefined;
 		if (!hasNearComma && phrase === undefined && nearDepth > 0) {
-			const attached = /^(.+),(\d+)$/.exec(raw);
+			const attached = /^(.*),(\d+)$/.exec(raw);
 			if (attached) {
 				raw = attached[1];
 				attachedDistance = attached[2];
@@ -552,27 +554,23 @@ function collectQueryTerms(query: string): QueryTerm[] {
 		if (text) {
 			const operator = phrase === undefined && /^(?:OR|AND|NOT|NEAR)$/.test(text);
 			const nearDistance = nearDepth > 0 && afterNearComma && /^\d+$/.test(text);
-			terms.push({ text, operator, nearDistance });
+			terms.push({ text, operator, nearDistance, quoted: phrase !== undefined });
 			if (operator && text === "NEAR") pendingNear = true;
 		}
-		if (attachedDistance !== undefined) terms.push({ text: attachedDistance, operator: false, nearDistance: true });
+		if (attachedDistance !== undefined) terms.push({ text: attachedDistance, operator: false, nearDistance: true, quoted: false });
 		if (hasNearComma) afterNearComma = true;
 	}
 	return terms;
 }
 
-function collectTerms(query: string): string[] {
-	return collectQueryTerms(query).filter((term) => !term.nearDistance).map((term) => term.text);
+function quoteTerm(term: QueryTerm): string {
+	// Prefix expansion belongs only to an unquoted trailing star. An explicitly
+	// quoted `"deploy*"` searches for the literal asterisk.
+	if (!term.quoted && term.text.endsWith("*")) return `"${term.text.slice(0, -1).replace(/"/g, '""')}"*`;
+	return `"${term.text.replace(/"/g, '""')}"`;
 }
 
-function quoteTerm(t: string): string {
-	// Trailing * is FTS5 prefix syntax; the quote must close before it
-	// ("deploy"*), never wrap it ("deploy*" = literal asterisk).
-	if (t.endsWith("*")) return `"${t.slice(0, -1).replace(/"/g, '""')}"*`;
-	return `"${t.replace(/"/g, '""')}"`;
-}
-
-function quoteTerms(terms: string[], sep: string): string {
+function quoteTerms(terms: QueryTerm[], sep: string): string {
 	return terms.map(quoteTerm).join(sep);
 }
 
@@ -607,11 +605,11 @@ export function buildFtsQueryPlan(rawQuery: string): FtsQueryPlan {
 		return { ftsCandidates: [], forceLike: true };
 	}
 
-	const operandTexts = queryTerms.filter((term) => !term.operator && !term.nearDistance).map((term) => term.text);
+	const operands = queryTerms.filter((term) => !term.operator && !term.nearDistance);
 	// Recovery operands exclude syntax operators so a malformed query can never
 	// broaden into matches on AND/OR/NOT/NEAR themselves.
-	const natural = quoteTerms(operandTexts, " ");
-	const orExpanded = operandTexts.length > 1 ? quoteTerms(operandTexts, " OR ") : null;
+	const natural = quoteTerms(operands, " ");
+	const orExpanded = operands.length > 1 ? quoteTerms(operands, " OR ") : null;
 
 	if (!hasOperator) {
 		// Quoted form cannot fail to parse; OR-expand only as breadth fallback.
@@ -632,10 +630,9 @@ function foldCase(s: string): string {
 	return s.toLowerCase().replaceAll("ς", "σ");
 }
 
-function normalizeLikeTerm(term: string): string {
-	// Trailing * is FTS5 prefix syntax; in LIKE it folds into the % suffix
-	// ("deploy*" must match "deployment", not a literal asterisk).
-	return term.endsWith("*") ? term.slice(0, -1) : term;
+function normalizeLikeTerm(term: string, quoted = false): string {
+	// Only an unquoted trailing star is prefix syntax. Quoted stars stay literal.
+	return !quoted && term.endsWith("*") ? term.slice(0, -1) : term;
 }
 
 function likePattern(term: string): string {
@@ -644,13 +641,12 @@ function likePattern(term: string): string {
 }
 
 // --- Boolean LIKE fallback ---
-// Parameterized translation of simple AND/OR/NOT queries to SQL LIKE so short
-// operands (trigram floor) keep boolean semantics. Unsupported/malformed
-// expressions return null and the caller uses plain AND-of-terms — user input
-// only ever reaches SQL as a bound parameter.
+// Parameterized translation of simple AND/OR/NOT/NEAR queries to SQL LIKE so
+// short operands (trigram floor) keep boolean semantics. User input only ever
+// reaches SQL as bound data.
 
-function likeClause(term: string): { clause: string; params: string[] } | null {
-	term = normalizeLikeTerm(term);
+function likeClause(term: string, quoted = false): { clause: string; params: string[] } | null {
+	term = normalizeLikeTerm(term, quoted);
 	if (!term) return null;
 	const pattern = likePattern(term);
 	return {
@@ -661,7 +657,100 @@ function likeClause(term: string): { clause: string; params: string[] } | null {
 
 interface LikeSql {
 	where: string;
-	params: string[];
+	params: SQLInputValue[];
+}
+
+/** Character-position analogue of trigram FTS5 NEAR for LIKE-only operands.
+ *  Trigram positions make N allow at most N-2 characters between phrases. */
+function nearLike(textValue: SQLOutputValue, termsValue: SQLOutputValue, distanceValue: SQLOutputValue): number {
+	if (typeof textValue !== "string" || typeof termsValue !== "string" || typeof distanceValue !== "number") return 0;
+	const terms = (JSON.parse(termsValue) as string[]).map(foldCase);
+	const text = foldCase(textValue);
+	const codePointAt = new Uint32Array(text.length + 1);
+	let point = 0;
+	for (let i = 0; i < text.length; point++) {
+		const width = (text.codePointAt(i) ?? 0) > 0xffff ? 2 : 1;
+		codePointAt[i] = point;
+		if (width === 2) codePointAt[i + 1] = point;
+		i += width;
+	}
+	codePointAt[text.length] = point;
+
+	const occurrences: { start: number; end: number; term: number }[] = [];
+	for (const [term, needle] of terms.entries()) {
+		for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
+			occurrences.push({ start: codePointAt[at], end: codePointAt[at + needle.length], term });
+		}
+	}
+	occurrences.sort((a, b) => a.start - b.start || a.end - b.end);
+
+	const counts = new Uint16Array(terms.length);
+	let present = 0;
+	let left = 0;
+	for (let right = 0; right < occurrences.length; right++) {
+		if (counts[occurrences[right].term]++ === 0) present++;
+		while (present === terms.length) {
+			if (occurrences[right].start - occurrences[left].end + 2 <= distanceValue) return 1;
+			if (--counts[occurrences[left++].term] === 0) present--;
+		}
+	}
+	return 0;
+}
+
+interface LikeToken {
+	phrase?: string;
+	word?: string;
+}
+
+function parseNearLikeSql(tokens: LikeToken[], start: number): { sql: LikeSql; end: number } | null {
+	if (tokens[start + 1]?.word !== "(") return null;
+	const operands: { text: string; quoted: boolean }[] = [];
+	let sawComma = false;
+	let distanceText: string | undefined;
+
+	for (let i = start + 2; i < tokens.length; i++) {
+		const token = tokens[i];
+		if (token.word === ")") {
+			if (operands.length < 2 || (sawComma && distanceText === undefined)) return null;
+			const distance = distanceText === undefined ? 10 : Number(distanceText);
+			if (distanceText !== undefined && (!/^\d+$/.test(distanceText) || !Number.isSafeInteger(distance))) return null;
+			const terms = operands.map((term) => normalizeLikeTerm(term.text, term.quoted));
+			if (terms.some((term) => !term)) return null;
+			const clauses = terms.map((term) => likeClause(term, true)!);
+			const encoded = JSON.stringify(terms);
+			return {
+				sql: {
+					where: `(${clauses.map((clause) => clause.clause).join(" AND ")} AND (unear(m.head, ?, ?) OR unear(m.tail, ?, ?)))`,
+					params: [...clauses.flatMap((clause) => clause.params), encoded, distance, encoded, distance],
+				},
+				end: i,
+			};
+		}
+		if (token.phrase !== undefined) {
+			if (sawComma) return null;
+			operands.push({ text: token.phrase, quoted: true });
+			continue;
+		}
+
+		const word = token.word ?? "";
+		if (!word || word === "(" || /^(?:AND|OR|NOT|NEAR)$/.test(word) || word.includes('"')) return null;
+		const comma = word.indexOf(",");
+		if (comma >= 0) {
+			if (sawComma || word.indexOf(",", comma + 1) >= 0) return null;
+			const before = word.slice(0, comma).replace(/^[.!?;:]+|[.!?;:]+$/g, "");
+			if (before) operands.push({ text: before, quoted: false });
+			sawComma = true;
+			distanceText = word.slice(comma + 1) || undefined;
+		} else if (sawComma) {
+			if (distanceText !== undefined) return null;
+			distanceText = word;
+		} else {
+			const text = word.replace(/^[.!?;:]+|[.!?;:]+$/g, "");
+			if (!text) return null;
+			operands.push({ text, quoted: false });
+		}
+	}
+	return null;
 }
 
 /** Space out parens that act as grouping syntax while leaving quoted phrases
@@ -696,15 +785,17 @@ function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 		}).join("");
 	}
 
-	const tokens = [...spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)]
+	const tokens: LikeToken[] = [...spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)]
 		.map((m) => (m[1] !== undefined ? { phrase: m[1] } : { word: m[2] ?? "" }))
 		.filter((t) => (t.phrase !== undefined ? t.phrase !== "" : t.word !== ""));
+	const fail = (): LikeSql | null => tokens.some((token) => token.word === "NEAR") ? { where: "0", params: [] } : null;
 	const sql: string[] = [];
-	const params: string[] = [];
+	const params: SQLInputValue[] = [];
 	let expectingOperand = true;
 	depth = 0;
 
-	for (const token of tokens) {
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
 		const word = token.word;
 		if (word === "(") {
 			if (!expectingOperand) sql.push("AND");
@@ -714,13 +805,13 @@ function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 			continue;
 		}
 		if (word === ")") {
-			if (expectingOperand || depth-- === 0) return null;
+			if (expectingOperand || depth-- === 0) return fail();
 			sql.push(")");
 			expectingOperand = false;
 			continue;
 		}
 		if (word === "AND" || word === "OR") {
-			if (expectingOperand) return null;
+			if (expectingOperand) return fail();
 			sql.push(word);
 			expectingOperand = true;
 			continue;
@@ -731,18 +822,27 @@ function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 			expectingOperand = true;
 			continue;
 		}
-		if (word === "NEAR") return null;
+		if (word === "NEAR") {
+			const near = parseNearLikeSql(tokens, i);
+			if (near === null) return fail();
+			if (!expectingOperand) sql.push("AND");
+			sql.push(near.sql.where);
+			params.push(...near.sql.params);
+			expectingOperand = false;
+			i = near.end;
+			continue;
+		}
 
 		const term = token.phrase ?? word?.replace(/^[.,!?;:]+|[.,!?;:]+$/g, "").replace(/"/g, "") ?? "";
-		const clause = likeClause(term);
-		if (clause === null) return null;
+		const clause = likeClause(term, token.phrase !== undefined);
+		if (clause === null) return fail();
 		if (!expectingOperand) sql.push("AND");
 		sql.push(clause.clause);
 		params.push(...clause.params);
 		expectingOperand = false;
 	}
 
-	return expectingOperand || depth !== 0 ? null : { where: sql.join(" "), params };
+	return expectingOperand || depth !== 0 ? fail() : { where: sql.join(" "), params };
 }
 
 // --- Search ---
@@ -873,7 +973,7 @@ export function searchIndex(
 			// distance; only unquoted syntax tokens are excluded.
 			const operandTerms = collectQueryTerms(trimmed)
 				.filter((term) => !term.operator && !term.nearDistance)
-				.map((term) => normalizeLikeTerm(term.text))
+				.map((term) => normalizeLikeTerm(term.text, term.quoted))
 				.filter(Boolean);
 			if (operandTerms.length === 0) return { hits: [], backlogRemaining: getBacklog(db) };
 			const terms = operandTerms;

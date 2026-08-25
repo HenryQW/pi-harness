@@ -166,6 +166,22 @@ describe("sanitize ladder", () => {
 		assert.ok(hits.length >= 1, "prefix query must match indexed deploy text");
 	});
 
+	it("quoted trailing wildcard stays literal (regression)", () => {
+		const literal = writeFixture("--literal-star--", "literal.jsonl", [sessionHeader(), msg("ls1", "user", "Qj run deploy* exactly as written")], 150000);
+		const expanded = writeFixture("--expanded-star--", "expanded.jsonl", [sessionHeader(), msg("es1", "user", "Qj ordinary deployment text")], 150100);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.deepEqual(buildFtsQueryPlan('"deploy*"').ftsCandidates[0], '"deploy*"');
+		const { hits } = searchIndex(dbPath, '"deploy*"', { limit: 10 });
+		assert.ok(hits.some((hit) => hit.path === literal), "quoted star must match a literal deploy*");
+		assert.ok(!hits.some((hit) => hit.path === expanded), "quoted star must not expand to deployment");
+		const likeHits = searchIndex(dbPath, 'Qj "deploy*"', { limit: 10 }).hits;
+		assert.ok(likeHits.some((hit) => hit.path === literal), "quoted star stays literal in the short-term LIKE path");
+		assert.ok(!likeHits.some((hit) => hit.path === expanded), "LIKE must not expand a quoted star");
+		fs.rmSync(literal);
+		fs.rmSync(expanded);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+	});
+
 	it("technical sigils survive boundary normalization (bhZeo)", () => {
 		const plan = buildFtsQueryPlan("C++ templates");
 		assert.match(plan.ftsCandidates[0], /"C\+\+"/);
@@ -420,18 +436,21 @@ describe("lineage + guards", () => {
 		assert.ok(hits.length >= 1, "parenthesized natural query must match deploy pipeline hits");
 	});
 
-	it("NEAR with short operands falls back to LIKE over operand terms, not literal NEAR (regression)", () => {
-		writeFixture("--near-proj--", "near.jsonl", [
-			sessionHeader(),
-			msg("n1", "user", "we wrote the CLI in Go AND kept the parser in Rust here"),
-		], 96000);
+	it("NEAR is a bounded operand in composed boolean LIKE expressions", () => {
+		const nearby = writeFixture("--near-proj--", "near.jsonl", [sessionHeader(), msg("n1", "user", "Go Rust AND stay nearby")], 96000);
+		const far = writeFixture("--near-far--", "far.jsonl", [sessionHeader(), msg("nf1", "user", `Go ${"arbitrarily distant ".repeat(20)}Rust`)], 96100);
+		const blocked = writeFixture("--near-blocked--", "blocked.jsonl", [sessionHeader(), msg("nb1", "user", "Go Rust ZqBlocked")], 96200);
+		const alternative = writeFixture("--near-alt--", "alt.jsonl", [sessionHeader(), msg("na1", "user", "ZqAlt only")], 96300);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
+
 		assert.equal(buildFtsQueryPlan("NEAR(Go Rust)").forceLike, true);
-		const { hits } = searchIndex(dbPath, "NEAR(Go Rust)");
-		assert.equal(hits.length, 1, "NEAR operands must be searched via LIKE fallback");
-		assert.ok(!hits[0].snippet.includes("NEAR"), "snippet terms must not anchor on the operator");
-		assert.equal(searchIndex(dbPath, "NEAR(Go Rust, 5)").hits.length, 1, "NEAR distance is syntax, not an operand");
+		const hits = searchIndex(dbPath, "((NEAR(Go Rust) AND NOT ZqBlocked) OR ZqAlt)", { limit: 10 }).hits;
+		assert.deepEqual(new Set(hits.map((hit) => hit.path)), new Set([nearby, alternative]), "NEAR composes with grouping, AND, OR, and NOT without admitting distant or blocked matches");
+		assert.ok(!hits.find((hit) => hit.path === nearby)!.snippet.includes("NEAR"), "snippet terms must not anchor on the operator");
+		assert.equal(searchIndex(dbPath, "NEAR(Go, Rust)").hits.length, 0, "a comma between operands is malformed and must fail closed");
 		assert.equal(searchIndex(dbPath, "NEAR(Go \"AND\")").hits.length, 1, "quoted operator word remains an operand");
+		for (const file of [nearby, far, blocked, alternative]) fs.rmSync(file);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
 	});
 
 	it("short-term floor counts Unicode code points, not UTF-16 units (two-emoji term)", () => {
@@ -642,13 +661,15 @@ describe("incompatible index schema", () => {
 			assert.equal(searchIndex(dbPath, '"zqxlaunch').hits.length, 1, 'query with unmatched opening quote must match ordinary text');
 		});
 
-		it("NEAR distance attached to the operand comma is recognized as syntax", () => {
-			writeFixture("--near-comma--", "n.jsonl", [
-				sessionHeader(),
-				msg("nc1", "user", "first Go ZqRust then zqxwrap"),
-			], 121000);
+		it("NEAR accepts comma spacing at the distance boundary and rejects unsafe integers", () => {
+			const boundary = writeFixture("--near-comma--", "boundary.jsonl", [sessionHeader(), msg("nc1", "user", "Go123ZqRust")], 121000);
+			const outside = writeFixture("--near-comma--", "outside.jsonl", [sessionHeader(), msg("nc2", "user", "Go1234ZqRust")], 121100);
 			syncSessions(sessionsDir, dbPath, { cap: 10 });
-			assert.equal(searchIndex(dbPath, "NEAR(Go ZqRust,10)").hits.length, 1, "attached NEAR distance must not be searched as literal text");
+			assert.deepEqual(searchIndex(dbPath, "NEAR(Go ZqRust ,5)", { limit: 10 }).hits.map((hit) => hit.path), [boundary]);
+			assert.equal(searchIndex(dbPath, "NEAR(Go ZqRust, 9007199254740992)").hits.length, 0, "an unsafe distance must fail closed");
+			fs.rmSync(boundary);
+			fs.rmSync(outside);
+			syncSessions(sessionsDir, dbPath, { cap: 10 });
 		});
 	});
 });

@@ -36,13 +36,17 @@ interface Entry {
 
 /** Parse JSONL lines; malformed lines are skipped. Header line (no id) skipped. */
 function parseSessionEntries(sessionPath: string): Entry[] {
-	const fd = fs.openSync(sessionPath, "r");
+	// O_NONBLOCK keeps FIFOs from waiting for a writer before fstat rejects
+	// them; the descriptor check also covers symlinks to non-regular nodes.
+	const fd = fs.openSync(sessionPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
 	let raw: string;
 	try {
 		// Snapshot bounds are fixed once here: the fd pins the inode, and fstat on
 		// that fd fixes both the allocation and the read ceiling. A concurrent
 		// append after fstat waits until the next hydration call.
-		const size = fs.fstatSync(fd).size;
+		const stats = fs.fstatSync(fd);
+		if (!stats.isFile()) throw new Error(`session path is not a regular file: ${sessionPath}`);
+		const size = stats.size;
 		if (size > MAX_SESSION_FILE_BYTES) {
 			throw new Error(`session file exceeds 32 MiB hydration limit: ${sessionPath}`);
 		}

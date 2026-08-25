@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs, { appendFileSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { test } from "node:test";
@@ -37,6 +38,20 @@ function mkMsgs() {
 		};
 	};
 }
+
+test("hydration rejects a FIFO promptly without a writer", { skip: process.platform === "win32" }, () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-session-hydrate-"));
+	const session = join(dir, "session.jsonl");
+	try {
+		assert.equal(spawnSync("mkfifo", [session]).status, 0);
+		const script = `import { readSession } from ${JSON.stringify(new URL("../extensions/hydrate.ts", import.meta.url).href)}; try { readSession(${JSON.stringify(session)}); } catch (error) { if (/not a regular file/.test(String(error))) process.exit(0); throw error; } process.exit(1);`;
+		const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { timeout: 500 });
+		assert.equal(result.error, undefined, `hydration timed out: ${result.error}`);
+		assert.equal(result.status, 0, result.stderr.toString());
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 test("hydration rejects a session larger than the indexing cap", () => {
 	const dir = mkdtempSync(join(tmpdir(), "pi-session-hydrate-"));
