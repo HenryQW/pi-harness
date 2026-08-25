@@ -280,11 +280,17 @@ test("executor rejects timeout with accumulated Usage without double counting", 
 	const first = usage(1);
 	const current = usage(2);
 	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], usage: ${JSON.stringify(first)}, stopReason: "toolUse" } })); console.log(JSON.stringify({ type: "message_update", usage: ${JSON.stringify(current)} })); setInterval(() => {}, 1_000);\n`);
-	const timeoutExecutor = createEphemeralSubagentExecutor({
-		maxConcurrency: 1,
-		timeout: { idleMs: 40, maxMs: 100 },
+	const timeoutExecutor = createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout });
+	let observed!: () => void;
+	const usageObserved = new Promise<void>((resolve) => { observed = resolve; });
+	const running = timeoutExecutor.run({
+		onTokens: (tokens) => {
+			if (tokens === first.totalTokens + current.totalTokens) observed();
+		},
+		prepare: async () => prepared(cwd),
 	});
-	await assert.rejects(timeoutExecutor.run({ prepare: async () => prepared(cwd) }), (error) => {
+	await Promise.race([usageObserved, running]);
+	await assert.rejects(running, (error) => {
 		assert.ok(error instanceof EphemeralSubagentError);
 		assert.equal(error.code, "timeout");
 		assert.ok(error.cause instanceof Error);

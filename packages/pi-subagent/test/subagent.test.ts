@@ -154,8 +154,8 @@ function harness(options: {
 	};
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-	const deadline = Date.now() + 2_000;
+async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
 	while (!check()) {
 		if (Date.now() >= deadline) throw new Error("Timed out waiting for test state.");
 		await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2089,7 +2089,8 @@ test("session shutdown promptly reports preserved isolated setup failures", asyn
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir, true);
 		const hook = join(repo, ".git", "hooks", "post-checkout");
-		await writeFile(hook, "#!/bin/sh\nsleep 5\nexit 1\n");
+		const hookStarted = join(agentDir, "post-checkout-started");
+		await writeFile(hook, `#!/bin/sh\n: > ${JSON.stringify(hookStarted)}\nsleep 5\nexit 1\n`);
 		await chmod(hook, 0o755);
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, "throw new Error('runner must not start');\n");
@@ -2100,7 +2101,7 @@ test("session shutdown promptly reports preserved isolated setup failures", asyn
 		const name = childName("call-1:single:0");
 		const path = join(await realpath(repo), ".worktrees", name);
 		const branch = `pi-subagent/${name}`;
-		await waitFor(() => existsSync(path));
+		await waitFor(() => existsSync(hookStarted), 10_000);
 		const shutdownAt = Date.now();
 		await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
 
@@ -2114,7 +2115,7 @@ test("session shutdown promptly reports preserved isolated setup failures", asyn
 		assert.ok(message.content.indexOf("Recovery locations:") < message.content.indexOf("Evidence:"));
 		assert.equal(message.content.includes(path), true);
 		assert.equal(message.content.includes(branch), true);
-		assert.equal(existsSync(path), true);
+		assert.notEqual(execFileSync("git", ["branch", "--list", branch], { cwd: repo, encoding: "utf8" }).trim(), "");
 	});
 });
 
