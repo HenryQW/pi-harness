@@ -6,6 +6,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import childToolPolicy, { ROLE_TOOL_POLICY_FLAG } from "../extensions/role-tools.ts";
 import {
+	createRoleLaunch,
 	listManagedSubagents,
 	managedSubagentName,
 	managedSubagentWorkspaceId,
@@ -20,18 +21,19 @@ import {
 	type Role,
 } from "../src/index.ts";
 
-const model = {
+const model: NonNullable<ExtensionContext["model"]> = {
 	provider: "openai-codex-2",
 	id: "gpt-test",
 	name: "Test",
 	api: "openai-responses",
 	baseUrl: "https://example.test",
 	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 100_000,
 	maxTokens: 10_000,
 	reasoning: true,
 	thinkingLevelMap: { high: "high" },
-} as const;
+};
 
 test("child role policy keeps selected built-ins and activates loaded extension tools", () => {
 	let sessionStart: (() => void) | undefined;
@@ -80,6 +82,64 @@ test("child role policy rejects a malformed tool flag", () => {
 	assert.throws(sessionStart, /pi-subagent-role-tools must be JSON tool names/);
 });
 
+test("omitted Role tools preserve active Main built-ins and add caller protocol tools", () => {
+	const role: Role = {
+		name: "worker",
+		description: "Uses Main defaults and caller protocol tools",
+		tools: undefined,
+		extensions: ["/roles/worker.ts"],
+		skills: [],
+		systemPrompt: "Do bounded work.",
+	};
+	const mainPi = {
+		getCommands: () => [],
+		getActiveTools: () => ["read", "bash", "parent_extension", "ask_question"],
+		getAllTools: () => [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "edit", sourceInfo: { source: "builtin" } },
+			{ name: "parent_extension", sourceInfo: { source: "npm:parent-extension" } },
+			{ name: "ask_question", sourceInfo: { source: "npm:parent-extension" } },
+		],
+	} as unknown as Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">;
+	const launch = createRoleLaunch(mainPi, { isProjectTrusted: () => true }, {
+		role,
+		route: { model, thinkingLevel: "high" },
+		extensions: ["/caller/protocol.ts"],
+		tools: ["caller_protocol", "ask_question"],
+	});
+
+	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/worker.ts", "/caller/protocol.ts"]);
+	assert.match(valuesAfter(launch.args, "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
+	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "bash", "caller_protocol", "ask_question"]));
+
+	let sessionStart: (() => void) | undefined;
+	let activeTools = ["read", "bash", "edit", "role_extension", "caller_protocol", "caller_extension"];
+	const childPi = {
+		registerFlag() {},
+		getFlag: () => valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`),
+		on(event: string, handler: () => void) {
+			if (event === "session_start") sessionStart = handler;
+		},
+		getAllTools: () => [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "edit", sourceInfo: { source: "builtin" } },
+			{ name: "role_extension", sourceInfo: { source: "/roles/worker.ts" } },
+			{ name: "caller_protocol", sourceInfo: { source: "/caller/protocol.ts" } },
+			{ name: "caller_extension", sourceInfo: { source: "/caller/protocol.ts" } },
+			{ name: "delegate_task", sourceInfo: { source: "npm:pi-subagent" } },
+			{ name: "ask_question", sourceInfo: { source: "/caller/protocol.ts" } },
+		],
+		setActiveTools(names: string[]) { activeTools = names; },
+	} as unknown as ExtensionAPI;
+
+	childToolPolicy(childPi);
+	assert.ok(sessionStart);
+	sessionStart();
+	assert.deepEqual(activeTools, ["read", "bash", "caller_protocol", "role_extension", "caller_extension"]);
+});
+
 test("assigned Role launch merges caller policy and resolves effective Pi resources", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-library-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
@@ -102,7 +162,14 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 			source: "skill",
 			sourceInfo: { path: "/effective/security/SKILL.md" },
 		}],
-	} as unknown as Pick<ExtensionAPI, "getCommands">;
+		getActiveTools: () => ["read", "bash", "parent_tool"],
+		getAllTools: () => [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "edit", sourceInfo: { source: "builtin" } },
+			{ name: "parent_tool", sourceInfo: { source: "npm:parent-extension" } },
+		],
+	} as unknown as Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">;
 	const ctx = {
 		model,
 		scopedModels: [],
@@ -149,8 +216,8 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	});
 	assert.equal(defaultTools.args.includes("--tools"), false);
 	assert.equal(defaultTools.args.includes("--no-tools"), false);
-	assert.equal(defaultTools.args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
-	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
+	assert.equal(valueAfter(defaultTools.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "bash", "submit"]));
+	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), true);
 	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge");
 });
 

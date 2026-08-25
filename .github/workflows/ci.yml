@@ -23,7 +23,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
+      - name: Run tests
+        shell: bash
+        run: |
+          set +e
+          npm test 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            {
+              echo "### Failed tests"
+              grep -E '^(not ok [0-9]+ - |# fail [1-9])' "$RUNNER_TEMP/npm-test.log" || echo "npm test failed before producing a test summary; see the full Run tests log."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
       - run: npm run typecheck
       - run: npm run pack:check
       - name: Require package version bumps

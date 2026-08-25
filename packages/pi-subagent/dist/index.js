@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode } from "@henryqw/pi-herdr";
 import { modelReference, orderedProfileRoutes, PROFILE_NAMES, readTaskModelsConfig, resolveConfiguredTaskRoute, resolveTaskModelRoute, } from "@henryqw/pi-task-models";
+export { capEphemeralSubagentOutput, createEphemeralSubagentExecutor, EphemeralSubagentError, } from "./ephemeral.js";
 export { createChildWorktree, finalizeChildWorktree, worktreeContextNote, } from "./worktree.js";
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
@@ -125,9 +126,16 @@ export function resolveRoleSkills(pi, role) {
 export function createRoleLaunch(pi, ctx, input) {
     const role = input.role;
     const skills = resolveRoleSkills(pi, role);
-    const tools = role.tools === undefined
+    let baseTools = role.tools;
+    if (baseTools === undefined && input.tools !== undefined) {
+        const builtins = new Set(pi.getAllTools()
+            .filter((tool) => tool.sourceInfo.source === "builtin")
+            .map((tool) => tool.name));
+        baseTools = pi.getActiveTools().filter((tool) => builtins.has(tool));
+    }
+    const tools = baseTools === undefined
         ? undefined
-        : [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+        : [...new Set([...baseTools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
     const extensions = [
         ...role.extensions,
         ...(input.extensions ?? []),

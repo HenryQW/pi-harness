@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "3.0.3",
-  "description": "Delegate one task to an isolated Pi role with explicit extensions and skills.",
+  "version": "3.1.0",
+  "description": "Delegate bounded single, parallel, or chained tasks to isolated Pi roles.",
   "keywords": [
     "pi-package",
     "pi",
@@ -16,6 +16,8 @@
   "files": [
     "dist",
     "extensions",
+    "docs",
+    "examples",
     "README.md",
     "CONTEXT.md",
     "LICENSE"

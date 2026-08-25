@@ -1,55 +1,53 @@
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { basename } from "node:path";
-import { StringDecoder } from "node:string_decoder";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { type AgentSessionEvent, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import type { Usage } from "@earendil-works/pi-ai";
+import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import {
 	availableTaskModels,
-	THINKING_LEVELS,
 	type ThinkingLevel,
 	modelReference,
-	PROFILE_NAMES,
 	resolveAvailableModel,
 	resolveConfiguredTaskRoute,
 	type ResolvedTaskRoute,
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
-import { Type } from "typebox";
-import { createChildWorktree, createRoleLaunch, finalizeChildWorktree, isProfileName, loadRoles, resolveTaskRoute, worktreeContextNote, type WorktreeInfo, type WorktreePayload } from "@henryqw/pi-subagent";
+import {
+	capEphemeralSubagentOutput as capOutput,
+	createChildWorktree,
+	createEphemeralSubagentExecutor,
+	createRoleLaunch,
+	EphemeralSubagentError,
+	finalizeChildWorktree,
+	loadRoles,
+	resolveTaskRoute,
+	worktreeContextNote,
+	type EphemeralSubagentResult,
+	type EphemeralSubagentTimeout,
+	type Role,
+	type WorktreeInfo,
+	type WorktreePayload,
+} from "@henryqw/pi-subagent";
+import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import {
+	formatBackgroundWorkflowResult,
+	formatWorkflowResult,
+	formatWorkflowUpdate,
+	WorkflowAbortedError,
+	WorkflowFailureError,
+	type WorkflowTransportEntry,
+} from "./result-transport.ts";
+import {
+	identifyWorkflowEntries,
+	parseWorkflow,
+	runForegroundWorkflow,
+	WorkflowSchema,
+	type Delegation,
+	type ParsedWorkflow,
+	type WorkflowEntry,
+} from "./workflow.ts";
+
+export { capOutput };
 
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
-const MAX_OUTPUT_BYTES = 50 * 1024;
-const MAX_JSON_EVENT_BYTES = 1024 * 1024;
-const PI_JSON_EVENTS = {
-	agent_start: true,
-	agent_end: true,
-	agent_settled: true,
-	turn_start: true,
-	turn_end: true,
-	message_start: true,
-	message_update: true,
-	message_end: true,
-	tool_execution_start: true,
-	tool_execution_update: true,
-	tool_execution_end: true,
-	queue_update: true,
-	compaction_start: true,
-	compaction_end: true,
-	entry_appended: true,
-	session_info_changed: true,
-	thinking_level_changed: true,
-	auto_retry_start: true,
-	auto_retry_end: true,
-	summarization_retry_scheduled: true,
-	summarization_retry_attempt_start: true,
-	summarization_retry_finished: true,
-	bash_execution_update: true,
-} satisfies Record<AgentSessionEvent["type"], true>;
-const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
-const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const TERMINAL_DISPLAY_MS = 1_000;
@@ -60,7 +58,7 @@ const DEFAULT_TIMEOUT_POLICY = {
 };
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-type TimeoutPolicy = typeof DEFAULT_TIMEOUT_POLICY;
+type TimeoutPolicy = EphemeralSubagentTimeout;
 
 /** Merge validated config-file timeout fields over defaults; absent keys keep defaults. */
 export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined): TimeoutPolicy {
@@ -69,19 +67,6 @@ export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined)
 		maxMs: partial?.maxMinutes === undefined ? DEFAULT_TIMEOUT_POLICY.maxMs : partial.maxMinutes * 60_000,
 	};
 }
-class SubagentTimeoutError extends Error {}
-type ChildResult = {
-	exitCode: number;
-	output: string;
-	stderr: string;
-	stopReason?: string;
-	errorMessage?: string;
-};
-type DelegateResult = {
-	content: [{ type: "text"; text: string }];
-	details: Record<string, unknown>;
-	isError?: boolean;
-};
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
 type WidgetItem = {
 	roleRoute: string;
@@ -93,78 +78,8 @@ type WidgetItem = {
 	removeAt?: number;
 };
 
-const cleanText = (value: unknown, field: string, file: string): string => {
-	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
-		throw new Error(`${file}: ${field} must be non-empty text.`);
-	}
-	return value.trim();
-};
-
-function piInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
-	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
-	const executable = basename(process.execPath).toLowerCase();
-	if (!/^(node|bun)(\.exe)?$/.test(executable)) return { command: process.execPath, args };
-	return { command: "pi", args };
-}
-
-function assistantText(message: unknown): string | undefined {
-	if (!message || typeof message !== "object" || Array.isArray(message)) return;
-	const record = message as Record<string, unknown>;
-	if (record.role !== "assistant" || !Array.isArray(record.content)) return;
-	const text = record.content
-		.filter((part): part is { type: "text"; text: string } =>
-			Boolean(part && typeof part === "object" && !Array.isArray(part)
-				&& (part as Record<string, unknown>).type === "text"
-				&& typeof (part as Record<string, unknown>).text === "string"))
-		.map((part) => part.text)
-		.join("\n");
-	return text || undefined;
-}
-
-function utf8Prefix(text: string, maxBytes: number): string {
-	return new StringDecoder().write(Buffer.from(text).subarray(0, maxBytes));
-}
-
-function cappedPrefix(text: string, totalBytes: number): string {
-	if (totalBytes <= MAX_OUTPUT_BYTES) return text;
-	const worstCaseMarker = `\n\n[Output truncated: ${totalBytes} bytes omitted]`;
-	const prefix = utf8Prefix(text, MAX_OUTPUT_BYTES - Buffer.byteLength(worstCaseMarker, "utf8"));
-	const omittedBytes = totalBytes - Buffer.byteLength(prefix, "utf8");
-	return `${prefix}\n\n[Output truncated: ${omittedBytes} bytes omitted]`;
-}
-
-export function capOutput(text: string): string {
-	return cappedPrefix(text, Buffer.byteLength(text, "utf8"));
-}
-
-type BoundedText = { prefix: string; totalBytes: number };
-
-function appendBounded(target: BoundedText, text: string): void {
-	target.totalBytes += Buffer.byteLength(text, "utf8");
-	const remaining = MAX_OUTPUT_BYTES - Buffer.byteLength(target.prefix, "utf8");
-	if (remaining > 0) target.prefix += utf8Prefix(text, remaining);
-}
-
-function boundedText(target: BoundedText): string {
-	return cappedPrefix(target.prefix, target.totalBytes);
-}
-
 function taskSummary(task: string): string {
 	return task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ");
-}
-
-/** Finalizes an isolated child's worktree; returns its report, or undefined when absent/failed. */
-async function finalizeWorktreePayload(worktree: WorktreeInfo | undefined): Promise<WorktreePayload | undefined> {
-	if (!worktree) return undefined;
-	try {
-		return await finalizeChildWorktree(worktree);
-	} catch {
-		return undefined;
-	}
 }
 
 function formatTokens(tokens: number): string {
@@ -179,12 +94,6 @@ function formatElapsed(startedAt: number, finishedAt = Date.now()): string {
 	const hours = Math.floor(seconds / 3_600);
 	const minutes = Math.floor(seconds % 3_600 / 60);
 	return hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
-}
-
-function usageTokens(value: unknown): number | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return;
-	const total = (value as Record<string, unknown>).totalTokens;
-	return typeof total === "number" && Number.isFinite(total) && total >= 0 ? Math.round(total) : undefined;
 }
 
 function statusGlyph(status: WidgetStatus, spinnerIndex: number, theme: Theme): string {
@@ -240,270 +149,6 @@ function renderWidgetRows(
 	return lines;
 }
 
-async function runPi(
-	args: string[],
-	cwd: string,
-	signal: AbortSignal | undefined,
-	onUpdate: ((text: string) => void) | undefined,
-	onTokens: ((tokens: number) => void) | undefined,
-	timeoutPolicy: TimeoutPolicy,
-): Promise<ChildResult> {
-	if (signal?.aborted) throw new Error("Subagent was aborted.");
-	return await new Promise<ChildResult>((resolve, reject) => {
-		const invocation = piInvocation(args);
-		const child = spawn(invocation.command, invocation.args, {
-			cwd,
-			shell: false,
-			stdio: ["ignore", "pipe", "pipe"],
-			detached: process.platform !== "win32",
-		});
-		child.stdout.setEncoding("utf8");
-		child.stderr.setEncoding("utf8");
-		let lineParts: string[] = [];
-		let lineBytes = 0;
-		let linePrefix = "";
-		let lineEventType: string | undefined;
-		let ignoreLine = false;
-		let output = "";
-		const stderr = { prefix: "", totalBytes: 0 };
-		const partial = { prefix: "", totalBytes: 0 };
-		let hasPartialText = false;
-		let stopReason: string | undefined;
-		let errorMessage: string | undefined;
-		let spawnError: Error | undefined;
-		let protocolError: Error | undefined;
-		let aborted = false;
-		const startedAt = Date.now();
-		const maxDeadline = startedAt + timeoutPolicy.maxMs;
-		let lastEventAt = startedAt;
-		let deadline = Math.min(startedAt + timeoutPolicy.idleMs, maxDeadline);
-		let timedOutAfterMs: number | undefined;
-		let timeoutReason: "idle" | "maximum" | undefined;
-		let childExited = false;
-		let completedTokens = 0;
-		let currentTokens = 0;
-		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-		let killTimer: ReturnType<typeof setTimeout> | undefined;
-
-		const scheduleDeadline = () => {
-			if (deadlineTimer) clearTimeout(deadlineTimer);
-			deadline = Math.min(lastEventAt + timeoutPolicy.idleMs, maxDeadline);
-			const scheduledDeadline = deadline;
-			deadlineTimer = setTimeout(
-				() => timeout(scheduledDeadline - startedAt, scheduledDeadline === maxDeadline ? "maximum" : "idle"),
-				Math.max(0, scheduledDeadline - Date.now()),
-			);
-			deadlineTimer.unref();
-		};
-
-		const observeEvent = () => {
-			if (aborted || timedOutAfterMs !== undefined || childExited) return;
-			const now = Date.now();
-			if (now >= deadline) {
-				timeout(deadline - startedAt, deadline === maxDeadline ? "maximum" : "idle");
-				return;
-			}
-			lastEventAt = now;
-			scheduleDeadline();
-		};
-
-		const processLine = (line: string) => {
-			if (!line.trim()) return;
-			let event: unknown;
-			try {
-				event = JSON.parse(line);
-			} catch {
-				return;
-			}
-			if (!event || typeof event !== "object" || Array.isArray(event)) return;
-			const record = event as Record<string, unknown>;
-			if (typeof record.type !== "string" || !Object.hasOwn(PI_JSON_EVENTS, record.type)) return;
-			observeEvent();
-			if (record.type === "message_start") {
-				partial.prefix = "";
-				partial.totalBytes = 0;
-				hasPartialText = false;
-				return;
-			}
-			if (record.type === "message_update") {
-				const tokens = usageTokens(record.usage);
-				if (tokens !== undefined) {
-					currentTokens = tokens;
-					onTokens?.(completedTokens + currentTokens);
-				}
-				const update = record.assistantMessageEvent;
-				if (update && typeof update === "object" && !Array.isArray(update)) {
-					const assistantEvent = update as Record<string, unknown>;
-					if (assistantEvent.type === "text_start" && hasPartialText) appendBounded(partial, "\n");
-					if (assistantEvent.type === "text_start") hasPartialText = true;
-					if (assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") {
-						hasPartialText = true;
-						appendBounded(partial, assistantEvent.delta);
-						output = boundedText(partial);
-						onUpdate?.(output);
-					}
-				}
-				return;
-			}
-			if (record.type !== "message_end") return;
-			const text = assistantText(record.message);
-			if (text !== undefined) {
-				output = capOutput(text);
-				onUpdate?.(output);
-			}
-			if (record.message && typeof record.message === "object" && !Array.isArray(record.message)) {
-				const message = record.message as Record<string, unknown>;
-				if (message.role === "assistant") {
-					completedTokens += usageTokens(message.usage) ?? currentTokens;
-					currentTokens = 0;
-					onTokens?.(completedTokens);
-				}
-				if (typeof message.stopReason === "string") stopReason = message.stopReason;
-				if (typeof message.errorMessage === "string") errorMessage = message.errorMessage;
-			}
-		};
-
-		const killTree = async (force: boolean): Promise<void> => {
-			if (!child.pid) return;
-			if (process.platform === "win32") {
-				await new Promise<void>((resolve) => {
-					const taskkill = spawn("taskkill", [...(force ? ["/F"] : []), "/T", "/PID", String(child.pid)], {
-						stdio: "ignore",
-						windowsHide: true,
-					});
-					taskkill.once("error", () => resolve());
-					taskkill.once("close", () => resolve());
-				});
-				return;
-			}
-			try {
-				process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
-			} catch {
-				child.kill(force ? "SIGKILL" : "SIGTERM");
-			}
-		};
-
-		child.stdout.on("data", (data: string) => {
-			if (protocolError) return;
-			let offset = 0;
-			while (offset < data.length) {
-				const newline = data.indexOf("\n", offset);
-				const end = newline === -1 ? data.length : newline;
-				const part = data.slice(offset, end);
-				if (!ignoreLine) {
-					linePrefix += part.slice(0, Math.max(0, 256 - linePrefix.length));
-					const eventType = JSON_EVENT_TYPE.exec(linePrefix)?.[1];
-					if (eventType && !lineEventType) lineEventType = eventType;
-					lineBytes += Buffer.byteLength(part, "utf8");
-					if (lineBytes > MAX_JSON_EVENT_BYTES) {
-						if (lineEventType && !CONSUMED_JSON_EVENTS.has(lineEventType)) {
-							ignoreLine = true;
-							lineParts = [];
-							lineBytes = 0;
-						} else {
-							protocolError = new Error(`Subagent JSON event exceeds ${MAX_JSON_EVENT_BYTES} bytes.`);
-							void killTree(true);
-							return;
-						}
-					} else if (part) lineParts.push(part);
-				}
-				if (newline === -1) return;
-				if (!ignoreLine) processLine(lineParts.join(""));
-				lineParts = [];
-				lineBytes = 0;
-				linePrefix = "";
-				lineEventType = undefined;
-				ignoreLine = false;
-				offset = newline + 1;
-			}
-		});
-		child.stderr.on("data", (data: string) => {
-			appendBounded(stderr, data);
-		});
-		child.on("error", (error) => { spawnError = error; });
-
-		const stop = (force = false) => {
-			if (force) {
-				void killTree(true);
-				return;
-			}
-			void killTree(false);
-			killTimer = setTimeout(
-				() => void killTree(true),
-				Math.min(5_000, Math.max(0, maxDeadline - Date.now())),
-			);
-			killTimer.unref();
-		};
-		const abort = () => {
-			if (timedOutAfterMs !== undefined || childExited) return;
-			aborted = true;
-			stop();
-		};
-		function timeout(afterMs: number, reason: "idle" | "maximum") {
-			if (timedOutAfterMs !== undefined || childExited) return;
-			if (reason === "maximum") {
-				if (!aborted) {
-					timedOutAfterMs = afterMs;
-					timeoutReason = reason;
-				}
-				stop(true);
-				return;
-			}
-			if (aborted) return;
-			timedOutAfterMs = afterMs;
-			timeoutReason = reason;
-			stop();
-		}
-		scheduleDeadline();
-		signal?.addEventListener("abort", abort, { once: true });
-		if (signal?.aborted) abort();
-
-		// `close` waits for stdio EOF, which descendants can hold after Pi exits.
-		// Kill the process group at Pi's exit boundary so `close` can settle.
-		child.once("exit", () => {
-			childExited = true;
-			if (deadlineTimer) clearTimeout(deadlineTimer);
-			signal?.removeEventListener("abort", abort);
-			void killTree(true);
-		});
-		child.on("close", async (code) => {
-			if (!protocolError && lineBytes) processLine(lineParts.join(""));
-			await killTree(true);
-			if (deadlineTimer) clearTimeout(deadlineTimer);
-			if (killTimer) clearTimeout(killTimer);
-			signal?.removeEventListener("abort", abort);
-			if (aborted) reject(new Error("Subagent was aborted."));
-			else if (timedOutAfterMs !== undefined) reject(new SubagentTimeoutError(
-				timeoutReason === "maximum"
-					? `Subagent reached its maximum runtime after ${formatElapsed(0, timedOutAfterMs)}.`
-					: `Subagent timed out after ${formatElapsed(0, timeoutPolicy.idleMs)} without a recognized Pi event.`,
-			));
-			else if (protocolError) reject(protocolError);
-			else if (spawnError) reject(spawnError);
-			else resolve({ exitCode: code ?? 1, output, stderr: boundedText(stderr), stopReason, errorMessage });
-		});
-	});
-}
-
-const Parameters = Type.Object({
-	role: Type.String({ description: "Configured Subagent role name" }),
-	task: Type.String({
-		description: "Bounded task packet: objective; exact scope and exclusions; relevant context and constraints; expected deliverable; validation. Never the whole parent request.",
-	}),
-	model: Type.Optional(Type.String({
-		description: "Designated model as provider/modelId; overrides modelClass. Unknown references reject with the list of available models.",
-	})),
-	modelClass: Type.Optional(StringEnum(PROFILE_NAMES, {
-		description: "Classify task complexity: fast for narrow lookups or mechanical edits; balanced for normal bounded work; frontier for ambiguous, cross-cutting, or high-risk reasoning; fav for the user's favorite model when they ask for it. Defaults to the shared pi-subagent/delegateTask assignment.",
-	})),
-	background: Type.Optional(Type.Boolean({
-		description: "Run without blocking: returns a task ID immediately and delivers the outcome as a message when the Subagent settles; the result cannot be waited on. Set only when the user explicitly asks for non-blocking delegation. Prefer blocking delegation whenever the parent needs the result to continue.",
-	})),
-	thinking: Type.Optional(StringEnum(THINKING_LEVELS, {
-		description: "Override the resolved route's thinking level (e.g. when the user asks for deeper or lighter reasoning). Must be supported by the resolved model.",
-	})),
-});
-
 function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinking?: ThinkingLevel): ResolvedTaskRoute {
 	const models = availableTaskModels(ctx);
 	const model = resolveAvailableModel(models, reference, ctx.model?.provider);
@@ -511,7 +156,7 @@ function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinki
 		throw new Error(`Unknown delegate_task model: ${reference}. Available models: ${models.map((candidate) => modelReference(candidate)).join(", ") || "none"}.`);
 	}
 	const levels = taskThinkingLevels(ctx, model);
-		if (thinking !== undefined) {
+	if (thinking !== undefined) {
 		if (!levels.includes(thinking)) {
 			throw new Error(`delegate_task thinking ${thinking} is not usable for ${modelReference(model)} in this session. Usable levels here: ${levels.join(", ") || "none"}.`);
 		}
@@ -524,6 +169,20 @@ function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinki
 }
 
 const BACKGROUND_RESULT_TYPE = "subagent-background-result";
+
+function boundedError(error: unknown): Error {
+	const message = capOutput(error instanceof Error ? error.message : String(error));
+	return error instanceof Error && error.message === message ? error : new Error(message, { cause: error });
+}
+
+function failedToolPatch(error: WorkflowFailureError | WorkflowAbortedError) {
+	return {
+		content: [{ type: "text" as const, text: error.message }],
+		details: error.details,
+		isError: true as const,
+		...(error.usage === undefined ? {} : { usage: error.usage }),
+	};
+}
 
 const roleSummary = (): string => {
 	try {
@@ -551,11 +210,11 @@ export default function subagentExtension(
 		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes —
 		// and digit strings that overflow to Infinity, which would disable the cap.
 		if (!/^\d+$/.test(maxSubagentsRaw) || !/^[1-9]\d*$/.test(maxSubagentsRaw)) {
-			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`);
+			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`));
 		}
 		const parsed = Number.parseInt(maxSubagentsRaw, 10);
 		if (!Number.isSafeInteger(parsed)) {
-			throw new Error(`PI_SUBAGENT_MAX_SUBAGENTS exceeds the supported range, got ${JSON.stringify(maxSubagentsRaw)}.`);
+			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS exceeds the supported range, got ${JSON.stringify(maxSubagentsRaw)}.`));
 		}
 		maxActiveSubagents = parsed;
 	}
@@ -563,44 +222,17 @@ export default function subagentExtension(
 	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
 	// config file over defaults.
 	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
+	const executor = createEphemeralSubagentExecutor({ maxConcurrency: maxActiveSubagents, timeout: timeoutPolicy });
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, { controller: AbortController; settled: Promise<void> }>();
+	const failedToolPatches = new Map<string, ReturnType<typeof failedToolPatch>>();
 	// Latest known session context; refreshed on session lifecycle and model
 	// changes so queued background launches resolve against effective state.
 	let latestCtx: ExtensionContext | undefined;
 	// Bumped by session_start and session_shutdown; background tasks may only
 	// deliver into the exact session that launched them.
 	let sessionEpoch = 0;
-	let activeChildren = 0;
-	const queuedChildren: Array<() => void> = [];
-	const acquireChildPermit = (signal: AbortSignal | undefined): Promise<void> => {
-		if (signal?.aborted) return Promise.reject(new Error("Subagent was aborted."));
-		if (activeChildren < maxActiveSubagents) {
-			activeChildren++;
-			return Promise.resolve();
-		}
-		return new Promise<void>((resolve, reject) => {
-			function abort() {
-				const index = queuedChildren.indexOf(grant);
-				if (index < 0) return;
-				queuedChildren.splice(index, 1);
-				signal?.removeEventListener("abort", abort);
-				reject(new Error("Subagent was aborted."));
-			}
-			const grant = () => {
-				signal?.removeEventListener("abort", abort);
-				resolve();
-			};
-			queuedChildren.push(grant);
-			signal?.addEventListener("abort", abort, { once: true });
-		});
-	};
-	const releaseChildPermit = () => {
-		const grant = queuedChildren.shift();
-		if (grant) grant();
-		else activeChildren--;
-	};
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
@@ -684,6 +316,7 @@ export default function subagentExtension(
 		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
+		failedToolPatches.clear();
 		stopWidgetTimer();
 		widgetItems.clear();
 		activeTui = undefined;
@@ -705,75 +338,130 @@ export default function subagentExtension(
 	pi.on("agent_settled", (_event, ctx) => {
 		latestCtx = ctx;
 	});
+	pi.on("tool_result", (event) => {
+		if (event.toolName !== "delegate_task") return;
+		const patch = failedToolPatches.get(event.toolCallId);
+		if (!patch) return;
+		failedToolPatches.delete(event.toolCallId);
+		return patch;
+	});
 
-	const reportBackground = async (
+	const reportBackground = (
 		launchEpoch: number,
 		taskId: string,
-		details: { role: string; model?: string; thinkingLevel?: string },
-		outcome: "completed" | "failed" | "aborted",
-		text: string,
-		worktreePayload?: WorktreePayload,
-		setupRecovery?: string,
-	): Promise<void> => {
+		mode: ParsedWorkflow["mode"],
+		entries: readonly WorkflowTransportEntry[],
+		setupRecoveries: ReadonlyMap<string, string>,
+	): void => {
 		const stale = launchEpoch !== sessionEpoch;
-		if (stale && (!worktreePayload || worktreePayload.pruned) && !setupRecovery) return;
-		// Custom messages convert to user-role LLM messages, so the parent agent
-		// sees the outcome on its next turn without a forced turn now.
+		const retained = entries.filter(({ worktreePayload }) => worktreePayload && !worktreePayload.pruned);
+		if (stale && !retained.length && !setupRecoveries.size) return;
+		const transport = formatBackgroundWorkflowResult(mode, entries);
+		const outcome = stale ? "aborted" : transport.failed ? "failed" : "completed";
+		const content = stale
+			? capOutput([
+				"Background workflow left recoverable isolated work after session shutdown.",
+				`Task ID: ${taskId}`,
+				`Mode: ${mode}`,
+				"Recovery locations:",
+				...retained.map((entry) =>
+					`- [${entry.index}] worktree path=${JSON.stringify(entry.worktreePayload!.path)} branch=${JSON.stringify(entry.worktreePayload!.branch)}`),
+				...[...setupRecoveries].map(([id, recovery]) => {
+					const entry = entries.find((candidate) => candidate.id === id)!;
+					return `- [${entry.index}] setup state: ${recovery}`;
+				}),
+				"Evidence:",
+				...retained.map((entry) => {
+					const payload = entry.worktreePayload!;
+					return `- [${entry.index}] retained worktree commits=${payload.commits} dirty=${payload.dirty} inspection_failed=${payload.inspection_failed === true}`;
+				}),
+				...[...setupRecoveries].map(([id, recovery]) => {
+					const entry = entries.find((candidate) => candidate.id === id)!;
+					return `- [${entry.index}] recoverable WorktreeSetupError: ${recovery}`;
+				}),
+			].join("\n"))
+			: transport.text;
 		try {
+			// Custom messages convert to user-role LLM messages, so the parent agent
+			// sees the aggregate on its next turn without forcing one now.
 			pi.sendMessage({
 				customType: BACKGROUND_RESULT_TYPE,
-				content: stale
-					? worktreePayload && !worktreePayload.pruned
-						? `Background subagent ${taskId} (${details.role}) left recoverable isolated work after session shutdown.\n${JSON.stringify(worktreePayload)}`
-						: `Background subagent ${taskId} (${details.role}) left recoverable isolated setup state after session shutdown.\n${setupRecovery}`
-					: `Background subagent ${taskId} (${details.role}) ${outcome}.\n\n${capOutput(text)}${worktreePayload ? `\n${JSON.stringify(worktreePayload)}` : ""}`,
+				content,
 				display: true,
-				details: { ...details, taskId, outcome, ...(stale ? { recovery: true } : {}) },
+				details: {
+					...transport.details,
+					taskId,
+					outcome,
+					...(transport.usage === undefined ? {} : { usage: transport.usage }),
+					...(stale ? { recovery: true } : {}),
+				},
 			}, { triggerTurn: false });
-		} catch {
-			// Session may already be gone; the widget row still shows the outcome.
+		} catch (error) {
+			// Delivery can disappear during teardown; only an active UI gets a visible failure.
+			if (!stale && latestCtx?.hasUI) {
+				latestCtx.ui.notify(boundedError(new Error(
+					`Background workflow ${taskId} result delivery failed: ${error instanceof Error ? error.message : String(error)}`,
+				)).message, "error");
+			}
 		}
 	};
 
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one bounded, independently executable task to one isolated Pi Subagent. Roles: ${roleSummary()}.`,
-		promptSnippet: "Delegate one bounded, independently executable task to an isolated role",
+		description: `Delegate one selected single, parallel, or chain workflow of bounded tasks to isolated Pi Subagents. Roles: ${roleSummary()}.`,
+		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
 		promptGuidelines: [
-			"Before calling delegate_task, split broad work into the smallest independent bounded tasks; keep integration and cross-cutting decisions in Main.",
-			"Each delegate_task task must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
-			"Use fav when the user explicitly asks for their favorite model. Otherwise, choose the least capable modelClass that can reliably complete the task: fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
-			"Submit independent delegate_task calls together for parallel execution. Parallel edits must own non-overlapping files; otherwise sequence them. Use the minimum number of Subagents needed.",
-			"Use background: true only when the user explicitly asks for non-blocking delegation (for example \"keep working while this runs\"); the result arrives as a message after the current turn and the parent must not assume it is available yet.",
+			"Call delegate_task with exactly one mode: role+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output.",
+			"Every delegate_task entry must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
+			"For each delegate_task entry, use fav only when the user asks for their favorite model; otherwise choose fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
+			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
+			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
-		parameters: Parameters,
+		parameters: WorkflowSchema,
+		prepareArguments(args) {
+			try {
+				const workflow = parseWorkflow(args);
+				if (workflow.mode === "single") return { ...workflow.delegations[0], background: workflow.background };
+				if (workflow.mode === "parallel") return { tasks: workflow.delegations, background: workflow.background };
+				return { chain: workflow.delegations, background: workflow.background };
+			} catch (error) {
+				throw boundedError(error);
+			}
+		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const task = cleanText(params.task, "task", "delegate_task");
-			const roles = loadRoles();
-			const role = roles.find((candidate) => candidate.name === params.role);
-			if (!role) {
-				throw new Error(`Unknown Subagent role: ${params.role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
+			const throwIfAborted = () => {
+				if (signal?.aborted) throw new EphemeralSubagentError("aborted", "Subagent was aborted.", signal.reason);
+			};
+			throwIfAborted();
+			let workflow: ParsedWorkflow;
+			let roles: Role[];
+			try {
+				workflow = parseWorkflow(params);
+				roles = loadRoles();
+				const knownRoles = new Set(roles.map(({ name }) => name));
+				for (const { role } of workflow.delegations) {
+					if (!knownRoles.has(role)) {
+						throw new Error(`Unknown Subagent role: ${role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
+					}
+				}
+			} catch (error) {
+				throw boundedError(error);
 			}
+			throwIfAborted();
+			const rolesByName = new Map(roles.map((role) => [role.name, role]));
 
-			if (params.modelClass !== undefined && !isProfileName(params.modelClass)) {
-				throw new Error("delegate_task modelClass must be fast, balanced, frontier, or fav.");
-			}
-			// Resolve against the latest known session context: a task queued past
-			// the cap must pick up model or Codex account changes that happened
-			// while it waited.
+			// Resolve against the latest known session context after each FIFO permit.
 			const launchCtx = () => latestCtx ?? ctx;
-			// The explicit thinking override participates in route resolution itself:
-			// routes that cannot honor it are skipped so fallback routes get considered.
-			const resolveLaunch = () => createRoleLaunch(pi, launchCtx(), {
+			const resolveLaunch = (role: Role, delegation: Delegation) => createRoleLaunch(pi, launchCtx(), {
 				role,
-				route: params.model !== undefined
-					? resolveDesignatedRoute(launchCtx(), cleanText(params.model, "model", "delegate_task"), params.thinking)
-					: params.modelClass === undefined
-						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK, undefined, params.thinking)
-						: resolveTaskRoute(launchCtx(), params.modelClass, undefined, params.thinking),
+				route: delegation.model !== undefined
+					? resolveDesignatedRoute(launchCtx(), delegation.model, delegation.thinking)
+					: delegation.modelClass === undefined
+						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK, undefined, delegation.thinking)
+						: resolveTaskRoute(launchCtx(), delegation.modelClass, undefined, delegation.thinking),
 			});
-			const notifyMissingSkills = (launch: ReturnType<typeof resolveLaunch>) => {
+			const notifyMissingSkills = (role: Role, launch: ReturnType<typeof resolveLaunch>) => {
 				if (launch.missingSkills.length) {
 					ctx.ui.notify(
 						`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
@@ -782,128 +470,233 @@ export default function subagentExtension(
 				}
 			};
 
-			if (params.background) {
+			const foregroundWorkflow: ParsedWorkflow = { ...workflow, background: false };
+			const entries = identifyWorkflowEntries(toolCallId, foregroundWorkflow);
+			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
+				id: entry.id,
+				index: entry.index,
+				role: entry.delegation.role,
+				status: "pending",
+			}]));
+			const setupRecoveries = new Map<string, string>();
+			const emitUpdate = (enabled: boolean) => {
+				if (!enabled) return;
+				const update = formatWorkflowUpdate(workflow.mode, [...states.values()]);
+				onUpdate?.({
+					content: [{ type: "text", text: update.text }],
+					details: update.details,
+					...(update.usage === undefined ? {} : { usage: update.usage }),
+				});
+			};
+			const runWorkflow = async (workflowSignal: AbortSignal | undefined, emitToolUpdates: boolean) => {
+				try {
+					return await runForegroundWorkflow<EphemeralSubagentResult>(toolCallId, foregroundWorkflow, async (entry: WorkflowEntry) => {
+					const role = rolesByName.get(entry.delegation.role)!;
+					let model: string | undefined;
+					let thinkingLevel: string | undefined;
+					let worktree: WorktreeInfo | undefined;
+					let worktreePayload: WorktreePayload | undefined;
+					let child: EphemeralSubagentResult | undefined;
+					let rejected: unknown;
+					let rejectedUsage: Usage | undefined;
+					let aborted = false;
+					let status: "succeeded" | "failed" | "rejected" = "rejected";
+					let text = "Subagent did not start.";
+					const setState = (
+						nextStatus: "running" | "succeeded" | "failed" | "rejected",
+						nextText: string,
+					) => {
+						const usage = child?.usage ?? rejectedUsage;
+						const base = {
+							id: entry.id,
+							index: entry.index,
+							role: role.name,
+							...(model === undefined ? {} : { model }),
+							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+							...(worktreePayload === undefined ? {} : { worktreePayload }),
+							...(usage === undefined ? {} : { usage }),
+						};
+						states.set(entry.id, nextStatus === "failed" || nextStatus === "rejected"
+							? { ...base, status: nextStatus, failure: nextText }
+							: { ...base, status: nextStatus, assistantOutput: nextText });
+					};
+					try {
+						child = await executor.run({
+							signal: workflowSignal,
+							onUpdate: (output) => {
+								setState("running", output);
+								emitUpdate(emitToolUpdates);
+							},
+							onTokens: (tokens) => updateWidgetTokens(entry.id, tokens),
+							prepare: async () => {
+								// Route and effective Role resources resolve only after this entry's
+								// shared executor permit, before isolated state is created.
+								const launch = resolveLaunch(role, entry.delegation);
+								notifyMissingSkills(role, launch);
+								model = modelReference(launch.model);
+								thinkingLevel = launch.thinkingLevel;
+								if (role.isolation === "worktree") {
+									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
+								}
+								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.task, ctx);
+								setState("running", "");
+								emitUpdate(emitToolUpdates);
+								return {
+									launch,
+									task: worktree ? `${entry.delegation.task}${worktreeContextNote(worktree)}` : entry.delegation.task,
+									cwd: worktree?.cwd ?? ctx.cwd,
+								};
+							},
+						});
+						if (child.outcome === "failure") {
+							status = "failed";
+							text = capOutput(child.errorMessage || child.stderr.trim() || child.output || `Subagent exited with code ${child.exitCode}.`);
+						} else {
+							status = "succeeded";
+							text = child.output;
+						}
+					} catch (error) {
+						rejected = error;
+						aborted = error instanceof EphemeralSubagentError && error.code === "aborted";
+						rejectedUsage = error instanceof EphemeralSubagentError
+							? (error as EphemeralSubagentError & { usage?: Usage }).usage
+							: undefined;
+						const cause = error instanceof EphemeralSubagentError ? error.cause : error;
+						if (cause instanceof Error && cause.name === "WorktreeSetupError") {
+							setupRecoveries.set(entry.id, cause.message);
+						}
+						text = capOutput(error instanceof Error ? error.message : String(error));
+					}
+					try {
+						worktreePayload = worktree ? await finalizeChildWorktree(worktree) : undefined;
+					} catch (error) {
+						rejected = error;
+						aborted = false;
+						status = "rejected";
+						text = capOutput(error instanceof Error ? error.message : String(error));
+						worktreePayload = worktree ? {
+							path: worktree.path,
+							branch: worktree.branch,
+							commits: 0,
+							dirty: false,
+							pruned: false,
+							inspection_failed: true,
+							note: capOutput(`Worktree finalization failed (${text}); commits/dirty UNKNOWN. Inspect retained work before assuming no changes.`),
+						} : undefined;
+					}
+					if (worktreePayload?.inspection_failed) {
+						const note = capOutput(worktreePayload.note ?? `Worktree inspection failed; inspect ${worktreePayload.path} before assuming no work.`);
+						worktreePayload = { ...worktreePayload, note };
+						rejected = new Error(note, rejected === undefined ? undefined : { cause: rejected });
+						status = "rejected";
+						text = capOutput(`${note}\n${text}`);
+					}
+					if (rejected !== undefined) status = "rejected";
+					setState(status, text);
+					try {
+						finishWidgetItem(entry.id, aborted ? "aborted" : status === "succeeded" ? "success" : "failure");
+						emitUpdate(emitToolUpdates);
+					} catch (error) {
+						rejected = error;
+						status = "rejected";
+						setState("rejected", capOutput(error instanceof Error ? error.message : String(error)));
+						finishWidgetItem(entry.id, "failure");
+					}
+					if (rejected !== undefined) throw rejected;
+						return child!.outcome === "success"
+							? { ok: true, assistantOutput: text, result: child! }
+							: { ok: false, result: child! };
+					}, workflowSignal);
+				} finally {
+					if (workflow.mode === "chain" && (workflowSignal?.aborted
+						|| [...states.values()].some(({ status }) => status === "failed" || status === "rejected"))) {
+						for (const [id, state] of states) {
+							if (state.status === "pending") states.set(id, { ...state, status: "skipped" });
+						}
+					}
+				}
+			};
+
+			const recordInfrastructureFailure = (error: unknown) => {
+				if ([...states.values()].some(({ status }) => status === "failed" || status === "rejected")) return;
+				const target = [...states.values()].find(({ status }) => status === "pending" || status === "running")
+					?? [...states.values()].at(-1)!;
+				states.set(target.id, {
+					id: target.id,
+					index: target.index,
+					role: target.role,
+					...(target.model === undefined ? {} : { model: target.model }),
+					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
+					...(target.worktreePayload === undefined ? {} : { worktreePayload: target.worktreePayload }),
+					...(target.usage === undefined ? {} : { usage: target.usage }),
+					status: "rejected",
+					failure: capOutput(error instanceof Error ? error.message : String(error)),
+				});
+			};
+
+			throwIfAborted();
+			if (workflow.background) {
 				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
 				const controller = new AbortController();
 				// Freeze the launching session now: a task that settles after a
 				// reload must not deliver into whichever session is active then.
 				const launchEpoch = sessionEpoch;
 				const settled = (async () => {
-					let acquired = false;
-					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
-					// Role is known up front; model/thinking join after launch resolution.
-					let details: { role: string; model?: string; thinkingLevel?: string } = { role: role.name };
-					let worktree: WorktreeInfo | undefined;
 					try {
-						await acquireChildPermit(controller.signal);
-						acquired = true;
-						// Same contract as foreground: isolation only after the permit,
-						// setup failure fails closed via the catch below.
-						if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId, undefined, controller.signal);
-						// Resolve resources only once launched: a task queued past the
-						// cap must not start with model routes or skills resolved before
-						// registries or accounts changed while it waited.
-						const launch = resolveLaunch();
-						notifyMissingSkills(launch);
-						details = { role: role.name, model: modelReference(launch.model), thinkingLevel: launch.thinkingLevel };
-						startWidgetItem(taskId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
-						const result = await runPi(
-							["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`],
-							worktree?.cwd ?? ctx.cwd,
-							controller.signal,
-							undefined,
-							(tokens) => updateWidgetTokens(taskId, tokens),
-							timeoutPolicy,
-						);
-						const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-						widgetStatus = result.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
-						const text = failed
-							? result.errorMessage || result.stderr.trim() || result.output || `Subagent exited with code ${result.exitCode}.`
-							: result.output || "(no output)";
-						const payloadLine = await finalizeWorktreePayload(worktree);
-						await reportBackground(
-							launchEpoch,
-							taskId,
-							details,
-							result.stopReason === "aborted" ? "aborted" : failed ? "failed" : "completed",
-							text,
-							payloadLine,
-						);
-					} catch (error) {
-						const aborted = controller.signal.aborted && !(error instanceof SubagentTimeoutError);
-						widgetStatus = aborted ? "aborted" : "failure";
-						const failureText = error instanceof Error ? error.message : String(error);
-						const payloadLine = await finalizeWorktreePayload(worktree);
-						await reportBackground(
-							launchEpoch,
-							taskId,
-							details,
-							aborted ? "aborted" : "failed",
-							failureText,
-							payloadLine,
-							error instanceof Error && error.name === "WorktreeSetupError" ? failureText : undefined,
-						);
+						// Let the acknowledgement resolve before any route, Skill, worktree,
+						// permit, or child work starts.
+						await new Promise<void>((resolve) => setImmediate(resolve));
+						try {
+							await runWorkflow(controller.signal, false);
+						} catch (error) {
+							if (!controller.signal.aborted) recordInfrastructureFailure(error);
+						}
+						reportBackground(launchEpoch, taskId, workflow.mode, [...states.values()], setupRecoveries);
 					} finally {
-						if (acquired) releaseChildPermit();
-						finishWidgetItem(taskId, widgetStatus);
 						backgroundTasks.delete(taskId);
 					}
 				})();
 				backgroundTasks.set(taskId, { controller, settled });
 				void settled;
+				const acknowledgement = capOutput([
+					`Background workflow ${taskId} accepted.`,
+					`Mode: ${workflow.mode}`,
+					"Entries:",
+					...entries.map((entry) =>
+						`- [${entry.index}] id=${JSON.stringify(entry.id)} role=${JSON.stringify(entry.delegation.role)}`),
+					"The aggregate outcome arrives as one message; keep working or end your turn.",
+				].join("\n"));
 				return {
-					content: [{ type: "text" as const, text: `Background subagent ${taskId} started (${role.name}). The outcome arrives as a message when the task settles; keep working or end your turn.` }],
-					details: { role: role.name, taskId, background: true },
+					content: [{ type: "text" as const, text: acknowledgement }],
+					details: {
+						taskId,
+						background: true,
+						mode: workflow.mode,
+						entries: entries.map((entry) => ({ id: entry.id, index: entry.index, role: entry.delegation.role })),
+					},
 				};
 			}
 
-			const launch = resolveLaunch();
-			notifyMissingSkills(launch);
-			const modelReferenceValue = modelReference(launch.model);
-			const details = { role: role.name, model: modelReferenceValue, thinkingLevel: launch.thinkingLevel };
-			await acquireChildPermit(signal);
-			let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
-			let result: DelegateResult | undefined;
-			let worktree: WorktreeInfo | undefined;
-			let rethrow: unknown;
-			let worktreePayload: WorktreePayload | undefined;
+			let outcomes: Awaited<ReturnType<typeof runWorkflow>>;
 			try {
-				// Isolation is created only after preflight and permit acquisition so a
-				// rejected delegation cannot leak worktrees; setup failure fails closed.
-				if (role.isolation === "worktree") worktree = await createChildWorktree(ctx.cwd, toolCallId, undefined, signal);
-				startWidgetItem(toolCallId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
-				const child = await runPi(
-					["--mode", "json", "-p", ...launch.args, `Task: ${worktree ? `${task}${worktreeContextNote(worktree)}` : task}`],
-					worktree?.cwd ?? ctx.cwd,
-					signal,
-					(text) => onUpdate?.({ content: [{ type: "text", text }], details }),
-					(tokens) => updateWidgetTokens(toolCallId, tokens),
-					timeoutPolicy,
-				);
-				const failed = child.exitCode !== 0 || child.stopReason === "error" || child.stopReason === "aborted";
-				widgetStatus = child.stopReason === "aborted" ? "aborted" : failed ? "failure" : "success";
-				const text = capOutput(failed
-					? child.errorMessage || child.stderr.trim() || child.output || `Subagent exited with code ${child.exitCode}.`
-					: child.output || "(no output)");
-				result = { content: [{ type: "text" as const, text }], details, ...(failed ? { isError: true } : {}) };
-				return result;
+				outcomes = await runWorkflow(signal, true);
 			} catch (error) {
-				if (signal?.aborted && !(error instanceof SubagentTimeoutError)) widgetStatus = "aborted";
-				rethrow = error;
-			} finally {
-				releaseChildPermit();
-				finishWidgetItem(toolCallId, widgetStatus);
-				worktreePayload = await finalizeWorktreePayload(worktree);
-				if (result && worktreePayload) result.content[0].text += `\n${JSON.stringify(worktreePayload)}`;
+				if (!signal?.aborted) throw error;
+				const aborted = new WorkflowAbortedError(workflow.mode, [...states.values()], signal.reason);
+				failedToolPatches.set(toolCallId, failedToolPatch(aborted));
+				throw aborted;
 			}
-			if (rethrow !== undefined) {
-				// A kept-but-unreported worktree is unrecoverable: attach the report
-				// locating it (path/branch/dirty state) to whatever failure escapes.
-				throw worktreePayload
-					? new Error(`${rethrow instanceof Error ? rethrow.message : String(rethrow)}\n${JSON.stringify(worktreePayload)}`)
-					: rethrow;
+			if (outcomes.some(({ status }) => status === "failed" || status === "rejected")) {
+				const failure = new WorkflowFailureError(workflow.mode, [...states.values()]);
+				failedToolPatches.set(toolCallId, failedToolPatch(failure));
+				throw failure;
 			}
-			return result!;
+			const result = formatWorkflowResult(workflow.mode, [...states.values()]);
+			return {
+				content: [{ type: "text" as const, text: result.text }],
+				details: result.details,
+				...(result.usage === undefined ? {} : { usage: result.usage }),
+			};
 		},
 	});
 }
