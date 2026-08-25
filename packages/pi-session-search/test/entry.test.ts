@@ -64,6 +64,19 @@ function msg(parentId: string | null, role: string, text: string): object {
 }
 let msgCount = 0;
 
+function resetConfigProbe(): void {
+	fs.rmSync(path.join(agentDir, "sessions"), { recursive: true, force: true });
+	const db = path.join(agentDir, "config", "pi-session-search", "index.db");
+	for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(db + suffix, { force: true });
+	msgCount = 1;
+	for (let i = 0; i < 2; i++) {
+		writeSession(`config-probe-${i}.jsonl`, [
+			{ type: "session", version: 3, id: `config-probe-${i}`, timestamp: `2026-01-0${i + 1}T00:00:00.000Z`, cwd: "/tmp" },
+			msg(null, "user", `config probe ${i}`),
+		]);
+	}
+}
+
 describe("session_search entry point", () => {
 	it("registers the tool and dispatches browse/discovery", async () => {
 		const pi = makePi();
@@ -276,6 +289,53 @@ describe("session_search entry point", () => {
 		} finally {
 			console.error = origError;
 			fs.rmSync(configPath, { recursive: true, force: true });
+		}
+	});
+
+	it("unknown config keys warn once and default without rewriting", async () => {
+		resetConfigProbe();
+		const configPath = path.join(agentDir, "config", "pi-session-search", "pi-session-search.json");
+		const raw = '{"backfillFiles":1,"backfilFiles":2}';
+		fs.writeFileSync(configPath, raw);
+		const errors: unknown[] = [];
+		const origError = console.error;
+		console.error = (...args: unknown[]) => errors.push(args);
+		try {
+			const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-unknown-config`);
+			const pi = makePi();
+			mod.default(pi as never);
+			const result = await (pi as any).tool.execute("config", {}, undefined, undefined, { sessionManager: {} });
+			assert.equal(errors.length, 1);
+			assert.equal(JSON.parse(result.content[0].text).sessions.length, 2, "unknown key must default instead of accepting backfillFiles: 1");
+			assert.equal(fs.readFileSync(configPath, "utf8"), raw);
+		} finally {
+			console.error = origError;
+			fs.rmSync(configPath, { force: true });
+		}
+	});
+
+	it("sparse oversized config warns once and defaults without rewriting", async () => {
+		resetConfigProbe();
+		const configPath = path.join(agentDir, "config", "pi-session-search", "pi-session-search.json");
+		fs.writeFileSync(configPath, '{"backfillFiles":1}');
+		fs.truncateSync(configPath, 1024 * 1024 * 1024);
+		const before = fs.statSync(configPath, { bigint: true });
+		const errors: unknown[] = [];
+		const origError = console.error;
+		console.error = (...args: unknown[]) => errors.push(args);
+		try {
+			const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-oversized-config`);
+			const pi = makePi();
+			mod.default(pi as never);
+			const result = await (pi as any).tool.execute("config", {}, undefined, undefined, { sessionManager: {} });
+			const after = fs.statSync(configPath, { bigint: true });
+			assert.equal(errors.length, 1);
+			assert.equal(JSON.parse(result.content[0].text).sessions.length, 2, "oversized config must use the default cap");
+			assert.equal(after.size, before.size);
+			assert.equal(after.mtimeNs, before.mtimeNs);
+		} finally {
+			console.error = origError;
+			fs.rmSync(configPath, { force: true });
 		}
 	});
 

@@ -5,7 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { readFileSync, realpathSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { DEFAULT_SYNC_CAP, MAX_BACKFILL_FILES, MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
@@ -16,42 +16,64 @@ const dbPath = () => join(getAgentDir(), "config", "pi-session-search", "index.d
 const sessionsDir = () => join(getAgentDir(), "sessions");
 
 const OUTPUT_CHAR_BUDGET = 50_000;
+const MAX_CONFIG_BYTES = 1024;
 
 interface Config {
 	backfillFiles: number;
 }
 
-/** Untrusted JSON: validate, log-and-default on malformed, never rewrite. */
+/** Untrusted JSON: bound and validate, log-and-default on invalid, never rewrite. */
 function readConfig(): Config {
 	const fallback = { backfillFiles: DEFAULT_SYNC_CAP };
 	const path = configPath();
 	let raw: string;
 	try {
-		raw = readFileSync(path, "utf8");
+		const fd = openSync(path, "r");
+		try {
+			if (fstatSync(fd).size > MAX_CONFIG_BYTES) throw new Error(`config exceeds ${MAX_CONFIG_BYTES} bytes`);
+			const buffer = Buffer.alloc(MAX_CONFIG_BYTES + 1);
+			let length = 0;
+			while (length < buffer.length) {
+				const read = readSync(fd, buffer, length, buffer.length - length, null);
+				if (read === 0) break;
+				length += read;
+			}
+			if (length > MAX_CONFIG_BYTES) throw new Error(`config exceeds ${MAX_CONFIG_BYTES} bytes`);
+			raw = buffer.toString("utf8", 0, length);
+		} finally {
+			closeSync(fd);
+		}
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
 		console.error(`[pi-session-search] failed to read config ${path}: ${error instanceof Error ? error.message : String(error)}; using default`);
 		return fallback;
 	}
+
+	let value: unknown;
 	try {
-		const value: unknown = JSON.parse(raw);
-		if (!value || typeof value !== "object" || Array.isArray(value)) {
-			console.error("[pi-session-search] config must be a JSON object; using default");
-			return fallback;
-		}
-		const cap = (value as Record<string, unknown>).backfillFiles;
-		if (cap === undefined) return fallback;
-		// Safe integer rejects untrusted magnitudes like 1e100 that would
-		// defeat the sync work bound.
-		if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1 || cap > MAX_BACKFILL_FILES) {
-			console.error("[pi-session-search] invalid backfillFiles in config; using default");
-			return fallback;
-		}
-		return { backfillFiles: cap };
+		value = JSON.parse(raw);
 	} catch {
 		console.error("[pi-session-search] malformed config; using default");
 		return fallback;
 	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		console.error("[pi-session-search] config must be a JSON object; using default");
+		return fallback;
+	}
+	const keys = Object.keys(value);
+	if (keys.some((key) => key !== "backfillFiles")) {
+		console.error("[pi-session-search] config contains unknown keys; using default");
+		return fallback;
+	}
+	const cap = (value as Record<string, unknown>).backfillFiles;
+	if (cap === undefined) return fallback;
+	// Safe integer rejects untrusted magnitudes like 1e100 that would
+	// defeat the sync work bound.
+	if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1 || cap > MAX_BACKFILL_FILES) {
+		console.error("[pi-session-search] invalid backfillFiles in config; using default");
+		return fallback;
+	}
+	return { backfillFiles: cap };
 }
 
 function clamp(n: number | undefined, min: number, max: number, dflt: number): number {
