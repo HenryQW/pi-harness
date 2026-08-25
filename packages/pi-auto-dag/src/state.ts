@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { executionIssues, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
 import {
@@ -127,12 +127,16 @@ export async function createRun(mainWorktree: string, state: RunState, uuid: Uui
 		throw new Error(`An active pi-auto-dag run already exists: ${state.run_id}`);
 	}
 
+	// Durable run artifacts are published before post-claim work so an interruption there leaves a
+	// recoverable run instead of an orphaned active.json without state.
 	try {
-		await afterClaim?.();
 		await mkdir(runDirectory(mainWorktree, state.run_id));
 		await writeRunState(mainWorktree, state, uuid);
+		await afterClaim?.();
 	} catch (error) {
 		await unlink(join(root, "active.json")).catch(() => {});
+		// The claimed run ID is a fresh UUID, so this directory can only be this failed attempt's.
+		await rm(runDirectory(mainWorktree, state.run_id), { recursive: true }).catch(() => {});
 		throw error;
 	}
 }

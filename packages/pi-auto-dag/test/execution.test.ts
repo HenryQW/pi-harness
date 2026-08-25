@@ -250,6 +250,35 @@ test("concurrent starts cannot replace the winning run graph", async (t) => {
 	assert.equal(await readActiveRunId(project.root), winners[0].value.run_id);
 });
 
+test("createRun publishes durable state before the post-claim window and recovers from interruption there", async (t) => {
+	const project = await setupProject(t);
+	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
+	const initial = createInitialRunState({
+		run_id: RUN_ID,
+		graph,
+		source_commit: await git(project.root, "rev-parse", "HEAD"),
+		main_worktree: project.root,
+		integration_branch: "integration",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	let duringAfterClaim: RunState | undefined;
+	await assert.rejects(
+		createRun(project.root, initial, () => "create", async () => {
+			duringAfterClaim = await readRunState(project.root, RUN_ID);
+			throw new Error("process stopped inside the post-claim window");
+		}),
+		/process stopped inside the post-claim window/,
+	);
+	// state.json already existed while afterClaim ran, so a crash there is recoverable via resume/abort.
+	assert.equal(duringAfterClaim?.run_id, RUN_ID);
+	// A thrown failure (not a crash) still releases the lock and leaves no half-created run behind.
+	assert.equal(await readActiveRunId(project.root), undefined);
+	assert.equal(await readRunState(project.root, RUN_ID), undefined);
+});
+
 test("abort retains an undelivered blocked notification until acknowledgement", async (t) => {
 	const project = await setupProject(t);
 	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });

@@ -137,6 +137,12 @@ export async function resumeRun(
 	state = await resumeFinalRepair(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
 	state = await recoverAppliedIntegration(state, options);
+	if (state.phase === "completed") {
+		// A retained completed run only finishes terminal cleanup; it never revalidates its PR.
+		state = await retryCleanup(state, options);
+		if (workerEnvelope) await writeWorkerReceipt(preflight!.receiptPath, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
+		return state;
+	}
 	const config = await assertRunBoundary(state, options.runner);
 	if (conflictedIssueId) {
 		const { block_reason: _blockReason, ...recovered } = state;

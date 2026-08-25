@@ -14,7 +14,7 @@ import { preflightLocalRun } from "../src/intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { type RunState } from "../src/model.ts";
 import { actionTicketPath, readWorkerReceipt, reviewId, type ActionTicket } from "../src/review-ticket.ts";
-import { readActiveRunId, writeRunState } from "../src/state.ts";
+import { readActiveRunId, replaceTask, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "33333333-3333-4333-8333-333333333333";
@@ -71,6 +71,24 @@ test("completion notification retains the active lock until idempotent acknowled
 	const acknowledged = await lifecycle.acknowledgeNotification(project.root, notification.event_id);
 	assert.equal(await readActiveRunId(project.root), undefined);
 	assert.deepEqual(await lifecycle.acknowledgeNotification(project.root, notification.event_id), acknowledged);
+});
+
+test("a retained completed run resumes unfinished terminal cleanup without revalidating its PR", async (t) => {
+	const project = await makeProject(t);
+	const gh = fakeGh(project.root);
+	const lifecycle = makeLifecycle(combinedRunner(fakeHerdr(), gh));
+	await finishInitialRun(project.root, lifecycle);
+	const completed = (await lifecycle.status(project.root, RUN_ID))!;
+
+	// Simulate an interrupted cleanup save plus a PR merged after completion.
+	await writeRunState(project.root, replaceTask(completed, "alpha", { ...completed.tasks.alpha, branch_cleanup_done: undefined }), () => "interrupted");
+	gh.state = "MERGED";
+	const ghCalls = gh.calls.length;
+
+	const resumed = await lifecycle.resume(project.root);
+	assert.equal(resumed.phase, "completed");
+	assert.equal(resumed.tasks.alpha.branch_cleanup_done, true);
+	assert.equal(gh.calls.length, ghCalls);
 });
 
 test("acknowledgement cannot clobber a concurrent lifecycle state update", async (t) => {
@@ -705,6 +723,7 @@ function combinedRunner(herdr: ReturnType<typeof fakeHerdr>, gh: ReturnType<type
 }
 
 function fakeGh(root: string, input: { base?: string } = {}) {
+	let prState = "OPEN";
 	let pr: { number: number; url: string; headRefName: string; baseRefName: string; body: string } | undefined = input.base
 		? { number: 42, url: "https://example.test/pr/42", headRefName: "dag", baseRefName: input.base, body: "existing" }
 		: undefined;
@@ -713,6 +732,7 @@ function fakeGh(root: string, input: { base?: string } = {}) {
 		calls,
 		gitPushes: 0,
 		get pr() { return pr; },
+		set state(value: string) { prState = value; },
 		count(action: string) { return calls.filter((args) => args.slice(0, 2).join(" ") === action).length; },
 		async runner(_command: string, arguments_: readonly string[]) {
 			const args = [...arguments_];
@@ -733,7 +753,7 @@ function fakeGh(root: string, input: { base?: string } = {}) {
 			}
 			if (args.slice(0, 2).join(" ") === "pr view") {
 				if (!pr) return { code: 1, stdout: "", stderr: "PR not found" };
-				return success({ ...pr, headRefOid: oid, state: "OPEN" });
+				return success({ ...pr, headRefOid: oid, state: prState });
 			}
 			return { code: 1, stdout: "", stderr: `Unexpected gh command: ${args.join(" ")}` };
 		},
