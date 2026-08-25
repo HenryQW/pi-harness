@@ -15,15 +15,15 @@ const CREATE_PR_SKILL_COMMAND = "skill:pi-pr-create";
 const FAILED_CHECK_STATES = new Set(["ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "STALE", "STARTUP_FAILURE", "TIMED_OUT"]);
 const SUCCESSFUL_CHECK_STATES = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
 
-type Lifecycle = "D" | "O" | "M" | "C";
 type CiStatus = "success" | "running" | "failure" | "none";
 type PullRequest = {
 	id: string;
 	number: number;
-	url: string;
+	url: URL;
 	headRefOid: string;
 	updatedAt: string;
-	lifecycle: Lifecycle;
+	state: "OPEN" | "MERGED" | "CLOSED";
+	isDraft: boolean;
 	mergeable: string;
 	reviewDecision: string | null;
 	statusCheckRollup: unknown[];
@@ -33,14 +33,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function pullRequestUrl(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	try {
-		const url = new URL(value);
-		return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
-	} catch {
-		return undefined;
-	}
+function pullRequestUrl(value: unknown): URL | undefined {
+	if (typeof value !== "string" || !URL.canParse(value)) return undefined;
+	const url = new URL(value);
+	return url.protocol === "http:" || url.protocol === "https:" ? url : undefined;
 }
 
 export function parsePullRequest(value: unknown): PullRequest | undefined {
@@ -60,16 +56,14 @@ export function parsePullRequest(value: unknown): PullRequest | undefined {
 		typeof id !== "string" || !id ||
 		typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0 || !url ||
 		typeof headRefOid !== "string" || !headRefOid ||
-		typeof updatedAt !== "string" || Number.isNaN(Date.parse(updatedAt)) || typeof state !== "string" ||
+		typeof updatedAt !== "string" || Number.isNaN(Date.parse(updatedAt)) ||
+		(state !== "MERGED" && state !== "CLOSED" && state !== "OPEN") ||
 		typeof isDraft !== "boolean" || typeof mergeable !== "string" ||
 		(reviewDecision !== null && typeof reviewDecision !== "string") ||
 		(statusCheckRollup !== null && !Array.isArray(statusCheckRollup))
 	) return undefined;
 
-	const lifecycle = state === "MERGED" ? "M" : state === "CLOSED" ? "C" : state === "OPEN" ? isDraft ? "D" : "O" : undefined;
-	if (!lifecycle) return undefined;
-
-	return { id, number, url, headRefOid, updatedAt, lifecycle, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
+	return { id, number, url, headRefOid, updatedAt, state, isDraft, mergeable, reviewDecision, statusCheckRollup: statusCheckRollup ?? [] };
 }
 
 function parseUnresolvedReviewCount(value: string): number {
@@ -136,19 +130,19 @@ type Status = {
 };
 
 function statusFor(pullRequest: PullRequest, ci: CiStatus): Status {
-	if (pullRequest.lifecycle === "M") return { text: "merged", color: "success" };
-	if (pullRequest.lifecycle === "C") return { text: "closed", color: "dim" };
+	if (pullRequest.state === "MERGED") return { text: "merged", color: "success" };
+	if (pullRequest.state === "CLOSED") return { text: "closed", color: "dim" };
 	if (pullRequest.mergeable === "CONFLICTING") return { text: "merge conflict", color: "error" };
 	if (pullRequest.reviewDecision === "CHANGES_REQUESTED") return { text: "changes requested", color: "error" };
 	if (ci === "failure") return { text: "CI failed", color: "error" };
 	if (ci === "running") return { text: "CI running", color: "warning" };
-	if (pullRequest.lifecycle === "D") return { text: "draft", color: "warning" };
+	if (pullRequest.isDraft) return { text: "draft", color: "warning" };
 	if (pullRequest.reviewDecision === "APPROVED") return { text: "approved", color: "success" };
 	return { text: "open", color: "accent" };
 }
 
 export function formatPullRequest(pullRequest: PullRequest, theme: ExtensionContext["ui"]["theme"], unresolved = 0): string {
-	const link = hyperlink(theme.fg("text", `PR #${pullRequest.number}`), pullRequest.url);
+	const link = hyperlink(theme.fg("text", `PR #${pullRequest.number}`), pullRequest.url.href);
 	const status = unresolved > 0
 		? { text: `${unresolved} unresolved`, color: "warning" as const }
 		: statusFor(pullRequest, ciStatus(pullRequest.statusCheckRollup));
@@ -203,7 +197,7 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 				ctx.ui.setStatus("pi-pr", undefined);
 				return;
 			}
-			if (pullRequest.lifecycle === "M" || pullRequest.lifecycle === "C") {
+			if (pullRequest.state === "MERGED" || pullRequest.state === "CLOSED") {
 				reviewState = undefined;
 				reviewWindow = undefined;
 				ctx.ui.setStatus("pi-pr", formatPullRequest(pullRequest, ctx.ui.theme));
@@ -234,7 +228,7 @@ export default function pullRequestExtension(pi: ExtensionAPI): void {
 				const reviews = await pi.exec(
 					"gh",
 					[
-						"api", "graphql", "--hostname", new URL(pullRequest.url).hostname, "--paginate",
+						"api", "graphql", "--hostname", pullRequest.url.hostname, "--paginate",
 						"-f", `query=${REVIEW_THREADS_QUERY}`, "-F", `id=${pullRequest.id}`,
 						"--jq", "[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length",
 					],
