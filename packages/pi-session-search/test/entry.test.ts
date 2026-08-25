@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
 import { MAX_SESSION_FILE_BYTES } from "../extensions/search-core.ts";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -336,6 +337,36 @@ describe("session_search entry point", () => {
 		} finally {
 			console.error = origError;
 			fs.rmSync(configPath, { force: true });
+		}
+	});
+
+	it("FIFO/symlink-to-FIFO config cannot hang startup: defaults with one warning, no writer", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+		resetConfigProbe();
+		const configDir = path.join(agentDir, "config", "pi-session-search");
+		fs.mkdirSync(configDir, { recursive: true });
+		const fifo = path.join(agentDir, "probe.fifo");
+		const errors: unknown[] = [];
+		const origError = console.error;
+		console.error = (...args: unknown[]) => errors.push(args);
+		try {
+			for (const [label, link] of [["fifo", false], ["symlink-to-fifo", true]] as const) {
+				const configPath = path.join(configDir, "pi-session-search.json");
+				execFileSync("mkfifo", [fifo]); // never written to; open must not block
+				if (link) fs.symlinkSync(fifo, configPath);
+				else fs.renameSync(fifo, configPath); // move the FIFO into place directly
+				errors.length = 0;
+				const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-${label}`);
+				const pi = makePi();
+				mod.default(pi as never); // must return without a writer on the FIFO
+				const result = await (pi as any).tool.execute("fifo", {}, undefined, undefined, { sessionManager: {} });
+				assert.equal(errors.length, 1);
+				assert.match(String(errors[0]), /not a regular file/);
+				assert.equal(JSON.parse(result.content[0].text).sessions.length, 2, `${label} must default the cap`);
+				fs.rmSync(configPath, { force: true });
+			}
+		} finally {
+			console.error = origError;
+			fs.rmSync(fifo, { force: true });
 		}
 	});
 

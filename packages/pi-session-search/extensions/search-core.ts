@@ -81,8 +81,52 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
+/** Owner-only modes for the index directory and database files. The
+ *  extension-owned parent dir is the only node tightened; intermediate config
+ *  dirs are created restrictive but never chmod'ed if they predate this fix. */
+const DB_FILE_MODE = 0o600;
+const DB_DIR_MODE = 0o700;
+
+/** Create or tighten the index's private directory and owner-only database
+ *  file BEFORE SQLite writes any transcript content into it. Descriptor-based
+ *  O_NOFOLLOW|O_NONBLOCK open + fstat rejects symlinks and other non-regular
+ *  nodes instead of following them; fchmod tightens an existing permissive db.
+ *  WAL/SHM sidecars inherit the main db mode from SQLite; legacy sidecars left
+ *  behind by older builds are tightened here too. Always closes the fd. */
+function secureIndexNode(dbPath: string): void {
+	const posix = process.platform !== "win32";
+	fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: DB_DIR_MODE });
+	if (posix) {
+		// Tighten an existing permissive dir (e.g. created under umask 022).
+		if ((fs.statSync(path.dirname(dbPath)).mode & 0o777) !== DB_DIR_MODE) {
+			fs.chmodSync(path.dirname(dbPath), DB_DIR_MODE);
+		}
+	}
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(
+			dbPath,
+			(fs.constants.O_RDWR | fs.constants.O_CREAT | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0)),
+			DB_FILE_MODE,
+		);
+		const st = fs.fstatSync(fd);
+		if (!st.isFile()) throw new Error("index database path is not a regular file");
+		if (posix && (st.mode & 0o777) !== DB_FILE_MODE) fs.fchmodSync(fd, DB_FILE_MODE);
+	} finally {
+		if (fd !== undefined) fs.closeSync(fd);
+	}
+	if (!posix) return;
+	for (const suffix of ["-wal", "-shm"]) {
+		try {
+			fs.chmodSync(dbPath + suffix, DB_FILE_MODE);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		}
+	}
+}
+
 function openDb(dbPath: string): DatabaseSync {
-	fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+	secureIndexNode(dbPath);
 	let db = new DatabaseSync(dbPath);
 	try {
 		db.exec("PRAGMA journal_mode = WAL");
@@ -97,6 +141,9 @@ function openDb(dbPath: string): DatabaseSync {
 		if (stale) {
 			db.close();
 			for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(dbPath + suffix, { force: true });
+			// Recreate through the same hardened path so the rebuilt index keeps
+			// owner-only modes instead of inheriting umask defaults.
+			secureIndexNode(dbPath);
 			db = new DatabaseSync(dbPath);
 			db.exec("PRAGMA journal_mode = WAL");
 			db.exec("PRAGMA busy_timeout = 5000");
@@ -187,7 +234,31 @@ function extractText(content: unknown): string {
 	return parts.join("\n").trim();
 }
 
-function parseSessionFile(filePath: string): ParsedFile {
+/** Open the path once, validate that exact descriptor (type + size), and read
+ *  only the validated snapshot from it. A concurrent append/replacement between
+ *  the walk's stat and this open cannot grow the allocation or the read beyond
+ *  maxBytes: the fd pins the inode, and fstat on that fd fixes both bounds.
+ *  Deliberately not fs.readFileSync(fd) — that re-reads to EOF unbounded. */
+function readBoundedSnapshot(filePath: string, maxBytes: number): string {
+	const fd = fs.openSync(filePath, "r");
+	try {
+		const st = fs.fstatSync(fd);
+		if (!st.isFile()) throw new Error("session path is not a regular file");
+		if (st.size > maxBytes) throw new Error("session file exceeds size cap");
+		const buf = Buffer.allocUnsafe(st.size);
+		let read = 0;
+		while (read < buf.length) {
+			const n = fs.readSync(fd, buf, read, buf.length - read, read);
+			if (n === 0) break; // truncated concurrently after fstat: index what was there
+			read += n;
+		}
+		return buf.toString("utf-8", 0, read);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function parseSessionFile(filePath: string, maxBytes: number): ParsedFile {
 	const seenEntryIds = new Set<string>();
 	const parsed: ParsedFile = {
 		cwd: null,
@@ -197,9 +268,9 @@ function parseSessionFile(filePath: string): ParsedFile {
 		preview: null,
 		messages: [],
 	};
-	// Unreadable file must throw so the sync transaction rolls back instead of
-	// wiping previously indexed rows and advancing the watermark over a hole.
-	const content = fs.readFileSync(filePath, "utf-8");
+	// Unreadable/oversized file must throw so the sync transaction rolls back
+	// instead of wiping previously indexed rows and advancing the watermark over a hole.
+	const content = readBoundedSnapshot(filePath, maxBytes);
 	for (const line of content.split("\n")) {
 		if (!line.trim()) continue;
 		let entry: any;
@@ -376,11 +447,13 @@ export function syncSessions(
 		"INSERT INTO messages(path, entry_id, role, timestamp, head, tail) VALUES (?, ?, ?, ?, ?, ?)",
 	);
 
+	const maxFileBytes = opts?.maxFileBytes ?? MAX_SESSION_FILE_BYTES;
+
 	// Returns messages indexed for this file.
 	const tx = (filePath: string, stat: fs.Stats): number => {
 		db.exec("BEGIN");
 		try {
-			const parsed = parseSessionFile(filePath);
+			const parsed = parseSessionFile(filePath, maxFileBytes);
 			delStmt.run(filePath);
 			upsertSession.run(filePath, parsed.cwd, parsed.name, parsed.startedAt, parsed.preview, parsed.parentSession);
 			let count = 0;
@@ -407,8 +480,9 @@ export function syncSessions(
 		try {
 			// ponytail: byte-level work bound — skip instead of streaming files that
 			// are huge enough to block the event loop; raise the cap or stream the
-			// parser if real sessions ever hit it.
-			if (stat.size > (opts?.maxFileBytes ?? MAX_SESSION_FILE_BYTES)) throw new Error("session file exceeds size cap");
+			// parser if real sessions ever hit it. Optimization only: readBoundedSnapshot
+			// re-validates size/type on its own descriptor at the parse boundary.
+			if (stat.size > maxFileBytes) throw new Error("session file exceeds size cap");
 			messagesIndexed += tx(p, stat);
 			filesProcessed++;
 		} catch {

@@ -337,20 +337,20 @@ describe("lineage + guards", () => {
 			sessionHeader(),
 			msg("tr1", "user", "transient retry unique marker text"),
 		], 95000);
-		const origRead = fs.readFileSync;
+		const origOpen = fs.openSync;
 		let failed = false;
 		try {
-			fs.readFileSync = ((p: any, ...rest: any[]) => {
+			fs.openSync = ((p: any, ...rest: any[]) => {
 				if (p === target && !failed) {
-					failed = true; // stat succeeded, first read fails once
+					failed = true; // stat succeeded, first open/read fails once
 					throw new Error("EIO simulated");
 				}
-				return (origRead as any).call(fs, p, ...rest);
-			}) as typeof fs.readFileSync;
+				return (origOpen as any).call(fs, p, ...rest);
+			}) as typeof fs.openSync;
 			const first = syncSessions(sessionsDir, dbPath);
 			assert.equal(first.filesProcessed, 0, "simulated transient read must fail the pass");
 		} finally {
-			fs.readFileSync = origRead;
+			fs.openSync = origOpen;
 		}
 		// File is unchanged — no fingerprint cache may block the retry.
 		const second = syncSessions(sessionsDir, dbPath);
@@ -365,13 +365,13 @@ describe("lineage + guards", () => {
 		], 99500);
 		writeFixture("--retry-order--", "ok1.jsonl", [sessionHeader(), msg("ro1", "user", "retry order healthy one")], 99400);
 		writeFixture("--retry-order--", "ok2.jsonl", [sessionHeader(), msg("ro2", "user", "retry order healthy two")], 99300);
-		const origRead = fs.readFileSync;
+		const origOpen = fs.openSync;
 		let fail = true;
 		try {
-			fs.readFileSync = ((p: any, ...rest: any[]) => {
+			fs.openSync = ((p: any, ...rest: any[]) => {
 				if (p === failing && fail) throw new Error("persistent EIO simulated");
-				return (origRead as any).call(fs, p, ...rest);
-			}) as typeof fs.readFileSync;
+				return (origOpen as any).call(fs, p, ...rest);
+			}) as typeof fs.openSync;
 			const first = syncSessions(sessionsDir, dbPath, { cap: 1 });
 			assert.equal(first.filesProcessed, 0);
 			assert.equal(first.backlogRemaining, 3, "attempted failure remains backlog");
@@ -382,7 +382,7 @@ describe("lineage + guards", () => {
 			fail = false;
 			assert.equal(syncSessions(sessionsDir, dbPath, { cap: 1 }).backlogRemaining, 0);
 		} finally {
-			fs.readFileSync = origRead;
+			fs.openSync = origOpen;
 		}
 		assert.equal(searchIndex(dbPath, "retry order healthy one", { limit: 5 }).hits.length, 1);
 		assert.equal(searchIndex(dbPath, "retry order healthy two", { limit: 5 }).hits.length, 1);
@@ -391,23 +391,23 @@ describe("lineage + guards", () => {
 	it("persistent failures rotate under a small cap instead of retrying only the newest (regression)", () => {
 		const oldFail = writeFixture("--rotation--", "old-fail.jsonl", [sessionHeader(), msg("of", "user", "rotation marker old")], 80000);
 		const newFail = writeFixture("--rotation--", "new-fail.jsonl", [sessionHeader(), msg("nf", "user", "rotation marker new")], 90000);
-		const origRead = fs.readFileSync;
+		const origOpen = fs.openSync;
 		const reads = new Set<string>();
 		try {
-			fs.readFileSync = ((p: any, ...rest: any[]) => {
+			fs.openSync = ((p: any, ...rest: any[]) => {
 				if (p === oldFail || p === newFail) {
 					reads.add(p as string);
 					throw new Error("persistent EIO simulated");
 				}
-				return (origRead as any).call(fs, p, ...rest);
-			}) as typeof fs.readFileSync;
+				return (origOpen as any).call(fs, p, ...rest);
+			}) as typeof fs.openSync;
 			// Seed BOTH failure rows in one pass (cap >= 2) so neither file is
 			// "fresh" afterward — only retry rotation can reach the older one.
 			syncSessions(sessionsDir, dbPath, { cap: 2 });
 			reads.clear();
 			for (let i = 0; i < 3; i++) syncSessions(sessionsDir, dbPath, { cap: 1 });
 		} finally {
-			fs.readFileSync = origRead;
+			fs.openSync = origOpen;
 		}
 		assert.ok(reads.has(oldFail), "older persistent failure must eventually be attempted, not starve behind the newest");
 	});
@@ -557,6 +557,65 @@ describe("legacy schema migration", () => {
 			assert.equal(searchIndex(dbPath, "oversized file unique content").hits.length, 0);
 			void MAX_SESSION_FILE_BYTES;
 			void file;
+		});
+
+		it("growth between walk stat and parse open is rejected at the descriptor, not read past the cap", () => {
+			const file = writeFixture("--grow-race--", "g.jsonl", [
+				sessionHeader(),
+				msg("gr1", "user", "growth race must not be indexed content"),
+			], 134000);
+			writeFixture("--grow-race--", "ok.jsonl", [
+				sessionHeader(),
+				msg("gr2", "user", "healthy sibling survives growth race"),
+			], 134500);
+			// Simulates a concurrent append AFTER the walk's stat: the file on disk is
+			// now far over the cap, but statSync still reports the stale small size.
+			fs.appendFileSync(file, "z".repeat(1024));
+			const realStatSync = fs.statSync.bind(fs);
+			const liveTargetFds = new Set<number>(); // fds currently open on the target file
+			let targetBytesRead = 0; // durable counter: survives fd reuse
+			(fs as any).statSync = (p: any, ...rest: any[]) => {
+				const s = realStatSync(p, ...rest);
+				if (p === file) {
+					const stale = Object.create(s);
+					stale.size = 10; // walk-time fingerprint: small
+					return stale;
+				}
+				return s;
+			};
+			const realOpenSync = fs.openSync.bind(fs);
+			(fs as any).openSync = (p: any, ...rest: any[]) => {
+				const fd = (realOpenSync as any)(p, ...rest);
+				if (p === file) liveTargetFds.add(fd);
+				return fd;
+			};
+			const realReadSync = fs.readSync.bind(fs);
+			(fs as any).readSync = (fd: number, buf: any, off: number, len: number, pos: number) => {
+				if (liveTargetFds.has(fd)) targetBytesRead += len;
+				return realReadSync(fd, buf, off, len, pos);
+			};
+			const realCloseSync = fs.closeSync.bind(fs);
+			(fs as any).closeSync = (fd: number) => {
+				liveTargetFds.delete(fd); // stop counting: the number may be reused
+				return realCloseSync(fd);
+			};
+			try {
+				syncSessions(sessionsDir, dbPath, { cap: 50, maxFileBytes: 512 });
+				assert.equal(targetBytesRead, 0, "rejected file must not be read at all, let alone past the cap");
+				assert.equal(searchIndex(dbPath, "growth race must not be indexed content").hits.length, 0);
+				assert.ok(searchIndex(dbPath, "healthy sibling survives growth race").hits.length >= 1, "other files continue to index");
+				// Rejection recorded as retryable failure under the STALE walk fingerprint.
+				const db2 = new DatabaseSync(dbPath);
+				const failure = db2.prepare("SELECT size, mtime_ms, attempts FROM session_failures WHERE path = ?").get(file) as any;
+				assert.ok(failure, "rejection must be recorded as retryable failure");
+				assert.equal(failure.attempts, 1);
+				assert.ok(failure.size < 512, "failure fingerprint carries the walk-time size, so the next pass re-attempts");
+			} finally {
+				(fs as any).statSync = realStatSync;
+				(fs as any).openSync = realOpenSync;
+				(fs as any).readSync = realReadSync;
+				(fs as any).closeSync = realCloseSync;
+			}
 		});
 
 		it("unmatched quote is malformed syntax, not searchable text", () => {
@@ -868,5 +927,154 @@ describe("browse", () => {
 		]);
 		assert.deepEqual(new Set(rows.slice(2).map((row) => path.basename(row.path))), new Set(["malformed.jsonl", "impossible.jsonl", "hour-24.jsonl"]));
 		assert.ok(rows.slice(2).every((row) => row.startedAt === undefined));
+	});
+});
+
+describe("index permissions (POSIX)", { skip: process.platform === "win32" }, () => {
+	/** Run fn with a forced 022 umask; restores the previous mask after. */
+	function withUmask022<T>(fn: () => T): T {
+		const prev = process.umask(0o022);
+		try {
+			return fn();
+		} finally {
+			process.umask(prev);
+		}
+	}
+
+	function modeOf(p: string): number {
+		return fs.statSync(p).mode & 0o777;
+	}
+
+	const fileMode = (p: string) => modeOf(p);
+
+	it("fresh index under umask 022: directory 0700, db 0600, WAL sidecars inherit 0600", () => {
+		withUmask022(() => {
+			const dir = path.join(tmp, "perm-fresh");
+			const sessions = path.join(dir, "sessions");
+			const freshDb = path.join(dir, "index.db");
+			fs.mkdirSync(sessions, { recursive: true });
+			fs.writeFileSync(path.join(sessions, "a.jsonl"), [sessionHeader(), msg("pm1", "user", "permission regression unique marker")].join("\n") + "\n");
+
+			// Hold a second connection open so WAL/SHM sidecars survive sync's close.
+			syncSessions(sessions, freshDb, { cap: 5 });
+			const holder = new DatabaseSync(freshDb);
+			try {
+				holder.exec("SELECT count(*) FROM sessions");
+				assert.equal(syncSessions(sessions, freshDb, { cap: 5 }).filesProcessed, 0);
+				assert.equal(modeOf(dir), 0o700, "parent directory must be owner-only");
+				assert.equal(fileMode(freshDb), 0o600, "database must be owner-only");
+				assert.equal(fileMode(freshDb + "-wal"), 0o600, "WAL sidecar inherits the main db mode");
+				assert.equal(fileMode(freshDb + "-shm"), 0o600, "SHM sidecar inherits the main db mode");
+			} finally {
+				holder.close();
+			}
+			assert.ok(searchIndex(freshDb, "permission regression unique marker").hits.length === 1, "secure modes must not break indexing");
+		});
+	});
+
+	it("existing permissive directory and database are tightened in place, data preserved", () => {
+		withUmask022(() => {
+			const dir = path.join(tmp, "perm-existing");
+			fs.mkdirSync(dir, { recursive: true });
+			fs.chmodSync(dir, 0o755);
+			const permissiveDb = path.join(dir, "index.db");
+			fs.writeFileSync(permissiveDb, Buffer.alloc(0));
+			fs.chmodSync(permissiveDb, 0o644);
+			const sessions = path.join(tmp, "perm-existing-sessions");
+			fs.mkdirSync(sessions, { recursive: true });
+			fs.writeFileSync(path.join(sessions, "b.jsonl"), [sessionHeader(), msg("pm2", "user", "tightening keeps indexing functional marker")].join("\n") + "\n");
+
+			assert.equal(syncSessions(sessions, permissiveDb, { cap: 5 }).filesProcessed, 1);
+			assert.equal(modeOf(dir), 0o700, "permissive parent directory must be tightened");
+			assert.equal(fileMode(permissiveDb), 0o600, "permissive database must be tightened");
+			assert.ok(searchIndex(permissiveDb, "tightening keeps indexing functional marker").hits.length === 1);
+		});
+	});
+
+	it("legacy permissive sidecars left by older builds are tightened", () => {
+		withUmask022(() => {
+			const dir = path.join(tmp, "perm-sidecars");
+			fs.mkdirSync(dir, { recursive: true });
+			const legacyDb = path.join(dir, "index.db");
+			for (const suffix of ["-wal", "-shm"]) {
+				fs.writeFileSync(legacyDb + suffix, Buffer.alloc(0));
+				fs.chmodSync(legacyDb + suffix, 0o644);
+			}
+			const sessions = path.join(tmp, "perm-sidecars-sessions");
+			fs.mkdirSync(sessions, { recursive: true });
+			fs.writeFileSync(path.join(sessions, "c.jsonl"), [sessionHeader(), msg("pm3", "user", "sidecar tightening marker text")].join("\n") + "\n");
+
+			syncSessions(sessions, legacyDb, { cap: 5 });
+			// Hold a second connection so the sidecars survive sync's clean close.
+			const holder = new DatabaseSync(legacyDb);
+			try {
+				holder.exec("SELECT count(*) FROM sessions");
+				syncSessions(sessions, legacyDb, { cap: 5 });
+				assert.equal(fileMode(legacyDb + "-wal"), 0o600);
+				assert.equal(fileMode(legacyDb + "-shm"), 0o600);
+			} finally {
+				holder.close();
+			}
+		});
+	});
+
+	it("symlinked and non-regular database nodes are rejected, not followed", () => {
+		withUmask022(() => {
+			const dir = path.join(tmp, "perm-reject");
+			fs.mkdirSync(dir, { recursive: true });
+
+			// Symlink at the db path: O_NOFOLLOW must reject it instead of
+			// writing transcript content to the link target outside the private dir.
+			const outsideDb = path.join(tmp, "outside-index.db");
+			fs.writeFileSync(outsideDb, Buffer.alloc(0));
+			const linkedDb = path.join(dir, "linked.db");
+			fs.symlinkSync(outsideDb, linkedDb);
+			const sessions = path.join(tmp, "perm-reject-sessions");
+			fs.mkdirSync(sessions, { recursive: true });
+			fs.writeFileSync(path.join(sessions, "d.jsonl"), [sessionHeader(), msg("pm4", "user", "rejection path marker")].join("\n") + "\n");
+			assert.throws(() => syncSessions(sessions, linkedDb), (err: NodeJS.ErrnoException) => err.code === "ELOOP" || /not a regular file|symbolic link/i.test(String(err.message)));
+			assert.equal(fs.statSync(outsideDb).size, 0, "link target must stay untouched");
+
+			// Directory at the db path: open(O_RDWR) fails instead of following.
+			const dirAsDb = path.join(dir, "dir.db");
+			fs.mkdirSync(dirAsDb);
+			assert.throws(() => syncSessions(sessions, dirAsDb), (err: NodeJS.ErrnoException) => Boolean(err.code));
+		});
+	});
+
+	it("disposable-schema rebuild recreates the index through the hardened path", () => {
+		withUmask022(() => {
+			const rebuildDir = path.join(tmp, "perm-rebuild");
+			fs.mkdirSync(rebuildDir, { recursive: true });
+			fs.chmodSync(rebuildDir, 0o755);
+			const rebuildDb = path.join(rebuildDir, "index.db");
+			// Build a stale-schema database (no attempts column) with a permissive mode.
+			const db = new DatabaseSync(rebuildDb);
+			db.exec(`
+				CREATE TABLE session_failures (
+					path TEXT PRIMARY KEY,
+					size INTEGER NOT NULL,
+					mtime_ms INTEGER NOT NULL
+				);
+				CREATE TABLE messages (
+					id TEXT PRIMARY KEY,
+					session_path TEXT NOT NULL,
+					role TEXT NOT NULL,
+					text TEXT NOT NULL
+				);
+			`);
+			db.close();
+			fs.chmodSync(rebuildDb, 0o644);
+
+			const sessions = path.join(tmp, "perm-rebuild-sessions");
+			fs.mkdirSync(sessions, { recursive: true });
+			fs.writeFileSync(path.join(sessions, "e.jsonl"), [sessionHeader(), msg("pm5", "user", "rebuild retains secure modes marker")].join("\n") + "\n");
+
+			assert.equal(syncSessions(sessions, rebuildDb, { cap: 5 }).filesProcessed, 1);
+			assert.equal(modeOf(rebuildDir), 0o700, "rebuild must tighten the directory");
+			assert.equal(fileMode(rebuildDb), 0o600, "recreated database must be owner-only");
+			assert.ok(searchIndex(rebuildDb, "rebuild retains secure modes marker").hits.length === 1, "rebuilt index stays functional");
+			assert.ok(searchIndex(rebuildDb, "ghost").hits.length === 0);
+		});
 	});
 });

@@ -5,7 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { DEFAULT_SYNC_CAP, MAX_BACKFILL_FILES, MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
@@ -28,9 +28,13 @@ function readConfig(): Config {
 	const path = configPath();
 	let raw: string;
 	try {
-		const fd = openSync(path, "r");
+		// O_NONBLOCK so a FIFO/symlink-to-FIFO cannot block waiting for a writer;
+		// fstat on the same descriptor then rejects any non-regular node.
+		const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
 		try {
-			if (fstatSync(fd).size > MAX_CONFIG_BYTES) throw new Error(`config exceeds ${MAX_CONFIG_BYTES} bytes`);
+			const stats = fstatSync(fd);
+			if (!stats.isFile()) throw new Error("config is not a regular file");
+			if (stats.size > MAX_CONFIG_BYTES) throw new Error(`config exceeds ${MAX_CONFIG_BYTES} bytes`);
 			const buffer = Buffer.alloc(MAX_CONFIG_BYTES + 1);
 			let length = 0;
 			while (length < buffer.length) {
