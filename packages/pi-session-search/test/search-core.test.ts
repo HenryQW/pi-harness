@@ -761,6 +761,16 @@ describe("SQL prefilter + parse semantics + walk safety", () => {
 		assert.ok(recovered.hits.length >= 1, "malformed query must still recover deploy hits");
 	});
 
+	it("prunes /tmp and /private/tmp encoded directories without matching embedded tmp names", () => {
+		writeFixture("--tmp-project--", "tmp.jsonl", [sessionHeader(), msg("tmp", "user", "tempwalk exclusion marker")]);
+		writeFixture("--private-tmp-project--", "private.jsonl", [sessionHeader(), msg("private", "user", "tempwalk exclusion marker")]);
+		const kept = writeFixture("--users-tmp-project--", "kept.jsonl", [sessionHeader(), msg("kept", "user", "tempwalk exclusion marker")]);
+
+		const result = syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(result.filesProcessed, 1);
+		assert.deepEqual(searchIndex(dbPath, "tempwalk exclusion marker").hits.map((hit) => hit.path), [kept]);
+	});
+
 	it("readdir failure in an indexed subdir preserves indexed data and indexes other dirs", () => {
 		const target = path.join(sessionsDir, "--flood--");
 		const origReaddir = fs.readdirSync;

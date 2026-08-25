@@ -254,7 +254,7 @@ function parseSessionFile(filePath: string): ParsedFile {
 }
 
 function isJunkEncodedDir(relSegments: string[]): boolean {
-	return relSegments.some((seg) => seg.startsWith("--private-tmp-"));
+	return relSegments.some((seg) => seg.startsWith("--tmp-") || seg.startsWith("--private-tmp-"));
 }
 
 /** Walk result. `complete: false` means the tree could not be fully read
