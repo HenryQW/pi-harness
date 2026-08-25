@@ -310,6 +310,11 @@ export default function (pi: ExtensionAPI): void {
 						used += JSON.stringify(out).length;
 						return out;
 					};
+					const hydrationFallback = (error: unknown) =>
+						fitOrTruncate(
+							{ ...meta, detail: hydrateFull ? "full" : "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0, error: (error instanceof Error ? error.message : String(error)).slice(0, 512) },
+							[],
+						);
 					if (!hydrateFull) {
 						// Compact hits still carry the matched anchor message.
 						try {
@@ -318,8 +323,8 @@ export default function (pi: ExtensionAPI): void {
 							// hit that still fits the budget isn't mistaken for complete.
 							const overCompactCap = win.messages.some((m) => m.content.length > 2000);
 							return fitOrTruncate({ ...meta, detail: "compact", ...(overCompactCap ? { contentTruncated: true } : {}), messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter }, win.messages);
-						} catch {
-							return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
+						} catch (error) {
+							return hydrationFallback(error);
 						}
 					}
 					try {
@@ -345,9 +350,9 @@ export default function (pi: ExtensionAPI): void {
 							win.messages,
 							bookends,
 						);
-					} catch {
+					} catch (error) {
 						// Session file unreadable/moved since indexing → anchor-only.
-						return { ...meta, detail: "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0 };
+						return hydrationFallback(error);
 					}
 				});
 

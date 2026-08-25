@@ -4,7 +4,8 @@
  * Pure functions over file paths; no SQLite access.
  */
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { MAX_SESSION_FILE_BYTES } from "./search-core.ts";
 import type { WindowMessage } from "./types.ts";
 
 export interface WindowResult {
@@ -35,7 +36,16 @@ interface Entry {
 
 /** Parse JSONL lines; malformed lines are skipped. Header line (no id) skipped. */
 function parseSessionEntries(sessionPath: string): Entry[] {
-	const raw = readFileSync(sessionPath, "utf8");
+	const fd = openSync(sessionPath, "r");
+	let raw: string;
+	try {
+		if (fstatSync(fd).size > MAX_SESSION_FILE_BYTES) {
+			throw new Error(`session file exceeds 32 MiB hydration limit: ${sessionPath}`);
+		}
+		raw = readFileSync(fd, "utf8");
+	} finally {
+		closeSync(fd);
+	}
 	const entries: Entry[] = [];
 	const seenIds = new Set<string>();
 	for (const line of raw.split("\n")) {

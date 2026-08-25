@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { test } from "node:test";
 import { getWindow, readSession } from "../extensions/hydrate.ts";
+import { MAX_SESSION_FILE_BYTES } from "../extensions/search-core.ts";
 
 const FIX = join(dirname(new URL(import.meta.url).pathname), "fixtures");
 
@@ -35,6 +37,21 @@ function mkMsgs() {
 		};
 	};
 }
+
+test("hydration rejects a session larger than the indexing cap", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-session-hydrate-"));
+	const session = join(dir, "oversized.jsonl");
+	try {
+		writeFileSync(session, "");
+		truncateSync(session, MAX_SESSION_FILE_BYTES + 1);
+		assert.throws(
+			() => readSession(session),
+			/32 MiB hydration limit.*oversized\.jsonl/,
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 test("linear session: window and read", () => {
 	const msg = mkMsgs();

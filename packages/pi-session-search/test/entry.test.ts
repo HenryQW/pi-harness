@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
+import { MAX_SESSION_FILE_BYTES } from "../extensions/search-core.ts";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 let agentDir: string;
@@ -334,6 +335,27 @@ describe("session_search entry point", () => {
 		assert.ok(compact, "expected a compact hit with limit 2");
 		assert.equal(compact.messages.length, 1);
 		assert.match(compact.messages[0].content, /zebra topic/);
+	});
+
+	it("discovery preserves an indexed hit and reports oversized hydration failure", async () => {
+		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-oversized-hydration`);
+		const pi = makePi();
+		mod.default(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		msgCount = 1;
+		const session = writeSession("oversized-hydration/session.jsonl", [
+			{ type: "session", version: 3, id: "oversized-hydration", timestamp: "2026-01-08T00:00:00.000Z", cwd: "/tmp" },
+			msg(null, "user", "sparse hydration ceiling platypus"),
+		]);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-oversized-hydration`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
+		fs.truncateSync(session, MAX_SESSION_FILE_BYTES + 1);
+
+		const response = await tool.execute("oversized", { query: "sparse hydration ceiling platypus" }, undefined, undefined, { sessionManager: {} });
+		const hit = JSON.parse(response.content[0].text).results[0];
+		assert.equal(hit.path, session);
+		assert.deepEqual(hit.messages, []);
+		assert.match(hit.error, /session file exceeds 32 MiB hydration limit/);
 	});
 
 	it("discovery drains sync backlog left by capped startup pass (bhGOb)", async () => {
