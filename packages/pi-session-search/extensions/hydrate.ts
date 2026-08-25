@@ -4,7 +4,7 @@
  * Pure functions over file paths; no SQLite access.
  */
 /// <reference types="node" />
-import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
+import fs from "node:fs";
 import { MAX_SESSION_FILE_BYTES } from "./search-core.ts";
 import type { WindowMessage } from "./types.ts";
 
@@ -36,15 +36,27 @@ interface Entry {
 
 /** Parse JSONL lines; malformed lines are skipped. Header line (no id) skipped. */
 function parseSessionEntries(sessionPath: string): Entry[] {
-	const fd = openSync(sessionPath, "r");
+	const fd = fs.openSync(sessionPath, "r");
 	let raw: string;
 	try {
-		if (fstatSync(fd).size > MAX_SESSION_FILE_BYTES) {
+		// Snapshot bounds are fixed once here: the fd pins the inode, and fstat on
+		// that fd fixes both the allocation and the read ceiling. A concurrent
+		// append after fstat waits until the next hydration call.
+		const size = fs.fstatSync(fd).size;
+		if (size > MAX_SESSION_FILE_BYTES) {
 			throw new Error(`session file exceeds 32 MiB hydration limit: ${sessionPath}`);
 		}
-		raw = readFileSync(fd, "utf8");
+		// Deliberately not fs.readFileSync(fd) — that re-reads to EOF unbounded.
+		const buf = Buffer.allocUnsafe(size);
+		let read = 0;
+		while (read < buf.length) {
+			const n = fs.readSync(fd, buf, read, buf.length - read, read);
+			if (n === 0) break; // truncated concurrently after fstat: parse what was there
+			read += n;
+		}
+		raw = buf.toString("utf8", 0, read);
 	} finally {
-		closeSync(fd);
+		fs.closeSync(fd);
 	}
 	const entries: Entry[] = [];
 	const seenIds = new Set<string>();

@@ -127,32 +127,16 @@ function secureIndexNode(dbPath: string): void {
 
 function openDb(dbPath: string): DatabaseSync {
 	secureIndexNode(dbPath);
-	let db = new DatabaseSync(dbPath);
+	const db = new DatabaseSync(dbPath);
 	try {
 		db.exec("PRAGMA journal_mode = WAL");
 		db.exec("PRAGMA busy_timeout = 5000");
-		// The index is disposable derived state with no migration path: an
-		// incompatible older schema is discarded and rebuilt from scratch.
-		const needsRebuild = (table: string, column: string): boolean => {
-			const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-			return Boolean(exists) && !db.prepare(`PRAGMA table_info(${table})`).all().some((c: any) => c.name === column);
-		};
-		const stale = needsRebuild("session_failures", "attempts") || needsRebuild("messages", "head");
-		if (stale) {
-			db.close();
-			for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(dbPath + suffix, { force: true });
-			// Recreate through the same hardened path so the rebuilt index keeps
-			// owner-only modes instead of inheriting umask defaults.
-			secureIndexNode(dbPath);
-			db = new DatabaseSync(dbPath);
-			db.exec("PRAGMA journal_mode = WAL");
-			db.exec("PRAGMA busy_timeout = 5000");
-		}
+		// The index is disposable derived state with no migration path. Only the
+		// current schema is defined; an incompatible existing index fails on use
+		// and is never deleted or rewritten here — remove it manually to rebuild.
 		// SQLite's LIKE folds ASCII only, missing é/É, Greek, Cyrillic, …; every
 		// LIKE below wraps columns in ulower and binds pre-folded operands so
 		// both sides case-fold through the same foldCase helper.
-		// Registered after any stale-schema reopen so the returned connection
-		// always has the function.
 		db.function("ulower", (s: SQLOutputValue): string => typeof s === "string" ? foldCase(s) : "");
 		db.exec(SCHEMA_SQL);
 	} catch (err) {

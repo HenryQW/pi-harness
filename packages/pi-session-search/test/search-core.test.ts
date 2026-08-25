@@ -460,46 +460,59 @@ describe("lineage + guards", () => {
 	});
 });
 
-describe("legacy schema migration", () => {
-	it("discards and rebuilds an incompatible 0.1.2-era index.db (regression)", () => {
-		const legacyDir = path.join(tmp, "legacy-sessions");
-		const legacyDb = path.join(tmp, "legacy-index.db");
-		fs.mkdirSync(legacyDir, { recursive: true });
-		const file = path.join(legacyDir, "l.jsonl");
-		fs.writeFileSync(file, [sessionHeader(), msg("lg1", "user", "legacy schema migration unique marker")].join("\n") + "\n");
-		// Build a database with the OLD (0.1.2) schema: no attempts column.
-		const db = new DatabaseSync(legacyDb);
-		db.exec(`
-			CREATE TABLE session_files (
-				path TEXT PRIMARY KEY,
-				size INTEGER NOT NULL,
-				mtime_ms INTEGER NOT NULL
-			);
-			CREATE TABLE session_failures (
-				path TEXT PRIMARY KEY,
-				size INTEGER NOT NULL,
-				mtime_ms INTEGER NOT NULL
-			);
-			CREATE TABLE messages (
-				id TEXT PRIMARY KEY,
-				session_path TEXT NOT NULL,
-				role TEXT NOT NULL,
-				text TEXT NOT NULL
-			);
-		`);
-		db.prepare("INSERT INTO messages(id, session_path, role, text) VALUES (?, ?, ?, ?)").run("stale1", file, "user", "stale old-schema ghost marker");
-		const stat = fs.statSync(file);
-		db.prepare("INSERT INTO session_failures(path, size, mtime_ms) VALUES (?, ?, ?)").run(file, stat.size, Math.floor(stat.mtimeMs));
-		db.close();
+describe("incompatible index schema", () => {
+	it("an old-schema index fails visibly without deletion or rebuild; tightening may still occur", { skip: process.platform === "win32" }, () => {
+		const prev = process.umask(0o022);
+		try {
+			const staleDir = path.join(tmp, "stale-schema");
+			fs.mkdirSync(staleDir, { recursive: true });
+			fs.chmodSync(staleDir, 0o755);
+			const staleDb = path.join(staleDir, "index.db");
+			// OLD (0.1.2-era) schema: session_failures has no attempts column and
+			// messages has id/text instead of entry_id/head/tail.
+			const db = new DatabaseSync(staleDb);
+			db.exec(`
+				CREATE TABLE session_files (
+					path TEXT PRIMARY KEY,
+					size INTEGER NOT NULL,
+					mtime_ms INTEGER NOT NULL
+				);
+				CREATE TABLE session_failures (
+					path TEXT PRIMARY KEY,
+					size INTEGER NOT NULL,
+					mtime_ms INTEGER NOT NULL
+				);
+				CREATE TABLE messages (
+					id TEXT PRIMARY KEY,
+					session_path TEXT NOT NULL,
+					role TEXT NOT NULL,
+					text TEXT NOT NULL
+				);
+			`);
+			db.prepare("INSERT INTO messages(id, session_path, role, text) VALUES (?, ?, ?, ?)").run("ghost1", "/x", "user", "stale old-schema ghost marker");
+			db.close();
+			fs.chmodSync(staleDb, 0o644);
 
-		// Regression: a forced-LIKE query must not throw even though opening the
-		// stale-schema db closes and reopens it (ulower must survive the reopen).
-		assert.ok(Array.isArray(searchIndex(legacyDb, ".g").hits));
+			// Operations against an incompatible index must throw, not silently
+			// delete/rebuild it (WAL header bytes may change; sentinel data must not).
+			assert.throws(() => syncSessions(sessionsDir, staleDb), /attempts|no such column|no such table/i);
+			assert.throws(() => searchIndex(staleDb, ".g"), /head|tail|entry_id|no such column|no such table/i);
 
-		const res = syncSessions(legacyDir, legacyDb);
-		assert.equal(res.filesProcessed, 1);
-		assert.equal(searchIndex(legacyDb, "legacy schema migration unique marker").hits.length, 1);
-		assert.equal(searchIndex(legacyDb, "ghost marker").hits.length, 0, "stale old-schema row must be discarded on rebuild");
+			// The file survives with its sentinel schema/data intact; only
+			// owner-only permission tightening may have occurred.
+			assert.equal(fs.statSync(staleDb).mode & 0o777, 0o600, "permissive db may still be tightened");
+			assert.equal(fs.statSync(staleDir).mode & 0o777, 0o700, "permissive dir may still be tightened");
+			const check = new DatabaseSync(staleDb, { readOnly: true });
+			try {
+				const columns = check.prepare("PRAGMA table_info(messages)").all().map((c: any) => c.name);
+				assert.deepEqual(columns, ["id", "session_path", "role", "text"], "old schema layout must be preserved untouched");
+				assert.equal(check.prepare("SELECT text FROM messages WHERE id = 'ghost1'").get()?.text, "stale old-schema ghost marker", "sentinel row must survive");
+			} finally {
+				check.close();
+			}
+		} finally {
+			process.umask(prev);
+		}
 	});
 
 	describe("sanitize ladder regressions from review", () => {
@@ -1039,42 +1052,6 @@ describe("index permissions (POSIX)", { skip: process.platform === "win32" }, ()
 			const dirAsDb = path.join(dir, "dir.db");
 			fs.mkdirSync(dirAsDb);
 			assert.throws(() => syncSessions(sessions, dirAsDb), (err: NodeJS.ErrnoException) => Boolean(err.code));
-		});
-	});
-
-	it("disposable-schema rebuild recreates the index through the hardened path", () => {
-		withUmask022(() => {
-			const rebuildDir = path.join(tmp, "perm-rebuild");
-			fs.mkdirSync(rebuildDir, { recursive: true });
-			fs.chmodSync(rebuildDir, 0o755);
-			const rebuildDb = path.join(rebuildDir, "index.db");
-			// Build a stale-schema database (no attempts column) with a permissive mode.
-			const db = new DatabaseSync(rebuildDb);
-			db.exec(`
-				CREATE TABLE session_failures (
-					path TEXT PRIMARY KEY,
-					size INTEGER NOT NULL,
-					mtime_ms INTEGER NOT NULL
-				);
-				CREATE TABLE messages (
-					id TEXT PRIMARY KEY,
-					session_path TEXT NOT NULL,
-					role TEXT NOT NULL,
-					text TEXT NOT NULL
-				);
-			`);
-			db.close();
-			fs.chmodSync(rebuildDb, 0o644);
-
-			const sessions = path.join(tmp, "perm-rebuild-sessions");
-			fs.mkdirSync(sessions, { recursive: true });
-			fs.writeFileSync(path.join(sessions, "e.jsonl"), [sessionHeader(), msg("pm5", "user", "rebuild retains secure modes marker")].join("\n") + "\n");
-
-			assert.equal(syncSessions(sessions, rebuildDb, { cap: 5 }).filesProcessed, 1);
-			assert.equal(modeOf(rebuildDir), 0o700, "rebuild must tighten the directory");
-			assert.equal(fileMode(rebuildDb), 0o600, "recreated database must be owner-only");
-			assert.ok(searchIndex(rebuildDb, "rebuild retains secure modes marker").hits.length === 1, "rebuilt index stays functional");
-			assert.ok(searchIndex(rebuildDb, "ghost").hits.length === 0);
 		});
 	});
 });

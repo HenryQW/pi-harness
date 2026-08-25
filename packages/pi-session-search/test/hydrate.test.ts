@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync } from "node:fs";
+import fs, { appendFileSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { test } from "node:test";
@@ -50,6 +50,34 @@ test("hydration rejects a session larger than the indexing cap", () => {
 		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("concurrent append after fstat: current call sees only the snapshot, next call sees the append", () => {
+	const msg = mkMsgs();
+	const p = write("race.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		msg(null, "user", "q1"), // e01
+		msg("e01", "assistant", "a1"), // e02
+	]);
+	const realFstatSync = fs.fstatSync.bind(fs) as typeof fs.fstatSync;
+	let appended = false;
+	// Simulate another Pi process appending between fstat and the read loop.
+	fs.fstatSync = ((fd: number, opts?: { bigint?: boolean }) => {
+		const st = realFstatSync(fd, opts);
+		if (!appended) {
+			appended = true;
+			appendFileSync(p, JSON.stringify(msg("e02", "assistant", "a2")) + "\n"); // e03
+		}
+		return st;
+	}) as typeof fs.fstatSync;
+	try {
+		const r1 = readSession(p);
+		assert.deepEqual(r1.messages.map((m) => m.entryId), ["e01", "e02"], "append after fstat must not be read by this call");
+		const r2 = readSession(p);
+		assert.deepEqual(r2.messages.map((m) => m.entryId), ["e01", "e02", "e03"], "next call must see the appended data");
+	} finally {
+		fs.fstatSync = realFstatSync;
 	}
 });
 
