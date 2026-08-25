@@ -222,18 +222,17 @@ if (task === "Task: first") {
 	}
 });
 
-test("a never-settling callback cannot hold run or its permit after child exit", async (t) => {
+test("a never-settling callback rejects as a typed callback failure and releases the permit", async (t) => {
 	const cwd = await useRunner(t, successfulRunner);
 	const executorInstance = executor();
-	const first = executorInstance.run({
+	await assert.rejects(executorInstance.run({
 		onUpdate: () => new Promise<void>(() => {}),
 		prepare: async () => prepared(cwd, "first"),
+	}), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "callback");
+		return true;
 	});
-	const settled = await Promise.race([
-		first.then(() => "settled" as const),
-		new Promise<"hung">((resolve) => { setTimeout(resolve, 4_500); }),
-	]);
-	assert.equal(settled, "settled");
 	assert.equal((await executorInstance.run({ prepare: async () => prepared(cwd, "second") })).output, "done");
 });
 

@@ -640,10 +640,13 @@ async function runPi(
 			await killTree(true);
 			// A caller callback that never settles must not hold `run()` or its permit
 			// past child exit; bound the drain by what remains of the maximum runtime.
-			const drainTimer = setTimeout(
-				signalCallbackFailure,
-				Math.min(5_000, Math.max(0, maxDeadline - Date.now())),
-			);
+			const drainTimer = setTimeout(() => {
+				callbackFailure ??= new EphemeralSubagentError(
+					"callback",
+					"Subagent callback did not settle before the post-exit drain deadline.",
+				);
+				signalCallbackFailure();
+			}, Math.min(5_000, Math.max(0, maxDeadline - Date.now())));
 			drainTimer.unref();
 			await Promise.race([Promise.all(pendingCallbacks), callbackFailed]);
 			clearTimeout(drainTimer);
