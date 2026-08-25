@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-dag",
-  "version": "8.0.0",
+  "version": "8.0.1",
   "description": "Execute Delivery Graphs through Pi and Herdr.",
   "keywords": [
     "pi-package",
@@ -22,7 +22,7 @@
   "scripts": {
     "dev:ui": "pi --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session --offline -e test/dev/worker-ui.ts",
     "test": "node test/run.mjs",
-    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck extensions/*.ts src/*.ts test/*.ts test/dev/*.ts",
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --allowJs --skipLibCheck extensions/*.ts src/*.ts test/*.ts test/dev/*.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
