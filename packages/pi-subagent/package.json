@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "description": "Delegate one task to an isolated Pi role with explicit extensions and skills.",
   "keywords": [
     "pi-package",
