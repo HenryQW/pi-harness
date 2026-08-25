@@ -24,15 +24,21 @@ interface Config {
 /** Untrusted JSON: validate, log-and-default on malformed, never rewrite. */
 function readConfig(): Config {
 	const fallback = { backfillFiles: DEFAULT_SYNC_CAP };
+	const path = configPath();
 	let raw: string;
 	try {
-		raw = readFileSync(configPath(), "utf8");
-	} catch {
-		return fallback; // missing config = defaults
+		raw = readFileSync(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+		console.error(`[pi-session-search] failed to read config ${path}: ${error instanceof Error ? error.message : String(error)}; using default`);
+		return fallback;
 	}
 	try {
-		const value = JSON.parse(raw);
-		if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+		const value: unknown = JSON.parse(raw);
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			console.error("[pi-session-search] config must be a JSON object; using default");
+			return fallback;
+		}
 		const cap = (value as Record<string, unknown>).backfillFiles;
 		if (cap === undefined) return fallback;
 		// Safe integer rejects untrusted magnitudes like 1e100 that would

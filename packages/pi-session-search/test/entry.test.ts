@@ -250,31 +250,32 @@ describe("session_search entry point", () => {
 		assert.equal(parsed.messages[0].timestamp.length, 128);
 	});
 
-	it("config validation: malformed file logs-and-defaults, invalid backfillFiles rejected", async () => {
+	it("config validation: invalid config and read failures log-and-default without rewriting", async () => {
 		const configDir = path.join(agentDir, "config", "pi-session-search");
 		fs.mkdirSync(configDir, { recursive: true });
 		const configPath = path.join(configDir, "pi-session-search.json");
 
-		fs.writeFileSync(configPath, "{ not json !!!");
 		const errors: unknown[] = [];
 		const origError = console.error;
 		console.error = (...args: unknown[]) => errors.push(args);
 		try {
-			// Fresh module instance picks up the config at registration time.
 			const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}`);
-			const pi = makePi();
-			mod.default(pi as never); // must not throw
-			assert.equal(errors.length, 1);
-
-			for (const invalid of [-5, 501]) {
-				fs.writeFileSync(configPath, JSON.stringify({ backfillFiles: invalid }));
+			for (const invalid of ["{ not json !!!", "null", "[]", '"string"', "{\"backfillFiles\":-5}", "{\"backfillFiles\":501}"]) {
+				fs.writeFileSync(configPath, invalid);
 				errors.length = 0;
-				mod.default(makePi() as never);
+				mod.default(makePi() as never); // must not throw
 				assert.equal(errors.length, 1);
-				assert.equal(fs.readFileSync(configPath, "utf8"), JSON.stringify({ backfillFiles: invalid }));
+				assert.equal(fs.readFileSync(configPath, "utf8"), invalid);
 			}
+
+			fs.rmSync(configPath);
+			fs.mkdirSync(configPath);
+			errors.length = 0;
+			mod.default(makePi() as never);
+			assert.equal(errors.length, 1);
 		} finally {
 			console.error = origError;
+			fs.rmSync(configPath, { recursive: true, force: true });
 		}
 	});
 
