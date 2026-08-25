@@ -236,3 +236,18 @@ test("malformed message content: object and non-string text parts yield empty st
 	const w = getWindow(p, "e01", 1);
 	assert.equal(w.messages[0].content, "");
 });
+
+test("fragmented anchor (id#h): descendant discovery uses resolved real id", () => {
+	const msg = mkMsgs();
+	const p = write("fragment-anchor.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		msg(null, "user", "q1"), // e01
+		msg("e01", "assistant", "big"), // e02 — oversized message indexed as e02#h/e02#t
+		msg("e02", "user", "q2"), // e03
+		msg("e03", "assistant", "a2"), // e04
+	]);
+	const w = getWindow(p, "e02#h", 5);
+	assert.deepEqual(w.messages.map((m) => m.entryId), ["e01", "e02", "e03", "e04"]);
+	assert.equal(w.messages.find((m) => m.entryId === "e02")?.anchor, true);
+	assert.equal(w.messagesAfter, 2); // descendants e03, e04 discovered past the fragment
+});

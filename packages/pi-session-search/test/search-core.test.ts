@@ -265,6 +265,20 @@ describe("lineage + guards", () => {
 		}
 	});
 
+	it("current-session guard suppresses oversized-message fragments (#h/#t)", () => {
+		const big = "x".repeat(20000);
+		const fragFile = writeFixture("--lg-frag--", "frag.jsonl", [
+			sessionHeader(),
+			msg("f1", "user", `fragmentguard unique marker ${big}`),
+		], 40000);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		const { hits } = searchIndex(dbPath, "fragmentguard unique marker", {
+			currentSessionPath: fragFile,
+			currentLiveEntryIds: new Set(["f1"]),
+		});
+		assert.ok(!hits.some((h) => h.path === fragFile), "fragment hits on the live entry must be suppressed");
+	});
+
 	it("suppressed live hit on parent does not suppress a matching child (bhGOs)", () => {
 		const parentFile = writeFixture("--lg-parent--", "parent.jsonl", [
 			sessionHeader(),

@@ -713,7 +713,12 @@ export function searchIndex(
 			const ins = db.prepare("INSERT INTO live_filter(path, entry_id) VALUES (?, ?)");
 			db.exec("BEGIN");
 			try {
-				for (const id of opts.currentLiveEntryIds!) ins.run(opts.currentSessionPath!, id);
+				// Oversized messages index as `id#h`/`id#t` fragments; suppress those too.
+				for (const id of opts.currentLiveEntryIds!) {
+					ins.run(opts.currentSessionPath!, id);
+					ins.run(opts.currentSessionPath!, `${id}#h`);
+					ins.run(opts.currentSessionPath!, `${id}#t`);
+				}
 				db.exec("COMMIT");
 			} catch (err) {
 				db.exec("ROLLBACK");

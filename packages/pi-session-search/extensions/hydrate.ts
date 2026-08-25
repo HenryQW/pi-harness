@@ -159,8 +159,10 @@ export function getBranchMessages(
 ): WindowMessage[] {
 	const entries = parseSessionEntries(sessionPath);
 	const entriesById = new Map(entries.map((e) => [e.id, e]));
+	// Descendants hang off the real entry id, never a synthetic #h/#t fragment.
+	const realAnchorId = baseEntryId(anchorEntryId);
 	resolveMessageCursor(entriesById, anchorEntryId);
-	return branchMessages(entriesById, deepestDescendant(entriesById, entries, anchorEntryId));
+	return branchMessages(entriesById, deepestDescendant(entriesById, entries, realAnchorId));
 }
 
 export function getWindow(
@@ -187,7 +189,7 @@ export function getWindow(
 			throw new Error(`anchor entry ${anchorEntryId} is not on branch ${opts.branchTip}`);
 		}
 	} else {
-		tip = deepestDescendant(entriesById, entries, anchorEntryId);
+		tip = deepestDescendant(entriesById, entries, baseEntryId(anchorEntryId));
 	}
 	const msgs = branchMessages(entriesById, tip);
 	const idx = msgs.findIndex((m) => m.entryId === anchorEntryIdMsg);
