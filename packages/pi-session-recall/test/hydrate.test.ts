@@ -231,6 +231,20 @@ test("oversized entry and parent ids are rejected without corrupting the branch"
 	assert.deepEqual(result.messages.map((m) => m.entryId), ["e01", "e02"]);
 });
 
+test("trailing detached ID-bearing metadata does not hide the transcript", () => {
+	const msg = mkMsgs();
+	const p = write("detached-tail.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		msg(null, "user", "q1"), // e01
+		msg("e01", "assistant", "a1"), // e02
+		// Detached metadata entry: no parentId, no message ancestry.
+		{ type: "session_info", id: "si1", timestamp: "2024-01-01T00:00:03.000Z" },
+	]);
+	const r = readSession(p);
+	assert.deepEqual(r.messages.map((m) => m.entryId), ["e01", "e02"]);
+	assert.equal(r.totalMessages, 2);
+});
+
 test("parentId cycle terminates (corrupt file)", () => {
 	const msg = mkMsgs();
 	const a = msg("e02", "user", "q2") as Record<string, string>; a.parentId = "e03";

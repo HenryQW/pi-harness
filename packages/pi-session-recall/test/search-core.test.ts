@@ -3,6 +3,7 @@
  * JSONL files are written to a temp dir per run.
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -246,6 +247,25 @@ describe("lineage + guards", () => {
 		({ hits } = searchIndex(dbPath, "lineage-marker shared topic"));
 		assert.equal(hits.length, 1);
 		assert.equal(hits[0].path, childFile);
+	});
+
+	it("does not self-suppress malformed self-parent sessions in FTS or LIKE", () => {
+		const selfFile = path.join(sessionsDir, "--self-parent--", "self.jsonl");
+		writeFixture("--self-parent--", "self.jsonl", [
+			sessionHeader({ parentSession: selfFile }),
+			msg("self", "user", "selfparentftsmarker q7"),
+		], 25000);
+		writeFixture("--self-parent-child--", "child.jsonl", [
+			sessionHeader({ parentSession: selfFile }),
+			msg("child", "assistant", "selfparentftsmarker q7"),
+		], 26000);
+
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(buildFtsQueryPlan("q7").forceLike, true);
+		for (const [query, pathLabel] of [["selfparentftsmarker", "FTS"], ["q7", "LIKE"]] as const) {
+			const hits = searchIndex(dbPath, query, { limit: 10 }).hits;
+			assert.deepEqual(hits.map((hit) => hit.path), [selfFile], `${pathLabel} should keep self-parent and suppress its child`);
+		}
 	});
 
 	it("collapses lineage before the scan limit", () => {
@@ -1074,5 +1094,60 @@ describe("index permissions (POSIX)", { skip: process.platform === "win32" }, ()
 			fs.mkdirSync(dirAsDb);
 			assert.throws(() => syncSessions(sessions, dirAsDb), (err: NodeJS.ErrnoException) => Boolean(err.code));
 		});
+	});
+});
+
+// The FIFO TOCTOU regression runs in a subprocess: pre-fix code blocks forever
+// on the writerless FIFO open, and a timeout there kills only this child instead
+// of wedging the test runner.
+describe("FIFO TOCTOU in indexing", () => {
+	it("a regular .jsonl swapped for a writerless FIFO fails promptly without hanging sync", { skip: process.platform === "win32" }, () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-fifo-"));
+		try {
+			const sessions = path.join(dir, "sessions");
+			const victimDir = path.join(sessions, "--fifo-victim--", "victim.jsonl");
+			fs.mkdirSync(path.dirname(victimDir), { recursive: true });
+			const goodDir = path.join(sessions, "--good--");
+			fs.mkdirSync(goodDir, { recursive: true });
+			// Healthy neighbor proves the pass continues past the failed file.
+			fs.writeFileSync(path.join(goodDir, "good.jsonl"),
+				[sessionHeader(), msg("g1", "user", "healthy fifo neighbor marker")].join("\n") + "\n");
+			assert.equal(spawnSync("mkfifo", [victimDir]).status, 0);
+
+			// Simulate the race outcome inside the child: the walk's directory
+			// listing was captured while victim.jsonl was still a regular file;
+			// by open time it is a writerless FIFO.
+			const script = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+const origReaddirSync = fs.readdirSync;
+fs.readdirSync = (p, opts) => {
+	const entries = origReaddirSync(p, opts);
+	if (!opts?.withFileTypes) return entries;
+	return entries.map((e) => e.name === "victim.jsonl"
+		? { name: e.name, isFile: () => true, isDirectory: () => false }
+		: e);
+};
+const { syncSessions } = await import(pathToFileURL(process.env.SEARCH_CORE_PATH));
+const res = syncSessions(process.env.FIFO_SESSIONS_DIR, process.env.FIFO_DB_PATH);
+assert.equal(res.filesProcessed, 1, "healthy neighbor must still index");
+assert.equal(res.backlogRemaining, 1, "FIFO must stay a retryable failure");
+process.exit(0);
+`;
+			const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+				timeout: 5000,
+				env: {
+					...process.env,
+					SEARCH_CORE_PATH: path.resolve(import.meta.dirname, "../extensions/search-core.ts"),
+					FIFO_SESSIONS_DIR: sessions,
+					FIFO_DB_PATH: path.join(dir, "index.db"),
+				},
+			});
+			assert.equal(result.error, undefined, `sync hung on the writerless FIFO (timed out): ${result.error}`);
+			assert.equal(result.status, 0, result.stderr.toString());
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

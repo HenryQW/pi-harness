@@ -225,7 +225,9 @@ function extractText(content: unknown): string {
  *  maxBytes: the fd pins the inode, and fstat on that fd fixes both bounds.
  *  Deliberately not fs.readFileSync(fd) — that re-reads to EOF unbounded. */
 function readBoundedSnapshot(filePath: string, maxBytes: number): string {
-	const fd = fs.openSync(filePath, "r");
+	// O_NONBLOCK keeps a writerless FIFO (regular .jsonl swapped mid-walk) from
+	// blocking this open before fstat rejects it, as hydration/config readers do.
+	const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
 	try {
 		const st = fs.fstatSync(fd);
 		if (!st.isFile()) throw new Error("session path is not a regular file");
@@ -880,7 +882,9 @@ FROM ranked r
 WHERE rn <= ${ROWS_PER_FILE}
   AND NOT EXISTS (
     SELECT 1 FROM ranked parent
-    WHERE parent.path = r.parent_session AND parent.rn <= ${ROWS_PER_FILE}
+    WHERE parent.path = r.parent_session
+      AND parent.path <> r.path
+      AND parent.rn <= ${ROWS_PER_FILE}
   )
 ORDER BY score, rid
 LIMIT ${SCAN_LIMIT}`;
@@ -998,7 +1002,9 @@ export function searchIndex(
 			            WHERE rn <= ${ROWS_PER_FILE}
 			              AND NOT EXISTS (
 			                SELECT 1 FROM ranked parent
-			                WHERE parent.path = r.parent_session AND parent.rn <= ${ROWS_PER_FILE}
+			                WHERE parent.path = r.parent_session
+			                  AND parent.path <> r.path
+			                  AND parent.rn <= ${ROWS_PER_FILE}
 			              )
 			            ORDER BY matches DESC, started_at DESC, path
 			            LIMIT ${SCAN_LIMIT}`).all(...params) as any;

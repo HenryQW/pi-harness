@@ -88,9 +88,15 @@ function parseSessionEntries(sessionPath: string): Entry[] {
 	return entries;
 }
 
-/** Leaf = last entry in file order. */
-function leafId(entries: Entry[]): string | null {
-	return entries.length ? entries[entries.length - 1].id : null;
+/** Leaf = last entry in file order whose ancestry contains a message; detached
+ *  trailing metadata must not hide the transcript. */
+function leafId(entriesById: Map<string, Entry>, entries: Entry[]): string | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		if (branch(entriesById, entries[i].id).some((e) => e.type === "message")) {
+			return entries[i].id;
+		}
+	}
+	return null;
 }
 
 /** Walk parentId chain from entry to root, reversed (root→entry). */
@@ -229,9 +235,9 @@ export function readSession(
 	tail = 10,
 ): ReadResult {
 	const entries = parseSessionEntries(sessionPath);
-	const leaf = leafId(entries);
-	if (!leaf) return { messages: [], totalMessages: 0, truncated: false };
 	const entriesById = new Map(entries.map((e) => [e.id, e]));
+	const leaf = leafId(entriesById, entries);
+	if (!leaf) return { messages: [], totalMessages: 0, truncated: false };
 	const msgs = branchMessages(entriesById, leaf);
 	if (msgs.length > head + tail) {
 		return {
