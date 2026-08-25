@@ -20,6 +20,7 @@ export const ORCHESTRATOR_TOOLS = {
 	retryGate: "auto_dag_retry_gate",
 	resolve: "auto_dag_resolve",
 	abort: "auto_dag_abort",
+	acknowledge: "auto_dag_acknowledge",
 } as const;
 
 export interface OrchestratorExtensionOptions {
@@ -87,6 +88,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume,
+					...(state.notifications.some((notification) => !notification.delivered_at) ? [ORCHESTRATOR_TOOLS.acknowledge] : []),
 					...(isRetryableFinalGate(state) ? [ORCHESTRATOR_TOOLS.retryGate] : []),
 					...(["aborted", "completed"].includes(state.phase) ? [] : [ORCHESTRATOR_TOOLS.abort]),
 					...(hasActivePhaseBlock(state) ? [ORCHESTRATOR_TOOLS.resolve] : [])]
@@ -129,6 +131,8 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			if (!pendingNotifications.length && ["aborted", "completed"].includes(current.phase)) {
 				current = await lifecycle.settleTerminal(ctx.cwd);
 			}
+			// ponytail: sendUserMessage is fire-and-forget; entries stay pending and are redelivered
+			// until the consumer acknowledges the exact event via auto_dag_acknowledge.
 			for (const notification of pendingNotifications) {
 				await pi.sendUserMessage(JSON.stringify({
 					type: "auto_dag_notification",
@@ -137,7 +141,6 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 					run_id: current.run_id,
 					payload: notification.payload,
 				}), { deliverAs: "followUp" });
-				current = await lifecycle.acknowledgeNotification(ctx.cwd, notification.event_id);
 			}
 			state = runRemainsActive(current) ? current : undefined;
 			syncActiveTools();
@@ -386,6 +389,17 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				].join("\n"));
 				if (!approved) return stateResult(current);
 				return await lifecycleResult(ctx, async () => await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution, amendment));
+			},
+		}));
+
+		pi.registerTool(defineTool({
+			name: ORCHESTRATOR_TOOLS.acknowledge,
+			label: "Acknowledge Auto DAG notification",
+			description: "Idempotently acknowledge one exact Auto DAG notification event after durably handling it; settles a terminal run once every event is acknowledged.",
+			parameters: Type.Object({ event_id: Type.String({ minLength: 1 }) }),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
+				return await lifecycleResult(ctx, async () => await lifecycle.acknowledgeNotification(ctx.cwd, params.event_id));
 			},
 		}));
 

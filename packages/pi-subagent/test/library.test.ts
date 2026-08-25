@@ -48,6 +48,8 @@ test("child role policy keeps selected built-ins and activates loaded extension 
 		getAllTools: () => [
 			{ name: "read", sourceInfo: { source: "builtin" } },
 			{ name: "delegate_task", sourceInfo: { source: "npm:pi-subagent" } },
+			{ name: "auto_dag_execute", sourceInfo: { source: "npm:pi-auto-dag" } },
+			{ name: "auto_dag_acknowledge", sourceInfo: { source: "npm:pi-auto-dag" } },
 			{ name: "extension_tool", sourceInfo: { source: "npm:example-extension" } },
 			{ name: "sdk_tool", sourceInfo: { source: "sdk" } },
 			{ name: "inline_tool", sourceInfo: { source: "inline" } },
@@ -59,6 +61,8 @@ test("child role policy keeps selected built-ins and activates loaded extension 
 	assert.ok(sessionStart);
 	sessionStart();
 	assert.deepEqual(activeTools, ["read", "extension_tool"]);
+	assert.equal(activeTools.includes("auto_dag_execute"), false);
+	assert.equal(activeTools.includes("auto_dag_acknowledge"), false);
 });
 
 test("child role policy rejects a malformed tool flag", () => {
@@ -121,7 +125,7 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.deepEqual(launch.missingSkills, ["missing"]);
 	assert.deepEqual(launch.args.slice(0, 5), [
 		"--no-session", "--no-extensions", "--no-skills",
-		"--exclude-tools", "delegate_task,ask_question,auto_dag_execute",
+		"--exclude-tools", "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge",
 	]);
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
 	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
@@ -147,7 +151,7 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.equal(defaultTools.args.includes("--no-tools"), false);
 	assert.equal(defaultTools.args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
 	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
-	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,ask_question,auto_dag_execute");
+	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge");
 });
 
 test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retires", async () => {

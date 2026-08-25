@@ -37,6 +37,7 @@ Workers run through user-owned `@henryqw/pi-subagent` Roles with package-fixed i
 | `auto_dag_status` / `auto_dag_resume` | tools | Inspect or resume the active durable run. |
 | `auto_dag_retry_gate` / `auto_dag_resolve` | tools | Recover a blocked gate or task through an explicit decision. |
 | `auto_dag_abort` | tool | Abort the active run while retaining evidence. |
+| `auto_dag_acknowledge` | tool | Idempotently acknowledge one exact notification `event_id` after durably handling it; delivery is at-least-once and unacknowledged events are redelivered. Releases a settled terminal run once every event is acknowledged. |
 
 ## Config
 

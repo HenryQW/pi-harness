@@ -467,6 +467,90 @@ test("durable blocked/completed notifications retain stable IDs and release comp
 	assert.deepEqual(await lifecycle.acknowledgeNotification(project.root, completedId), delivered);
 });
 
+test("followUp delivery is fire-and-forget: failed or unacknowledged dispatch stays pending until explicit acknowledgement", async (t) => {
+	const project = await setupProject(t);
+	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
+	const initial = createInitialRunState({
+		run_id: RUN_ID,
+		graph,
+		source_commit: await git(project.root, "rev-parse", "HEAD"),
+		main_worktree: project.root,
+		integration_branch: "integration",
+		default_branch: "main",
+		created_at: "2026-08-09T00:00:00.000Z",
+		main_pane: "main-pane",
+		workspace_id: "main-workspace",
+	});
+	await createRun(project.root, initial, () => "create");
+	await writeRunState(project.root, {
+		...initial,
+		phase: "blocked",
+		block_reason: "API needs a decision.",
+		tasks: { ...initial.tasks, api: { status: "blocked", attempts: 1, block_reason: "Choose a protocol.", blocked_role: "implementer" } },
+	}, () => "blocked");
+	const lifecycle = createCoreLifecycle({ uuid: () => "lifecycle", now: () => "2026-08-09T01:00:00.000Z" });
+	await lifecycle.abort(project.root, "Cancelled by user");
+	const eventId = (await readRunState(project.root, RUN_ID))!.notifications[0].event_id;
+
+	let failSend = true;
+	const sent: string[] = [];
+	const notifications: string[] = [];
+	const tools = new Map<string, { execute: Function }>();
+	const events = new Map<string, Function>();
+	const pi = {
+		registerCommand() {},
+		registerTool(tool: { name: string; execute: Function }) { tools.set(tool.name, tool); },
+		on(name: string, handler: Function) { events.set(name, handler); },
+		getActiveTools: () => [ORCHESTRATOR_TOOLS.status],
+		setActiveTools() {},
+		getCommands: () => [],
+		async sendUserMessage(text: string) {
+			if (failSend) throw new Error("model unavailable during startup");
+			sent.push(text);
+		},
+	};
+	createOrchestratorExtension({ lifecycle })(pi as never);
+	const context = {
+		cwd: project.root,
+		mode: "rpc" as const,
+		ui: {
+			notify(_message: string, kind?: string) { if (kind === "warning") notifications.push(_message); },
+			setWidget() {},
+		},
+	};
+
+	// A failed followUp dispatch must not acknowledge the event nor release the lock.
+	await events.get("session_start")!({}, context);
+	assert.equal(sent.length, 0);
+	assert.ok(notifications.some((message) => message.includes("delivery failed")));
+	assert.equal((await readRunState(project.root, RUN_ID))!.notifications[0].delivered_at, undefined);
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+
+	// A successful dispatch is still not treated as delivered; the exact event is redelivered.
+	failSend = false;
+	await events.get("tool_execution_end")!({ toolName: ORCHESTRATOR_TOOLS.status }, context);
+	const deliveredMessage = JSON.parse(sent[0]);
+	assert.equal(deliveredMessage.type, "auto_dag_notification");
+	assert.equal(deliveredMessage.event_id, eventId);
+	assert.equal(deliveredMessage.kind, "blocked");
+	assert.equal(deliveredMessage.run_id, RUN_ID);
+	assert.equal((await readRunState(project.root, RUN_ID))!.notifications[0].delivered_at, undefined);
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+
+	// Flushing again redelivers the same unacknowledged event after the successful send.
+	await events.get("tool_execution_end")!({ toolName: ORCHESTRATOR_TOOLS.status }, context);
+	const redeliveredMessage = JSON.parse(sent[1]);
+	assert.equal(redeliveredMessage.type, "auto_dag_notification");
+	assert.equal(redeliveredMessage.event_id, eventId);
+	assert.equal(sent.length, 2);
+
+	// Explicit idempotent acknowledgement of the exact event settles the terminal run.
+	await tools.get(ORCHESTRATOR_TOOLS.acknowledge)!.execute("ack", { event_id: eventId }, undefined, undefined, context);
+	assert.equal((await readRunState(project.root, RUN_ID))!.notifications[0].delivered_at, "2026-08-09T01:00:00.000Z");
+	await tools.get(ORCHESTRATOR_TOOLS.acknowledge)!.execute("ack-again", { event_id: eventId }, undefined, undefined, context);
+	assert.equal(await readActiveRunId(project.root), undefined);
+});
+
 async function setupProject(t: TestContext, withAgentConfig = false): Promise<{ root: string; agentDir?: string }> {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-execution-"));
 	t.after(async () => await rm(root, { recursive: true, force: true }));

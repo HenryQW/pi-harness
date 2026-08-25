@@ -422,5 +422,6 @@ test("tool surfaces match current v5 run-state contracts", () => {
 		"auto_dag_retry_gate",
 		"auto_dag_resolve",
 		"auto_dag_abort",
+		"auto_dag_acknowledge",
 	]);
 });

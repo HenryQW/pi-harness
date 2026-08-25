@@ -29,7 +29,7 @@ const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question,auto_dag_execute";
+const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge";
 
 export interface Role {
 	name: string;
