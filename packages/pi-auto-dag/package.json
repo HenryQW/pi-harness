@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-auto-dag",
-  "version": "7.1.5",
-  "description": "Plan and run local Delivery Graphs through Pi and Herdr.",
+  "version": "8.0.0",
+  "description": "Execute Delivery Graphs through Pi and Herdr.",
   "keywords": [
     "pi-package",
     "pi",
@@ -14,9 +14,7 @@
   },
   "license": "MIT",
   "files": [
-    "examples",
     "extensions",
-    "prompts",
     "src",
     "README.md",
     "LICENSE"
@@ -31,8 +29,8 @@
     "@earendil-works/pi-coding-agent": "^0.84.3"
   },
   "dependencies": {
-    "@henryqw/pi-subagent": "^2.5.0",
-    "@henryqw/pi-task-models": "^1.0.0",
+    "@henryqw/pi-subagent": "^3.0.3",
+    "proper-lockfile": "^4.1.2",
     "typebox": "1.3.15"
   },
   "repository": {
@@ -48,8 +46,10 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/auto-dag.ts",
-      "./extensions/worker.ts"
+      "./extensions/auto-dag.ts"
     ]
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4"
   }
 }

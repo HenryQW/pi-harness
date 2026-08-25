@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { setTimeout as defaultDelay } from "node:timers/promises";
 import { Type } from "typebox";
-import { defineTool, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	managedSubagentName,
 	type ManagedSubagentHost,
@@ -10,10 +10,8 @@ import {
 	type ResolveRoleLaunchInput,
 	type Role,
 } from "@henryqw/pi-subagent";
-import { DEFAULT_TASK_ASSIGNMENTS } from "@henryqw/pi-task-models";
 import { commandFailure, commandOutput, runCommand, type CommandRunner } from "./command.ts";
 import { DEFAULT_REQUIRED_GATE_TIMEOUT_MS, type DeliveryGraph, type LocalIssue, type WorkerEnvelope } from "./model.ts";
-import { planningReviewPath, PLANNING_REVIEW_TOOL, writePlanningReviewPass } from "./planning-review.ts";
 import { readActionTicket, readWorkerReceipt, type ActionTicket } from "./review-ticket.ts";
 import { nonEmptyString, oneOf, positiveInteger } from "./validate.ts";
 
@@ -22,7 +20,6 @@ export type WorkerRole = "implementer" | "reviewer";
 export const WORKER_TOOLS = {
 	request_review: "auto_dag_request_review",
 	submit_review: "auto_dag_submit_review",
-	submit_health: "auto_dag_submit_health",
 	block_task: "auto_dag_block_task",
 } as const;
 
@@ -30,7 +27,7 @@ export type WorkerEvent = keyof typeof WORKER_TOOLS;
 
 export const WORKER_ROLE_EVENTS: Record<WorkerRole, WorkerEvent[]> = {
 	implementer: ["request_review", "block_task"],
-	reviewer: ["submit_review", "submit_health", "block_task"],
+	reviewer: ["submit_review", "block_task"],
 };
 
 export type WorkerLaunch = PiLaunch;
@@ -52,7 +49,7 @@ export const WORKER_EXTENSION_PATH = fileURLToPath(new URL("../extensions/worker
 export const AUTO_DAG_TASK_IDS = {
 	implement: "pi-auto-dag/implement",
 	review: "pi-auto-dag/review",
-} as const satisfies Record<string, keyof typeof DEFAULT_TASK_ASSIGNMENTS>;
+} as const;
 const WORKER_DELIVERY_MARGIN_MS = 60_000;
 
 /** A Role owns launch policy; Auto DAG contributes only its protocol adapter, phase tools, and action identity. */
@@ -73,20 +70,6 @@ export function createWorkerLaunch(input: WorkerLaunchInput): WorkerLaunch {
 			PI_AUTO_DAG_ACTION_TICKET: nonEmptyString(input.action_ticket, "worker action ticket"),
 			PI_AUTO_DAG_DELIVERY_TIMEOUT_MS: String(positiveInteger(input.required_gate_timeout_ms, "worker required gate timeout") + WORKER_DELIVERY_MARGIN_MS),
 		},
-	});
-}
-
-export function createPlanningReviewLaunch(
-	resolveLaunch: RoleLaunchResolver,
-	role: Role,
-	mainWorktree: string,
-): WorkerLaunch {
-	return resolveLaunch({
-		role,
-		taskId: AUTO_DAG_TASK_IDS.review,
-		extensions: [WORKER_EXTENSION_PATH],
-		tools: [PLANNING_REVIEW_TOOL],
-		env: { PI_AUTO_DAG_PLANNING_ROOT: nonEmptyString(mainWorktree, "planning reviewer main worktree") },
 	});
 }
 
@@ -275,11 +258,6 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 			environment.PI_AUTO_DAG_ISSUE_ID,
 			environment.PI_AUTO_DAG_MAIN_PANE,
 		];
-		if (environment.PI_AUTO_DAG_PLANNING_ROOT !== undefined) {
-			if (runWorkerValues.some((value) => value !== undefined)) throw new Error("Planning reviewer cannot also be a run worker");
-			registerPlanningReviewTool(pi, nonEmptyString(environment.PI_AUTO_DAG_PLANNING_ROOT, "PI_AUTO_DAG_PLANNING_ROOT"));
-			return;
-		}
 		if (runWorkerValues.every((value) => value === undefined)) return;
 		const worker = workerEnvironment(environment);
 		const runner = options.runner ?? runCommand;
@@ -310,21 +288,6 @@ export function createWorkerExtension(options: WorkerExtensionOptions = {}) {
 		});
 		for (const type of worker.events) registerWorkerTool(pi, worker, type, runner, cwd, () => turn, options);
 	};
-}
-
-function registerPlanningReviewTool(pi: ExtensionAPI, mainWorktree: string): void {
-	pi.registerTool(defineTool({
-		name: PLANNING_REVIEW_TOOL,
-		label: "Submit planning review",
-		description: "Record PASS for exact current draft after independent semantic review. Call only when no material blockers remain.",
-		parameters: Type.Object({}),
-		async execute() {
-			return withFileMutationQueue(planningReviewPath(mainWorktree), async () => {
-				const pass = await writePlanningReviewPass(mainWorktree);
-				return { content: [{ type: "text", text: `Recorded reviewer PASS for ${pass.graph_id} at ${pass.graph_hash}.` }], details: pass, terminate: true };
-			});
-		},
-	}));
 }
 
 function registerWorkerTool(
@@ -373,8 +336,6 @@ function eventDefinition(type: WorkerEvent): {
 			return { label: "Request review", description: "Request reviewer dispatch for current worktree HEAD.", parameters: Type.Object({ summary: Type.Optional(Type.String()) }), payload: (params) => params.summary === undefined ? {} : { summary: params.summary } };
 		case "submit_review":
 			return { label: "Submit review", description: "Submit independent reviewer verdict and findings.", parameters: Type.Object({ verdict: Type.Union([Type.Literal("approved"), Type.Literal("changes_requested"), Type.Literal("blocked")]), findings: Type.Array(Type.String()) }), payload: (params) => ({ verdict: params.verdict, findings: params.findings }) };
-		case "submit_health":
-			return { label: "Submit health", description: "Submit PR-health summary and evidence.", parameters: Type.Object({ summary: Type.String(), actionable: Type.Boolean(), thread_ids: Type.Optional(Type.Array(Type.String())), checks: Type.Optional(Type.Array(Type.Object({ name: Type.String(), link: Type.Optional(Type.String()), output: Type.Optional(Type.String()) }))) }), payload: (params) => ({ summary: params.summary, actionable: params.actionable, ...(params.thread_ids === undefined ? {} : { thread_ids: params.thread_ids }), ...(params.checks === undefined ? {} : { checks: params.checks }) }) };
 		case "block_task":
 			return { label: "Block task", description: "Report blocker for current task.", parameters: Type.Object({ reason: Type.String() }), payload: (params) => ({ reason: params.reason }) };
 	}

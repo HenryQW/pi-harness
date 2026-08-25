@@ -1,7 +1,7 @@
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
 import { findManagedSubagentTab, retireManagedSubagentTab } from "@henryqw/pi-subagent";
 import { cleanupFinalRepair, resumeFinalRepair } from "./final-repair.ts";
-import { executionIssues } from "./graph.ts";
+import { executionIssues, FINAL_CHECK_ID } from "./graph.ts";
 import {
 	assertTaskBranch,
 	childBranch,
@@ -18,13 +18,12 @@ import {
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, deleteExpectedBranch, findAppliedCherryPick, readCurrentBranch, retireChildWorktree } from "./git.ts";
 import type { CleanupBlock, LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
-import { cleanupPrHealth, resumePrHealth } from "./pr-health.ts";
 import { acceptPrLifecycleEnvelope, advancePrLifecycle } from "./pr-lifecycle.ts";
 import { hasAcceptedWorkerEvent, issueById, readRunState, recordAcceptedWorkerEvent, replaceTask, task, type Uuid } from "./state.ts";
 import { actionTicketPath, assertActiveActionTicket, eventReceiptPath, readWorkerReceipt, rejectWorkerEnvelope, rotateRejectedActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "./review-ticket.ts";
 import { WORKER_ROLE_EVENTS, workerAgentName, workerHost, workerHostOptions, type RoleLaunchResolver, type WorkerEvent, type WorkerRole } from "./worker.ts";
 import { hasReviewFindings, saveRunState as save, timestamp } from "./worker-protocol.ts";
-import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
+import { exactKeys, nonEmptyString, object, oneOf, positiveInteger, stringArray } from "./validate.ts";
 
 export interface OrchestrationOptions {
 	runner: CommandRunner;
@@ -38,10 +37,9 @@ type CleanupOperation = CleanupBlock["operation"];
 
 /** A wave is frozen before work starts; only completed integration opens another one. */
 export function deriveReadyIssueIds(state: RunState): string[] {
-	return executionIssues(state.graph)
-		.filter((issue) => issue.role === "implementation")
+	return state.graph.issues
 		.filter((issue) => task(state, issue.id).status === "pending")
-		.filter((issue) => issue.blocked_by.every((id) => task(state, id).status === "completed"))
+		.filter((issue) => issue.depends_on.every((id) => task(state, id).status === "completed"))
 		.map((issue) => issue.id)
 		.sort();
 }
@@ -51,6 +49,7 @@ export async function initializeOrchestration(
 	mainPane: string,
 	options: OrchestrationOptions,
 ): Promise<RunState> {
+	if (state.phase !== "execution") throw new Error(`Cannot initialize Auto DAG orchestration from ${state.phase}`);
 	const pane = nonEmptyString(mainPane, "main Herdr pane");
 	if (state.main_pane !== pane) throw new Error("Run state main Herdr pane does not match start pane");
 	return await advanceRun(state, options);
@@ -93,7 +92,7 @@ export async function preflightRunEnvelope(
 	if (!accepted) {
 		try {
 			await assertActiveActionTicket(
-				actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.role === "final_check" ? "lifecycle" : "implementation", envelope.role),
+				actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.id === FINAL_CHECK_ID ? "lifecycle" : "implementation", envelope.role),
 				envelope,
 			);
 		} catch (error) {
@@ -137,9 +136,14 @@ export async function resumeRun(
 	}
 	const preflight = workerEnvelope ? await preflightRunEnvelope(state, workerEnvelope, options) : undefined;
 	state = await resumeFinalRepair(state, options);
-	if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 	const conflictedIssueId = await abortOwnedCherryPick(state, options);
 	state = await recoverAppliedIntegration(state, options);
+	if (state.phase === "completed") {
+		// A retained completed run only finishes terminal cleanup; it never revalidates its PR.
+		state = await retryCleanup(state, options);
+		if (workerEnvelope) await writeWorkerReceipt(preflight!.receiptPath, { event_id: workerEnvelope.event_id, status: "accepted" }, options.uuid);
+		return state;
+	}
 	const config = await assertRunBoundary(state, options.runner);
 	if (conflictedIssueId) {
 		const { block_reason: _blockReason, ...recovered } = state;
@@ -185,7 +189,7 @@ async function rotateEnvelopeActionTicket(state: RunState, envelope: WorkerEnvel
 	const issue = executionIssues(state.graph).find((candidate) => candidate.id === envelope.issue_id);
 	if (!issue) return;
 	await rotateRejectedActionTicket(
-		actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.role === "final_check" ? "lifecycle" : "implementation", envelope.role),
+		actionTicketPath(state.main_worktree, state.run_id, issue.id, issue.id === FINAL_CHECK_ID ? "lifecycle" : "implementation", envelope.role),
 		envelope.event_id,
 		state.main_worktree,
 		state.run_id,
@@ -198,20 +202,22 @@ export async function abortRun(state: RunState, options: OrchestrationOptions): 
 	if (await integrationBranchIsRecorded(state, options)) {
 		try {
 			state = await resumeFinalRepair(state, options);
-			if (state.health || state.health_fast_forward_intent) state = await resumePrHealth(state, options);
 			await abortOwnedCherryPick(state, options);
 			state = await recoverAppliedIntegration(state, options);
 		} catch (error) {
 			if (await integrationBranchIsRecorded(state, options)) throw error;
 		}
 	}
-	const next = await save({ ...state, phase: "aborted" }, options);
-	return await cleanupRun(next, options);
+	const { abort_cleanup_complete: _abortCleanupComplete, ...pendingCleanup } = state;
+	const next = await save({ ...pendingCleanup, phase: "aborted" }, options);
+	const cleaned = await cleanupRun(next, options);
+	return cleaned.cleanup_blocks?.length
+		? cleaned
+		: await save({ ...cleaned, abort_cleanup_complete: true }, options);
 }
 
 export async function cleanupRun(state: RunState, options: OrchestrationOptions): Promise<RunState> {
 	state = await cleanupFinalRepair(state, options);
-	state = await cleanupPrHealth(state, options);
 	for (const issue of executionIssues(state.graph)) {
 		state = await cleanupTask(state, issue.id, options);
 	}
@@ -220,7 +226,7 @@ export async function cleanupRun(state: RunState, options: OrchestrationOptions)
 
 export function parseWorkerEnvelope(value: unknown): WorkerEnvelope {
 	const input = object(value, "worker envelope");
-	const type = oneOf(input.type, ["request_review", "submit_review", "submit_health", "block_task"] as const, "worker envelope type");
+	const type = oneOf(input.type, ["request_review", "submit_review", "block_task"] as const, "worker envelope type");
 	const keys = ["version", "type", "run_id", "issue_id", "role", "event_id", "attempt", "review_round", "receipt_path", "payload"];
 	exactKeys(input, type === "submit_review" ? [...keys, "review_id"] : type === "request_review" ? [...keys, "commit"] : keys, "worker envelope");
 	if (input.version !== 1) throw new Error(`Unsupported worker envelope version: ${String(input.version)}`);
@@ -307,15 +313,13 @@ async function acceptEnvelope(
 ): Promise<RunState> {
 	if (envelope.run_id !== state.run_id) throw new Error(`Worker event belongs to another run: ${envelope.run_id}`);
 	const issue = issueById(state, envelope.issue_id);
-	if (issue.role === "final_check") return await acceptPrLifecycleEnvelope(state, envelope, config, options);
+	if (issue.id === FINAL_CHECK_ID) return await acceptPrLifecycleEnvelope(state, envelope, config, options);
 
 	switch (envelope.type) {
 		case "request_review":
 			return await requestReview(state, issue, envelope, config, options);
 		case "submit_review":
 			return await submitReview(state, issue, envelope, config, options);
-		case "submit_health":
-			throw new Error(`Health event is not valid for implementation issue ${issue.id}`);
 		case "block_task":
 			return await blockWorkerTask(state, issue.id, envelope, options);
 	}
@@ -649,7 +653,8 @@ async function recordCleanupBlock(
 	return await save({
 		...state,
 		cleanup_blocks: blocks,
-		...(state.phase === "aborted" ? {} : { phase: "blocked", block_reason: `Cleanup blocked for ${issueId}: ${reason}` }),
+		// Terminal completion survives a failed cleanup so a later resume retries cleanup instead of revalidating its PR.
+		...(state.phase === "aborted" || state.phase === "completed" ? {} : { phase: "blocked", block_reason: `Cleanup blocked for ${issueId}: ${reason}` }),
 	}, options);
 }
 
@@ -687,7 +692,7 @@ async function blockLatestRun(state: RunState, reason: string, options: Orchestr
 
 function implementationIssue(state: RunState, issueId: string): LocalIssue {
 	const issue = issueById(state, issueId);
-	if (issue.role !== "implementation" || !issue.profile) throw new Error(`Local Issue ${issueId} is not an implementation task`);
+	if (issue.id === FINAL_CHECK_ID) throw new Error(`Local Issue ${issueId} is not an implementation task`);
 	return issue;
 }
 
@@ -718,15 +723,6 @@ function parseEnvelopePayload(type: WorkerEvent, value: unknown): Record<string,
 				throw new Error("Non-approval review verdict requires findings");
 			}
 			return { verdict, findings };
-		case "submit_health":
-			only(["summary", "actionable", "thread_ids", "checks"]);
-			if (typeof input.actionable !== "boolean") throw new Error("submit_health actionable must be a boolean");
-			return {
-				summary: nonEmptyString(input.summary, "submit_health summary"),
-				actionable: input.actionable,
-				...(input.thread_ids === undefined ? {} : { thread_ids: stringArray(input.thread_ids, "submit_health thread_ids") }),
-				...(input.checks === undefined ? {} : { checks: array(input.checks, "submit_health checks") }),
-			};
 		case "block_task":
 			only(["reason"]);
 			return { reason: nonEmptyString(input.reason, "block_task reason") };

@@ -21,9 +21,7 @@ export interface GateOutputFiles {
 	stderr: string;
 }
 
-export type GateEvidenceTarget =
-	| { kind: "task"; issue_id: string }
-	| { kind: "health"; issue_id: string };
+export type GateEvidenceTarget = { kind: "task"; issue_id: string };
 
 export interface RequiredGateExecution {
 	command: string;
@@ -598,7 +596,7 @@ async function readGateProcess(path: string): Promise<GateProcessRecord | undefi
 function readGateTarget(value: unknown): GateEvidenceTarget {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Required gate evidence target must be an object");
 	const input = value as Record<string, unknown>;
-	if (!["task", "health"].includes(String(input.kind))) throw new Error("Required gate evidence target kind is invalid");
+	if (input.kind !== "task") throw new Error("Required gate evidence target kind is invalid");
 	if (typeof input.issue_id !== "string" || !input.issue_id) throw new Error("Required gate evidence target issue ID must be a non-empty string");
 	if (Object.keys(input).some((key) => key !== "kind" && key !== "issue_id")) throw new Error("Required gate evidence target has unknown fields");
 	return input as unknown as GateEvidenceTarget;

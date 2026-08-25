@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Role } from "@henryqw/pi-subagent";
 import type { RoleLaunchResolver } from "../../src/worker.ts";
 
-export const TEST_ROLE_NAMES = ["coder", "backend", "frontend", "reviewer"] as const;
+export const TEST_ROLE_NAMES = ["implementer", "reviewer"] as const;
 
 const codingTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search"];
 
@@ -31,20 +31,6 @@ export async function createTestRoles(agentDir: string): Promise<void> {
 		role.systemPrompt,
 		"",
 	].join("\n"))));
-}
-
-export function testRoleConfig(options: {
-	maxParallel?: number;
-	maxReviews?: number;
-} = {}) {
-	return {
-		version: 4,
-		implementation_roles: ["coder", "backend", "frontend"],
-		reviewer_role: "reviewer",
-		repair_role: "coder",
-		...(options.maxParallel === undefined ? {} : { max_parallel_tasks: options.maxParallel }),
-		...(options.maxReviews === undefined ? {} : { max_review_rounds: options.maxReviews }),
-	};
 }
 
 export const testLaunchResolver: RoleLaunchResolver = (input) => ({

@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { RUN_STATE_VERSION } from "../src/model.ts";
+import { ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import { createWorkerExtension, WORKER_TOOLS, workerEnvironment } from "../src/worker.ts";
 import { ensureActionTicket, readActionTicket, type ActionTicket, writeWorkerReceipt } from "../src/review-ticket.ts";
 
@@ -405,4 +407,21 @@ test("consumed action tickets are replaced on the same logical action", async (t
 
 test("worker environment requires action ticket", () => {
 	assert.throws(() => workerEnvironment(environment("")), /action ticket/);
+});
+
+test("tool surfaces match current v5 run-state contracts", () => {
+	assert.equal(RUN_STATE_VERSION, 5);
+	const workerTools = Object.values(WORKER_TOOLS);
+	for (const forbidden of ["planning", "submit_health", "approve", "start", "health"]) {
+		assert.equal(workerTools.some((name) => name.includes(forbidden)), false);
+	}
+	assert.deepEqual(Object.values(ORCHESTRATOR_TOOLS), [
+		"auto_dag_execute",
+		"auto_dag_status",
+		"auto_dag_resume",
+		"auto_dag_retry_gate",
+		"auto_dag_resolve",
+		"auto_dag_abort",
+		"auto_dag_acknowledge",
+	]);
 });

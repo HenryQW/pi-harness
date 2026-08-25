@@ -163,7 +163,7 @@ export function retryableFinalGate(state: RunState): { issue: LocalIssue; eviden
 	if (current.repair_issue_id && current.repair_base && current.repair_attempt) {
 		throw new Error("Infrastructure retry cannot run while Final Check repair is active");
 	}
-	if (executionIssues(state.graph).some((candidate) => candidate.role === "implementation" && task(state, candidate.id).status !== "completed")) {
+	if (state.graph.issues.some((candidate) => task(state, candidate.id).status !== "completed")) {
 		throw new Error("Infrastructure retry requires every implementation Local Issue to be completed");
 	}
 	const evidence = recordedGateEvidence(current, commit);
