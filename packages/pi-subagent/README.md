@@ -53,6 +53,19 @@ Each delegation resolves its own user Role, resources, route, and optional workt
 
 See [Orchestration, isolation, and the public API](./docs/orchestration.md) for the complete contract and JavaScript composition examples.
 
+## Config
+
+`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts:
+
+```json
+{
+  "maxSubagents": 5,
+  "timeout": { "idleMinutes": 10, "maxMinutes": 30 }
+}
+```
+
+Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides the configured concurrency for the session.
+
 ## Roles
 
 Roles are user-owned Markdown files in `~/.pi/agent/config/pi-subagent/`. This repository includes inert samples:
@@ -72,19 +85,6 @@ cp packages/pi-subagent/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
 The package never installs or writes Role configuration. Sample names are not built-ins; after copying, edit or replace them as your own Roles.
 
 A Role owns its base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Ambient extension and Skill discovery is disabled in children. With neither Role tools nor caller tools, Pi defaults remain; caller tools with omitted Role tools snapshot Main's effective active built-ins and install the child policy. Loaded Role/caller extension tools still activate, parent-only tools stay excluded, and unavailable named Skills warn and skip.
-
-## Runtime configuration
-
-`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts:
-
-```json
-{
-  "maxSubagents": 5,
-  "timeout": { "idleMinutes": 10, "maxMinutes": 30 }
-}
-```
-
-Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides the configured concurrency for the session.
 
 ## Library API
 
