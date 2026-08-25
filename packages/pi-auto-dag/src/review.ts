@@ -51,12 +51,10 @@ export async function recordGateExecution(
 		execution.handoff.target.kind !== target.kind
 		|| execution.handoff.target.issue_id !== target.issue_id
 	)) throw new Error("Required gate handoff evidence target changed before persistence");
-	if (target.kind === "task" && !state.tasks[target.issue_id]) throw new Error(`Required gate target task is missing: ${target.issue_id}`);
-	if (target.kind === "health" && !state.health) throw new Error("Required gate target health state is missing");
+	if (target.kind !== "task") throw new Error("Required gate target must be a Run Task");
+	if (!state.tasks[target.issue_id]) throw new Error(`Required gate target task is missing: ${target.issue_id}`);
 	const evidence = await persistGateOutput(state, target.issue_id, execution, uuid);
-	const next = target.kind === "task"
-		? replaceTask(state, target.issue_id, { ...state.tasks[target.issue_id], ...gateEvidenceRecord(evidence) })
-		: { ...state, health: { ...state.health!, ...gateEvidenceRecord(evidence) } };
+	const next = replaceTask(state, target.issue_id, { ...state.tasks[target.issue_id], ...gateEvidenceRecord(evidence) });
 	await writeRunState(state.main_worktree, next, uuid);
 	await acknowledgeRequiredGate(requiredGateProcessPath(state.main_worktree, state.run_id), execution);
 	return next;

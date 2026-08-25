@@ -7,7 +7,7 @@ import type {
 	DeliveryIssue,
 	LocalIssue,
 } from "./model.ts";
-import { array, exactKeys, nonEmptyString, object, oneOf, stringArray } from "./validate.ts";
+import { array, exactKeys, nonEmptyString, object, stringArray } from "./validate.ts";
 
 const ID = /^[a-z](?:[a-z0-9]*)(?:-[a-z0-9]+)*$/;
 export const FINAL_CHECK_ID = "final-check";
@@ -18,9 +18,8 @@ export function deliveryGraphPath(mainWorktree: string): string {
 
 export function parseDeliveryGraph(value: unknown): DeliveryGraph {
 	const input = object(value, "Delivery Graph");
-	exactKeys(input, ["status", "id", "goal", "constraints", "non_goals", "issues", "final_check"], "Delivery Graph");
+	exactKeys(input, ["id", "goal", "constraints", "non_goals", "issues", "final_check"], "Delivery Graph");
 	const graph: DeliveryGraph = {
-		status: oneOf(input.status, ["draft", "approved"] as const, "Delivery Graph status"),
 		id: parseId(input.id, "Delivery Graph id"),
 		goal: nonEmptyString(input.goal, "Delivery Graph goal"),
 		constraints: stringArray(input.constraints, "Delivery Graph constraints"),
@@ -99,8 +98,6 @@ export function executionIssues(graph: DeliveryGraph): LocalIssue[] {
 		...graph.issues.map((issue): LocalIssue => ({
 			id: issue.id,
 			title: issue.title,
-			role: "implementation",
-			profile: issue.profile,
 			purpose: issue.objective,
 			acceptance: [...issue.acceptance],
 			testing: issue.testing,
@@ -109,8 +106,6 @@ export function executionIssues(graph: DeliveryGraph): LocalIssue[] {
 		{
 			id: FINAL_CHECK_ID,
 			title: "Final check",
-			role: "final_check",
-			profile: null,
 			purpose: "Verify integrated delivery.",
 			acceptance: [...graph.final_check.acceptance],
 			testing: graph.final_check.testing,
@@ -122,11 +117,10 @@ export function executionIssues(graph: DeliveryGraph): LocalIssue[] {
 function parseIssue(value: unknown, index: number): DeliveryIssue {
 	const label = `Delivery Graph issues[${index}]`;
 	const input = object(value, label);
-	exactKeys(input, ["id", "title", "profile", "objective", "acceptance", "testing", "depends_on"], label);
+	exactKeys(input, ["id", "title", "objective", "acceptance", "testing", "depends_on"], label);
 	return {
 		id: parseId(input.id, `${label}.id`),
 		title: nonEmptyString(input.title, `${label}.title`),
-		profile: nonEmptyString(input.profile, `${label}.profile`),
 		objective: nonEmptyString(input.objective, `${label}.objective`),
 		acceptance: nonEmptyCriteria(input.acceptance, `${label}.acceptance`),
 		testing: nonEmptyString(input.testing, `${label}.testing`),
@@ -154,15 +148,6 @@ function parseId(value: unknown, label: string): string {
 	const id = nonEmptyString(value, label);
 	if (!ID.test(id)) throw new Error(`${label} must be a path-safe lowercase-hyphen ID`);
 	return id;
-}
-
-export function assertDeliveryGraphRoles(graph: DeliveryGraph, implementationRoles: readonly string[]): void {
-	const allowed = new Set(implementationRoles);
-	for (const issue of graph.issues) {
-		if (!allowed.has(issue.profile)) {
-			throw new Error(`Delivery Graph issues profile must be one of: ${implementationRoles.join(", ")}; received ${issue.profile}`);
-		}
-	}
 }
 
 function validateGraph(graph: DeliveryGraph): void {

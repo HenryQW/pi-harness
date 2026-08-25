@@ -1,4 +1,4 @@
-import { configuredRole } from "./config.ts";
+import { loadRoles, type Role } from "@henryqw/pi-subagent";
 import { assertAttachedBranch, verifySingleCommit } from "./git.ts";
 import { executionIssues } from "./graph.ts";
 import type { CommandRunner } from "./command.ts";
@@ -38,25 +38,29 @@ export async function verifyOneCommit(
 
 export function lifecycleWorkerLaunch(
 	state: RunState,
-	issue: LocalIssue,
 	issueId: string,
 	config: ProjectConfig,
 	role: WorkerRole,
 	options: { resolveLaunch: RoleLaunchResolver },
 	ticketScope: ReviewTicketScope,
 ): WorkerLaunch {
-	const roleName = role === "reviewer" ? config.reviewer_role : nonEmptyString(issue.profile, `Local Issue ${issue.id} profile`);
 	return createWorkerLaunch({
 		resolveLaunch: options.resolveLaunch,
 		workerRole: role,
-		role: configuredRole(config, roleName),
-		events: WORKER_ROLE_EVENTS[role].filter((event) => ticketScope === "pr_health" || event !== "submit_health"),
+		role: conventionalRole(role),
+		events: WORKER_ROLE_EVENTS[role],
 		run_id: state.run_id,
 		issue_id: issueId,
 		main_pane: nonEmptyString(state.main_pane, "recorded main Herdr pane"),
 		action_ticket: actionTicketPath(state.main_worktree, state.run_id, issueId, ticketScope, role),
 		required_gate_timeout_ms: config.required_gate_timeout_ms,
 	});
+}
+
+function conventionalRole(role: WorkerRole): Role {
+	const match = loadRoles().find((candidate) => candidate.name === role);
+	if (!match) throw new Error(`Configured Subagent Role is unavailable: ${role}`);
+	return match;
 }
 
 export function lifecycleReviewId(state: RunState, issue: LocalIssue, current: RunTaskState, kind: ReviewKind): string {

@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { runDirectory, type Uuid } from "./state.ts";
 import { exactKeys, nonEmptyString, object, oneOf, positiveInteger } from "./validate.ts";
 
-export type ReviewKind = "implementation" | "final_check" | "final_repair" | "pr_health_repair";
-export type ReviewTicketScope = "implementation" | "lifecycle" | "pr_health";
+export type ReviewKind = "implementation" | "final_check" | "final_repair";
+export type ReviewTicketScope = "implementation" | "lifecycle";
 export type ActionTicketRole = "implementer" | "reviewer";
 
 export interface ReviewIdentity {

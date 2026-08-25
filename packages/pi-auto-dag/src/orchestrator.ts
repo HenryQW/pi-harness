@@ -1,26 +1,26 @@
 import { Type } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { listManagedSubagents, resolveRoleLaunch, type ResolveRoleLaunchInput, type ResolvedRoleLaunch } from "@henryqw/pi-subagent";
+import { listManagedSubagents, loadRoles, resolveRoleLaunch, type ResolveRoleLaunchInput, type ResolvedRoleLaunch } from "@henryqw/pi-subagent";
 import { errorMessage, runCommand, type CommandRunner } from "./command.ts";
 import { isRetryableFinalGate, requiredGateCommandAmendmentRequest, retryableFinalGate } from "./final-gate.ts";
-import { executionIssues } from "./graph.ts";
+import { deriveDependencyWaves, FINAL_CHECK_ID, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
+import { assertSameLocalRunBoundary, preflightLocalRun, type LocalRunPreflight } from "./intake.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "./lifecycle.ts";
 import { actionTicketPath, readActionTicket, readWorkerReceipt, type ReviewTicketScope } from "./review-ticket.ts";
-import type { RunState, WorkerEnvelope } from "./model.ts";
-import type { WorkerRole } from "./worker.ts";
+import { runCleanupIsClear } from "./state.ts";
+import type { DeliveryGraph, ProjectConfig, RunState, WorkerEnvelope } from "./model.ts";
 import { parseWorkerEnvelope } from "./orchestration.ts";
-import { registerPlanning } from "./planning.ts";
 import { nonEmptyString } from "./validate.ts";
-import { workerHost, workerHostOptions, type RoleLaunchResolver } from "./worker.ts";
+import { createWorkerLaunch, workerHost, workerHostOptions, type RoleLaunchResolver, type WorkerRole } from "./worker.ts";
 
 export const ORCHESTRATOR_TOOLS = {
-	start: "auto_dag_start",
+	execute: "auto_dag_execute",
 	status: "auto_dag_status",
 	resume: "auto_dag_resume",
 	retryGate: "auto_dag_retry_gate",
 	resolve: "auto_dag_resolve",
 	abort: "auto_dag_abort",
-	health: "auto_dag_health",
+	acknowledge: "auto_dag_acknowledge",
 } as const;
 
 export interface OrchestratorExtensionOptions {
@@ -30,6 +30,26 @@ export interface OrchestratorExtensionOptions {
 
 const WORKER_WIDGET = "auto-dag-workers";
 const ORCHESTRATOR_TOOL_NAMES = new Set<string>(Object.values(ORCHESTRATOR_TOOLS));
+const DELIVERY_GRAPH_PARAMETERS = Type.Object({
+	graph: Type.Object({
+		id: Type.String({ minLength: 1, pattern: "^[a-z](?:[a-z0-9]*)(?:-[a-z0-9]+)*$" }),
+		goal: Type.String({ minLength: 1 }),
+		constraints: Type.Array(Type.String({ minLength: 1 })),
+		non_goals: Type.Array(Type.String({ minLength: 1 })),
+		issues: Type.Array(Type.Object({
+			id: Type.String({ minLength: 1, pattern: "^[a-z](?:[a-z0-9]*)(?:-[a-z0-9]+)*$" }),
+			title: Type.String({ minLength: 1 }),
+			objective: Type.String({ minLength: 1 }),
+			acceptance: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+			testing: Type.String({ minLength: 1 }),
+			depends_on: Type.Array(Type.String({ minLength: 1 })),
+		}, { additionalProperties: false }), { minItems: 1 }),
+		final_check: Type.Object({
+			acceptance: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+			testing: Type.String({ minLength: 1 }),
+		}, { additionalProperties: false }),
+	}, { additionalProperties: false }),
+}, { additionalProperties: false });
 
 function quotedConfirmationValue(value: string): string {
 	return JSON.stringify(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (character) => `\\u{${character.codePointAt(0)!.toString(16)}}`);
@@ -55,7 +75,6 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			mainPane: () => process.env.HERDR_PANE_ID,
 			resolveLaunch,
 		});
-		registerPlanning(pi, runner, resolveFor);
 		let state: RunState | undefined;
 		let liveAgents: Map<string, string> | undefined;
 		let pendingHandoffs = new Set<string>();
@@ -65,14 +84,15 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		let herdrTimer: ReturnType<typeof setInterval> | undefined;
 		let readingHerdr = false;
 		let herdrGeneration = 0;
+		let notificationFlush: Promise<void> = Promise.resolve();
 		const syncActiveTools = (): void => {
 			const autoDagTools = state
 				? [ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume,
+					...(state.notifications.some((notification) => !notification.delivered_at) ? [ORCHESTRATOR_TOOLS.acknowledge] : []),
 					...(isRetryableFinalGate(state) ? [ORCHESTRATOR_TOOLS.retryGate] : []),
-					ORCHESTRATOR_TOOLS.abort,
-					...(hasActivePhaseBlock(state) ? [ORCHESTRATOR_TOOLS.resolve] : []),
-					...(state.health ? [ORCHESTRATOR_TOOLS.health] : [])]
-				: [ORCHESTRATOR_TOOLS.start, ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.health];
+					...(["aborted", "completed"].includes(state.phase) ? [] : [ORCHESTRATOR_TOOLS.abort]),
+					...(hasActivePhaseBlock(state) ? [ORCHESTRATOR_TOOLS.resolve] : [])]
+				: [ORCHESTRATOR_TOOLS.execute, ORCHESTRATOR_TOOLS.status];
 			const active = pi.getActiveTools();
 			const next = [...active.filter((name) => !ORCHESTRATOR_TOOL_NAMES.has(name)), ...autoDagTools];
 			if (active.length !== next.length || active.some((name, index) => name !== next[index])) pi.setActiveTools(next);
@@ -91,6 +111,60 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			syncActiveTools();
 			pendingHandoffs = state ? await pendingWorkerHandoffs(state) : new Set();
 			renderWorkerWidget(ctx);
+		};
+		const flushNotificationsNow = async (ctx: ExtensionContext): Promise<void> => {
+			liveContext = ctx;
+			let current: RunState | undefined;
+			try {
+				current = await lifecycle.status(ctx.cwd);
+			} catch (error) {
+				if (errorMessage(error) !== "No active pi-auto-dag run") throw error;
+			}
+			if (!current) {
+				state = undefined;
+				syncActiveTools();
+				pendingHandoffs = new Set();
+				renderWorkerWidget(ctx);
+				return;
+			}
+			const pendingNotifications = current.notifications.filter((candidate) => !candidate.delivered_at);
+			if (!pendingNotifications.length && ["aborted", "completed"].includes(current.phase)) {
+				current = await lifecycle.settleTerminal(ctx.cwd);
+			}
+			// ponytail: sendUserMessage is fire-and-forget; entries stay pending and are redelivered
+			// until the consumer acknowledges the exact event via auto_dag_acknowledge.
+			for (const notification of pendingNotifications) {
+				await pi.sendUserMessage(JSON.stringify({
+					type: "auto_dag_notification",
+					event_id: notification.event_id,
+					kind: notification.kind,
+					run_id: current.run_id,
+					payload: notification.payload,
+				}), { deliverAs: "followUp" });
+			}
+			state = runRemainsActive(current) ? current : undefined;
+			syncActiveTools();
+			pendingHandoffs = state ? await pendingWorkerHandoffs(state) : new Set();
+			renderWorkerWidget(ctx);
+		};
+		const flushNotifications = async (ctx: ExtensionContext): Promise<void> => {
+			const next = notificationFlush.then(async () => await flushNotificationsNow(ctx));
+			notificationFlush = next.catch(() => {});
+			try {
+				await next;
+			} catch (error) {
+				ctx.ui.notify(`Auto DAG notification delivery failed: ${errorMessage(error)}`, "warning");
+			}
+		};
+		const lifecycleResult = async (
+			ctx: ExtensionContext,
+			action: () => Promise<RunState | undefined>,
+		) => {
+			try {
+				return stateResult(await action());
+			} finally {
+				await flushNotifications(ctx);
+			}
 		};
 		const refreshHerdr = async (ctx: ExtensionContext): Promise<void> => {
 			if (readingHerdr) return;
@@ -171,6 +245,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		});
 		pi.on("session_start", async (_event, ctx) => {
 			await refreshWorkerWidget(ctx);
+			await flushNotifications(ctx);
 			if (ctx.mode === "tui") {
 				await refreshHerdr(ctx);
 				renderingTimer = setInterval(() => { if (widgetVisible) renderWorkerWidget(ctx); }, 1000);
@@ -186,6 +261,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 		pi.on("tool_execution_end", async (event, ctx) => {
 			if (!ORCHESTRATOR_TOOL_NAMES.has(event.toolName)) return;
 			await refreshWorkerWidget(ctx);
+			await flushNotifications(ctx);
 			if (ctx.mode === "tui" && widgetVisible) await refreshHerdr(ctx);
 		});
 		pi.on("input", async (event, ctx) => {
@@ -203,18 +279,36 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				ctx.ui.notify(stateSummary(result), "info");
 			} catch (error) {
 				ctx.ui.notify(`Auto DAG worker event rejected: ${errorMessage(error)}`, "error");
+			} finally {
+				if (envelope) await flushNotifications(ctx);
 			}
 			return { action: "handled" as const };
 		});
 
 		pi.registerTool(defineTool({
-			name: ORCHESTRATOR_TOOLS.start,
-			label: "Start Auto DAG",
-			description: "Validate the approved local Delivery Graph and start its sole active run.",
-			parameters: Type.Object({ main_pane: Type.Optional(Type.String()) }),
-			async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			name: ORCHESTRATOR_TOOLS.execute,
+			label: "Execute Auto DAG",
+			description: "Confirm and execute one exact Delivery Graph through integration PR creation.",
+			parameters: DELIVERY_GRAPH_PARAMETERS,
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				liveContext = ctx;
-				return stateResult(await lifecycle.start(ctx.cwd, _params.main_pane ?? process.env.HERDR_PANE_ID));
+				if (ctx.mode !== "tui") throw new Error("Auto DAG execution requires interactive TUI mode");
+				const graph = parseDeliveryGraph(params.graph);
+				const mainPane = nonEmptyString(process.env.HERDR_PANE_ID, "main Herdr pane");
+				const boundary = await preflightLocalRun(ctx.cwd, runner);
+				const roles = preflightFixedRoles(ctx, boundary.config, mainPane, resolveFor);
+				const hash = hashDeliveryGraph(graph);
+				const waves = deriveDependencyWaves(graph);
+				const approved = await ctx.ui.confirm(
+					"Execute Auto DAG Delivery Graph?",
+					executionConfirmation(boundary, graph, hash, waves, roles),
+				);
+				if (!approved) return {
+					content: [{ type: "text" as const, text: "Auto DAG execution cancelled." }],
+					details: undefined,
+				};
+				assertSameLocalRunBoundary(boundary, await preflightLocalRun(ctx.cwd, runner));
+				return await lifecycleResult(ctx, async () => await lifecycle.start(graph, boundary, mainPane));
 			},
 		}));
 
@@ -225,7 +319,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			parameters: Type.Object({ run_id: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				liveContext = ctx;
-				return stateResult(await lifecycle.status(ctx.cwd, params.run_id));
+				return await lifecycleResult(ctx, async () => await lifecycle.status(ctx.cwd, params.run_id));
 			},
 		}));
 
@@ -236,7 +330,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			parameters: Type.Object({ envelope: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				liveContext = ctx;
-				return stateResult(await lifecycle.resume(ctx.cwd, params.envelope));
+				return await lifecycleResult(ctx, async () => await lifecycle.resume(ctx.cwd, params.envelope));
 			},
 		}));
 
@@ -253,17 +347,17 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 				if (!candidate) throw new Error("No active pi-auto-dag run");
 				const { evidence } = retryableFinalGate(candidate);
 				const approved = await ctx.ui.confirm("Retry failed Final Check Required Gate?", [
-					`Commit: ${evidence.commit}`,
-					`Command: ${evidence.command}`,
+					`Commit: ${quotedConfirmationValue(evidence.commit)}`,
+					`Command: ${quotedConfirmationValue(evidence.command)}`,
 					`Failed exit: ${evidence.exit_code}`,
-					`Invalidation reason: ${reason}`,
+					`Invalidation reason: ${quotedConfirmationValue(reason)}`,
 					"Old evidence will remain archived. Command and commit cannot be changed.",
 				].join("\n"));
 				if (!approved) return {
 					content: [{ type: "text" as const, text: "Required Gate infrastructure retry cancelled." }],
 					details: candidate,
 				};
-				return stateResult(await lifecycle.retryGate(ctx.cwd, reason, evidence));
+				return await lifecycleResult(ctx, async () => await lifecycle.retryGate(ctx.cwd, reason, evidence));
 			},
 		}));
 
@@ -279,7 +373,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				liveContext = ctx;
 				if (params.replacement_command === undefined) {
-					return stateResult(await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution));
+					return await lifecycleResult(ctx, async () => await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution));
 				}
 				if (ctx.mode !== "tui") throw new Error("Required Gate command amendment requires interactive TUI mode");
 				const current = await lifecycle.status(ctx.cwd);
@@ -294,7 +388,18 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 					`Reason: ${quotedConfirmationValue(params.resolution)}`,
 				].join("\n"));
 				if (!approved) return stateResult(current);
-				return stateResult(await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution, amendment));
+				return await lifecycleResult(ctx, async () => await lifecycle.resolve(ctx.cwd, params.issue_id, params.resolution, amendment));
+			},
+		}));
+
+		pi.registerTool(defineTool({
+			name: ORCHESTRATOR_TOOLS.acknowledge,
+			label: "Acknowledge Auto DAG notification",
+			description: "Idempotently acknowledge one exact Auto DAG notification event after durably handling it; settles a terminal run once every event is acknowledged.",
+			parameters: Type.Object({ event_id: Type.String({ minLength: 1 }) }),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				liveContext = ctx;
+				return await lifecycleResult(ctx, async () => await lifecycle.acknowledgeNotification(ctx.cwd, params.event_id));
 			},
 		}));
 
@@ -305,21 +410,74 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
 			parameters: Type.Object({ reason: Type.Optional(Type.String()) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				liveContext = ctx;
-				return stateResult(await lifecycle.abort(ctx.cwd, params.reason));
-			},
-		}));
-
-		pi.registerTool(defineTool({
-			name: ORCHESTRATOR_TOOLS.health,
-			label: "Auto DAG health",
-			description: "Run explicit health handling for the required retained run ID.",
-			parameters: Type.Object({ run_id: Type.String(), envelope: Type.Optional(Type.String()) }),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				liveContext = ctx;
-				return stateResult(await lifecycle.health(ctx.cwd, params.run_id, params.envelope));
+				return await lifecycleResult(ctx, async () => await lifecycle.abort(ctx.cwd, params.reason));
 			},
 		}));
 	};
+}
+
+interface FixedRoles {
+	implementer: string;
+	reviewer: string;
+}
+
+function preflightFixedRoles(
+	ctx: ExtensionContext,
+	config: ProjectConfig,
+	mainPane: string,
+	resolveFor: (ctx: ExtensionContext, input: ResolveRoleLaunchInput) => ResolvedRoleLaunch,
+): FixedRoles {
+	const registry = loadRoles();
+	const resolve = (roleName: WorkerRole): string => {
+		const role = registry.find((candidate) => candidate.name === roleName);
+		if (!role) throw new Error(`Required Subagent Role is unavailable: ${roleName}`);
+		createWorkerLaunch({
+			resolveLaunch: (input) => resolveFor(ctx, input),
+			workerRole: roleName,
+			role,
+			run_id: "00000000-0000-4000-8000-000000000000",
+			issue_id: roleName === "implementer" ? "preflight-issue" : FINAL_CHECK_ID,
+			main_pane: mainPane,
+			action_ticket: "preflight-action-ticket",
+			required_gate_timeout_ms: config.required_gate_timeout_ms,
+		});
+		return role.name;
+	};
+	return { implementer: resolve("implementer"), reviewer: resolve("reviewer") };
+}
+
+function executionConfirmation(
+	boundary: LocalRunPreflight,
+	graph: DeliveryGraph,
+	hash: string,
+	waves: readonly (readonly string[])[],
+	roles: FixedRoles,
+): string {
+	const issues = new Map(graph.issues.map((issue) => [issue.id, issue]));
+	const lines = [
+		`Repository: ${quotedConfirmationValue(boundary.main_worktree)}`,
+		`Branch: ${quotedConfirmationValue(boundary.branch)}`,
+		`Graph ID: ${quotedConfirmationValue(graph.id)}`,
+		`Goal: ${quotedConfirmationValue(graph.goal)}`,
+		`Graph SHA-256: ${quotedConfirmationValue(hash)}`,
+		`Implementer Role: ${quotedConfirmationValue(roles.implementer)}`,
+		`Reviewer Role: ${quotedConfirmationValue(roles.reviewer)}`,
+	];
+	for (const [index, wave] of waves.entries()) {
+		lines.push(`Wave ${index + 1}:`);
+		for (const issueId of wave) {
+			const issue = issues.get(issueId)!;
+			lines.push(
+				`- Issue ${quotedConfirmationValue(issue.id)}: ${quotedConfirmationValue(issue.title)}`,
+				`  Testing (${quotedConfirmationValue(roles.implementer)}): ${quotedConfirmationValue(issue.testing)}`,
+			);
+		}
+	}
+	lines.push(
+		"Final Check:",
+		`  Testing (${quotedConfirmationValue(roles.reviewer)}): ${quotedConfirmationValue(graph.final_check.testing)}`,
+	);
+	return lines.join("\n");
 }
 
 interface WorkerWidgetEntry {
@@ -366,7 +524,7 @@ function workers(state: RunState): WorkerWidgetEntry[] {
 	for (const [issue, task] of Object.entries(state.tasks)) {
 		if (task.tab_cleanup_done) continue;
 		const role: WorkerRole | undefined = task.status === "blocked" ? task.blocked_role : ["starting", "implementing", "repairing"].includes(task.status) ? "implementer" : ["reviewing", "repair_reviewing"].includes(task.status) ? "reviewer" : undefined;
-		const scope: ReviewTicketScope = executionIssues(state.graph).find((candidate) => candidate.role === "final_check")?.id === issue ? "lifecycle" : "implementation";
+		const scope: ReviewTicketScope = issue === FINAL_CHECK_ID ? "lifecycle" : "implementation";
 		const pane = role === "implementer" ? task.implementer_pane : role === "reviewer" ? task.reviewer_pane : undefined;
 		const activity = task.status === "blocked" ? "blocked" : task.status === "starting" ? "starting" : task.status === "implementing" ? "coding" : task.status === "repairing" ? "repairing" : role === "reviewer" ? "reviewing" : undefined;
 		if (activity && pane && role && task.activity_started_at) active.push({
@@ -380,22 +538,6 @@ function workers(state: RunState): WorkerWidgetEntry[] {
 			reason: task.block_reason,
 		});
 	}
-	const health = state.health;
-	if (health) {
-		const role: WorkerRole | undefined = health.status === "blocked" ? health.blocked_role : health.status === "repairing" ? "implementer" : ["triaging", "reviewing"].includes(health.status) ? "reviewer" : undefined;
-		const pane = role === "implementer" ? health.coder_pane : role === "reviewer" ? health.reviewer_pane : undefined;
-		const activity = health.status === "blocked" ? "blocked" : health.status;
-		if (role && pane && health.activity_started_at) active.push({
-			key: `${state.run_id}:PR health:${activity}:${pane}:${health.activity_started_at}`,
-			issue: "PR health",
-			activity,
-			pane,
-			startedAt: health.activity_started_at,
-			role,
-			scope: "pr_health",
-			reason: health.summary,
-		});
-	}
 	return active;
 }
 
@@ -403,10 +545,7 @@ async function pendingWorkerHandoffs(state: RunState): Promise<Set<string>> {
 	const pending = new Set<string>();
 	for (const worker of workers(state)) {
 		if (worker.activity === "blocked") continue;
-		const issueId = worker.scope === "pr_health"
-			? executionIssues(state.graph).find((candidate) => candidate.role === "final_check")?.id
-			: worker.issue;
-		if (!issueId) continue;
+		const issueId = worker.issue;
 		try {
 			const ticket = await readActionTicket(actionTicketPath(state.main_worktree, state.run_id, issueId, worker.scope, worker.role));
 			const receipt = await readWorkerReceipt(ticket.receipt_path);
@@ -452,6 +591,7 @@ function workerEnvelopeInput(text: string): WorkerEnvelope | undefined {
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const input = value as Record<string, unknown>;
+	if (input.type === "auto_dag_notification") return undefined;
 	if (!["version", "type", "run_id", "issue_id", "role", "event_id", "attempt", "review_round", "receipt_path", "payload"].every((key) => key in input)) return undefined;
 	return parseWorkerEnvelope(input);
 }
@@ -462,7 +602,8 @@ function hasActivePhaseBlock(state: RunState): boolean {
 }
 
 function runRemainsActive(state: RunState): boolean {
-	if (state.phase === "aborted") return Boolean(state.cleanup_blocks?.length);
-	if (state.phase !== "completed") return true;
-	return Boolean(state.health && state.health.status !== "completed");
+	const pendingNotification = state.notifications.some((notification) => !notification.delivered_at);
+	if (state.phase === "completed") return !runCleanupIsClear(state) || pendingNotification;
+	if (state.phase === "aborted") return state.abort_cleanup_complete !== true || pendingNotification;
+	return true;
 }

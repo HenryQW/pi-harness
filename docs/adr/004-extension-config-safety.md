@@ -1,25 +1,20 @@
 # 004. Extension Config Safety
 
 - **Status:** accepted (guidance)
-- **Date:** 2026-08-09 (migrated from Obsidian vault)
+- **Date:** 2026-08-09
 
 ## Context
 
-Pi extension config files under `getAgentDir()/config` are user-owned data that may be malformed or hand-edited. Naive handling can destroy user data at startup or let bad optional config block unrelated use.
+Extension JSON under `getAgentDir()/config` is user-owned, hand-editable, and untrusted. Startup must not destroy malformed data or silently weaken correctness.
 
 ## Decision
 
-Treat extension config as untrusted user-owned data:
-
-- Validate parsed JSON on read.
-- Use explicit defaults for optional config; fail fast for correctness-critical config.
-- Preserve malformed files; never rewrite config during startup. Write only after an explicit user action/command.
-- Do not use fail-soft defaults for correctness-critical orchestration config.
+- Validate reads at the boundary.
+- Preserve malformed files; never rewrite config during startup.
+- Write only after explicit user action.
+- Use explicit defaults only for optional settings; fail fast when invalid config would make execution unsafe.
+- Store a package's sole config at `config/<extension>.json`; if it owns multiple files, store all under `config/<extension>/`.
 
 ## Consequences
 
-Bad optional config does not block unrelated Pi use or get silently destroyed, while mandatory Auto DAG config still fails before unsafe execution.
-
-## Notes
-
-Applies when adding or changing any Pi extension config file under `getAgentDir()/config`. Related files: `packages/pi-auto-compact/extensions/auto-compact.ts`, `packages/pi-auto-dag/src/config.ts`, `packages/pi-herdr-rename/extensions/rename.ts`, `packages/pi-open-in/extensions/open.ts`.
+Bad optional config can be reported without blocking unrelated use, while correctness-critical settings cannot silently fall back.
