@@ -48,9 +48,6 @@ type Result = {
 	writtenEntries?: string[];
 	currentEntries?: string[];
 	matches?: string[];
-	done?: boolean;
-	note?: string;
-	target?: Target;
 };
 
 const PREVIEW_WIDTH = 80;
@@ -66,6 +63,11 @@ function previews(entries: string[]): string[] {
 		chars += PREVIEW_WIDTH;
 	}
 	return shown;
+}
+
+export function usage(current: number, limit: number): string {
+	const pct = limit > 0 ? Math.min(100, Math.floor((current / limit) * 100)) : 0;
+	return `${pct}% — ${current.toLocaleString()}/${limit.toLocaleString()} chars`;
 }
 
 /**
@@ -122,34 +124,26 @@ export class MemoryStore {
 	}
 
 	private usage(target: Target): string {
-		const current = this.charCount(target);
-		const limit = this.limit(target);
-		const pct = limit > 0 ? Math.min(100, Math.floor((current / limit) * 100)) : 0;
-		return `${pct}% — ${current.toLocaleString()}/${limit.toLocaleString()} chars`;
+		return usage(this.charCount(target), this.limit(target));
 	}
 
 	private successResponse(target: Target, message?: string, writtenEntries: string[] = []): Result {
 		this.resetOnSuccess();
 		return {
 			success: true,
-			done: true,
-			target,
 			message,
 			usage: this.usage(target),
 			entryCount: this.entries.get(target)!.length,
 			writtenEntries,
-			note: "Write saved. This update is complete — do not repeat it.",
 		};
 	}
 
-	private consolidationFailure(error: string, extra?: Partial<Result>): Result {
-		const target = extra?.target ?? "memory";
+	private consolidationFailure(error: string, target: Target = "memory", resultUsage?: string): Result {
 		return {
 			success: false,
 			error,
 			currentEntries: previews(this.entries.get(target)!),
-			usage: this.usage(target),
-			...extra,
+			usage: resultUsage ?? this.usage(target),
 		};
 	}
 
@@ -404,7 +398,7 @@ export class MemoryStore {
 					+ `Adding this entry (${text.length} chars) would exceed the limit. Consolidate now: use 'replace' to merge `
 					+ `overlapping entries into shorter ones or 'remove' stale or less important entries (see current_entries below), `
 					+ `then retry this add — all in this turn.`,
-				{ target },
+				target,
 			);
 		}
 
@@ -447,7 +441,7 @@ export class MemoryStore {
 		if (resolved[0] === "missing") {
 			return this.consolidationFailure(
 				`No entry matched '${trimmedOld}'. Check current_entries below and retry with the exact text of the entry you want to replace.`,
-				{ target },
+				target,
 			);
 		}
 		if (resolved[0] === "ambiguous") return MemoryStore.ambiguousError(trimmedOld, resolved[1]);
@@ -463,7 +457,7 @@ export class MemoryStore {
 				`Replacement would put memory at ${newTotal.toLocaleString()}/${this.limit(target).toLocaleString()} chars. `
 					+ `Shorten the new content, or 'remove' other stale or less important entries to make room `
 					+ `(see current_entries below), then retry — all in this turn.`,
-				{ target },
+				target,
 			);
 		}
 
@@ -483,7 +477,7 @@ export class MemoryStore {
 		if (resolved[0] === "missing") {
 			return this.consolidationFailure(
 				`No entry matched '${trimmedOld}'. Check current_entries below and retry with the exact text of the entry you want to remove.`,
-				{ target },
+				target,
 			);
 		}
 		if (resolved[0] === "ambiguous") return MemoryStore.ambiguousError(trimmedOld, resolved[1]);
@@ -512,8 +506,9 @@ export class MemoryStore {
 		if (!(await this.reloadTarget(target))) return this.unreadableAbort(target);
 
 		let working = [...this.entries.get(target)!];
+		const writtenEntries = new Set<string>();
 		const fail = (message: string): Result =>
-			this.consolidationFailure(`${message} No operations were applied (batch is all-or-nothing).`, { target });
+			this.consolidationFailure(`${message} No operations were applied (batch is all-or-nothing).`, target);
 
 		for (let i = 0; i < operations.length; i++) {
 			const op = operations[i] ?? {};
@@ -524,8 +519,9 @@ export class MemoryStore {
 
 			if (action === "add") {
 				if (!content) return fail(`${pos}: content is required.`);
-				if (working.includes(normalize(content))) continue; // idempotent duplicate
-				working.push(normalize(content));
+				writtenEntries.add(content);
+				if (working.includes(content)) continue; // idempotent duplicate
+				working.push(content);
 			} else if (action === "replace") {
 				if (!oldText) return fail(`${pos}: old_text is required.`);
 				if (!content) return fail(`${pos}: content is required (use action='remove' to delete).`);
@@ -533,6 +529,7 @@ export class MemoryStore {
 				if (resolved[0] === "missing") return fail(`${pos}: no entry matched '${oldText}'.`);
 				if (resolved[0] === "ambiguous") return fail(`${pos}: '${oldText}' matched multiple distinct entries -- be more specific.`);
 				working[resolved[0]] = content;
+				writtenEntries.add(content);
 				// A replace can create a duplicate; dedupe order-preserving before later ops/budget.
 				working = [...new Set(working)];
 			} else if (action === "remove") {
@@ -553,16 +550,13 @@ export class MemoryStore {
 				`After applying all ${operations.length} operations, memory would be at ${newTotal.toLocaleString()}/`
 					+ `${this.limit(target).toLocaleString()} chars -- over the limit. Remove or shorten more entries in the same batch `
 					+ `(see current_entries below), then retry.`,
-				{ target, usage: `${current.toLocaleString()}/${this.limit(target).toLocaleString()}` },
+				target,
+				`${current.toLocaleString()}/${this.limit(target).toLocaleString()}`,
 			);
 		}
 
 		this.entries.set(target, working);
 		await this.persist(target);
-		const writtenEntries = [...new Set(operations.flatMap((operation) => {
-			const content = normalize(operation.content ?? operation.new_text ?? "");
-			return (operation.action === "add" || operation.action === "replace") && working.includes(content) ? [content] : [];
-		}))];
-		return this.successResponse(target, `Applied ${operations.length} operation(s).`, writtenEntries);
+		return this.successResponse(target, `Applied ${operations.length} operation(s).`, [...writtenEntries].filter((entry) => working.includes(entry)));
 	}
 }
