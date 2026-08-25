@@ -10,7 +10,7 @@ import type { DeliveryGraph, ProjectConfig, RequiredGateEvidence, RunState, RunT
 import { abortRun, cleanupRun, initializeOrchestration, parseWorkerEnvelope, preflightRunEnvelope, resumeRun, type OrchestrationOptions } from "./orchestration.ts";
 import { WorkerEnvelopeRejectedError } from "./review-ticket.ts";
 import { recordGateExecution } from "./review.ts";
-import { acknowledgeRunNotification, notificationRunId, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, runCleanupIsClear, type Uuid, writeRunState } from "./state.ts";
+import { acknowledgeRunNotification, notificationRunId, readActiveRun, readActiveRunId, readRunState, releaseActiveRun, replaceTask, runCleanupIsClear, withLifecycleLock, type LifecycleLease, type Uuid, writeRunState } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 import { workerHost, workerHostOptions, type RoleLaunchResolver } from "./worker.ts";
 
@@ -34,9 +34,6 @@ export interface CoreLifecycle {
 	settleTerminal(mainWorktree: string): Promise<RunState>;
 }
 
-// ponytail: same-process serialization; add a cross-process lock only if callers span processes.
-const lifecycleMutationTails = new Map<string, Promise<void>>();
-
 export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLifecycle {
 	const runner = options.runner ?? runCommand;
 	const uuid = options.uuid ?? randomUUID;
@@ -49,7 +46,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 	};
 	return {
 		async start(graph, confirmedBoundary, mainPane) {
-			return await withLifecycleMutation(confirmedBoundary.main_worktree, runner, async (root) => {
+			return await withLifecycleMutation(confirmedBoundary.main_worktree, runner, async (root, lifecycleLease) => {
 				const pane = nonEmptyString(mainPane ?? options.mainPane?.(), "main Herdr pane");
 				const workspaceId = await managedSubagentWorkspaceId(root, pane, { execute: runner });
 				const state = await startLocalRun({
@@ -60,8 +57,11 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 					now: options.now,
 					mainPane: pane,
 					workspaceId,
-				});
-				return await completeSuccessfulRun(await blockOnFailure(state, uuid, async () => await initializeOrchestration(state, pane, orchestration)), orchestration);
+				}, lifecycleLease);
+				return await completeSuccessfulRun(
+					await blockOnFailure(state, uuid, async () => await initializeOrchestration(state, pane, orchestration)),
+					orchestration,
+				);
 			});
 		},
 
@@ -71,7 +71,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		},
 
 		async resume(mainWorktree, envelope) {
-			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root, lifecycleLease) => {
 				let state = await readActiveRun(root);
 				let workerEnvelope: WorkerEnvelope | undefined;
 				if (state.phase !== "aborted" && envelope !== undefined) {
@@ -85,7 +85,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				const next = state.phase === "aborted"
 					? await resumeRun(state, undefined, orchestration)
 					: await blockOnFailure(state, uuid, async () => await resumeRun(state, workerEnvelope, orchestration));
-				if (next.phase === "aborted") await releaseTerminalRun(next.main_worktree, next);
+				if (next.phase === "aborted") await releaseTerminalRun(next.main_worktree, next, lifecycleLease);
 				return await completeSuccessfulRun(next, orchestration);
 			});
 		},
@@ -195,7 +195,7 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 		},
 
 		async abort(mainWorktree, reason) {
-			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root, lifecycleLease) => {
 				let state = await readActiveRun(root);
 				if (state.phase === "completed") throw new Error("Cannot abort a completed run");
 				state = await reconcileGate(state, orchestration);
@@ -206,13 +206,13 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				};
 				await writeRunState(state.main_worktree, next, uuid);
 				const cleaned = await abortRun(next, orchestration);
-				await releaseTerminalRun(cleaned.main_worktree, cleaned);
+				await releaseTerminalRun(cleaned.main_worktree, cleaned, lifecycleLease);
 				return cleaned;
 			});
 		},
 
 		async acknowledgeNotification(mainWorktree, eventId) {
-			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root, lifecycleLease) => {
 				const id = nonEmptyString(eventId, "run notification event ID");
 				const runId = notificationRunId(id);
 				const state = await readRunState(root, runId);
@@ -222,43 +222,38 @@ export function createCoreLifecycle(options: CoreLifecycleOptions = {}): CoreLif
 				}
 				await acknowledgeRunNotification(root, runId, id, options.now?.() ?? new Date().toISOString(), uuid);
 				const latest = (await readRunState(root, runId))!;
-				await releaseTerminalRun(root, latest);
+				await releaseTerminalRun(root, latest, lifecycleLease);
 				return latest;
 			});
 		},
 
 		async settleTerminal(mainWorktree) {
-			return await withLifecycleMutation(mainWorktree, runner, async (root) => {
+			return await withLifecycleMutation(mainWorktree, runner, async (root, lifecycleLease) => {
 				const state = await readActiveRun(root);
-				await releaseTerminalRun(root, state);
+				await releaseTerminalRun(root, state, lifecycleLease);
 				return state;
 			});
 		},
 	};
 }
 
-async function releaseTerminalRun(root: string, state: RunState): Promise<void> {
+async function releaseTerminalRun(root: string, state: RunState, lifecycleLease: LifecycleLease): Promise<void> {
 	const delivered = state.notifications.every((notification) => notification.delivered_at);
 	const releasable = state.phase === "completed"
 		? runCleanupIsClear(state) && delivered
 		: state.phase === "aborted" && state.abort_cleanup_complete === true && delivered;
-	if (releasable && await readActiveRunId(root) === state.run_id) await releaseActiveRun(root, state.run_id);
+	if (releasable && await readActiveRunId(root) === state.run_id) {
+		await releaseActiveRun(root, state.run_id, lifecycleLease);
+	}
 }
 
-async function withLifecycleMutation<T>(mainWorktree: string, runner: CommandRunner, action: (root: string) => Promise<T>): Promise<T> {
+async function withLifecycleMutation<T>(
+	mainWorktree: string,
+	runner: CommandRunner,
+	action: (root: string, lease: LifecycleLease) => Promise<T>,
+): Promise<T> {
 	const root = await resolveGitTopLevel(mainWorktree, runner);
-	const previous = lifecycleMutationTails.get(root) ?? Promise.resolve();
-	let release!: () => void;
-	const pending = new Promise<void>((done) => { release = done; });
-	const tail = previous.then(() => pending);
-	lifecycleMutationTails.set(root, tail);
-	await previous;
-	try {
-		return await action(root);
-	} finally {
-		release();
-		if (lifecycleMutationTails.get(root) === tail) lifecycleMutationTails.delete(root);
-	}
+	return await withLifecycleLock(root, async (lease) => await action(root, lease));
 }
 
 async function retireActiveTaskWorker(

@@ -49,6 +49,7 @@ export async function initializeOrchestration(
 	mainPane: string,
 	options: OrchestrationOptions,
 ): Promise<RunState> {
+	if (state.phase !== "execution") throw new Error(`Cannot initialize Auto DAG orchestration from ${state.phase}`);
 	const pane = nonEmptyString(mainPane, "main Herdr pane");
 	if (state.main_pane !== pane) throw new Error("Run state main Herdr pane does not match start pane");
 	return await advanceRun(state, options);

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import nodeFs, { type NoParamCallback, type PathLike } from "node:fs";
+import fs, { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { lock } from "proper-lockfile";
 import { executionIssues, hashDeliveryGraph, parseDeliveryGraph } from "./graph.ts";
 import {
 	RUN_STATE_VERSION,
@@ -25,6 +28,9 @@ import { array, exactKeys, nonEmptyString, object, oneOf, positiveInteger, strin
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RUN_PHASES = ["execution", "blocked", "aborted", "completed"] as const;
+const LIFECYCLE_LOCK = ".lifecycle.lock";
+const LIFECYCLE_TOKEN_PREFIX = ".lease-";
+const lifecycleLeaseBrand: unique symbol = Symbol("pi-auto-dag lifecycle lease");
 
 const RUN_STATE_KEYS = [
 	"version", "run_id", "graph_hash", "graph", "source_commit", "integration_head", "main_worktree", "integration_branch", "default_branch", "created_at", "phase", "tasks", "resolutions", "gate_command_amendments", "main_pane", "workspace_id",
@@ -76,8 +82,135 @@ const RUN_TASK_KEYS = ["status", "attempts", ...Object.keys(TASK_OPTIONAL_FIELDS
 
 export type Uuid = () => string;
 
+export interface LifecycleLease {
+	readonly main_worktree: string;
+	readonly token: string;
+	readonly [lifecycleLeaseBrand]: true;
+}
+
+const activeLifecycleLeases = new WeakSet<LifecycleLease>();
+
 export function stateRoot(mainWorktree: string): string {
 	return join(resolve(mainWorktree), ".context", "pi-auto-dag");
+}
+
+function compromisedLifecycleLock(cause?: unknown): NodeJS.ErrnoException {
+	return Object.assign(new Error("Auto DAG lifecycle lock ownership was compromised", { cause }), { code: "ECOMPROMISED" });
+}
+
+function lifecycleLockFileSystem(lockDirectory: string, token: string): {
+	fs: typeof nodeFs;
+	prepareRelease(): void;
+	tokenPath: string;
+} {
+	const tokenName = `${LIFECYCLE_TOKEN_PREFIX}${token}`;
+	const tokenPath = join(lockDirectory, tokenName);
+	const tokenContent = `${token}\n`;
+	let releasing = false;
+	const lockFs: typeof nodeFs = Object.create(nodeFs);
+
+	lockFs.mkdir = ((path: PathLike, callback: NoParamCallback) => {
+		nodeFs.mkdir(path, (error) => {
+			if (error) return callback(error);
+			nodeFs.writeFile(tokenPath, tokenContent, { encoding: "utf8", flag: "wx", mode: 0o600 }, (tokenError) => {
+				if (!tokenError) return callback(null);
+				nodeFs.rmdir(path, () => callback((tokenError as NodeJS.ErrnoException).code === "ENOENT"
+					? Object.assign(new Error("Lifecycle lock acquisition was displaced"), { code: "ELOCKED" })
+					: tokenError));
+			});
+		});
+	}) as typeof nodeFs.mkdir;
+
+	lockFs.rmdir = ((path: PathLike, callback: NoParamCallback) => {
+		if (releasing) {
+			return nodeFs.readFile(tokenPath, "utf8", (error, owner) => {
+				if (error || owner !== tokenContent) return callback(compromisedLifecycleLock(error));
+				nodeFs.unlink(tokenPath, (error) => {
+					if (error) return callback(compromisedLifecycleLock(error));
+					nodeFs.rmdir(path, callback);
+				});
+			});
+		}
+		nodeFs.readdir(path, (error, entries) => {
+			if (error) return callback(error);
+			if (entries.length !== 1 || !entries[0].startsWith(LIFECYCLE_TOKEN_PREFIX)) return nodeFs.rmdir(path, callback);
+			const staleToken = entries[0].slice(LIFECYCLE_TOKEN_PREFIX.length);
+			const staleTokenPath = join(lockDirectory, entries[0]);
+			nodeFs.readFile(staleTokenPath, "utf8", (error, owner) => {
+				if (error || !UUID.test(staleToken) || owner !== `${staleToken}\n`) return callback(compromisedLifecycleLock(error));
+				nodeFs.unlink(staleTokenPath, (error) => {
+					if (error) return callback(error);
+					nodeFs.rmdir(path, callback);
+				});
+			});
+		});
+	}) as typeof nodeFs.rmdir;
+
+	lockFs.rmdirSync = ((path: PathLike) => {
+		if (nodeFs.readFileSync(tokenPath, "utf8") !== tokenContent) throw compromisedLifecycleLock();
+		nodeFs.unlinkSync(tokenPath);
+		nodeFs.rmdirSync(path);
+	}) as typeof nodeFs.rmdirSync;
+
+	return { fs: lockFs, prepareRelease: () => { releasing = true; }, tokenPath };
+}
+
+async function assertLifecycleLockOwner(tokenPath: string, token: string): Promise<void> {
+	let owner: string;
+	try {
+		owner = await readFile(tokenPath, "utf8");
+	} catch (error) {
+		throw compromisedLifecycleLock(error);
+	}
+	if (owner !== `${token}\n`) throw compromisedLifecycleLock();
+}
+
+/** Serialize one lifecycle mutation across processes; proper-lockfile heartbeats and recovers dead holders. */
+export async function withLifecycleLock<T>(mainWorktree: string, action: (lease: LifecycleLease) => Promise<T>): Promise<T> {
+	const root = resolve(mainWorktree);
+	const directory = stateRoot(root);
+	const lockDirectory = join(directory, LIFECYCLE_LOCK);
+	await mkdir(directory, { recursive: true });
+	const lease: LifecycleLease = Object.freeze({ main_worktree: root, token: randomUUID(), [lifecycleLeaseBrand]: true as const });
+	const lockFileSystem = lifecycleLockFileSystem(lockDirectory, lease.token);
+	let release!: () => Promise<void>;
+	for (;;) {
+		try {
+			release = await lock(directory, {
+				fs: lockFileSystem.fs,
+				lockfilePath: lockDirectory,
+				stale: 10_000,
+				update: 2_000,
+				onCompromised(error) {
+					activeLifecycleLeases.delete(lease);
+					throw error;
+				},
+			});
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED") throw error;
+			await delay(50);
+		}
+	}
+	activeLifecycleLeases.add(lease);
+	try {
+		return await action(lease);
+	} finally {
+		activeLifecycleLeases.delete(lease);
+		await assertLifecycleLockOwner(lockFileSystem.tokenPath, lease.token);
+		lockFileSystem.prepareRelease();
+		await release();
+	}
+}
+
+async function assertLifecycleLease(mainWorktree: string, lease: LifecycleLease): Promise<void> {
+	if (!activeLifecycleLeases.has(lease) || lease.main_worktree !== resolve(mainWorktree)) {
+		throw new Error("Auto DAG lifecycle mutation requires the active lifecycle lease");
+	}
+	await assertLifecycleLockOwner(
+		join(stateRoot(lease.main_worktree), LIFECYCLE_LOCK, `${LIFECYCLE_TOKEN_PREFIX}${lease.token}`),
+		lease.token,
+	);
 }
 
 export function runDirectory(mainWorktree: string, runId: string): string {
@@ -119,41 +252,78 @@ export function createInitialRunState(input: {
 	};
 }
 
-/** The active lock is exclusive; it is deliberately not removed by a failed cleanup. */
-export async function createRun(mainWorktree: string, state: RunState, uuid: Uuid = randomUUID, afterClaim?: () => Promise<void>): Promise<void> {
+/** Publish complete state before the active claim; all startup work remains under the lifecycle lock. */
+export async function createRun(
+	mainWorktree: string,
+	state: RunState,
+	uuid: Uuid = randomUUID,
+	afterClaim?: () => Promise<void>,
+	lifecycleLease?: LifecycleLease,
+): Promise<void> {
+	if (!lifecycleLease) {
+		return await withLifecycleLock(mainWorktree, async (lease) => await createRun(mainWorktree, state, uuid, afterClaim, lease));
+	}
+	await assertLifecycleLease(mainWorktree, lifecycleLease);
+	if (state.phase !== "execution") throw new Error("A new Auto DAG run must be executable");
 	const root = stateRoot(mainWorktree);
 	await mkdir(join(root, "runs"), { recursive: true });
-	if (!(await claimActiveRun(mainWorktree, state.run_id))) {
-		throw new Error(`An active pi-auto-dag run already exists: ${state.run_id}`);
-	}
-
-	// Durable run artifacts are published before post-claim work so an interruption there leaves a
-	// recoverable run instead of an orphaned active.json without state.
+	await mkdir(runDirectory(mainWorktree, state.run_id));
+	let claimed = false;
 	try {
-		await mkdir(runDirectory(mainWorktree, state.run_id));
 		await writeRunState(mainWorktree, state, uuid);
+		claimed = await claimActiveRun(mainWorktree, state.run_id, uuid, lifecycleLease);
+		if (!claimed) throw new Error(`An active pi-auto-dag run already exists: ${state.run_id}`);
 		await afterClaim?.();
+		await assertActiveRunOwner(mainWorktree, state.run_id);
 	} catch (error) {
-		await unlink(join(root, "active.json")).catch(() => {});
-		// The claimed run ID is a fresh UUID, so this directory can only be this failed attempt's.
-		await rm(runDirectory(mainWorktree, state.run_id), { recursive: true }).catch(() => {});
+		if (claimed && await readActiveRunId(mainWorktree) === state.run_id) {
+			await releaseActiveRun(mainWorktree, state.run_id, lifecycleLease);
+		}
+		// The run ID is a fresh UUID, so this directory can only be this failed attempt's.
+		await rm(runDirectory(mainWorktree, state.run_id), { recursive: true });
 		throw error;
 	}
 }
 
-/** Claim the exclusive active lock; a retained run may re-enter when it already owns it. */
-export async function claimActiveRun(mainWorktree: string, runId: string): Promise<boolean> {
+/** Write the complete active claim privately, then publish it exclusively with one hard link. */
+export async function claimActiveRun(
+	mainWorktree: string,
+	runId: string,
+	uuid: Uuid,
+	lifecycleLease: LifecycleLease,
+): Promise<boolean> {
+	await assertLifecycleLease(mainWorktree, lifecycleLease);
 	assertRunId(runId);
-	const active = join(stateRoot(mainWorktree), "active.json");
-	for (;;) {
+	const root = stateRoot(mainWorktree);
+	const temporary = join(root, `.active-${uuid()}.tmp`);
+	if (await publishExclusiveFile(temporary, join(root, "active.json"), `${JSON.stringify({ run_id: runId })}\n`, lifecycleLease)) return true;
+	const owner = await readActiveRunId(mainWorktree);
+	if (owner === runId) return false;
+	if (owner) throw new Error(`An active pi-auto-dag run already exists: ${owner}`);
+	throw new Error("Active Auto DAG claim collision disappeared while lifecycle lock was held");
+}
+
+async function publishExclusiveFile(temporary: string, destination: string, content: string, lifecycleLease: LifecycleLease): Promise<boolean> {
+	// Exclusive creation means a colliding claimant's temporary file is never overwritten or removed.
+	await fs.writeFile(temporary, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+	let published = false;
+	try {
+		await assertLifecycleLease(lifecycleLease.main_worktree, lifecycleLease);
 		try {
-			await writeFile(active, JSON.stringify({ run_id: runId }), { encoding: "utf8", flag: "wx", mode: 0o600 });
+			await link(temporary, destination);
+			published = true;
 			return true;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			const owner = await readActiveRunId(mainWorktree);
-			if (owner === runId) return false;
-			if (owner) throw new Error(`An active pi-auto-dag run already exists: ${owner}`);
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+			throw error;
+		}
+	} finally {
+		try {
+			await fs.unlink(temporary);
+		} catch (error) {
+			// Once linked, the destination is authoritative; the retained temp exposes cleanup failure
+			// without turning claim success into failed-run cleanup.
+			if (!published && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
 }
@@ -174,7 +344,7 @@ export async function acknowledgeRunNotification(mainWorktree: string, runId: st
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 	} finally {
-		await unlink(temporary).catch(() => {});
+		await fs.unlink(temporary).catch(() => {});
 	}
 }
 
@@ -230,7 +400,7 @@ export async function readRunState(mainWorktree: string, runId: string): Promise
 
 export async function readActiveRunId(mainWorktree: string): Promise<string | undefined> {
 	try {
-		const value = object(JSON.parse(await readFile(join(stateRoot(mainWorktree), "active.json"), "utf8")), "active run lock");
+		const value = object(JSON.parse(await fs.readFile(join(stateRoot(mainWorktree), "active.json"), "utf8")), "active run lock");
 		exactKeys(value, ["run_id"], "active run lock");
 		const runId = nonEmptyString(value.run_id, "active run lock.run_id");
 		assertRunId(runId);
@@ -268,11 +438,16 @@ function workerEnvelopeHash(envelope: WorkerEnvelope): string {
 	return createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
 }
 
+async function assertActiveRunOwner(mainWorktree: string, runId: string): Promise<void> {
+	if (await readActiveRunId(mainWorktree) !== runId) throw new Error(`Run ${runId} does not own the active lock`);
+}
+
 /** Call only after all owned worker/worktree cleanup has succeeded. */
-export async function releaseActiveRun(mainWorktree: string, runId: string): Promise<void> {
-	const active = await readActiveRunId(mainWorktree);
-	if (active !== runId) throw new Error(`Run ${runId} does not own the active lock`);
-	await unlink(join(stateRoot(mainWorktree), "active.json"));
+export async function releaseActiveRun(mainWorktree: string, runId: string, lifecycleLease: LifecycleLease): Promise<void> {
+	await assertLifecycleLease(mainWorktree, lifecycleLease);
+	await assertActiveRunOwner(mainWorktree, runId);
+	await assertLifecycleLease(mainWorktree, lifecycleLease);
+	await fs.unlink(join(stateRoot(mainWorktree), "active.json"));
 }
 
 export function parseRunState(value: unknown): RunState {

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -16,10 +17,90 @@ import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
 import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, type ActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "../src/review-ticket.ts";
-import { recordAcceptedWorkerEvent, runDirectory, writeRunState } from "../src/state.ts";
+import { readActiveRunId, readRunState, recordAcceptedWorkerEvent, runDirectory, stateRoot, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
+
+test("a successor takes over after the starter is killed with a durably identified live worker", async (t) => {
+	const project = await makeProject(t, graph(["alpha"]), 1, 1);
+	const child = spawn(process.execPath, ["--input-type=module", "--eval", `
+		import { createCoreLifecycle } from ${JSON.stringify(new URL("../src/lifecycle.ts", import.meta.url).href)};
+		import { readDeliveryGraph } from ${JSON.stringify(new URL("../src/graph.ts", import.meta.url).href)};
+		import { preflightLocalRun } from ${JSON.stringify(new URL("../src/intake.ts", import.meta.url).href)};
+		import { fakeHerdr } from ${JSON.stringify(new URL("./support/fake-herdr.ts", import.meta.url).href)};
+		import { testLaunchResolver } from ${JSON.stringify(new URL("./support/roles.ts", import.meta.url).href)};
+		const herdr = fakeHerdr();
+		const runner = async (command, args, options) => {
+			const result = await herdr.runner(command, args, options);
+			if (command === "herdr" && args[0] === "agent" && args[1] === "start") {
+				process.send({
+					live: [...herdr.live],
+					agentPanes: [...herdr.agentPanes],
+					tabs: [...herdr.tabs],
+					panes: [...herdr.panes],
+				});
+				await new Promise((resolve) => process.once("message", resolve));
+			}
+			return result;
+		};
+		const lifecycle = createCoreLifecycle({
+			runner,
+			uuid: () => ${JSON.stringify(RUN_ID)},
+			now: () => "2026-08-09T00:00:00.000Z",
+			resolveLaunch: testLaunchResolver,
+		});
+		await lifecycle.start(
+			await readDeliveryGraph(process.env.AUTO_DAG_ROOT),
+			await preflightLocalRun(process.env.AUTO_DAG_ROOT, runner),
+			"main-pane",
+		);
+	`], {
+		env: { ...process.env, AUTO_DAG_ROOT: project.root },
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+	});
+	t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+	let childError = "";
+	child.stderr!.on("data", (chunk) => { childError += chunk; });
+	const snapshot = await new Promise<{
+		live: string[];
+		agentPanes: Array<[string, string]>;
+		tabs: Array<[string, { tab_id: string; label: string; workspace_id: string }]>;
+		panes: Array<[string, { pane_id: string; tab_id: string; label?: string }]>;
+	}>((resolve, reject) => {
+		child.once("message", (message) => resolve(message as never));
+		child.once("exit", (code, signal) => reject(new Error(`starter exited before worker launch (${code ?? signal}): ${childError}`)));
+	});
+	const launched = (await readRunState(project.root, RUN_ID))!;
+	assert.equal(launched.phase, "execution");
+	assert.equal(launched.tasks.alpha.status, "starting");
+	assert.ok(launched.tasks.alpha.implementer_provisioning_id);
+	assert.ok(launched.tasks.alpha.implementer_pane);
+	assert.ok(launched.tasks.alpha.implementer_agent);
+	assert.equal(launched.tasks.alpha.implementer_instruction_pending, true);
+
+	const exit = once(child, "exit");
+	child.kill("SIGKILL");
+	await exit;
+	await utimes(join(stateRoot(project.root), ".lifecycle.lock"), new Date(0), new Date(0));
+
+	const herdr = fakeHerdr();
+	for (const value of snapshot.live) herdr.live.add(value);
+	for (const value of snapshot.agentPanes) herdr.agentPanes.set(...value);
+	for (const value of snapshot.tabs) herdr.tabs.set(...value);
+	for (const value of snapshot.panes) herdr.panes.set(...value);
+	const lifecycle = makeLifecycle(herdr.runner);
+	const recovered = await lifecycle.resume(project.root);
+	assert.equal(recovered.phase, "execution");
+	assert.equal(recovered.tasks.alpha.status, "implementing");
+	assert.equal(herdr.count("agent start"), 0);
+	assert.equal(herdr.count("agent prompt"), 1);
+	assert.equal(herdr.live.size, 1);
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+
+	await lifecycle.abort(project.root, "test cleanup");
+	assert.equal(await readActiveRunId(project.root), undefined);
+});
 
 test("orchestration freezes a wave, refills slots, reviews once per pane, and integrates lexically", async (t) => {
 	const project = await makeProject(t, graph(["alpha", "beta", "gamma"]), 1, 2);

@@ -4,7 +4,7 @@ import { runCommand, type CommandRunner } from "./command.ts";
 import { hashDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "./graph.ts";
 import { inspectActiveIntegrationWorktree, inspectIntegrationCandidate, resolveGitTopLevel } from "./git.ts";
 import type { DeliveryGraph, ProjectConfig, RunState } from "./model.ts";
-import { createInitialRunState, createRun, readActiveRunId, type Uuid } from "./state.ts";
+import { createInitialRunState, createRun, readActiveRunId, type LifecycleLease, type Uuid } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
 
 const LOCAL_GRAPH_PATH = ".context/issues/graph.json";
@@ -37,7 +37,7 @@ export async function preflightLocalRun(mainWorktree: string, runner: CommandRun
 }
 
 /** Claim the run, then bind its graph and integration facts to the confirmed boundary. */
-export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
+export async function startLocalRun(options: IntakeOptions, lifecycleLease?: LifecycleLease): Promise<RunState> {
 	const runner = options.runner ?? runCommand;
 	const boundary = options.confirmedBoundary;
 	const uuid = options.uuid ?? randomUUID;
@@ -55,7 +55,7 @@ export async function startLocalRun(options: IntakeOptions): Promise<RunState> {
 	await createRun(boundary.main_worktree, state, uuid, async () => {
 		assertSameLocalRunBoundary(boundary, await inspectLocalRunBoundary(boundary.main_worktree, runner));
 		await writeDeliveryGraph(boundary.main_worktree, state.graph);
-	});
+	}, lifecycleLease);
 	return state;
 }
 

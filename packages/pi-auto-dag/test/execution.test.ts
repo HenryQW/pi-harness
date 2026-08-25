@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback, spawn } from "node:child_process";
+import { once } from "node:events";
+import fs, { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
+import test, { mock, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { parseProjectConfig } from "../src/config.ts";
 import { deriveDependencyWaves, hashDeliveryGraph, parseDeliveryGraph, readDeliveryGraph, writeDeliveryGraph } from "../src/graph.ts";
@@ -12,11 +13,15 @@ import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import type { DeliveryGraph, RunState } from "../src/model.ts";
 import { createOrchestratorExtension, ORCHESTRATOR_TOOLS } from "../src/orchestrator.ts";
 import {
+	claimActiveRun,
 	createInitialRunState,
 	createRun,
 	parseRunState,
 	readActiveRunId,
 	readRunState,
+	releaseActiveRun,
+	stateRoot,
+	withLifecycleLock,
 	writeRunState,
 } from "../src/state.ts";
 import { createTestRoles } from "./support/roles.ts";
@@ -186,6 +191,7 @@ test("auto_dag_execute is the sole confirmed initial execution boundary", async 
 
 	const result = await execute.execute("approve", { graph: graphInput }, undefined, undefined, context("tui", async () => true));
 	assert.equal(result.details?.graph_hash, hashDeliveryGraph(canonical));
+	assert.deepEqual(activeTools, ["read", ORCHESTRATOR_TOOLS.status, ORCHESTRATOR_TOOLS.resume, ORCHESTRATOR_TOOLS.abort]);
 	assert.equal(starts.length, 1);
 	assert.deepEqual(starts[0], {
 		graph: canonical,
@@ -250,12 +256,229 @@ test("concurrent starts cannot replace the winning run graph", async (t) => {
 	assert.equal(await readActiveRunId(project.root), winners[0].value.run_id);
 });
 
-test("createRun publishes durable state before the post-claim window and recovers from interruption there", async (t) => {
+test("concurrent abort and start serialize active release before the new claim", async (t) => {
+	const project = await setupProject(t, true);
+	const boundary = await preflightLocalRun(project.root);
+	const oldGraph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
+	const newGraph = parseDeliveryGraph({ ...graphInput, goal: "Execute the successor graph.", issues: [graphInput.issues[2]] });
+	await startLocalRun({
+		graph: oldGraph,
+		confirmedBoundary: boundary,
+		mainPane: "main-pane",
+		workspaceId: "main-workspace",
+		uuid: () => RUN_ID,
+	});
+
+	let releaseChecked!: () => void;
+	let allowRelease!: () => void;
+	const checked = new Promise<void>((done) => { releaseChecked = done; });
+	const allowed = new Promise<void>((done) => { allowRelease = done; });
+	const active = join(stateRoot(project.root), "active.json");
+	const unlink = fs.unlink.bind(fs);
+	const mocked = mock.method(fs, "unlink", async (path: Parameters<typeof fs.unlink>[0]) => {
+		if (path === active) {
+			releaseChecked();
+			await allowed;
+		}
+		return await unlink(path);
+	});
+	t.after(() => mocked.mock.restore());
+
+	const aborting = createCoreLifecycle().abort(project.root, "replace run");
+	await checked;
+	const winner = "77777777-7777-4777-8777-777777777777";
+	const starting = startLocalRun({
+		graph: newGraph,
+		confirmedBoundary: boundary,
+		mainPane: "main-pane",
+		workspaceId: "main-workspace",
+		uuid: () => winner,
+	});
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+
+	allowRelease();
+	assert.equal((await aborting).phase, "aborted");
+	assert.equal((await starting).run_id, winner);
+	assert.equal(await readActiveRunId(project.root), winner);
+	assert.deepEqual(await readDeliveryGraph(project.root), newGraph);
+	assert.deepEqual((await readdir(stateRoot(project.root))).filter((name) => name.startsWith(".lifecycle")), []);
+});
+
+test("active run claim requires a live lease and atomically publishes a complete file without temp debris", async (t) => {
 	const project = await setupProject(t);
-	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
+	const root = stateRoot(project.root);
+	await mkdir(root, { recursive: true });
+	await assert.rejects(
+		claimActiveRun(project.root, RUN_ID, () => "forged", { main_worktree: project.root } as never),
+		/requires the active lifecycle lease/,
+	);
+	let expiredLease!: Parameters<typeof claimActiveRun>[3];
+	await withLifecycleLock(project.root, async (lease) => {
+		expiredLease = lease;
+		assert.equal(await claimActiveRun(project.root, RUN_ID, () => "winner", lease), true);
+		assert.deepEqual(JSON.parse(await readFile(join(root, "active.json"), "utf8")), { run_id: RUN_ID });
+		assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".active-")), []);
+
+		const rival = "77777777-7777-4777-8777-777777777777";
+		await assert.rejects(claimActiveRun(project.root, rival, () => "rival", lease), new RegExp(RUN_ID));
+		assert.equal(await readActiveRunId(project.root), RUN_ID);
+		assert.equal(await claimActiveRun(project.root, RUN_ID, () => "same-owner", lease), false);
+	});
+	await assert.rejects(releaseActiveRun(project.root, RUN_ID, expiredLease), /requires the active lifecycle lease/);
+	assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".active-") || name.startsWith(".lifecycle")), []);
+});
+
+test("active claim preserves an exclusively collided temporary file", async (t) => {
+	const project = await setupProject(t);
+	const root = stateRoot(project.root);
+	await mkdir(root, { recursive: true });
+	const temporary = join(root, ".active-collision.tmp");
+	await writeFile(temporary, "owned by another claimant\n");
+
+	await withLifecycleLock(project.root, async (lease) => {
+		await assert.rejects(claimActiveRun(project.root, RUN_ID, () => "collision", lease), /EEXIST/);
+	});
+	assert.equal(await readFile(temporary, "utf8"), "owned by another claimant\n");
+	assert.equal(await readActiveRunId(project.root), undefined);
+});
+
+test("post-link temporary cleanup failure does not reverse a successful active claim", async (t) => {
+	const project = await setupProject(t);
+	const root = stateRoot(project.root);
+	await mkdir(root, { recursive: true });
+	const temporary = join(root, ".active-cleanup-failure.tmp");
+	const unlink = fs.unlink.bind(fs);
+	const mocked = mock.method(fs, "unlink", async (path: Parameters<typeof fs.unlink>[0]) => {
+		if (path === temporary) throw Object.assign(new Error("forced post-link cleanup failure"), { code: "EACCES" });
+		return await unlink(path);
+	});
+	t.after(() => mocked.mock.restore());
+
+	await withLifecycleLock(project.root, async (lease) => {
+		assert.equal(await claimActiveRun(project.root, RUN_ID, () => "cleanup-failure", lease), true);
+	});
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+	assert.deepEqual(JSON.parse(await readFile(temporary, "utf8")), { run_id: RUN_ID });
+});
+
+test("a stale holder cannot publish or release active.json after lifecycle takeover", async (t) => {
+	const project = await setupProject(t);
+	const root = stateRoot(project.root);
+	const lockDirectory = join(root, ".lifecycle.lock");
+	const holderScript = `
+		import fs from "node:fs/promises";
+		import { join } from "node:path";
+		import { mock } from "node:test";
+		const root = process.env.AUTO_DAG_ROOT;
+		const active = join(root, ".context", "pi-auto-dag", "active.json");
+		const operation = process.env.AUTO_DAG_OPERATION;
+		let paused = false;
+		const pause = async () => {
+			if (paused) return;
+			paused = true;
+			process.send("paused");
+			await new Promise((resolve) => process.once("message", resolve));
+		};
+		if (process.env.AUTO_DAG_ROLE === "a" && operation === "claim") {
+			const writeFile = fs.writeFile.bind(fs);
+			mock.method(fs, "writeFile", async (path, ...args) => {
+				const result = await writeFile(path, ...args);
+				if (path === join(root, ".context", "pi-auto-dag", ".active-a.tmp")) await pause();
+				return result;
+			});
+		}
+		if (process.env.AUTO_DAG_ROLE === "a" && operation === "release") {
+			const readFile = fs.readFile.bind(fs);
+			mock.method(fs, "readFile", async (path, ...args) => {
+				const result = await readFile(path, ...args);
+				if (path === active) await pause();
+				return result;
+			});
+		}
+		const { claimActiveRun, releaseActiveRun, withLifecycleLock } = await import(${JSON.stringify(new URL("../src/state.ts", import.meta.url).href)});
+		try {
+			await withLifecycleLock(root, async (lease) => {
+				if (process.env.AUTO_DAG_ROLE === "a") {
+					if (operation === "release") await claimActiveRun(root, ${JSON.stringify(RUN_ID)}, () => "initial", lease);
+					try {
+						if (operation === "claim") await claimActiveRun(root, ${JSON.stringify(RUN_ID)}, () => "a", lease);
+						else await releaseActiveRun(root, ${JSON.stringify(RUN_ID)}, lease);
+					} catch (error) {
+						process.send(error?.code);
+						throw error;
+					}
+					return;
+				}
+				process.send("acquired");
+				await new Promise((resolve) => process.once("message", resolve));
+				if (operation === "release") await releaseActiveRun(root, ${JSON.stringify(RUN_ID)}, lease);
+			});
+		} catch (error) {
+			console.error(error?.code, error?.message);
+			process.exitCode = 1;
+		}
+	`;
+	const spawnHolder = (role: "a" | "b", operation: "claim" | "release") => {
+		const child = spawn(process.execPath, ["--input-type=module", "--eval", holderScript], {
+			env: { ...process.env, AUTO_DAG_ROOT: project.root, AUTO_DAG_ROLE: role, AUTO_DAG_OPERATION: operation },
+			stdio: ["ignore", "ignore", "pipe", "ipc"],
+		});
+		t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+		return child;
+	};
+	const waitForMessage = (child: ReturnType<typeof spawn>, expected: string) => new Promise<void>((resolve, reject) => {
+		const onMessage = (message: unknown) => {
+			if (message !== expected) return;
+			child.off("exit", onExit);
+			resolve();
+		};
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+			child.off("message", onMessage);
+			reject(new Error(`holder exited before ${expected} (${code ?? signal})`));
+		};
+		child.on("message", onMessage);
+		child.once("exit", onExit);
+	});
+
+	for (const operation of ["claim", "release"] as const) {
+		const holderA = spawnHolder("a", operation);
+		let holderAError = "";
+		holderA.stderr!.on("data", (chunk) => { holderAError += chunk; });
+		await waitForMessage(holderA, "paused");
+		await utimes(lockDirectory, new Date(0), new Date(0));
+
+		const holderB = spawnHolder("b", operation);
+		let holderBError = "";
+		holderB.stderr!.on("data", (chunk) => { holderBError += chunk; });
+		await waitForMessage(holderB, "acquired");
+		const holderBLock = await readdir(lockDirectory);
+		assert.equal(holderBLock.length, 1);
+		assert.equal(await readActiveRunId(project.root), operation === "release" ? RUN_ID : undefined);
+
+		const compromised = waitForMessage(holderA, "ECOMPROMISED");
+		const holderAExit = once(holderA, "exit");
+		holderA.send("resume");
+		await compromised;
+		const [holderACode] = await holderAExit;
+		assert.equal(holderACode, 1, `stale ${operation} unexpectedly succeeded: ${holderAError}`);
+		assert.match(holderAError, /ECOMPROMISED.*ownership was compromised/);
+		assert.deepEqual(await readdir(lockDirectory), holderBLock);
+		assert.equal(await readActiveRunId(project.root), operation === "release" ? RUN_ID : undefined);
+
+		const holderBExit = once(holderB, "exit");
+		holderB.send("release");
+		const [holderBCode] = await holderBExit;
+		assert.equal(holderBCode, 0, holderBError);
+		assert.equal(await readActiveRunId(project.root), undefined);
+		assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".lifecycle")), []);
+	}
+});
+
+test("process interruption after claiming leaves inspectable execution state and permits stale-owner takeover", async (t) => {
+	const project = await setupProject(t);
 	const initial = createInitialRunState({
 		run_id: RUN_ID,
-		graph,
+		graph: parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] }),
 		source_commit: await git(project.root, "rev-parse", "HEAD"),
 		main_worktree: project.root,
 		integration_branch: "integration",
@@ -264,19 +487,38 @@ test("createRun publishes durable state before the post-claim window and recover
 		main_pane: "main-pane",
 		workspace_id: "main-workspace",
 	});
-	let duringAfterClaim: RunState | undefined;
-	await assert.rejects(
-		createRun(project.root, initial, () => "create", async () => {
-			duringAfterClaim = await readRunState(project.root, RUN_ID);
-			throw new Error("process stopped inside the post-claim window");
-		}),
-		/process stopped inside the post-claim window/,
-	);
-	// state.json already existed while afterClaim ran, so a crash there is recoverable via resume/abort.
-	assert.equal(duringAfterClaim?.run_id, RUN_ID);
-	// A thrown failure (not a crash) still releases the lock and leaves no half-created run behind.
+	const child = spawn(process.execPath, ["--input-type=module", "--eval", `
+		import { createRun } from ${JSON.stringify(new URL("../src/state.ts", import.meta.url).href)};
+		const state = JSON.parse(process.env.AUTO_DAG_STATE);
+		await createRun(process.env.AUTO_DAG_ROOT, state, undefined, async () => {
+			process.send("claimed");
+			await new Promise((resolve) => process.once("message", resolve));
+		});
+	`], {
+		env: { ...process.env, AUTO_DAG_ROOT: project.root, AUTO_DAG_STATE: JSON.stringify(initial) },
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+	});
+	t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+	let childError = "";
+	child.stderr!.on("data", (chunk) => { childError += chunk; });
+	await new Promise<void>((resolve, reject) => {
+		child.once("message", () => resolve());
+		child.once("exit", (code, signal) => reject(new Error(`starter exited before claim (${code ?? signal}): ${childError}`)));
+	});
+	const exit = once(child, "exit");
+	child.kill("SIGKILL");
+	await exit;
+	await utimes(join(stateRoot(project.root), ".lifecycle.lock"), new Date(0), new Date(0));
+
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+	const interrupted = await readRunState(project.root, RUN_ID);
+	assert.equal(interrupted?.phase, "execution");
+	assert.deepEqual(interrupted?.graph, initial.graph);
+	const aborted = await createCoreLifecycle().abort(project.root, "recover interrupted starter");
+	assert.equal(aborted.phase, "aborted");
+	assert.equal(aborted.abort_cleanup_complete, true);
 	assert.equal(await readActiveRunId(project.root), undefined);
-	assert.equal(await readRunState(project.root, RUN_ID), undefined);
+	assert.deepEqual((await readdir(stateRoot(project.root))).filter((name) => name.startsWith(".lifecycle")), []);
 });
 
 test("abort retains an undelivered blocked notification until acknowledgement", async (t) => {
