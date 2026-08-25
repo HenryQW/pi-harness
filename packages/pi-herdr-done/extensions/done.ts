@@ -64,15 +64,13 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 				const listing = await herdr.json(["tab", "list"], { cwd: ctx.cwd });
 				const tabs = (listing.result as { tabs?: TabEntry[] } | undefined)?.tabs;
 				if (!Array.isArray(tabs)) throw new Error("herdr tab list returned no tabs.");
-				const tabsById = new Map(tabs
-					.filter((tab): tab is TabEntry & { tab_id: string } => typeof tab.tab_id === "string")
-					.map((tab) => [tab.tab_id, tab]));
+				const validTabs = tabs.filter((tab): tab is TabEntry & { tab_id: string } => typeof tab.tab_id === "string");
+				const tabsById = new Map(validTabs.map((tab) => [tab.tab_id, tab]));
 				if (tabsById.get(tabId)?.workspace_id !== workspaceId) {
 					throw new Error(`Herdr tab ${tabId} does not belong to workspace ${workspaceId}.`);
 				}
-				siblingTabIds = tabs
-					.filter((tab): tab is TabEntry & { tab_id: string } =>
-						typeof tab.tab_id === "string" && tab.tab_id !== tabId && tab.workspace_id === workspaceId)
+				siblingTabIds = validTabs
+					.filter((tab) => tab.tab_id !== tabId && tab.workspace_id === workspaceId)
 					.map((tab) => tab.tab_id);
 				const blockers = dependentIds.filter((id) => tabsById.get(id)?.workspace_id !== workspaceId);
 				if (blockers.length > 0) {

@@ -79,24 +79,23 @@ async function withHerdrEnvironment(
 	run: () => Promise<void>,
 	workspaceId: string | null | undefined = "w1",
 ): Promise<void> {
-	const previousHerdrEnv = process.env.HERDR_ENV;
-	const previousTabId = process.env.HERDR_TAB_ID;
-	const previousWorkspaceId = process.env.HERDR_WORKSPACE_ID;
-	if (herdrEnv === undefined) delete process.env.HERDR_ENV;
-	else process.env.HERDR_ENV = herdrEnv;
-	if (tabId === undefined) delete process.env.HERDR_TAB_ID;
-	else process.env.HERDR_TAB_ID = tabId;
-	if (workspaceId == null) delete process.env.HERDR_WORKSPACE_ID;
-	else process.env.HERDR_WORKSPACE_ID = workspaceId;
+	const setEnvironment = (values: Record<string, string | undefined>) => {
+		for (const [key, value] of Object.entries(values)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	};
+	const environment = {
+		HERDR_ENV: herdrEnv,
+		HERDR_TAB_ID: tabId,
+		HERDR_WORKSPACE_ID: workspaceId ?? undefined,
+	};
+	const previous = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]));
+	setEnvironment(environment);
 	try {
 		await run();
 	} finally {
-		if (previousHerdrEnv === undefined) delete process.env.HERDR_ENV;
-		else process.env.HERDR_ENV = previousHerdrEnv;
-		if (previousTabId === undefined) delete process.env.HERDR_TAB_ID;
-		else process.env.HERDR_TAB_ID = previousTabId;
-		if (previousWorkspaceId === undefined) delete process.env.HERDR_WORKSPACE_ID;
-		else process.env.HERDR_WORKSPACE_ID = previousWorkspaceId;
+		setEnvironment(previous);
 	}
 }
 
