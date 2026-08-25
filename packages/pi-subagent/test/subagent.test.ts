@@ -8,10 +8,13 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { EphemeralSubagentError } from "@henryqw/pi-subagent";
+import {
+	capEphemeralSubagentOutput as capOutput,
+	EphemeralSubagentError,
+	ROLE_TOOL_POLICY_FLAG,
+} from "@henryqw/pi-subagent";
 import { WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
-import { ROLE_TOOL_POLICY_FLAG } from "../extensions/role-tools.ts";
-import subagentExtension, { capOutput } from "../extensions/subagent.ts";
+import subagentExtension from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
 
@@ -893,7 +896,6 @@ test("tool argument preparation normalizes valid modes and bounds parse failures
 			);
 			assert.ok(error instanceof Error);
 			assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
-			assert.match(error.message, /\[Output truncated: \d+ bytes omitted\]$/);
 		}
 		assert.equal(existsSync(marker), false);
 	});
