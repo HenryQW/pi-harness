@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { buildContextInjection, collectSkillPaths, scanDirContext } from "../extensions/add-dir-helpers.ts";
+import { buildContextInjection, collectSkillPaths, findFiles, scanDirContext } from "../extensions/add-dir-helpers.ts";
 
 test("registers external skills without duplicating Pi's skill prompt", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
@@ -22,4 +22,10 @@ test("registers external skills without duplicating Pi's skill prompt", async ()
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
+});
+
+test("returns no results when an external directory disappears", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	await rm(dir, { recursive: true, force: true });
+	assert.deepEqual(await findFiles(dir, "*.ts", 1), []);
 });
