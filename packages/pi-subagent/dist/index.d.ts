@@ -1,6 +1,7 @@
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type HerdrExecutor } from "@henryqw/pi-herdr";
 import { type AvailableModel, type ProfileName, type ResolvedTaskRoute, type ThinkingLevel } from "@henryqw/pi-task-models";
+export { capEphemeralSubagentOutput, createEphemeralSubagentExecutor, EphemeralSubagentError, type EphemeralSubagentErrorCode, type EphemeralSubagentExecutor, type EphemeralSubagentExecutorOptions, type EphemeralSubagentResult, type EphemeralSubagentRunInput, type EphemeralSubagentTimeout, } from "./ephemeral.ts";
 export { createChildWorktree, finalizeChildWorktree, worktreeContextNote, type WorktreeInfo, type WorktreePayload, } from "./worktree.ts";
 export interface Role {
     name: string;
@@ -39,8 +40,8 @@ export declare const isProfileName: (value: unknown) => value is ProfileName;
 export declare function loadRoles(agentDir?: string): Role[];
 export declare function resolveTaskRoute(ctx: ExtensionContext, profileName: ProfileName, agentDir?: string, thinking?: ThinkingLevel): ResolvedTaskRoute;
 export declare function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: Role): ResolvedRoleSkills;
-export declare function createRoleLaunch(pi: Pick<ExtensionAPI, "getCommands">, ctx: Pick<ExtensionContext, "isProjectTrusted">, input: CreateRoleLaunchInput): ResolvedRoleLaunch;
-export declare function resolveRoleLaunch(pi: Pick<ExtensionAPI, "getCommands">, ctx: ExtensionContext, input: ResolveRoleLaunchInput): ResolvedRoleLaunch;
+export declare function createRoleLaunch(pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">, ctx: Pick<ExtensionContext, "isProjectTrusted">, input: CreateRoleLaunchInput): ResolvedRoleLaunch;
+export declare function resolveRoleLaunch(pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">, ctx: ExtensionContext, input: ResolveRoleLaunchInput): ResolvedRoleLaunch;
 export interface ManagedSubagentHost {
     cwd: string;
     workspaceId: string;

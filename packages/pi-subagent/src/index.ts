@@ -18,6 +18,17 @@ import {
 } from "@henryqw/pi-task-models";
 
 export {
+	capEphemeralSubagentOutput,
+	createEphemeralSubagentExecutor,
+	EphemeralSubagentError,
+	type EphemeralSubagentErrorCode,
+	type EphemeralSubagentExecutor,
+	type EphemeralSubagentExecutorOptions,
+	type EphemeralSubagentResult,
+	type EphemeralSubagentRunInput,
+	type EphemeralSubagentTimeout,
+} from "./ephemeral.ts";
+export {
 	createChildWorktree,
 	finalizeChildWorktree,
 	worktreeContextNote,
@@ -194,15 +205,22 @@ export function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: R
 }
 
 export function createRoleLaunch(
-	pi: Pick<ExtensionAPI, "getCommands">,
+	pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">,
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
 	input: CreateRoleLaunchInput,
 ): ResolvedRoleLaunch {
 	const role = input.role;
 	const skills = resolveRoleSkills(pi, role);
-	const tools = role.tools === undefined
+	let baseTools = role.tools;
+	if (baseTools === undefined && input.tools !== undefined) {
+		const builtins = new Set(pi.getAllTools()
+			.filter((tool) => tool.sourceInfo.source === "builtin")
+			.map((tool) => tool.name));
+		baseTools = pi.getActiveTools().filter((tool) => builtins.has(tool));
+	}
+	const tools = baseTools === undefined
 		? undefined
-		: [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+		: [...new Set([...baseTools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
 	const extensions = [
 		...role.extensions,
 		...(input.extensions ?? []),
@@ -232,7 +250,7 @@ export function createRoleLaunch(
 }
 
 export function resolveRoleLaunch(
-	pi: Pick<ExtensionAPI, "getCommands">,
+	pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">,
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput,
 ): ResolvedRoleLaunch {
