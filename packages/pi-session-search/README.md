@@ -64,5 +64,3 @@ npm test --workspace @henryqw/pi-session-search
 npm run typecheck --workspace @henryqw/pi-session-search
 npm run pack:check --workspace @henryqw/pi-session-search
 ```
-
-See [CONTEXT.md](CONTEXT.md) for design decisions and boundaries.
