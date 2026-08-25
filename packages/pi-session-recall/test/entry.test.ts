@@ -14,7 +14,7 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 let agentDir: string;
 
 before(() => {
-	agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-search-entry-"));
+	agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-entry-"));
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 });
 
@@ -67,7 +67,7 @@ let msgCount = 0;
 
 function resetConfigProbe(): void {
 	fs.rmSync(path.join(agentDir, "sessions"), { recursive: true, force: true });
-	const db = path.join(agentDir, "config", "pi-session-search", "index.db");
+	const db = path.join(agentDir, "config", "pi-session-recall", "index.db");
 	for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(db + suffix, { force: true });
 	msgCount = 1;
 	for (let i = 0; i < 2; i++) {
@@ -81,7 +81,7 @@ function resetConfigProbe(): void {
 describe("session_search entry point", () => {
 	it("registers the tool and dispatches browse/discovery", async () => {
 		const pi = makePi();
-		const { default: register } = await import("../extensions/session-search.ts");
+		const { default: register } = await import("../extensions/session-recall.ts");
 		register(pi as never);
 
 		const tool = (pi as any).tool as CapturedTool;
@@ -111,7 +111,7 @@ describe("session_search entry point", () => {
 
 		// Sync via exported core, then browse.
 		const { syncSessions } = await import("../extensions/search-core.ts");
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
 
 		const ctx = { sessionManager: {} };
 
@@ -159,7 +159,7 @@ describe("session_search entry point", () => {
 
 	it("SCROLL keeps position and branch as separate cursors", async () => {
 		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-branch-scroll`);
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-branch-scroll`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
 		msgCount = 1;
@@ -186,7 +186,7 @@ describe("session_search entry point", () => {
 
 	it("READ clamps oversized content to the output budget (PR #135)", async () => {
 		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-read`);
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-read`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
 		msgCount = 1;
@@ -206,7 +206,7 @@ describe("session_search entry point", () => {
 
 	it("SCROLL and DISCOVERY bound oversized content to the output budget (PR #135)", async () => {
 		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-bound`);
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-bound`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
 
@@ -244,14 +244,14 @@ describe("session_search entry point", () => {
 			msg(null, "user", "pangolin migration notes"),
 		]);
 		const core = await import("../extensions/search-core.ts");
-		core.syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
-		const { hits } = core.searchIndex(path.join(agentDir, "config", "pi-session-search", "index.db"), "pangolin migration");
+		core.syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+		const { hits } = core.searchIndex(path.join(agentDir, "config", "pi-session-recall", "index.db"), "pangolin migration");
 		assert.equal(hits.length, 0, "sessions under --private-tmp-* must not be indexed");
 	});
 
 	it("caps hydrated metadata at the JSONL trust boundary", async () => {
 		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-search.ts?bust=${Date.now()}-metadata`);
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-metadata`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
 		const session = writeSession("metadata/session.jsonl", [
@@ -265,15 +265,15 @@ describe("session_search entry point", () => {
 	});
 
 	it("config validation: invalid config and read failures log-and-default without rewriting", async () => {
-		const configDir = path.join(agentDir, "config", "pi-session-search");
+		const configDir = path.join(agentDir, "config", "pi-session-recall");
 		fs.mkdirSync(configDir, { recursive: true });
-		const configPath = path.join(configDir, "pi-session-search.json");
+		const configPath = path.join(configDir, "pi-session-recall.json");
 
 		const errors: unknown[] = [];
 		const origError = console.error;
 		console.error = (...args: unknown[]) => errors.push(args);
 		try {
-			const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}`);
+			const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}`);
 			for (const invalid of ["{ not json !!!", "null", "[]", '"string"', "{\"backfillFiles\":-5}", "{\"backfillFiles\":501}"]) {
 				fs.writeFileSync(configPath, invalid);
 				errors.length = 0;
@@ -295,14 +295,14 @@ describe("session_search entry point", () => {
 
 	it("unknown config keys warn once and default without rewriting", async () => {
 		resetConfigProbe();
-		const configPath = path.join(agentDir, "config", "pi-session-search", "pi-session-search.json");
+		const configPath = path.join(agentDir, "config", "pi-session-recall", "pi-session-recall.json");
 		const raw = '{"backfillFiles":1,"backfilFiles":2}';
 		fs.writeFileSync(configPath, raw);
 		const errors: unknown[] = [];
 		const origError = console.error;
 		console.error = (...args: unknown[]) => errors.push(args);
 		try {
-			const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-unknown-config`);
+			const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-unknown-config`);
 			const pi = makePi();
 			mod.default(pi as never);
 			const result = await (pi as any).tool.execute("config", {}, undefined, undefined, { sessionManager: {} });
@@ -317,7 +317,7 @@ describe("session_search entry point", () => {
 
 	it("sparse oversized config warns once and defaults without rewriting", async () => {
 		resetConfigProbe();
-		const configPath = path.join(agentDir, "config", "pi-session-search", "pi-session-search.json");
+		const configPath = path.join(agentDir, "config", "pi-session-recall", "pi-session-recall.json");
 		fs.writeFileSync(configPath, '{"backfillFiles":1}');
 		fs.truncateSync(configPath, 1024 * 1024 * 1024);
 		const before = fs.statSync(configPath, { bigint: true });
@@ -325,7 +325,7 @@ describe("session_search entry point", () => {
 		const origError = console.error;
 		console.error = (...args: unknown[]) => errors.push(args);
 		try {
-			const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-oversized-config`);
+			const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-oversized-config`);
 			const pi = makePi();
 			mod.default(pi as never);
 			const result = await (pi as any).tool.execute("config", {}, undefined, undefined, { sessionManager: {} });
@@ -342,7 +342,7 @@ describe("session_search entry point", () => {
 
 	it("FIFO/symlink-to-FIFO config cannot hang startup: defaults with one warning, no writer", { skip: process.platform === "win32", timeout: 5000 }, async () => {
 		resetConfigProbe();
-		const configDir = path.join(agentDir, "config", "pi-session-search");
+		const configDir = path.join(agentDir, "config", "pi-session-recall");
 		fs.mkdirSync(configDir, { recursive: true });
 		const fifo = path.join(agentDir, "probe.fifo");
 		const errors: unknown[] = [];
@@ -350,12 +350,12 @@ describe("session_search entry point", () => {
 		console.error = (...args: unknown[]) => errors.push(args);
 		try {
 			for (const [label, link] of [["fifo", false], ["symlink-to-fifo", true]] as const) {
-				const configPath = path.join(configDir, "pi-session-search.json");
+				const configPath = path.join(configDir, "pi-session-recall.json");
 				execFileSync("mkfifo", [fifo]); // never written to; open must not block
 				if (link) fs.symlinkSync(fifo, configPath);
 				else fs.renameSync(fifo, configPath); // move the FIFO into place directly
 				errors.length = 0;
-				const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-${label}`);
+				const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-${label}`);
 				const pi = makePi();
 				mod.default(pi as never); // must return without a writer on the FIFO
 				const result = await (pi as any).tool.execute("fifo", {}, undefined, undefined, { sessionManager: {} });
@@ -371,7 +371,7 @@ describe("session_search entry point", () => {
 	});
 
 	it("errors return success:false instead of throwing", async () => {
-		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}`);
+		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}`);
 		const pi = makePi();
 		mod.default(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
@@ -383,7 +383,7 @@ describe("session_search entry point", () => {
 	});
 
 	it("rejects sessionId outside the sessions directory (bhGOq)", async () => {
-		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-trav`);
+		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-trav`);
 		const pi = makePi();
 		mod.default(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
@@ -402,7 +402,7 @@ describe("session_search entry point", () => {
 	});
 
 	it("compact discovery hits carry the anchor message (bhGOn)", async () => {
-		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-compact`);
+		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-compact`);
 		const pi = makePi();
 		mod.default(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
@@ -417,7 +417,7 @@ describe("session_search entry point", () => {
 			msg(null, "user", "another zebra topic conversation"),
 		]);
 		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-compact`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
 		const res = await tool.execute("t7", { query: "zebra topic", limit: 2 }, undefined, undefined, {
 			sessionManager: {},
 		});
@@ -430,7 +430,7 @@ describe("session_search entry point", () => {
 	});
 
 	it("discovery preserves an indexed hit and reports oversized hydration failure", async () => {
-		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-oversized-hydration`);
+		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-oversized-hydration`);
 		const pi = makePi();
 		mod.default(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
@@ -440,7 +440,7 @@ describe("session_search entry point", () => {
 			msg(null, "user", "sparse hydration ceiling platypus"),
 		]);
 		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-oversized-hydration`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"));
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
 		fs.truncateSync(session, MAX_SESSION_FILE_BYTES + 1);
 
 		const response = await tool.execute("oversized", { query: "sparse hydration ceiling platypus" }, undefined, undefined, { sessionManager: {} });
@@ -461,22 +461,22 @@ describe("session_search entry point", () => {
 			]);
 		}
 		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-search", "index.db"), { cap: 1 });
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"), { cap: 1 });
 		let before = 0;
 		for (let i = 0; i < 3; i++) {
 			const r = await (async () => {
 				const mod = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain${i}`);
-				return mod.searchIndex(path.join(agentDir, "config", "pi-session-search", "index.db"), `backlog drain unique topic number ${i}`);
+				return mod.searchIndex(path.join(agentDir, "config", "pi-session-recall", "index.db"), `backlog drain unique topic number ${i}`);
 			})();
 			if (r.hits.length > 0) before++;
 		}
-		const mod = await import(`../extensions/session-search.ts?bust=${Date.now()}-drain`);
+		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-drain`);
 		const pi = makePi();
 		mod.default(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
 		await tool.execute("t8", { query: "backlog drain unique topic number 2" }, undefined, undefined, { sessionManager: {} });
 		const { searchIndex: si } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain-after`);
-		const after = si(path.join(agentDir, "config", "pi-session-search", "index.db"), `backlog drain unique topic number 2`);
+		const after = si(path.join(agentDir, "config", "pi-session-recall", "index.db"), `backlog drain unique topic number 2`);
 		// Before the tool call at most cap=1 file was indexed; lazy sync drains the rest.
 		assert.ok(after.hits.length > 0 || before > 0);
 		assert.ok(before + after.hits.length >= 1);

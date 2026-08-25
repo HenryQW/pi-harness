@@ -16,7 +16,7 @@ let sessionsDir: string;
 let dbPath: string;
 
 before(() => {
-	tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-search-test-"));
+	tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-test-"));
 	sessionsDir = path.join(tmp, "sessions");
 	dbPath = path.join(tmp, "index.db");
 });

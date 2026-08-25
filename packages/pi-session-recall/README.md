@@ -1,4 +1,4 @@
-# `@henryqw/pi-session-search`
+# `@henryqw/pi-session-recall`
 
 FTS5 search over past Pi sessions: single `session_search` tool with four arg-inferred modes, zero LLM calls, raw messages only.
 
@@ -10,7 +10,7 @@ FTS5 search over past Pi sessions: single `session_search` tool with four arg-in
 ## Install
 
 ```bash
-pi install npm:@henryqw/pi-session-search
+pi install npm:@henryqw/pi-session-recall
 ```
 
 ## Use
@@ -33,7 +33,7 @@ Hits inside the current session's live context are suppressed; compacted-away or
 
 ## Config
 
-`~/.pi/agent/config/pi-session-search/pi-session-search.json`
+`~/.pi/agent/config/pi-session-recall/pi-session-recall.json`
 
 ```json
 {
@@ -47,20 +47,20 @@ Deliberate exclusions: session directories whose encoded path starts with `--tmp
 
 ## Storage & privacy
 
-The SQLite index lives at `~/.pi/agent/config/pi-session-search/index.db`. It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.
+The SQLite index lives at `~/.pi/agent/config/pi-session-recall/index.db`. It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.
 
 ## Remove
 
 ```bash
-pi remove npm:@henryqw/pi-session-search
+pi remove npm:@henryqw/pi-session-recall
 ```
 
-Delete `~/.pi/agent/config/pi-session-search/` to reclaim index disk space.
+Delete `~/.pi/agent/config/pi-session-recall/` to reclaim index disk space.
 
 ## Development
 
 ```bash
-npm test --workspace @henryqw/pi-session-search
-npm run typecheck --workspace @henryqw/pi-session-search
-npm run pack:check --workspace @henryqw/pi-session-search
+npm test --workspace @henryqw/pi-session-recall
+npm run typecheck --workspace @henryqw/pi-session-recall
+npm run pack:check --workspace @henryqw/pi-session-recall
 ```

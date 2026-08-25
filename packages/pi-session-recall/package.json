@@ -1,11 +1,11 @@
 {
-	"name": "@henryqw/pi-session-search",
+	"name": "@henryqw/pi-session-recall",
 	"version": "0.1.4",
 	"description": "FTS5 search over past Pi sessions: single tool, four arg-inferred modes (discovery/scroll/read/browse), zero LLM calls.",
 	"keywords": [
 		"pi-package",
 		"pi",
-		"session-search",
+		"session-recall",
 		"fts5",
 		"recall"
 	],
@@ -32,7 +32,7 @@
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/HenryQW/pi-packages.git",
-		"directory": "packages/pi-session-search"
+		"directory": "packages/pi-session-recall"
 	},
 	"bugs": {
 		"url": "https://github.com/HenryQW/pi-packages/issues"
@@ -42,7 +42,7 @@
 	},
 	"pi": {
 		"extensions": [
-			"./extensions/session-search.ts"
+			"./extensions/session-recall.ts"
 		]
 	}
 }

@@ -1,5 +1,5 @@
 /**
- * pi-session-search entry point: config load, tool registration, mode dispatch.
+ * pi-session-recall entry point: config load, tool registration, mode dispatch.
  */
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -11,8 +11,8 @@ import { DEFAULT_SYNC_CAP, MAX_BACKFILL_FILES, MAX_QUERY_CHARS, getSessionRows, 
 import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
-const configPath = () => join(getAgentDir(), "config", "pi-session-search", "pi-session-search.json");
-const dbPath = () => join(getAgentDir(), "config", "pi-session-search", "index.db");
+const configPath = () => join(getAgentDir(), "config", "pi-session-recall", "pi-session-recall.json");
+const dbPath = () => join(getAgentDir(), "config", "pi-session-recall", "index.db");
 const sessionsDir = () => join(getAgentDir(), "sessions");
 
 const OUTPUT_CHAR_BUDGET = 50_000;
@@ -49,7 +49,7 @@ function readConfig(): Config {
 		}
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
-		console.error(`[pi-session-search] failed to read config ${path}: ${error instanceof Error ? error.message : String(error)}; using default`);
+		console.error(`[pi-session-recall] failed to read config ${path}: ${error instanceof Error ? error.message : String(error)}; using default`);
 		return fallback;
 	}
 
@@ -57,16 +57,16 @@ function readConfig(): Config {
 	try {
 		value = JSON.parse(raw);
 	} catch {
-		console.error("[pi-session-search] malformed config; using default");
+		console.error("[pi-session-recall] malformed config; using default");
 		return fallback;
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		console.error("[pi-session-search] config must be a JSON object; using default");
+		console.error("[pi-session-recall] config must be a JSON object; using default");
 		return fallback;
 	}
 	const keys = Object.keys(value);
 	if (keys.some((key) => key !== "backfillFiles")) {
-		console.error("[pi-session-search] config contains unknown keys; using default");
+		console.error("[pi-session-recall] config contains unknown keys; using default");
 		return fallback;
 	}
 	const cap = (value as Record<string, unknown>).backfillFiles;
@@ -74,7 +74,7 @@ function readConfig(): Config {
 	// Safe integer rejects untrusted magnitudes like 1e100 that would
 	// defeat the sync work bound.
 	if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1 || cap > MAX_BACKFILL_FILES) {
-		console.error("[pi-session-search] invalid backfillFiles in config; using default");
+		console.error("[pi-session-recall] invalid backfillFiles in config; using default");
 		return fallback;
 	}
 	return { backfillFiles: cap };
