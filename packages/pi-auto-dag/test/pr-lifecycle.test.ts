@@ -91,6 +91,43 @@ test("a retained completed run resumes unfinished terminal cleanup without reval
 	assert.equal(gh.calls.length, ghCalls);
 });
 
+test("a failed terminal cleanup keeps completion durable and retries after the PR merges", async (t) => {
+	const project = await makeProject(t);
+	const gh = fakeGh(project.root);
+	const base = combinedRunner(fakeHerdr(), gh);
+	let failBranchDelete = false;
+	const runner: CommandRunner = async (command, args, options) => {
+		if (failBranchDelete && command === "git" && args[0] === "branch" && args[1] === "-D") {
+			return { code: 1, stdout: "", stderr: "branch busy" };
+		}
+		return await base(command, args, options);
+	};
+	const lifecycle = makeLifecycle(runner);
+	await finishInitialRun(project.root, lifecycle);
+	const completed = (await lifecycle.status(project.root, RUN_ID))!;
+
+	// Simulate an interrupted cleanup save whose retry fails while the PR merges.
+	await writeRunState(project.root, replaceTask(completed, "alpha", { ...completed.tasks.alpha, branch_cleanup_done: undefined }), () => "interrupted");
+	await git(project.root, "branch", completed.tasks.alpha.branch!, completed.tasks.alpha.commit!);
+	failBranchDelete = true;
+	gh.state = "MERGED";
+	let resumed = await lifecycle.resume(project.root);
+	assert.equal(resumed.phase, "completed");
+	assert.equal(resumed.cleanup_blocks?.[0]?.operation, "branch");
+
+	failBranchDelete = false;
+	const ghCalls = gh.calls.length;
+	resumed = await lifecycle.resume(project.root);
+	assert.equal(resumed.phase, "completed");
+	assert.equal(resumed.cleanup_blocks, undefined);
+	assert.equal(resumed.tasks.alpha.branch_cleanup_done, true);
+	assert.equal(gh.calls.length, ghCalls);
+	const notification = resumed.notifications.find((candidate) => candidate.kind === "completed");
+	assert.ok(notification);
+	assert.equal(notification.delivered_at, undefined);
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+});
+
 test("acknowledgement cannot clobber a concurrent lifecycle state update", async (t) => {
 	const project = await makeProject(t);
 	const lifecycle = makeLifecycle(combinedRunner(fakeHerdr(), fakeGh(project.root)));

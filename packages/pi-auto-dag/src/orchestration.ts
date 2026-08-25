@@ -652,7 +652,8 @@ async function recordCleanupBlock(
 	return await save({
 		...state,
 		cleanup_blocks: blocks,
-		...(state.phase === "aborted" ? {} : { phase: "blocked", block_reason: `Cleanup blocked for ${issueId}: ${reason}` }),
+		// Terminal completion survives a failed cleanup so a later resume retries cleanup instead of revalidating its PR.
+		...(state.phase === "aborted" || state.phase === "completed" ? {} : { phase: "blocked", block_reason: `Cleanup blocked for ${issueId}: ${reason}` }),
 	}, options);
 }
 
