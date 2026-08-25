@@ -834,4 +834,29 @@ describe("browse", () => {
 		assert.equal(cjkRow?.preview?.slice(0, 4), "今天我们");
 		assert.equal(cjkRow?.cwd, "/Users/tester/proj");
 	});
+
+	it("canonicalizes valid timestamps and ranks invalid timestamps last", () => {
+		const isolatedSessions = path.join(tmp, "timestamp-sessions");
+		const isolatedDb = path.join(tmp, "timestamp-index.db");
+		const fixtures = [
+			["z.jsonl", "2026-01-01T00:30:00Z"],
+			["offset.jsonl", "2026-01-01T02:00:00+01:00"],
+			["malformed.jsonl", "zzzz"],
+			["impossible.jsonl", "2026-02-30T12:00:00Z"],
+			["hour-24.jsonl", "2026-01-01T24:00:00Z"],
+		] as const;
+		fs.mkdirSync(isolatedSessions);
+		for (const [name, timestamp] of fixtures) {
+			fs.writeFileSync(path.join(isolatedSessions, name), `${JSON.stringify({ type: "session", version: 3, id: crypto.randomUUID(), timestamp, cwd: "/tmp" })}\n`);
+		}
+
+		assert.equal(syncSessions(isolatedSessions, isolatedDb).filesProcessed, fixtures.length);
+		const rows = getSessionRows(isolatedDb, fixtures.length);
+		assert.deepEqual(rows.slice(0, 2).map((row) => [path.basename(row.path), row.startedAt]), [
+			["offset.jsonl", "2026-01-01T01:00:00.000Z"],
+			["z.jsonl", "2026-01-01T00:30:00.000Z"],
+		]);
+		assert.deepEqual(new Set(rows.slice(2).map((row) => path.basename(row.path))), new Set(["malformed.jsonl", "impossible.jsonl", "hour-24.jsonl"]));
+		assert.ok(rows.slice(2).every((row) => row.startedAt === undefined));
+	});
 });

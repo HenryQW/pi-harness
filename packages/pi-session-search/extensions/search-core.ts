@@ -154,6 +154,26 @@ function capStr(value: unknown, max: number): string | null {
 	return typeof value === "string" ? value.slice(0, max) : null;
 }
 
+/** Narrow ISO timestamp shape; captures wall-clock fields for validation. */
+const ISO_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** Canonicalize a session-header timestamp to UTC ISO so its lexicographic
+ *  order matches chronological order (browse sorts started_at DESC as TEXT).
+ *  Anything else is stored null so it sorts behind every valid timestamp. */
+function normalizeTimestamp(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const m = ISO_TIMESTAMP_RE.exec(value);
+	if (!m) return null;
+	const [, y, mo, d, h] = m;
+	if (+h > 23) return null;
+	const probe = new Date(Date.UTC(+y, +mo - 1, +d));
+	// Date parsing rejects invalid time fields, but silently rolls impossible
+	// calendar dates such as February 30.
+	if (probe.getUTCMonth() !== +mo - 1 || probe.getUTCDate() !== +d) return null;
+	const date = new Date(value);
+	return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function extractText(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
@@ -201,7 +221,7 @@ function parseSessionFile(filePath: string): ParsedFile {
 				// Untrusted header strings are capped here so every consumer
 				// (browse rows, discovery meta) inherits the bound.
 				parsed.cwd = capStr(entry.cwd, 500) ?? parsed.cwd;
-				parsed.startedAt = capStr(entry.timestamp, 128) ?? parsed.startedAt;
+				parsed.startedAt = normalizeTimestamp(entry.timestamp) ?? parsed.startedAt;
 				parsed.parentSession = capStr(entry.parentSession, 1024) ?? parsed.parentSession;
 				break;
 			case "session_info":
