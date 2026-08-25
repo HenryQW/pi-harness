@@ -5,8 +5,7 @@ How engineering skills consume domain documentation in this multi-context worksp
 ## Before exploring, read these
 
 - **`CONTEXT-MAP.md`** at repo root, if present. It points to each package's `CONTEXT.md`; read contexts relevant to task.
-- **`docs/adr/`** for system-wide decisions affecting task.
-- **`packages/<package>/docs/adr/`** for package-specific decisions affecting task.
+- **`docs/adr/`** for repository-wide and package-prefixed decisions affecting the task.
 
 If files don't exist, proceed silently. Don't suggest creating them upfront. `/domain-modeling` creates them when terms or decisions get resolved.
 
@@ -15,14 +14,12 @@ If files don't exist, proceed silently. Don't suggest creating them upfront. `/d
 ```text
 /
 ├── CONTEXT-MAP.md
-├── docs/adr/                         ← system-wide decisions
+├── docs/adr/                         ← repository-wide and package-prefixed decisions
 └── packages/
     ├── pi-auto-compact/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/                 ← package-specific decisions
+    │   └── CONTEXT.md
     └── <future-package>/
-        ├── CONTEXT.md
-        └── docs/adr/
+        └── CONTEXT.md
 ```
 
 ## Use glossary vocabulary
