@@ -49,12 +49,6 @@ export function configuredOpenUri(path: string): string | undefined {
 	return `vscode://file${pathToFileURL(path).pathname}`;
 }
 
-async function saveCommand(command: string): Promise<void> {
-	const path = configPath();
-	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify({ command }, null, 2)}\n`, "utf8");
-}
-
 export default function openInExtension(pi: ExtensionAPI): void {
 	// ponytail: static description so it never goes stale after /set-open-in
 	// (handler re-reads config per invocation); per-token whitespace splitting,
@@ -75,7 +69,9 @@ export default function openInExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const command = args.trim();
 			if (!command) throw new Error("Usage: /set-open-in <command>");
-			await saveCommand(command);
+			const path = configPath();
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, `${JSON.stringify({ command }, null, 2)}\n`, "utf8");
 			ctx.ui.notify(`Saved open-in command: ${command}`, "info");
 		},
 	});
