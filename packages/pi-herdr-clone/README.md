@@ -41,6 +41,14 @@ Both commands wait until Pi is idle, then validate the current Herdr pane (`HERD
 
 If target creation fails outright, no clone session is kept or created. A killed or incomplete creation response is ambiguous because Herdr may have retained partial state; the error reports every identifier returned so far and suggests inspecting `herdr workspace list`. Once agent start is attempted, the target tab, panes, and session file are retained because the launch outcome can be unknown; the error reports any known IDs for recovery. A later focus failure is shown as a warning and does not report the already-started clone as failed.
 
+## Config
+
+This package has no package-owned user-editable config. Cloned Pi session files are Pi-managed session state, not configuration.
+
+| File | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| — | No | — | — | Built-in behavior |
+
 ## Remove
 
 ```bash

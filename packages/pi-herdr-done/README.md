@@ -35,6 +35,14 @@ Tabs in the current Herdr workspace close automatically. When a tab from another
 
 Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --force` to explicitly delete them.
 
+## Config
+
+This package has no package-owned user-editable config.
+
+| File | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| — | No | — | — | Built-in behavior |
+
 ## Remove
 
 ```bash
