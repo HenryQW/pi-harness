@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import memoryExtension from "../extensions/memory.ts";
-import { MAX_FILE_BYTES } from "../src/store.ts";
+import { ENTRY_DELIMITER, MAX_FILE_BYTES } from "../src/store.ts";
 
 const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 
@@ -34,7 +34,7 @@ test("/remember validates input, rejects busy agents, and sends live state", asy
 	try {
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
 		await mkdir(memoryDir, { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
+		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir, memoryCharLimit: 30, userCharLimit: 22 }));
 		await writeFile(join(memoryDir, "MEMORY.md"), "prefers tea");
 		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
 
@@ -69,7 +69,22 @@ test("/remember validates input, rejects busy agents, and sends live state", asy
 		assert.match(notify[3]!, /Cannot run \/remember: live memory state is unreadable or oversized/);
 		assert.equal(messages.length, 0);
 
+		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(31));
+		await remember.handler("save this", context(true));
+		assert.match(notify[4]!, /live memory entries exceed the configured character limit/);
+		assert.equal(messages.length, 0);
+
+		await writeFile(join(memoryDir, "MEMORY.md"), "prefers tea");
+		const userEntries = ["first user", "second user", "third user"];
+		assert.ok(userEntries.every((entry) => entry.length <= 22));
+		assert.ok(userEntries.join(ENTRY_DELIMITER).length > 22);
+		await writeFile(join(memoryDir, "USER.md"), userEntries.join(ENTRY_DELIMITER));
+		await remember.handler("save this", context(true));
+		assert.match(notify[5]!, /live user entries exceed the configured character limit/);
+		assert.equal(messages.length, 0);
+
 		await writeFile(join(memoryDir, "MEMORY.md"), "prefers tea\n§\nnew live entry");
+		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
 		await remember.handler("  prefers \"tea\"\n  ", context(true));
 		assert.equal(messages.length, 1);
 		assert.match(messages[0]!, /semantically compare it with the live entries/);

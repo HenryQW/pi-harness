@@ -134,6 +134,14 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify("Cannot run /remember while the agent is busy.", "warning");
 					return;
 				}
+				const overLimit = loaded.filter(([target, result]) => {
+					const limit = target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit;
+					return result.entries.join(ENTRY_DELIMITER).length > limit;
+				});
+				if (overLimit.length) {
+					ctx.ui.notify(`Cannot run /remember: live ${overLimit.map(([target]) => target).join(" and ")} entries exceed the configured character limit. Consolidate them before using /remember.`, "warning");
+					return;
+				}
 				const entries = Object.fromEntries(loaded.map(([target, result]) => [target, result.entries]));
 				pi.sendUserMessage(`Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory, choose the correct memory target, semantically compare it with the live entries, and merge or replace overlap instead of adding duplicates. Use the existing memory tool. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`);
 			} catch (error) {
