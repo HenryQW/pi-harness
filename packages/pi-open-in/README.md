@@ -30,9 +30,11 @@ pi install npm:@henryqw/pi-open-in
 }
 ```
 
-The command is split on whitespace; tokens cannot contain spaces (no quoting). Use a wrapper script for executables in spaced paths.
+| Field | Required | Possible values | Default (missing file) |
+| --- | --- | --- | --- |
+| `command` | Yes when the file exists | Non-empty string, split on whitespace into executable plus arguments; tokens cannot contain spaces (no quoting) — use a wrapper script for executables in spaced paths | `"code"` |
 
-A missing config file falls back to `code`. An existing file must be a JSON object with exactly one non-empty string `command` property; otherwise `/open` fails with a visible error. The file is never rewritten by this extension except via `/set-open-in`. When the config is invalid, no open URI is offered.
+An existing file must be a JSON object with exactly one non-empty string `command` property; otherwise `/open` fails with a visible error and no open URI is offered. The file is never rewritten by this extension except via `/set-open-in`. This package uses no shared config.
 
 ## Remove
 

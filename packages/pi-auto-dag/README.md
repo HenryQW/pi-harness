@@ -41,7 +41,7 @@ Workers run through user-owned `@henryqw/pi-subagent` Roles with package-fixed i
 
 ## Config
 
-`~/.pi/agent/config/pi-auto-dag.json`
+Package-owned: `~/.pi/agent/config/pi-auto-dag.json`
 
 ```json
 {
@@ -52,7 +52,16 @@ Workers run through user-owned `@henryqw/pi-subagent` Roles with package-fixed i
 }
 ```
 
-The file is optional. When present, `version` is required and must be `5`; the other values are optional positive integers. `required_gate_timeout_ms` cannot exceed `2147483647`; timeout exits `124`.
+| Field | Required | Possible values | Default (missing file or omitted field) |
+| --- | --- | --- | --- |
+| `version` | Yes when the file exists | Exactly `5` | — |
+| `max_parallel_tasks` | No | Positive integer | `5` |
+| `max_review_rounds` | No | Positive integer | `5` |
+| `required_gate_timeout_ms` | No | Positive integer, at most `2147483647`; timeout exits `124` | `1800000` |
+
+The file is optional; missing means all defaults. Unknown keys are rejected. Malformed or invalid files fail fast and are never rewritten.
+
+Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`, assigns profiles to tasks `pi-auto-dag/implement` and `pi-auto-dag/review` for worker routes.
 
 ## Delivery Graph
 
