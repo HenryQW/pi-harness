@@ -1,9 +1,8 @@
-import { execFile as execFileCallback, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { finished } from "node:stream/promises";
-import { promisify } from "node:util";
+import { exists, processIdentity, removeFile, writeJson } from "./gate-helpers.mjs";
 
 const OUTPUT_OVERFLOW_EXIT_CODE = 125;
 const GATE_COMMAND_LAUNCHER = `
@@ -207,59 +206,8 @@ function signalGroup(pid, signal) {
 	}
 }
 
-async function processIdentity(pid) {
-	if (process.platform === "linux") {
-		try {
-			const [bootId, stat] = await Promise.all([
-				readFile("/proc/sys/kernel/random/boot_id", "utf8"),
-				readFile(`/proc/${pid}/stat`, "utf8"),
-			]);
-			const fields = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
-			const started = fields[19];
-			if (!started) throw new Error("Linux process stat lacks start time");
-			return fields[0] === "Z" ? undefined : `linux:${bootId.trim()}:${started}`;
-		} catch (error) {
-			if (["ENOENT", "ESRCH"].includes(error.code ?? "")) return undefined;
-			throw error;
-		}
-	}
-	try {
-		const execFile = promisify(execFileCallback);
-		const [{ stdout }, { stdout: status }] = await Promise.all([
-			execFile("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }),
-			execFile("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }),
-		]);
-		const started = stdout.trim();
-		return started && !status.trim().startsWith("Z") ? `${process.platform}:${started}` : undefined;
-	} catch (error) {
-		if (String(error.code) === "1") return undefined;
-		throw error;
-	}
-}
-
-async function writeJson(path, value) {
-	const temporary = `${path}.${randomUUID()}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
-	await rename(temporary, path);
-}
-
-async function exists(path) {
-	try {
-		await access(path);
-		return true;
-	} catch (error) {
-		if (error.code === "ENOENT") return false;
-		throw error;
-	}
-}
-
 async function cancelLaunch(readyPath, cancelPath) {
 	await Promise.all([removeFile(readyPath), removeFile(cancelPath)]);
 	throw new Error("Required gate launch was cancelled");
 }
 
-async function removeFile(path) {
-	await unlink(path).catch((error) => {
-		if (error.code !== "ENOENT") throw error;
-	});
-}

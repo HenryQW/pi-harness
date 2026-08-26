@@ -1,11 +1,11 @@
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { exists as fileExists, processIdentity, removeFile, writeJson } from "./gate-helpers.mjs";
 import type { GateOutputEvidence, RequiredGateEvidence } from "./model.ts";
 import { runDirectory } from "./state.ts";
 
@@ -21,7 +21,9 @@ export interface GateOutputFiles {
 	stderr: string;
 }
 
-export type GateEvidenceTarget = { kind: "task"; issue_id: string };
+export interface GateEvidenceTarget {
+	issue_id: string;
+}
 
 export interface RequiredGateExecution {
 	command: string;
@@ -56,8 +58,8 @@ interface CommandOptions {
 		command: string;
 		commit: string;
 		target: GateEvidenceTarget;
-		ignoredSnapshotPath?: string;
-		headRef?: string | null;
+		ignoredSnapshotPath: string;
+		headRef: string | null;
 	};
 }
 
@@ -71,7 +73,6 @@ export type CommandRunner = (
 const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const OUTPUT_OVERFLOW_EXIT_CODE = 125;
 const GATE_HOST_PATH = fileURLToPath(new URL("./gate-host.mjs", import.meta.url));
-const execFile = promisify(execFileCallback);
 
 export const runCommand: CommandRunner = async (command, arguments_, options) => {
 	const timed = options.timeoutMs !== undefined;
@@ -94,7 +95,7 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 			target: options.gateProcess.target,
 			head_ref: options.gateProcess.headRef,
 			ignored_snapshot: options.gateProcess.ignoredSnapshotPath,
-			output_files: outputFiles,
+			output_files: outputFiles!,
 			max_output_bytes: maxOutputBytes,
 			timeout_ms: options.timeoutMs,
 		});
@@ -188,24 +189,31 @@ export const runCommand: CommandRunner = async (command, arguments_, options) =>
 	}
 };
 
-interface GateProcessRecord {
-	version: 3 | 4;
-	phase: "launching" | "completed";
+interface GateProcessRecordBase {
+	version: 4;
 	launch_id: string;
 	grouped: boolean;
 	release: string;
 	cwd: string;
 	command: string;
 	commit: string;
-	target?: GateEvidenceTarget;
-	head_ref?: string | null;
-	ignored_snapshot?: string;
-	output_files?: GateOutputFiles;
-	max_output_bytes?: number;
+	target: GateEvidenceTarget;
+	head_ref: string | null;
+	ignored_snapshot: string;
+	output_files: GateOutputFiles;
+	max_output_bytes: number;
 	timeout_ms?: number;
-	exit_code?: number;
-	cleanup_complete?: boolean;
 }
+
+type GateProcessRecord = GateProcessRecordBase & ({
+	phase: "launching";
+} | {
+	phase: "completed";
+	exit_code: number;
+	cleanup_complete: boolean;
+});
+
+type GateProcessRecordCompleted = Extract<GateProcessRecord, { phase: "completed"; }>;
 
 interface GateHostRecord {
 	version: 1;
@@ -215,17 +223,6 @@ interface GateHostRecord {
 }
 
 type GateCommandRecord = GateHostRecord;
-
-export interface GateHostControl {
-	release: string;
-	cancel: string;
-	ready: string;
-	command: string;
-	command_release: string;
-	output_files: GateOutputFiles;
-	max_output_bytes: number;
-	timeout_ms?: number;
-}
 
 export function requiredGateProcessPath(mainWorktree: string, runId: string): string {
 	return join(runDirectory(mainWorktree, runId), "required-gate-process.json");
@@ -297,14 +294,14 @@ export async function reconcileRequiredGateProcess(
 	}
 	if (latest && latest.launch_id !== record.launch_id) throw new Error("Required gate launch changed during reconciliation");
 	await restoreCleanCommit(runner, record.commit, record.cwd, record.ignored_snapshot, record.head_ref);
-	if (record.output_files) await removeGateOutputFiles(record.output_files);
-	if (record.ignored_snapshot) await rm(record.ignored_snapshot, { recursive: true, force: true });
+	await removeGateOutputFiles(record.output_files);
+	await rm(record.ignored_snapshot, { recursive: true, force: true });
 	await removeGateControlFiles(path, record, !host && !command);
 	await removeFile(path);
 	return undefined;
 }
 
-async function recoverCompletedGate(runner: CommandRunner, path: string, record: GateProcessRecord): Promise<RequiredGateExecution> {
+async function recoverCompletedGate(runner: CommandRunner, path: string, record: GateProcessRecordCompleted): Promise<RequiredGateExecution> {
 	if (!record.cleanup_complete) {
 		await restoreCleanCommit(runner, record.commit, record.cwd, record.ignored_snapshot, record.head_ref);
 		await markGateCleanupComplete(path, record.launch_id);
@@ -427,9 +424,7 @@ async function markGateCleanupComplete(path: string, launchId: string): Promise<
 }
 
 function completedGateExecution(record: GateProcessRecord): RequiredGateExecution {
-	if (record.phase !== "completed" || !record.target || !record.output_files || record.exit_code === undefined) {
-		throw new Error("Completed required gate handoff is incomplete");
-	}
+	if (record.phase !== "completed") throw new Error("Completed required gate handoff is incomplete");
 	return {
 		command: record.command,
 		commit: record.commit,
@@ -447,11 +442,10 @@ export async function acknowledgeRequiredGate(path: string, execution: RequiredG
 	if (
 		record.phase !== "completed"
 		|| record.launch_id !== execution.handoff.launch_id
-		|| !record.target
 		|| !sameGateTarget(record.target, execution.handoff.target)
 	) throw new Error("Required gate acknowledgment does not match completed handoff");
-	if (record.output_files) await removeGateOutputFiles(record.output_files);
-	if (record.ignored_snapshot) await rm(record.ignored_snapshot, { recursive: true, force: true });
+	await removeGateOutputFiles(record.output_files);
+	await rm(record.ignored_snapshot, { recursive: true, force: true });
 	await removeGateControlFiles(path, record);
 	await removeFile(path);
 }
@@ -459,8 +453,8 @@ export async function acknowledgeRequiredGate(path: string, execution: RequiredG
 async function discardGateProcess(path: string): Promise<void> {
 	const record = await readGateProcess(path);
 	if (!record) return;
-	if (record.output_files) await removeGateOutputFiles(record.output_files);
-	if (record.ignored_snapshot) await rm(record.ignored_snapshot, { recursive: true, force: true });
+	await removeGateOutputFiles(record.output_files);
+	await rm(record.ignored_snapshot, { recursive: true, force: true });
 	await removeGateControlFiles(path, record);
 	await removeFile(path);
 }
@@ -477,38 +471,7 @@ async function removeGateControlFiles(path: string, record: GateProcessRecord, p
 }
 
 function sameGateTarget(left: GateEvidenceTarget, right: GateEvidenceTarget): boolean {
-	return left.kind === right.kind && left.issue_id === right.issue_id;
-}
-
-export async function markGateHostReady(path: string, launchId: string): Promise<GateHostControl> {
-	const record = await readGateProcess(path);
-	if (!record || record.phase !== "launching" || record.launch_id !== launchId) {
-		throw new Error("Required gate launch intent does not match gate host");
-	}
-	const cancel = gateHostCancelPath(path, launchId);
-	if (await fileExists(cancel)) throw new Error("Required gate launch was cancelled");
-	if (record.version !== 4 || !record.output_files || record.max_output_bytes === undefined) {
-		throw new Error("Required gate launch intent lacks host output settings");
-	}
-	const control = {
-		release: record.release,
-		cancel,
-		ready: gateHostReadyPath(path, launchId),
-		command: gateCommandPath(path, launchId),
-		command_release: gateCommandReleasePath(path, launchId),
-		output_files: record.output_files,
-		max_output_bytes: record.max_output_bytes,
-		...(record.timeout_ms === undefined ? {} : { timeout_ms: record.timeout_ms }),
-	};
-	const identity = await processIdentity(process.pid);
-	if (!identity) throw new Error("Required gate host lacks a safe process identity");
-	if (await fileExists(control.cancel)) throw new Error("Required gate launch was cancelled");
-	await writeJson(control.ready, { version: 1, launch_id: launchId, pid: process.pid, identity } satisfies GateHostRecord);
-	if (await fileExists(control.cancel)) {
-		await removeFile(control.ready);
-		throw new Error("Required gate launch was cancelled");
-	}
-	return control;
+	return left.issue_id === right.issue_id;
 }
 
 async function waitForGateHost(
@@ -565,30 +528,24 @@ async function readGateProcess(path: string): Promise<GateProcessRecord | undefi
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Required gate process record must be an object");
 	const input = value as Record<string, unknown>;
-	if (input.version !== 3 && input.version !== 4) throw new Error("Unsupported required gate process record version");
-	if (input.phase !== "launching" && !(input.version === 4 && input.phase === "completed")) throw new Error("Required gate process phase is invalid");
+	if (input.version !== 4) throw new Error("Unsupported required gate process record version");
+	if (input.phase !== "launching" && input.phase !== "completed") throw new Error("Required gate process phase is invalid");
 	if (typeof input.grouped !== "boolean") throw new Error("Required gate process grouped must be boolean");
-	for (const key of ["launch_id", "release", "cwd", "command", "commit"] as const) {
+	for (const key of ["launch_id", "release", "cwd", "command", "commit", "ignored_snapshot"] as const) {
 		if (typeof input[key] !== "string" || !input[key]) throw new Error(`Required gate process ${key} must be a non-empty string`);
 	}
-	if (input.version === 4) {
-		input.target = readGateTarget(input.target);
-		if (!Number.isSafeInteger(input.max_output_bytes) || (input.max_output_bytes as number) <= 0) throw new Error("Required gate maximum output bytes must be a positive integer");
-		if (input.timeout_ms !== undefined && (!Number.isSafeInteger(input.timeout_ms) || (input.timeout_ms as number) <= 0)) throw new Error("Required gate timeout must be a positive integer");
-	}
-	if (input.head_ref !== undefined && input.head_ref !== null && (typeof input.head_ref !== "string" || !input.head_ref)) throw new Error("Required gate head ref must be a non-empty string or null");
-	if (input.ignored_snapshot !== undefined && (typeof input.ignored_snapshot !== "string" || !input.ignored_snapshot)) throw new Error("Required gate ignored snapshot must be a non-empty string");
-	if (input.output_files !== undefined) {
-		if (!input.output_files || typeof input.output_files !== "object" || Array.isArray(input.output_files)) throw new Error("Required gate output files must be an object");
-		const files = input.output_files as Record<string, unknown>;
-		for (const stream of ["stdout", "stderr"] as const) {
-			if (typeof files[stream] !== "string" || !files[stream]) throw new Error(`Required gate ${stream} output file must be a non-empty string`);
-		}
+	input.target = readGateTarget(input.target);
+	if (!Number.isSafeInteger(input.max_output_bytes) || (input.max_output_bytes as number) <= 0) throw new Error("Required gate maximum output bytes must be a positive integer");
+	if (input.timeout_ms !== undefined && (!Number.isSafeInteger(input.timeout_ms) || (input.timeout_ms as number) <= 0)) throw new Error("Required gate timeout must be a positive integer");
+	if (input.head_ref !== null && (typeof input.head_ref !== "string" || !input.head_ref)) throw new Error("Required gate head ref must be a non-empty string or null");
+	if (!input.output_files || typeof input.output_files !== "object" || Array.isArray(input.output_files)) throw new Error("Required gate output files must be an object");
+	const files = input.output_files as Record<string, unknown>;
+	for (const stream of ["stdout", "stderr"] as const) {
+		if (typeof files[stream] !== "string" || !files[stream]) throw new Error(`Required gate ${stream} output file must be a non-empty string`);
 	}
 	if (input.phase === "completed") {
 		if (!Number.isSafeInteger(input.exit_code) || (input.exit_code as number) < 0) throw new Error("Completed required gate exit code must be a non-negative integer");
 		if (typeof input.cleanup_complete !== "boolean") throw new Error("Completed required gate cleanup status must be boolean");
-		if (input.output_files === undefined) throw new Error("Completed required gate output files are missing");
 	}
 	return input as unknown as GateProcessRecord;
 }
@@ -596,16 +553,9 @@ async function readGateProcess(path: string): Promise<GateProcessRecord | undefi
 function readGateTarget(value: unknown): GateEvidenceTarget {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Required gate evidence target must be an object");
 	const input = value as Record<string, unknown>;
-	if (input.kind !== "task") throw new Error("Required gate evidence target kind is invalid");
 	if (typeof input.issue_id !== "string" || !input.issue_id) throw new Error("Required gate evidence target issue ID must be a non-empty string");
-	if (Object.keys(input).some((key) => key !== "kind" && key !== "issue_id")) throw new Error("Required gate evidence target has unknown fields");
+	if (Object.keys(input).some((key) => key !== "issue_id")) throw new Error("Required gate evidence target has unknown fields");
 	return input as unknown as GateEvidenceTarget;
-}
-
-async function writeJson(path: string, value: unknown): Promise<void> {
-	const temporary = `${path}.${randomUUID()}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
-	await rename(temporary, path);
 }
 
 function gateHostReadyPath(path: string, launchId: string): string {
@@ -634,16 +584,6 @@ async function writeGateCancellation(path: string): Promise<void> {
 	});
 }
 
-async function fileExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-		throw error;
-	}
-}
-
 function signalProcess(pid: number, grouped: boolean, signal: NodeJS.Signals): boolean {
 	try {
 		process.kill(grouped ? -pid : pid, signal);
@@ -660,35 +600,6 @@ async function terminateProcess(pid: number, grouped: boolean): Promise<void> {
 	signalProcess(pid, grouped, "SIGKILL");
 }
 
-async function processIdentity(pid: number): Promise<string | undefined> {
-	if (process.platform === "linux") {
-		try {
-			const [bootId, stat] = await Promise.all([
-				readFile("/proc/sys/kernel/random/boot_id", "utf8"),
-				readFile(`/proc/${pid}/stat`, "utf8"),
-			]);
-			const fields = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/);
-			const started = fields[19];
-			if (!started) throw new Error("Linux process stat lacks start time");
-			return fields[0] === "Z" ? undefined : `linux:${bootId.trim()}:${started}`;
-		} catch (error) {
-			if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined;
-			throw error;
-		}
-	}
-	try {
-		const [{ stdout }, { stdout: status }] = await Promise.all([
-			execFile("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }),
-			execFile("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }),
-		]);
-		const started = stdout.trim();
-		return started && !status.trim().startsWith("Z") ? `${process.platform}:${started}` : undefined;
-	} catch (error) {
-		if (String((error as NodeJS.ErrnoException).code) === "1") return undefined;
-		throw error;
-	}
-}
-
 function gateOutputFiles(processPath: string): GateOutputFiles {
 	const id = randomUUID();
 	return {
@@ -699,12 +610,6 @@ function gateOutputFiles(processPath: string): GateOutputFiles {
 
 async function removeGateOutputFiles(files: GateOutputFiles): Promise<void> {
 	await Promise.all([removeFile(files.stdout), removeFile(files.stderr)]);
-}
-
-async function removeFile(path: string): Promise<void> {
-	await unlink(path).catch((error: NodeJS.ErrnoException) => {
-		if (error.code !== "ENOENT") throw error;
-	});
 }
 
 async function writeIgnoredSnapshot(path: string, cwd: string, runner: CommandRunner): Promise<void> {

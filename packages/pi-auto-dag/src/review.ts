@@ -47,11 +47,9 @@ export async function recordGateExecution(
 	execution: RequiredGateExecution,
 	uuid: Uuid,
 ): Promise<RunState> {
-	if (execution.handoff && (
-		execution.handoff.target.kind !== target.kind
-		|| execution.handoff.target.issue_id !== target.issue_id
-	)) throw new Error("Required gate handoff evidence target changed before persistence");
-	if (target.kind !== "task") throw new Error("Required gate target must be a Run Task");
+	if (execution.handoff && execution.handoff.target.issue_id !== target.issue_id) {
+		throw new Error("Required gate handoff evidence target changed before persistence");
+	}
 	if (!state.tasks[target.issue_id]) throw new Error(`Required gate target task is missing: ${target.issue_id}`);
 	const evidence = await persistGateOutput(state, target.issue_id, execution, uuid);
 	const next = replaceTask(state, target.issue_id, { ...state.tasks[target.issue_id], ...gateEvidenceRecord(evidence) });
