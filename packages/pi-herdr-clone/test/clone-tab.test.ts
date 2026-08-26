@@ -30,7 +30,7 @@ test("/clone-tab retries a briefly busy root pane, copies only the active path, 
 				if (args[0] === "agent") {
 					starts += 1;
 					return starts === 1
-						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: false }
+						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: true }
 						: success();
 				}
 				return success();

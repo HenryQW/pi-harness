@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
-import { setTimeout as delay } from "node:timers/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode, type HerdrExecutor } from "@henryqw/pi-herdr";
+import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode, startPiAgent, type HerdrExecutor } from "@henryqw/pi-herdr";
 import {
 	modelReference,
 	orderedProfileRoutes,
@@ -482,26 +481,26 @@ export async function startManagedSubagent(
 		return "existing";
 	}
 	await hooks.beforeStart?.();
-	const arguments_ = ["agent", "start", name, "--kind", "pi", "--pane", paneId, "--", ...launch.args];
 	const herdr = createHerdrClient(options.execute);
-	for (let attempt = 1; attempt <= 5; attempt += 1) {
-		const result = await herdr.exec(arguments_, { cwd: host.cwd });
-		if (result.code === 0 && !result.killed) {
-			await hooks.onStarted?.();
-			return "started";
-		}
-		if (hasHerdrErrorCode(result, "agent_name_taken")) {
-			const raced = await getManagedSubagent(host, name, options);
-			if (!raced) throw new Error(`Herdr agent ${name} reported agent_name_taken but could not be found; refusing to start a duplicate`);
-			assertAgentPane(name, paneId, raced);
-			return "existing";
-		}
-		if (!hasHerdrErrorCode(result, "agent_pane_busy") || attempt === 5) {
-			throw new Error(herdrCommandFailure(arguments_, result));
-		}
-		await (options.delay ?? delay)(250);
+	const startArgs = ["agent", "start", name, "--kind", "pi", "--pane", paneId, "--", ...launch.args];
+	const result = await startPiAgent(herdr, {
+		name,
+		pane: paneId,
+		args: launch.args,
+		options: { cwd: host.cwd },
+		delay: options.delay,
+	});
+	if (result.code === 0 && !result.killed) {
+		await hooks.onStarted?.();
+		return "started";
 	}
-	throw new Error(`Herdr agent ${name} could not be started`);
+	if (hasHerdrErrorCode(result, "agent_name_taken")) {
+		const raced = await getManagedSubagent(host, name, options);
+		if (!raced) throw new Error(`Herdr agent ${name} reported agent_name_taken but could not be found; refusing to start a duplicate`);
+		assertAgentPane(name, paneId, raced);
+		return "existing";
+	}
+	throw new Error(herdrCommandFailure(startArgs, result));
 }
 
 export async function promptManagedSubagent(

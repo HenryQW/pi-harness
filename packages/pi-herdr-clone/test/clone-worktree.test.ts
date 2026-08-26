@@ -156,7 +156,7 @@ test("/clone-worktree moves to an extra tab when the root pane becomes busy afte
 				if (args[0] === "agent") {
 					starts.push(args[6]!);
 					return starts.length === 1
-						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: false }
+						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: true }
 						: success();
 				}
 				return undefined;
