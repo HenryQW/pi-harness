@@ -21,6 +21,7 @@ Public Pi packages under `@henryqw` scope.
 | [`@henryqw/pi-open-in`](./packages/pi-open-in) | Open current working directory with configurable command. |
 | [`@henryqw/pi-footer`](./packages/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
 | [`@henryqw/pi-pr`](./packages/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
+| [`@henryqw/pi-session-recall`](./packages/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
 | [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate one task to an isolated role with explicit extensions and skills. |
 | [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
