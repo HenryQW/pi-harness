@@ -14,7 +14,7 @@ import {
 	taskThinkingLevels,
 	writeTaskModelsConfig,
 } from "@henryqw/pi-task-models";
-import { registerTaskModelsExtension } from "../extensions/task-models.ts";
+import registerTaskModelsExtension from "../extensions/task-models.ts";
 
 function tempDir(): string {
 	return mkdtempSync(join(tmpdir(), "pi-task-models-"));
