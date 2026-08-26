@@ -3,8 +3,9 @@ import { recordedGateEvidence, requiredGateProcessPath, runRequiredGate, type Co
 import { executionIssues } from "./graph.ts";
 import type { GateCommandAmendment, LocalIssue, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
 import { recordGateExecution } from "./review.ts";
-import { issueById, replaceTask, task, writeRunState, type Uuid } from "./state.ts";
+import { issueById, replaceTask, task, type Uuid } from "./state.ts";
 import { nonEmptyString } from "./validate.ts";
+import { saveRunState as save, timestamp } from "./worker-protocol.ts";
 
 export type FinalGateOptions = {
 	runner: CommandRunner;
@@ -130,9 +131,9 @@ export async function ensureRecordedGate(
 			cwd,
 			timeoutMs,
 			requiredGateProcessPath(state.main_worktree, state.run_id),
-			{ kind: "task", issue_id: issue.id },
+			{ issue_id: issue.id },
 		);
-		state = await recordGateExecution(state, { kind: "task", issue_id: issue.id }, execution, options.uuid);
+		state = await recordGateExecution(state, { issue_id: issue.id }, execution, options.uuid);
 	}
 	return state;
 }
@@ -176,11 +177,3 @@ export function retryableFinalGate(state: RunState): { issue: LocalIssue; eviden
 	return { issue, evidence };
 }
 
-async function save(state: RunState, options: FinalGateOptions): Promise<RunState> {
-	await writeRunState(state.main_worktree, state, options.uuid);
-	return state;
-}
-
-function timestamp(options: FinalGateOptions): string {
-	return options.now?.() ?? new Date().toISOString();
-}

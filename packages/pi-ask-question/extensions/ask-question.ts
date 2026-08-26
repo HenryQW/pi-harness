@@ -3,6 +3,7 @@ import {
 	Editor,
 	type EditorTheme,
 	Key,
+	type KeyId,
 	matchesKey,
 	Text,
 	visibleWidth,
@@ -21,7 +22,6 @@ const CUSTOM_OPTION_LABEL = "Something else.";
 // Models are told to omit "(Recommended)" from labels but don't always comply; normalize instead of duplicating.
 const RECOMMENDED_SUFFIX = /\s*\(recommended\)\s*$/i;
 const withRecommended = (label: string): string => `${label.replace(RECOMMENDED_SUFFIX, "")} (Recommended)`;
-const NUMBER_KEYS = ["1", "2", "3", "4"] as const;
 
 interface QuestionDetails {
 	question: string;
@@ -75,8 +75,7 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 				};
 			}
 			let validationError: string | undefined;
-			if (suppliedOptions.length < 1 || suppliedOptions.length > 3) validationError = "1 to 3 options required";
-			else if (!question) validationError = "Question must not be blank";
+			if (!question) validationError = "Question must not be blank";
 			else if (suppliedOptions.some((option) => !option.label)) validationError = "Option labels must not be blank";
 			else if (new Set(options.map((option) => option.toLowerCase())).size !== options.length) validationError = "Option labels must be unique";
 			else if (options.some((option) => option.toLowerCase() === CUSTOM_OPTION_LABEL.toLowerCase())) validationError = `Option label "${CUSTOM_OPTION_LABEL}" is reserved`;
@@ -139,7 +138,7 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 							return;
 						}
 
-						const numberIndex = NUMBER_KEYS.findIndex((key, index) => index < allOptions.length && matchesKey(data, key));
+						const numberIndex = allOptions.findIndex((_, index) => matchesKey(data, `${index + 1}` as KeyId));
 						if (numberIndex >= 0) {
 							optionIndex = numberIndex;
 							selectOption();
@@ -157,11 +156,10 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 						if (cachedLines) return cachedLines;
 						const lines: string[] = [];
 						const renderWidth = Math.max(1, width);
-						const addWrapped = (text: string): void => { lines.push(...wrapTextWithAnsi(text, renderWidth)); };
 						const addWrappedWithPrefix = (prefix: string, text: string): void => {
 							const prefixWidth = visibleWidth(prefix);
 							if (prefixWidth >= renderWidth) {
-								addWrapped(prefix + text);
+								lines.push(...wrapTextWithAnsi(prefix + text, renderWidth));
 								return;
 							}
 							const wrapped = wrapTextWithAnsi(text, renderWidth - prefixWidth);

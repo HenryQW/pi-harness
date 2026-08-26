@@ -1,5 +1,6 @@
 import { commandFailure, commandOutput, errorMessage, type CommandRunner } from "./command.ts";
 import { findManagedSubagentTab, retireManagedSubagentTab } from "@henryqw/pi-subagent";
+import { requiredTaskGate } from "./final-gate.ts";
 import { cleanupFinalRepair, resumeFinalRepair } from "./final-repair.ts";
 import { executionIssues, FINAL_CHECK_ID } from "./graph.ts";
 import {
@@ -11,7 +12,6 @@ import {
 	ensureWorktree,
 	provisioningIdFor,
 	reconcileWorkers,
-	requiredTaskGate,
 	taskReviewId,
 	verifyReviewCommit,
 } from "./implementation-workers.ts";
@@ -390,7 +390,7 @@ async function submitReview(
 	if (current.status !== "reviewing") throw new Error(`Review submission is stale for Local Issue ${issue.id}`);
 	if (envelope.review_id !== taskReviewId(state, issue.id, current)) throw new Error(`Review submission is stale for Local Issue ${issue.id}`);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
-	const gate = requiredTaskGate(current, commit, issue.id);
+	const gate = requiredTaskGate(current, commit, `Run Task ${issue.id}`);
 	try {
 		await verifyReviewCommit(state, issue.id, commit, options);
 	} catch (error) {

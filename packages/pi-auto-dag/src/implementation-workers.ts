@@ -9,11 +9,11 @@ import {
 	reconcileManagedSubagentTab,
 	startManagedSubagent,
 } from "@henryqw/pi-subagent";
-import { gateCommandAmendments, requiredGateCommand } from "./final-gate.ts";
+import { gateCommandAmendments, requiredGateCommand, requiredTaskGate } from "./final-gate.ts";
 import { executionIssues, FINAL_CHECK_ID } from "./graph.ts";
 import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
-import type { LocalIssue, ProjectConfig, RequiredGateEvidence, RunState, RunTaskState } from "./model.ts";
+import type { LocalIssue, ProjectConfig, RunState, RunTaskState } from "./model.ts";
 import { actionTicketPath, ensureActionTicket, reviewId } from "./review-ticket.ts";
 import { recordGateExecution, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, type Uuid } from "./state.ts";
@@ -155,7 +155,7 @@ export async function ensureReviewer(
 	state = await ensureTaskGate(state, issue, config.required_gate_timeout_ms, options);
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, `Run Task ${issue.id} review commit`);
-	const gate = requiredTaskGate(current, commit, issue.id);
+	const gate = requiredTaskGate(current, commit, `Run Task ${issue.id}`);
 	if (gate.exit_code !== 0) throw new Error(`Required gate exited with code ${gate.exit_code}; reviewer was not launched`);
 	if (!current.tab_id || !current.implementer_pane || (current.reviewer_pane && !(await managedSubagentTabExists(workerHost(state), current.tab_id, workerHostOptions(options))))) {
 		const provisioningId = current.implementer_provisioning_id ?? provisioningIdFor(state.run_id, issue.id, "implementer");
@@ -262,9 +262,9 @@ async function ensureTaskGate(state: RunState, issue: LocalIssue, timeoutMs: num
 			nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 			timeoutMs,
 			requiredGateProcessPath(state.main_worktree, state.run_id),
-			{ kind: "task", issue_id: issue.id },
+			{ issue_id: issue.id },
 		);
-		state = await recordGateExecution(state, { kind: "task", issue_id: issue.id }, execution, options.uuid);
+		state = await recordGateExecution(state, { issue_id: issue.id }, execution, options.uuid);
 	}
 	return state;
 }
@@ -367,7 +367,7 @@ function reviewerPrompt(
 		issue,
 		worktree: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 		base: nonEmptyString(current.wave_base, `Run Task ${issue.id} wave_base`),
-		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), issue.id),
+		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), `Run Task ${issue.id}`),
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
 		...(amendments.length ? { context: { gate_command_amendments: amendments } } : {}),
@@ -383,12 +383,6 @@ export function taskReviewId(state: RunState, issueId: string, current: RunTaskS
 		attempt: current.attempts,
 		review_round: positiveInteger(current.review_rounds, `Run Task ${issueId} review round`),
 	});
-}
-
-export function requiredTaskGate(current: RunTaskState, commit: string, issueId: string): RequiredGateEvidence {
-	const evidence = recordedGateEvidence(current, commit);
-	if (!evidence) throw new Error(`Run Task ${issueId} required-gate evidence is missing`);
-	return evidence;
 }
 
 export function provisioningIdFor(runId: string, issueId: string, role: WorkerRole): string {

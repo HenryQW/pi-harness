@@ -78,7 +78,6 @@ export class ContextStore {
 				flag: "wx",
 				mode: 0o600,
 			});
-			await chmod(payloadPath, 0o600);
 			return payloadPath;
 		} catch (error) {
 			await rm(launchDir, { recursive: true, force: true }).catch(() => undefined);
@@ -88,7 +87,6 @@ export class ContextStore {
 
 	async read(payloadPath: string): Promise<BtwPayload> {
 		const canonicalPath = await this.validateLaunchFile(payloadPath, PAYLOAD_FILE);
-		if (!canonicalPath) throw new Error(`Missing /btw context payload: ${payloadPath}`);
 		const parsed: unknown = JSON.parse(await readFile(canonicalPath, "utf8"));
 		if (!isBtwPayload(parsed)) {
 			throw new Error("Invalid or unsupported /btw context payload");
@@ -204,7 +202,6 @@ export class ContextStore {
 				flag: "wx",
 				mode: 0o600,
 			});
-			await chmod(temporaryPath, 0o600);
 			await rename(temporaryPath, targetPath);
 		} catch (error) {
 			await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -218,6 +215,8 @@ export class ContextStore {
 		return JSON.parse(await readFile(canonicalPath, "utf8")) as unknown;
 	}
 
+	private validateLaunchFile(payloadPath: string, fileName: typeof PAYLOAD_FILE): Promise<string>;
+	private validateLaunchFile(payloadPath: string, fileName: string): Promise<string | undefined>;
 	private async validateLaunchFile(
 		payloadPath: string,
 		fileName: string,

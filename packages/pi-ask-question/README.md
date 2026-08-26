@@ -41,7 +41,6 @@ pi remove npm:@henryqw/pi-ask-question
 ## Development
 
 ```bash
-npm test --workspace @henryqw/pi-ask-question
 npm run typecheck --workspace @henryqw/pi-ask-question
 npm run pack:check --workspace @henryqw/pi-ask-question
 ```

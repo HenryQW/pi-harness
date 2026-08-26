@@ -8,7 +8,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-export const MAX_NOTES = 4;
+const MAX_NOTES = 4;
 const WIDGET_KEY = "pi-notes";
 
 interface WorktreeIdentity {
@@ -36,8 +36,6 @@ const isSafeNote = (note: unknown): note is string =>
 
 const recordIdentity = ({ repository, worktree, gitDir, generation }: NotesRecord): WorktreeIdentity =>
 	({ repository, worktree, gitDir, generation });
-
-const isMissing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
 
 async function worktreeGeneration(gitDir: string): Promise<string> {
 	const metadata = await stat(gitDir, { bigint: true });
@@ -135,16 +133,20 @@ function issueMessage(issue: LoadedNotes["issue"]): string | undefined {
 	return undefined;
 }
 
+async function loadCurrent(pi: ExtensionAPI, cwd: string) {
+	const identity = await resolveWorktree(pi, cwd);
+	const loaded = await loadNotes(identity);
+	return { identity, notes: loaded.notes, message: issueMessage(loaded.issue) };
+}
+
 async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ identity: WorktreeIdentity; notes: string[] } | undefined> {
 	try {
-		const identity = await resolveWorktree(pi, ctx.cwd);
-		const loaded = await loadNotes(identity);
-		const message = issueMessage(loaded.issue);
+		const { identity, notes, message } = await loadCurrent(pi, ctx.cwd);
 		if (message) {
 			ctx.ui.notify(message, "error");
 			return undefined;
 		}
-		return { identity, notes: loaded.notes };
+		return { identity, notes };
 	} catch (error) {
 		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 		return undefined;
@@ -153,11 +155,9 @@ async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ i
 
 async function refresh(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	try {
-		const identity = await resolveWorktree(pi, ctx.cwd);
-		const loaded = await loadNotes(identity);
-		const message = issueMessage(loaded.issue);
+		const { notes, message } = await loadCurrent(pi, ctx.cwd);
 		if (message) ctx.ui.setWidget(WIDGET_KEY, [message]);
-		else setNotesWidget(ctx, loaded.notes);
+		else setNotesWidget(ctx, notes);
 	} catch {
 		ctx.ui.setWidget(WIDGET_KEY, undefined);
 	}
@@ -193,7 +193,8 @@ async function pruneStale(pi: ExtensionAPI): Promise<void> {
 				|| gitDir !== record.gitDir
 				|| await worktreeGeneration(gitDir) !== record.generation;
 		} catch (error) {
-			if (isMissing(error)) stale = true;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT" || code === "ENOTDIR") stale = true;
 			else continue;
 		}
 		if (!stale) {

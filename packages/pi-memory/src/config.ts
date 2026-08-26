@@ -19,6 +19,14 @@ export function DEFAULT_DIRECTORY(): string {
 export const DEFAULT_MEMORY_CHAR_LIMIT = 8800;
 export const DEFAULT_USER_CHAR_LIMIT = 5500;
 
+function charLimit(key: "memoryCharLimit" | "userCharLimit", value: unknown, defaultValue: number, path: string): number {
+	if (value === undefined) return defaultValue;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > 100_000) {
+		throw new Error(`Invalid '${key}' in memory config at ${path}: must be a positive safe integer <= 100000, got ${JSON.stringify(value)}`);
+	}
+	return value;
+}
+
 export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 	const path = explicitPath ?? configPath();
 	let raw: string;
@@ -87,23 +95,8 @@ export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
 		directory = obj.directory;
 	}
 
-	let memoryCharLimit = DEFAULT_MEMORY_CHAR_LIMIT;
-	if (obj.memoryCharLimit !== undefined) {
-		const val = obj.memoryCharLimit;
-		if (typeof val !== "number" || !Number.isSafeInteger(val) || val <= 0 || val > 100_000) {
-			throw new Error(`Invalid 'memoryCharLimit' in memory config at ${path}: must be a positive safe integer <= 100000, got ${JSON.stringify(val)}`);
-		}
-		memoryCharLimit = val;
-	}
-
-	let userCharLimit = DEFAULT_USER_CHAR_LIMIT;
-	if (obj.userCharLimit !== undefined) {
-		const val = obj.userCharLimit;
-		if (typeof val !== "number" || !Number.isSafeInteger(val) || val <= 0 || val > 100_000) {
-			throw new Error(`Invalid 'userCharLimit' in memory config at ${path}: must be a positive safe integer <= 100000, got ${JSON.stringify(val)}`);
-		}
-		userCharLimit = val;
-	}
+	const memoryCharLimit = charLimit("memoryCharLimit", obj.memoryCharLimit, DEFAULT_MEMORY_CHAR_LIMIT, path);
+	const userCharLimit = charLimit("userCharLimit", obj.userCharLimit, DEFAULT_USER_CHAR_LIMIT, path);
 
 	return {
 		directory,

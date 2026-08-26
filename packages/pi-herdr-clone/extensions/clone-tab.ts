@@ -129,14 +129,12 @@ async function createBranchedClone(
 	const createdClone = session.createBranchedSession(source.leafId);
 	if (!createdClone) throw new Error("Pi did not create a persisted clone session file.");
 	const cloneFile = resolve(createdClone);
-	let cloneStat;
 	try {
-		cloneStat = await stat(cloneFile);
+		if ((await stat(cloneFile)).isFile()) return cloneFile;
 	} catch (error) {
 		throw new Error(`Pi clone session file was not created: ${cloneFile}`, { cause: error });
 	}
-	if (!cloneStat.isFile()) throw new Error(`Pi clone session path is not a file: ${cloneFile}`);
-	return cloneFile;
+	throw new Error(`Pi clone session path is not a file: ${cloneFile}`);
 }
 
 // A worktree layout plugin (e.g. herdr-plus) can start its own agent in a new

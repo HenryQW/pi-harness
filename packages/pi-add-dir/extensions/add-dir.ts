@@ -62,21 +62,9 @@ function readState(data: unknown): AddedDir[] {
 	return Array.isArray(dirs) ? dirs.filter(isAddedDir) : [];
 }
 
-function cleanPath(input: string): string {
-	return input.trim();
-}
-
 function isWithinDir(dir: string, candidate: string): boolean {
 	const relativePath = relative(dir, candidate);
 	return relativePath === "" || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !isAbsolute(relativePath));
-}
-
-function maxResults(value: number | undefined): number {
-	const limit = value ?? DEFAULT_MAX_RESULTS;
-	if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RESULTS) {
-		throw new Error(`maxResults must be an integer from 1 to ${MAX_RESULTS}.`);
-	}
-	return limit;
 }
 
 function contextDetails(dirCtx: DirContext, absolutePath: string): AddDirectoryDetails {
@@ -147,7 +135,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		cwd: string,
 		ctx: ExtensionContext,
 	): { ok: boolean; message: string; hasNewSkills: boolean; absolutePath?: string; context?: DirContext } {
-		const input = cleanPath(dirPath);
+		const input = dirPath.trim();
 		if (!input) return { ok: false, message: "Directory path must not be blank.", hasNewSkills: false };
 
 		const absolutePath = resolveDir(input, cwd);
@@ -267,7 +255,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		parameters: AddDirectoryParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const inputPath = cleanPath(params.path);
+			const inputPath = params.path.trim();
 			const result = addDir(inputPath, ctx.cwd, ctx);
 			if (!result.ok) throw new Error(result.message);
 
@@ -294,7 +282,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 
 		renderCall(args, theme) {
 			let text = theme.fg("toolTitle", theme.bold("add_directory "));
-			text += theme.fg("accent", cleanPath(args.path));
+			text += theme.fg("accent", args.path.trim());
 			if (args.reason) text += theme.fg("dim", ` (${args.reason})`);
 			return new Text(text, 0, 0);
 		},
@@ -339,14 +327,13 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 				throw new Error("No external directories added. Use /dir-add or add_directory first.");
 			}
 
-			const pattern = cleanPath(params.pattern);
-			const limit = maxResults(params.maxResults);
+			const pattern = params.pattern.trim();
+			const limit = params.maxResults ?? DEFAULT_MAX_RESULTS;
 			const results: Array<{ dir: string; label: string; files: string[] }> = [];
 			let totalFound = 0;
 
 			for (const dir of addedDirs) {
 				signal?.throwIfAborted();
-				if (!dirExists(dir.absolutePath)) continue;
 				const remaining = limit - totalFound;
 				if (remaining <= 0) break;
 
@@ -385,7 +372,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 
 		renderCall(args, theme) {
 			let text = theme.fg("toolTitle", theme.bold("search_external_files "));
-			text += theme.fg("accent", `"${cleanPath(args.pattern)}"`);
+			text += theme.fg("accent", `"${args.pattern.trim()}"`);
 			return new Text(text, 0, 0);
 		},
 

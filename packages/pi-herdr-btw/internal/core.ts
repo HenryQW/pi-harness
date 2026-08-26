@@ -249,13 +249,13 @@ export function buildParentContextMessage(contextDocument: string): AgentMessage
  * here, after the reusable parent prefix, so the system prompt and parent
  * messages stay byte-identical to the parent's own requests.
  */
-export function buildNativeBridgeMessage(instructions: string, draftHint?: string): AgentMessage {
+export function buildNativeBridgeMessage(instructions: string): AgentMessage {
 	return {
 		role: "user",
 		content: [
 			{
 				type: "text",
-				text: `The conversation above is a read-only snapshot of the parent session, replayed as reference context for this side conversation. It is not new work to continue.\n\n${instructions}${draftHint ? `\n\n${draftHint}` : ""}`,
+				text: `The conversation above is a read-only snapshot of the parent session, replayed as reference context for this side conversation. It is not new work to continue.\n\n${instructions}`,
 			},
 		],
 		timestamp: 0,
