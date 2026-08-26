@@ -57,14 +57,18 @@ function toEntry(t: TranscriptEntry): Entry | null {
 }
 
 /** Parse JSONL lines; malformed lines are skipped and duplicate/invalid ids are
- *  handled by the shared transcript boundary. */
+ *  handled by the shared transcript boundary. Entries stream out of the
+ *  boundary's generator and only successfully projected ones are pushed. */
 function parseSessionEntries(sessionPath: string): Entry[] {
 	// The bounded snapshot read (O_NONBLOCK + descriptor validation + fixed-size
 	// read) is shared with the index engine; the fd pins the inode so a
 	// concurrent append after fstat waits until the next hydration call.
-	return readTranscriptEntries(sessionPath)
-		.map(toEntry)
-		.filter((e): e is Entry => e !== null);
+	const entries: Entry[] = [];
+	for (const t of readTranscriptEntries(sessionPath)) {
+		const projected = toEntry(t);
+		if (projected !== null) entries.push(projected);
+	}
+	return entries;
 }
 
 /** Leaf = last entry in file order whose ancestry contains a message; detached

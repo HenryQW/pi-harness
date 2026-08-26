@@ -69,17 +69,28 @@ function validateIds(data: unknown): { id: string; parentId: string | null } | u
 	return undefined;
 }
 
-/** Read one bounded snapshot of `filePath`, split into JSONL entries in file
- *  order. Blank and malformed JSON lines are skipped. The first occurrence of
+/** Lazily yield one bounded snapshot of `filePath` as JSONL entries in file
+ *  order — no materialized entry array, and lines are located by newline
+ *  scan rather than splitting the whole snapshot into a string array.
+ *  Blank and malformed JSON lines are skipped. The first occurrence of
  *  every valid id is reserved across all entry types; later duplicates are
  *  dropped entirely. Entries without a valid id pair are retained so index
- *  header/session_info projection can still use them — hydration filters to
- *  entries carrying a validated `id`. */
-export function readTranscriptEntries(filePath: string, maxBytes: number = MAX_SESSION_FILE_BYTES): TranscriptEntry[] {
+ *  header/session_info projection can still use them — hydration projects to
+ *  entries carrying a validated `id`. The snapshot is read once when iteration
+ *  starts (fd-pinned descriptor validation still applies); consumers iterate
+ *  immediately via for-of. */
+export function* readTranscriptEntries(
+	filePath: string,
+	maxBytes: number = MAX_SESSION_FILE_BYTES,
+): Generator<TranscriptEntry> {
 	const content = readBoundedSnapshot(filePath, maxBytes);
-	const entries: TranscriptEntry[] = [];
 	const seenIds = new Set<string>();
-	for (const line of content.split("\n")) {
+	let start = 0;
+	while (start < content.length) {
+		const nl = content.indexOf("\n", start);
+		const end = nl === -1 ? content.length : nl;
+		const line = content.slice(start, end);
+		start = end + 1;
 		if (!line.trim()) continue;
 		let data: unknown;
 		try {
@@ -89,14 +100,13 @@ export function readTranscriptEntries(filePath: string, maxBytes: number = MAX_S
 		}
 		const ids = validateIds(data);
 		if (!ids) {
-			entries.push({ data });
+			yield { data };
 			continue;
 		}
 		// Hydration is first-wins across every entry type; reserve IDs here so
 		// no consumer can ever point at a different duplicate.
 		if (seenIds.has(ids.id)) continue;
 		seenIds.add(ids.id);
-		entries.push({ data, id: ids.id, parentId: ids.parentId });
+		yield { data, id: ids.id, parentId: ids.parentId };
 	}
-	return entries;
 }

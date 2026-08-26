@@ -31,7 +31,7 @@ Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` fo
 
 Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
 
-If the lazy index sync before browse/discovery cannot fully enumerate the session tree, or throws entirely, results are still served from the last complete index and carry a top-level `syncWarning`: `{kind:"incomplete-walk"}` for a partial walk (indexed-but-unseen paths are never purged in that case), or `{kind:"sync-failed", error}` with the capped failure message. The warning is omitted once a sync completes.
+If the lazy index sync before browse/discovery cannot fully enumerate the session tree, or throws entirely, results are still served from the current index — potentially partially updated and stale: files discovered before the failure may already reflect their new content, while rows for files the walk never reached remain stale — and carry a top-level `syncWarning`: `{kind:"incomplete-walk"}` for a partial walk (indexed-but-unseen paths are never purged in that case), or `{kind:"sync-failed", error}` with the capped failure message. The warning is omitted once a sync completes.
 
 ## Deliberate exclusions
 
