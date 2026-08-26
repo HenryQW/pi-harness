@@ -4,7 +4,7 @@
  * Pure functions over file paths; no SQLite access.
  */
 /// <reference types="node" />
-import { MAX_SESSION_FILE_BYTES, readBoundedSnapshot } from "./search-core.ts";
+import { readTranscriptEntries, type TranscriptEntry } from "./transcript.ts";
 import type { WindowMessage } from "./types.ts";
 
 export interface WindowResult {
@@ -36,36 +36,35 @@ interface Entry {
 	};
 }
 
-/** Parse JSONL lines; malformed lines are skipped. Header line (no id) skipped. */
+/** Project a boundary entry onto the shape hydration consumes. Entries without
+ *  a validated id pair are dropped (they carry no hydratable position); the
+ *  raw data must be a JSON object for any projection beyond id/parentId to
+ *  exist at all. */
+function toEntry(t: TranscriptEntry): Entry | null {
+	if (t.id === undefined) return null;
+	if (t.data === null || typeof t.data !== "object") return null;
+	const rec = t.data as Record<string, unknown>;
+	const message = rec.message !== null && typeof rec.message === "object"
+		? (rec.message as Entry["message"])
+		: undefined;
+	return {
+		id: t.id,
+		parentId: t.parentId ?? null,
+		type: typeof rec.type === "string" ? rec.type : "",
+		timestamp: typeof rec.timestamp === "string" ? rec.timestamp : undefined,
+		message,
+	};
+}
+
+/** Parse JSONL lines; malformed lines are skipped and duplicate/invalid ids are
+ *  handled by the shared transcript boundary. */
 function parseSessionEntries(sessionPath: string): Entry[] {
-	// O_NONBLOCK + descriptor validation + fixed-size snapshot read are shared
-	// with the index engine; the fd pins the inode so a concurrent append after
-	// fstat waits until the next hydration call.
-	const raw = readBoundedSnapshot(sessionPath, MAX_SESSION_FILE_BYTES);
-	const entries: Entry[] = [];
-	const seenIds = new Set<string>();
-	for (const line of raw.split("\n")) {
-		if (!line.trim()) continue;
-		let obj: unknown;
-		try {
-			obj = JSON.parse(line);
-		} catch {
-			continue; // skip malformed line
-		}
-		const e = obj as Entry;
-		if (
-			e &&
-			typeof e.id === "string" &&
-			e.id.length > 0 &&
-			e.id.length <= 256 &&
-			!seenIds.has(e.id) &&
-			(e.parentId == null || (typeof e.parentId === "string" && e.parentId.length <= 256))
-		) {
-			seenIds.add(e.id);
-			entries.push(e);
-		}
-	}
-	return entries;
+	// The bounded snapshot read (O_NONBLOCK + descriptor validation + fixed-size
+	// read) is shared with the index engine; the fd pins the inode so a
+	// concurrent append after fstat waits until the next hydration call.
+	return readTranscriptEntries(sessionPath)
+		.map(toEntry)
+		.filter((e): e is Entry => e !== null);
 }
 
 /** Leaf = last entry in file order whose ancestry contains a message; detached

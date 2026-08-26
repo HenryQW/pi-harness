@@ -9,7 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
-import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, readBoundedSnapshot, searchIndex, syncSessions } from "../extensions/search-core.ts";
+import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, searchIndex, syncSessions } from "../extensions/search-core.ts";
+import { readBoundedSnapshot } from "../extensions/transcript.ts";
 import { getWindow } from "../extensions/hydrate.ts";
 
 let tmp: string;
@@ -767,7 +768,7 @@ describe("incompatible index schema", () => {
 		});
 
 		it("files over the byte cap are skipped without reading, recorded as failures", async () => {
-			const { MAX_SESSION_FILE_BYTES } = await import("../extensions/search-core.ts");
+			const { MAX_SESSION_FILE_BYTES } = await import("../extensions/transcript.ts");
 			const file = writeFixture("--toobig--", "big.jsonl", [
 				sessionHeader(),
 				msg("tb1", "user", "oversized file unique content"),
