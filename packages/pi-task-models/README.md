@@ -79,7 +79,7 @@ Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-t
 
 Model references use canonical `provider/model`; numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
 
-Reads are strict. A missing file yields no profiles and the built-in default task assignments; malformed JSON, unknown keys, invalid task IDs, unknown profiles, or out-of-range values fail visibly with `/task-models` guidance and never rewrite the file.
+Reads are strict. A missing file yields no profiles and the built-in default task assignments; malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance and never rewrite the file.
 
 Profile thinking is authoritative for task routes.
 

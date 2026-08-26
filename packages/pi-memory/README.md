@@ -37,7 +37,7 @@ Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory
 | `memoryCharLimit` | No | Safe integer 1–100000 | `8800` |
 | `userCharLimit` | No | Safe integer 1–100000 | `5500` |
 
-A missing file falls back to defaults. Any other invalid configuration fails fast: malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values throw an error naming the problem; the file is never rewritten.
+Any other invalid configuration fails fast: malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values throw an error naming the problem; the file is never rewritten.
 
 ## Storage & sync
 
