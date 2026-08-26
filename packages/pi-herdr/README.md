@@ -26,6 +26,14 @@ const response = await herdr.json(["agent", "list"], { cwd: ctx.cwd });
 
 Client does not mirror the Herdr command catalog. Herdr remains the source of truth for supported commands and response shapes.
 
+## Config
+
+This package has no package-owned user-editable config.
+
+| File | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| — | No | — | — | Built-in behavior |
+
 ## Development
 
 ```bash

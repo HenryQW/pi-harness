@@ -36,6 +36,27 @@ In a linked worktree, a detached checkout or Herdr `worktree/...` branch is rena
 
 Tries assigned profile primary, then fallback, while honoring configured thinking level. Never substitutes current session model. No viable route leaves titles unchanged. Resuming a session created by this version reapplies saved display title and semantic branch without another model request. Older titles receive no migration.
 
+## Config
+
+This package has no package-owned user-editable config. Saved titles in Pi sessions are internal state, not configuration.
+
+| Package-owned file | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| — | No | — | — | Built-in behavior |
+
+### Shared task-model config
+
+Model routing uses this companion-owned config, not config owned by `@henryqw/pi-herdr-rename`: `~/.pi/agent/config/pi-task-models.json`.
+
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `profiles.<selected>.primary.model` | Yes, to generate titles | An available Pi model as `provider/model` | None |
+| `profiles.<selected>.primary.thinkingLevel` | Yes, to generate titles | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | None |
+| `profiles.<selected>.fallback` | No | A `model` and `thinkingLevel` route with the values above; not allowed for `fav` | None |
+| `tasks["pi-herdr-rename/rename"]` | No | `fast`, `balanced`, `frontier`, or `fav` | `fast` |
+
+Configure the shared file with `/task-models`; malformed shared config fails visibly and remains unchanged.
+
 ## Remove
 
 ```bash

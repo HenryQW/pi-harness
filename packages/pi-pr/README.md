@@ -28,6 +28,14 @@ The status loads at session start, polls every 30 seconds, and refreshes after a
 
 `/pr` finds an open PR for current branch. When absent, it starts bundled `/skill:pi-pr-create` workflow. Agent resolves base, inspects and commits scoped changes, runs relevant validation, pushes branch, and creates or updates PR with live title and body. This workflow handles dirty worktrees; it never silently commits unrelated changes.
 
+## Config
+
+This package has no package-owned user-editable config. Its in-memory poll and review state is not configuration.
+
+| File | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| — | No | — | — | Built-in behavior |
+
 ## Remove
 
 ```bash
