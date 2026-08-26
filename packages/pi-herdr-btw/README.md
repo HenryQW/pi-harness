@@ -46,7 +46,7 @@ Side pane gets static parent context and shares Main's working directory, so ena
 
 ## Config
 
-`~/.pi/agent/config/pi-herdr-btw.json`
+Package-owned: `~/.pi/agent/config/pi-herdr-btw.json`
 
 ```json
 {
@@ -56,7 +56,15 @@ Side pane gets static parent context and shares Main's working directory, so ena
 }
 ```
 
-`/btw config` shows defaults. Set `auto-submit on|off`, `tools inherit|all|read-only|none`, or `split right|down`; `reset` removes config. Missing config uses defaults. Malformed config fails visibly and remains unchanged. Model routes live in `~/.pi/agent/config/pi-task-models.json`.
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `autoSubmit` | No | `true`, `false` — submit the draft question automatically instead of leaving it editable in the side pane | `false` |
+| `tools` | No | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), `none` | `inherit` |
+| `split` | No | `right`, `down` — side-pane placement | `right` |
+
+All fields are optional; unknown keys and non-object files are rejected. `/btw config show` prints effective values; `/btw config reset` removes the file. Missing config uses defaults; malformed config fails visibly and remains unchanged.
+
+Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. Task `pi-herdr-btw/btw` defaults to profile `fast`; side-thread routes resolve before pane launch.
 
 ## Remove
 

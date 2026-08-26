@@ -44,7 +44,7 @@ Refuses to activate unless effective `compaction.enabled` is `false`. Checks `tu
 
 ## Config
 
-`~/.pi/agent/config/pi-auto-compact.json`
+Package-owned: `~/.pi/agent/config/pi-auto-compact.json`
 
 ```json
 {
@@ -52,7 +52,13 @@ Refuses to activate unless effective `compaction.enabled` is `false`. Checks `tu
 }
 ```
 
-Threshold must be at least 25 and below 100. Missing config defaults to 50. Model routes live in `~/.pi/agent/config/pi-task-models.json`. Malformed shared task-model config is reported and left unchanged.
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `autoCompactThreshold` | No | Number, at least 25, below 100 | `50` |
+
+Unknown fields are ignored (legacy model fields are obsolete). `/auto-compact` writes this file. A missing file uses the default; a malformed or invalid file fails visibly at session start, falls back to 50%, and stays unchanged.
+
+Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. Task `pi-auto-compact/autoCompact` defaults to profile `fast`. Malformed shared task-model config is reported and left unchanged; compaction then uses the current session model.
 
 ## Remove
 
