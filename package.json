@@ -35,6 +35,7 @@
     ]
   },
   "scripts": {
+    "prepare": "npm run build --workspace @henryqw/pi-subagent",
     "test": "npm test --workspaces --if-present",
     "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",
     "typecheck": "npm run typecheck --workspaces --if-present",
