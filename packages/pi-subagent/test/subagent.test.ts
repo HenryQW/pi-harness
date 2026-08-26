@@ -285,7 +285,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		);
 		const child = JSON.parse(singleOutput(result));
 		assert.equal(child.cwd, await realpath("/tmp"));
-		assert.equal(child.prompt, "Review only requested change.");
+		assert.equal(child.prompt, "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only requested change.");
 		const extensionArgs = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension");
 		const policyExtension = extensionArgs.at(-1)!;
 		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
@@ -299,7 +299,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			"--model", "test/text-model",
 			"--thinking", "high",
 			"--no-approve",
-			"--append-system-prompt", "Review only requested change.",
+			"--append-system-prompt", "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only requested change.",
 			"Task: inspect auth",
 		]);
 		assert.ok(updates.length >= 2);
