@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"s1","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/x"}
+{"type":"message","id":"e01","parentId":null,"timestamp":"2024-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}
+{"type":"message","id":"e02","parentId":"e01","timestamp":"2024-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a1"}]}}
+{"type":"message","id":"e03","parentId":"e02","timestamp":"2024-01-01T00:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"q2"}]}}
+{"type":"message","id":"e04","parentId":"e03","timestamp":"2024-01-01T00:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"A-a1"}]}}
+{"type":"message","id":"e05","parentId":"e04","timestamp":"2024-01-01T00:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"A-q2"}]}}
+{"type":"message","id":"e06","parentId":"e03","timestamp":"2024-01-01T00:00:06.000Z","message":{"role":"assistant","content":[{"type":"text","text":"B-a1"}]}}
+{"type":"message","id":"e07","parentId":"e06","timestamp":"2024-01-01T00:00:07.000Z","message":{"role":"user","content":[{"type":"text","text":"B-q2"}]}}

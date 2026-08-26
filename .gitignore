@@ -15,3 +15,6 @@ npm-debug.log*
 .context/decisions.jsonl
 .context/memory-context.md
 .context/memory-distill-preview.json
+
+# Build output
+packages/*/dist/

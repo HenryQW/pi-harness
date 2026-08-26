@@ -19,6 +19,7 @@
       "./packages/pi-add-dir/extensions/add-dir.ts",
       "./packages/pi-auto-compact/extensions",
       "./packages/pi-auto-dag/extensions/auto-dag.ts",
+      "./packages/pi-session-recall/extensions/session-recall.ts",
       "./packages/pi-deps/extensions/deps.ts",
       "./packages/pi-footer/extensions/footer.ts",
       "./packages/pi-notes/extensions/notes.ts",
@@ -35,14 +36,16 @@
     ]
   },
   "scripts": {
-    "prepare": "npm run build --workspace @henryqw/pi-subagent",
+    "build": "npm run build --workspace @henryqw/pi-herdr --workspace @henryqw/pi-task-models --workspace @henryqw/pi-subagent",
+    "postinstall": "npm run build",
     "test": "npm test --workspaces --if-present",
     "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "pack:check": "npm run pack:check --workspaces --if-present"
   },
-  "devDependencies": {
+  "dependencies": {
     "@types/node": "^26.2.0",
+    "@types/proper-lockfile": "^4.1.4",
     "typescript": "^7.0.2"
   }
 }

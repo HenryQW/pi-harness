@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -136,7 +137,7 @@ export async function watchDependencyInstallation(
 	}
 	const deadline = Date.now() + waitTimeoutMs;
 	while (status.state === "running" && Date.now() < deadline) {
-		await new Promise((resolveSleep) => setTimeout(resolveSleep, pollMs));
+		await delay(pollMs);
 		status = await readStatus();
 		if (!status) {
 			ctx.ui.setWidget(widgetKey, undefined);

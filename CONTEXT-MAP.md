@@ -15,6 +15,7 @@
 | `pi-task-models` | [`packages/pi-task-models/CONTEXT.md`](packages/pi-task-models/CONTEXT.md) | Shared task model profiles and task assignments |
 | `pi-multi-codex` | [`packages/pi-multi-codex/CONTEXT.md`](packages/pi-multi-codex/CONTEXT.md) | Multiple ChatGPT Codex subscription accounts |
 | `pi-memory` | [`packages/pi-memory/CONTEXT.md`](packages/pi-memory/CONTEXT.md) | Auto-managed cross-session markdown memory scratch with size caps and session snapshots |
+| `pi-session-recall` | [`packages/pi-session-recall/CONTEXT.md`](packages/pi-session-recall/CONTEXT.md) | FTS5 search over past Pi session transcripts with four arg-inferred tool modes |
 | `pi-footer` | [`packages/pi-footer/CONTEXT.md`](packages/pi-footer/CONTEXT.md) | Henry's opinionated Pi footer identity and usage display |
 | `pi-pr` | [`packages/pi-pr/CONTEXT.md`](packages/pi-pr/CONTEXT.md) | Current-branch pull request lifecycle in the Pi footer |
 | `pi-subagent` | [`packages/pi-subagent/CONTEXT.md`](packages/pi-subagent/CONTEXT.md) | Role-configured isolated Pi subagents |

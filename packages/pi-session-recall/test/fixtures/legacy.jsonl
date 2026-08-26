@@ -1,0 +1,3 @@
+{"type":"session","version":1,"id":"s1","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/x"}
+{"type":"message","id":"e01","parentId":null,"timestamp":"2024-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}
+{"type":"message","id":"e02","parentId":"e01","timestamp":"2024-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a1"}]}}

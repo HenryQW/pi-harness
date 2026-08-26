@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { setTimeout as defaultDelay } from "node:timers/promises";
 import { Type } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -365,8 +366,4 @@ function parseWorkerEvents(value: unknown, role: WorkerRole): WorkerEvent[] {
 
 function parseWorkerRole(value: unknown): WorkerRole {
 	return oneOf(value, ["implementer", "reviewer"] as const, "worker role");
-}
-
-async function defaultDelay(milliseconds: number): Promise<void> {
-	await new Promise<void>((done) => { setTimeout(done, milliseconds); });
 }
