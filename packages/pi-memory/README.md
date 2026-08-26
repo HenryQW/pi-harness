@@ -22,7 +22,7 @@ pi install npm:@henryqw/pi-memory
 
 The extension maintains two markdown stores: `MEMORY.md` (global agent notes shared across all projects — do not store project-specific facts here, those belong in the repo) and `USER.md` (user profile). Each file holds `§`-delimited entries and is size-capped — 8800 characters by default for `MEMORY.md`, 5500 for `USER.md`. When a write would exceed the cap, the tool rejects it and reports current usage; consolidate by issuing one batch that removes or shortens stale entries and adds the new entry together (batch checks the final size only). If the on-disk file exceeds the cap (external edit or sync), the session snapshot omits the overflow and warns instead of injecting it.
 
-At session start, the current contents of both stores are frozen into the system prompt; later edits during the session do not alter what the model already saw. Each turn also includes a short memory check: save explicit durable preferences or corrections immediately, inferred habits after two independent signals from the conversation and/or existing profile, merge overlaps, and skip task-local behavior.
+At session start, the current contents of both stores are frozen into the system prompt; later edits during the session do not alter what the model already saw. Each turn also includes a short memory check: save explicit durable preferences or corrections immediately, inferred habits after two independent signals from the conversation and/or existing profile, merge overlaps, and skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.
 
 To inspect live state, read `<directory>/MEMORY.md`.
 

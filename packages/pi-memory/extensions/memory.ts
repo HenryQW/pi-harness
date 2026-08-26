@@ -19,7 +19,7 @@ const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
 // @henryqw/pi-herdr-btw does not export internal/core.ts from its package root.
 const BTW_CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched|[Mm]ultiple entries matched|matched multiple distinct/i;
-const MEMORY_CHECK = "MEMORY CHECK: Save explicit durable user preferences or corrections immediately. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip task-local behavior, progress, and temporary preferences.";
+const MEMORY_CHECK = "MEMORY CHECK: Save explicit durable user preferences or corrections immediately. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.";
 const MEMORY_DESCRIPTION = `Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.
 
 HOW: Prefer one operations batch for multiple changes or consolidation. A batch applies atomically and checks the character limit only on the final result, so it can remove or shorten stale entries and add new ones in one call. Use action/content/old_text only for one lone change. A successful response finishes the update; do not repeat it.
