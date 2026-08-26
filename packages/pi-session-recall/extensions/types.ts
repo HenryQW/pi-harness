@@ -42,4 +42,7 @@ export interface SyncResult {
 	messagesIndexed: number;
 	/** Changed files still unindexed after this pass, including failures. */
 	backlogRemaining: number;
+	/** False when the filesystem walk could not fully enumerate the tree —
+	 *  indexed-but-unseen paths were NOT purged and results may be stale. */
+	walkComplete: boolean;
 }

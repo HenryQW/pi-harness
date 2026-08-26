@@ -756,7 +756,7 @@ test("parent does not guess pane ownership when split output has no pane ID", as
 	});
 });
 
-test("parent keeps an ambiguously started agent that becomes ready in its exact pane", async () => {
+test("parent does not retry killed pane contention and reconciles an agent in its exact pane", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const harness = await createHarness(store, async (_command, args) => {
@@ -764,7 +764,7 @@ test("parent keeps an ambiguously started agent that becomes ready in its exact 
 				return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 			}
 			if (args[0] === "agent" && args[1] === "start") {
-				return { code: 1, stdout: "", stderr: "timeout", killed: true };
+				return { code: 1, stdout: "", stderr: JSON.stringify({ error: { code: "agent_pane_busy" } }), killed: true };
 			}
 			if (args[0] === "agent" && args[1] === "wait") {
 				return {
@@ -781,8 +781,10 @@ test("parent keeps an ambiguously started agent that becomes ready in its exact 
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		const startArgs = harness.execCalls.find(({ args }) => args[0] === "agent" && args[1] === "start")?.args;
+		const startCalls = harness.execCalls.filter(({ args }) => args[0] === "agent" && args[1] === "start");
+		const startArgs = startCalls[0]?.args;
 		const waitArgs = harness.execCalls.find(({ args }) => args[0] === "agent" && args[1] === "wait")?.args;
+		assert.equal(startCalls.length, 1);
 		assert.deepEqual(waitArgs, [
 			"agent",
 			"wait",

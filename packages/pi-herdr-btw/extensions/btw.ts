@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient, hasHerdrErrorCode } from "@henryqw/pi-herdr";
+import { createHerdrClient, hasHerdrErrorCode, startPiAgent } from "@henryqw/pi-herdr";
 import {
 	resolveConfiguredTaskRoutes,
 	type ResolvedTaskRoute,
@@ -53,8 +53,6 @@ const BTW_TASK = "pi-herdr-btw/btw";
 const CHILD_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000;
 const LITERAL_DRAFT_PREFIX = "\u200b";
 const MERGE_POLL_INTERVAL_MS = 3_000;
-const AGENT_START_BUSY_RETRIES = 5;
-const AGENT_START_RETRY_DELAY_MS = 250;
 
 function childPayloadPathFromArgv(): string | undefined {
 	const index = process.argv.indexOf(CHILD_PAYLOAD_ARG);
@@ -703,20 +701,16 @@ export async function registerBtwExtension(
 				}
 
 				// Step 2: adopt pi into the new pane; herdr waits for readiness.
-				const agentStartArgs = buildAgentStartArgs(launchOptions, paneId);
+				const agentStartArgs = buildAgentStartArgs(launchOptions);
 				let result;
 				try {
-					result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
-					for (let attempt = 1; attempt < AGENT_START_BUSY_RETRIES; attempt += 1) {
-						if (
-							launchGeneration !== sessionGeneration ||
-							result.killed ||
-							!hasHerdrErrorCode(result, "agent_pane_busy")
-						) break;
-						await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
-						if (launchGeneration !== sessionGeneration) break;
-						result = await herdr.exec(agentStartArgs, { timeout: 45_000 });
-					}
+					result = await startPiAgent(herdr, {
+						name: launchOptions.paneName,
+						pane: paneId,
+						args: agentStartArgs,
+						options: { timeout: 45_000 },
+						shouldRetry: (candidate) => !candidate.killed && launchGeneration === sessionGeneration,
+					});
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					await reportKnownPaneFailure(`/btw failed: ${message.slice(0, 500)}`, paneId, payloadPath);

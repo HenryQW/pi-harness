@@ -22,6 +22,6 @@ const herdr = createHerdrClient(pi.exec.bind(pi));
 const response = await herdr.json(["agent", "list"], { cwd: ctx.cwd });
 ```
 
-`exec` validates string argv and returns the raw process result. `run` requires a successful exit and returns stdout. `json` also parses a JSON object. `hasHerdrErrorCode` detects structured CLI errors in stdout or stderr.
+`exec` validates string argv and returns the raw process result. `run` requires a successful exit and returns stdout. `json` also parses a JSON object. `hasHerdrErrorCode` detects structured CLI errors in stdout or stderr. `startPiAgent` validates and builds the shared `agent start --kind pi --pane ... --` boundary, retries structured `agent_pane_busy` responses allowed by the caller's result-aware policy within a five-attempt limit, and returns the raw final result; callers still build Pi-specific args and validate responses.
 
 Client does not mirror the Herdr command catalog. Herdr remains the source of truth for supported commands and response shapes.

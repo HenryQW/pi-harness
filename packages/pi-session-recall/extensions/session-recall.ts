@@ -208,17 +208,20 @@ export default function (pi: ExtensionAPI): void {
 					return textResult(result);
 				}
 
-				// Lazy sync: drains any backlog the capped startup pass left.
+				// Lazy sync: drains any backlog the capped startup pass left. A partial
+				// or failed sync degrades to a warning; the stale index stays usable.
+				let syncWarning: { kind: "incomplete-walk" } | { kind: "sync-failed"; error: string } | undefined;
 				try {
-					syncSessions(sessionsDir(), dbPath());
-				} catch {
-					// Serve from the possibly stale index rather than failing.
+					const sync = syncSessions(sessionsDir(), dbPath());
+					if (!sync.walkComplete) syncWarning = { kind: "incomplete-walk" };
+				} catch (error) {
+					syncWarning = { kind: "sync-failed", error: (error instanceof Error ? error.message : String(error)).slice(0, 512) };
 				}
 
 				// --- BROWSE ---
 				if (!params.query?.trim()) {
 					const rows = getSessionRows(dbPath(), clamp(params.limit, 1, 10, 3));
-					return textResult({ mode: "browse", sessions: rows });
+					return textResult({ mode: "browse", sessions: rows, ...(syncWarning ? { syncWarning } : {}) });
 				}
 
 				// --- DISCOVERY ---
@@ -249,7 +252,17 @@ export default function (pi: ExtensionAPI): void {
 				const resultQuery = params.query!.trim().slice(0, MAX_QUERY_CHARS);
 				// Reserve the complete response envelope and divide remaining space
 				// across hits so the first hydrated result cannot starve later metadata.
-				let used = JSON.stringify({ mode: "discovery", query: resultQuery, results: [], backlogRemaining }).length + Math.max(0, hits.length - 1);
+				// The same warning-bearing envelope is reused for the final result so the
+				// reservation matches what is returned (and textResult's trimming keeps
+				// top-level non-array keys like syncWarning).
+				const envelope: Record<string, unknown> = {
+					mode: "discovery",
+					query: resultQuery,
+					results: [],
+					backlogRemaining,
+					...(syncWarning ? { syncWarning } : {}),
+				};
+				let used = JSON.stringify(envelope).length + Math.max(0, hits.length - 1);
 				const results = hits.map((hit, index) => {
 					const remaining = Math.floor((OUTPUT_CHAR_BUDGET - used) / (hits.length - index));
 					const meta = {
@@ -339,7 +352,7 @@ export default function (pi: ExtensionAPI): void {
 					}
 				});
 
-				const result: Record<string, unknown> = { mode: "discovery", query: resultQuery, results, backlogRemaining };
+				const result: Record<string, unknown> = { ...envelope, results };
 				return textResult(result);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

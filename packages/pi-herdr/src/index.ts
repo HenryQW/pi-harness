@@ -20,6 +20,53 @@ export interface HerdrClient<Options> {
 	json(args: readonly string[], options: Options): Promise<Record<string, unknown>>;
 }
 
+const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const MAX_AGENT_START_ATTEMPTS = 5;
+const AGENT_START_RETRY_DELAY_MS = 250;
+
+export interface StartPiAgentOptions<Options> {
+	name: string;
+	pane: string;
+	args: readonly string[];
+	options: Options;
+	delay?: (milliseconds: number) => Promise<void>;
+	onPaneBusy?: () => Promise<string>;
+	shouldRetry?: (result: HerdrExecResult) => boolean;
+}
+
+/** Start a Pi agent in a Herdr pane, retrying only transient pane contention. */
+export async function startPiAgent<Options>(
+	client: Pick<HerdrClient<Options>, "exec">,
+	input: StartPiAgentOptions<Options>,
+): Promise<HerdrExecResult> {
+	const name = nonEmptyString(input.name, "Herdr Pi agent name");
+	let pane = nonEmptyString(input.pane, "Herdr Pi agent pane");
+	if (!Array.isArray(input.args) || input.args.some((arg) => typeof arg !== "string")) {
+		throw new TypeError("Herdr Pi agent arguments must be an array of strings");
+	}
+	const piArgs = [...input.args];
+	let onPaneBusy = input.onPaneBusy;
+	let result: HerdrExecResult | undefined;
+	for (let attempt = 1; attempt <= MAX_AGENT_START_ATTEMPTS; attempt += 1) {
+		const args = ["agent", "start", name, "--kind", "pi", "--pane", pane, "--", ...piArgs];
+		result = await client.exec(args, input.options);
+		if (result.code === 0 && !result.killed) return result;
+		if (
+			!hasHerdrErrorCode(result, "agent_pane_busy")
+			|| attempt === MAX_AGENT_START_ATTEMPTS
+			|| input.shouldRetry?.(result) === false
+		) return result;
+		if (onPaneBusy) {
+			pane = nonEmptyString(await onPaneBusy(), "Herdr Pi agent pane returned by onPaneBusy");
+			onPaneBusy = undefined;
+		} else {
+			await (input.delay ?? delay)(AGENT_START_RETRY_DELAY_MS);
+		}
+		if (input.shouldRetry?.(result) === false) return result;
+	}
+	return result!;
+}
+
 export function createHerdrClient<Options>(execute: HerdrExecutor<Options>): HerdrClient<Options> {
 	const exec = async (args: readonly string[], options: Options): Promise<HerdrExecResult> => {
 		if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
@@ -75,6 +122,11 @@ export async function withWorktreeLock<T>(checkout: string, operation: () => Pro
 
 function herdrCommandName(args: readonly string[]): string {
 	return ["herdr", ...args.slice(0, 2)].join(" ");
+}
+
+function nonEmptyString(value: unknown, label: string): string {
+	if (typeof value !== "string" || !value.trim()) throw new TypeError(`${label} must be a non-empty string`);
+	return value;
 }
 
 function containsErrorCode(value: unknown, expected: string): boolean {

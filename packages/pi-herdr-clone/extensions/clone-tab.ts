@@ -12,7 +12,7 @@ import {
 import {
 	createHerdrClient,
 	herdrCommandFailure,
-	hasHerdrErrorCode,
+	startPiAgent,
 	withWorktreeLock,
 	type HerdrClient,
 	type HerdrExecResult,
@@ -199,24 +199,25 @@ async function launchCloneAgent(
 ): Promise<string> {
 	const agentName = `clone-${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 	try {
-		for (let attempt = 1; attempt <= 5; attempt += 1) {
-			const startArgs = [
-				"agent", "start", agentName, "--kind", "pi", "--pane", rootPaneId,
-				"--", "--session", cloneFile,
-			];
-			const result = await herdr.exec(startArgs, { cwd: ctx.cwd });
-			if (result.code === 0 && !result.killed) return agentName;
-			if (hasHerdrErrorCode(result, "agent_pane_busy") && onPaneBusy) {
-				({ rootPaneId, retained } = await onPaneBusy());
-				onPaneBusy = undefined;
-				continue;
-			}
-			if (!hasHerdrErrorCode(result, "agent_pane_busy") || attempt === 5) {
-				throw new Error(herdrCommandFailure(startArgs, result));
-			}
-			await delay(250);
-		}
-		throw new Error("Herdr agent start retry loop exited unexpectedly.");
+		const result = await startPiAgent(herdr, {
+			name: agentName,
+			pane: rootPaneId,
+			args: ["--session", cloneFile],
+			options: { cwd: ctx.cwd },
+			onPaneBusy: onPaneBusy
+				? async () => {
+					const next = await onPaneBusy!();
+					rootPaneId = next.rootPaneId;
+					retained = next.retained;
+					return rootPaneId;
+				}
+				: undefined,
+		});
+		if (result.code === 0 && !result.killed) return agentName;
+		const startArgs = [
+			"agent", "start", agentName, "--kind", "pi", "--pane", rootPaneId, "--", "--session", cloneFile,
+		];
+		throw new Error(herdrCommandFailure(startArgs, result));
 	} catch (error) {
 		throw new Error(
 			`Clone launch could not be confirmed after starting agent ${agentName}; retained ${retained}: ${errorMessage(error)}`,
