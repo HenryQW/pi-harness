@@ -37,7 +37,7 @@ This package has no package-specific user-editable config file.
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
-| — | — | — | — |
+| No package-owned config file | No fields | No possible values | Built-in behavior/defaults |
 
 ## State
 
