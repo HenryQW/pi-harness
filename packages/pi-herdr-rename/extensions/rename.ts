@@ -396,7 +396,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 				ctx.ui.setWidget(WIDGET_KEY, undefined);
 				widgetTimer = undefined;
 			}, WIDGET_RESULT_MS);
-			widgetTimer.unref?.();
+			widgetTimer.unref();
 		},
 	});
 }
