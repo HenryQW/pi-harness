@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
+    "pretypecheck": "npm run build",
     "test": "npm run build && node --test test/*.test.ts",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck src/*.ts extensions/*.ts test/*.test.ts",
     "prepack": "npm run build",

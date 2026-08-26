@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "pretest": "npm run build --workspace @henryqw/pi-subagent",
+    "pretypecheck": "npm run build --workspace @henryqw/pi-subagent",
     "dev:ui": "pi --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session --offline -e test/dev/worker-ui.ts",
     "test": "node test/run.mjs",
     "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck extensions/*.ts src/*.ts test/*.ts test/dev/*.ts",
