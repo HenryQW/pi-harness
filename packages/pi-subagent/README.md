@@ -75,18 +75,20 @@ Roles are user-owned Markdown files in `~/.pi/agent/config/pi-subagent/`. This r
 - [`reviewer`](./examples/roles/reviewer.md): read-only correctness review
 - [`synthesizer`](./examples/roles/synthesizer.md): reconcile supplied reports
 
-Copy them manually from the repository root:
+Copy them manually from your installed `@henryqw/pi-subagent` package (npm installs ship the `examples/roles/` directory), e.g.:
 
 ```bash
 mkdir -p ~/.pi/agent/config/pi-subagent
-cp packages/pi-subagent/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
+cp <package-install-dir>/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
 ```
+
+Locate the install directory with `npm root` inside your project, or via Pi's package installation path.
 
 The package never installs or writes Role configuration. Sample names are not built-ins; after copying, edit or replace them as your own Roles.
 
 ## Skill
 
-The bundled [`delegated-development`](./skills/delegated-development/SKILL.md) Skill is opinionated orchestration policy for Main: decompose into bounded units, delegate each to a worktree-isolated `implementer`, review with the read-only `reviewer` using explicit worktree/branch/diff evidence, merge only approved branches, and route findings through fresh reviewed delegations. It is guidance only — it adds no runtime code, config, or Role installation, and preserves the [composition-outside-the-executor](./docs/adr/001-composable-ephemeral-execution.md) boundary.
+The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is opinionated orchestration policy for Main: decompose into bounded units, delegate each to a worktree-isolated `implementer`, review with the read-only `reviewer` using explicit worktree/branch/diff evidence, merge only approved branches, and route findings through fresh reviewed delegations. It is guidance only — it adds no runtime code, config, or Role installation, and preserves the [composition-outside-the-executor](./docs/adr/001-composable-ephemeral-execution.md) boundary.
 
 A Role owns its base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Ambient extension and Skill discovery is disabled in children. With neither Role tools nor caller tools, Pi defaults remain; caller tools with omitted Role tools snapshot Main's effective active built-ins and install the child policy. Loaded Role/caller extension tools still activate, parent-only tools stay excluded, and unavailable named Skills warn and skip.
 

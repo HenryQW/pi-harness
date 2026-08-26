@@ -1,5 +1,5 @@
 ---
-name: delegated-development
+name: pi-subagent-delegated-development
 description: Orchestrate delegated development with pi-subagent delegate_task. Use when splitting implementation work into bounded units for isolated implementer children reviewed by a read-only reviewer before merging.
 ---
 
@@ -9,11 +9,7 @@ You are Main. Decompose work into bounded units and coordinate; never edit files
 
 ## Prerequisites
 
-Delegation uses the user-configured Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only). Verify both exist before starting; if either is missing, stop and tell the user to install the samples:
-
-```bash
-cp packages/pi-subagent/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
-```
+Delegation uses the user-configured Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only). Verify both exist before starting; if either is missing, stop and tell the user to copy the package-shipped `examples/roles/` samples from their installed `@henryqw/pi-subagent` package into `~/.pi/agent/config/pi-subagent/` (see that package's README for details).
 
 Do not invent substitute Roles or proceed without them.
 
@@ -27,7 +23,7 @@ For each bounded unit:
 
 ## Findings
 
-Any reviewer finding goes back as a **fresh** `implementer` delegation containing the findings plus the same worktree/branch/diff evidence, followed by a fresh review of the new state. Bound the loop (e.g. three rounds); past the bound, stop and report to the user instead of merging.
+Any reviewer finding goes back as a **fresh** `implementer` delegation containing the findings plus the same worktree/branch/diff evidence, followed by a fresh review of the new state. A fresh repair implementer starts in a new worktree from Main HEAD and does not contain the prior unit commit: the repair packet must first bring the reported predecessor branch/commit(s) into its fresh worktree (merge or cherry-pick as appropriate), then address the findings. Bound the loop (e.g. three rounds); past the bound, stop and report to the user instead of merging.
 
 ## Parallelism
 

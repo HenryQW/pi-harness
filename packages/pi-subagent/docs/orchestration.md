@@ -330,15 +330,15 @@ Repository samples are documentation, not installed configuration:
 | [`reviewer`](../examples/roles/reviewer.md) | Read-only correctness review. |
 | [`synthesizer`](../examples/roles/synthesizer.md) | Reconcile supplied reports without broad discovery. |
 
-From the repository root, opt in explicitly:
+Copy the package-shipped samples from your installed `@henryqw/pi-subagent` package (npm installs include `examples/roles/`):
 
 ```bash
 mkdir -p ~/.pi/agent/config/pi-subagent
-cp packages/pi-subagent/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
+cp <package-install-dir>/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
 ```
 
 The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the files and their names are entirely user-owned.
 
-The bundled [`delegated-development`](../skills/delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It names the sample Roles and prescribes an implement → review → merge loop, but it defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
+The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It names the sample Roles and prescribes an implement → review → merge loop, but it defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
 
 See the architectural decision: [Compose workflows outside the ephemeral executor](./adr/001-composable-ephemeral-execution.md).
