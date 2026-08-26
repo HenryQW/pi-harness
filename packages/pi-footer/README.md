@@ -43,6 +43,12 @@ Third line shows cumulative agent-work time right-aligned beneath the model. It 
 
 Fourth line renders statuses from all other extensions, including Ponytail and `pi-rewind`. Statuses are sorted by key; producer text, spacing, colors, links, and glyphs are preserved.
 
+## Config
+
+| Package-owned editable config | Companion-package config |
+| --- | --- |
+| None | `~/.pi/agent/config/pi-open-in.json` belongs to `@henryqw/pi-open-in`; it controls clickable VS Code checkout links. |
+
 ## Clickable checkout
 
 When `pi-open-in.json` command is exactly `code`, the accent-colored checkout name is an OSC 8 `vscode://` link to the current path. Other configured commands remain plain because terminal links cannot run arbitrary shell commands.

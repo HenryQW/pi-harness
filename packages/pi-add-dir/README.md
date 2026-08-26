@@ -26,6 +26,12 @@ Added directories return root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.p
 
 Search uses Node filesystem traversal, skips `.git` and `node_modules`, supports basename and relative-path globs, and caps results at 1,000 per call.
 
+## Config
+
+| Package-owned editable config | Package-owned generated state |
+| --- | --- |
+| None | Session entry `add-dir:state` stores added directories; do not edit it. |
+
 ## Remove
 
 ```bash

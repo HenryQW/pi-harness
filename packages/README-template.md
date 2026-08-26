@@ -36,18 +36,15 @@ pi install npm:@henryqw/<package>
 
 <Behavior, limits, integrations, and safety caveats.>
 
-<!-- Optional. -->
 ## Config
 
 `~/.pi/agent/config/<package>.json`
 
-```json
-{
-  "<setting>": "<value>"
-}
-```
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `<setting>` | Yes or no | <Valid values> | <Default> |
 
-<Defaults, valid values, and invalid-config behavior.>
+<Invalid-config behavior. Packages with no package-owned editable config use a compact table saying so. Document package-owned generated state separately; do not present companion-package config as this package's config.>
 
 <!-- Optional: add feature-specific sections here, for example Library API, Workflow, or Recovery. -->
 ## <Feature>

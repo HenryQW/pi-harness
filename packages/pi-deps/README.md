@@ -41,6 +41,12 @@ Creation returns immediately. The hook validates lockfiles synchronously — con
 
 Dependency installation may execute repository-controlled build and install scripts. Enable only repositories you trust.
 
+## Config
+
+| Package-owned editable config | Package-owned generated state |
+| --- | --- |
+| None | `<worktree gitdir>/pi-deps/status.json` and adjacent `install.log`; do not edit them. |
+
 ## Remove
 
 Disable each opted-in repository before removing package because copied Git hook is self-contained:
