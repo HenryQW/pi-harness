@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { MAX_SESSION_FILE_BYTES } from "../extensions/search-core.ts";
+import { MAX_SESSION_FILE_BYTES } from "../extensions/transcript.ts";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 let agentDir: string;

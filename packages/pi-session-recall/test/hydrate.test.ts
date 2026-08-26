@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { test } from "node:test";
 import { getWindow, readSession } from "../extensions/hydrate.ts";
-import { MAX_SESSION_FILE_BYTES } from "../extensions/search-core.ts";
+import { MAX_SESSION_FILE_BYTES } from "../extensions/transcript.ts";
 
 const FIX = join(dirname(new URL(import.meta.url).pathname), "fixtures");
 
