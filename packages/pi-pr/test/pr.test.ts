@@ -76,27 +76,7 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	let sessionShutdown: Handler | undefined;
 	let toolResult: Handler | undefined;
 	let command: Command | undefined;
-	let interval: { callback: () => void; delay: number } | undefined;
-	let intervalHandle: ReturnType<typeof setInterval> | undefined;
-	let intervalCleared = false;
-	let now = 1_000;
-	const originalSetInterval = globalThis.setInterval;
-	const originalClearInterval = globalThis.clearInterval;
-	const originalDateNow = Date.now;
-	Date.now = () => now;
-	globalThis.setInterval = ((callback: () => void, delay: number) => {
-		interval = { callback, delay };
-		intervalHandle = {} as ReturnType<typeof setInterval>;
-		return intervalHandle;
-	}) as typeof setInterval;
-	globalThis.clearInterval = ((timer: ReturnType<typeof setInterval>) => {
-		if (timer === intervalHandle) intervalCleared = true;
-	}) as typeof clearInterval;
-	t.after(() => {
-		globalThis.setInterval = originalSetInterval;
-		globalThis.clearInterval = originalClearInterval;
-		Date.now = originalDateNow;
-	});
+	t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_000 });
 
 	const calls: Array<{ command: string; args: string[]; signal: AbortSignal | undefined }> = [];
 	const reviewCallCount = () => calls.filter(({ command: executable, args }) => executable === "gh" && args[0] === "api" && args[1] === "graphql").length;
@@ -182,45 +162,45 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	assert.deepEqual(calls[0]?.args, ["pr", "view", "--json", "id,number,url,headRefOid,updatedAt,state,isDraft,mergeable,reviewDecision,statusCheckRollup"]);
 	assert.deepEqual(calls[1]?.args.slice(0, 5), ["api", "graphql", "--hostname", "github.com", "--paginate"]);
 	assert.equal(calls[1]?.args.at(-1), "[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length");
-	assert.equal(interval?.delay, 30_000);
 	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · 2 unresolved");
 	assert.deepEqual(notifications, [{ message: "PR #42 has 2 unresolved review threads", level: "warning" }]);
 
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	await flush();
+	assert.equal(calls.length, 4);
 	assert.equal(notifications.length, 1);
 
 	reviewOutput = "invalid";
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	await flush();
 	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · 2 unresolved");
 	reviewOutput = "2\n";
 
 	viewCode = 1;
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	await flush();
 	viewCode = 0;
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	await flush();
 	assert.equal(notifications.length, 1);
 
-	now += 20 * 60_000;
+	t.mock.timers.setTime(Date.now() + 20 * 60_000);
 	const reviewsBeforeExpiry = reviewCallCount();
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	await flush();
 	assert.equal(reviewCallCount(), reviewsBeforeExpiry);
 	assert.equal(plain(statuses.at(-1) ?? ""), "PR #42 · 2 unresolved");
 
 	updatedAt = "2026-08-25T12:01:00Z";
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	await flush();
 	assert.equal(reviewCallCount(), reviewsBeforeExpiry + 1);
 	assert.equal(notifications.length, 1);
-	now += 20 * 60_000;
+	t.mock.timers.setTime(Date.now() + 20 * 60_000);
 
 	let release!: (value: ReturnType<typeof result>) => void;
 	hold = new Promise((resolve) => { release = resolve; });
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	const callsBeforeCreate = calls.length;
 	await toolResult?.({
 		toolName: "bash",
@@ -238,8 +218,8 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await toolResult?.({ toolName: "bash", input: { command: "gh pr create --fill" }, isError: true } as never, context);
 	assert.equal(calls.length, callsAfterCreate);
 
-	now += 20 * 60_000;
-	interval?.callback();
+	t.mock.timers.setTime(Date.now() + 20 * 60_000);
+	t.mock.timers.tick(30_000);
 	await flush();
 	const reviewsBeforePush = reviewCallCount();
 	reviewOutput = "1\n";
@@ -303,10 +283,13 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 
 	let releaseAbort!: (value: ReturnType<typeof result>) => void;
 	hold = new Promise((resolve) => { releaseAbort = resolve; });
-	interval?.callback();
+	t.mock.timers.tick(30_000);
 	assert.ok(heldSignal);
 	await sessionShutdown?.({} as never, context);
-	assert.equal(intervalCleared, true);
 	assert.equal(heldSignal.aborted, true);
+	const callsAfterShutdown = calls.length;
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(calls.length, callsAfterShutdown);
 	releaseAbort(result(good()));
 });
