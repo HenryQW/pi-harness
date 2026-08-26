@@ -11,3 +11,7 @@ _Avoid_: Herdr SDK, socket client, orchestration client
 **Herdr Executor**:
 Caller-supplied command function used by Herdr Client, preserving caller ownership of process execution, cwd, cancellation, and tests.
 _Avoid_: Process manager, transport
+
+**Herdr Pi-Agent Launcher**:
+Small helper for the shared `agent start --kind pi --pane ... --` boundary and bounded structured pane-busy retry; callers still own Pi arguments and response/lifecycle semantics.
+_Avoid_: Generic agent lifecycle framework, command catalog
