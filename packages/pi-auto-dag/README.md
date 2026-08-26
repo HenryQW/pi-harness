@@ -41,7 +41,7 @@ Workers run through user-owned `@henryqw/pi-subagent` Roles with package-fixed i
 
 ## Config
 
-`~/.pi/agent/config/pi-auto-dag.json`
+Package-owned: `~/.pi/agent/config/pi-auto-dag.json`
 
 ```json
 {
@@ -52,7 +52,18 @@ Workers run through user-owned `@henryqw/pi-subagent` Roles with package-fixed i
 }
 ```
 
-The file is optional. When present, `version` is required and must be `5`; the other values are optional positive integers. `required_gate_timeout_ms` cannot exceed `2147483647`; timeout exits `124`.
+| Field | Required | Possible values | Default (missing file or omitted field) |
+| --- | --- | --- | --- |
+| `version` | Yes when the file exists | Exactly `5` | `5` when the file is missing |
+| `max_parallel_tasks` | No | Positive integer | `5` |
+| `max_review_rounds` | No | Positive integer | `5` |
+| `required_gate_timeout_ms` | No | Positive integer, at most `2147483647`; timeout exits `124` | `1800000` |
+
+The file is optional; missing means all defaults. Unknown keys are rejected. Malformed or invalid files fail fast and are never rewritten.
+
+Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`, assigns profiles to tasks `pi-auto-dag/implement` and `pi-auto-dag/review` for worker routes.
+
+Package-owned generated state: `<project>/.context/pi-auto-dag/`; do not edit it.
 
 ## Delivery Graph
 
@@ -99,17 +110,3 @@ Pass the exact graph object to `auto_dag_execute`. It is immutable for the durat
 ## Events
 
 Blocked and completed outcomes persist through a durable at-least-once outbox with stable event IDs. Consumers dedupe on event ID; redelivery never changes action, payload, or Git HEAD. Infrastructure-invalid Final Check evidence surfaces as a blocked outcome; only what durable receipts prove incomplete is ever rerun.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-auto-dag
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-auto-dag
-npm run typecheck --workspace @henryqw/pi-auto-dag
-npm run pack:check --workspace @henryqw/pi-auto-dag
-```

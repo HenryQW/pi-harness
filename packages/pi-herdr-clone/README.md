@@ -40,17 +40,3 @@ Both commands wait until Pi is idle, then validate the current Herdr pane (`HERD
 ### Failure semantics
 
 If target creation fails outright, no clone session is kept or created. A killed or incomplete creation response is ambiguous because Herdr may have retained partial state; the error reports every identifier returned so far and suggests inspecting `herdr workspace list`. Once agent start is attempted, the target tab, panes, and session file are retained because the launch outcome can be unknown; the error reports any known IDs for recovery. A later focus failure is shown as a warning and does not report the already-started clone as failed.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-herdr-clone
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-herdr-clone
-npm run typecheck --workspace @henryqw/pi-herdr-clone
-npm run pack:check --workspace @henryqw/pi-herdr-clone
-```

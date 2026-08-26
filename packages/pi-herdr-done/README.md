@@ -34,17 +34,3 @@ The parent pull runs only when this session ran in a linked worktree with a non-
 Tabs in the current Herdr workspace close automatically. When a tab from another workspace still uses the current checkout, `/done` refuses and lists it by name; use `/done --force` to remove the checkout regardless. Command requires Pi running inside Herdr with `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_TAB_ID` set.
 
 Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --force` to explicitly delete them.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-herdr-done
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-herdr-done
-npm run typecheck --workspace @henryqw/pi-herdr-done
-npm run pack:check --workspace @henryqw/pi-herdr-done
-```

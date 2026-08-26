@@ -15,18 +15,6 @@ pi install npm:@henryqw/pi-deps
 
 Node 22.19 or newer, Git, and each selected package manager must be available on `PATH` used by Git.
 
-## Supported managers
-
-Only current major versions are supported; older majors are not handled and fall back to the lockfile default below.
-
-| Manager | Command | Lockfile |
-| --- | --- | --- |
-| npm | `npm ci` | `package-lock.json`, `npm-shrinkwrap.json` |
-| pnpm | `pnpm install --frozen-lockfile` | `pnpm-lock.yaml` |
-| Yarn | `yarn install --immutable` | `yarn.lock` (Yarn Classic 1.x is not supported) |
-| Bun | `bun install --frozen-lockfile` | `bun.lock`, `bun.lockb` |
-| uv | `uv sync --locked` | `uv.lock` |
-
 ## Use
 
 | Surface | Type | Purpose |
@@ -41,22 +29,14 @@ Creation returns immediately. The hook validates lockfiles synchronously — con
 
 Dependency installation may execute repository-controlled build and install scripts. Enable only repositories you trust.
 
-## Remove
+## Supported managers
 
-Disable each opted-in repository before removing package because copied Git hook is self-contained:
+Only current major versions are supported; older majors are not handled and fall back to the lockfile default below.
 
-```text
-/deps
-```
-
-```bash
-pi remove npm:@henryqw/pi-deps
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-deps
-npm run typecheck --workspace @henryqw/pi-deps
-npm run pack:check --workspace @henryqw/pi-deps
-```
+| Manager | Command | Lockfile |
+| --- | --- | --- |
+| npm | `npm ci` | `package-lock.json`, `npm-shrinkwrap.json` |
+| pnpm | `pnpm install --frozen-lockfile` | `pnpm-lock.yaml` |
+| Yarn | `yarn install --immutable` | `yarn.lock` (Yarn Classic 1.x is not supported) |
+| Bun | `bun install --frozen-lockfile` | `bun.lock`, `bun.lockb` |
+| uv | `uv sync --locked` | `uv.lock` |

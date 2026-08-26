@@ -29,20 +29,15 @@ To inspect live state, read `<directory>/MEMORY.md`.
 
 ## Config
 
-`~/.pi/agent/config/pi-memory/config.json`
+Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional; a missing file uses defaults.
 
-```json
-{
-  "directory": "/absolute/path/to/memory",
-  "memoryCharLimit": 8800,
-  "userCharLimit": 5500
-}
-```
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `directory` | No | Non-empty absolute path without control characters, e.g. an iCloud- or Obsidian-synced folder | `~/.pi/agent/config/pi-memory/memory` |
+| `memoryCharLimit` | No | Safe integer 1–100000 | `8800` |
+| `userCharLimit` | No | Safe integer 1–100000 | `5500` |
 
-- `directory`: absolute path where `MEMORY.md` and `USER.md` live. Required only when overriding the default (`~/.pi/agent/config/pi-memory/memory`). Point it at an iCloud- or Obsidian-synced folder to sync across machines.
-- `memoryCharLimit` / `userCharLimit`: positive integers, maximum 100000.
-
-Invalid configuration fails fast; malformed config files are never rewritten.
+Any other invalid configuration fails fast: malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values throw an error naming the problem; the file is never rewritten.
 
 ## Storage & sync
 
@@ -53,17 +48,3 @@ Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi
 ## Threat model
 
 Because the directory can be a globally synced location readable outside Pi, review [`ADR 006 — pi-memory global store threat model`](https://github.com/HenryQW/pi-packages/blob/main/docs/adr/006-pi-memory-global-store-threat-model.md) before pointing it at a shared or cloud-synced path.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-memory
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-memory
-npm run typecheck --workspace @henryqw/pi-memory
-npm run pack:check --workspace @henryqw/pi-memory
-```
