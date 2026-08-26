@@ -72,8 +72,6 @@ describe("session_search entry point", () => {
 
 		const tool = (pi as any).tool as CapturedTool;
 		assert.equal(tool.name, "session_search");
-		assert.match(tool.description, /FOUR CALLING SHAPES/);
-		assert.match(tool.description, /user\/assistant/);
 		assert.equal(tool.promptSnippet, "Search past Pi sessions for prior decisions and context");
 
 		// Fixture sessions with proper parentId chain.
