@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { isAbsolute, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode, type HerdrExecutor } from "@henryqw/pi-herdr";
