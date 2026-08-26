@@ -22,9 +22,15 @@ function clamp(n: number | undefined, min: number, max: number, dflt: number): n
 }
 
 function truncateContent(msgs: WindowMessage[], maxChars: number): WindowMessage[] {
-	return msgs.map((m) =>
-		m.content.length > maxChars ? { ...m, content: m.content.slice(0, maxChars) + "…" } : m,
-	);
+	return msgs.map((m) => {
+		if (m.content.length <= maxChars) return m;
+		const head = Math.ceil(maxChars / 2);
+		const tail = Math.floor(maxChars / 2);
+		return {
+			...m,
+			content: m.content.slice(0, head) + "…" + (tail > 0 ? m.content.slice(-tail) : ""),
+		};
+	});
 }
 
 /** Binary-search the max uniform per-message content cap whose built result fits

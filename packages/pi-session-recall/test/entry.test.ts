@@ -309,6 +309,33 @@ describe("session_search entry point", () => {
 		assert.match(compact.messages[0].content, /zebra topic/);
 	});
 
+	it("compact discovery preserves a match from the tail of oversized content", async () => {
+		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-compact-tail`);
+		const pi = makePi();
+		mod.default(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		msgCount = 1;
+		const target = writeSession("compact-tail/target.jsonl", [
+			{ type: "session", version: 3, id: "compact-tail-target", timestamp: "2026-01-08T00:00:00.000Z", cwd: "/tmp" },
+			msg(null, "user", `${"head ".repeat(5000)}amber-tail-citation`),
+		]);
+		writeSession("compact-tail/short.jsonl", [
+			{ type: "session", version: 3, id: "compact-tail-short", timestamp: "2026-01-08T00:00:01.000Z", cwd: "/tmp" },
+			msg(null, "user", "amber-tail-citation"),
+		]);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-compact-tail`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+
+		const response = await tool.execute("compact-tail", { query: "amber-tail-citation", limit: 2 }, undefined, undefined, {
+			sessionManager: {},
+		});
+		const parsed = JSON.parse(response.content[0].text);
+		const hit = parsed.results.find((r: { path: string }) => r.path === target);
+		assert.ok(hit, "expected the oversized target session to be discovered");
+		assert.equal(hit.detail, "compact");
+		assert.match(hit.messages[0].content, /amber-tail-citation/);
+	});
+
 	it("discovery preserves an indexed hit and reports oversized hydration failure", async () => {
 		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-oversized-hydration`);
 		const pi = makePi();
