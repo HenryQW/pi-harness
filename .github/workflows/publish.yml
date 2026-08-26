@@ -36,13 +36,20 @@ jobs:
           shopt -s nullglob
           published=0
           task_models_seen=0
+          subagent_seen=0
 
-          # Shared task-model library must exist before first consumer releases.
-          for manifest in packages/pi-task-models/package.json packages/*/package.json; do
-            if [ "$manifest" = packages/pi-task-models/package.json ]; then
-              [ "$task_models_seen" = 1 ] && continue
-              task_models_seen=1
-            fi
+          # Prerequisites must exist before their consumers release.
+          for manifest in packages/pi-task-models/package.json packages/pi-subagent/package.json packages/*/package.json; do
+            case "$manifest" in
+              packages/pi-task-models/package.json)
+                [ "$task_models_seen" = 1 ] && continue
+                task_models_seen=1
+                ;;
+              packages/pi-subagent/package.json)
+                [ "$subagent_seen" = 1 ] && continue
+                subagent_seen=1
+                ;;
+            esac
             name="$(node -p "require('./$manifest').name")"
             if [ "$(node -p "Boolean(require('./$manifest').private)")" = true ]; then
               continue
