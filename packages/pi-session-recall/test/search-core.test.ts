@@ -1,6 +1,6 @@
 /**
  * Tests for the index engine. No network, no pi runtime imports — fixture
- * JSONL files are written to a temp dir per run.
+ * JSONL files are written to a fresh temp dir per test.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { after, before, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, searchIndex, syncSessions } from "../extensions/search-core.ts";
 import { readBoundedSnapshot } from "../extensions/transcript.ts";
 import { getWindow } from "../extensions/hydrate.ts";
@@ -17,24 +17,25 @@ let tmp: string;
 let sessionsDir: string;
 let dbPath: string;
 
-before(() => {
+// Fresh sessions tree + index per test: no test may rely on another's data.
+beforeEach(() => {
 	tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-test-"));
 	sessionsDir = path.join(tmp, "sessions");
 	dbPath = path.join(tmp, "index.db");
 });
 
-after(() => {
+afterEach(() => {
 	fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 // --- fixture helpers ---
 
-function sessionHeader(opts: { cwd?: string; parentSession?: string } = {}) {
+function sessionHeader(opts: { cwd?: string; parentSession?: string; timestamp?: string } = {}) {
 	return JSON.stringify({
 		type: "session",
 		version: 3,
 		id: crypto.randomUUID(),
-		timestamp: "2026-01-01T00:00:00.000Z",
+		timestamp: opts.timestamp ?? "2026-01-01T00:00:00.000Z",
 		cwd: opts.cwd ?? "/Users/tester/proj",
 		...(opts.parentSession ? { parentSession: opts.parentSession } : {}),
 	});
@@ -59,6 +60,25 @@ function writeFixture(dirName: string, fileName: string, lines: string[], mtimeO
 	const t = new Date(Date.UTC(2026, 0, 1, 12, 0, 0) + mtimeOffsetMs);
 	fs.utimesSync(file, t, t);
 	return file;
+}
+
+/** Seed the canonical deploy-pipeline session (entry ids u1/a1) and index it. */
+function seedDeploy() {
+	writeFixture("--users-tester-proj--", "a.jsonl", [
+		sessionHeader(),
+		msg("u1", "user", "How do I configure the deploy pipeline for staging?"),
+		msg("a1", "assistant", "The deploy pipeline config lives in deploy.yml under the staging key."),
+	]);
+	syncSessions(sessionsDir, dbPath);
+}
+
+/** Seed a Go deployment-strategy session (short term `Go` forces the LIKE path). */
+function seedGoDeployment() {
+	writeFixture("--go-deploy-proj--", "gd.jsonl", [
+		sessionHeader(),
+		msg("gd1", "user", "we chose the Go deployment strategy for the edge service"),
+	]);
+	syncSessions(sessionsDir, dbPath);
 }
 
 describe("sync + BM25 search", () => {
@@ -95,11 +115,13 @@ describe("sync + BM25 search", () => {
 		const res = syncSessions(path.join(tmp, "does-not-exist"), dbPath);
 		assert.equal(res.walkComplete, false);
 		// A normal walk over an existing tree is complete.
+		fs.mkdirSync(sessionsDir);
 		const ok = syncSessions(sessionsDir, dbPath);
 		assert.equal(ok.walkComplete, true);
 	});
 
 	it("re-sync of unchanged file is a no-op; append reindexes; delete purges", () => {
+		seedDeploy();
 		const file = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
 		const before = searchIndex(dbPath, "staging");
 		assert.ok(before.hits.length > 0);
@@ -119,14 +141,6 @@ describe("sync + BM25 search", () => {
 		syncSessions(sessionsDir, dbPath);
 		assert.equal(searchIndex(dbPath, "unique-zebra-query").hits.length, 0);
 		assert.equal(getSessionRows(dbPath, 100).length, 0);
-
-		// restore for later suites
-		writeFixture("--users-tester-proj--", "a.jsonl", [
-			sessionHeader(),
-			msg("u1", "user", "How do I configure the deploy pipeline for staging?"),
-			msg("a1", "assistant", "The deploy pipeline config lives in deploy.yml under the staging key."),
-			JSON.stringify({ type: "session_info", id: "si1", name: "Deploy pipeline chat" }),
-		]);
 	});
 
 	it("caps per call, newest-first, reports backlog and catches up", () => {
@@ -134,9 +148,8 @@ describe("sync + BM25 search", () => {
 			writeFixture(`--cap-proj-${i}--`, `${i}.jsonl`, [sessionHeader(), msg("m1", "user", `capfile${i} marker number`)], i * 1000);
 		}
 		const r1 = syncSessions(sessionsDir, dbPath, { cap: 2 });
-		// 6 changed: 5 capfiles + a.jsonl restored by the previous suite
 		assert.equal(r1.filesProcessed, 2);
-		assert.equal(r1.backlogRemaining, 4);
+		assert.equal(r1.backlogRemaining, 3);
 		// newest first: files 4 and 3 indexed (highest mtime offsets)
 		assert.ok(searchIndex(dbPath, `"capfile4"`).hits.length === 1);
 		assert.ok(searchIndex(dbPath, `"capfile3"`).hits.length === 1);
@@ -144,9 +157,9 @@ describe("sync + BM25 search", () => {
 
 		const r2 = syncSessions(sessionsDir, dbPath, { cap: 2 });
 		assert.equal(r2.filesProcessed, 2);
-		assert.equal(r2.backlogRemaining, 2);
+		assert.equal(r2.backlogRemaining, 1);
 		const r3 = syncSessions(sessionsDir, dbPath, { cap: DEFAULT_SYNC_CAP });
-		assert.equal(r3.filesProcessed, 2);
+		assert.equal(r3.filesProcessed, 1);
 		assert.equal(r3.backlogRemaining, 0);
 		assert.ok(searchIndex(dbPath, `"capfile0"`).hits.length === 1);
 	});
@@ -171,6 +184,7 @@ describe("sanitize ladder", () => {
 	});
 
 	it("trailing wildcard keeps FTS5 prefix syntax (bnRnk)", () => {
+		seedDeploy();
 		const plan = buildFtsQueryPlan("deploy*");
 		assert.deepEqual(plan.ftsCandidates[0], `"deploy"*`);
 		const { hits } = searchIndex(dbPath, "deploy*");
@@ -188,9 +202,6 @@ describe("sanitize ladder", () => {
 		const likeHits = searchIndex(dbPath, 'Qj "deploy*"', { limit: 10 }).hits;
 		assert.ok(likeHits.some((hit) => hit.path === literal), "quoted star stays literal in the short-term LIKE path");
 		assert.ok(!likeHits.some((hit) => hit.path === expanded), "LIKE must not expand a quoted star");
-		fs.rmSync(literal);
-		fs.rmSync(expanded);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
 	});
 
 	it("technical sigils survive boundary normalization (bhZeo)", () => {
@@ -199,6 +210,7 @@ describe("sanitize ladder", () => {
 	});
 
 	it("parse-error recovery falls back through ladder to deploy hits (bhZf0)", () => {
+		seedDeploy();
 		// raw form is an FTS5 syntax error; recovery candidates and the LIKE
 		// fallback must still surface existing deploy hits
 		const { hits } = searchIndex(dbPath, 'deploy AND NOT ("unterminated');
@@ -206,6 +218,7 @@ describe("sanitize ladder", () => {
 	});
 
 	it("queries with every term <3 chars use LIKE fallback", () => {
+		seedDeploy(); // text mentions deploy.yml: exercises the yml / .y substrings
 		const plan = buildFtsQueryPlan("ab cd");
 		assert.equal(plan.forceLike, true);
 		assert.equal(plan.ftsCandidates.length, 0);
@@ -327,6 +340,7 @@ describe("lineage + guards", () => {
 	});
 
 	it("current-session guard skips live entries only in the current file", () => {
+		seedDeploy();
 		const cur = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
 		const { hits } = searchIndex(dbPath, "deploy pipeline", {
 			currentSessionPath: cur,
@@ -484,6 +498,7 @@ describe("lineage + guards", () => {
 	});
 
 	it("grouping parens outside quotes are stripped from terms before planning (regression)", () => {
+		seedDeploy();
 		const plan = buildFtsQueryPlan("(deploy pipeline)");
 		assert.deepEqual(plan.ftsCandidates[0], `"deploy" "pipeline"`);
 		assert.equal(plan.forceLike, false);
@@ -504,8 +519,6 @@ describe("lineage + guards", () => {
 		assert.ok(!hits.find((hit) => hit.path === nearby)!.snippet.includes("NEAR"), "snippet terms must not anchor on the operator");
 		assert.equal(searchIndex(dbPath, "NEAR(Go, Rust)").hits.length, 0, "a comma between operands is malformed and must fail closed");
 		assert.equal(searchIndex(dbPath, "NEAR(Go \"AND\")").hits.length, 1, "quoted operator word remains an operand");
-		for (const file of [nearby, far, blocked, alternative]) fs.rmSync(file);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
 	});
 
 	it("NEAR keeps prior semantics on overlapping intervals (NEAR(a aaa,0) inside aaa)", () => {
@@ -875,9 +888,6 @@ describe("incompatible index schema", () => {
 		const { hits } = searchIndex(dbPath, '"alphazq ""betazq"', { limit: 10 });
 		assert.deepEqual(hits.map((hit) => hit.path), [literal], "only the literal-quote text may match the escaped phrase");
 		assert.ok(!hits.some((hit) => hit.path === plain), "splitting the phrase would falsely match plain adjacent words");
-		fs.rmSync(plain);
-		fs.rmSync(literal);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
 	});
 
 	it("escaped literal quote phrase uses LIKE without broadening separated characters", () => {
@@ -895,9 +905,6 @@ describe("incompatible index schema", () => {
 		const { hits } = searchIndex(dbPath, query, { limit: 10 });
 		assert.deepEqual(hits.map((hit) => hit.path), [contiguous], "only contiguous fox-plus-quote text may match");
 		assert.ok(!hits.some((hit) => hit.path === separated), "separated fox and quote must not match the exact phrase");
-		fs.rmSync(contiguous);
-		fs.rmSync(separated);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
 	});
 
 	it("NEAR accepts comma spacing at the distance boundary and rejects unsafe integers", () => {
@@ -906,9 +913,6 @@ describe("incompatible index schema", () => {
 			syncSessions(sessionsDir, dbPath, { cap: 10 });
 			assert.deepEqual(searchIndex(dbPath, "NEAR(Go ZqRust ,5)", { limit: 10 }).hits.map((hit) => hit.path), [boundary]);
 			assert.equal(searchIndex(dbPath, "NEAR(Go ZqRust, 9007199254740992)").hits.length, 0, "an unsafe distance must fail closed");
-			fs.rmSync(boundary);
-			fs.rmSync(outside);
-			syncSessions(sessionsDir, dbPath, { cap: 10 });
 		});
 	});
 });
@@ -927,22 +931,30 @@ describe("sanitize ladder regression", () => {
 	});
 
 	it("boolean LIKE fallback surfaces both sides of OR with short operands (bhZey)", () => {
+		const go = writeFixture("--go-proj--", "go.jsonl", [
+			sessionHeader(),
+			msg("go1", "user", "we chose the Go runtime for the edge service"),
+		], 50000);
 		writeFixture("--rust-proj--", "rust.jsonl", [
 			sessionHeader(),
 			msg("r1", "user", "we picked Rust for the CLI renderer rewrite"),
 		], 55000);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		const { hits } = searchIndex(dbPath, "Go OR Rust", { limit: 5 });
-		const paths = hits.map((h) => h.path);
-		assert.ok(paths.some((p) => p.includes("--short-mix--")), "Go-only session must surface for `Go OR Rust`");
+		const paths = searchIndex(dbPath, "Go OR Rust", { limit: 5 }).hits.map((h) => h.path);
+		assert.ok(paths.includes(go), "Go-only session must surface for `Go OR Rust`");
 		assert.ok(paths.some((p) => p.includes("--rust-proj--")), "Rust-only session must surface for `Go OR Rust`");
 
 		const filtered = searchIndex(dbPath, "Go OR (Rust NOT renderer)", { limit: 5 }).hits;
-		assert.ok(filtered.some((h) => h.path.includes("--short-mix--")), "parenthesized OR must keep the Go side");
+		assert.ok(filtered.some((h) => h.path === go), "parenthesized OR must keep the Go side");
 		assert.ok(!filtered.some((h) => h.path.includes("--rust-proj--")), "NOT must exclude the Rust renderer session");
 	});
 
 	it("LIKE fallback treats trailing FTS wildcard as prefix, not literal (bhZf1)", () => {
+		writeFixture("--go-deploy--", "gd.jsonl", [
+			sessionHeader(),
+			msg("gd1", "user", "we chose the Go deployment strategy for the edge service"),
+		]);
+		syncSessions(sessionsDir, dbPath);
 		const { hits } = searchIndex(dbPath, "Go deploy*");
 		assert.equal(hits.length, 1, "`Go deploy*` must match 'Go deployment strategy'");
 	});
@@ -1034,16 +1046,19 @@ describe("sanitize ladder regression", () => {
 	});
 
 	it("LIKE fallback results carry a snippet (bhGOt)", () => {
+		seedGoDeployment();
 		const { hits } = searchIndex(dbPath, "Go deployment");
 		assert.ok(hits[0].snippet.length > 0 && /Go deployment|deployment/i.test(hits[0].snippet));
 	});
 
 	it("boundary punctuation is stripped from NL terms end-to-end (bhGOw)", () => {
+		seedGoDeployment();
 		const { hits } = searchIndex(dbPath, "Go deployment strategy?");
 		assert.equal(hits.length, 1);
 	});
 
 	it("hits carry joined session metadata (bhGO0)", () => {
+		seedGoDeployment();
 		const { hits } = searchIndex(dbPath, "Go deployment");
 		assert.ok(hits[0].cwd && hits[0].startedAt);
 	});
@@ -1087,6 +1102,7 @@ describe("SQL prefilter + parse semantics + walk safety", () => {
 	});
 
 	it("parsed query with zero rows stays empty; malformed recovers via LIKE", () => {
+		seedDeploy();
 		const none = searchIndex(dbPath, "nonexistent AND deploy");
 		assert.equal(none.hits.length, 0, "zero-row parsed candidate must not broaden to OR/LIKE");
 		const recovered = searchIndex(dbPath, 'deploy AND NOT ("unterminated');
@@ -1104,24 +1120,27 @@ describe("SQL prefilter + parse semantics + walk safety", () => {
 	});
 
 	it("readdir failure in an indexed subdir preserves indexed data and indexes other dirs", () => {
-		const target = path.join(sessionsDir, "--flood--");
-		const origReaddir = fs.readdirSync;
+		const target = writeFixture("--walk-victim--", "v.jsonl", [sessionHeader(), msg("w0", "user", "walkvictim preserved marker")], 71000);
+		syncSessions(sessionsDir, dbPath);
+		assert.ok(searchIndex(dbPath, "walkvictim preserved marker").hits.length === 1);
+
 		writeFixture("--walk-ok--", "ok.jsonl", [sessionHeader(), msg("w1", "user", "walksafety unique survivor marker")], 72000);
+		const origReaddir = fs.readdirSync;
 		try {
 			fs.readdirSync = ((dir: any, opts?: any) => {
-				if (dir === target) throw new Error("EACCES simulated");
+				if (dir === path.dirname(target)) throw new Error("EACCES simulated");
 				return origReaddir.call(fs, dir, opts);
 			}) as typeof fs.readdirSync;
 			syncSessions(sessionsDir, dbPath, { cap: 50 });
-			// Deterministic: only --flood-- fails; every other directory is fully read.
+			// Deterministic: only --walk-victim-- fails; every other directory is fully read.
 			assert.ok(searchIndex(dbPath, "walksafety unique survivor").hits.length === 1,
 				"new file discovered around the failure must still be processed");
 		} finally {
 			fs.readdirSync = origReaddir;
 		}
-		// Data preservation: incomplete walk must not purge --flood--'s rows.
-		const { hits } = searchIndex(dbPath, "verbose-flood");
-		assert.ok(hits.some((hit) => hit.path.startsWith(target)), "indexed rows from the unreadable directory must survive");
+		// Data preservation: incomplete walk must not purge --walk-victim--'s rows.
+		assert.ok(searchIndex(dbPath, "walkvictim preserved marker").hits.length === 1,
+			"indexed rows from the unreadable directory must survive");
 	});
 });
 
@@ -1167,12 +1186,22 @@ describe("transaction atomicity", () => {
 
 describe("browse", () => {
 	it("returns recent sessions newest-first", () => {
+		writeFixture("--browse-old--", "old.jsonl", [
+			sessionHeader({ timestamp: "2026-01-01T00:00:00.000Z" }),
+			msg("b1", "user", "今天我们要讨论部署流水线的配置问题"),
+		], 1000);
+		writeFixture("--browse-new--", "new.jsonl", [
+			sessionHeader({ timestamp: "2026-01-02T00:00:00.000Z" }),
+			msg("b2", "user", "kubernetes ingress followup"),
+		], 2000);
+		syncSessions(sessionsDir, dbPath);
+
 		const rows = getSessionRows(dbPath, 100);
 		assert.ok(rows.length >= 2);
 		const times = rows.filter((r) => r.startedAt).map((r) => r.startedAt!);
 		const sorted = [...times].sort().reverse();
 		assert.deepEqual(times, sorted);
-		const cjkRow = rows.find((r) => r.path.endsWith("cjk.jsonl"));
+		const cjkRow = rows.find((r) => r.path.endsWith("old.jsonl"));
 		assert.equal(cjkRow?.preview?.slice(0, 4), "今天我们");
 		assert.equal(cjkRow?.cwd, "/Users/tester/proj");
 	});
