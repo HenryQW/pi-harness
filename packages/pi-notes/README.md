@@ -25,16 +25,8 @@ Notes are isolated per Git worktree, render as a numbered widget above editor, a
 
 Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for affected worktree until fixed or reset with `/note-clear`.
 
-## Remove
+## State
 
-```bash
-pi remove npm:@henryqw/pi-notes
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-notes
-npm run typecheck --workspace @henryqw/pi-notes
-npm run pack:check --workspace @henryqw/pi-notes
-```
+| Path | Purpose |
+| --- | --- |
+| `~/.pi/agent/config/pi-notes/<worktree-sha256>.json` | Command-managed notes for one Git worktree. |

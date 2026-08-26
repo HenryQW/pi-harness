@@ -29,6 +29,22 @@ Public Pi packages under `@henryqw` scope.
 
 Retired extensions and their replacements are recorded under [`deprecated/`](./deprecated).
 
+## Remove
+
+```bash
+pi remove npm:@henryqw/<package>
+```
+
+Replace `<package>` with the package's unscoped name, for example `pi-subagent`.
+
+Before removing `@henryqw/pi-deps`, disable each opted-in repository with `/deps`: its copied hook is self-contained.
+
+After removing `@henryqw/pi-session-recall`, delete its derived index to reclaim storage:
+
+```bash
+rm -rf ~/.pi/agent/config/pi-session-recall/
+```
+
 ## Development
 
 Requires Node.js `>=22.19.0`.
@@ -47,6 +63,21 @@ npm run test:live
 ```
 
 Live tests use real model requests and can incur provider cost. They set a temporary small context window so compaction completes quickly.
+
+Manual Pi TUI check for `@henryqw/pi-ask-question`:
+
+```bash
+npm run test:manual --workspace @henryqw/pi-ask-question
+```
+
+`@henryqw/pi-auto-compact` live test needs real Pi and authenticated model access:
+
+```bash
+npm run test:live --workspace @henryqw/pi-auto-compact
+PI_AUTO_COMPACT_AUTH_FILE=/path/to/auth.json npm run test:live --workspace @henryqw/pi-auto-compact
+```
+
+Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`.
 
 ## Release
 

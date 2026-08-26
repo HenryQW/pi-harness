@@ -55,16 +55,35 @@ See [Orchestration, isolation, and the public API](./docs/orchestration.md) for 
 
 ## Config
 
-`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts:
+pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-subagent/`, which holds two kinds of user-owned configuration: one Markdown file per Role (see [Roles](#roles)) and its own optional JSON file below. Model routing is *not* configured here; children resolve routes through the shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models.json`.
 
-```json
-{
-  "maxSubagents": 5,
-  "timeout": { "idleMinutes": 10, "maxMinutes": 30 }
-}
-```
+`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts. All fields are optional; a missing file uses defaults.
 
-Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides the configured concurrency for the session.
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `maxSubagents` | No | Safe integer ≥ 1 | `5` |
+| `timeout.idleMinutes` | No | Positive number of minutes where minutes × 60 000 ms ≤ 2,147,483,647 | `10` |
+| `timeout.maxMinutes` | No | Positive number within the same ms cap that must be greater than `timeout.idleMinutes`, otherwise the whole `timeout` object falls back to defaults | `30` |
+
+Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session (positive integer; an invalid value prevents the extension from loading, leaving `delegate_task` unavailable).
+
+This JSON is read leniently: malformed JSON, a non-object root, unknown keys, or invalid values are collected into one warning and the affected settings fall back to defaults; the file is never rewritten.
+
+### Role frontmatter
+
+Each Role `.md` file in the same directory accepts these frontmatter fields:
+
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `name` | Yes | Non-empty text; unique across roles | — |
+| `description` | Yes | Non-empty text | — |
+| `tools` | No | Array or comma-separated string of tool names | Omitted: caller tools win, else Pi defaults apply |
+| `isolation` | No | `worktree` | None |
+| `extensions` | No | Absolute paths, `~/…`, `file://`, or package sources (`npm:`, `git:`, `github:`, `https?:`, `ssh:`) | None |
+| `skills` | No | Array or comma-separated string of skill names | None; unavailable names warn and skip |
+| body | Yes | System-prompt Markdown after the frontmatter | — |
+
+An unreadable or invalid Role file fails role loading fast; duplicate role names are rejected.
 
 ## Roles
 
@@ -102,17 +121,3 @@ A Role owns its base tools, extensions, named Skills, instructions, and optional
 The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers. The ephemeral executor is for code already running inside active Pi; it does not provide standalone Node.js Pi discovery or launch support.
 
 Use [`docs/orchestration.md`](./docs/orchestration.md#public-role-and-executor-api) for exact API behavior and a post-permit `prepare` example using `resolveRoleLaunch` against the latest Pi context.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-subagent
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-subagent
-npm run typecheck --workspace @henryqw/pi-subagent
-npm run pack:check --workspace @henryqw/pi-subagent
-```

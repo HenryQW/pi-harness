@@ -38,7 +38,7 @@ Package also exports config and route-resolution helpers for consumers.
 
 ## Config
 
-`~/.pi/agent/config/pi-task-models.json`
+Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-task-models.json`. Consumers read it but never write it; only explicit `/task-models` actions save it.
 
 ```json
 {
@@ -68,24 +68,19 @@ Package also exports config and route-resolution helpers for consumers.
 }
 ```
 
-Each configured profile needs one primary model and thinking level. Fallback is optional. Model references use canonical `provider/model`; numbered `openai-codex-N` routes store as `openai-codex/model`.
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `profiles` | No | Object keyed by `fast`, `balanced`, `frontier`, `fav`; unknown profile names are rejected | `{}` (no profiles configured) |
+| `profiles.<profile>.primary.model` | Yes within a configured profile's `primary` | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry (or session-scoped models) at resolution time, not from this file | — |
+| `profiles.<profile>.primary.thinkingLevel` | Yes within a configured profile's `primary` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the model must support the level when the route resolves | — |
+| `profiles.<profile>.fallback` | No | When present, requires both `model` and `thinkingLevel` with the corresponding `primary.*` values; not allowed for `fav` | Omitted |
+| `tasks` | No | Object mapping task IDs (`<package>/<task>`) to a profile name | Built-in defaults listed in the example above |
+| `tasks.<taskId>` | Value required if the key is present | `fast`, `balanced`, `frontier`, `fav` | The built-in default for that task, if any |
+
+Model references use canonical `provider/model`; numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
+
+Reads are strict. A missing file yields no profiles and the built-in default task assignments; malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance and never rewrite the file.
 
 Profile thinking is authoritative for task routes.
 
-Reads are strict. Malformed or unknown values fail visibly and never rewrite the file. Only explicit `/task-models` actions write config.
-
 Consumers can call `resolveConfiguredTaskRoute(ctx, taskId)` for the first usable route or `resolveConfiguredTaskRoutes(ctx, taskId)` for primary and fallback routes. Both read strict shared config and fail with `/task-models` guidance when assignment, profile, or route is unavailable.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-task-models
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-task-models
-npm run typecheck --workspace @henryqw/pi-task-models
-npm run pack:check --workspace @henryqw/pi-task-models
-```

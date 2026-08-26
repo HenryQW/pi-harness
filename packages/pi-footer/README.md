@@ -56,17 +56,3 @@ Use Pi fullscreen TUI so Pi handles the custom URI:
 ```
 
 Set this through `/settings`, or launch with `--tui-mode fullscreen`. Then use normal primary click. Regular TUI delegates OSC 8 activation to the terminal; Ghostty uses `Cmd+click` but may not open custom URI schemes.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-footer
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-footer
-npm run typecheck --workspace @henryqw/pi-footer
-npm run pack:check --workspace @henryqw/pi-footer
-```

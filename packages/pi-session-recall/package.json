@@ -1,6 +1,6 @@
 {
 	"name": "@henryqw/pi-session-recall",
-	"version": "0.1.5",
+	"version": "0.1.6",
 	"description": "FTS5 search over past Pi sessions: single tool, four arg-inferred modes (discovery/scroll/read/browse), zero LLM calls.",
 	"keywords": [
 		"pi-package",

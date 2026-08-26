@@ -26,16 +26,6 @@ Added directories return root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.p
 
 Search uses Node filesystem traversal, skips `.git` and `node_modules`, supports basename and relative-path globs, and caps results at 1,000 per call.
 
-## Remove
+## State
 
-```bash
-pi remove npm:@henryqw/pi-add-dir
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-add-dir
-npm run typecheck --workspace @henryqw/pi-add-dir
-npm run pack:check --workspace @henryqw/pi-add-dir
-```
+Pi session entry `add-dir:state` stores added directories; package-managed, do not edit.

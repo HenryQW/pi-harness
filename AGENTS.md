@@ -51,6 +51,15 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 - PR CI enforces version bumps for published package changes; test-only package changes are excluded.
 - Before finishing, state which packages release and why. If no package version changed, state that CI will not publish.
 
+## Documentation fast path
+
+For README/template-only changes:
+
+- Keep cohesive work in one bounded implementer/reviewer unit, including any required workspace version bumps and lockfile update.
+- Preserve or relocate unique guidance when deleting standard sections.
+- Validate structure, version/lockfile consistency, and `git diff --check`.
+- Skip runtime tests, typechecks, pack checks, and progress tracking unless runtime/package structure changes or the work becomes resumable.
+
 ## Agent skills
 
 ### Issue tracker
