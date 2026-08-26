@@ -624,6 +624,7 @@ test("durable blocked/completed notifications retain stable IDs and settle deliv
 	assert.equal(completedRoundTrip.notifications.find(({ kind }) => kind === "completed")!.event_id, completedId);
 	assert.equal(completedRoundTrip.notifications.length, 3);
 	await assert.rejects(lifecycle.abort(project.root, "Too late"), /Cannot abort a completed run/);
+	assert.equal((await readRunState(project.root, RUN_ID))!.phase, "completed");
 	await writeRunState(project.root, {
 		...completedRoundTrip,
 		notifications: completedRoundTrip.notifications.map((notification) => notification.kind === "completed"
