@@ -541,7 +541,7 @@ test("terminal settlement retains an aborted lock without cleanup proof", async 
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 });
 
-test("durable blocked/completed notifications retain stable IDs and release completion only after ack", async (t) => {
+test("durable blocked/completed notifications retain stable IDs and settle delivered completion", async (t) => {
 	const project = await setupProject(t);
 	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
 	const initial = createInitialRunState({
@@ -623,10 +623,16 @@ test("durable blocked/completed notifications retain stable IDs and release comp
 	const completedRoundTrip = (await readRunState(project.root, RUN_ID))!;
 	assert.equal(completedRoundTrip.notifications.find(({ kind }) => kind === "completed")!.event_id, completedId);
 	assert.equal(completedRoundTrip.notifications.length, 3);
-
-	const delivered = await lifecycle.acknowledgeNotification(project.root, completedId);
+	await assert.rejects(lifecycle.abort(project.root, "Too late"), /Cannot abort a completed run/);
+	await writeRunState(project.root, {
+		...completedRoundTrip,
+		notifications: completedRoundTrip.notifications.map((notification) => notification.kind === "completed"
+			? { ...notification, delivered_at: "2026-08-09T01:00:00.000Z" }
+			: notification),
+	}, () => "completed-delivered");
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+	await lifecycle.settleTerminal(project.root);
 	assert.equal(await readActiveRunId(project.root), undefined);
-	assert.deepEqual(await lifecycle.acknowledgeNotification(project.root, completedId), delivered);
 });
 
 test("followUp delivery is fire-and-forget: failed or unacknowledged dispatch stays pending until explicit acknowledgement", async (t) => {
@@ -651,14 +657,15 @@ test("followUp delivery is fire-and-forget: failed or unacknowledged dispatch st
 		tasks: { ...initial.tasks, api: { status: "blocked", attempts: 1, block_reason: "Choose a protocol.", blocked_role: "implementer" } },
 	}, () => "blocked");
 	const lifecycle = createCoreLifecycle({ uuid: () => "lifecycle", now: () => "2026-08-09T01:00:00.000Z" });
+	const eventId = (await readRunState(project.root, RUN_ID))!.notifications[0].event_id;
 	const aborted = await lifecycle.abort(project.root, "Cancelled by user");
 	assert.equal(aborted.phase, "aborted");
 	assert.equal(aborted.abort_cleanup_complete, true);
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	assert.equal((await lifecycle.resume(project.root)).phase, "aborted");
 	const pending = (await readRunState(project.root, RUN_ID))!.notifications[0];
+	assert.equal(pending.event_id, eventId);
 	assert.equal(pending.delivered_at, undefined);
-	const eventId = pending.event_id;
 
 	let failSend = true;
 	const sent: string[] = [];
