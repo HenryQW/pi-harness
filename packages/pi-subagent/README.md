@@ -65,7 +65,7 @@ pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-sub
 | `timeout.idleMinutes` | No | Positive number of minutes where minutes × 60 000 ms ≤ 2,147,483,647 | `10` |
 | `timeout.maxMinutes` | No | Positive number within the same ms cap that must be greater than `timeout.idleMinutes`, otherwise the whole `timeout` object falls back to defaults | `30` |
 
-Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session (positive integer; an invalid value aborts delegation).
+Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session (positive integer; an invalid value prevents the extension from loading, leaving `delegate_task` unavailable).
 
 This JSON is read leniently: malformed JSON, a non-object root, unknown keys, or invalid values are collected into one warning and the affected settings fall back to defaults; the file is never rewritten.
 

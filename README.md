@@ -35,9 +35,15 @@ Retired extensions and their replacements are recorded under [`deprecated/`](./d
 pi remove npm:@henryqw/<package>
 ```
 
-Replace `<package>` with a package name from the table above.
+Replace `<package>` with the package's unscoped name, for example `pi-subagent`.
 
 Before removing `@henryqw/pi-deps`, disable each opted-in repository with `/deps`: its copied hook is self-contained.
+
+After removing `@henryqw/pi-session-recall`, delete its derived index to reclaim storage:
+
+```bash
+rm -rf ~/.pi/agent/config/pi-session-recall/
+```
 
 ## Development
 

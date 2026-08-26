@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-dag",
-  "version": "8.0.4",
+  "version": "8.0.3",
   "description": "Execute Delivery Graphs through Pi and Herdr.",
   "keywords": [
     "pi-package",
