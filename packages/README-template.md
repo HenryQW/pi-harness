@@ -36,6 +36,7 @@ pi install npm:@henryqw/<package>
 
 <Behavior, limits, integrations, and safety caveats.>
 
+<!-- Optional: include Config only when the package owns a user-editable config file; otherwise omit it. Do not present generated state or companion-package config as this package's config. -->
 ## Config
 
 `~/.pi/agent/config/<package>.json`
@@ -44,30 +45,9 @@ pi install npm:@henryqw/<package>
 | --- | --- | --- | --- |
 | `<setting>` | Yes or no | <Valid values> | <Default> |
 
-<Invalid-config behavior. Packages with no package-owned editable config use exactly:>
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
-<Document package-owned generated state separately; do not present companion-package config as this package's config.>
+<Invalid-config behavior.>
 
 <!-- Optional: add feature-specific sections here, for example Library API, Workflow, or Recovery. -->
 ## <Feature>
 
 <Feature-specific documentation.>
-
-<!-- Pi extensions only. -->
-## Remove
-
-```bash
-pi remove npm:@henryqw/<package>
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/<package>
-npm run typecheck --workspace @henryqw/<package>
-npm run pack:check --workspace @henryqw/<package>
-```

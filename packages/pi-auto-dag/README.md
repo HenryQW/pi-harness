@@ -110,17 +110,3 @@ Pass the exact graph object to `auto_dag_execute`. It is immutable for the durat
 ## Events
 
 Blocked and completed outcomes persist through a durable at-least-once outbox with stable event IDs. Consumers dedupe on event ID; redelivery never changes action, payload, or Git HEAD. Infrastructure-invalid Final Check evidence surfaces as a blocked outcome; only what durable receipts prove incomplete is ever rerun.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-auto-dag
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-auto-dag
-npm run typecheck --workspace @henryqw/pi-auto-dag
-npm run pack:check --workspace @henryqw/pi-auto-dag
-```

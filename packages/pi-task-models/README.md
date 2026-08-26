@@ -84,17 +84,3 @@ Reads are strict. A missing file yields no profiles and the built-in default tas
 Profile thinking is authoritative for task routes.
 
 Consumers can call `resolveConfiguredTaskRoute(ctx, taskId)` for the first usable route or `resolveConfiguredTaskRoutes(ctx, taskId)` for primary and fallback routes. Both read strict shared config and fail with `/task-models` guidance when assignment, profile, or route is unavailable.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-task-models
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-task-models
-npm run typecheck --workspace @henryqw/pi-task-models
-npm run pack:check --workspace @henryqw/pi-task-models
-```

@@ -42,15 +42,6 @@ Second line shows cumulative input tokens, output tokens, latest cache-hit rate,
 Third line shows cumulative agent-work time right-aligned beneath the model. It counts each run from `agent_start` through the final idle `agent_settled`, including automatic retries and auto-compaction inside that run, and excludes idle waits between runs. Standalone `/compact` is excluded because it runs outside the agent-run lifecycle and emits no `agent_start`. The cumulative total is persisted in the session via a `pi-footer:agent-work` custom entry after each finalized run and restored on session resume. Non-empty statuses from `@henryqw` extensions, currently Codex quota, share the left side.
 
 Fourth line renders statuses from all other extensions, including Ponytail and `pi-rewind`. Statuses are sorted by key; producer text, spacing, colors, links, and glyphs are preserved.
-
-## Config
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
-Companion config: `~/.pi/agent/config/pi-open-in.json` belongs to `@henryqw/pi-open-in`; it controls clickable VS Code checkout links.
-
 ## Clickable checkout
 
 When `pi-open-in.json` command is exactly `code`, the accent-colored checkout name is an OSC 8 `vscode://` link to the current path. Other configured commands remain plain because terminal links cannot run arbitrary shell commands.
@@ -64,17 +55,3 @@ Use Pi fullscreen TUI so Pi handles the custom URI:
 ```
 
 Set this through `/settings`, or launch with `--tui-mode fullscreen`. Then use normal primary click. Regular TUI delegates OSC 8 activation to the terminal; Ghostty uses `Cmd+click` but may not open custom URI schemes.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-footer
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-footer
-npm run typecheck --workspace @henryqw/pi-footer
-npm run pack:check --workspace @henryqw/pi-footer
-```

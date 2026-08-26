@@ -59,23 +59,3 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact.json`
 Unknown fields are ignored (legacy model fields are obsolete). `/auto-compact` writes this file. A missing file uses the default; a malformed or invalid file fails visibly at session start, falls back to 50%, and stays unchanged.
 
 Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. Task `pi-auto-compact/autoCompact` defaults to profile `fast`. Malformed shared task-model config is reported and left unchanged; compaction then uses the current session model.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-auto-compact
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-auto-compact
-npm run typecheck --workspace @henryqw/pi-auto-compact
-npm run pack:check --workspace @henryqw/pi-auto-compact
-```
-
-`test:live` needs real Pi plus authenticated model access. Set `PI_AUTO_COMPACT_AUTH_FILE` when auth is not at `~/.pi/agent/auth.json`.
-
-```bash
-npm run test:live --workspace @henryqw/pi-auto-compact
-```

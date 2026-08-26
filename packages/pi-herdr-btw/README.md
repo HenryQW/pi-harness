@@ -65,17 +65,3 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw.json`
 All fields are optional; unknown keys and non-object files are rejected. `/btw config show` prints effective values; `/btw config reset` removes the file. Missing config uses defaults; malformed config fails visibly and remains unchanged.
 
 Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. Task `pi-herdr-btw/btw` defaults to profile `fast`; side-thread routes resolve before pane launch.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-herdr-btw
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-herdr-btw
-npm run typecheck --workspace @henryqw/pi-herdr-btw
-npm run pack:check --workspace @henryqw/pi-herdr-btw
-```

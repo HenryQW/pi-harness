@@ -48,17 +48,3 @@ Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi
 ## Threat model
 
 Because the directory can be a globally synced location readable outside Pi, review [`ADR 006 — pi-memory global store threat model`](https://github.com/HenryQW/pi-packages/blob/main/docs/adr/006-pi-memory-global-store-threat-model.md) before pointing it at a shared or cloud-synced path.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-memory
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-memory
-npm run typecheck --workspace @henryqw/pi-memory
-npm run pack:check --workspace @henryqw/pi-memory
-```

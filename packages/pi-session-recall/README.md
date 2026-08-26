@@ -30,13 +30,6 @@ pi install npm:@henryqw/pi-session-recall
 Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help stems ≥3 chars. Only user/assistant text is indexed; thinking blocks and tool output are not searchable. For message text over the 20,000-character indexing budget, only first/last regions are indexed and the middle is omitted; phrases and `NEAR` cannot cross those regions, but ordinary AND terms can. `sessionId` must be a `.jsonl` file under the Pi sessions directory.
 
 Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
-
-## Config
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
 ## State
 
 | Path | Purpose |
@@ -50,19 +43,3 @@ Session directories whose encoded path starts with `--tmp-` or `--private-tmp-` 
 ## Storage & privacy
 
 The SQLite index lives at `~/.pi/agent/config/pi-session-recall/index.db`. It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-session-recall
-```
-
-Delete `~/.pi/agent/config/pi-session-recall/` to reclaim index disk space.
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-session-recall
-npm run typecheck --workspace @henryqw/pi-session-recall
-npm run pack:check --workspace @henryqw/pi-session-recall
-```

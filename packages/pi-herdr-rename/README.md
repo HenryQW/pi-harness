@@ -35,25 +35,3 @@ Display titles are natural task phrases, preferably three or four words and alwa
 In a linked worktree, a detached checkout or Herdr `worktree/...` branch is renamed; an existing non-generated branch stays. A generated workspace label such as `worktree-brave-meadow-4aa8` becomes display title; custom workspace names stay. Enclosing Herdr tab updates only when this pane is tab's only pane. Outside Herdr, only Pi session name changes.
 
 Tries assigned profile primary, then fallback, while honoring configured thinking level. Never substitutes current session model. No viable route leaves titles unchanged. Resuming a session created by this version reapplies saved display title and semantic branch without another model request. Older titles receive no migration.
-
-## Config
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
-Companion config: `~/.pi/agent/config/pi-task-models.json` is owned by `@henryqw/pi-task-models`; task `pi-herdr-rename/rename` defaults to `fast`. See [pi-task-models config docs](../pi-task-models/README.md#config).
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-herdr-rename
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-herdr-rename
-npm run typecheck --workspace @henryqw/pi-herdr-rename
-npm run pack:check --workspace @henryqw/pi-herdr-rename
-```

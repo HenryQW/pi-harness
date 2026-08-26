@@ -27,25 +27,3 @@ Each entry is one linked `PR #number` plus one plain-language state: `<count> un
 The status loads at session start, polls every 30 seconds, and refreshes after an agent successfully runs `gh pr create`, `git push`, or `/pr`. Unresolved review threads are checked every 30 seconds for 20 minutes after an open PR is first found. Each new push or remote PR update, including new comments, restarts that window. Footer and warning notification show the unresolved count when first found or increased. Last known footer count remains after review checks stop. No pull request leaves the footer blank.
 
 `/pr` finds an open PR for current branch. When absent, it starts bundled `/skill:pi-pr-create` workflow. Agent resolves base, inspects and commits scoped changes, runs relevant validation, pushes branch, and creates or updates PR with live title and body. This workflow handles dirty worktrees; it never silently commits unrelated changes.
-
-## Config
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
-In-memory poll and review state is not configuration.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-pr
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-pr
-npm run typecheck --workspace @henryqw/pi-pr
-npm run pack:check --workspace @henryqw/pi-pr
-```

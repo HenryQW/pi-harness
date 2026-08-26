@@ -29,31 +29,8 @@ pi install npm:@henryqw/pi-multi-codex
 | `/codex-switch` | command | Pick an authenticated slot. |
 
 Extension reads `auth.json` and never writes or refreshes credentials. Before the first agent start, a fresh snapshot routes a managed Codex model to the slot with the most seven-day quota. Routing preserves model ID and never changes in-progress work. Footer shows the active slot and fresh seven-day quota. Scoped sessions can switch only to exact scoped aliases; restart or update model scope after adding a slot.
-
-## Config
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
-Pi's standard auth file, `~/.pi/agent/auth.json`, is not package config; this extension only reads it.
-
 ## State
 
 | Path | Purpose |
 | --- | --- |
 | `~/.pi/agent/config/pi-multi-codex/usage.json` | Generated credential-free quota cache, maintained by the extension. |
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-multi-codex
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-multi-codex
-npm run typecheck --workspace @henryqw/pi-multi-codex
-npm run pack:check --workspace @henryqw/pi-multi-codex
-```

@@ -31,28 +31,3 @@ pi install npm:@henryqw/pi-ask-question
 ```
 
 Supply one to three options in preference order. UI marks the first `(Recommended)` and adds `Something else.` for a custom answer. Number keys select options. Empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions return an error. Aborting the tool closes the pending question.
-
-## Config
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-ask-question
-```
-
-## Development
-
-```bash
-npm run typecheck --workspace @henryqw/pi-ask-question
-npm run pack:check --workspace @henryqw/pi-ask-question
-```
-
-Manual TUI check outside CI:
-
-```bash
-npm run test:manual --workspace @henryqw/pi-ask-question
-```

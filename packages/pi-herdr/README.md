@@ -25,17 +25,3 @@ const response = await herdr.json(["agent", "list"], { cwd: ctx.cwd });
 `exec` validates string argv and returns the raw process result. `run` requires a successful exit and returns stdout. `json` also parses a JSON object. `hasHerdrErrorCode` detects structured CLI errors in stdout or stderr.
 
 Client does not mirror the Herdr command catalog. Herdr remains the source of truth for supported commands and response shapes.
-
-## Config
-
-| Package-owned editable config | Required | Fields | Possible values | Default |
-| --- | --- | --- | --- | --- |
-| None | No | No fields | No possible values | Built-in behavior |
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-herdr
-npm run typecheck --workspace @henryqw/pi-herdr
-npm run pack:check --workspace @henryqw/pi-herdr
-```

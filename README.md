@@ -29,6 +29,14 @@ Public Pi packages under `@henryqw` scope.
 
 Retired extensions and their replacements are recorded under [`deprecated/`](./deprecated).
 
+## Remove
+
+```bash
+pi remove npm:@henryqw/<package>
+```
+
+Replace `<package>` with a package name from the table above.
+
 ## Development
 
 Requires Node.js `>=22.19.0`.

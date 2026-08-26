@@ -110,17 +110,3 @@ A Role owns its base tools, extensions, named Skills, instructions, and optional
 The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers. The ephemeral executor is for code already running inside active Pi; it does not provide standalone Node.js Pi discovery or launch support.
 
 Use [`docs/orchestration.md`](./docs/orchestration.md#public-role-and-executor-api) for exact API behavior and a post-permit `prepare` example using `resolveRoleLaunch` against the latest Pi context.
-
-## Remove
-
-```bash
-pi remove npm:@henryqw/pi-subagent
-```
-
-## Development
-
-```bash
-npm test --workspace @henryqw/pi-subagent
-npm run typecheck --workspace @henryqw/pi-subagent
-npm run pack:check --workspace @henryqw/pi-subagent
-```
