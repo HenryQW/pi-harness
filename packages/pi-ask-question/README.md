@@ -34,9 +34,9 @@ Supply one to three options in preference order. UI marks the first `(Recommende
 
 ## Config
 
-| Package-owned editable config |
-| --- |
-| None |
+| Package-owned editable config | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| None | No | No fields | No possible values | Built-in behavior |
 
 ## Remove
 

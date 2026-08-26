@@ -45,9 +45,11 @@ Fourth line renders statuses from all other extensions, including Ponytail and `
 
 ## Config
 
-| Package-owned editable config | Companion-package config |
-| --- | --- |
-| None | `~/.pi/agent/config/pi-open-in.json` belongs to `@henryqw/pi-open-in`; it controls clickable VS Code checkout links. |
+| Package-owned editable config | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| None | No | No fields | No possible values | Built-in behavior |
+
+Companion config: `~/.pi/agent/config/pi-open-in.json` belongs to `@henryqw/pi-open-in`; it controls clickable VS Code checkout links.
 
 ## Clickable checkout
 

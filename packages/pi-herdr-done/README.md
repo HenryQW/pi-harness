@@ -37,11 +37,9 @@ Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --fo
 
 ## Config
 
-This package has no package-owned user-editable config.
-
-| File | Required | Fields | Possible values | Default |
+| Package-owned editable config | Required | Fields | Possible values | Default |
 | --- | --- | --- | --- | --- |
-| — | No | — | — | Built-in behavior |
+| None | No | No fields | No possible values | Built-in behavior |
 
 ## Remove
 

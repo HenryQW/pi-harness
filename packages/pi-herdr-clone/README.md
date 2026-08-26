@@ -43,11 +43,11 @@ If target creation fails outright, no clone session is kept or created. A killed
 
 ## Config
 
-This package has no package-owned user-editable config. Cloned Pi session files are Pi-managed session state, not configuration.
-
-| File | Required | Fields | Possible values | Default |
+| Package-owned editable config | Required | Fields | Possible values | Default |
 | --- | --- | --- | --- | --- |
-| — | No | — | — | Built-in behavior |
+| None | No | No fields | No possible values | Built-in behavior |
+
+Pi-managed session files are not configuration.
 
 ## Remove
 

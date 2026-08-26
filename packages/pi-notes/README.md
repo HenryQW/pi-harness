@@ -27,11 +27,9 @@ Each worktree file is validated as untrusted data. Malformed files are preserved
 
 ## Config
 
-This package has no package-specific user-editable config file.
-
-| Field | Required | Possible values | Default |
-| --- | --- | --- | --- |
-| No package-owned config file | No fields | No possible values | Built-in behavior/defaults |
+| Package-owned editable config | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| None | No | No fields | No possible values | Built-in behavior |
 
 ## State
 

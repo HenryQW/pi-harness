@@ -44,7 +44,13 @@ pi install npm:@henryqw/<package>
 | --- | --- | --- | --- |
 | `<setting>` | Yes or no | <Valid values> | <Default> |
 
-<Invalid-config behavior. Packages with no package-owned editable config use a compact table saying so. Document package-owned generated state separately; do not present companion-package config as this package's config.>
+<Invalid-config behavior. Packages with no package-owned editable config use exactly:>
+
+| Package-owned editable config | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| None | No | No fields | No possible values | Built-in behavior |
+
+<Document package-owned generated state separately; do not present companion-package config as this package's config.>
 
 <!-- Optional: add feature-specific sections here, for example Library API, Workflow, or Recovery. -->
 ## <Feature>

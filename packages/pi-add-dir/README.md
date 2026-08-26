@@ -28,9 +28,11 @@ Search uses Node filesystem traversal, skips `.git` and `node_modules`, supports
 
 ## Config
 
-| Package-owned editable config | Package-owned generated state |
-| --- | --- |
-| None | Session entry `add-dir:state` stores added directories; do not edit it. |
+| Package-owned editable config | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| None | No | No fields | No possible values | Built-in behavior |
+
+Package-owned generated state: Pi session entry `add-dir:state` stores added directories; do not edit it.
 
 ## Remove
 

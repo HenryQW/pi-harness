@@ -73,7 +73,7 @@ Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-t
 | `profiles` | No | Object keyed by `fast`, `balanced`, `frontier`, `fav`; unknown profile names are rejected | `{}` (no profiles configured) |
 | `profiles.<profile>.primary.model` | Yes within a configured profile's `primary` | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry (or session-scoped models) at resolution time, not from this file | — |
 | `profiles.<profile>.primary.thinkingLevel` | Yes within a configured profile's `primary` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the model must support the level when the route resolves | — |
-| `profiles.<profile>.fallback.model` / `.thinkingLevel` | No | Same as the corresponding `primary.*` fields; not allowed for `fav` | Omitted |
+| `profiles.<profile>.fallback` | No | When present, requires both `model` and `thinkingLevel` with the corresponding `primary.*` values; not allowed for `fav` | Omitted |
 | `tasks` | No | Object mapping task IDs (`<package>/<task>`) to a profile name | Built-in defaults listed in the example above |
 | `tasks.<taskId>` | Value required if the key is present | `fast`, `balanced`, `frontier`, `fav` | The built-in default for that task, if any |
 

@@ -28,11 +28,9 @@ Client does not mirror the Herdr command catalog. Herdr remains the source of tr
 
 ## Config
 
-This package has no package-owned user-editable config.
-
-| File | Required | Fields | Possible values | Default |
+| Package-owned editable config | Required | Fields | Possible values | Default |
 | --- | --- | --- | --- | --- |
-| — | No | — | — | Built-in behavior |
+| None | No | No fields | No possible values | Built-in behavior |
 
 ## Development
 

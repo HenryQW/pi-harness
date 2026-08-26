@@ -54,7 +54,7 @@ Package-owned: `~/.pi/agent/config/pi-auto-dag.json`
 
 | Field | Required | Possible values | Default (missing file or omitted field) |
 | --- | --- | --- | --- |
-| `version` | Yes when the file exists | Exactly `5` | — |
+| `version` | Yes when the file exists | Exactly `5` | `5` when the file is missing |
 | `max_parallel_tasks` | No | Positive integer | `5` |
 | `max_review_rounds` | No | Positive integer | `5` |
 | `required_gate_timeout_ms` | No | Positive integer, at most `2147483647`; timeout exits `124` | `1800000` |
@@ -62,6 +62,8 @@ Package-owned: `~/.pi/agent/config/pi-auto-dag.json`
 The file is optional; missing means all defaults. Unknown keys are rejected. Malformed or invalid files fail fast and are never rewritten.
 
 Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`, assigns profiles to tasks `pi-auto-dag/implement` and `pi-auto-dag/review` for worker routes.
+
+Package-owned generated state: `<project>/.context/pi-auto-dag/`; do not edit it.
 
 ## Delivery Graph
 

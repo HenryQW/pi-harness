@@ -15,18 +15,6 @@ pi install npm:@henryqw/pi-deps
 
 Node 22.19 or newer, Git, and each selected package manager must be available on `PATH` used by Git.
 
-## Supported managers
-
-Only current major versions are supported; older majors are not handled and fall back to the lockfile default below.
-
-| Manager | Command | Lockfile |
-| --- | --- | --- |
-| npm | `npm ci` | `package-lock.json`, `npm-shrinkwrap.json` |
-| pnpm | `pnpm install --frozen-lockfile` | `pnpm-lock.yaml` |
-| Yarn | `yarn install --immutable` | `yarn.lock` (Yarn Classic 1.x is not supported) |
-| Bun | `bun install --frozen-lockfile` | `bun.lock`, `bun.lockb` |
-| uv | `uv sync --locked` | `uv.lock` |
-
 ## Use
 
 | Surface | Type | Purpose |
@@ -43,9 +31,23 @@ Dependency installation may execute repository-controlled build and install scri
 
 ## Config
 
-| Package-owned editable config | Package-owned generated state |
-| --- | --- |
-| None | `<worktree gitdir>/pi-deps/status.json` and adjacent `install.log`; do not edit them. |
+| Package-owned editable config | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| None | No | No fields | No possible values | Built-in behavior |
+
+Package-owned generated state: `<worktree gitdir>/pi-deps/status.json` and adjacent `install.log`; do not edit them.
+
+## Supported managers
+
+Only current major versions are supported; older majors are not handled and fall back to the lockfile default below.
+
+| Manager | Command | Lockfile |
+| --- | --- | --- |
+| npm | `npm ci` | `package-lock.json`, `npm-shrinkwrap.json` |
+| pnpm | `pnpm install --frozen-lockfile` | `pnpm-lock.yaml` |
+| Yarn | `yarn install --immutable` | `yarn.lock` (Yarn Classic 1.x is not supported) |
+| Bun | `bun install --frozen-lockfile` | `bun.lock`, `bun.lockb` |
+| uv | `uv sync --locked` | `uv.lock` |
 
 ## Remove
 

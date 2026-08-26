@@ -38,24 +38,11 @@ Tries assigned profile primary, then fallback, while honoring configured thinkin
 
 ## Config
 
-This package has no package-owned user-editable config. Saved titles in Pi sessions are internal state, not configuration.
-
-| Package-owned file | Required | Fields | Possible values | Default |
+| Package-owned editable config | Required | Fields | Possible values | Default |
 | --- | --- | --- | --- | --- |
-| — | No | — | — | Built-in behavior |
+| None | No | No fields | No possible values | Built-in behavior |
 
-### Shared task-model config
-
-Model routing uses this companion-owned config, not config owned by `@henryqw/pi-herdr-rename`: `~/.pi/agent/config/pi-task-models.json`.
-
-| Field | Required | Possible values | Default |
-| --- | --- | --- | --- |
-| `profiles.<selected>.primary.model` | Yes, to generate titles | An available Pi model as `provider/model` | None |
-| `profiles.<selected>.primary.thinkingLevel` | Yes, to generate titles | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | None |
-| `profiles.<selected>.fallback` | No | A `model` and `thinkingLevel` route with the values above; not allowed for `fav` | None |
-| `tasks["pi-herdr-rename/rename"]` | No | `fast`, `balanced`, `frontier`, or `fav` | `fast` |
-
-Configure the shared file with `/task-models`; malformed shared config fails visibly and remains unchanged.
+Companion config: `~/.pi/agent/config/pi-task-models.json` is owned by `@henryqw/pi-task-models`; task `pi-herdr-rename/rename` defaults to `fast`. See [pi-task-models config docs](../pi-task-models/README.md#config).
 
 ## Remove
 

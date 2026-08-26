@@ -30,11 +30,11 @@ The status loads at session start, polls every 30 seconds, and refreshes after a
 
 ## Config
 
-This package has no package-owned user-editable config. Its in-memory poll and review state is not configuration.
-
-| File | Required | Fields | Possible values | Default |
+| Package-owned editable config | Required | Fields | Possible values | Default |
 | --- | --- | --- | --- | --- |
-| — | No | — | — | Built-in behavior |
+| None | No | No fields | No possible values | Built-in behavior |
+
+In-memory poll and review state is not configuration.
 
 ## Remove
 

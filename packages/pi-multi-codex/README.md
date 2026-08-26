@@ -32,11 +32,9 @@ Extension reads `auth.json` and never writes or refreshes credentials. Before th
 
 ## Config
 
-This package has no package-specific user-editable config file.
-
-| Field | Required | Possible values | Default |
-| --- | --- | --- | --- |
-| No package-owned config file | No fields | No possible values | Built-in behavior/defaults |
+| Package-owned editable config | Required | Fields | Possible values | Default |
+| --- | --- | --- | --- | --- |
+| None | No | No fields | No possible values | Built-in behavior |
 
 Pi's standard auth file, `~/.pi/agent/auth.json`, is not package config; this extension only reads it.
 
