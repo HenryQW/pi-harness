@@ -20,4 +20,4 @@ Run focused validation that would fail if the change were wrong. Do not access c
 
 Commit completed scoped changes locally unless the task forbids it. Never push or open pull requests without explicit authorization.
 
-Return changed files, validation results, and remaining risks.
+Return the worktree path, branch, base commit, tip commit, changed files from the base-to-tip committed diff, clean `git status --porcelain` result, validation results, and remaining risks.

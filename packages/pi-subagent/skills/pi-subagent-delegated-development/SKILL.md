@@ -9,21 +9,32 @@ You are Main. Decompose work into bounded units and coordinate; never edit files
 
 All model and agent work in this workflow goes through Pi's `delegate_task` and Pi-managed children. Do not invoke external LLM APIs, SDKs, agent harnesses, or model CLIs; ordinary deterministic developer tools such as `git`, npm, test runners, and compilers remain allowed.
 
+## Required preflight
+
+Before any delegation, require that Main's cwd is a Git working tree with a committed `HEAD`:
+
+```bash
+test "$(git rev-parse --is-inside-work-tree)" = true &&
+git rev-parse --verify -q HEAD^{commit} >/dev/null
+```
+
+If this fails, stop before delegation and report that this Skill requires a Git repository with a committed `HEAD`; do not rely on the generic worktree fallback to Main's cwd. Record `base=$(git rev-parse HEAD)` for each unit.
+
 ## Roles
 
-The package-shipped built-in Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only, with read-only bash Git/diff inspection) are always available; no installation step is required. A same-name user override replaces the built-in entirely. Before using this workflow, Main must verify that each override preserves implementer worktree isolation and reviewer read-only constraints; fail clearly if it does not. Do not invent substitute Roles.
+The package-shipped built-in Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only patch-and-file review) are always available; no installation step is required. A same-name user override replaces the built-in entirely. Before using this workflow, Main must verify that each override preserves implementer worktree isolation and reviewer read-only patch-and-file constraints; fail clearly if it does not. Do not invent substitute Roles.
 
 ## Per-unit loop
 
 For each bounded unit:
 
-1. **Implement** — one `delegate_task` single call to `implementer`. The packet states the objective, touched scope, and required validation.
-2. **Review** — one `delegate_task` single call to `reviewer`. Chain entries do not share files: `{previous}` passes text only, so the review packet must carry exact evidence from the implementer's report — worktree path, branch name, commit SHA(s), changed files, and how to see the diff. Ask the implementer for this evidence in step 1 if missing.
-3. **Merge** — only after an approving review, merge the unit's task branch into your current worktree yourself and run focused validation there. Never merge on unresolved findings.
+1. **Implement** — one `delegate_task` single call to `implementer`. The packet states the objective, touched scope, required validation, and recorded base commit. Require its output to identify the retained worktree path, branch, base commit, tip commit, changed files from the base-to-tip committed diff, and clean status.
+2. **Verify and review** — refuse review or merge unless Main independently verifies that the worktree was retained and is clean (including untracked files), the reported base/branch/tip identities are complete and match Git, the tip is descended from the recorded base, and the reported changed files equal `git diff --name-only "$base" "$tip"`. All intended changes must be in that committed base-to-tip diff. If any evidence is missing or any check fails, send the work to a fresh implementer repair; never review dirty or uncommitted work. Create the exact reviewer patch with `git diff --binary "$base" "$tip"` and supply that complete patch, the base/branch/tip identities, and referenced file paths in one `delegate_task` single call to `reviewer`. Chain entries do not share files: `{previous}` passes text only.
+3. **Merge** — only after an approving review, verify the branch tip still equals the reviewed tip commit, then merge that exact commit (not the branch name) into your current worktree and run focused validation there. Never merge on unresolved findings.
 
 ## Findings
 
-Any reviewer finding goes back as a **fresh** `implementer` delegation containing the findings plus the same worktree/branch/diff evidence, followed by a fresh review of the new state. A fresh repair implementer starts in a new worktree from Main HEAD and does not contain the prior unit commit: the repair packet must first bring the reported predecessor branch/commit(s) into its fresh worktree (merge or cherry-pick as appropriate), then address the findings. Bound the loop (e.g. three rounds); past the bound, stop and report to the user instead of merging.
+Any reviewer finding goes back as a **fresh** `implementer` delegation containing the findings plus the reviewed base/branch/tip identities and exact patch, followed by a fresh review of the new state. A fresh repair implementer starts in a new worktree from Main HEAD and does not contain the prior unit commit: the repair packet must first bring the reported predecessor commit into its fresh worktree (merge or cherry-pick as appropriate), then address the findings. Dirty or uncommitted work also goes only to this fresh repair path. Bound the loop (e.g. three rounds); past the bound, stop and report to the user instead of merging.
 
 ## Parallelism
 

@@ -90,7 +90,7 @@ Every single entry, parallel sibling, and chain step independently:
 
 Separate deterministic identities produce separate hashed worktree paths and branches. Parallel siblings cannot collide, and a chain does not base one step's worktree on the preceding step's branch. `{previous}` passes text only. There is no implicit shared worktree or hidden workflow state.
 
-A worktree starts from Main's current `HEAD`. Clean worktrees with no child commits are pruned; committed, dirty, switched, unmeasurable, or otherwise recoverable work is preserved and reported. Non-git directories and repositories with an unborn `HEAD` use Main's working directory. Git submodules reject worktree isolation, and setup failure in a real repository throws rather than silently sharing Main's checkout.
+A worktree starts from Main's current `HEAD`. Clean worktrees with no child commits are pruned; committed, dirty, switched, unmeasurable, or otherwise recoverable work is preserved and reported. Non-git directories and repositories with an unborn `HEAD` use Main's working directory. Git submodules reject worktree isolation, and setup failure in a real repository throws rather than silently sharing Main's checkout. This generic fallback remains unchanged: the bundled delegated-development Skill separately refuses to begin without a committed Git `HEAD`.
 
 If steps must share files, make that an explicit caller decision: use an intentionally shared workspace, merge preserved child commits, or pass state through a caller-owned store. Do not rely on chain order to imply filesystem sharing.
 
@@ -326,7 +326,7 @@ The package ships two working built-in Roles, validated by the same parser as us
 | Built-in | Behavior |
 | --- | --- |
 | `implementer` | Focused implementation requesting `isolation: worktree`; commits scoped changes locally, never pushes or opens PRs without authorization. Non-Git or unborn-`HEAD` contexts may use Main's cwd. |
-| `reviewer` | Read-only correctness review; read-only bash Git/diff inspection, never edits or commits. |
+| `reviewer` | Read-only correctness review from a supplied exact patch and referenced files; never edits or commits. |
 
 A same-named Markdown file in `config/pi-subagent/` explicitly overrides the built-in default.
 
