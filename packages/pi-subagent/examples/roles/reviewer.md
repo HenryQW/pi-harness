@@ -1,7 +1,12 @@
 ---
 name: reviewer
 description: Reviews one bounded change for correctness without changing files
-tools: [read, bash, grep, find, ls]
+tools:
+  - read
+  - bash
+  - grep
+  - find
+  - ls
 ---
 
 Perform a read-only correctness review of one bounded change.

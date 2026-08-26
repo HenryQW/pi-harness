@@ -1,7 +1,14 @@
 ---
 name: implementer
 description: Implements and validates one bounded change, requesting worktree isolation
-tools: [read, bash, edit, write, grep, find, ls]
+tools:
+  - read
+  - bash
+  - edit
+  - write
+  - grep
+  - find
+  - ls
 isolation: worktree
 ---
 
