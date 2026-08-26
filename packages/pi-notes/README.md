@@ -25,6 +25,20 @@ Notes are isolated per Git worktree, render as a numbered widget above editor, a
 
 Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for affected worktree until fixed or reset with `/note-clear`.
 
+## Config
+
+This package has no package-specific user-editable config file.
+
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| — | — | — | — |
+
+## State
+
+| Path | Purpose |
+| --- | --- |
+| `~/.pi/agent/config/pi-notes/<worktree-sha256>.json` | Command-managed notes for one Git worktree. |
+
 ## Remove
 
 ```bash

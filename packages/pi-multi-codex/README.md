@@ -30,7 +30,21 @@ pi install npm:@henryqw/pi-multi-codex
 
 Extension reads `auth.json` and never writes or refreshes credentials. Before the first agent start, a fresh snapshot routes a managed Codex model to the slot with the most seven-day quota. Routing preserves model ID and never changes in-progress work. Footer shows the active slot and fresh seven-day quota. Scoped sessions can switch only to exact scoped aliases; restart or update model scope after adding a slot.
 
-Quota snapshots live in `~/.pi/agent/config/pi-multi-codex/usage.json`. They are credential-free cache, not user-edited config.
+## Config
+
+This package has no package-specific user-editable config file.
+
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| — | — | — | — |
+
+Pi's standard auth file, `~/.pi/agent/auth.json`, is not package config; this extension only reads it.
+
+## State
+
+| Path | Purpose |
+| --- | --- |
+| `~/.pi/agent/config/pi-multi-codex/usage.json` | Generated credential-free quota cache, maintained by the extension. |
 
 ## Remove
 
