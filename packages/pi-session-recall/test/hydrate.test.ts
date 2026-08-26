@@ -311,6 +311,39 @@ test("malformed message content: object and non-string text parts yield empty st
 	assert.equal(w.messages[0].content, "");
 });
 
+test("long detached parent-linked non-message tail: linear leaf resolution", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-session-hydrate-leaf-"));
+	const session = join(dir, "session.jsonl");
+	try {
+		// 50k-entry detached tail whose entries link among themselves but not to
+		// any message. Naive per-candidate ancestry traversal is O(n²) here
+		// (~1.25e9 map ops) and blows past the timeout; memoized resolution is O(n).
+		const lines: string[] = [
+			JSON.stringify({ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" }),
+			JSON.stringify({ type: "message", id: "e01", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "text", text: "q1" }] } }),
+			JSON.stringify({ type: "message", id: "e02", parentId: "e01", timestamp: "t2", message: { role: "assistant", content: [{ type: "text", text: "a1" }] } }),
+		];
+		let prev: string | null = null;
+		for (let i = 0; i < 50_000; i++) {
+			const id = `tail${i}`;
+			lines.push(JSON.stringify({ type: "session_info", id, parentId: prev, timestamp: "t" }));
+			prev = id;
+		}
+		writeFileSync(session, lines.join("\n") + "\n");
+		// The subprocess keeps a quadratic regression from wedging the test runner.
+		const script = `import assert from "node:assert/strict";
+import { readSession } from ${JSON.stringify(new URL("../extensions/hydrate.ts", import.meta.url).href)};
+const result = readSession(${JSON.stringify(session)});
+assert.deepEqual(result.messages.map((message) => message.entryId), ["e01", "e02"]);
+assert.equal(result.totalMessages, 2);`;
+		const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { timeout: 20_000 });
+		assert.equal(result.error, undefined, `leaf resolution timed out: ${result.error}`);
+		assert.equal(result.status, 0, result.stderr.toString());
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("real ids ending in #h/#t are anchored without suffix stripping", () => {
 	const p = write("suffix-id-anchor.jsonl", [
 		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },

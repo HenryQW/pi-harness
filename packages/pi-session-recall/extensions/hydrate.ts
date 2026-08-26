@@ -66,14 +66,47 @@ function parseSessionEntries(sessionPath: string): Entry[] {
 }
 
 /** Leaf = last entry in file order whose ancestry contains a message; detached
- *  trailing metadata must not hide the transcript. */
+ *  trailing metadata must not hide the transcript.
+ *  Linear time: each entry's ancestry verdict is memoized, so every parent
+ *  chain segment is traversed once regardless of how many trailing candidates
+ *  share ancestry. Cycle handling matches branch(): truncation at the first
+ *  revisit means every path node's truncated chain is a suffix of the path,
+ *  so one walk's verdict covers all its memoized nodes. */
 function leafId(entriesById: Map<string, Entry>, entries: Entry[]): string | null {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		if (branch(entriesById, entries[i].id).some((e) => e.type === "message")) {
-			return entries[i].id;
+	const hasMessageAncestor = new Map<string, boolean>();
+	let leaf: string | null = null;
+	for (const start of entries) {
+		const path: Entry[] = [];
+		const onPath = new Set<string>();
+		let cur: Entry = start;
+		for (;;) {
+			const known = hasMessageAncestor.get(cur.id);
+			if (known !== undefined) {
+				for (const e of path) hasMessageAncestor.set(e.id, known);
+				break;
+			}
+			if (onPath.has(cur.id)) {
+				// No message was found before revisiting (we exit on message first).
+				for (const e of path) hasMessageAncestor.set(e.id, false);
+				break;
+			}
+			onPath.add(cur.id);
+			path.push(cur);
+			if (cur.type === "message") {
+				// Every node above the first message has one in its ancestry too.
+				for (const e of path) hasMessageAncestor.set(e.id, true);
+				break;
+			}
+			const parent = cur.parentId ? entriesById.get(cur.parentId) : undefined;
+			if (!parent) {
+				for (const e of path) hasMessageAncestor.set(e.id, false);
+				break;
+			}
+			cur = parent;
 		}
+		if (hasMessageAncestor.get(start.id)) leaf = start.id;
 	}
-	return null;
+	return leaf;
 }
 
 /** Walk parentId chain from entry to root, reversed (root→entry). */

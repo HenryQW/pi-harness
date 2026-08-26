@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
-import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, searchIndex, syncSessions } from "../extensions/search-core.ts";
+import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, readBoundedSnapshot, searchIndex, syncSessions } from "../extensions/search-core.ts";
 import { getWindow } from "../extensions/hydrate.ts";
 
 let tmp: string;
@@ -471,6 +471,39 @@ describe("lineage + guards", () => {
 		assert.equal(searchIndex(dbPath, "NEAR(Go \"AND\")").hits.length, 1, "quoted operator word remains an operand");
 		for (const file of [nearby, far, blocked, alternative]) fs.rmSync(file);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
+	});
+
+	it("NEAR keeps prior semantics on overlapping intervals (NEAR(a aaa,0) inside aaa)", () => {
+		// Short operands route through the LIKE fallback's unear UDF. The prior
+		// sliding-window sweep matches at distance 0 because the nested a@(1,2)
+		// sits fully inside aaa@(0,3): max(start) - min(end) + 2 = 0.
+		writeFixture("--near-overlap--", "overlap.jsonl", [
+			sessionHeader(),
+			msg("ov-u1", "user", "aaa"),
+		]);
+		syncSessions(sessionsDir, dbPath);
+		const { hits } = searchIndex(dbPath, "NEAR(a aaa,0)");
+		assert.equal(hits.length, 1);
+		assert.equal(hits[0].entryId, "ov-u1");
+	});
+
+	it("NEAR with hundreds of repeated common operands still matches after deduplication", () => {
+		// 100 duplicate operands fit well under the 512-char query cap; before
+		// operand deduplication each repeat materialized every occurrence of "rs"
+		// independently per candidate row. Dedup must leave the result unchanged.
+		const query = `NEAR(${Array<string>(100).fill("rs").join(" ")} kubernetes,10)`;
+		assert.ok(query.length <= MAX_QUERY_CHARS);
+		writeFixture("--near-dedupe--", "dedupe.jsonl", [
+			sessionHeader(),
+			msg("dd-u1", "user", "deploy rs with kubernetes nearby"),
+		]);
+		syncSessions(sessionsDir, dbPath);
+		const { hits } = searchIndex(dbPath, query);
+		assert.equal(hits.length, 1);
+		assert.equal(hits[0].entryId, "dd-u1");
+		// A missing distinct operand still gates the whole NEAR expression.
+		const gated = searchIndex(dbPath, `NEAR(${Array<string>(100).fill("rs").join(" ")} zebraqqq,10)`);
+		assert.equal(gated.hits.length, 0);
 	});
 
 	it("short-term floor counts Unicode code points, not UTF-16 units (two-emoji term)", () => {
@@ -1146,6 +1179,24 @@ process.exit(0);
 			});
 			assert.equal(result.error, undefined, `sync hung on the writerless FIFO (timed out): ${result.error}`);
 			assert.equal(result.status, 0, result.stderr.toString());
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("symlink TOCTOU in shared reader", () => {
+	it("a symlink swapped in after the walk is rejected, not followed", { skip: process.platform === "win32" }, () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-symlink-"));
+		try {
+			// Simulate the race outcome: the walk validated victim.jsonl as a regular
+			// file; by open time it is a symlink to a regular JSONL outside the tree.
+			const outside = path.join(dir, "outside.jsonl");
+			fs.writeFileSync(outside, [sessionHeader(), msg("s1", "user", "external secret marker")].join("\n") + "\n");
+			const linked = path.join(dir, "victim.jsonl");
+			fs.symlinkSync(outside, linked);
+
+			assert.throws(() => readBoundedSnapshot(linked, 1024 * 1024), (err: NodeJS.ErrnoException) => err.code === "ELOOP");
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}

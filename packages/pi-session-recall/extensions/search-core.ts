@@ -228,8 +228,12 @@ function extractText(content: unknown): string {
  *  MAX_SESSION_FILE_BYTES in production). */
 export function readBoundedSnapshot(filePath: string, maxBytes: number): string {
 	// O_NONBLOCK keeps a writerless FIFO (regular .jsonl swapped mid-walk) from
-	// blocking this open before fstat rejects it.
-	const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+	// blocking this open before fstat rejects it; O_NOFOLLOW (absent on Windows)
+	// rejects a symlink swapped in after the walk instead of following it.
+	const fd = fs.openSync(
+		filePath,
+		fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW ?? 0),
+	);
 	try {
 		const st = fs.fstatSync(fd);
 		if (!st.isFile()) throw new Error(`session path is not a regular file: ${filePath}`);
@@ -670,7 +674,9 @@ interface LikeSql {
  *  Trigram positions make N allow at most N-2 characters between phrases. */
 function nearLike(textValue: SQLOutputValue, termsValue: SQLOutputValue, distanceValue: SQLOutputValue): number {
 	if (typeof textValue !== "string" || typeof termsValue !== "string" || typeof distanceValue !== "number") return 0;
-	const terms = (JSON.parse(termsValue) as string[]).map(foldCase);
+	// Duplicate operands cannot affect the all-distinct-terms-present predicate,
+	// and the 512-char query cap otherwise admits hundreds of them.
+	const needles = [...new Set((JSON.parse(termsValue) as string[]).map(foldCase))];
 	const text = foldCase(textValue);
 	const codePointAt = new Uint32Array(text.length + 1);
 	let point = 0;
@@ -683,19 +689,19 @@ function nearLike(textValue: SQLOutputValue, termsValue: SQLOutputValue, distanc
 	codePointAt[text.length] = point;
 
 	const occurrences: { start: number; end: number; term: number }[] = [];
-	for (const [term, needle] of terms.entries()) {
+	for (const [term, needle] of needles.entries()) {
 		for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
 			occurrences.push({ start: codePointAt[at], end: codePointAt[at + needle.length], term });
 		}
 	}
 	occurrences.sort((a, b) => a.start - b.start || a.end - b.end);
 
-	const counts = new Uint16Array(terms.length);
+	const counts = new Uint16Array(needles.length);
 	let present = 0;
 	let left = 0;
 	for (let right = 0; right < occurrences.length; right++) {
 		if (counts[occurrences[right].term]++ === 0) present++;
-		while (present === terms.length) {
+		while (present === needles.length) {
 			if (occurrences[right].start - occurrences[left].end + 2 <= distanceValue) return 1;
 			if (--counts[occurrences[left++].term] === 0) present--;
 		}
