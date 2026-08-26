@@ -71,8 +71,8 @@ const waitTimeoutMs = 10 * 60_000;
 const spinnerIntervalMs = 100;
 const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-function formatElapsed(startedAt: number, now = Date.now()): string {
-	const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+function formatElapsed(startedAt: number): string {
+	const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1_000));
 	const minutes = Math.floor(seconds / 60);
 	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
@@ -93,7 +93,6 @@ export interface InstallWatchContext {
 export async function watchDependencyInstallation(
 	exec: ExtensionAPI["exec"],
 	ctx: InstallWatchContext,
-	timing: { pollMs?: number; successTtlMs?: number } = {},
 ): Promise<void> {
 	if (ctx.mode && ctx.mode !== "tui") return;
 	const git = await exec("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: ctx.cwd });
@@ -137,7 +136,7 @@ export async function watchDependencyInstallation(
 	}
 	const deadline = Date.now() + waitTimeoutMs;
 	while (status.state === "running" && Date.now() < deadline) {
-		await new Promise((resolveSleep) => setTimeout(resolveSleep, timing.pollMs ?? pollMs));
+		await new Promise((resolveSleep) => setTimeout(resolveSleep, pollMs));
 		status = await readStatus();
 		if (!status) {
 			ctx.ui.setWidget(widgetKey, undefined);
@@ -147,7 +146,7 @@ export async function watchDependencyInstallation(
 	await rm(statusPath, { force: true }); // consume so later sessions do not replay a stale outcome
 	if (status.state === "ok") {
 		ctx.ui.setWidget(widgetKey, ["pi-deps: dependencies installed"]);
-		setTimeout(() => ctx.ui.setWidget(widgetKey, undefined), timing.successTtlMs ?? successTtlMs);
+		setTimeout(() => ctx.ui.setWidget(widgetKey, undefined), successTtlMs);
 	} else if (status.state === "error") {
 		ctx.ui.setWidget(widgetKey, [
 			`pi-deps: install failed: ${status.message ?? "unknown error"}`,
