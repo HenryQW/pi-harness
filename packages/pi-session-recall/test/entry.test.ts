@@ -421,6 +421,89 @@ describe("session_search entry point", () => {
 		assert.match(hit.error, /session file exceeds 32 MiB snapshot limit/);
 	});
 
+	it("incomplete walk / failed lazy sync surface as warnings over stale data", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-syncwarn`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		const ctx = { sessionManager: {} };
+
+		// Index one fixture so stale browse/discovery data exists.
+		msgCount = 1;
+		writeSession("sync-warn/session.jsonl", [
+			{ type: "session", version: 3, id: "sync-warn", timestamp: "2026-01-10T00:00:00.000Z", cwd: "/tmp" },
+			msg(null, "user", "sync warning unique quokka topic"),
+		]);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-syncwarn`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+
+		// Hide the sessions root: the walk cannot enumerate it.
+		const sessionsRoot = path.join(agentDir, "sessions");
+		fs.renameSync(sessionsRoot, sessionsRoot + ".hidden");
+		try {
+			const browse = await tool.execute("w1", {}, undefined, undefined, ctx);
+			const browseResult = JSON.parse(browse.content[0].text);
+			assert.equal(browseResult.mode, "browse");
+			assert.deepEqual(browseResult.syncWarning, { kind: "incomplete-walk" }, "browse must warn on incomplete walk");
+			assert.ok(browseResult.sessions.length >= 1, "stale browse rows stay usable");
+
+			const disc = await tool.execute("w2", { query: "sync warning unique quokka topic" }, undefined, undefined, ctx);
+			const discResult = JSON.parse(disc.content[0].text);
+			assert.equal(discResult.mode, "discovery");
+			assert.deepEqual(discResult.syncWarning, { kind: "incomplete-walk" });
+			assert.ok(discResult.results.length >= 1, "stale discovery hits stay usable");
+		} finally {
+			fs.renameSync(sessionsRoot + ".hidden", sessionsRoot);
+		}
+
+		// A subsequent complete sync omits the warning.
+		const after = await tool.execute("w3", { query: "sync warning unique quokka topic" }, undefined, undefined, ctx);
+		const afterParsed = JSON.parse(after.content[0].text);
+		assert.equal(afterParsed.syncWarning, undefined, "warning omitted after complete sync");
+	});
+
+	it("thrown lazy sync surfaces a capped warning while stale results remain usable", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-syncthrow`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		const ctx = { sessionManager: {} };
+
+		msgCount = 1;
+		writeSession("sync-throw/session.jsonl", [
+			{ type: "session", version: 3, id: "sync-throw", timestamp: "2026-01-11T00:00:00.000Z", cwd: "/tmp" },
+			msg(null, "user", "sync throw unique capybara topic"),
+		]);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-syncthrow`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+
+		// One-shot failure: the FIRST index-db open inside the tool call belongs to
+		// the lazy sync; browse/discovery then open normally over the stale index.
+		const dbFile = path.join(agentDir, "config", "pi-session-recall", "index.db");
+		const realOpenSync = fs.openSync.bind(fs) as typeof fs.openSync;
+		let failedOnce = false;
+		const longError = new Error(`synthetic db outage ${"x".repeat(1000)}`);
+		fs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+			if (!failedOnce && args[0] === dbFile) {
+				failedOnce = true;
+				throw longError;
+			}
+			return realOpenSync(...args);
+		}) as typeof fs.openSync;
+		let parsed: { syncWarning?: { kind: string; error: string }; results: unknown[] };
+		try {
+			const res = await tool.execute("wt", { query: "sync throw unique capybara topic" }, undefined, undefined, ctx);
+			parsed = JSON.parse(res.content[0].text);
+		} finally {
+			fs.openSync = realOpenSync;
+		}
+		assert.ok(failedOnce, "lazy sync must have attempted the index-db open");
+		assert.equal(parsed.syncWarning?.kind, "sync-failed");
+		assert.ok(parsed.syncWarning!.error.length <= 512, "error message capped at 512 chars");
+		assert.ok(parsed.syncWarning!.error.startsWith("synthetic db outage"));
+		assert.ok(parsed.results.length >= 1, "stale discovery hits stay usable after sync failure");
+	});
+
 	it("discovery drains sync backlog left by capped startup pass (bhGOb)", async () => {
 		// Fill more files than the default cap, then run only a 1-file startup backfill.
 		msgCount = 1;

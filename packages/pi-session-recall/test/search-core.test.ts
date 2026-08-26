@@ -89,6 +89,15 @@ describe("sync + BM25 search", () => {
 		assert.equal(think.hits.length, 0);
 	});
 
+	it("reports walkComplete so callers can distinguish partial walks", () => {
+		// Missing sessions root: walk cannot enumerate anything.
+		const res = syncSessions(path.join(tmp, "does-not-exist"), dbPath);
+		assert.equal(res.walkComplete, false);
+		// A normal walk over an existing tree is complete.
+		const ok = syncSessions(sessionsDir, dbPath);
+		assert.equal(ok.walkComplete, true);
+	});
+
 	it("re-sync of unchanged file is a no-op; append reindexes; delete purges", () => {
 		const file = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
 		const before = searchIndex(dbPath, "staging");

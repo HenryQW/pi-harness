@@ -549,7 +549,7 @@ export function syncSessions(
 	const backlog = changed.length - filesProcessed + deletedRemaining;
 	db.prepare("INSERT INTO meta(key, value) VALUES ('backlog', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(backlog));
 
-	return { filesProcessed, messagesIndexed, backlogRemaining: backlog };
+	return { filesProcessed, messagesIndexed, backlogRemaining: backlog, walkComplete: walk.complete };
 	} finally {
 		db.close();
 	}
