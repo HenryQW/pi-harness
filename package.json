@@ -43,8 +43,9 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "pack:check": "npm run pack:check --workspaces --if-present"
   },
-  "devDependencies": {
+  "dependencies": {
     "@types/node": "^26.2.0",
+    "@types/proper-lockfile": "^4.1.4",
     "typescript": "^7.0.2"
   }
 }
