@@ -84,6 +84,10 @@ cp packages/pi-subagent/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
 
 The package never installs or writes Role configuration. Sample names are not built-ins; after copying, edit or replace them as your own Roles.
 
+## Skill
+
+The bundled [`delegated-development`](./skills/delegated-development/SKILL.md) Skill is opinionated orchestration policy for Main: decompose into bounded units, delegate each to a worktree-isolated `implementer`, review with the read-only `reviewer` using explicit worktree/branch/diff evidence, merge only approved branches, and route findings through fresh reviewed delegations. It is guidance only — it adds no runtime code, config, or Role installation, and preserves the [composition-outside-the-executor](./docs/adr/001-composable-ephemeral-execution.md) boundary.
+
 A Role owns its base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Ambient extension and Skill discovery is disabled in children. With neither Role tools nor caller tools, Pi defaults remain; caller tools with omitted Role tools snapshot Main's effective active built-ins and install the child policy. Loaded Role/caller extension tools still activate, parent-only tools stay excluded, and unavailable named Skills warn and skip.
 
 ## Library API

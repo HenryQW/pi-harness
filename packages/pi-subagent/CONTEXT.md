@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide validated user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, and a `delegate_task` extension that runs one selected bounded workflow in one or more ephemeral child processes.
+Provide validated user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, a `delegate_task` extension that runs one selected bounded workflow in one or more ephemeral child processes, and a bundled Main-side `delegated-development` orchestration Skill (policy text only; no runtime behavior).
 
 ## Domain glossary
 

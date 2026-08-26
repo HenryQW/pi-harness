@@ -339,4 +339,6 @@ cp packages/pi-subagent/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
 
 The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the files and their names are entirely user-owned.
 
+The bundled [`delegated-development`](../skills/delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It names the sample Roles and prescribes an implement → review → merge loop, but it defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
+
 See the architectural decision: [Compose workflows outside the ephemeral executor](./adr/001-composable-ephemeral-execution.md).

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,21 @@ import test from "node:test";
 import { loadRoles } from "../src/index.ts";
 
 const samplesDir = fileURLToPath(new URL("../examples/roles/", import.meta.url));
+
+const packageDir = fileURLToPath(new URL("../", import.meta.url));
+
+test("bundled delegated-development Skill is valid and registered", async () => {
+	const manifest = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
+	assert.deepEqual(manifest.pi.skills, ["./skills"]);
+	assert.ok(manifest.files.includes("skills"));
+
+	const skill = await readFile(
+		join(packageDir, "skills", "delegated-development", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(skill, /^name: delegated-development$/m);
+	assert.match(skill, /^description: .+/m);
+});
 
 test("copyable Role samples load from an isolated agent directory", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-examples-"));
