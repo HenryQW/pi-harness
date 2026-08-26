@@ -8,7 +8,7 @@ import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, PullRequestIdentity, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { assertSamePullRequest, parsePullRequest, viewOpenPullRequest } from "./pull-request.ts";
 import { actionTicketPath, ensureActionTicket, type ReviewKind } from "./review-ticket.ts";
-import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
+import { persistReviewPatch, reviewPrompt, reviewPromptMode, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, type Uuid } from "./state.ts";
 import {
 	finalCheck,
@@ -104,6 +104,7 @@ async function ensureFinalReviewer(
 	let current = task(state, issue.id);
 	const commit = nonEmptyString(current.commit, "final-check commit");
 	if (commit !== state.integration_head) throw new Error("Final-check commit does not match the integration HEAD");
+	await commandOutput(options.runner, "git", ["merge-base", "--is-ancestor", state.source_commit, commit], state.main_worktree);
 	state = await ensureFinalGate(state, issue, commit, config.required_gate_timeout_ms, options);
 	current = task(state, issue.id);
 	const gate = requiredTaskGate(current, commit, "Final check");
@@ -138,11 +139,15 @@ async function ensureFinalReviewer(
 	});
 	current = task(state, issue.id);
 	const needsInstruction = Boolean(current.reviewer_instruction_pending) || mode === "review" || started !== "existing";
-	const promptMode: ReviewPromptMode = !needsInstruction
-		? "resend"
-		: started !== "existing" || current.review_rounds === 1
-			? "full"
-			: "update";
+	const base = state.source_commit;
+	const promptMode: ReviewPromptMode = reviewPromptMode(
+		needsInstruction,
+		started,
+		current.review_packet_base,
+		current.review_packet_commit,
+		base,
+		commit,
+	);
 	await ensureActionTicket(
 		actionTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle", "reviewer"),
 		{ attempt: current.attempts, review_round: positiveInteger(current.review_rounds, "final-check review round"), role: "reviewer", review_id: lifecycleReviewId(state, issue, current, "final_check") },
@@ -150,6 +155,15 @@ async function ensureFinalReviewer(
 		state.run_id,
 		options.uuid,
 	);
+	const patch = promptMode === "full" ? await persistReviewPatch({
+		runner: options.runner,
+		mainWorktree: state.main_worktree,
+		runId: state.run_id,
+		worktree: state.main_worktree,
+		base,
+		commit,
+		context: { type: "integration_head" },
+	}) : undefined;
 	const amendments = gateCommandAmendments(state, issue.id);
 	await promptManagedSubagent(workerHost(state), agent, reviewPrompt({
 		kind: "final_check",
@@ -158,10 +172,15 @@ async function ensureFinalReviewer(
 		worktree: state.main_worktree,
 		base: state.source_commit,
 		gate: requiredTaskGate(current, commit, "Final check"),
+		patch,
 		...(amendments.length ? { context: { gate_command_amendments: amendments } } : {}),
 	}, promptMode), workerHostOptions(options));
-	if (needsInstruction) {
-		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);
+	if (needsInstruction || promptMode === "full") {
+		state = await save(replaceTask(state, issue.id, {
+			...task(state, issue.id),
+			reviewer_instruction_pending: undefined,
+			...(promptMode === "full" ? { review_packet_base: base, review_packet_commit: commit } : {}),
+		}), options);
 	}
 	return state;
 }

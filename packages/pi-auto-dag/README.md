@@ -102,7 +102,7 @@ Pass the exact graph object to `auto_dag_execute`. It is immutable for the durat
 
 1. The caller normalizes an approved plan into the exact graph and calls `auto_dag_execute`. Planning is externally owned (for example by `/ship`).
 2. Auto DAG validates structure, then shows one TUI confirmation bound to the SHA-256 of the exact graph. It display-escapes every exact `testing` command that will later run through `sh -c`, alongside both fixed Roles. Execution never starts without this confirmation.
-3. Ready tasks share one Git base at the frozen HEAD. Each gets a child worktree, the fixed implementer Role, one required commit, and the exact `testing` command through `sh -c`. The fixed reviewer Role sees the commit and gate evidence; approval requires system-owned exit code `0`.
+3. Ready tasks share one Git base at the frozen HEAD. Each gets a child worktree, the fixed implementer Role, one required commit, and the exact `testing` command through `sh -c`. A fresh fixed reviewer Role receives the commit, gate evidence, and a read-only run-private exact binary patch reference (path, base, commit, size, SHA-256); the patch body is never in its prompt. Approval requires system-owned exit code `0`.
 4. After each wave passes, commits are cherry-picked by Local Issue ID and the next wave starts. A cherry-pick conflict returns that task to its workers.
 5. After every implementation task, Final Check runs on clean integration `HEAD`; product failure repairs through the owning Local Issue.
 6. When all gates pass, Auto DAG pushes one branch and opens exactly one PR. Ownership ends there; post-PR sweep and CI status are caller-owned (for example `/ship`).

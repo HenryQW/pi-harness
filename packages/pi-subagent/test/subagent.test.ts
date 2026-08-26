@@ -221,6 +221,14 @@ const timer = setInterval(() => {
 	};
 }
 
+test("delegate_task description exposes built-in roles with an empty user config", async () => {
+	await environment(async () => {
+		const app = harness();
+		assert.match(app.tool.description, /implementer: Implements and validates one bounded change/);
+		assert.match(app.tool.description, /reviewer: Reviews one bounded change for correctness without changing files/);
+	});
+});
+
 test("role config rejects repository-relative extension sources", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
@@ -261,7 +269,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 `);
 		process.argv[1] = runner;
 
-		assert.deepEqual(loadRoles(agentDir).map(({ name }) => name), ["reviewer"]);
+		assert.deepEqual(loadRoles(agentDir).map(({ name }) => name), ["implementer", "reviewer"]);
 		const app = harness({
 			skills: [{ name: "security", path: "/effective/skills/security/SKILL.md" }],
 			trusted: false,

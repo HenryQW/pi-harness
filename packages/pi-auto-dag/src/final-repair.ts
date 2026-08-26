@@ -15,7 +15,7 @@ import { assertAttachedBranch, deleteExpectedBranch, ensureChildWorktree, findAp
 import { assertRunBoundary } from "./intake.ts";
 import type { LocalIssue, ProjectConfig, RunState, RunTaskState, SubmitReviewEnvelope, WorkerEnvelope } from "./model.ts";
 import { actionTicketPath, ensureActionTicket, type ReviewKind } from "./review-ticket.ts";
-import { reviewPrompt, type ReviewPromptMode } from "./review.ts";
+import { persistReviewPatch, reviewPrompt, reviewPromptMode, type ReviewPromptMode } from "./review.ts";
 import { issueById, replaceTask, task, type Uuid } from "./state.ts";
 import {
 	clearLifecycleCleanupBlock,
@@ -396,11 +396,15 @@ async function ensureFinalRepairReviewer(
 	});
 	current = task(state, issue.id);
 	const needsInstruction = Boolean(current.reviewer_instruction_pending) || mode === "review" || started !== "existing";
-	const promptMode: ReviewPromptMode = !needsInstruction
-		? "resend"
-		: started !== "existing" || current.review_rounds === 1
-			? "full"
-			: "update";
+	const base = nonEmptyString(current.repair_base, "final repair base");
+	const promptMode: ReviewPromptMode = reviewPromptMode(
+		needsInstruction,
+		started,
+		current.review_packet_base,
+		current.review_packet_commit,
+		base,
+		commit,
+	);
 	await ensureActionTicket(
 		actionTicketPath(state.main_worktree, state.run_id, issue.id, "lifecycle", "reviewer"),
 		{ attempt: current.attempts, review_round: positiveInteger(current.review_rounds, "final-gate repair review round"), role: "reviewer", review_id: lifecycleReviewId(state, issue, current, "final_repair") },
@@ -408,6 +412,15 @@ async function ensureFinalRepairReviewer(
 		state.run_id,
 		options.uuid,
 	);
+	const patch = promptMode === "full" ? await persistReviewPatch({
+		runner: options.runner,
+		mainWorktree: state.main_worktree,
+		runId: state.run_id,
+		worktree: nonEmptyString(current.worktree, "final repair worktree"),
+		base,
+		commit,
+		context: { type: "child_branch", branch: nonEmptyString(current.branch, "final repair branch") },
+	}) : undefined;
 	const amendments = gateCommandAmendments(state, issue.id);
 	await promptManagedSubagent(workerHost(state), agent, reviewPrompt({
 		kind: "final_repair",
@@ -416,6 +429,7 @@ async function ensureFinalRepairReviewer(
 		worktree: nonEmptyString(current.worktree, "final repair worktree"),
 		base: nonEmptyString(current.repair_base, "final repair base"),
 		gate: requiredTaskGate(current, commit, "Final-gate repair"),
+		patch,
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[owner.id],
 		context: {
@@ -423,8 +437,12 @@ async function ensureFinalRepairReviewer(
 			...(amendments.length ? { gate_command_amendments: amendments } : {}),
 		},
 	}, promptMode), workerHostOptions(options));
-	if (needsInstruction) {
-		state = await save(replaceTask(state, issue.id, { ...task(state, issue.id), reviewer_instruction_pending: undefined }), options);
+	if (needsInstruction || promptMode === "full") {
+		state = await save(replaceTask(state, issue.id, {
+			...task(state, issue.id),
+			reviewer_instruction_pending: undefined,
+			...(promptMode === "full" ? { review_packet_base: base, review_packet_commit: commit } : {}),
+		}), options);
 	}
 	return state;
 }
@@ -538,10 +556,14 @@ async function ensureRepairWorktree(state: RunState, issue: LocalIssue, options:
 
 async function verifyRepairCommit(state: RunState, issue: LocalIssue, commit: string, options: FinalRepairOptions): Promise<string> {
 	const current = task(state, issue.id);
+	const branch = nonEmptyString(current.branch, "final-gate repair branch");
+	if (branch !== repairBranch(state, repairOwner(state, current).id, positiveInteger(current.repair_attempt, "final-gate repair attempt"))) {
+		throw new Error(`Final-gate repair branch is not its deterministic child branch: ${branch}`);
+	}
 	return await verifyOneCommit(
 		state,
 		nonEmptyString(current.worktree, "final-gate repair worktree"),
-		nonEmptyString(current.branch, "final-gate repair branch"),
+		branch,
 		nonEmptyString(current.repair_base, "final-gate repair base"),
 		commit,
 		"Final-gate repair",
