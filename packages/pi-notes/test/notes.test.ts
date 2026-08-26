@@ -34,9 +34,7 @@ async function harness(t: TestContext) {
 	let sessionStart: ((event: unknown, ctx: ExtensionContext) => Promise<void> | void) | undefined;
 	const pi = {
 		exec: async (_command: string, _args: string[], options: { cwd?: string }) => {
-			const identity = options.cwd
-				? identities.get(options.cwd) ?? [...identities.values()].find((candidate) => candidate.worktree === options.cwd)
-				: undefined;
+			const identity = options.cwd ? identities.get(options.cwd) : undefined;
 			return identity
 				? { code: 0, killed: false, stdout: `${identity.worktree}\n${identity.repository}\n${identity.gitDir}\n`, stderr: "" }
 				: { code: 128, killed: false, stdout: "", stderr: "not a git worktree" };
