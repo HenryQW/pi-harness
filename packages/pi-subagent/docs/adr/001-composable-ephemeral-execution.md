@@ -12,7 +12,7 @@ Resource Policy is split at launch preparation:
 - Caller may add explicit tools, extensions, and environment through `createRoleLaunch`.
 - The executor receives the resulting Pi Launch and does not discover resources.
 
-Repository Role samples are inert and user-owned only after manual copying to `~/.pi/agent/config/pi-subagent/`. This package does not install, copy, or write user configuration; copy instructions belong in downstream user documentation.
+Built-in `implementer` and `reviewer` Roles ship with the package as Markdown in `examples/roles/` and resolve through the same single-file parser at load time; a same-named user file in `~/.pi/agent/config/pi-subagent/` explicitly overrides a built-in. Other repository samples are inert and user-owned only after manual copying to `~/.pi/agent/config/pi-subagent/`. This package does not install, copy, or write user configuration; copy instructions belong in downstream user documentation.
 
 ## Consequences
 

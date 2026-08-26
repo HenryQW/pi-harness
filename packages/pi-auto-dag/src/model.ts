@@ -120,6 +120,9 @@ export interface RunTaskState {
 	review_exit_code?: number;
 	review_stdout?: GateOutputEvidence;
 	review_stderr?: GateOutputEvidence;
+	/** Base and commit last delivered to the reviewer in a full packet. */
+	review_packet_base?: string;
+	review_packet_commit?: string;
 	/** Failed Required Gate evidence invalidated by explicit infrastructure retry. */
 	required_gate_invalidations?: RequiredGateInvalidation[];
 	review_findings?: string[];

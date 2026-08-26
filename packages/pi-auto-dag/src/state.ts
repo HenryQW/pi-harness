@@ -55,6 +55,8 @@ const TASK_OPTIONAL_FIELDS: Record<string, (value: unknown, label: string) => un
 	integration_intent: nonEmptyString,
 	review_command: nonEmptyString,
 	review_commit: nonEmptyString,
+	review_packet_base: nonEmptyString,
+	review_packet_commit: nonEmptyString,
 	review_stdout: parseGateOutputEvidence,
 	review_stderr: parseGateOutputEvidence,
 	required_gate_invalidations: (value, label) => array(value, label)

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { acknowledgeRequiredGate, gateEvidenceRecord, requiredGateProcessPath, type GateEvidenceTarget, type RequiredGateExecution } from "./command.ts";
+import { createReadStream } from "node:fs";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { acknowledgeRequiredGate, commandFailure, gateEvidenceRecord, requiredGateProcessPath, type CommandRunner, type GateEvidenceTarget, type RequiredGateExecution } from "./command.ts";
 import type { DeliveryGraph, GateOutputEvidence, GateOutputReference, LocalIssue, RequiredGateEvidence, RunState } from "./model.ts";
 import type { ReviewKind } from "./review-ticket.ts";
 import { replaceTask, runDirectory, writeRunState, type Uuid } from "./state.ts";
@@ -12,6 +13,38 @@ const OUTPUT_EXCERPT_HEAD = 2 * 1024;
 
 export type ReviewPromptMode = "full" | "update" | "resend";
 
+export function reviewPromptMode(
+	needsInstruction: boolean,
+	started: string,
+	packetBase: string | undefined,
+	packetCommit: string | undefined,
+	base: string,
+	commit: string,
+): ReviewPromptMode {
+	if (packetBase !== base || packetCommit !== commit) return "full";
+	if (!needsInstruction) return "resend";
+	return started !== "existing" ? "full" : "update";
+}
+
+export interface ReviewPatchReference {
+	path: string;
+	base: string;
+	commit: string;
+	bytes: number;
+	sha256: string;
+	context: { type: "child_branch"; branch: string } | { type: "integration_head" };
+}
+
+export interface ReviewPatchInput {
+	runner: CommandRunner;
+	mainWorktree: string;
+	runId: string;
+	worktree: string;
+	base: string;
+	commit: string;
+	context: ReviewPatchReference["context"];
+}
+
 export interface ReviewPromptInput {
 	kind: ReviewKind;
 	graph: DeliveryGraph;
@@ -19,6 +52,7 @@ export interface ReviewPromptInput {
 	worktree: string;
 	base: string;
 	gate: RequiredGateEvidence;
+	patch?: ReviewPatchReference;
 	prior_findings?: string[];
 	resolution?: unknown;
 	context?: Record<string, unknown>;
@@ -67,6 +101,7 @@ export function reviewPrompt(input: ReviewPromptInput, mode: ReviewPromptMode): 
 		...(input.prior_findings?.length ? { prior_findings: input.prior_findings } : {}),
 		...(input.resolution === undefined ? {} : { resolution: input.resolution }),
 	};
+	if (!input.patch) throw new Error("Full Review Packet requires an exact patch artifact");
 	return {
 		type: "auto_dag_review",
 		kind: input.kind,
@@ -74,12 +109,73 @@ export function reviewPrompt(input: ReviewPromptInput, mode: ReviewPromptMode): 
 		issue: workerIssueContext(input.issue, false),
 		worktree: input.worktree,
 		base: input.base,
+		patch: input.patch,
 		gate,
 		...(input.prior_findings?.length ? { prior_findings: input.prior_findings } : {}),
 		...(input.resolution === undefined ? {} : { resolution: input.resolution }),
 		...(input.context ? { context: input.context } : {}),
 		instruction: "Inspect diff against acceptance and gate evidence. Auto DAG already verified worktree, base, and commit and ran exact approved gate. Extra checks cannot replace gate. Submit only verdict and findings.",
 	};
+}
+
+export async function persistReviewPatch(input: ReviewPatchInput): Promise<ReviewPatchReference> {
+	const base = objectId(input.base, "review patch base");
+	const commit = objectId(input.commit, "review patch commit");
+	const root = await realpath(resolve(runDirectory(input.mainWorktree, input.runId)));
+	const directory = join(root, "review-patches");
+	assertInsideRunDirectory(root, directory);
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	const artifactDirectory = await realpath(directory);
+	assertInsideRunDirectory(root, artifactDirectory);
+	await chmod(artifactDirectory, 0o700);
+	const temporaryDirectory = await mkdtemp(join(artifactDirectory, ".patch-"));
+	const temporary = join(temporaryDirectory, "patch");
+	const path = join(artifactDirectory, `${basename(temporaryDirectory)}.patch`);
+	assertInsideRunDirectory(root, path);
+	try {
+		const args = ["diff", "--no-textconv", "--no-ext-diff", "--ignore-submodules=none", "--binary", `--output=${temporary}`, base, commit];
+		const result = await input.runner("git", args, { cwd: input.worktree });
+		if (result.code !== 0) throw new Error(commandFailure("git", args, result));
+		await chmod(temporary, 0o600);
+		const expected = await patchDigest(temporary);
+		try {
+			await link(temporary, path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`Review patch artifact path collided: ${path}`);
+			throw error;
+		}
+		const published = await patchDigest(path);
+		if (published.bytes !== expected.bytes || published.sha256 !== expected.sha256) {
+			throw new Error(`Review patch artifact hash or size changed during publication: ${path}`);
+		}
+		await chmod(path, 0o400);
+		return { path, base, commit, ...published, context: input.context };
+	} finally {
+		await rm(temporaryDirectory, { recursive: true, force: true });
+	}
+}
+
+async function patchDigest(path: string): Promise<{ bytes: number; sha256: string }> {
+	const metadata = await lstat(path);
+	if (!metadata.isFile()) throw new Error(`Review patch artifact is not a regular file: ${path}`);
+	const hash = createHash("sha256");
+	let bytes = 0;
+	for await (const chunk of createReadStream(path)) {
+		bytes += chunk.length;
+		hash.update(chunk);
+	}
+	if (bytes !== (await stat(path)).size) throw new Error(`Review patch artifact size changed while hashing: ${path}`);
+	return { bytes, sha256: hash.digest("hex") };
+}
+
+function objectId(value: string, label: string): string {
+	if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(value)) throw new Error(`${label} must be a full Git object ID`);
+	return value;
+}
+
+function assertInsideRunDirectory(root: string, path: string): void {
+	const contained = relative(root, path);
+	if (!contained || contained.startsWith("..") || isAbsolute(contained)) throw new Error(`Unsafe review patch artifact path: ${path}`);
 }
 
 function gatePromptEvidence(input: ReviewPromptInput): Record<string, unknown> {

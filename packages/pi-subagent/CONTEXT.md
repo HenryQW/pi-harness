@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Provide validated user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, and a `delegate_task` extension that runs one selected bounded workflow in one or more ephemeral child processes.
+Provide validated built-in and user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, a `delegate_task` extension that runs one selected bounded workflow in one or more ephemeral child processes, and a bundled Main-side `pi-subagent-delegated-development` policy Skill. The Skill requires a clean committed Git `HEAD`, exact clean committed-diff review through a private byte-verified patch file reference, and post-validation recovery cleanup; it adds no runtime behavior or changes generic fallback.
 
 ## Domain glossary
 
 - **Main**: Pi session delegating work.
 - **Subagent**: isolated Pi child process handling one task.
-- **Role**: user-owned Markdown definition of a reusable responsibility, with a name, description, system instructions, optional base tool allowlist, extensions, and Skill names.
+- **Role**: package-shipped built-in or user-owned Markdown definition of a reusable responsibility, with a name, description, system instructions, optional base tool allowlist, extensions, and Skill names.
 - **Model Class**: `fast`, `balanced`, `frontier`, or `fav`, assigned in shared task-model settings or overridden by Main from task complexity.
 - **Route**: configured model and thinking-level pair selected from a shared Model Class profile; the primary route precedes its optional fallback.
 - **Delegated Task**: one bounded work request sent from Main to one Role.
@@ -27,6 +27,6 @@ Provide validated user Roles, shared task-model Pi launch policy, generic manage
 - Role Skill names resolve through Main's effective Pi Skill registry; unavailable names warn and skip without blocking delegation.
 - Main selects Role and may override Model Class and thinking level per task; omitted class uses shared `pi-subagent/delegateTask` assignment, initially `balanced`. Library callers select Role plus their own shared task ID.
 - The selected profile resolves primary then fallback only before launch when a route, model, or thinking level is unavailable. If neither route is usable, launch rejects with `Run /task-models`; a started child is never retried by this package.
-- Role Markdown files and Subagent JSON config live only in the user `config/pi-subagent` directory; model routes live in shared `config/pi-task-models.json`; repository roles do not execute.
+- User Role Markdown files and Subagent JSON config live only in the user `config/pi-subagent` directory; model routes live in shared `config/pi-task-models.json`. Package-shipped built-in Roles (`implementer`, `reviewer`) resolve from the package's own `examples/roles/` Markdown through the same parser; a same-named user file explicitly overrides a built-in.
 - Numbered Codex routes prefer Main's active account slot and explicitly load the multi-Codex child extension.
 - Generic Herdr host functions validate workspace ownership and provisioning identity while callers retain domain state, prompts, and lifecycle decisions.

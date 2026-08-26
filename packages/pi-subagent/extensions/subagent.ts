@@ -178,8 +178,7 @@ function failedToolPatch(error: WorkflowFailureError | WorkflowAbortedError) {
 
 const roleSummary = (): string => {
 	try {
-		const roles = loadRoles();
-		return roles.length ? roles.map((role) => `${role.name}: ${role.description}`).join("; ") : "none configured";
+		return loadRoles().map((role) => `${role.name}: ${role.description}`).join("; ");
 	} catch (error) {
 		return `configuration error: ${error instanceof Error ? error.message : String(error)}`;
 	}
