@@ -114,6 +114,34 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 	}
 });
 
+test("injects the memory check even when stores are empty", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-policy-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
+		const handlers = new Map<string, Handler>();
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerTool() {},
+		} as unknown as ExtensionAPI);
+		await handlers.get("session_start")!({ type: "session_start" });
+		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
+		assert.equal(
+			injected.systemPrompt,
+			"base\n\nMEMORY CHECK: Save explicit durable user preferences or corrections immediately. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip task-local behavior, progress, and temporary preferences.",
+		);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("errors carry match previews/usage, snapshots filter frame tokens, backups live outside the memory dir", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-extension-hardening-"));
 	const agentDir = join(root, "agent");
