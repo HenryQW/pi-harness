@@ -24,7 +24,11 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /git rev-parse --verify -q HEAD\^\{commit\}/);
 	assert.match(skill, /refuse review or merge unless/i);
 	assert.match(skill, /never review dirty or uncommitted work/i);
-	assert.match(skill, /git diff --binary "\$base" "\$tip"/);
+	assert.match(skill, /git diff --no-textconv --no-ext-diff --ignore-submodules=none --binary "\$base" "\$tip"/);
+	assert.match(skill, /same diff and byte-compare it with the artifact/i);
+	assert.match(skill, /whole reviewed `\$base\.\.\$tip` range/i);
+	assert.match(skill, /cherry-picking every range commit in order/i);
+	assert.match(skill, /git rev-list --count "\$base\.\.\$tip"/);
 	assert.match(skill, /private temporary exact-patch artifact/i);
 	assert.match(skill, /byte-compare it with the artifact/i);
 	assert.match(skill, /review context `\{type:'child_branch', branch\}`/i);

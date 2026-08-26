@@ -133,8 +133,9 @@ export async function persistReviewPatch(input: ReviewPatchInput): Promise<Revie
 	const path = join(artifactDirectory, `${basename(temporaryDirectory)}.patch`);
 	assertInsideRunDirectory(root, path);
 	try {
-		const result = await input.runner("git", ["diff", "--binary", `--output=${temporary}`, base, commit], { cwd: input.worktree });
-		if (result.code !== 0) throw new Error(commandFailure("git", ["diff", "--binary", `--output=${temporary}`, base, commit], result));
+		const args = ["diff", "--no-textconv", "--no-ext-diff", "--ignore-submodules=none", "--binary", `--output=${temporary}`, base, commit];
+		const result = await input.runner("git", args, { cwd: input.worktree });
+		if (result.code !== 0) throw new Error(commandFailure("git", args, result));
 		await chmod(temporary, 0o600);
 		const expected = await patchDigest(temporary);
 		try {

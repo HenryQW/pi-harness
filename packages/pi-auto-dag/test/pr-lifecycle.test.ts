@@ -785,7 +785,7 @@ async function assertReviewPatch(
 	assert.equal(patch.base, base);
 	assert.equal(patch.commit, commit);
 	const actual = await readFile(patch.path);
-	const expected = (await execFile("git", ["diff", "--binary", base, commit], { cwd: root, encoding: "buffer" })).stdout;
+	const expected = (await execFile("git", ["diff", "--no-textconv", "--no-ext-diff", "--ignore-submodules=none", "--binary", base, commit], { cwd: root, encoding: "buffer" })).stdout;
 	assert.deepEqual(actual, expected);
 	assert.equal(patch.bytes, actual.length);
 	assert.equal(patch.sha256, createHash("sha256").update(actual).digest("hex"));

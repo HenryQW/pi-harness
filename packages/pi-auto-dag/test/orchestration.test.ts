@@ -3,20 +3,20 @@ import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fakeHerdr } from "./support/fake-herdr.ts";
 import { testLaunchResolver } from "./support/roles.ts";
-import { recordedGateEvidence, type CommandRunner } from "../src/command.ts";
+import { recordedGateEvidence, runCommand, type CommandRunner } from "../src/command.ts";
 import { createCoreLifecycle, type CoreLifecycle } from "../src/lifecycle.ts";
 import { readDeliveryGraph } from "../src/graph.ts";
 import { preflightLocalRun } from "../src/intake.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
-import { reviewPromptMode } from "../src/review.ts";
+import { persistReviewPatch, reviewPromptMode } from "../src/review.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
 import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, type ActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "../src/review-ticket.ts";
 import { readActiveRunId, readRunState, recordAcceptedWorkerEvent, runDirectory, stateRoot, writeRunState } from "../src/state.ts";
@@ -26,6 +26,54 @@ const RUN_ID = "22222222-2222-4222-8222-222222222222";
 
 test("stale reviewer packet identity forces a full recovery packet", () => {
 	assert.equal(reviewPromptMode(false, "existing", "old-base", "old-commit", "base", "commit"), "full");
+});
+
+test("review patches ignore configured diff transforms and submodule omission", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-review-patch-"));
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	await git(root, "init", "-b", "main");
+	await git(root, "config", "user.email", "test@example.com");
+	await git(root, "config", "user.name", "Test User");
+	await writeFile(join(root, ".gitattributes"), "fixture.txt diff=fixture\n");
+	await writeFile(join(root, "fixture.txt"), "native base\n");
+	await git(root, "add", ".");
+	await git(root, "commit", "-m", "base");
+	const base = await git(root, "rev-parse", "HEAD");
+	const external = join(root, "external-diff");
+	await writeFile(external, "#!/bin/sh\nprintf 'external diff\\n'\n");
+	await chmod(external, 0o755);
+	await git(root, "config", "diff.fixture.textconv", "sed s/native/transformed/");
+	await git(root, "config", "diff.external", external);
+	await git(root, "config", "diff.ignoreSubmodules", "all");
+	await writeFile(join(root, "fixture.txt"), "native changed\n");
+	const gitlink = "1".repeat(40);
+	await git(root, "update-index", "--add", "--cacheinfo", `160000,${gitlink},vendor/review-fixture`);
+	await git(root, "add", "fixture.txt");
+	await git(root, "commit", "-m", "change");
+	const commit = await git(root, "rev-parse", "HEAD");
+	assert.match((await execFile("git", ["diff", "--textconv", "--no-ext-diff", "--ignore-submodules=none", base, commit], { cwd: root })).stdout, /transformed/);
+	assert.match((await execFile("git", ["diff", "--ext-diff", base, commit], { cwd: root })).stdout, /external diff/);
+	assert.doesNotMatch((await execFile("git", ["diff", "--no-textconv", "--no-ext-diff", "--ignore-submodules=all", base, commit], { cwd: root })).stdout, new RegExp(gitlink));
+	await mkdir(runDirectory(root, RUN_ID), { recursive: true });
+	const calls: ReadonlyArray<string>[] = [];
+	const patch = await persistReviewPatch({
+		runner: async (command, args, options) => {
+			if (command === "git") calls.push(args);
+			return await runCommand(command, args, options);
+		},
+		mainWorktree: root,
+		runId: RUN_ID,
+		worktree: root,
+		base,
+		commit,
+		context: { type: "integration_head" },
+	});
+	const actual = await readFile(patch.path);
+	const expected = (await execFile("git", ["diff", "--no-textconv", "--no-ext-diff", "--ignore-submodules=none", "--binary", base, commit], { cwd: root, encoding: "buffer" })).stdout;
+	assert.deepEqual(actual, expected);
+	assert.match(actual.toString(), /native changed/);
+	assert.match(actual.toString(), new RegExp(gitlink));
+	assert.ok(calls.some((args) => args.includes("--no-textconv") && args.includes("--no-ext-diff") && args.includes("--ignore-submodules=none")));
 });
 
 test("a successor takes over after the starter is killed with a durably identified live worker", async (t) => {
@@ -1267,7 +1315,7 @@ async function assertReviewPatch(
 	assert.equal(patch.base, base);
 	assert.equal(patch.commit, commit);
 	const actual = await readFile(patch.path);
-	const expected = (await execFile("git", ["diff", "--binary", base, commit], { cwd: root, encoding: "buffer" })).stdout;
+	const expected = (await execFile("git", ["diff", "--no-textconv", "--no-ext-diff", "--ignore-submodules=none", "--binary", base, commit], { cwd: root, encoding: "buffer" })).stdout;
 	assert.deepEqual(actual, expected);
 	assert.equal(patch.bytes, actual.length);
 	assert.equal(patch.sha256, createHash("sha256").update(actual).digest("hex"));
