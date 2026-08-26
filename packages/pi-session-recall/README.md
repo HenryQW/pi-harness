@@ -31,6 +31,20 @@ Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` fo
 
 Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
 
+## Config
+
+This package has no package-specific user-editable config file.
+
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| No package-owned config file | No fields | No possible values | Built-in behavior/defaults |
+
+## State
+
+| Path | Purpose |
+| --- | --- |
+| `~/.pi/agent/config/pi-session-recall/index.db` | Derived SQLite search index, maintained by the extension. |
+
 ## Deliberate exclusions
 
 Session directories whose encoded path starts with `--tmp-` or `--private-tmp-` (sessions run from `/tmp` or `/private/tmp`) are never indexed. Session files over 32 MiB are excluded from indexing and hydration: discovery cannot newly find them; READ/SCROLL return an explicit size error, while a stale discovery hit retained from before the file grew is returned as metadata with empty messages and that error.
