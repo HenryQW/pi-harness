@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -15,12 +16,17 @@ import { readDeliveryGraph } from "../src/graph.ts";
 import { preflightLocalRun } from "../src/intake.ts";
 import { childWorktreePath } from "../src/implementation-workers.ts";
 import { type RunState } from "../src/model.ts";
+import { reviewPromptMode } from "../src/review.ts";
 import { parseWorkerEnvelope } from "../src/orchestration.ts";
 import { actionTicketPath, eventReceiptPath, readActionTicket, readWorkerReceipt, reviewId, type ActionTicket, WorkerEnvelopeRejectedError, writeWorkerReceipt } from "../src/review-ticket.ts";
 import { readActiveRunId, readRunState, recordAcceptedWorkerEvent, runDirectory, stateRoot, writeRunState } from "../src/state.ts";
 
 const execFile = promisify(execFileCallback);
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
+
+test("stale reviewer packet identity forces a full recovery packet", () => {
+	assert.equal(reviewPromptMode(false, "existing", "old-base", "old-commit", "base", "commit"), "full");
+});
 
 test("a successor takes over after the starter is killed with a durably identified live worker", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
@@ -142,6 +148,7 @@ test("orchestration freezes a wave, refills slots, reviews once per pane, and in
 	});
 	for (const key of ["run_id", "attempt", "review_round", "required_gate", "command", "commit"]) assert.equal(key in reviewPrompt, false);
 	assert.equal(reviewPrompt.base, state.tasks.alpha.wave_base);
+	await assertReviewPatch(reviewPrompt, project.root, state.tasks.alpha.wave_base!, alpha, { type: "child_branch", branch: state.tasks.alpha.branch! });
 	assert.deepEqual(Object.keys(reviewPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
 	assert.equal("testing" in reviewPrompt, false);
 	assert.equal(herdr.count("pane split"), 1);
@@ -894,6 +901,12 @@ test("review revisions need a new SHA after changes requested", async (t) => {
 	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", second));
 	assert.equal(state.tasks.alpha.status, "reviewing");
 	assert.equal(state.tasks.alpha.review_rounds, 2);
+	const revisedReview = JSON.parse(reviewPrompts(herdr).at(-1)!);
+	assert.equal(revisedReview.type, "auto_dag_review");
+	await assertReviewPatch(revisedReview, project.root, state.tasks.alpha.wave_base!, second, {
+		type: "child_branch",
+		branch: state.tasks.alpha.branch!,
+	});
 });
 
 test("reviewer block resolution starts a fresh bounded review round with same commit evidence", async (t) => {
@@ -1240,6 +1253,26 @@ function blockTaskEvent(state: RunState, issueId: string, role: "implementer" | 
 
 function activeActionTicket(state: RunState, issueId: string, role: "implementer" | "reviewer"): ActionTicket {
 	return JSON.parse(readFileSync(actionTicketPath(state.main_worktree, state.run_id, issueId, "implementation", role), "utf8")) as ActionTicket;
+}
+
+async function assertReviewPatch(
+	prompt: Record<string, any>,
+	root: string,
+	base: string,
+	commit: string,
+	context: unknown,
+): Promise<void> {
+	const patch = prompt.patch;
+	assert.deepEqual(patch.context, context);
+	assert.equal(patch.base, base);
+	assert.equal(patch.commit, commit);
+	const actual = await readFile(patch.path);
+	const expected = (await execFile("git", ["diff", "--binary", base, commit], { cwd: root, encoding: "buffer" })).stdout;
+	assert.deepEqual(actual, expected);
+	assert.equal(patch.bytes, actual.length);
+	assert.equal(patch.sha256, createHash("sha256").update(actual).digest("hex"));
+	assert.equal((await stat(patch.path)).mode & 0o777, 0o400);
+	assert.doesNotMatch(JSON.stringify(prompt), /diff --git /);
 }
 
 function reviewPrompts(herdr: ReturnType<typeof fakeHerdr>): string[] {

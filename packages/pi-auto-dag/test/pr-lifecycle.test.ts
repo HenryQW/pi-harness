@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -54,6 +55,11 @@ test("the frozen final check prepares its disposable checkout and opens one exac
 	assert.match(finalGate?.cwd ?? "", /\/final-gate$/);
 	assert.notEqual(finalGate?.cwd, project.root);
 	await assert.rejects(readFile(finalGate!.cwd!, "utf8"), /ENOENT/);
+	const finalPacket = herdr.calls
+		.filter((call) => call.command === "herdr" && call.args.slice(0, 2).join(" ") === "agent prompt")
+		.map((call) => JSON.parse(call.args[3]))
+		.find((value) => value.type === "auto_dag_review" && value.kind === "final_check");
+	await assertReviewPatch(finalPacket, project.root, state.source_commit, state.integration_head, { type: "integration_head" });
 });
 
 test("completion notification retains the active lock until idempotent acknowledgement", async (t) => {
@@ -460,9 +466,25 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 		},
 	});
 	for (const key of ["run_id", "attempt", "review_round", "required_gate", "command", "commit"]) assert.equal(key in repairReviewPrompt, false);
+	await assertReviewPatch(repairReviewPrompt, project.root, state.tasks["final-check"].repair_base!, repair, {
+		type: "child_branch",
+		branch: state.tasks["final-check"].branch!,
+	});
+	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "changes_requested", ["revise repair"]));
+	await writeFile(join(repairWorktree, "repair.txt"), "fixed twice\n");
+	await git(repairWorktree, "add", "repair.txt");
+	await git(repairWorktree, "commit", "--amend", "-m", "repair alpha revised");
+	const revisedRepair = await git(repairWorktree, "rev-parse", "HEAD");
+	state = await lifecycle.resume(project.root, requestReviewEvent(state, "final-check", revisedRepair));
+	const revisedRepairReview = workerPrompts().filter((value) => value.type === "auto_dag_review" && value.kind === "final_repair").at(-1);
+	assert.equal(revisedRepairReview.type, "auto_dag_review");
+	await assertReviewPatch(revisedRepairReview, project.root, state.tasks["final-check"].repair_base!, revisedRepair, {
+		type: "child_branch",
+		branch: state.tasks["final-check"].branch!,
+	});
 	state = await lifecycle.resume(project.root, reviewEvent(state, "final-check", "approved", []));
 	assert.equal(state.tasks["final-check"].status, "reviewing");
-	assert.equal(await git(project.root, "show", "HEAD:repair.txt"), "fixed");
+	assert.equal(await git(project.root, "show", "HEAD:repair.txt"), "fixed twice");
 	const finalReviewer = state.tasks["final-check"].reviewer_agent!;
 	const prompts = () => herdr.calls
 		.filter((call) => call.command === "herdr" && call.args[0] === "agent" && call.args[1] === "prompt" && call.args[2] === finalReviewer)
@@ -472,6 +494,7 @@ test("a failed final gate requires a completed owner resolution and a fresh revi
 	assert.equal(fullPrompt.gate.commit, state.integration_head);
 	assert.equal(fullPrompt.gate.exit_code, 0);
 	assert.equal(fullPrompt.worktree, project.root);
+	await assertReviewPatch(fullPrompt, project.root, state.source_commit, state.integration_head, { type: "integration_head" });
 	assert.equal("command" in fullPrompt, false);
 	assert.deepEqual(fullPrompt.delivery, repairPrompt.delivery);
 	assert.deepEqual(Object.keys(fullPrompt.issue).sort(), ["acceptance", "id", "purpose", "title"]);
@@ -748,6 +771,25 @@ async function commit(cwd: string, file: string, content: string, subject: strin
 	await git(cwd, "add", file);
 	await git(cwd, "commit", "-m", subject);
 	return await git(cwd, "rev-parse", "HEAD");
+}
+
+async function assertReviewPatch(
+	prompt: Record<string, any>,
+	root: string,
+	base: string,
+	commit: string,
+	context: unknown,
+): Promise<void> {
+	const patch = prompt.patch;
+	assert.deepEqual(patch.context, context);
+	assert.equal(patch.base, base);
+	assert.equal(patch.commit, commit);
+	const actual = await readFile(patch.path);
+	const expected = (await execFile("git", ["diff", "--binary", base, commit], { cwd: root, encoding: "buffer" })).stdout;
+	assert.deepEqual(actual, expected);
+	assert.equal(patch.bytes, actual.length);
+	assert.equal(patch.sha256, createHash("sha256").update(actual).digest("hex"));
+	assert.doesNotMatch(JSON.stringify(prompt), /diff --git /);
 }
 
 function combinedRunner(herdr: ReturnType<typeof fakeHerdr>, gh: ReturnType<typeof fakeGh>): CommandRunner {
