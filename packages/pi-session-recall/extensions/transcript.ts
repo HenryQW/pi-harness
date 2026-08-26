@@ -52,7 +52,7 @@ export interface TranscriptEntry {
 	data: unknown;
 	/** Nonempty string ≤256 chars; absent when missing or invalid. */
 	id?: string;
-	/** null or nonempty string ≤256 chars; defined only when `id` is present. */
+	/** null or string ≤256 chars; defined only when `id` is present. */
 	parentId?: string | null;
 }
 
