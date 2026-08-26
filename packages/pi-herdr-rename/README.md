@@ -52,7 +52,7 @@ Model routing uses this companion-owned config, not config owned by `@henryqw/pi
 | --- | --- | --- | --- |
 | `profiles.<selected>.primary.model` | Yes, to generate titles | An available Pi model as `provider/model` | None |
 | `profiles.<selected>.primary.thinkingLevel` | Yes, to generate titles | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | None |
-| `profiles.<selected>.fallback` | No | A `model` and `thinkingLevel` route with the values above | None |
+| `profiles.<selected>.fallback` | No | A `model` and `thinkingLevel` route with the values above; not allowed for `fav` | None |
 | `tasks["pi-herdr-rename/rename"]` | No | `fast`, `balanced`, `frontier`, or `fav` | `fast` |
 
 Configure the shared file with `/task-models`; malformed shared config fails visibly and remains unchanged.
