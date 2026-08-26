@@ -1,5 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import {
+	addUsage,
 	capEphemeralSubagentOutput,
 	type EphemeralSubagentResult,
 	type WorktreePayload,
@@ -61,31 +62,6 @@ function compareEntries(left: WorkflowTransportEntry, right: WorkflowTransportEn
 function splitEvidence(text: string): [string, string] {
 	const preview = Array.from(text).slice(0, EVIDENCE_PREVIEW_CODE_POINTS).join("");
 	return [preview, text.slice(preview.length)];
-}
-
-function sumOptional(left: number | undefined, right: number | undefined): number | undefined {
-	return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
-}
-
-function addUsage(left: Usage | undefined, right: Usage): Usage {
-	const cacheWrite1h = sumOptional(left?.cacheWrite1h, right.cacheWrite1h);
-	const reasoning = sumOptional(left?.reasoning, right.reasoning);
-	return {
-		input: (left?.input ?? 0) + right.input,
-		output: (left?.output ?? 0) + right.output,
-		cacheRead: (left?.cacheRead ?? 0) + right.cacheRead,
-		cacheWrite: (left?.cacheWrite ?? 0) + right.cacheWrite,
-		...(cacheWrite1h === undefined ? {} : { cacheWrite1h }),
-		...(reasoning === undefined ? {} : { reasoning }),
-		totalTokens: (left?.totalTokens ?? 0) + right.totalTokens,
-		cost: {
-			input: (left?.cost.input ?? 0) + right.cost.input,
-			output: (left?.cost.output ?? 0) + right.cost.output,
-			cacheRead: (left?.cost.cacheRead ?? 0) + right.cost.cacheRead,
-			cacheWrite: (left?.cost.cacheWrite ?? 0) + right.cost.cacheWrite,
-			total: (left?.cost.total ?? 0) + right.cost.total,
-		},
-	};
 }
 
 function label(kind: TransportKind, failed: boolean): string {

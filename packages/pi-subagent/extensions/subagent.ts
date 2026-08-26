@@ -17,6 +17,7 @@ import {
 	createRoleLaunch,
 	EphemeralSubagentError,
 	finalizeChildWorktree,
+	formatDuration,
 	loadRoles,
 	resolveTaskRoute,
 	worktreeContextNote,
@@ -44,8 +45,6 @@ import {
 	type ParsedWorkflow,
 	type WorkflowEntry,
 } from "./workflow.ts";
-
-export { capOutput };
 
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
@@ -89,13 +88,6 @@ function formatTokens(tokens: number): string {
 	return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
-function formatElapsed(startedAt: number, finishedAt = Date.now()): string {
-	const seconds = Math.max(0, Math.floor((finishedAt - startedAt) / 1_000));
-	const hours = Math.floor(seconds / 3_600);
-	const minutes = Math.floor(seconds % 3_600 / 60);
-	return hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
-}
-
 function statusGlyph(status: WidgetStatus, spinnerIndex: number, theme: Theme): string {
 	switch (status) {
 		case "working": return theme.fg("accent", SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length]!);
@@ -123,7 +115,7 @@ function renderWidgetRows(
 	const visible = items.slice(0, MAX_WIDGET_ROWS);
 	if (!visible.length) return [];
 	const tokens = visible.map((item) => formatTokens(item.tokens));
-	const elapsed = visible.map((item) => formatElapsed(item.startedAt, item.finishedAt ?? now));
+	const elapsed = visible.map((item) => formatDuration((item.finishedAt ?? now) - item.startedAt));
 	const tokenWidth = Math.max(...tokens.map(visibleWidth));
 	const elapsedWidth = Math.max(...elapsed.map(visibleWidth));
 	const fixedWidth = 1 + 8 + tokenWidth + elapsedWidth;

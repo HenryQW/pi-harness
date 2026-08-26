@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "3.1.0",
+  "version": "4.0.0",
   "description": "Delegate bounded single, parallel, or chained tasks to isolated Pi roles.",
   "keywords": [
     "pi-package",
@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
+    "pretypecheck": "npm run build",
     "test": "npm run build && node --test test/*.test.ts",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck src/*.ts extensions/*.ts test/*.test.ts",
     "prepack": "npm run build",

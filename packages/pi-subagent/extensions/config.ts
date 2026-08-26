@@ -27,10 +27,7 @@ const positive = (value: unknown): value is number =>
 // every child immediately instead of applying the configured deadline.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 export const DEFAULT_TIMEOUT_CONFIG = { idleMinutes: 10, maxMinutes: 30 } as const;
-const TIMEOUT_FIELDS: Array<[keyof SubagentTimeoutConfig, string]> = [
-	["idleMinutes", "minutes"],
-	["maxMinutes", "minutes"],
-];
+const TIMEOUT_FIELDS = ["idleMinutes", "maxMinutes"] as const;
 
 /**
  * All pi-subagent config lives in its existing extension-named directory;
@@ -88,20 +85,20 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 		} else {
 			const timeoutRecord = record.timeout as Record<string, unknown>;
 			const timeout: SubagentTimeoutConfig = {};
-			for (const [key, unit] of TIMEOUT_FIELDS) {
+			for (const key of TIMEOUT_FIELDS) {
 				const value = timeoutRecord[key];
 				if (value === undefined) continue;
 				if (!positive(value)) {
-					problems.push(`timeout.${key} must be a positive number of ${unit}, got ${JSON.stringify(value)}`);
+					problems.push(`timeout.${key} must be a positive number of minutes, got ${JSON.stringify(value)}`);
 				} else if (value * 60_000 > MAX_TIMER_DELAY_MS) {
-					problems.push(`timeout.${key} exceeds the maximum supported delay of ${MAX_TIMER_DELAY_MS} ms, got ${JSON.stringify(value)} ${unit}`);
+					problems.push(`timeout.${key} exceeds the maximum supported delay of ${MAX_TIMER_DELAY_MS} ms, got ${JSON.stringify(value)} minutes`);
 				} else {
 					timeout[key] = value;
 				}
 			}
 			for (const key of Object.keys(timeoutRecord)) {
-				if (!TIMEOUT_FIELDS.some(([known]) => known === key)) {
-					problems.push(`unknown timeout.${key}; expected ${TIMEOUT_FIELDS.map(([known]) => known).join(", ")}`);
+				if (!TIMEOUT_FIELDS.includes(key as keyof SubagentTimeoutConfig)) {
+					problems.push(`unknown timeout.${key}; expected ${TIMEOUT_FIELDS.join(", ")}`);
 				}
 			}
 			if (Object.keys(timeout).length) config.timeout = timeout;

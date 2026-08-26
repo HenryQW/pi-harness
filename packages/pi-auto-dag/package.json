@@ -20,6 +20,8 @@
     "LICENSE"
   ],
   "scripts": {
+    "pretest": "npm run build --workspace @henryqw/pi-subagent",
+    "pretypecheck": "npm run build --workspace @henryqw/pi-subagent",
     "dev:ui": "pi --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session --offline -e test/dev/worker-ui.ts",
     "test": "node test/run.mjs",
     "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --allowJs --skipLibCheck extensions/*.ts src/*.ts test/*.ts test/dev/*.ts",
@@ -29,7 +31,7 @@
     "@earendil-works/pi-coding-agent": "^0.84.3"
   },
   "dependencies": {
-    "@henryqw/pi-subagent": "^3.0.3",
+    "@henryqw/pi-subagent": "^4.0.0",
     "proper-lockfile": "^4.1.2",
     "typebox": "1.3.15"
   },
