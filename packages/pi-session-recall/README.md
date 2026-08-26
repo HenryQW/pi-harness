@@ -27,7 +27,7 @@ pi install npm:@henryqw/pi-session-recall
 
 **Browse** — recent sessions: path, name, cwd, started date, preview.
 
-Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help stems ≥3 chars. Only user/assistant text is indexed; thinking blocks and tool output are not searchable. For message text over the 20,000-character indexing budget, only first/last regions are indexed and the middle is omitted; phrases and `NEAR` cannot cross those regions, but ordinary AND terms can. `sessionId` must be a `.jsonl` file under the Pi sessions directory.
+Query syntax: Prefer distinctive identifiers, package names, issue numbers, or uncommon terms; use quoted phrases only when exact wording is known. FTS5 over a trigram index — multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help stems ≥3 chars. Only user/assistant text is indexed; thinking blocks and tool output are not searchable. For message text over the 20,000-character indexing budget, only first/last regions are indexed and the middle is omitted; phrases and `NEAR` cannot cross those regions, but ordinary AND terms can. `sessionId` must be a `.jsonl` file under the Pi sessions directory.
 
 Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
 

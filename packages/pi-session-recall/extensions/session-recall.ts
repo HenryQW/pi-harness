@@ -108,7 +108,7 @@ FOUR CALLING SHAPES
 Mode is inferred from args; precedence: scroll > read > browse > discovery.
 
 FTS5 SYNTAX
-  AND is the default — multi-word queries require all terms. Use OR for broader recall (\`alpha OR beta\`), quoted phrases for exact match (\`"docker networking"\`), NOT to exclude (\`python NOT java\`). Wildcards work only as stem expansion of tokens ≥3 chars (trigram tokenizer); very short terms fall back to substring matching. The index covers user/assistant message text only — thinking, tool calls/results are not searchable.`;
+  Prefer distinctive identifiers, package names, issue numbers, or uncommon terms; use quoted phrases only when exact wording is known. AND is the default — multi-word queries require all terms. Use OR for broader recall (\`alpha OR beta\`), quoted phrases for exact match (\`"docker networking"\`), NOT to exclude (\`python NOT java\`). Wildcards work only as stem expansion of tokens ≥3 chars (trigram tokenizer); very short terms fall back to substring matching. The index covers user/assistant message text only — thinking, tool calls/results are not searchable.`;
 
 export default function (pi: ExtensionAPI): void {
 	// Best-effort sync at startup, deferred so the synchronous walk + SQLite
