@@ -235,6 +235,70 @@ describe("session_search entry point", () => {
 		assert.equal(hits.length, 0, "sessions under --private-tmp-* must not be indexed");
 	});
 
+	it("discovery full hit derives window and bookends from one snapshot read", async () => {
+		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-single-snapshot`);
+		const pi = makePi();
+		mod.default(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		msgCount = 1;
+		// Hit anchors on branch A (e04/e05) while the file's final leaf sits on branch B.
+		const target = writeSession("single-snapshot/session.jsonl", [
+			{ type: "session", version: 3, id: "ss1", timestamp: "2026-01-09T00:00:00.000Z", cwd: "/tmp" },
+			msg(null, "user", "shared root quoll"), // e01
+			msg("e01", "assistant", "shared middle quoll"), // e02
+			msg("e02", "user", "shared tail quoll"), // e03
+			msg("e03", "assistant", "branch A marker wombat token"), // e04
+			msg("e04", "user", "branch A tail wombat"), // e05
+			msg("e03", "assistant", "branch B sibling"), // e06 leaf branch
+			msg("e06", "user", "branch B tail"), // e07 leaf
+		]);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-single-snapshot`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+
+		// Pre-synced walk skips unchanged files via stat fingerprinting, so any
+		// further read of the transcript must come from hydration itself.
+		const realOpenSync = fs.openSync.bind(fs) as typeof fs.openSync;
+		let opens = 0;
+		fs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+			if (args[0] === target) opens++;
+			return realOpenSync(...args);
+		}) as typeof fs.openSync;
+		let hit: { bookends: { start: { entryId: string }[]; end: { entryId: string }[] }; messages: { entryId: string }[]; messagesBefore: number; messagesAfter: number };
+		try {
+			const response = await tool.execute("single-snapshot", { query: "branch A marker wombat token" }, undefined, undefined, {
+				sessionManager: {},
+			});
+			const parsed = JSON.parse(response.content[0].text);
+			hit = parsed.results.find((r: { path: string }) => r.path === target);
+		} finally {
+			fs.openSync = realOpenSync;
+		}
+		assert.ok(hit, "expected the forked session to match");
+		assert.equal(opens, 1, "full hit must hydrate from exactly one transcript snapshot read");
+		// Bookends come from the anchor's branch (same array as the window), not
+		// the file's final leaf on branch B.
+		assert.deepEqual(hit.bookends.start.map((m) => m.entryId), ["e01", "e02", "e03"]);
+		assert.deepEqual(hit.bookends.end.map((m) => m.entryId), ["e03", "e04", "e05"]);
+		assert.ok(hit.messages.every((m: { entryId: string }) => ["e01", "e02", "e03", "e04", "e05"].includes(m.entryId)), "window stays on the anchor's branch");
+	});
+
+	it("truncateContent never splits surrogate pairs at head/tail cut points", async () => {
+		const { truncateContent } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-surrogate`);
+		const emoji = "\u{1F600}"; // 😀 — one astral char = two UTF-16 code units
+		// Both cut points for maxChars=20 land inside emoji pairs:
+		// head=10 splits pair at [9,10]; tail start=20 splits pair at [19,20].
+		const content = "a".repeat(9) + emoji + "c".repeat(8) + emoji + "b".repeat(9);
+		assert.equal(content.length, 30);
+		const [m] = truncateContent([{ entryId: "e1", role: "user", content, timestamp: "t" }], 20);
+		const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+		assert.doesNotMatch(m.content, lone, "no dangling surrogate half may survive truncation");
+		assert.ok(m.content.length <= content.length && m.content.includes("…"), "result truncated and bounded");
+		// Non-astral content keeps the exact legacy split (no off-by-one).
+		const plain = "x".repeat(30);
+		const [p] = truncateContent([{ entryId: "e2", role: "user", content: plain, timestamp: "t" }], 20);
+		assert.equal(p.content, "x".repeat(10) + "…" + "x".repeat(10));
+	});
+
 	it("caps hydrated metadata at the JSONL trust boundary", async () => {
 		const pi = makePi();
 		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-metadata`);

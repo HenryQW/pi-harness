@@ -9,6 +9,9 @@ import type { WindowMessage } from "./types.ts";
 
 export interface WindowResult {
 	messages: WindowMessage[];
+	/** Every message on the resolved branch, root→tip chronological. Callers
+ *  derive bookends from this instead of re-parsing the transcript. */
+	branchMessages: WindowMessage[];
 	messagesBefore: number;
 	messagesAfter: number;
 	/** Tip of the branch the window was resolved on — pass back as branchTip to
@@ -188,17 +191,6 @@ function resolveMessageCursor(
 	return cur;
 }
 
-/** All messages on the anchor's branch, root→tip chronological (bnRnt). */
-export function getBranchMessages(
-	sessionPath: string,
-	anchorEntryId: string,
-): WindowMessage[] {
-	const entries = parseSessionEntries(sessionPath);
-	const entriesById = new Map(entries.map((e) => [e.id, e]));
-	resolveMessageCursor(entriesById, anchorEntryId);
-	return branchMessages(entriesById, deepestDescendant(entriesById, entries, anchorEntryId));
-}
-
 export function getWindow(
 	sessionPath: string,
 	anchorEntryId: string,
@@ -230,6 +222,7 @@ export function getWindow(
 	const start = Math.max(0, idx - n);
 	const end = Math.min(msgs.length - 1, idx + n);
 	return {
+		branchMessages: msgs,
 		messages: msgs.slice(start, end + 1).map((m) =>
 			m.entryId === anchorEntryIdMsg ? { ...m, anchor: true } : m,
 		),
