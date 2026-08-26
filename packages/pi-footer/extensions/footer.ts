@@ -12,7 +12,7 @@ const THINKING_COLORS = {
 	xhigh: 208,
 	max: 196,
 } as const;
-const HENRY_STATUS_KEYS = new Set(["pi-multi-codex"]);
+const HENRY_STATUS_KEY = "pi-multi-codex";
 const AGENT_TIME_ENTRY = "pi-footer:agent-work";
 
 function isValidMilliseconds(value: unknown): value is number {
@@ -191,10 +191,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						.map(([key, text]) => [key, sanitizeStatus(text)] as const)
 						.filter(([, text]) => Boolean(text));
 					const henryStatuses = statuses
-						.filter(([key]) => HENRY_STATUS_KEYS.has(key))
+						.filter(([key]) => key === HENRY_STATUS_KEY)
 						.map(([, text]) => text);
 					const externalStatuses = statuses
-						.filter(([key]) => !HENRY_STATUS_KEYS.has(key))
+						.filter(([key]) => key !== HENRY_STATUS_KEY)
 						.map(([, text]) => text);
 					const thinking = String(ctx.thinkingLevel ?? "off");
 					const thinkingColor = THINKING_COLORS[thinking as keyof typeof THINKING_COLORS];
