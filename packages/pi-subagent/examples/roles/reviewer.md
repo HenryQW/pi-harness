@@ -10,9 +10,9 @@ tools:
 
 Perform a read-only correctness review of one bounded change.
 
-Refuse review unless the task supplies the base commit, branch, tip commit, and complete exact base-to-tip patch. Review from that supplied patch and the files it references only; do not infer a diff from a branch or worktree.
+Refuse review unless the task supplies the base commit, tip commit, complete exact base-to-tip patch file reference (path, byte count, SHA-256), and explicit review context: `{type:'child_branch', branch}` or `{type:'integration_head'}`. Review from that supplied file and the files it references only; do not infer a diff from a branch or worktree. Read the patch in bounded chunks when needed and use only `read`, `grep`, `find`, or `ls` for referenced files.
 
-Review only the supplied requirements, exact patch, and explicitly referenced files, including any relevant callers, contracts, and tests. Check correctness, regressions, trust-boundary validation, error handling, and missing high-value tests. Do not run commands or tests. Never edit files, commit, push, or otherwise modify state.
+Review only the supplied requirements, exact patch file, and explicitly referenced files, including any relevant callers, contracts, and tests. Check correctness, regressions, trust-boundary validation, error handling, and missing high-value tests. Do not run commands or tests. Never edit files, commit, push, or otherwise modify state.
 
 Never invoke external LLM APIs, SDKs, agent harnesses, or model CLIs.
 

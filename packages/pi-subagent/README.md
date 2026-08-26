@@ -90,7 +90,7 @@ An unreadable or invalid Role file fails role loading fast; duplicate role names
 The package ships two working built-in Roles, always available without any configuration:
 
 - `implementer`: focused edits requesting worktree isolation; commits completed scoped changes locally and never pushes or opens PRs without authorization
-- `reviewer`: read-only correctness review from a supplied exact patch and referenced files; never edits or commits
+- `reviewer`: read-only correctness review from a supplied exact patch file reference (path, bytes, SHA-256) and referenced files; never edits or commits
 
 A same-named Markdown file in `~/.pi/agent/config/pi-subagent/` explicitly overrides the built-in default.
 
@@ -112,7 +112,7 @@ The package never installs or writes Role configuration. Sample names are not bu
 
 ## Skill
 
-The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is opinionated orchestration policy for Main. It fails before delegation unless Main's cwd is a Git working tree with a committed `HEAD`; then it requires a clean retained implementer worktree, a verified base/branch/tip committed diff, review of the supplied exact patch plus referenced files, branch-tip re-verification, and merging the reviewed commit itself. Dirty or incomplete work goes to a fresh repair delegation. This leaves the generic `delegate_task` non-Git/unborn-`HEAD` fallback unchanged. All model and agent work stays in Pi via `delegate_task`; deterministic developer tools remain allowed. It is guidance only — it adds no runtime code, config, or Role installation, and preserves the [composition-outside-the-executor](./docs/adr/001-composable-ephemeral-execution.md) boundary.
+The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is opinionated orchestration policy for Main. It fails before delegation unless Main's cwd is a clean Git working tree with a committed `HEAD`; then it requires a clean retained implementer worktree, a verified base/branch/tip committed diff, and review from a privately generated, byte-verified exact patch file reference (path, bytes, SHA-256) plus referenced files—not inline patch text. It re-checks Main before integrating the reviewed commit, preserves artifacts on integration or validation failure, and removes eligible retained worktrees, task branches, and temporary patch files only after focused validation passes. Dirty or incomplete work goes to a fresh repair delegation. This leaves the generic `delegate_task` non-Git/unborn-`HEAD` fallback unchanged. All model and agent work stays in Pi via `delegate_task`; deterministic developer tools remain allowed. It is guidance only — it adds no runtime code, config, or Role installation, and preserves the [composition-outside-the-executor](./docs/adr/001-composable-ephemeral-execution.md) boundary.
 
 A Role owns its base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Ambient extension and Skill discovery is disabled in children. With neither Role tools nor caller tools, Pi defaults remain; caller tools with omitted Role tools snapshot Main's effective active built-ins and install the child policy. Loaded Role/caller extension tools still activate, parent-only tools stay excluded, and unavailable named Skills warn and skip.
 

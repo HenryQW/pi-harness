@@ -25,6 +25,13 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /refuse review or merge unless/i);
 	assert.match(skill, /never review dirty or uncommitted work/i);
 	assert.match(skill, /git diff --binary "\$base" "\$tip"/);
+	assert.match(skill, /private temporary exact-patch artifact/i);
+	assert.match(skill, /byte-compare it with the artifact/i);
+	assert.match(skill, /review context `\{type:'child_branch', branch\}`/i);
+	assert.match(skill, /patch file reference \(`path`, `bytes`, `sha256`\)/i);
+	assert.match(skill, /Do not put any complete patch content in `delegate_task` text or argv/i);
+	assert.match(skill, /immediately before integration and validation/i);
+	assert.match(skill, /non-forced worktree removal followed by `git branch -d`/i);
 	assert.match(skill, /merge that exact commit \(not the branch name\)/i);
 });
 
@@ -42,12 +49,16 @@ test("missing config directory still returns validated built-in implementer and 
 	assert.equal(implementer!.isolation, "worktree");
 	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
 	assert.match(implementer!.systemPrompt, /base commit, tip commit, changed files/i);
+	assert.match(implementer!.systemPrompt, /git status --porcelain=v1 --untracked-files=all/);
+	assert.match(implementer!.systemPrompt, /Do not remove the retained worktree or task branch/i);
 	assert.match(implementer!.systemPrompt, /[Nn]ever push or open pull requests without explicit authorization/i);
 	assert.match(implementer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
 
 	assert.equal(reviewer!.name, "reviewer");
 	assert.deepEqual(reviewer!.tools, ["read", "grep", "find", "ls"]);
-	assert.match(reviewer!.systemPrompt, /Refuse review unless.*base commit, branch, tip commit, and complete exact base-to-tip patch/i);
+	assert.match(reviewer!.systemPrompt, /Refuse review unless.*base commit, tip commit.*patch file reference \(path, byte count, SHA-256\).*review context: `\{type:'child_branch', branch\}` or `\{type:'integration_head'\}`/i);
+	assert.match(reviewer!.systemPrompt, /use only `read`, `grep`, `find`, or `ls`/i);
+	assert.doesNotMatch(reviewer!.systemPrompt, /\bbash\b/i);
 	assert.match(reviewer!.systemPrompt, /[Nn]ever edit files, commit, push/i);
 	assert.match(reviewer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
 });

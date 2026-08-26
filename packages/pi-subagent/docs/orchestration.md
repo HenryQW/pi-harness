@@ -326,7 +326,7 @@ The package ships two working built-in Roles, validated by the same parser as us
 | Built-in | Behavior |
 | --- | --- |
 | `implementer` | Focused implementation requesting `isolation: worktree`; commits scoped changes locally, never pushes or opens PRs without authorization. Non-Git or unborn-`HEAD` contexts may use Main's cwd. |
-| `reviewer` | Read-only correctness review from a supplied exact patch and referenced files; never edits or commits. |
+| `reviewer` | Read-only correctness review from a supplied exact patch file reference (path, bytes, SHA-256) and referenced files; never edits or commits. |
 
 A same-named Markdown file in `config/pi-subagent/` explicitly overrides the built-in default.
 
@@ -346,6 +346,6 @@ cp <package-install-dir>/examples/roles/scout.md ~/.pi/agent/config/pi-subagent/
 
 The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the files and their names are entirely user-owned.
 
-The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It prescribes an implement → review → merge loop over the built-in `implementer` and `reviewer` Roles, but it defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
+The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It prescribes an implement → review → merge loop over the built-in `implementer` and `reviewer` Roles, with private byte-verified exact-patch file references rather than inline patch text and cleanup only after integration validation. It defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
 
 See the architectural decision: [Compose workflows outside the ephemeral executor](./adr/001-composable-ephemeral-execution.md).
