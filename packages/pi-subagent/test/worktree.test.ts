@@ -629,7 +629,7 @@ test("loadRoles accepts isolation worktree and rejects other values", async (t) 
 	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\n---\nBody.\n");
 
 	const roles = loadRoles(acceptDir);
-	assert.equal(roles.length, 1);
-	assert.equal(roles[0]!.isolation, "worktree");
+	assert.equal(roles.length, 3);
+	assert.equal(roles.find(({ name }) => name === "iso")!.isolation, "worktree");
 	assert.throws(() => loadRoles(rejectDir), /isolation must be "worktree"/);
 });

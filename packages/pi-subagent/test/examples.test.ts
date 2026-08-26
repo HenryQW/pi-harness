@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,23 +23,79 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /^description: .+/m);
 });
 
-test("copyable Role samples load from an isolated agent directory", async (t) => {
+async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-examples-"));
-	const rolesDir = join(agentDir, "config", "pi-subagent");
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
+	return agentDir;
+}
+
+test("missing config directory still returns validated built-in implementer and reviewer roles", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const [implementer, reviewer] = loadRoles(agentDir);
+
+	assert.equal(implementer!.name, "implementer");
+	assert.equal(implementer!.isolation, "worktree");
+	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
+	assert.match(implementer!.systemPrompt, /[Nn]ever push or open pull requests without explicit authorization/i);
+	assert.match(implementer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
+
+	assert.equal(reviewer!.name, "reviewer");
+	assert.ok(reviewer!.tools!.includes("bash"));
+	assert.ok(!reviewer!.tools!.includes("edit") && !reviewer!.tools!.includes("write"));
+	assert.match(reviewer!.systemPrompt, /[Nn]ever edit files, commit, push/i);
+	assert.match(reviewer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
+});
+
+test("a same-named user role overrides a built-in while other roles are added", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(join(rolesDir, "my-implementer.md"), `---
+name: implementer
+description: Custom implementation policy
+tools: [read]
+---
+Custom body.
+`);
+	await copyFile(join(samplesDir, "scout.md"), join(rolesDir, "scout.md"));
+
+	const roles = loadRoles(agentDir);
+	assert.deepEqual(roles.map(({ name }) => name), ["implementer", "reviewer", "scout"]);
+	assert.deepEqual(roles.find(({ name }) => name === "implementer"), {
+		name: "implementer",
+		description: "Custom implementation policy",
+		tools: ["read"],
+		isolation: undefined,
+		extensions: [],
+		skills: [],
+		systemPrompt: "Custom body.",
+	});
+});
+
+test("duplicate names among user role files remain an error", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(join(rolesDir, "a.md"), "---\nname: dup\ndescription: d\n---\nBody.\n");
+	await writeFile(join(rolesDir, "b.md"), "---\nname: dup\ndescription: d\n---\nBody.\n");
+
+	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
+});
+
+test("copyable Role samples load from an isolated agent directory", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
 	await Promise.all([
 		copyFile(join(samplesDir, "scout.md"), join(rolesDir, "scout.md")),
-		copyFile(join(samplesDir, "implementer.md"), join(rolesDir, "implementer.md")),
-		symlink(join(samplesDir, "reviewer.md"), join(rolesDir, "reviewer.md")),
-		symlink(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md")),
+		copyFile(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md")),
 	]);
 
 	assert.deepEqual(loadRoles(agentDir).map(({ name, tools, isolation, extensions, skills }) => ({
 		name, tools, isolation, extensions, skills,
 	})), [
 		{ name: "implementer", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"], isolation: "worktree", extensions: [], skills: [] },
-		{ name: "reviewer", tools: ["read", "grep", "find", "ls"], isolation: undefined, extensions: [], skills: [] },
+		{ name: "reviewer", tools: ["read", "bash", "grep", "find", "ls"], isolation: undefined, extensions: [], skills: [] },
 		{ name: "scout", tools: ["read", "grep", "find", "ls"], isolation: undefined, extensions: [], skills: [] },
 		{ name: "synthesizer", tools: ["read"], isolation: undefined, extensions: [], skills: [] },
 	]);

@@ -116,47 +116,75 @@ function extensionList(value: unknown, source: string): string[] {
 	return stringList(value, "extensions", source).map((extension) => validateExtension(extension, source));
 }
 
+// Built-in Roles required by the bundled pi-subagent-delegated-development Skill;
+// resolved from the package-shipped Markdown relative to this module.
+const BUILTIN_ROLE_FILES = ["implementer.md", "reviewer.md"] as const;
+
+/** Single-file Role parser shared by built-in and user roles. */
+function parseRoleFile(file: string, raw: string): Role {
+	let parsed: ReturnType<typeof parseFrontmatter>;
+	try {
+		parsed = parseFrontmatter(raw);
+	} catch (error) {
+		throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const frontmatter = parsed.frontmatter;
+	const isolation = frontmatter.isolation === undefined ? undefined : cleanText(frontmatter.isolation, "isolation", file);
+	if (isolation !== undefined && isolation !== "worktree") throw new Error(`${file}: isolation must be "worktree".`);
+	return {
+		name: cleanText(frontmatter.name, "name", file),
+		description: cleanText(frontmatter.description, "description", file),
+		tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
+		isolation,
+		extensions: extensionList(frontmatter.extensions, file),
+		skills: stringList(frontmatter.skills, "skills", file),
+		systemPrompt: cleanText(parsed.body, "system prompt", file),
+	};
+}
+
+function readRoleFile(file: string): Role {
+	try {
+		return parseRoleFile(file, readFileSync(file, "utf8"));
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith(`${file}: `)) throw error;
+		throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+function builtinRoles(): Role[] {
+	return BUILTIN_ROLE_FILES.map((name) =>
+		readRoleFile(fileURLToPath(new URL(`../examples/roles/${name}`, import.meta.url))));
+}
+
+/**
+ * Validated built-in implementer/reviewer Roles plus valid user roles from
+ * `config/pi-subagent`. A user role with a built-in name overrides the default;
+ * duplicate names among user files are an error. Missing user directory returns
+ * the built-ins.
+ */
 export function loadRoles(agentDir = getAgentDir()): Role[] {
+	const byName = new Map(builtinRoles().map((role) => [role.name, role]));
 	const dir = join(agentDir, "config", "pi-subagent");
 	let entries;
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
 	} catch (error: unknown) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [...byName.values()];
 		throw error;
 	}
 
-	const roles = entries
+	const userRoles = entries
 		.filter((entry) => entry.name.endsWith(".md") && (entry.isFile() || entry.isSymbolicLink()))
 		.sort((a, b) => a.name.localeCompare(b.name))
-		.map((entry): Role => {
-			const file = join(dir, entry.name);
-			let parsed: ReturnType<typeof parseFrontmatter>;
-			try {
-				parsed = parseFrontmatter(readFileSync(file, "utf8"));
-			} catch (error) {
-				throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-			}
-			const frontmatter = parsed.frontmatter;
-			const isolation = frontmatter.isolation === undefined ? undefined : cleanText(frontmatter.isolation, "isolation", file);
-			if (isolation !== undefined && isolation !== "worktree") throw new Error(`${file}: isolation must be "worktree".`);
-			return {
-				name: cleanText(frontmatter.name, "name", file),
-				description: cleanText(frontmatter.description, "description", file),
-				tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
-				isolation,
-				extensions: extensionList(frontmatter.extensions, file),
-				skills: stringList(frontmatter.skills, "skills", file),
-				systemPrompt: cleanText(parsed.body, "system prompt", file),
-			};
-		});
+		.map((entry) => readRoleFile(join(dir, entry.name)));
 
 	const names = new Set<string>();
-	for (const role of roles) {
+	for (const role of userRoles) {
 		if (names.has(role.name)) throw new Error(`Duplicate Subagent role: ${role.name}.`);
 		names.add(role.name);
+		byName.set(role.name, role);
 	}
-	return roles;
+	return [...byName.values()];
 }
 
 export function resolveTaskRoute(

@@ -3,7 +3,7 @@
 `pi-subagent` separates tool policy from execution mechanism:
 
 ```text
-user Role + latest Pi registries ── resolveRoleLaunch ──> PiLaunch
+Role (built-in or user override) + latest Pi registries ── resolveRoleLaunch ──> PiLaunch
                                                         │
 caller-owned task, cwd, signal ─────────────────────────┤
                                                         v
@@ -63,7 +63,7 @@ Single mode puts one delegation's fields at the top level.
 
 | Field | Required | Contract |
 | --- | --- | --- |
-| `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory. There are no package-owned Role names. |
+| `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory or a package-shipped built-in (`implementer`, `reviewer`); a same-named user file overrides the built-in. |
 | `task` | yes | Non-empty bounded task packet. |
 | `model` | no | Designated `provider/modelId`; takes precedence over `modelClass`. |
 | `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; omission uses shared task assignment. |
@@ -83,7 +83,7 @@ All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transp
 
 Every single entry, parallel sibling, and chain step independently:
 
-1. loads its selected user Role;
+1. loads its selected Role;
 2. resolves its route and named Skills from the latest effective Pi context after receiving an executor permit;
 3. creates its Role launch policy; and
 4. when the Role requests `isolation: worktree`, creates a worktree identified by the tool call, mode, and input index.
@@ -116,7 +116,7 @@ The package root exports the following mechanism-level APIs:
 
 | API | Responsibility |
 | --- | --- |
-| `loadRoles(agentDir?)` | Validate and load user Role Markdown. |
+| `loadRoles(agentDir?)` | Validate and load package-shipped built-in and user Role Markdown. |
 | `resolveRoleSkills(pi, role)` | Resolve Role Skill names from Pi's effective registry. |
 | `resolveRoleLaunch(pi, ctx, input)` | Resolve a shared task route and produce `ResolvedRoleLaunch`. |
 | `createRoleLaunch(pi, ctx, input)` | Produce the same launch from a caller-supplied resolved route. |
@@ -319,26 +319,33 @@ if (!approved) throw new Error(`Review did not pass after ${maxReviewRounds} rou
 
 The verdict schema, parser, round state, shared workspace, and terminal decision all belong to the caller. Add a richer protocol only when the workflow requires one; do not encode it as a recursive package workflow definition.
 
-## Role samples
+## Built-in Roles and samples
 
-Repository samples are documentation, not installed configuration:
+The package ships two working built-in Roles, validated by the same parser as user roles and always present even with no `config/pi-subagent` directory:
+
+| Built-in | Behavior |
+| --- | --- |
+| `implementer` | Focused implementation requesting `isolation: worktree`; commits scoped changes locally, never pushes or opens PRs without authorization. Non-Git or unborn-`HEAD` contexts may use Main's cwd. |
+| `reviewer` | Read-only correctness review; read-only bash Git/diff inspection, never edits or commits. |
+
+A same-named Markdown file in `config/pi-subagent/` explicitly overrides the built-in default.
+
+Additional repository samples are inert starting points, not installed configuration:
 
 | Sample | Intended starting point |
 | --- | --- |
 | [`scout`](../examples/roles/scout.md) | Read-only code/evidence mapping. |
-| [`implementer`](../examples/roles/implementer.md) | Focused implementation requesting `isolation: worktree`; non-Git or unborn-`HEAD` contexts may use Main's cwd. |
-| [`reviewer`](../examples/roles/reviewer.md) | Read-only correctness review. |
 | [`synthesizer`](../examples/roles/synthesizer.md) | Reconcile supplied reports without broad discovery. |
 
-Copy the package-shipped samples from your installed `@henryqw/pi-subagent` package (npm installs include `examples/roles/`):
+Copy the package-shipped samples from your installed `@henryqw/pi-subagent` package (npm installs include `examples/roles/`) if you want them:
 
 ```bash
 mkdir -p ~/.pi/agent/config/pi-subagent
-cp <package-install-dir>/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
+cp <package-install-dir>/examples/roles/scout.md ~/.pi/agent/config/pi-subagent/
 ```
 
 The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the files and their names are entirely user-owned.
 
-The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It names the sample Roles and prescribes an implement → review → merge loop, but it defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
+The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It prescribes an implement → review → merge loop over the built-in `implementer` and `reviewer` Roles, but it defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
 
 See the architectural decision: [Compose workflows outside the ephemeral executor](./adr/001-composable-ephemeral-execution.md).

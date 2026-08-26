@@ -9,11 +9,9 @@ You are Main. Decompose work into bounded units and coordinate; never edit files
 
 All model and agent work in this workflow goes through Pi's `delegate_task` and Pi-managed children. Do not invoke external LLM APIs, SDKs, agent harnesses, or model CLIs; ordinary deterministic developer tools such as `git`, npm, test runners, and compilers remain allowed.
 
-## Prerequisites
+## Roles
 
-Delegation uses the user-configured Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only). Verify both exist before starting; if either is missing, stop and tell the user to copy the package-shipped `examples/roles/` samples from their installed `@henryqw/pi-subagent` package into `~/.pi/agent/config/pi-subagent/` (see that package's README for details).
-
-Do not invent substitute Roles or proceed without them.
+The package-shipped built-in Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only, with read-only bash Git/diff inspection) are always available; no installation step is required. A same-name user override replaces the built-in entirely. Before using this workflow, Main must verify that each override preserves implementer worktree isolation and reviewer read-only constraints; fail clearly if it does not. Do not invent substitute Roles.
 
 ## Per-unit loop
 

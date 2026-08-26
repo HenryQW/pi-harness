@@ -49,7 +49,7 @@ Parallel mode starts entries concurrently, waits for every entry, and reports th
 
 Background workflows are session-scoped. Session shutdown or reload aborts them and may deliver only recoverable-work evidence or no follow-up message.
 
-Each delegation resolves its own user Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
+Each delegation resolves its own Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
 
 See [Orchestration, isolation, and the public API](./docs/orchestration.md) for the complete contract and JavaScript composition examples.
 
@@ -68,18 +68,23 @@ Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBA
 
 ## Roles
 
-Roles are user-owned Markdown files in `~/.pi/agent/config/pi-subagent/`. This repository includes inert samples:
+The package ships two working built-in Roles, always available without any configuration:
+
+- `implementer`: focused edits requesting worktree isolation; commits completed scoped changes locally and never pushes or opens PRs without authorization
+- `reviewer`: read-only correctness review with read-only bash Git/diff inspection; never edits or commits
+
+A same-named Markdown file in `~/.pi/agent/config/pi-subagent/` explicitly overrides the built-in default.
+
+The repository also includes optional inert samples:
 
 - [`scout`](./examples/roles/scout.md): read-only discovery
-- [`implementer`](./examples/roles/implementer.md): focused edits requesting worktree isolation
-- [`reviewer`](./examples/roles/reviewer.md): read-only correctness review
 - [`synthesizer`](./examples/roles/synthesizer.md): reconcile supplied reports
 
-Copy them manually from your installed `@henryqw/pi-subagent` package (npm installs ship the `examples/roles/` directory), e.g.:
+Copy them manually from your installed `@henryqw/pi-subagent` package (npm installs ship the `examples/roles/` directory) if you want them as a starting point:
 
 ```bash
 mkdir -p ~/.pi/agent/config/pi-subagent
-cp <package-install-dir>/examples/roles/*.md ~/.pi/agent/config/pi-subagent/
+cp <package-install-dir>/examples/roles/scout.md ~/.pi/agent/config/pi-subagent/
 ```
 
 Locate the install directory with `npm root` inside your project, or via Pi's package installation path.
