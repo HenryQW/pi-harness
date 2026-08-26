@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { lock } from "proper-lockfile";
@@ -138,8 +138,6 @@ export class ConfigStore {
 	}
 
 	private async saveUnlocked(validated: BtwConfig): Promise<void> {
-		const directory = dirname(this.path);
-		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const temporaryPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
 		try {
 			await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
@@ -147,7 +145,6 @@ export class ConfigStore {
 				flag: "wx",
 				mode: 0o600,
 			});
-			await chmod(temporaryPath, 0o600);
 			await rename(temporaryPath, this.path);
 		} catch (error) {
 			await rm(temporaryPath, { force: true }).catch(() => undefined);
