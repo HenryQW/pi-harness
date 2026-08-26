@@ -7,7 +7,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { execFileSync } from "node:child_process";
 import { MAX_SESSION_FILE_BYTES } from "../extensions/search-core.ts";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -64,19 +63,6 @@ function msg(parentId: string | null, role: string, text: string): object {
 	};
 }
 let msgCount = 0;
-
-function resetConfigProbe(): void {
-	fs.rmSync(path.join(agentDir, "sessions"), { recursive: true, force: true });
-	const db = path.join(agentDir, "config", "pi-session-recall", "index.db");
-	for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(db + suffix, { force: true });
-	msgCount = 1;
-	for (let i = 0; i < 2; i++) {
-		writeSession(`config-probe-${i}.jsonl`, [
-			{ type: "session", version: 3, id: `config-probe-${i}`, timestamp: `2026-01-0${i + 1}T00:00:00.000Z`, cwd: "/tmp" },
-			msg(null, "user", `config probe ${i}`),
-		]);
-	}
-}
 
 describe("session_search entry point", () => {
 	it("registers the tool and dispatches browse/discovery", async () => {
@@ -264,112 +250,6 @@ describe("session_search entry point", () => {
 		assert.equal(parsed.messages[0].timestamp.length, 128);
 	});
 
-	it("config validation: invalid config and read failures log-and-default without rewriting", async () => {
-		const configDir = path.join(agentDir, "config", "pi-session-recall");
-		fs.mkdirSync(configDir, { recursive: true });
-		const configPath = path.join(configDir, "pi-session-recall.json");
-
-		const errors: unknown[] = [];
-		const origError = console.error;
-		console.error = (...args: unknown[]) => errors.push(args);
-		try {
-			const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}`);
-			for (const invalid of ["{ not json !!!", "null", "[]", '"string"', "{\"backfillFiles\":-5}", "{\"backfillFiles\":501}"]) {
-				fs.writeFileSync(configPath, invalid);
-				errors.length = 0;
-				mod.default(makePi() as never); // must not throw
-				assert.equal(errors.length, 1);
-				assert.equal(fs.readFileSync(configPath, "utf8"), invalid);
-			}
-
-			fs.rmSync(configPath);
-			fs.mkdirSync(configPath);
-			errors.length = 0;
-			mod.default(makePi() as never);
-			assert.equal(errors.length, 1);
-		} finally {
-			console.error = origError;
-			fs.rmSync(configPath, { recursive: true, force: true });
-		}
-	});
-
-	it("unknown config keys warn once and default without rewriting", async () => {
-		resetConfigProbe();
-		const configPath = path.join(agentDir, "config", "pi-session-recall", "pi-session-recall.json");
-		const raw = '{"backfillFiles":1,"backfilFiles":2}';
-		fs.writeFileSync(configPath, raw);
-		const errors: unknown[] = [];
-		const origError = console.error;
-		console.error = (...args: unknown[]) => errors.push(args);
-		try {
-			const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-unknown-config`);
-			const pi = makePi();
-			mod.default(pi as never);
-			const result = await (pi as any).tool.execute("config", {}, undefined, undefined, { sessionManager: {} });
-			assert.equal(errors.length, 1);
-			assert.equal(JSON.parse(result.content[0].text).sessions.length, 2, "unknown key must default instead of accepting backfillFiles: 1");
-			assert.equal(fs.readFileSync(configPath, "utf8"), raw);
-		} finally {
-			console.error = origError;
-			fs.rmSync(configPath, { force: true });
-		}
-	});
-
-	it("sparse oversized config warns once and defaults without rewriting", async () => {
-		resetConfigProbe();
-		const configPath = path.join(agentDir, "config", "pi-session-recall", "pi-session-recall.json");
-		fs.writeFileSync(configPath, '{"backfillFiles":1}');
-		fs.truncateSync(configPath, 1024 * 1024 * 1024);
-		const before = fs.statSync(configPath, { bigint: true });
-		const errors: unknown[] = [];
-		const origError = console.error;
-		console.error = (...args: unknown[]) => errors.push(args);
-		try {
-			const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-oversized-config`);
-			const pi = makePi();
-			mod.default(pi as never);
-			const result = await (pi as any).tool.execute("config", {}, undefined, undefined, { sessionManager: {} });
-			const after = fs.statSync(configPath, { bigint: true });
-			assert.equal(errors.length, 1);
-			assert.equal(JSON.parse(result.content[0].text).sessions.length, 2, "oversized config must use the default cap");
-			assert.equal(after.size, before.size);
-			assert.equal(after.mtimeNs, before.mtimeNs);
-		} finally {
-			console.error = origError;
-			fs.rmSync(configPath, { force: true });
-		}
-	});
-
-	it("FIFO/symlink-to-FIFO config cannot hang startup: defaults with one warning, no writer", { skip: process.platform === "win32", timeout: 5000 }, async () => {
-		resetConfigProbe();
-		const configDir = path.join(agentDir, "config", "pi-session-recall");
-		fs.mkdirSync(configDir, { recursive: true });
-		const fifo = path.join(agentDir, "probe.fifo");
-		const errors: unknown[] = [];
-		const origError = console.error;
-		console.error = (...args: unknown[]) => errors.push(args);
-		try {
-			for (const [label, link] of [["fifo", false], ["symlink-to-fifo", true]] as const) {
-				const configPath = path.join(configDir, "pi-session-recall.json");
-				execFileSync("mkfifo", [fifo]); // never written to; open must not block
-				if (link) fs.symlinkSync(fifo, configPath);
-				else fs.renameSync(fifo, configPath); // move the FIFO into place directly
-				errors.length = 0;
-				const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-${label}`);
-				const pi = makePi();
-				mod.default(pi as never); // must return without a writer on the FIFO
-				const result = await (pi as any).tool.execute("fifo", {}, undefined, undefined, { sessionManager: {} });
-				assert.equal(errors.length, 1);
-				assert.match(String(errors[0]), /not a regular file/);
-				assert.equal(JSON.parse(result.content[0].text).sessions.length, 2, `${label} must default the cap`);
-				fs.rmSync(configPath, { force: true });
-			}
-		} finally {
-			console.error = origError;
-			fs.rmSync(fifo, { force: true });
-		}
-	});
-
 	it("errors return success:false instead of throwing", async () => {
 		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}`);
 		const pi = makePi();
@@ -447,7 +327,7 @@ describe("session_search entry point", () => {
 		const hit = JSON.parse(response.content[0].text).results[0];
 		assert.equal(hit.path, session);
 		assert.deepEqual(hit.messages, []);
-		assert.match(hit.error, /session file exceeds 32 MiB hydration limit/);
+		assert.match(hit.error, /session file exceeds 32 MiB snapshot limit/);
 	});
 
 	it("discovery drains sync backlog left by capped startup pass (bhGOb)", async () => {

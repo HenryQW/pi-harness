@@ -61,7 +61,7 @@ test("hydration rejects a session larger than the indexing cap", () => {
 		truncateSync(session, MAX_SESSION_FILE_BYTES + 1);
 		assert.throws(
 			() => readSession(session),
-			/32 MiB hydration limit.*oversized\.jsonl/,
+			/32 MiB snapshot limit.*oversized\.jsonl/,
 		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

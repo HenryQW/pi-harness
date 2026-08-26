@@ -13,8 +13,8 @@ export const DEFAULT_SYNC_CAP = 50;
 /** Hard byte ceiling per session file: larger files are skipped (and retried
  *  behind fresh work) instead of being read whole into memory. */
 export const MAX_SESSION_FILE_BYTES = 32 * 1024 * 1024;
-/** Hard ceiling for the configured backfillFiles work bound. */
-export const MAX_BACKFILL_FILES = DEFAULT_SYNC_CAP * 10;
+/** Hard ceiling for the internal/test `opts.cap` work bound of syncSessions. */
+const MAX_SYNC_CAP = DEFAULT_SYNC_CAP * 10;
 export const MAX_QUERY_CHARS = 512;
 const MAX_TEXT_CHARS = 20000;
 const SCAN_LIMIT = 300;
@@ -223,15 +223,19 @@ function extractText(content: unknown): string {
  *  only the validated snapshot from it. A concurrent append/replacement between
  *  the walk's stat and this open cannot grow the allocation or the read beyond
  *  maxBytes: the fd pins the inode, and fstat on that fd fixes both bounds.
- *  Deliberately not fs.readFileSync(fd) — that re-reads to EOF unbounded. */
-function readBoundedSnapshot(filePath: string, maxBytes: number): string {
+ *  Deliberately not fs.readFileSync(fd) — that re-reads to EOF unbounded.
+ *  Shared with hydration: callers pass their own byte ceiling (both use
+ *  MAX_SESSION_FILE_BYTES in production). */
+export function readBoundedSnapshot(filePath: string, maxBytes: number): string {
 	// O_NONBLOCK keeps a writerless FIFO (regular .jsonl swapped mid-walk) from
-	// blocking this open before fstat rejects it, as hydration/config readers do.
+	// blocking this open before fstat rejects it.
 	const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
 	try {
 		const st = fs.fstatSync(fd);
-		if (!st.isFile()) throw new Error("session path is not a regular file");
-		if (st.size > maxBytes) throw new Error("session file exceeds size cap");
+		if (!st.isFile()) throw new Error(`session path is not a regular file: ${filePath}`);
+		if (st.size > maxBytes) {
+			throw new Error(`session file exceeds ${Math.round(maxBytes / (1024 * 1024))} MiB snapshot limit: ${filePath}`);
+		}
 		const buf = Buffer.allocUnsafe(st.size);
 		let read = 0;
 		while (read < buf.length) {
@@ -365,7 +369,7 @@ export function syncSessions(
 ): SyncResult {
 	const requestedCap = opts?.cap ?? DEFAULT_SYNC_CAP;
 	const cap = Number.isFinite(requestedCap)
-		? Math.max(1, Math.min(MAX_BACKFILL_FILES, Math.floor(requestedCap)))
+		? Math.max(1, Math.min(MAX_SYNC_CAP, Math.floor(requestedCap)))
 		: DEFAULT_SYNC_CAP;
 	const db = openDb(dbPath);
 	try {
@@ -469,7 +473,7 @@ export function syncSessions(
 			// are huge enough to block the event loop; raise the cap or stream the
 			// parser if real sessions ever hit it. Optimization only: readBoundedSnapshot
 			// re-validates size/type on its own descriptor at the parse boundary.
-			if (stat.size > maxFileBytes) throw new Error("session file exceeds size cap");
+			if (stat.size > maxFileBytes) throw new Error("session file exceeds indexing size cap");
 			messagesIndexed += tx(p, stat);
 			filesProcessed++;
 		} catch {

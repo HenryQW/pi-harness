@@ -4,8 +4,7 @@
  * Pure functions over file paths; no SQLite access.
  */
 /// <reference types="node" />
-import fs from "node:fs";
-import { MAX_SESSION_FILE_BYTES } from "./search-core.ts";
+import { MAX_SESSION_FILE_BYTES, readBoundedSnapshot } from "./search-core.ts";
 import type { WindowMessage } from "./types.ts";
 
 export interface WindowResult {
@@ -36,32 +35,10 @@ interface Entry {
 
 /** Parse JSONL lines; malformed lines are skipped. Header line (no id) skipped. */
 function parseSessionEntries(sessionPath: string): Entry[] {
-	// O_NONBLOCK keeps FIFOs from waiting for a writer before fstat rejects
-	// them; the descriptor check also covers symlinks to non-regular nodes.
-	const fd = fs.openSync(sessionPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
-	let raw: string;
-	try {
-		// Snapshot bounds are fixed once here: the fd pins the inode, and fstat on
-		// that fd fixes both the allocation and the read ceiling. A concurrent
-		// append after fstat waits until the next hydration call.
-		const stats = fs.fstatSync(fd);
-		if (!stats.isFile()) throw new Error(`session path is not a regular file: ${sessionPath}`);
-		const size = stats.size;
-		if (size > MAX_SESSION_FILE_BYTES) {
-			throw new Error(`session file exceeds 32 MiB hydration limit: ${sessionPath}`);
-		}
-		// Deliberately not fs.readFileSync(fd) — that re-reads to EOF unbounded.
-		const buf = Buffer.allocUnsafe(size);
-		let read = 0;
-		while (read < buf.length) {
-			const n = fs.readSync(fd, buf, read, buf.length - read, read);
-			if (n === 0) break; // truncated concurrently after fstat: parse what was there
-			read += n;
-		}
-		raw = buf.toString("utf8", 0, read);
-	} finally {
-		fs.closeSync(fd);
-	}
+	// O_NONBLOCK + descriptor validation + fixed-size snapshot read are shared
+	// with the index engine; the fd pins the inode so a concurrent append after
+	// fstat waits until the next hydration call.
+	const raw = readBoundedSnapshot(sessionPath, MAX_SESSION_FILE_BYTES);
 	const entries: Entry[] = [];
 	const seenIds = new Set<string>();
 	for (const line of raw.split("\n")) {

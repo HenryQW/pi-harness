@@ -31,19 +31,9 @@ Query syntax: FTS5 over a trigram index — multi-word = AND by default, `OR` fo
 
 Hits inside the current session's live context are suppressed; compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
 
-## Config
+## Deliberate exclusions
 
-`~/.pi/agent/config/pi-session-recall/pi-session-recall.json`
-
-```json
-{
-  "backfillFiles": 50
-}
-```
-
-- `backfillFiles`: max session files attempted per sync pass, [1,500] (default 50). Malformed config is ignored with a warning and never rewritten; failed files are retried on later passes but ordered behind fresh work.
-
-Deliberate exclusions: session directories whose encoded path starts with `--tmp-` or `--private-tmp-` (sessions run from `/tmp` or `/private/tmp`) are never indexed. Session files over 32 MiB are excluded from indexing and hydration: discovery cannot newly find them; READ/SCROLL return an explicit size error, while a stale discovery hit retained from before the file grew is returned as metadata with empty messages and that error.
+Session directories whose encoded path starts with `--tmp-` or `--private-tmp-` (sessions run from `/tmp` or `/private/tmp`) are never indexed. Session files over 32 MiB are excluded from indexing and hydration: discovery cannot newly find them; READ/SCROLL return an explicit size error, while a stale discovery hit retained from before the file grew is returned as metadata with empty messages and that error.
 
 ## Storage & privacy
 

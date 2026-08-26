@@ -1,84 +1,20 @@
 /**
- * pi-session-recall entry point: config load, tool registration, mode dispatch.
+ * pi-session-recall entry point: tool registration and mode dispatch.
  */
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { closeSync, constants as fsConstants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import { DEFAULT_SYNC_CAP, MAX_BACKFILL_FILES, MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
+import { MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
-const configPath = () => join(getAgentDir(), "config", "pi-session-recall", "pi-session-recall.json");
 const dbPath = () => join(getAgentDir(), "config", "pi-session-recall", "index.db");
 const sessionsDir = () => join(getAgentDir(), "sessions");
 
 const OUTPUT_CHAR_BUDGET = 50_000;
-const MAX_CONFIG_BYTES = 1024;
-
-interface Config {
-	backfillFiles: number;
-}
-
-/** Untrusted JSON: bound and validate, log-and-default on invalid, never rewrite. */
-function readConfig(): Config {
-	const fallback = { backfillFiles: DEFAULT_SYNC_CAP };
-	const path = configPath();
-	let raw: string;
-	try {
-		// O_NONBLOCK so a FIFO/symlink-to-FIFO cannot block waiting for a writer;
-		// fstat on the same descriptor then rejects any non-regular node.
-		const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
-		try {
-			const stats = fstatSync(fd);
-			if (!stats.isFile()) throw new Error("config is not a regular file");
-			if (stats.size > MAX_CONFIG_BYTES) throw new Error(`config exceeds ${MAX_CONFIG_BYTES} bytes`);
-			const buffer = Buffer.alloc(MAX_CONFIG_BYTES + 1);
-			let length = 0;
-			while (length < buffer.length) {
-				const read = readSync(fd, buffer, length, buffer.length - length, null);
-				if (read === 0) break;
-				length += read;
-			}
-			if (length > MAX_CONFIG_BYTES) throw new Error(`config exceeds ${MAX_CONFIG_BYTES} bytes`);
-			raw = buffer.toString("utf8", 0, length);
-		} finally {
-			closeSync(fd);
-		}
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
-		console.error(`[pi-session-recall] failed to read config ${path}: ${error instanceof Error ? error.message : String(error)}; using default`);
-		return fallback;
-	}
-
-	let value: unknown;
-	try {
-		value = JSON.parse(raw);
-	} catch {
-		console.error("[pi-session-recall] malformed config; using default");
-		return fallback;
-	}
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		console.error("[pi-session-recall] config must be a JSON object; using default");
-		return fallback;
-	}
-	const keys = Object.keys(value);
-	if (keys.some((key) => key !== "backfillFiles")) {
-		console.error("[pi-session-recall] config contains unknown keys; using default");
-		return fallback;
-	}
-	const cap = (value as Record<string, unknown>).backfillFiles;
-	if (cap === undefined) return fallback;
-	// Safe integer rejects untrusted magnitudes like 1e100 that would
-	// defeat the sync work bound.
-	if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1 || cap > MAX_BACKFILL_FILES) {
-		console.error("[pi-session-recall] invalid backfillFiles in config; using default");
-		return fallback;
-	}
-	return { backfillFiles: cap };
-}
 
 function clamp(n: number | undefined, min: number, max: number, dflt: number): number {
 	if (typeof n !== "number" || !Number.isFinite(n)) return dflt;
@@ -153,14 +89,12 @@ FTS5 SYNTAX
   AND is the default — multi-word queries require all terms. Use OR for broader recall (\`alpha OR beta\`), quoted phrases for exact match (\`"docker networking"\`), NOT to exclude (\`python NOT java\`). Wildcards work only as stem expansion of tokens ≥3 chars (trigram tokenizer); very short terms fall back to substring matching. The index covers user/assistant message text only — thinking, tool calls/results are not searchable.`;
 
 export default function (pi: ExtensionAPI): void {
-	const config = readConfig();
-
 	// Best-effort sync at startup, deferred so the synchronous walk + SQLite
 	// writes never block session start. The lazy in-tool-call sync retries.
 	pi.on("session_start", (_event, _ctx) => {
 		setTimeout(() => {
 			try {
-				syncSessions(sessionsDir(), dbPath(), { cap: config.backfillFiles });
+				syncSessions(sessionsDir(), dbPath());
 			} catch {
 				// Index stays stale; next tool call retries.
 			}
@@ -252,9 +186,9 @@ export default function (pi: ExtensionAPI): void {
 					return textResult(result);
 				}
 
-				// Lazy sync: drains any backlog the capped session_start pass left.
+				// Lazy sync: drains any backlog the capped startup pass left.
 				try {
-					syncSessions(sessionsDir(), dbPath(), { cap: config.backfillFiles });
+					syncSessions(sessionsDir(), dbPath());
 				} catch {
 					// Serve from the possibly stale index rather than failing.
 				}
