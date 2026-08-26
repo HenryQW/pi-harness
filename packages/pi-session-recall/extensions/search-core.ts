@@ -8,11 +8,9 @@ import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { MAX_SESSION_FILE_BYTES, readTranscriptEntries } from "./transcript.ts";
 import type { SearchHit, SessionRow, SyncResult } from "./types.ts";
 export const DEFAULT_SYNC_CAP = 50;
-/** Hard byte ceiling per session file: larger files are skipped (and retried
- *  behind fresh work) instead of being read whole into memory. */
-export const MAX_SESSION_FILE_BYTES = 32 * 1024 * 1024;
 /** Hard ceiling for the internal/test `opts.cap` work bound of syncSessions. */
 const MAX_SYNC_CAP = DEFAULT_SYNC_CAP * 10;
 export const MAX_QUERY_CHARS = 512;
@@ -260,42 +258,7 @@ function extractText(content: unknown): string {
 	return parts.join("\n").trim();
 }
 
-/** Open the path once, validate that exact descriptor (type + size), and read
- *  only the validated snapshot from it. A concurrent append/replacement between
- *  the walk's stat and this open cannot grow the allocation or the read beyond
- *  maxBytes: the fd pins the inode, and fstat on that fd fixes both bounds.
- *  Deliberately not fs.readFileSync(fd) — that re-reads to EOF unbounded.
- *  Shared with hydration: callers pass their own byte ceiling (both use
- *  MAX_SESSION_FILE_BYTES in production). */
-export function readBoundedSnapshot(filePath: string, maxBytes: number): string {
-	// O_NONBLOCK keeps a writerless FIFO (regular .jsonl swapped mid-walk) from
-	// blocking this open before fstat rejects it; O_NOFOLLOW (absent on Windows)
-	// rejects a symlink swapped in after the walk instead of following it.
-	const fd = fs.openSync(
-		filePath,
-		fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW ?? 0),
-	);
-	try {
-		const st = fs.fstatSync(fd);
-		if (!st.isFile()) throw new Error(`session path is not a regular file: ${filePath}`);
-		if (st.size > maxBytes) {
-			throw new Error(`session file exceeds ${Math.round(maxBytes / (1024 * 1024))} MiB snapshot limit: ${filePath}`);
-		}
-		const buf = Buffer.allocUnsafe(st.size);
-		let read = 0;
-		while (read < buf.length) {
-			const n = fs.readSync(fd, buf, read, buf.length - read, read);
-			if (n === 0) break; // truncated concurrently after fstat: index what was there
-			read += n;
-		}
-		return buf.toString("utf-8", 0, read);
-	} finally {
-		fs.closeSync(fd);
-	}
-}
-
 function parseSessionFile(filePath: string, maxBytes: number): ParsedFile {
-	const seenEntryIds = new Set<string>();
 	const parsed: ParsedFile = {
 		cwd: null,
 		name: null,
@@ -306,23 +269,8 @@ function parseSessionFile(filePath: string, maxBytes: number): ParsedFile {
 	};
 	// Unreadable/oversized file must throw so the sync transaction rolls back
 	// instead of wiping previously indexed rows and advancing the watermark over a hole.
-	const content = readBoundedSnapshot(filePath, maxBytes);
-	for (const line of content.split("\n")) {
-		if (!line.trim()) continue;
-		let entry: any;
-		try {
-			entry = JSON.parse(line);
-		} catch {
-			continue; // skip malformed lines
-		}
-		const hasValidId = typeof entry?.id === "string" && entry.id.length > 0 && entry.id.length <= 256
-			&& (entry.parentId == null || (typeof entry.parentId === "string" && entry.parentId.length <= 256));
-		if (hasValidId) {
-			// Hydration is first-wins across every entry type; reserve IDs at the
-			// same boundary so discovery can never point at a different duplicate.
-			if (seenEntryIds.has(entry.id)) continue;
-			seenEntryIds.add(entry.id);
-		}
+	for (const { data: entryRaw, id } of readTranscriptEntries(filePath, maxBytes)) {
+		const entry = entryRaw !== null && typeof entryRaw === "object" ? (entryRaw as Record<string, unknown>) : undefined;
 		switch (entry?.type) {
 			case "session":
 				// Untrusted header strings are capped here so every consumer
@@ -335,17 +283,17 @@ function parseSessionFile(filePath: string, maxBytes: number): ParsedFile {
 				if (typeof entry.name === "string") parsed.name = entry.name.slice(0, 500);
 				break;
 			case "message": {
-				const role = entry.message?.role;
-				if (role !== "user" && role !== "assistant") break;
-				const full = extractText(entry.message.content);
-				if (!full) break;
-				if (!hasValidId) break;
+				const msg = entry.message as { role?: unknown; content?: unknown } | undefined;
+				const role = msg?.role;
+				if (!msg || (role !== "user" && role !== "assistant")) break;
+				const full = extractText(msg.content);
+				if (!full || id === undefined) break;
 				if (role === "user" && parsed.preview === null) {
 					parsed.preview = full.slice(0, 200);
 				}
 				const regions = truncateRegions(full);
 				parsed.messages.push({
-					entryId: entry.id,
+					entryId: id,
 					role,
 					timestamp: capStr(entry.timestamp, 128),
 					head: regions ? regions.head : full,
@@ -549,7 +497,7 @@ export function syncSessions(
 	const backlog = changed.length - filesProcessed + deletedRemaining;
 	db.prepare("INSERT INTO meta(key, value) VALUES ('backlog', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(backlog));
 
-	return { filesProcessed, messagesIndexed, backlogRemaining: backlog };
+	return { filesProcessed, messagesIndexed, backlogRemaining: backlog, walkComplete: walk.complete };
 	} finally {
 		db.close();
 	}
