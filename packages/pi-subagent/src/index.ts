@@ -42,6 +42,7 @@ const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-mul
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge";
+const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";
 
 export interface Role {
 	name: string;
@@ -265,7 +266,7 @@ export function createRoleLaunch(
 	args.push("--model", modelReference(input.route.model));
 	if (input.route.thinkingLevel) args.push("--thinking", input.route.thinkingLevel);
 	args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
-	args.push("--append-system-prompt", cleanText(role.systemPrompt, "system prompt", `Role ${role.name}`));
+	args.push("--append-system-prompt", `${CHILD_IDENTITY_POLICY}\n\n${cleanText(role.systemPrompt, "system prompt", `Role ${role.name}`)}`);
 	return {
 		env,
 		args,

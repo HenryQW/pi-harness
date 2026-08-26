@@ -206,7 +206,10 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.equal(valueAfter(launch.args, "--model"), "openai-codex-2/gpt-test");
 	assert.equal(valueAfter(launch.args, "--thinking"), "high");
 	assert.ok(launch.args.includes("--no-approve"));
-	assert.equal(valueAfter(launch.args, "--append-system-prompt"), role.systemPrompt);
+	assert.equal(
+		valueAfter(launch.args, "--append-system-prompt"),
+		"You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only the requested change.",
+	);
 
 	const defaultTools = resolveRoleLaunch(pi, ctx, {
 		role: { ...role, tools: undefined },

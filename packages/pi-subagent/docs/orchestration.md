@@ -96,6 +96,8 @@ If steps must share files, make that an explicit caller decision: use an intenti
 
 ## Resource Policy
 
+Every Role launch centrally prepends this child identity contract to its system instructions before the Role prompt: the child is a delegated Pi Subagent, not Main; it executes its assigned Role and task directly; Main-only delegation rules do not apply; recursive delegation is unavailable and it must not seek or invoke delegation tools.
+
 A Role file owns:
 
 - base tools (`tools` omitted does not itself define an allowlist; `tools: []` means extension tools only);
