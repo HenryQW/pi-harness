@@ -85,30 +85,12 @@ interface ToolParams {
 	detail?: "adaptive" | "full";
 }
 
-const DESCRIPTION = `Search past Pi sessions stored on disk (FTS5-backed over a local SQLite index), or inspect one session in detail. No LLM calls — every shape returns actual messages.
+const DESCRIPTION = `Search past Pi sessions locally with FTS5; returns stored messages.
 
-FOUR CALLING SHAPES
-
-  1) DISCOVERY — pass \`query\`:
-     session_search(query="auth refactor", limit=3)
-     Runs FTS5 search and returns the top N sessions with metadata, match snippet, and messages around each match. Adaptive detail (default): the top-ranked result carries a ±5 message window plus first/last bookend messages; lower-ranked results carry only the anchor message. Pass \`detail="full"\` to hydrate every result fully.
-
-  2) SCROLL — pass \`sessionId\` + \`aroundMessageId\`:
-     session_search(sessionId="...", aroundMessageId="e07", window=10)
-     Returns ±window messages centered on the anchor (clamped to [1,20]). Use after discovery when you need more context than the default ±5 window. To scroll forward/backward, pass the last/first message entryId of the previous window back as aroundMessageId; messagesBefore/messagesAfter tell you where you are. Across forks, re-anchoring on a shared ancestor can jump branches — pass the previous response's branchTip as the branchTip argument (aroundMessageId only moves the center) to stay on that branch.
-
-  3) READ — pass \`sessionId\` only:
-     session_search(sessionId="...")
-     Returns the session's active branch (first 20 + last 10 messages when large).
-
-  4) BROWSE — no args:
-     session_search()
-     Returns recent sessions: name, cwd, start time, first-user-message preview. Use when asked "what was I working on" without a topic.
-
-Mode is inferred from args; precedence: scroll > read > browse > discovery.
-
-FTS5 SYNTAX
-  Prefer distinctive identifiers, package names, issue numbers, or uncommon terms; use quoted phrases only when exact wording is known. AND is the default — multi-word queries require all terms. Use OR for broader recall (\`alpha OR beta\`), quoted phrases for exact match (\`"docker networking"\`), NOT to exclude (\`python NOT java\`). Wildcards work only as stem expansion of tokens ≥3 chars (trigram tokenizer); very short terms fall back to substring matching. The index covers user/assistant message text only — thinking, tool calls/results are not searchable.`;
+- \`query\`: discover matches. Prefer distinctive identifiers or uncommon terms; multi-word queries are AND. Use \`OR\`/\`NOT\` for Boolean queries and quotes only when exact wording is known.
+- \`sessionId\` + \`aroundMessageId\`: scroll ±\`window\`; retain \`branchTip\` across forks.
+- \`sessionId\` alone: read; no args: browse recent sessions.
+- Discovery is adaptive; use \`detail: "full"\` to hydrate every result.`;
 
 export default function (pi: ExtensionAPI): void {
 	// Best-effort sync at startup, deferred so the synchronous walk + SQLite
