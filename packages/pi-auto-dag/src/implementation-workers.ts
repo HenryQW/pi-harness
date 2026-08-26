@@ -15,7 +15,7 @@ import { assertRunBoundary } from "./intake.ts";
 import { assertAttachedBranch, ensureChildWorktree, verifySingleCommit } from "./git.ts";
 import type { LocalIssue, ProjectConfig, RunState, RunTaskState } from "./model.ts";
 import { actionTicketPath, ensureActionTicket, reviewId } from "./review-ticket.ts";
-import { recordGateExecution, reviewPrompt as reviewWorkerPrompt, type ReviewPromptMode } from "./review.ts";
+import { persistReviewPatch, recordGateExecution, reviewPrompt as reviewWorkerPrompt, reviewPromptMode, type ReviewPatchReference, type ReviewPromptMode } from "./review.ts";
 import { replaceTask, task, type Uuid } from "./state.ts";
 import { hasReviewFindings, lifecycleWorkerLaunch, saveRunState as save } from "./worker-protocol.ts";
 import { workerAgentName, workerDeliveryContext, workerHost, workerHostOptions, workerIssueContext, type RoleLaunchResolver, type WorkerLaunch, type WorkerRole } from "./worker.ts";
@@ -226,11 +226,15 @@ export async function ensureReviewer(
 		state = await save(replaceTask(state, issue.id, { ...current, reviewer_instruction_pending: true }), options);
 		current = task(state, issue.id);
 	}
-	const promptMode: ReviewPromptMode = !needsInstruction
-		? "resend"
-		: started !== "existing" || current.review_rounds === 1
-			? "full"
-			: "update";
+	const base = nonEmptyString(current.wave_base, `Run Task ${issue.id} wave_base`);
+	const promptMode: ReviewPromptMode = reviewPromptMode(
+		needsInstruction,
+		started,
+		current.review_packet_base,
+		current.review_packet_commit,
+		base,
+		commit,
+	);
 	await ensureActionTicket(
 		actionTicketPath(state.main_worktree, state.run_id, issue.id, "implementation", "reviewer"),
 		{ attempt: current.attempts, review_round: positiveInteger(current.review_rounds, `Run Task ${issue.id} review round`), role: "reviewer", review_id: taskReviewId(state, issue.id, current) },
@@ -238,12 +242,22 @@ export async function ensureReviewer(
 		state.run_id,
 		options.uuid,
 	);
-	await promptManagedSubagent(workerHost(state), agent, reviewerPrompt(state, issue, current, promptMode), workerHostOptions(options));
-	if (task(state, issue.id).reviewer_instruction_pending || task(state, issue.id).resolution_pending) {
+	const patch = promptMode === "full" ? await persistReviewPatch({
+		runner: options.runner,
+		mainWorktree: state.main_worktree,
+		runId: state.run_id,
+		worktree: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
+		base,
+		commit,
+		context: { type: "child_branch", branch: nonEmptyString(current.branch, `Run Task ${issue.id} branch`) },
+	}) : undefined;
+	await promptManagedSubagent(workerHost(state), agent, reviewerPrompt(state, issue, current, promptMode, patch), workerHostOptions(options));
+	if (task(state, issue.id).reviewer_instruction_pending || task(state, issue.id).resolution_pending || promptMode === "full") {
 		state = await save(replaceTask(state, issue.id, {
 			...task(state, issue.id),
 			reviewer_instruction_pending: undefined,
 			resolution_pending: undefined,
+			...(promptMode === "full" ? { review_packet_base: base, review_packet_commit: commit } : {}),
 		}), options);
 	}
 	return state;
@@ -359,6 +373,7 @@ function reviewerPrompt(
 	issue: LocalIssue,
 	current: RunTaskState,
 	mode: ReviewPromptMode,
+	patch?: ReviewPatchReference,
 ): Record<string, unknown> {
 	const amendments = gateCommandAmendments(state, issue.id);
 	return reviewWorkerPrompt({
@@ -368,6 +383,7 @@ function reviewerPrompt(
 		worktree: nonEmptyString(current.worktree, `Run Task ${issue.id} worktree`),
 		base: nonEmptyString(current.wave_base, `Run Task ${issue.id} wave_base`),
 		gate: requiredTaskGate(current, nonEmptyString(current.commit, `Run Task ${issue.id} review commit`), `Run Task ${issue.id}`),
+		patch,
 		prior_findings: current.review_findings,
 		resolution: state.resolutions[issue.id],
 		...(amendments.length ? { context: { gate_command_amendments: amendments } } : {}),

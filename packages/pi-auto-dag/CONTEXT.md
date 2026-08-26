@@ -37,8 +37,8 @@ System-owned identity binding reviewer verdict to run, review kind, Local Issue,
 _Avoid_: Reviewer correlation field, model token
 
 **Review Packet**:
-Canonical fresh reviewer handoff containing delivery context, Local Issue, worktree, base, and Required Gate. Existing reviewers receive only changed gate, findings, or resolution data.
-_Avoid_: Reviewer prompt variant, echoed orchestration state
+Canonical fresh reviewer handoff containing delivery context, Local Issue, worktree, base, Required Gate, and a read-only exact binary patch artifact. The artifact is atomically persisted privately under the run directory after base/commit verification and identifies its path, base, commit, byte count, SHA-256, and deterministic child-branch or explicit integration-head context; its patch body is never in the prompt. Existing reviewers receive only changed gate, findings, or resolution data.
+_Avoid_: Reviewer prompt variant, inline diff, echoed orchestration state
 
 **Local Issue**:
 Immutable work definition identified by a stable string within a Delivery Graph.
