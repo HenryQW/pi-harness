@@ -1,10 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmExecPath = process.env.npm_execpath;
+if (!npmExecPath) throw new Error("npm_execpath is required to run workspace tests.");
+
 const concurrency = 2;
 const testArgs = process.argv.slice(2);
 
-const discovery = spawnSync(npm, ["pkg", "get", "name", "scripts.test", "--workspaces", "--json"], {
+const discovery = spawnSync(process.execPath, [npmExecPath, "pkg", "get", "name", "scripts.test", "--workspaces", "--json"], {
 	encoding: "utf8",
 	stdio: ["ignore", "pipe", "inherit"],
 });
@@ -33,7 +35,7 @@ function run(workspace) {
 	return new Promise((resolve) => {
 		const args = ["run", "test", "--workspace", workspace];
 		if (testArgs.length) args.push("--", ...testArgs);
-		const child = spawn(npm, args, { stdio: "inherit" });
+		const child = spawn(process.execPath, [npmExecPath, ...args], { stdio: "inherit" });
 		child.once("error", (error) => {
 			console.error(`Failed to start tests for ${workspace}: ${error.message}`);
 			resolve(1);
