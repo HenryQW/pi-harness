@@ -6,7 +6,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
 import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
-import { ENTRY_DELIMITER, MemoryStore, type Target } from "../src/store.ts";
+import { ENTRY_DELIMITER, MemoryStore, usage, type Target } from "../src/store.ts";
 
 const SEPARATOR = "═".repeat(46);
 // Backups and the lock file live OUTSIDE config.directory (which may be
@@ -87,31 +87,9 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 	// Everything omitted (e.g. one entry larger than the whole cap): no block,
 	// the standalone warning above still reaches the prompt.
 	if (!kept.length) return "";
-	const usage = `${Math.min(100, Math.floor((used / limit) * 100))}% — ${used.toLocaleString()}/${limit.toLocaleString()} chars`;
+	const usageText = usage(used, limit);
 	const header = target === "user" ? "USER PROFILE (who the user is)" : "MEMORY (your personal notes)";
-	return `${SEPARATOR}\n${header} [${usage}]\n${SEPARATOR}\n${content}`;
-}
-
-// Bound aggregate preview size: thousands of short entries over cap must not
-// inject nearly the whole file into one tool error.
-function failureMessage(error: string, entries?: string[]): string {
-	if (!entries?.length) return error;
-	const MAX_PREVIEW_ENTRIES = 20;
-	const MAX_PREVIEW_CHARS = 1500;
-	const shown: string[] = [];
-	let chars = 0;
-	let moreEntries = 0;
-	for (const entry of entries) {
-		const clipped = entry.length > 120 ? `${entry.slice(0, 120)}...` : entry;
-		if (shown.length >= MAX_PREVIEW_ENTRIES || chars + clipped.length > MAX_PREVIEW_CHARS) {
-			moreEntries = entries.length - shown.length;
-			break;
-		}
-		shown.push(clipped);
-		chars += clipped.length;
-	}
-	const suffix = moreEntries > 0 ? ` (and ${moreEntries} more entries)` : "";
-	return `${error}\nCurrent entries: ${JSON.stringify(shown)}${suffix}`;
+	return `${SEPARATOR}\n${header} [${usageText}]\n${SEPARATOR}\n${content}`;
 }
 
 export default function memoryExtension(pi: ExtensionAPI): void {
@@ -229,7 +207,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 						if (CONSOLIDATION_FAILURE.test(error) && store.incrementFailure().done) {
 							throw new Error("Memory consolidation failed repeatedly this turn. Stop retrying memory calls, continue replying to the user.");
 						}
-						throw new Error(failureMessage(error, result.currentEntries));
+						if (result.currentEntries?.length) error += `\nCurrent entries: ${JSON.stringify(result.currentEntries)}`;
+						throw new Error(error);
 					}
 					store.resetOnSuccess();
 					return {
