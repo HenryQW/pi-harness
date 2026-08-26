@@ -43,7 +43,7 @@ type SlotIdentity = {
 };
 
 type SlotAuthResolver = (slot: number) => Promise<string | undefined>;
-type QuotaRefresh = { generation: number; session: AbortController; resolveSlotAuth: SlotAuthResolver };
+type QuotaRefresh = { session: AbortController; resolveSlotAuth: SlotAuthResolver };
 
 type UsageSnapshot = {
 	slot: number;
@@ -120,10 +120,6 @@ function readCodexCredentials(): Map<number, CodexOAuthCredential> {
 		if (slot && isOAuthCredential(credential)) credentials.set(slot, credential);
 	}
 	return credentials;
-}
-
-function discoverCodexSlots(): Set<number> {
-	return new Set(readCodexCredentials().keys());
 }
 
 function accountIdFromAccessToken(access: string): string | undefined {
@@ -256,10 +252,6 @@ async function saveState(state: UsageState, signal?: AbortSignal): Promise<void>
 	}
 }
 
-function errorCode(error: unknown): string | undefined {
-	return error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
-}
-
 async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 	signal?.throwIfAborted();
 	await mkdir(join(getAgentDir(), "config", "pi-multi-codex"), { recursive: true, mode: 0o700 });
@@ -284,7 +276,7 @@ async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>,
 				await release().catch(() => undefined);
 			}
 		} catch (error) {
-			if (errorCode(error) !== "ELOCKED") throw error;
+			if (!(error && typeof error === "object" && "code" in error && String(error.code) === "ELOCKED")) throw error;
 			await delay(CACHE_MUTEX_RETRY_MS, undefined, { signal, ref: false });
 		}
 	}
@@ -380,8 +372,6 @@ function formatDuration(ms: number): string {
 }
 
 class CodexQuotaStatus {
-	private generation = 0;
-	private session: AbortController | undefined;
 	private refreshContext: QuotaRefresh | undefined;
 	private timer: Timer | undefined;
 	private readonly heartbeats = new Map<number, { owner: string; timer: Timer }>();
@@ -420,16 +410,12 @@ class CodexQuotaStatus {
 
 	start(resolveSlotAuth: SlotAuthResolver): void {
 		this.stop();
-		const session = new AbortController();
-		this.session = session;
-		this.refreshContext = { generation: ++this.generation, session, resolveSlotAuth };
+		this.refreshContext = { session: new AbortController(), resolveSlotAuth };
 		this.requestRefresh();
 	}
 
 	stop(): void {
-		this.generation++;
-		this.session?.abort();
-		this.session = undefined;
+		this.refreshContext?.session.abort();
 		this.refreshContext = undefined;
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
@@ -437,18 +423,10 @@ class CodexQuotaStatus {
 		this.heartbeats.clear();
 	}
 
-	private alive(generation: number, session: AbortController): boolean {
-		return this.generation === generation && this.session === session && !session.signal.aborted;
-	}
-
-	refreshNow(): void {
-		this.requestRefresh();
-	}
-
-	private requestRefresh(): void {
+	requestRefresh(): void {
 		const refresh = this.refreshContext;
-		if (!refresh || !this.alive(refresh.generation, refresh.session)) return;
-		void this.refreshDue(refresh.generation, refresh.session, refresh.resolveSlotAuth)
+		if (!refresh) return;
+		void this.refreshDue(refresh)
 			.catch(() => undefined)
 			.then(() => {
 				if (this.refreshContext === refresh) this.scheduleRefresh();
@@ -457,7 +435,7 @@ class CodexQuotaStatus {
 
 	private scheduleRefresh(): void {
 		const refresh = this.refreshContext;
-		if (!refresh || !this.alive(refresh.generation, refresh.session)) return;
+		if (!refresh) return;
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
 
@@ -490,33 +468,27 @@ class CodexQuotaStatus {
 		this.timer.unref?.();
 	}
 
-	private async refreshDue(generation: number, session: AbortController, resolveSlotAuth: SlotAuthResolver): Promise<void> {
+	private async refreshDue(refresh: QuotaRefresh): Promise<void> {
 		const credentials = readCodexCredentials();
 		const state = await this.state();
 		await Promise.all([...credentials.entries()].map(async ([slot, credential]) => {
-			if (!this.alive(generation, session) || this.active.has(slot)) return;
+			if (this.refreshContext !== refresh || this.active.has(slot)) return;
 			const identity = identityFor(credential);
 			if (!identity) return;
 			const snapshot = state.slots.get(slot);
 			if (isFresh(snapshot, identity, Date.now()) || checkedRecently(snapshot, identity, Date.now())) return;
-			this.launch(slot, identity, generation, session, resolveSlotAuth);
+			this.launch(slot, identity, refresh);
 		})).catch(() => undefined);
 	}
 
-	private launch(
-		slot: number,
-		identity: SlotIdentity,
-		generation: number,
-		session: AbortController,
-		resolveSlotAuth: SlotAuthResolver,
-	): void {
+	private launch(slot: number, identity: SlotIdentity, refresh: QuotaRefresh): void {
 		if (this.active.has(slot)) return;
-		const task = this.refreshSlot(slot, identity, generation, session, resolveSlotAuth);
+		const task = this.refreshSlot(slot, identity, refresh);
 		this.active.set(slot, task);
 		const cleanup = () => {
 			if (this.active.get(slot) !== task) return;
 			this.active.delete(slot);
-			if (this.refreshContext?.generation === generation) this.scheduleRefresh();
+			if (this.refreshContext === refresh) this.scheduleRefresh();
 			else this.requestRefresh();
 		};
 		void task.then(cleanup, cleanup);
@@ -574,21 +546,16 @@ class CodexQuotaStatus {
 		return currentIdentity(slot)?.accountHash === accountHash;
 	}
 
-	private async resolveAuth(slot: number, resolveSlotAuth: SlotAuthResolver, signal: AbortSignal): Promise<string | undefined> {
-		return raceWithSignal(resolveSlotAuth(slot), signal);
-	}
-
 	private async finish(
 		slot: number,
 		owner: string,
 		identity: SlotIdentity,
 		outcome: ParsedUsage | undefined,
-		generation: number,
-		session: AbortController,
+		refresh: QuotaRefresh,
 	): Promise<boolean> {
-		if (!this.alive(generation, session)) return false;
+		if (this.refreshContext !== refresh) return false;
 		const finished = await this.change((state) => {
-			if (!this.alive(generation, session) || !this.identityStillCurrent(slot, identity.accountHash)) {
+			if (this.refreshContext !== refresh || !this.identityStillCurrent(slot, identity.accountHash)) {
 				return { value: false, write: false };
 			}
 			const lock = state.locks.get(slot);
@@ -612,7 +579,7 @@ class CodexQuotaStatus {
 			}
 			state.locks.delete(slot);
 			return { value: true, write: true };
-		}, session.signal);
+		}, refresh.session.signal);
 		if (finished) this.onChange();
 		return finished;
 	}
@@ -626,36 +593,30 @@ class CodexQuotaStatus {
 		}, signal);
 	}
 
-	private async refreshSlot(
-		slot: number,
-		identity: SlotIdentity,
-		generation: number,
-		session: AbortController,
-		resolveSlotAuth: SlotAuthResolver,
-	): Promise<void> {
+	private async refreshSlot(slot: number, identity: SlotIdentity, refresh: QuotaRefresh): Promise<void> {
 		let owner: string | undefined;
 		let discard = false;
 		try {
-			owner = await this.claim(slot, identity, session.signal);
-			if (!owner || !this.alive(generation, session)) return;
-			this.startHeartbeat(slot, owner, identity.accountHash, session.signal);
+			owner = await this.claim(slot, identity, refresh.session.signal);
+			if (!owner || this.refreshContext !== refresh) return;
+			this.startHeartbeat(slot, owner, identity.accountHash, refresh.session.signal);
 
-			const authSignal = AbortSignal.any([session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
-			const apiKey = await this.resolveAuth(slot, resolveSlotAuth, authSignal);
+			const authSignal = AbortSignal.any([refresh.session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
+			const apiKey = await raceWithSignal(refresh.resolveSlotAuth(slot), authSignal);
 			if (!apiKey) throw new Error("Codex OAuth auth did not provide a bearer token.");
-			if (!this.alive(generation, session) || !this.identityStillCurrent(slot, identity.accountHash) || !(await this.stillOwn(slot, owner, identity.accountHash))) {
+			if (this.refreshContext !== refresh || !this.identityStillCurrent(slot, identity.accountHash) || !(await this.stillOwn(slot, owner, identity.accountHash))) {
 				discard = true;
 				return;
 			}
 
-			const fetchSignal = AbortSignal.any([session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
-			const response = await raceWithSignal(fetch(USAGE_URL, {
+			const fetchSignal = AbortSignal.any([refresh.session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
+			const response = await fetch(USAGE_URL, {
 				headers: {
 					Authorization: `Bearer ${apiKey}`,
 					"ChatGPT-Account-Id": identity.accountId,
 				},
 				signal: fetchSignal,
-			}), fetchSignal);
+			});
 			if (!response.ok) throw new Error(`Codex usage request failed (${response.status}).`);
 			const usage = parseCodexUsage(await raceWithSignal(response.json(), fetchSignal));
 			if (!usage) throw new Error("Codex usage response has no usable seven-day window.");
@@ -663,13 +624,13 @@ class CodexQuotaStatus {
 				discard = true;
 				return;
 			}
-			await this.finish(slot, owner, identity, usage, generation, session);
+			await this.finish(slot, owner, identity, usage, refresh);
 		} catch {
-			if (!session.signal.aborted && !discard && owner) await this.finish(slot, owner, identity, undefined, generation, session);
+			if (!refresh.session.signal.aborted && !discard && owner) await this.finish(slot, owner, identity, undefined, refresh);
 		} finally {
 			if (owner) {
 				this.stopHeartbeat(slot, owner);
-				await this.release(slot, owner, session.signal.aborted ? AbortSignal.timeout(CLEANUP_TIMEOUT_MS) : session.signal).catch(() => undefined);
+				await this.release(slot, owner, refresh.session.signal.aborted ? AbortSignal.timeout(CLEANUP_TIMEOUT_MS) : refresh.session.signal).catch(() => undefined);
 			}
 		}
 	}
@@ -835,7 +796,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	};
 
 	const syncSlots = (): Set<number> => {
-		const slots = discoverCodexSlots();
+		const slots = new Set(readCodexCredentials().keys());
 		for (const slot of [...slots].sort((a, b) => a - b)) registerSlot(slot);
 		return slots;
 	};
@@ -940,7 +901,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		// Explicit selector choice wins over startup routing.
 		automaticOpen = false;
 		syncSlots();
-		quota.refreshNow();
+		quota.requestRefresh();
 		updateFooter(ctx);
 	});
 
@@ -965,7 +926,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		description: "show shared Codex seven-day quota status",
 		handler: async (_args, ctx: ExtensionContext) => {
 			const lines = await quota.statusLines();
-			ctx.ui.notify(lines.length ? lines.join("\n") : "No Codex OAuth accounts found.", "info");
+			ctx.ui.notify(lines.length ? lines.join("\n") : NO_ACCOUNTS_MESSAGE, "info");
 		},
 	});
 
