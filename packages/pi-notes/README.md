@@ -24,6 +24,7 @@ pi install npm:@henryqw/pi-notes
 Notes are isolated per Git worktree, render as a numbered widget above editor, and persist across sessions under `~/.pi/agent/config/pi-notes/`. Empty worktrees show no widget. Stale files for removed repositories and worktrees are deleted silently when a session starts or notes change.
 
 Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for affected worktree until fixed or reset with `/note-clear`.
+
 ## State
 
 | Path | Purpose |

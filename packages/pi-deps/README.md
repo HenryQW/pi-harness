@@ -28,6 +28,7 @@ Only Git-root lockfiles are inspected. npm, pnpm, Yarn, and Bun use frozen insta
 Creation returns immediately. The hook validates lockfiles synchronously — conflicting Node lockfiles, `packageManager` mismatches, and unsupported declarations still fail the worktree command fast — then a detached installer runs the frozen installs in the background. Its outcome lands in `<worktree gitdir>/pi-deps/status.json` with command output in the adjacent `install.log`; the file is removed once a Pi session reports it. A Pi session opened in the worktree shows an editor widget while installing, auto-dismisses success after five seconds, and keeps install failures visible (including missing executables). Other tools creating worktrees get the same background install but must consume the status file themselves. Already-present `node_modules`, `.pnp.cjs`, or `.venv` are skipped. Worktrees created with `git worktree add --no-checkout` never run `post-checkout`, so they are not prepared. Because installs finish after creation returns, a consumer may start using a worktree before dependencies are ready.
 
 Dependency installation may execute repository-controlled build and install scripts. Enable only repositories you trust.
+
 ## Supported managers
 
 Only current major versions are supported; older majors are not handled and fall back to the lockfile default below.

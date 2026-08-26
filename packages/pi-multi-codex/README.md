@@ -29,6 +29,7 @@ pi install npm:@henryqw/pi-multi-codex
 | `/codex-switch` | command | Pick an authenticated slot. |
 
 Extension reads `auth.json` and never writes or refreshes credentials. Before the first agent start, a fresh snapshot routes a managed Codex model to the slot with the most seven-day quota. Routing preserves model ID and never changes in-progress work. Footer shows the active slot and fresh seven-day quota. Scoped sessions can switch only to exact scoped aliases; restart or update model scope after adding a slot.
+
 ## State
 
 | Path | Purpose |

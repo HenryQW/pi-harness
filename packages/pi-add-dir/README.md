@@ -25,3 +25,7 @@ pi install npm:@henryqw/pi-add-dir
 Added directories return root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md`, and inject them into later prompts. Skills load from `.pi/skills`, `.agents/skills`, and `.claude/skills`. `/dir-add` reloads when it finds skills; `add_directory` reports when a reload is needed.
 
 Search uses Node filesystem traversal, skips `.git` and `node_modules`, supports basename and relative-path globs, and caps results at 1,000 per call.
+
+## State
+
+Pi session entry `add-dir:state` stores added directories; package-managed, do not edit.
