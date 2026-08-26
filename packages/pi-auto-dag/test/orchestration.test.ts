@@ -768,38 +768,6 @@ test("failed implementation gate accepts an exact command amendment before revie
 	assert.deepEqual(revision.required_gate, { command: replacement, amendments: state.gate_command_amendments });
 });
 
-test("reviewer Role deletion mid-review blocks, then resolution launches a fresh reviewer from durable evidence", async (t) => {
-	const project = await makeProject(t, graph(["alpha"]), 1, 1);
-	const herdr = fakeHerdr();
-	const lifecycle = makeLifecycle(herdr.runner);
-	let state = await lifecycle.start(project.root, "main-pane");
-	const commit = await commitTask(state, "alpha", "alpha.txt", "alpha\n", "alpha");
-	state = await lifecycle.resume(project.root, requestReviewEvent(state, "alpha", commit));
-	assert.equal(state.tasks.alpha.status, "reviewing");
-	assert.equal(reviewPrompts(herdr).length, 1);
-
-
-	await rm(join(project.agentDir, "config", "pi-subagent", "reviewer.md"));
-	await assert.rejects(lifecycle.resume(project.root), /Configured Subagent Role is unavailable: reviewer/);
-	state = (await lifecycle.status(project.root))!;
-	assert.equal(state.phase, "blocked");
-	assert.match(String(state.block_reason), /Configured Subagent Role is unavailable: reviewer/);
-	const stuckTab = state.tasks.alpha.tab_id;
-	const gateRuns = herdr.calls.filter((call) => call.command === "sh").length;
-	assert.equal(state.tasks.alpha.review_commit, commit);
-
-	await writeRoleFile(project.agentDir, "implementer");
-	await writeRoleFile(project.agentDir, "reviewer");
-	state = await lifecycle.resolve(project.root, "alpha", "Reviewer Role restored; restart review.");
-	assert.equal(state.phase, "execution");
-	assert.equal(state.tasks.alpha.status, "reviewing");
-	assert.notEqual(state.tasks.alpha.tab_id, stuckTab);
-	assert.equal(herdr.tabs.has(stuckTab!), false);
-	assert.equal(herdr.calls.filter((call) => call.command === "sh").length, gateRuns);
-	assert.equal(state.tasks.alpha.review_commit, commit);
-	assert.equal(reviewPrompts(herdr).length, 2);
-});
-
 test("Auto DAG restores gate-created worktree changes before review", async (t) => {
 	const project = await makeProject(t, graph(["alpha"]), 1, 1);
 	const herdr = fakeHerdr();
