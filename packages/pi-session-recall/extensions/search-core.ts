@@ -125,10 +125,22 @@ function secureIndexNode(dbPath: string): void {
 	}
 	if (!posix) return;
 	for (const suffix of ["-wal", "-shm"]) {
+		// Same descriptor no-follow safety as the db path: chmodSync(path) would
+		// follow a swapped-in sidecar symlink and retarget its referent's mode.
+		let fd: number | undefined;
 		try {
-			fs.chmodSync(dbPath + suffix, DB_FILE_MODE);
+			fd = fs.openSync(
+				dbPath + suffix,
+				fs.constants.O_RDWR | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0),
+			);
+			const st = fs.fstatSync(fd);
+			if (!st.isFile()) throw new Error(`index ${suffix} sidecar is not a regular file`);
+			if ((st.mode & 0o777) !== DB_FILE_MODE) fs.fchmodSync(fd, DB_FILE_MODE);
 		} catch (err) {
+			// Sidecars are created by SQLite; a missing legacy sidecar stays harmless.
 			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		} finally {
+			if (fd !== undefined) fs.closeSync(fd);
 		}
 	}
 }
@@ -551,7 +563,9 @@ function getBacklog(db: DatabaseSync): number {
 // --- Query sanitize ladder ---
 
 const OPERATOR_RE = /\b(OR|AND|NOT|NEAR)\b/;
-const TOKEN_RE = /"([^"]*)"|(\S+)/g;
+// FTS5 string syntax: `""` inside a quoted phrase is one literal quote.
+const TOKEN_RE = /"((?:[^"]|"")*)"|(\S+)/g;
+const unescapePhrase = (s: string): string => s.replaceAll('""', '"');
 
 interface QueryTerm {
 	text: string;
@@ -568,7 +582,7 @@ function collectQueryTerms(query: string): QueryTerm[] {
 	let afterNearComma = false;
 	for (const match of spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)) {
 		const phrase = match[1];
-		let raw = phrase ?? match[2] ?? "";
+		let raw = phrase === undefined ? match[2] ?? "" : unescapePhrase(phrase);
 		if (phrase === undefined && raw === "(") {
 			depth++;
 			if (pendingNear) {
@@ -597,7 +611,8 @@ function collectQueryTerms(query: string): QueryTerm[] {
 			}
 		}
 		// Unmatched quote delimiters are malformed syntax, not searchable text.
-		const text = phrase ?? raw.replace(/^[.,!?;:()]+|[.,!?;:()]+$/g, "").replace(/"/g, "");
+		// Phrases arrive already unescaped via raw.
+		const text = phrase === undefined ? raw.replace(/^[.,!?;:()]+|[.,!?;:()]+$/g, "").replace(/"/g, "") : raw;
 		if (text) {
 			const operator = phrase === undefined && /^(?:OR|AND|NOT|NEAR)$/.test(text);
 			const nearDistance = nearDepth > 0 && afterNearComma && /^\d+$/.test(text);
@@ -715,6 +730,9 @@ function nearLike(textValue: SQLOutputValue, termsValue: SQLOutputValue, distanc
 	// and the 512-char query cap otherwise admits hundreds of them.
 	const needles = [...new Set((JSON.parse(termsValue) as string[]).map(foldCase))];
 	const text = foldCase(textValue);
+	// Deduplication can leave one needle: presence satisfies any distance,
+	// while the multi-needle span math below demands an impossible negative gap.
+	if (needles.length === 1) return text.includes(needles[0]) ? 1 : 0;
 	const codePointAt = new Uint32Array(text.length + 1);
 	let point = 0;
 	for (let i = 0; i < text.length; point++) {
@@ -835,7 +853,7 @@ function buildBooleanLikeSql(rawQuery: string): LikeSql | null {
 	}
 
 	const tokens: LikeToken[] = [...spaceParensOutsideQuotes(query).matchAll(TOKEN_RE)]
-		.map((m) => (m[1] !== undefined ? { phrase: m[1] } : { word: m[2] ?? "" }))
+		.map((m) => (m[1] !== undefined ? { phrase: unescapePhrase(m[1]) } : { word: m[2] ?? "" }))
 		.filter((t) => (t.phrase !== undefined ? t.phrase !== "" : t.word !== ""));
 	const fail = (): LikeSql | null => tokens.some((token) => token.word === "NEAR") ? { where: "0", params: [] } : null;
 	const sql: string[] = [];
@@ -932,6 +950,9 @@ WHERE rn <= ${ROWS_PER_FILE}
     WHERE parent.path = r.parent_session
       AND parent.path <> r.path
       AND parent.rn <= ${ROWS_PER_FILE}
+      -- Direct mutual cycle (A<->B) would suppress both sides; keep the
+      -- lexicographically smaller path deterministically.
+      AND NOT (parent.parent_session IS r.path AND r.path < parent.path)
   )
 ORDER BY score, rid
 LIMIT ${SCAN_LIMIT}`;
@@ -1052,6 +1073,8 @@ export function searchIndex(
 			                WHERE parent.path = r.parent_session
 			                  AND parent.path <> r.path
 			                  AND parent.rn <= ${ROWS_PER_FILE}
+			                  -- mutual-cycle tie-break: keep the lexicographically smaller path
+			                  AND NOT (parent.parent_session IS r.path AND r.path < parent.path)
 			              )
 			            ORDER BY matches DESC, started_at DESC, path
 			            LIMIT ${SCAN_LIMIT}`).all(...params) as any;
