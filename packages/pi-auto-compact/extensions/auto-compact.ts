@@ -33,21 +33,17 @@ const MIN_COMPACT_THRESHOLD_PERCENT = 25;
 const AUTO_COMPACT_TASK = "pi-auto-compact/autoCompact";
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
-type Config = {
-	autoCompactThreshold: number;
-};
-
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
 }
 
-function readConfig(): Config {
+function readConfig(): number {
 	let value: unknown;
 	try {
 		value = JSON.parse(readFileSync(configPath(), "utf8"));
 	} catch (error) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-			return { autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT };
+			return DEFAULT_COMPACT_THRESHOLD_PERCENT;
 		}
 		throw error;
 	}
@@ -58,13 +54,13 @@ function readConfig(): Config {
 	if (!isValidThreshold(threshold)) {
 		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
 	}
-	return { autoCompactThreshold: threshold };
+	return threshold;
 }
 
-function writeConfig(config: Config): void {
+function writeConfig(threshold: number): void {
 	const file = configPath();
 	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+	writeFileSync(file, `${JSON.stringify({ autoCompactThreshold: threshold }, null, 2)}\n`);
 }
 
 function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
@@ -250,32 +246,28 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			let config: Config;
+			let currentThreshold: number;
 			try {
-				config = readConfig();
+				currentThreshold = readConfig();
 			} catch {
 				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
 				return;
 			}
 
 			const input = await ctx.ui.input(
-				`Auto-compact threshold (%) · current: ${config.autoCompactThreshold}`,
+				`Auto-compact threshold (%) · current: ${currentThreshold}`,
 				"Enter a number at least 25 and below 100",
 			);
 			if (input === undefined) return;
 
 			const threshold = Number(input.trim());
-			if (Number.isFinite(threshold) && threshold < MIN_COMPACT_THRESHOLD_PERCENT) {
-				ctx.ui.notify("Auto-compact threshold below 25% is not meaningful.", "error");
-				return;
-			}
 			if (!isValidThreshold(threshold)) {
 				ctx.ui.notify("Threshold must be at least 25% and below 100%.", "error");
 				return;
 			}
 
 			try {
-				writeConfig({ autoCompactThreshold: threshold });
+				writeConfig(threshold);
 			} catch {
 				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
 				return;
@@ -289,7 +281,7 @@ export default function (pi: ExtensionAPI) {
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
 		try {
-			autoCompactThreshold = readConfig().autoCompactThreshold;
+			autoCompactThreshold = readConfig();
 		} catch {
 			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
