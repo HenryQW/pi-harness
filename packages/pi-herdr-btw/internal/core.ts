@@ -335,20 +335,9 @@ export function isAgentStartReady(
 	}
 }
 
-/**
- * Step 2 of the launch: start pi in the freshly split pane. Herdr prepends
- * the canonical executable for `--kind pi`, so only pi's own args follow `--`.
- */
-export function buildAgentStartArgs(options: HerdrLaunchOptions, paneId: string): string[] {
+/** The child Pi arguments for the Herdr agent-start boundary. */
+export function buildAgentStartArgs(options: HerdrLaunchOptions): string[] {
 	return [
-		"agent",
-		"start",
-		options.paneName,
-		"--kind",
-		"pi",
-		"--pane",
-		paneId,
-		"--",
 		"--no-session",
 		"--model",
 		options.model,

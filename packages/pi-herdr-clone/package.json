@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-clone",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Clone the current Pi conversation path into a new Herdr tab.",
   "keywords": [
     "pi-package",
@@ -28,7 +28,7 @@
     "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "dependencies": {
-    "@henryqw/pi-herdr": "^0.3.0"
+    "@henryqw/pi-herdr": "^0.4.0"
   },
   "repository": {
     "type": "git",

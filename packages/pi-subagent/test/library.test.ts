@@ -222,9 +222,10 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge");
 });
 
-test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retires", async () => {
+test("managed Herdr Subagent host reconciles, retries killed pane contention, prompts, lists, and retires", async () => {
 	const herdr = fakeHerdr();
-	const options = { execute: herdr.execute };
+	const retryDelays: number[] = [];
+	const options = { execute: herdr.execute, delay: async (milliseconds: number) => { retryDelays.push(milliseconds); } };
 	const workspaceId = await managedSubagentWorkspaceId("/main", "main-pane", options);
 	const host = { cwd: "/main", workspaceId };
 	const launch: PiLaunch = { env: { RUN_ID: "run-1" }, args: ["--no-session", "--model", "test/model"] };
@@ -240,7 +241,8 @@ test("managed Herdr Subagent host reconciles, starts, prompts, lists, and retire
 	await promptManagedSubagent(host, name, { instruction: "review" }, options);
 	assert.deepEqual(await listManagedSubagents(host, options), new Map([[pane, "working"]]));
 	assert.ok(herdr.calls.some((args) => args.includes("RUN_ID=run-1")));
-	assert.ok(herdr.calls.some((args) => args[0] === "agent" && args[1] === "start" && args.includes("test/model")));
+	assert.equal(herdr.calls.filter((args) => args[0] === "agent" && args[1] === "start" && args.includes("test/model")).length, 2);
+	assert.deepEqual(retryDelays, [250]);
 	assert.ok(herdr.calls.some((args) => args[0] === "agent" && args[1] === "prompt" && args.at(-1) === JSON.stringify({ instruction: "review" })));
 	await retireManagedSubagentTab(host, root.tabId, options);
 	assert.equal(herdr.tabs.size, 0);
@@ -257,6 +259,7 @@ function valuesAfter(args: string[], flag: string): string[] {
 function fakeHerdr() {
 	let tabNumber = 0;
 	let paneNumber = 0;
+	let agentStartAttempts = 0;
 	const tabs = new Map<string, { tab_id: string; label: string; workspace_id: string }>();
 	const panes = new Map<string, { pane_id: string; tab_id: string; label?: string }>();
 	const agents = new Map<string, string>();
@@ -290,6 +293,9 @@ function fakeHerdr() {
 					? ok({ result: { agent: { pane_id: agents.get(args[2]!) } } })
 					: fail("agent_not_found");
 			case "agent start":
+				if (++agentStartAttempts === 1) {
+					return { code: 1, stdout: "", stderr: JSON.stringify({ error: { code: "agent_pane_busy" } }), killed: true };
+				}
 				agents.set(args[2]!, valueAfter(args, "--pane"));
 				return ok({ result: {} });
 			case "agent prompt":
