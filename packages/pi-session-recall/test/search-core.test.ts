@@ -587,6 +587,100 @@ describe("incompatible index schema", () => {
 		}
 	});
 
+	it("predecessor watermark schema (current search tables, no ctime_ms) fails visibly instead of serving stale hits", () => {
+		const predDir = path.join(tmp, "predecessor-schema");
+		fs.mkdirSync(predDir, { recursive: true });
+		const predDb = path.join(predDir, "index.db");
+		// Immediate predecessor: messages/sessions/FTS already current, so search
+		// would work — but the watermark tables lack ctime_ms, meaning change
+		// detection is broken and every hit is potentially stale.
+		const db = new DatabaseSync(predDb);
+		db.exec(`
+			CREATE TABLE session_files (
+				path TEXT PRIMARY KEY,
+				size INTEGER NOT NULL,
+				mtime_ms INTEGER NOT NULL
+			);
+			CREATE TABLE session_failures (
+				path TEXT PRIMARY KEY,
+				size INTEGER NOT NULL,
+				mtime_ms INTEGER NOT NULL,
+				attempts INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE sessions (
+				path TEXT PRIMARY KEY, cwd TEXT, name TEXT, started_at TEXT,
+				preview TEXT, parent_session TEXT
+			);
+			CREATE TABLE messages (
+				rowid INTEGER PRIMARY KEY, path TEXT NOT NULL, entry_id TEXT NOT NULL,
+				role TEXT NOT NULL, timestamp TEXT, head TEXT NOT NULL, tail TEXT NOT NULL,
+				UNIQUE(path, entry_id)
+			);
+			CREATE VIRTUAL TABLE session_fts USING fts5(
+				head, tail, content='messages', content_rowid='rowid', tokenize='trigram'
+			);
+		`);
+		db.prepare("INSERT INTO messages(path, entry_id, role, timestamp, head, tail) VALUES (?, ?, ?, ?, ?, ?)")
+			.run("/stale.jsonl", "ghost1", "user", null, "stale predecessor ghost marker", "");
+		db.prepare("INSERT INTO session_fts(rowid, head, tail) SELECT rowid, head, tail FROM messages").run();
+		db.close();
+
+		// openDb must reject the schema loudly; without the check, searchIndex
+		// would happily serve the seeded stale hit while watermarks never move.
+		assert.throws(() => searchIndex(predDb, "ghost"), /ctime_ms missing|incompatible/i);
+		assert.throws(() => syncSessions(sessionsDir, predDb), /ctime_ms missing|incompatible/i);
+
+		// No migration/deletion/rewrite: predecessor layout and sentinel data intact.
+		const check = new DatabaseSync(predDb, { readOnly: true });
+		try {
+			const cols = (table: string) => check.prepare(`PRAGMA table_info(${table})`).all().map((c: any) => c.name);
+			assert.deepEqual(cols("session_files"), ["path", "size", "mtime_ms"]);
+			assert.deepEqual(cols("session_failures"), ["path", "size", "mtime_ms", "attempts"]);
+			assert.equal(check.prepare("SELECT head FROM messages WHERE entry_id = 'ghost1'").get()?.head, "stale predecessor ghost marker", "sentinel row must survive");
+		} finally {
+			check.close();
+		}
+	});
+
+	describe("stat fingerprint (size + floored mtime + raw ctime)", () => {
+		it("same-size rewrite with restored mtime is re-indexed via ctime", () => {
+			// Fully isolated tree+DB: initialize, index, then mutate the SAME db so
+			// "old hit removed" actually proves a resync purge.
+			const fpDir = path.join(tmp, "fingerprint-sessions");
+			const fpDb = path.join(tmp, "fingerprint-index.db");
+			fs.mkdirSync(fpDir, { recursive: true });
+			const file = path.join(fpDir, "fp.jsonl");
+			const oldContent = [sessionHeader(), msg("fp1", "user", "ZqOldAlpha confidential payload")].join("\n") + "\n";
+			fs.writeFileSync(file, oldContent);
+			assert.equal(syncSessions(fpDir, fpDb, { cap: 10 }).filesProcessed, 1);
+			assert.equal(searchIndex(fpDb, "ZqOldAlpha").hits.length, 1);
+
+			const stored = new DatabaseSync(fpDb).prepare("SELECT ctime_ms FROM session_files WHERE path = ?").get(file) as any;
+
+			// Same-byte-length redaction; file replacement models a backup restore:
+			// exact original millisecond mtime back, ctime cannot be restored on
+			// POSIX and is reborn on Windows, so the fingerprint must move on both.
+			let newContent = [sessionHeader(), msg("fp1", "user", "ZqRedacted")].join("\n") + "\n";
+			assert.ok(newContent.length <= oldContent.length, "fixture assumption: replacement fits inside original length");
+			newContent = newContent.replace("ZqRedacted", "ZqRedacted" + " ".repeat(oldContent.length - newContent.length));
+			const beforeStat = fs.statSync(file);
+			fs.rmSync(file);
+			fs.writeFileSync(file, newContent);
+			fs.utimesSync(file, beforeStat.atime, beforeStat.mtime);
+
+			const afterStat = fs.statSync(file);
+			assert.equal(afterStat.size, oldContent.length, "fixture must be same byte size");
+			// ponytail: APFS/ext4 utimes can lose 1ms through Date rounding.
+			assert.ok(Math.abs(afterStat.mtimeMs - beforeStat.mtimeMs) <= 1, "fixture must have the original mtime restored");
+			assert.notEqual(afterStat.ctimeMs, Number(stored.ctime_ms), "raw ctime must change for this test to be meaningful");
+
+			const res = syncSessions(fpDir, fpDb, { cap: 10 });
+			assert.equal(res.filesProcessed, 1, "same-size restored-mtime rewrite must not count as unchanged");
+			assert.equal(searchIndex(fpDb, "ZqOldAlpha").hits.length, 0, "old hit purged from the same db by resync");
+			assert.equal(searchIndex(fpDb, "ZqRedacted").hits.length, 1, "new content indexed");
+		});
+	});
+
 	describe("sanitize ladder regressions from review", () => {
 		it("unmatched quote is stripped in the boolean LIKE path too", () => {
 			writeFixture("--quote-like--", "ql.jsonl", [
@@ -1075,6 +1169,24 @@ describe("index permissions (POSIX)", { skip: process.platform === "win32" }, ()
 			assert.equal(modeOf(dir), 0o700, "permissive parent directory must be tightened");
 			assert.equal(fileMode(permissiveDb), 0o600, "permissive database must be tightened");
 			assert.ok(searchIndex(permissiveDb, "tightening keeps indexing functional marker").hits.length === 1);
+		});
+	});
+
+	it("symlinked extension directory pointing outside is rejected before any write", () => {
+		withUmask022(() => {
+			const target = path.join(tmp, "perm-symlink-target");
+			fs.mkdirSync(target, { recursive: true });
+			fs.chmodSync(target, 0o755);
+			const linkDir = path.join(tmp, "perm-symlink-dir");
+			fs.symlinkSync(target, linkDir);
+			const sessions = path.join(tmp, "perm-symlink-sessions");
+			fs.mkdirSync(sessions, { recursive: true });
+			fs.writeFileSync(path.join(sessions, "e.jsonl"), [sessionHeader(), msg("pm5", "user", "symlinked dir rejection marker")].join("\n") + "\n");
+
+			assert.throws(() => syncSessions(sessions, path.join(linkDir, "index.db")), /not a real directory/);
+			assert.ok(fs.lstatSync(linkDir).isSymbolicLink(), "link must remain a link");
+			assert.equal(fs.readdirSync(target).length, 0, "target must stay empty (no db or sidecars)");
+			assert.equal(modeOf(target), 0o755, "target permissions unchanged (no chmod followed the link)");
 		});
 	});
 

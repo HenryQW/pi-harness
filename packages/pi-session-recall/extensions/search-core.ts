@@ -22,10 +22,13 @@ const SCAN_LIMIT = 300;
 const ROWS_PER_FILE = 1;
 
 const SCHEMA_SQL = `
+-- ctime_ms is raw stat.ctimeMs stored as REAL (SQLite REALs are IEEE doubles,
+-- so JS numbers round-trip losslessly): flooring would collapse sub-ms restores.
 CREATE TABLE IF NOT EXISTS session_files (
   path TEXT PRIMARY KEY,
   size INTEGER NOT NULL,
-  mtime_ms INTEGER NOT NULL
+  mtime_ms INTEGER NOT NULL,
+  ctime_ms REAL NOT NULL
 );
 -- Retry markers affect ordering only: unchanged failures move behind fresh work,
 -- but remain eligible on every pass once fresh work is drained.
@@ -33,6 +36,7 @@ CREATE TABLE IF NOT EXISTS session_failures (
   path TEXT PRIMARY KEY,
   size INTEGER NOT NULL,
   mtime_ms INTEGER NOT NULL,
+  ctime_ms REAL NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -95,11 +99,15 @@ const DB_DIR_MODE = 0o700;
  *  behind by older builds are tightened here too. Always closes the fd. */
 function secureIndexNode(dbPath: string): void {
 	const posix = process.platform !== "win32";
-	fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: DB_DIR_MODE });
+	const dir = path.dirname(dbPath);
+	fs.mkdirSync(dir, { recursive: true, mode: DB_DIR_MODE });
+	// O_NOFOLLOW on the db path does not protect parent components; reject a
+	// symlinked extension directory before any chmod or database open follows it.
+	if (!fs.lstatSync(dir).isDirectory()) throw new Error(`index directory is not a real directory: ${dir}`);
 	if (posix) {
 		// Tighten an existing permissive dir (e.g. created under umask 022).
-		if ((fs.statSync(path.dirname(dbPath)).mode & 0o777) !== DB_DIR_MODE) {
-			fs.chmodSync(path.dirname(dbPath), DB_DIR_MODE);
+		if ((fs.statSync(dir).mode & 0o777) !== DB_DIR_MODE) {
+			fs.chmodSync(dir, DB_DIR_MODE);
 		}
 	}
 	let fd: number | undefined;
@@ -140,11 +148,32 @@ function openDb(dbPath: string): DatabaseSync {
 		db.function("ulower", (s: SQLOutputValue): string => typeof s === "string" ? foldCase(s) : "");
 		db.function("unear", nearLike);
 		db.exec(SCHEMA_SQL);
+		// CREATE TABLE IF NOT EXISTS cannot repair a predecessor index whose
+		// tables exist but lack current watermark columns (e.g. no ctime_ms): its
+		// search rows would silently serve stale hits while change detection
+		// breaks. Fail visibly; the index is disposable — remove it to rebuild.
+		for (const [table, required] of [
+			["session_files", ["path", "size", "mtime_ms", "ctime_ms"]],
+			["session_failures", ["path", "size", "mtime_ms", "ctime_ms", "attempts"]],
+		] as const) {
+			const have = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c) => c.name as string));
+			for (const col of required) {
+				if (!have.has(col)) throw new Error(`index schema incompatible: ${table}.${col} missing — delete the index to rebuild`);
+			}
+		}
 	} catch (err) {
 		db.close();
 		throw err;
 	}
 	return db;
+}
+
+/** Replacement/edit-sensitive file fingerprint from one fs.Stats. Size plus a
+ *  floored mtime_ms misses same-length rewrites whose millisecond mtime is
+ *  restored (backup restores, redactions). Exact ctime closes that: POSIX
+ *  utimensat can set mtime but never ctime, so every restore bumps it. */
+function fileFingerprint(stat: fs.Stats): { size: number; mtimeMs: number; ctimeMs: number } {
+	return { size: stat.size, mtimeMs: Math.floor(stat.mtimeMs), ctimeMs: stat.ctimeMs };
 }
 
 // --- Parsing ---
@@ -382,10 +411,10 @@ export function syncSessions(
 	const walk = walkJsonlFiles(sessionsDir);
 	const all = [...walk.files];
 	const watermarks = new Map(
-		(db.prepare("SELECT path, size, mtime_ms FROM session_files").all() as any[]).map((r) => [r.path, r]),
+		(db.prepare("SELECT path, size, mtime_ms, ctime_ms FROM session_files").all() as any[]).map((r) => [r.path, r]),
 	);
 	const failures = new Map(
-		(db.prepare("SELECT path, size, mtime_ms, attempts FROM session_failures").all() as any[]).map((r) => [r.path, r]),
+		(db.prepare("SELECT path, size, mtime_ms, ctime_ms, attempts FROM session_failures").all() as any[]).map((r) => [r.path, r]),
 	);
 	// An incomplete traversal proves nothing about absence: purging here would
 	// wipe healthy sessions over a transient readdir/stat failure. Changed/new
@@ -396,9 +425,9 @@ export function syncSessions(
 
 	const changed: { path: string; stat: fs.Stats }[] = [];
 	for (const [p, stat] of all) {
-		const mtimeMs = Math.floor(stat.mtimeMs);
+		const fp = fileFingerprint(stat);
 		const wm = watermarks.get(p);
-		if (wm && wm.size === stat.size && wm.mtime_ms === mtimeMs) continue;
+		if (wm && wm.size === fp.size && wm.mtime_ms === fp.mtimeMs && wm.ctime_ms === fp.ctimeMs) continue;
 		changed.push({ path: p, stat });
 	}
 
@@ -407,7 +436,9 @@ export function syncSessions(
 	// monopolize a small cap forever.
 	const retryAttempts = (p: string, stat: fs.Stats): number | null => {
 		const f = failures.get(p);
-		return f && f.size === stat.size && f.mtime_ms === Math.floor(stat.mtimeMs) ? (f.attempts ?? 0) : null;
+		if (!f) return null;
+		const fp = fileFingerprint(stat);
+		return f.size === fp.size && f.mtime_ms === fp.mtimeMs && f.ctime_ms === fp.ctimeMs ? (f.attempts ?? 0) : null;
 	};
 	changed.sort((a, b) => {
 		const aRetry = retryAttempts(a.path, a.stat);
@@ -428,10 +459,10 @@ export function syncSessions(
 	const delFile = db.prepare("DELETE FROM session_files WHERE path = ?");
 	const delFailure = db.prepare("DELETE FROM session_failures WHERE path = ?");
 	const upsertFailure = db.prepare(
-		"INSERT INTO session_failures(path, size, mtime_ms, attempts) VALUES (?, ?, ?, 1) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms, attempts=CASE WHEN size=excluded.size AND mtime_ms=excluded.mtime_ms THEN attempts+1 ELSE 1 END",
+		"INSERT INTO session_failures(path, size, mtime_ms, ctime_ms, attempts) VALUES (?, ?, ?, ?, 1) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms, ctime_ms=excluded.ctime_ms, attempts=CASE WHEN size=excluded.size AND mtime_ms=excluded.mtime_ms AND ctime_ms=excluded.ctime_ms THEN attempts+1 ELSE 1 END",
 	);
 	const upsertFile = db.prepare(
-		"INSERT INTO session_files(path, size, mtime_ms) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms",
+		"INSERT INTO session_files(path, size, mtime_ms, ctime_ms) VALUES (?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ms=excluded.mtime_ms, ctime_ms=excluded.ctime_ms",
 	);
 	const upsertSession = db.prepare(
 		`INSERT INTO sessions(path, cwd, name, started_at, preview, parent_session) VALUES (?, ?, ?, ?, ?, ?)
@@ -456,7 +487,10 @@ export function syncSessions(
 				insertMsg.run(filePath, msg.entryId, msg.role, msg.timestamp, msg.head, msg.tail);
 				count++;
 			}
-			upsertFile.run(filePath, stat.size, Math.floor(stat.mtimeMs));
+			{
+				const fp = fileFingerprint(stat);
+				upsertFile.run(filePath, fp.size, fp.mtimeMs, fp.ctimeMs);
+			}
 			delFailure.run(filePath);
 			db.exec("COMMIT");
 			return count;
@@ -483,7 +517,10 @@ export function syncSessions(
 		} catch {
 			// Keep the file retryable, but put this unchanged fingerprint behind
 			// untouched work on the next pass.
-			upsertFailure.run(p, stat.size, Math.floor(stat.mtimeMs));
+			{
+				const fp = fileFingerprint(stat);
+				upsertFailure.run(p, fp.size, fp.mtimeMs, fp.ctimeMs);
+			}
 		}
 	}
 
