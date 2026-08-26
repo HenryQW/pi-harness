@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
-import { getBranchMessages, getWindow, readSession } from "./hydrate.ts";
+import { getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
 const dbPath = () => join(getAgentDir(), "config", "pi-session-recall", "index.db");
@@ -21,14 +21,30 @@ function clamp(n: number | undefined, min: number, max: number, dflt: number): n
 	return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function truncateContent(msgs: WindowMessage[], maxChars: number): WindowMessage[] {
+/** UTF-16 surrogate halves. */
+const isHighSurrogate = (s: string, i: number) => {
+	const u = s.charCodeAt(i);
+	return u >= 0xd800 && u <= 0xdbff;
+};
+const isLowSurrogate = (s: string, i: number) => {
+	const u = s.charCodeAt(i);
+	return u >= 0xdc00 && u <= 0xdfff;
+};
+
+export function truncateContent(msgs: WindowMessage[], maxChars: number): WindowMessage[] {
 	return msgs.map((m) => {
 		if (m.content.length <= maxChars) return m;
-		const head = Math.ceil(maxChars / 2);
+		const c = m.content;
+		let head = Math.ceil(maxChars / 2);
 		const tail = Math.floor(maxChars / 2);
+		// Shift only cut points that land inside an astral character (surrogate
+		// pair); everything else keeps the exact head/tail split.
+		if (head > 0 && isHighSurrogate(c, head - 1) && isLowSurrogate(c, head)) head--;
+		let tailStart = c.length - tail;
+		if (tail > 0 && tailStart > 0 && isHighSurrogate(c, tailStart - 1) && isLowSurrogate(c, tailStart)) tailStart++;
 		return {
 			...m,
-			content: m.content.slice(0, head) + "…" + (tail > 0 ? m.content.slice(-tail) : ""),
+			content: c.slice(0, head) + "…" + (tail > 0 ? c.slice(tailStart) : ""),
 		};
 	});
 }
@@ -300,16 +316,11 @@ export default function (pi: ExtensionAPI): void {
 						}
 					}
 					try {
+						// One bounded snapshot feeds both window and branch bookends.
 						const win = getWindow(hit.path, hit.entryId, 5);
-						let bookends = { start: [], end: [] } as { start: WindowMessage[]; end: WindowMessage[] };
-						try {
-							// Same branch as the anchor — readSession would follow the
-							// file's final leaf and attach unrelated sibling messages.
-							const branchMsgs = getBranchMessages(hit.path, hit.entryId);
-							bookends = { start: branchMsgs.slice(0, 3), end: branchMsgs.slice(-3) };
-						} catch {
-							// Bookends optional.
-						}
+						// Same branch as the anchor — following the file's final leaf
+						// would attach unrelated sibling messages.
+						const bookends = { start: win.branchMessages.slice(0, 3), end: win.branchMessages.slice(-3) };
 						return fitOrTruncate(
 							{
 								...meta,
