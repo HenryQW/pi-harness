@@ -337,7 +337,7 @@ function sumOptional(left: number | undefined, right: number | undefined): numbe
 	return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
 }
 
-function addUsage(left: Usage | undefined, right: Usage | undefined): Usage | undefined {
+export function addUsage(left: Usage | undefined, right: Usage | undefined): Usage | undefined {
 	if (!left) return right;
 	if (!right) return left;
 	const cacheWrite1h = sumOptional(left.cacheWrite1h, right.cacheWrite1h);
@@ -360,7 +360,7 @@ function addUsage(left: Usage | undefined, right: Usage | undefined): Usage | un
 	};
 }
 
-function formatDuration(milliseconds: number): string {
+export function formatDuration(milliseconds: number): string {
 	const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
 	const hours = Math.floor(seconds / 3_600);
 	const minutes = Math.floor(seconds % 3_600 / 60);

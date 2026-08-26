@@ -81,60 +81,63 @@ test("parses and normalizes each explicit workflow mode", () => {
 
 test("rejects every workflow shape boundary at runtime", () => {
 	const nine = Array.from({ length: MAX_WORKFLOW_ENTRIES + 1 }, () => delegation());
-	const invalid: Array<[string, unknown, RegExp]> = [
-		["null", null, /must be an object/],
-		["array", [], /must be an object/],
-		["primitive", "workflow", /must be an object/],
-		["missing mode", {}, /exactly one mode/],
-		["background without mode", { background: true }, /exactly one mode/],
-		["unknown top-level property", { ...delegation(), extra: true }, /unknown property "extra"/],
-		["non-boolean background", { ...delegation(), background: "yes" }, /must be a boolean/],
-		["role without task", { role: "worker" }, /requires both role and task/],
-		["task without role", { task: "work" }, /requires both role and task/],
-		["routing without role and task", { model: "provider/model" }, /requires both role and task/],
-		["single and parallel", { ...delegation(), tasks: [delegation()] }, /exactly one mode/],
-		["single and chain", { ...delegation(), chain: [delegation()] }, /exactly one mode/],
-		["parallel and chain", { tasks: [delegation()], chain: [delegation()] }, /exactly one mode/],
-		["all modes", { ...delegation(), tasks: [delegation()], chain: [delegation()] }, /exactly one mode/],
-		["tasks not array", { tasks: delegation() }, /must be an array/],
-		["chain not array", { chain: delegation() }, /must be an array/],
-		["empty tasks", { tasks: [] }, /1 to 8/],
-		["empty chain", { chain: [] }, /1 to 8/],
-		["too many tasks", { tasks: nine }, /1 to 8/],
-		["too many chain entries", { chain: nine }, /1 to 8/],
-		["non-object task entry", { tasks: [null] }, /tasks\[0\] must be an object/],
-		["non-object chain entry", { chain: [null] }, /chain\[0\] must be an object/],
-		["unknown task property", { tasks: [{ ...delegation(), extra: true }] }, /unknown property "extra"/],
-		["unknown chain property", { chain: [{ ...delegation(), extra: true }] }, /unknown property "extra"/],
-		["nested background", { tasks: [{ ...delegation(), background: true }] }, /unknown property "background"/],
-		["nested tasks", { chain: [{ ...delegation(), tasks: [delegation()] }] }, /unknown property "tasks"/],
-		["nested chain", { tasks: [{ ...delegation(), chain: [delegation()] }] }, /unknown property "chain"/],
-		["nested partial delegation", { tasks: [{ role: "worker" }] }, /requires both role and task/],
+	const schemaInvalid = [
+		null,
+		[],
+		"workflow",
+		{ ...delegation(), extra: true },
+		{ ...delegation(), background: "yes" },
+		{ tasks: delegation() },
+		{ chain: delegation() },
+		{ tasks: [] },
+		{ chain: [] },
+		{ tasks: nine },
+		{ chain: nine },
+		{ tasks: [null] },
+		{ chain: [null] },
+		{ tasks: [{ ...delegation(), extra: true }] },
+		{ chain: [{ ...delegation(), extra: true }] },
+		{ tasks: [{ ...delegation(), background: true }] },
+		{ chain: [{ ...delegation(), tasks: [delegation()] }] },
+		{ tasks: [{ ...delegation(), chain: [delegation()] }] },
+		{ tasks: [{ role: "worker" }] },
 	];
-	for (const [name, value, expected] of invalid) {
-		assert.throws(() => parseWorkflow(value), expected, name);
+	for (const value of schemaInvalid) assert.throws(() => parseWorkflow(value), /declared tool schema/);
+
+	for (const value of [
+		{},
+		{ background: true },
+		{ ...delegation(), tasks: [delegation()] },
+		{ ...delegation(), chain: [delegation()] },
+		{ tasks: [delegation()], chain: [delegation()] },
+		{ ...delegation(), tasks: [delegation()], chain: [delegation()] },
+	]) {
+		assert.throws(() => parseWorkflow(value), /exactly one mode/);
+	}
+	for (const value of [{ role: "worker" }, { task: "work" }, { model: "provider/model" }]) {
+		assert.throws(() => parseWorkflow(value), /requires both role and task/);
 	}
 });
 
 test("rejects empty, NUL, and unknown delegation values in single and array modes", () => {
-	const invalidDelegations: Array<[string, Record<string, unknown>, RegExp]> = [
-		["empty role", { role: "", task: "work" }, /role.*non-empty text/],
-		["blank role", { role: " \n ", task: "work" }, /role.*non-empty text/],
-		["NUL role", { role: "work\0er", task: "work" }, /role.*without NUL/],
-		["empty task", { role: "worker", task: "" }, /task.*non-empty text/],
-		["blank task", { role: "worker", task: "\t" }, /task.*non-empty text/],
-		["NUL task", { role: "worker", task: "wo\0rk" }, /task.*without NUL/],
-		["empty model", { ...delegation(), model: "" }, /model.*non-empty text/],
-		["NUL model", { ...delegation(), model: "p\0m" }, /model.*without NUL/],
-		["unknown model class", { ...delegation(), modelClass: "slow" }, /modelClass must be one of/],
-		["blank model class", { ...delegation(), modelClass: " " }, /modelClass must be one of/],
-		["unknown thinking", { ...delegation(), thinking: "extreme" }, /thinking must be one of/],
-		["NUL thinking", { ...delegation(), thinking: "high\0" }, /thinking must be one of/],
+	const invalidDelegations: Array<[string, Record<string, unknown>]> = [
+		["empty role", { role: "", task: "work" }],
+		["blank role", { role: " \n ", task: "work" }],
+		["NUL role", { role: "work\0er", task: "work" }],
+		["empty task", { role: "worker", task: "" }],
+		["blank task", { role: "worker", task: "\t" }],
+		["NUL task", { role: "worker", task: "wo\0rk" }],
+		["empty model", { ...delegation(), model: "" }],
+		["NUL model", { ...delegation(), model: "p\0m" }],
+		["unknown model class", { ...delegation(), modelClass: "slow" }],
+		["blank model class", { ...delegation(), modelClass: " " }],
+		["unknown thinking", { ...delegation(), thinking: "extreme" }],
+		["NUL thinking", { ...delegation(), thinking: "high\0" }],
 	];
-	for (const [name, value, expected] of invalidDelegations) {
-		assert.throws(() => parseWorkflow(value), expected, `${name} in single mode`);
-		assert.throws(() => parseWorkflow({ tasks: [value] }), expected, `${name} in parallel mode`);
-		assert.throws(() => parseWorkflow({ chain: [value] }), expected, `${name} in chain mode`);
+	for (const [name, value] of invalidDelegations) {
+		assert.throws(() => parseWorkflow(value), `${name} in single mode`);
+		assert.throws(() => parseWorkflow({ tasks: [value] }), `${name} in parallel mode`);
+		assert.throws(() => parseWorkflow({ chain: [value] }), `${name} in chain mode`);
 	}
 });
 

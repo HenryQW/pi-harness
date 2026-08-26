@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import childToolPolicy, { ROLE_TOOL_POLICY_FLAG } from "../extensions/role-tools.ts";
+import childToolPolicy from "../extensions/role-tools.ts";
 import {
 	createRoleLaunch,
 	listManagedSubagents,
@@ -15,6 +15,7 @@ import {
 	reconcileManagedSubagentTab,
 	resolveRoleLaunch,
 	retireManagedSubagentTab,
+	ROLE_TOOL_POLICY_FLAG,
 	startManagedSubagent,
 	type ManagedSubagentExecutor,
 	type PiLaunch,

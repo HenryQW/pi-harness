@@ -38,7 +38,7 @@
   "scripts": {
     "build": "npm run build --workspace @henryqw/pi-herdr --workspace @henryqw/pi-task-models --workspace @henryqw/pi-subagent",
     "postinstall": "npm run build",
-    "test": "npm run build && npm test --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
     "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "pack:check": "npm run pack:check --workspaces --if-present"

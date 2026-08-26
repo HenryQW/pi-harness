@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -8,7 +9,6 @@ import { createHerdrClient, herdrCommandFailure, hasHerdrErrorCode, type HerdrEx
 import {
 	modelReference,
 	orderedProfileRoutes,
-	PROFILE_NAMES,
 	readTaskModelsConfig,
 	resolveConfiguredTaskRoute,
 	resolveTaskModelRoute,
@@ -19,9 +19,11 @@ import {
 } from "@henryqw/pi-task-models";
 
 export {
+	addUsage,
 	capEphemeralSubagentOutput,
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
+	formatDuration,
 	type EphemeralSubagentErrorCode,
 	type EphemeralSubagentExecutor,
 	type EphemeralSubagentExecutorOptions,
@@ -40,8 +42,8 @@ export {
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
-const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge";
+export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
+export const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question,auto_dag_execute,auto_dag_acknowledge";
 
 export interface Role {
 	name: string;
@@ -81,9 +83,6 @@ export interface ResolvedRoleSkills {
 	paths: string[];
 	missing: string[];
 }
-
-export const isProfileName = (value: unknown): value is ProfileName =>
-	typeof value === "string" && (PROFILE_NAMES as readonly string[]).includes(value);
 
 const cleanText = (value: unknown, field: string, source: string): string => {
 	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
@@ -283,7 +282,7 @@ export interface ManagedSubagentTab {
 	paneId: string;
 }
 
-export function launchEnvironmentArgs(launch: PiLaunch): string[] {
+function launchEnvironmentArgs(launch: PiLaunch): string[] {
 	return Object.entries(launch.env).flatMap(([key, value]) => {
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0")) {
 			throw new Error(`Invalid launch environment: ${key}`);

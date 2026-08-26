@@ -19,6 +19,8 @@ const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
 // @henryqw/pi-herdr-btw does not export internal/core.ts from its package root.
 const BTW_CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched|[Mm]ultiple entries matched|matched multiple distinct/i;
+const MEMORY_CHECK = "MEMORY CHECK: Save explicit durable user preferences or corrections immediately. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.";
+const REMEMBER_USAGE = "Usage: /remember <instruction>";
 const MEMORY_DESCRIPTION = `Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.
 
 HOW: Prefer one operations batch for multiple changes or consolidation. A batch applies atomically and checks the character limit only on the final result, so it can remove or shorten stale entries and add new ones in one call. Use action/content/old_text only for one lone change. A successful response finishes the update; do not repeat it.
@@ -100,6 +102,53 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		conflictWarnings: string[];
 		initError?: string;
 	} = { conflictWarnings: [] };
+
+	pi.registerCommand("remember", {
+		description: "Process an instruction into durable memory",
+		handler: async (args, ctx) => {
+			const candidate = args.trim();
+			if (!candidate) {
+				ctx.ui.notify(REMEMBER_USAGE, "warning");
+				return;
+			}
+			if (!ctx.isIdle()) {
+				ctx.ui.notify("Cannot run /remember while the agent is busy.", "warning");
+				return;
+			}
+			if (state.initError) {
+				ctx.ui.notify(`Cannot run /remember: persistent memory is disabled — ${sanitizeName(state.initError)}`, "warning");
+				return;
+			}
+			if (!state.config || !state.stores) {
+				ctx.ui.notify("Cannot run /remember: persistent memory is not initialized.", "warning");
+				return;
+			}
+			try {
+				const loaded = await Promise.all((Object.keys(state.stores) as Target[]).map(async (target) => [target, await state.stores![target].load(target)] as const));
+				const invalid = loaded.filter(([, result]) => result.status);
+				if (invalid.length) {
+					ctx.ui.notify(`Cannot run /remember: live memory state is unreadable or oversized. ${invalid.map(([, result]) => result.conflictWarning).join(" ")}`, "warning");
+					return;
+				}
+				if (!ctx.isIdle()) {
+					ctx.ui.notify("Cannot run /remember while the agent is busy.", "warning");
+					return;
+				}
+				const overLimit = loaded.filter(([target, result]) => {
+					const limit = target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit;
+					return result.entries.join(ENTRY_DELIMITER).length > limit;
+				});
+				if (overLimit.length) {
+					ctx.ui.notify(`Cannot run /remember: live ${overLimit.map(([target]) => target).join(" and ")} entries exceed the configured character limit. Consolidate them before using /remember.`, "warning");
+					return;
+				}
+				const entries = Object.fromEntries(loaded.map(([target, result]) => [target, result.entries]));
+				pi.sendUserMessage(`Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory, choose the correct memory target, semantically compare it with the live entries, and merge or replace overlap instead of adding duplicates. Use the existing memory tool. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`);
+			} catch (error) {
+				ctx.ui.notify(`Cannot run /remember: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			}
+		},
+	});
 
 	pi.on("session_start", async () => {
 		state.config = undefined;
@@ -254,6 +303,6 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		}
 		if (!state.config || !state.stores || !state.snapshotBlocks) return;
 		const blocks = [...state.snapshotBlocks, ...state.conflictWarnings].filter(Boolean).join("\n\n");
-		return { systemPrompt: `${event.systemPrompt}\n\n${blocks}` };
+		return { systemPrompt: `${event.systemPrompt}\n\n${blocks ? `${blocks}\n\n` : ""}${MEMORY_CHECK}` };
 	});
 }

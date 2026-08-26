@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CHILD_EXCLUDED_TOOLS, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 
-export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-const CHILD_EXCLUDED_TOOLS = new Set(["delegate_task", "ask_question", "auto_dag_execute", "auto_dag_acknowledge"]);
+const childExcludedTools = new Set(CHILD_EXCLUDED_TOOLS.split(","));
 
 function configuredTools(value: unknown): string[] | undefined {
 	if (value === undefined) return;
@@ -29,6 +29,6 @@ export default function roleTools(pi: ExtensionAPI): void {
 		const extensionTools = pi.getAllTools()
 			.filter((tool) => !["builtin", "sdk", "inline"].includes(tool.sourceInfo.source))
 			.map((tool) => tool.name);
-		pi.setActiveTools([...new Set([...selected, ...extensionTools])].filter((name) => !CHILD_EXCLUDED_TOOLS.has(name)));
+		pi.setActiveTools([...new Set([...selected, ...extensionTools])].filter((name) => !childExcludedTools.has(name)));
 	});
 }

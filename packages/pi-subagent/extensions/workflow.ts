@@ -1,6 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { PROFILE_NAMES, THINKING_LEVELS, type ProfileName, type ThinkingLevel } from "@henryqw/pi-task-models";
+import { PROFILE_NAMES, THINKING_LEVELS } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 
 export const MAX_WORKFLOW_ENTRIES = 8;
 
@@ -47,78 +48,61 @@ export type ParsedWorkflow =
 	| { mode: "parallel"; background: boolean; delegations: Delegation[] }
 	| { mode: "chain"; background: boolean; delegations: Delegation[] };
 
+type WorkflowInput = Static<typeof WorkflowSchema>;
+
 const DELEGATION_KEYS = ["role", "task", "model", "modelClass", "thinking"] as const;
-const TOP_LEVEL_KEYS = [...DELEGATION_KEYS, "tasks", "chain", "background"] as const;
 
-function record(value: unknown, path: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} must be an object.`);
-	return value as Record<string, unknown>;
+function text(value: string, path: string): string {
+	const normalized = value.trim();
+	if (!normalized || value.includes("\0")) throw new Error(`${path} must be non-empty text without NUL.`);
+	return normalized;
 }
 
-function rejectUnknown(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
-	const unknown = Object.keys(value).find((key) => !allowed.includes(key));
-	if (unknown) throw new Error(`${path} contains unknown property ${JSON.stringify(unknown)}.`);
-}
-
-function text(value: unknown, path: string): string {
-	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
-		throw new Error(`${path} must be non-empty text without NUL.`);
-	}
-	return value.trim();
-}
-
-function enumValue<T extends string>(value: unknown, values: readonly T[], path: string): T {
-	if (typeof value !== "string" || !values.includes(value as T)) {
-		throw new Error(`${path} must be one of: ${values.join(", ")}.`);
-	}
-	return value as T;
-}
-
-function parseDelegation(value: unknown, path: string, extraKeys: readonly string[] = []): Delegation {
-	const input = record(value, path);
-	rejectUnknown(input, [...DELEGATION_KEYS, ...extraKeys], path);
-	if (!Object.hasOwn(input, "role") || !Object.hasOwn(input, "task")) {
-		throw new Error(`${path} requires both role and task.`);
-	}
-	const delegation: Delegation = {
-		role: text(input.role, `${path}.role`),
-		task: text(input.task, `${path}.task`),
+function normalizeDelegation(value: Delegation, path: string): Delegation {
+	return {
+		role: text(value.role, `${path}.role`),
+		task: text(value.task, `${path}.task`),
+		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
+		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
+		...(value.thinking === undefined ? {} : { thinking: value.thinking }),
 	};
-	if (Object.hasOwn(input, "model")) delegation.model = text(input.model, `${path}.model`);
-	if (Object.hasOwn(input, "modelClass")) {
-		delegation.modelClass = enumValue(input.modelClass, PROFILE_NAMES, `${path}.modelClass`) as ProfileName;
-	}
-	if (Object.hasOwn(input, "thinking")) {
-		delegation.thinking = enumValue(input.thinking, THINKING_LEVELS, `${path}.thinking`) as ThinkingLevel;
-	}
-	return delegation;
 }
 
-function parseDelegations(value: unknown, path: "tasks" | "chain"): Delegation[] {
-	if (!Array.isArray(value)) throw new Error(`${path} must be an array.`);
-	if (value.length < 1 || value.length > MAX_WORKFLOW_ENTRIES) {
-		throw new Error(`${path} must contain 1 to ${MAX_WORKFLOW_ENTRIES} delegations.`);
-	}
-	return value.map((delegation, index) => parseDelegation(delegation, `${path}[${index}]`));
+function hasDelegation(value: WorkflowInput): value is WorkflowInput & Delegation {
+	return Object.hasOwn(value, "role") && Object.hasOwn(value, "task");
 }
 
-export function parseWorkflow(value: unknown): ParsedWorkflow {
-	const input = record(value, "workflow");
-	rejectUnknown(input, TOP_LEVEL_KEYS, "workflow");
-	const background = Object.hasOwn(input, "background") ? input.background : false;
-	if (typeof background !== "boolean") throw new Error("workflow.background must be a boolean.");
-
-	const single = DELEGATION_KEYS.some((key) => Object.hasOwn(input, key));
-	const parallel = Object.hasOwn(input, "tasks");
-	const chain = Object.hasOwn(input, "chain");
+function workflowMode(value: unknown): WorkflowMode | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+	const single = DELEGATION_KEYS.some((key) => Object.hasOwn(value, key));
+	const parallel = Object.hasOwn(value, "tasks");
+	const chain = Object.hasOwn(value, "chain");
 	if (Number(single) + Number(parallel) + Number(chain) !== 1) {
 		throw new Error("workflow must select exactly one mode: role and task, tasks, or chain.");
 	}
-	if (single) {
-		return { mode: "single", background, delegations: [parseDelegation(input, "workflow", ["background"])] };
+	return single ? "single" : parallel ? "parallel" : "chain";
+}
+
+export function parseWorkflow(value: unknown): ParsedWorkflow {
+	const mode = workflowMode(value);
+	if (!Check(WorkflowSchema, value)) throw new Error("workflow must match the declared tool schema.");
+	if (!mode) throw new Error("workflow must select exactly one mode: role and task, tasks, or chain.");
+	const input = value;
+	const background = input.background ?? false;
+	if (mode === "single") {
+		if (!hasDelegation(input)) throw new Error("workflow requires both role and task.");
+		return { mode, background, delegations: [normalizeDelegation(input, "workflow")] };
 	}
-	if (parallel) return { mode: "parallel", background, delegations: parseDelegations(input.tasks, "tasks") };
-	return { mode: "chain", background, delegations: parseDelegations(input.chain, "chain") };
+	if (mode === "parallel") return {
+		mode,
+		background,
+		delegations: input.tasks!.map((delegation, index) => normalizeDelegation(delegation, `tasks[${index}]`)),
+	};
+	return {
+		mode,
+		background,
+		delegations: input.chain!.map((delegation, index) => normalizeDelegation(delegation, `chain[${index}]`)),
+	};
 }
 
 export type WorkflowEntry = {

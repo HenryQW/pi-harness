@@ -5,10 +5,15 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import memoryExtension from "../extensions/memory.ts";
+import { ENTRY_DELIMITER, MAX_FILE_BYTES } from "../src/store.ts";
 
 const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 
 type Handler = (event: any, ctx?: any) => unknown | Promise<unknown>;
+type CapturedCommand = {
+	handler(args: string, ctx: any): Promise<void>;
+};
+
 type CapturedTool = {
 	description: string;
 	execute(toolCallId: string, params: Record<string, unknown>): Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
@@ -19,6 +24,80 @@ type CapturedTool = {
 		context: { args: Record<string, unknown> },
 	): { render(width: number): string[] };
 };
+
+test("/remember validates input, rejects busy agents, and sends live state", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-remember-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir, memoryCharLimit: 30, userCharLimit: 22 }));
+		await writeFile(join(memoryDir, "MEMORY.md"), "prefers tea");
+		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
+
+		const handlers = new Map<string, Handler>();
+		let command: CapturedCommand | undefined;
+		const messages: string[] = [];
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand(_name: string, value: CapturedCommand) { command = value; },
+			sendUserMessage(message: string) { messages.push(message); },
+			registerTool() {},
+		} as unknown as ExtensionAPI);
+		const notify: string[] = [];
+		const context = (idle: boolean) => ({
+			isIdle: () => idle,
+			ui: { notify: (message: string) => notify.push(message) },
+		});
+		const remember = command!;
+
+		await remember.handler("   ", context(true));
+		assert.deepEqual(notify, ["Usage: /remember <instruction>"]);
+
+		await remember.handler("save this", context(true));
+		assert.equal(notify[1], "Cannot run /remember: persistent memory is not initialized.");
+		assert.equal(messages.length, 0);
+
+		await handlers.get("session_start")!({ type: "session_start" });
+		await remember.handler("save this", context(false));
+		assert.equal(notify[2], "Cannot run /remember while the agent is busy.");
+		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
+		await remember.handler("save this", context(true));
+		assert.match(notify[3]!, /Cannot run \/remember: live memory state is unreadable or oversized/);
+		assert.equal(messages.length, 0);
+
+		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(31));
+		await remember.handler("save this", context(true));
+		assert.match(notify[4]!, /live memory entries exceed the configured character limit/);
+		assert.equal(messages.length, 0);
+
+		await writeFile(join(memoryDir, "MEMORY.md"), "prefers tea");
+		const userEntries = ["first user", "second user", "third user"];
+		assert.ok(userEntries.every((entry) => entry.length <= 22));
+		assert.ok(userEntries.join(ENTRY_DELIMITER).length > 22);
+		await writeFile(join(memoryDir, "USER.md"), userEntries.join(ENTRY_DELIMITER));
+		await remember.handler("save this", context(true));
+		assert.match(notify[5]!, /live user entries exceed the configured character limit/);
+		assert.equal(messages.length, 0);
+
+		await writeFile(join(memoryDir, "MEMORY.md"), "prefers tea\n§\nnew live entry");
+		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
+		await remember.handler("  prefers \"tea\"\n  ", context(true));
+		assert.equal(messages.length, 1);
+		assert.match(messages[0]!, /semantically compare it with the live entries/);
+		assert.match(messages[0]!, /merge or replace overlap instead of adding duplicates/);
+		assert.match(messages[0]!, /Use the existing memory tool/);
+		assert.ok(messages[0]!.includes(JSON.stringify("prefers \"tea\"")));
+		assert.ok(messages[0]!.includes(JSON.stringify({ memory: ["prefers tea", "new live entry"], user: ["likes concise replies"] })));
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test("extension loads a frozen snapshot, dispatches writes, caps retries, and skips btw children", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-extension-"));
@@ -42,6 +121,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		let tool: CapturedTool | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 
@@ -114,6 +194,35 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 	}
 });
 
+test("injects the memory check even when stores are empty", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-policy-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
+		const handlers = new Map<string, Handler>();
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerTool() {},
+		} as unknown as ExtensionAPI);
+		await handlers.get("session_start")!({ type: "session_start" });
+		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
+		assert.equal(
+			injected.systemPrompt,
+			"base\n\nMEMORY CHECK: Save explicit durable user preferences or corrections immediately. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.",
+		);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("errors carry match previews/usage, snapshots filter frame tokens, backups live outside the memory dir", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-extension-hardening-"));
 	const agentDir = join(root, "agent");
@@ -132,6 +241,7 @@ test("errors carry match previews/usage, snapshots filter frame tokens, backups 
 		let tool: CapturedTool | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" });
@@ -183,6 +293,7 @@ test("concurrent memory tool calls are serialized: both adds survive", async () 
 		let tool: CapturedTool | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" });
@@ -219,6 +330,7 @@ test("init failure disables extension silently; oversized and capped snapshots w
 		let tool: CapturedTool | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		const before = handlers.get("before_agent_start")!;
@@ -243,6 +355,7 @@ test("init failure disables extension silently; oversized and capped snapshots w
 			let tool2: CapturedTool | undefined;
 			memoryExtension({
 				on(event: string, handler: Handler) { handlers2.set(event, handler); },
+				registerCommand() {},
 				registerTool(value: CapturedTool) { tool2 = value; },
 			} as unknown as ExtensionAPI);
 			await handlers2.get("session_start")!({ type: "session_start" });
@@ -280,6 +393,7 @@ test("first oversized entry is omitted with warning; unexpected-file warnings ar
 		let tool: CapturedTool | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" });
@@ -310,6 +424,7 @@ test("memory directory overlapping the backup directory fails init loudly", asyn
 		let tool: CapturedTool | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" });
@@ -342,6 +457,7 @@ test("ambiguous old_text retries hit the consolidation cap; symlinked overlap re
 		let tool: CapturedTool | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" });
@@ -369,6 +485,7 @@ test("ambiguous old_text retries hit the consolidation cap; symlinked overlap re
 			const handlers3 = new Map<string, Handler>();
 			memoryExtension({
 				on(event: string, handler: Handler) { handlers3.set(event, handler); },
+				registerCommand() {},
 				registerTool() {},
 			} as unknown as ExtensionAPI);
 			await handlers3.get("session_start")!({ type: "session_start" });
