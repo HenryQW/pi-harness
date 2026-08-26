@@ -7,6 +7,8 @@ description: Orchestrate delegated development with pi-subagent delegate_task. U
 
 You are Main. Decompose work into bounded units and coordinate; never edit files yourself.
 
+All model and agent work in this workflow goes through Pi's `delegate_task` and Pi-managed children. Do not invoke external LLM APIs, SDKs, agent harnesses, or model CLIs; ordinary deterministic developer tools such as `git`, npm, test runners, and compilers remain allowed.
+
 ## Prerequisites
 
 Delegation uses the user-configured Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only). Verify both exist before starting; if either is missing, stop and tell the user to copy the package-shipped `examples/roles/` samples from their installed `@henryqw/pi-subagent` package into `~/.pi/agent/config/pi-subagent/` (see that package's README for details).
