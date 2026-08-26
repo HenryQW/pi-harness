@@ -268,6 +268,31 @@ describe("lineage + guards", () => {
 		}
 	});
 
+	it("direct mutual parent_session cycle collapses to one deterministic hit in FTS and LIKE", () => {
+		const aPath = path.join(sessionsDir, "--mutual-a--", "a.jsonl");
+		const bPath = path.join(sessionsDir, "--mutual-b--", "b.jsonl");
+		writeFixture("--mutual-a--", "a.jsonl", [
+			sessionHeader({ parentSession: bPath }),
+			msg("ma", "user", "mutualcycle q9 shared between forks"),
+		], 27500);
+		writeFixture("--mutual-b--", "b.jsonl", [
+			sessionHeader({ parentSession: aPath }),
+			msg("mb", "user", "mutualcycle q9 shared between forks"),
+		], 28500);
+
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		// Before this fix both sides suppressed each other → zero hits.
+		for (const [query, label] of [["mutualcycle shared between forks", "FTS"], ["q9", "LIKE"]] as const) {
+			const { hits } = searchIndex(dbPath, query, { limit: 10 });
+			assert.equal(hits.length, 1, `${label}: mutual cycle must keep exactly one hit`);
+			assert.equal(hits[0].path, aPath, `${label}: tie-break must keep the lexicographically smaller path`);
+		}
+
+		fs.rmSync(aPath);
+		fs.rmSync(bPath);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+	});
+
 	it("collapses lineage before the scan limit", () => {
 		const parent = writeFixture("--lineage-cap-parent--", "parent.jsonl", [
 			sessionHeader(),
@@ -504,6 +529,23 @@ describe("lineage + guards", () => {
 		// A missing distinct operand still gates the whole NEAR expression.
 		const gated = searchIndex(dbPath, `NEAR(${Array<string>(100).fill("rs").join(" ")} zebraqqq,10)`);
 		assert.equal(gated.hits.length, 0);
+	});
+
+	it("NEAR(a a,0) treats the deduplicated single needle as presence, not span math", () => {
+		const query = "NEAR(🧪 🧪,0)";
+		writeFixture("--near-single--", "single.jsonl", [
+			sessionHeader(),
+			msg("ns1", "user", "the 🧪 marker stands alone here"),
+		]);
+		syncSessions(sessionsDir, dbPath);
+		// One occurrence cannot satisfy multi-needle gap math at distance 0,
+		// yet FTS5 NEAR over one distinct phrase is pure presence.
+		assert.equal(buildFtsQueryPlan(query).forceLike, true);
+		const { hits } = searchIndex(dbPath, query);
+		assert.equal(hits.length, 1);
+		assert.equal(hits[0].entryId, "ns1");
+		// A missing distinct operand still gates the expression closed.
+		assert.equal(searchIndex(dbPath, "NEAR(🧪 absent🧪,0)").hits.length, 0);
 	});
 
 	it("short-term floor counts Unicode code points, not UTF-16 units (two-emoji term)", () => {
@@ -808,7 +850,47 @@ describe("incompatible index schema", () => {
 			assert.equal(searchIndex(dbPath, '"zqxlaunch').hits.length, 1, 'query with unmatched opening quote must match ordinary text');
 		});
 
-		it("NEAR accepts comma spacing at the distance boundary and rejects unsafe integers", () => {
+		it("doubled quotes stay inside one exact phrase instead of splitting into a false-positive AND", () => {
+		const plain = writeFixture("--quote-pair-false--", "p.jsonl", [
+			sessionHeader(),
+			msg("qp1", "user", "logged alphazq betazq plainly"),
+		], 136000);
+		const literal = writeFixture("--quote-pair-literal--", "l.jsonl", [
+			sessionHeader(),
+			msg("qp2", "user", 'logged alphazq "betazq" verbatim'),
+		], 136100);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		// FTS5 reads `""` as one literal quote: the query stays a single phrase.
+		assert.deepEqual(buildFtsQueryPlan('"alphazq ""betazq"').ftsCandidates[0], '"alphazq ""betazq"');
+		const { hits } = searchIndex(dbPath, '"alphazq ""betazq"', { limit: 10 });
+		assert.deepEqual(hits.map((hit) => hit.path), [literal], "only the literal-quote text may match the escaped phrase");
+		assert.ok(!hits.some((hit) => hit.path === plain), "splitting the phrase would falsely match plain adjacent words");
+		fs.rmSync(plain);
+		fs.rmSync(literal);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+	});
+
+	it("escaped literal quote phrase uses LIKE without broadening separated characters", () => {
+		const query = '"🦊"""';
+		const contiguous = writeFixture("--escaped-quote-short--", "contiguous.jsonl", [
+			sessionHeader(),
+			msg("eq1", "user", 'isolated 🦊" pair'),
+		], 136200);
+		const separated = writeFixture("--escaped-quote-separated--", "separated.jsonl", [
+			sessionHeader(),
+			msg("eq2", "user", 'isolated 🦊 pair then a separate " quote'),
+		], 136300);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+		assert.equal(buildFtsQueryPlan(query).forceLike, true);
+		const { hits } = searchIndex(dbPath, query, { limit: 10 });
+		assert.deepEqual(hits.map((hit) => hit.path), [contiguous], "only contiguous fox-plus-quote text may match");
+		assert.ok(!hits.some((hit) => hit.path === separated), "separated fox and quote must not match the exact phrase");
+		fs.rmSync(contiguous);
+		fs.rmSync(separated);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+	});
+
+	it("NEAR accepts comma spacing at the distance boundary and rejects unsafe integers", () => {
 			const boundary = writeFixture("--near-comma--", "boundary.jsonl", [sessionHeader(), msg("nc1", "user", "Go123ZqRust")], 121000);
 			const outside = writeFixture("--near-comma--", "outside.jsonl", [sessionHeader(), msg("nc2", "user", "Go1234ZqRust")], 121100);
 			syncSessions(sessionsDir, dbPath, { cap: 10 });
@@ -1213,6 +1295,31 @@ describe("index permissions (POSIX)", { skip: process.platform === "win32" }, ()
 				assert.equal(fileMode(legacyDb + "-shm"), 0o600);
 			} finally {
 				holder.close();
+			}
+		});
+	});
+
+	it("symlinked sidecars are rejected without following or retargeting their referent modes", () => {
+		withUmask022(() => {
+			const dir = path.join(tmp, "perm-sidecar-symlink");
+			fs.mkdirSync(dir, { recursive: true });
+			const linkedDb = path.join(dir, "index.db");
+			const targets: string[] = [];
+			for (const suffix of ["-wal", "-shm"]) {
+				const target = path.join(tmp, `sidecar-target${suffix}`);
+				fs.writeFileSync(target, Buffer.alloc(0));
+				fs.chmodSync(target, 0o644);
+				fs.symlinkSync(target, linkedDb + suffix);
+				targets.push(target);
+			}
+			const sessions = path.join(tmp, "perm-sidecar-symlink-sessions");
+			fs.mkdirSync(sessions, { recursive: true });
+			fs.writeFileSync(path.join(sessions, "f.jsonl"), [sessionHeader(), msg("pm6", "user", "sidecar symlink rejection marker")].join("\n") + "\n");
+
+			assert.throws(() => syncSessions(sessions, linkedDb, { cap: 5 }), (err: NodeJS.ErrnoException) => err.code === "ELOOP" || err.code === "EINVAL");
+			for (const target of targets) {
+				assert.equal(fs.statSync(target).size, 0, "link target content untouched");
+				assert.equal(modeOf(target), 0o644, "chmod must not follow the sidecar symlink");
 			}
 		});
 	});
