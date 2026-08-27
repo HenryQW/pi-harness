@@ -24,6 +24,21 @@ test("registers external skills without duplicating Pi's skill prompt", async ()
 	}
 });
 
+test("finds files recursively while skipping dependency and Git trees", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	try {
+		const matches = [join(dir, "src", "main.ts"), join(dir, ".hidden", "config.ts")];
+		for (const file of [...matches, join(dir, "node_modules", "ignored.ts"), join(dir, ".git", "ignored.ts")]) {
+			await mkdir(join(file, ".."), { recursive: true });
+			await writeFile(file, "");
+		}
+
+		assert.deepEqual((await findFiles(dir, "*.ts", 10)).sort(), matches.sort());
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("returns no results when an external directory disappears", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	await rm(dir, { recursive: true, force: true });
