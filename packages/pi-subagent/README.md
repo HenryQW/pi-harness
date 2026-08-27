@@ -64,7 +64,7 @@ delegate_flow({ units: [{ id, task, validation: [{ command, args }] }] })
 delegate_flow_continue({ guidance })
 ```
 
-One memory-only Flow may be active. It creates one Unit Worktree per unit, runs package-shipped Implementers in parallel, then processes settled results in declared order. For each unit, Flow rebases onto the current Flow Main when needed, runs its declared validation, gives a read-only package-shipped Reviewer the exact `{base, tip, patchPath}` packet in that same worktree, and only exact `PASS` permits `git merge --ff-only` of the full reviewed OID. It removes the worktree and branch non-forcibly after integration; a refusal is a completion warning with the retained path.
+One memory-only Flow may be active. It creates one Unit Worktree per unit, runs package-shipped Implementers in parallel, then processes settled results in declared order. For each unit, Flow rebases onto the current Flow Main when needed, runs its declared validation, gives a read-only package-shipped Reviewer the exact `{base, tip, patchPath}` packet in that same worktree, and only exact `PASS` permits `git merge --ff-only` of the full reviewed OID. It removes the worktree and branch non-forcibly after integration; a refusal is a completion warning with the retained worktree path and/or branch.
 
 A rebase that drops all unit commits is a no-op: Flow still validates and reviews it, then skips the merge after `PASS`. Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. Rebase conflicts and infrastructure or merge failures are terminal and retain affected worktrees. Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge gate.
 
