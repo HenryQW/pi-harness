@@ -145,6 +145,8 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 			await dream.handler("", context(true));
 			assert.ok(messages[1]!.includes(JSON.stringify({ memory: ["stable fact"], user: ["likes concise replies"] })));
 			assert.doesNotMatch(messages[1]!, /do not reread those files/);
+			assert.match(messages[1]!, /Read live SYSTEM\.md before semantic deduplication or editing/);
+			assert.doesNotMatch(messages[1]!, /changed since session start/);
 		} finally {
 			process.argv.pop();
 		}
@@ -157,15 +159,26 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		await dream.handler("", context(true));
 		assert.match(messages[3]!, /SYSTEM\.md changed since session start; read live SYSTEM\.md before semantic deduplication or editing/);
 
+		await rm(join(agentDir, "SYSTEM.md"));
+		await dream.handler("", context(true));
+		assert.match(messages[4]!, /SYSTEM\.md is currently absent; do not rely on SYSTEM content in context/);
+		assert.doesNotMatch(messages[4]!, /already in your system context/);
+
+		await symlink(join(root, "missing-SYSTEM.md"), join(agentDir, "SYSTEM.md"));
+		const dispatchedBeforeUnreadableSystem = messages.length;
+		await dream.handler("", context(true));
+		assert.match(notifications[2]!, /Cannot run \/dream: SYSTEM\.md is unreadable/);
+		assert.equal(messages.length, dispatchedBeforeUnreadableSystem);
+
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
 		await dream.handler("", context(true));
-		assert.match(notifications[2]!, /Cannot run \/dream: live memory state is unreadable or oversized/);
+		assert.match(notifications[3]!, /Cannot run \/dream: live memory state is unreadable or oversized/);
 
 		const dispatchedBeforeUnreadableState = messages.length;
 		await rm(join(memoryDir, "MEMORY.md"));
 		await symlink(join(root, "missing-MEMORY.md"), join(memoryDir, "MEMORY.md"));
 		await dream.handler("", context(true));
-		assert.match(notifications[3]!, /Cannot run \/dream: live memory state is unreadable or oversized/);
+		assert.match(notifications[4]!, /Cannot run \/dream: live memory state is unreadable or oversized/);
 		assert.equal(messages.length, dispatchedBeforeUnreadableState);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

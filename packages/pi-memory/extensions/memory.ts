@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -37,10 +37,17 @@ SKIP: trivial/obvious or easily rediscovered information, raw dumps, task progre
 type SystemState = { kind: "present"; content: string } | { kind: "absent" | "unreadable" };
 
 async function loadSystemState(): Promise<SystemState> {
+	const path = join(getAgentDir(), "SYSTEM.md");
 	try {
-		return { kind: "present", content: await readFile(join(getAgentDir(), "SYSTEM.md"), "utf8") };
+		return { kind: "present", content: await readFile(path, "utf8") };
 	} catch (error) {
-		return { kind: error instanceof Error && "code" in error && error.code === "ENOENT" ? "absent" : "unreadable" };
+		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) return { kind: "unreadable" };
+		try {
+			await lstat(path);
+			return { kind: "unreadable" };
+		} catch (statError) {
+			return { kind: statError instanceof Error && "code" in statError && statError.code === "ENOENT" ? "absent" : "unreadable" };
+		}
 	}
 }
 
@@ -182,17 +189,18 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Cannot run /dream: SYSTEM.md is unreadable.", "warning");
 				return;
 			}
-			const unchanged = !process.argv.includes(BTW_CHILD_PAYLOAD_ARG) && !state.snapshotSanitized && state.initialEntries
+			const btwChild = process.argv.includes(BTW_CHILD_PAYLOAD_ARG);
+			const unchanged = !btwChild && !state.snapshotSanitized && state.initialEntries
 				&& entries.memory.join(ENTRY_DELIMITER) === state.initialEntries.memory.join(ENTRY_DELIMITER)
 				&& entries.user.join(ENTRY_DELIMITER) === state.initialEntries.user.join(ENTRY_DELIMITER);
-			const systemUnchanged = system.kind === "present" && state.initialSystem?.kind === "present" && system.content === state.initialSystem.content;
+			const systemUnchanged = !btwChild && system.kind === "present" && state.initialSystem?.kind === "present" && system.content === state.initialSystem.content;
 			const memoryMessage = unchanged
 				? "Use USER PROFILE/MEMORY already in your system context; do not reread those files."
 				: `Live entries by target:\n${JSON.stringify(entries)}`;
 			const systemMessage = systemUnchanged
 				? "Use SYSTEM.md content already in your system context; do not reread SYSTEM.md."
 				: system.kind === "present"
-					? "SYSTEM.md changed since session start; read live SYSTEM.md before semantic deduplication or editing."
+					? `${btwChild ? "Read" : "SYSTEM.md changed since session start; read"} live SYSTEM.md before semantic deduplication or editing.`
 					: "SYSTEM.md is currently absent; do not rely on SYSTEM content in context. Create it only if a promotion needs it.";
 			pi.sendUserMessage(`${DREAM_INSTRUCTION}\n\n${memoryMessage}\n\n${systemMessage}`);
 		},
