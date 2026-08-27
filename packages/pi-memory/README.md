@@ -19,7 +19,7 @@ pi install npm:@henryqw/pi-memory
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/remember <instruction>` | command | Process an instruction into compact durable memory, deduplicating against live entries. |
-| `/promote-memory` | prompt | Promote invariant memory instructions into `SYSTEM.md`. |
+| `/dream` | prompt | Promote invariant memory instructions into `SYSTEM.md`. |
 | `memory` | tool | Add, replace, remove, or batch-edit entries across sessions. |
 
 The extension maintains two markdown stores: `MEMORY.md` (global agent notes shared across all projects — do not store project-specific facts here, those belong in the repo) and `USER.md` (user profile). Each file holds `§`-delimited entries and is size-capped — 8800 characters by default for `MEMORY.md`, 5500 for `USER.md`. When a write would exceed the cap, the tool rejects it and reports current usage; consolidate by issuing one batch that removes or shortens stale entries and adds the new entry together (batch checks the final size only). If the on-disk file exceeds the cap (external edit or sync), the session snapshot omits the overflow and warns instead of injecting it.
