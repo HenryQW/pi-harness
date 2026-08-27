@@ -177,6 +177,7 @@ test("failed terminal delivery releases the prompted-turn latch for retry", asyn
 	const tool = tools.find((candidate) => candidate.name === WORKER_TOOLS.request_review)!;
 
 	await assert.rejects(tool.execute("first", { summary: "finished" }), /acceptance receipt/);
+	await assert.rejects(readFile(action.value.receipt_path), /ENOENT/);
 	const result = await tool.execute("retry", { summary: "finished" });
 
 	assert.equal(result.details.status, "accepted");
@@ -335,27 +336,6 @@ test("worker redelivers an active rejected ticket for lifecycle recovery", async
 
 	assert.equal(result.details.status, "accepted");
 	assert.deepEqual(deliveries, [action.value.event_id, replacement.event_id]);
-});
-
-test("delivery without lifecycle acceptance does not report Sent", async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-handoff-"));
-	t.after(async () => await rm(root, { recursive: true, force: true }));
-	const action = await ticket(root);
-	const tools: Array<{ name: string; execute: Function }> = [];
-	createWorkerExtension({
-		environment: environment(action.path),
-		deliveryAttempts: 1,
-		delay: async () => {},
-		runner: async (command) => command === "git"
-			? { code: 0, stdout: `${HEAD}\n`, stderr: "" }
-			: { code: 0, stdout: "", stderr: "" },
-	})({ on() {}, registerTool(tool: { name: string; execute: Function }) { tools.push(tool); } } as never);
-
-	await assert.rejects(
-		tools.find((tool) => tool.name === WORKER_TOOLS.request_review)!.execute("call", { summary: "finished" }),
-		/acceptance receipt/,
-	);
-	await assert.rejects(readFile(action.value.receipt_path), /ENOENT/);
 });
 
 test("worker requests compaction before high-context submission", async (t) => {

@@ -43,6 +43,11 @@ test("the frozen final check prepares its disposable checkout and opens one exac
 
 	assert.equal(state.phase, "completed");
 	assert.equal(state.tasks["final-check"].status, "completed");
+	const notification = state.notifications[0];
+	assert.equal(state.notifications.length, 1);
+	assert.ok(notification?.kind === "completed");
+	assert.equal(notification.delivered_at, undefined);
+	assert.equal(notification.payload.pr.url, "https://example.test/pr/42");
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	assert.equal(gh.pr?.headRefName, "dag");
 	assert.equal(gh.pr?.baseRefName, "main");
@@ -60,41 +65,9 @@ test("the frozen final check prepares its disposable checkout and opens one exac
 		.map((call) => JSON.parse(call.args[3]))
 		.find((value) => value.type === "auto_dag_review" && value.kind === "final_check");
 	await assertReviewPatch(finalPacket, project.root, state.source_commit, state.integration_head, { type: "integration_head" });
-});
-
-test("completion notification retains the active lock until idempotent acknowledgement", async (t) => {
-	const project = await makeProject(t);
-	const lifecycle = makeLifecycle(combinedRunner(fakeHerdr(), fakeGh(project.root)));
-	await finishInitialRun(project.root, lifecycle);
-	const state = (await lifecycle.status(project.root, RUN_ID))!;
-	const notification = state.notifications[0];
-
-	assert.equal(state.notifications.length, 1);
-	assert.ok(notification?.kind === "completed");
-	assert.equal(notification.delivered_at, undefined);
-	assert.equal(notification.payload.pr.url, "https://example.test/pr/42");
-	assert.equal(await readActiveRunId(project.root), RUN_ID);
 	const acknowledged = await lifecycle.acknowledgeNotification(project.root, notification.event_id);
 	assert.equal(await readActiveRunId(project.root), undefined);
 	assert.deepEqual(await lifecycle.acknowledgeNotification(project.root, notification.event_id), acknowledged);
-});
-
-test("a retained completed run resumes unfinished terminal cleanup without revalidating its PR", async (t) => {
-	const project = await makeProject(t);
-	const gh = fakeGh(project.root);
-	const lifecycle = makeLifecycle(combinedRunner(fakeHerdr(), gh));
-	await finishInitialRun(project.root, lifecycle);
-	const completed = (await lifecycle.status(project.root, RUN_ID))!;
-
-	// Simulate an interrupted cleanup save plus a PR merged after completion.
-	await writeRunState(project.root, replaceTask(completed, "alpha", { ...completed.tasks.alpha, branch_cleanup_done: undefined }), () => "interrupted");
-	gh.state = "MERGED";
-	const ghCalls = gh.calls.length;
-
-	const resumed = await lifecycle.resume(project.root);
-	assert.equal(resumed.phase, "completed");
-	assert.equal(resumed.tasks.alpha.branch_cleanup_done, true);
-	assert.equal(gh.calls.length, ghCalls);
 });
 
 test("a failed terminal cleanup keeps completion durable and retries after the PR merges", async (t) => {
@@ -117,12 +90,14 @@ test("a failed terminal cleanup keeps completion durable and retries after the P
 	await git(project.root, "branch", completed.tasks.alpha.branch!, completed.tasks.alpha.commit!);
 	failBranchDelete = true;
 	gh.state = "MERGED";
+	let ghCalls = gh.calls.length;
 	let resumed = await lifecycle.resume(project.root);
 	assert.equal(resumed.phase, "completed");
 	assert.equal(resumed.cleanup_blocks?.[0]?.operation, "branch");
+	assert.equal(gh.calls.length, ghCalls);
 
 	failBranchDelete = false;
-	const ghCalls = gh.calls.length;
+	ghCalls = gh.calls.length;
 	resumed = await lifecycle.resume(project.root);
 	assert.equal(resumed.phase, "completed");
 	assert.equal(resumed.cleanup_blocks, undefined);
