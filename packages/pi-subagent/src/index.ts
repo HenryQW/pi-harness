@@ -118,7 +118,8 @@ function extensionList(value: unknown, source: string): string[] {
 
 // Built-in Roles required by the bundled pi-subagent-delegated-development Skill;
 // resolved from the package-shipped Markdown relative to this module.
-const BUILTIN_ROLE_FILES = ["implementer.md", "reviewer.md"] as const;
+const BUILTIN_ROLE_NAMES = ["implementer", "reviewer"] as const;
+export type BuiltinRoleName = (typeof BUILTIN_ROLE_NAMES)[number];
 
 /** Single-file Role parser shared by built-in and user roles. */
 function parseRoleFile(file: string, raw: string): Role {
@@ -151,9 +152,12 @@ function readRoleFile(file: string): Role {
 	}
 }
 
+export function loadBuiltinRole(name: BuiltinRoleName): Role {
+	return readRoleFile(fileURLToPath(new URL(`../examples/roles/${name}.md`, import.meta.url)));
+}
+
 function builtinRoles(): Role[] {
-	return BUILTIN_ROLE_FILES.map((name) =>
-		readRoleFile(fileURLToPath(new URL(`../examples/roles/${name}`, import.meta.url))));
+	return BUILTIN_ROLE_NAMES.map(loadBuiltinRole);
 }
 
 /**
