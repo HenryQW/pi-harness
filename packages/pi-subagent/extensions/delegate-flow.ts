@@ -674,9 +674,21 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const merged = await git(["merge", "--no-overwrite-ignore", "--ff-only", evidence.tip], main.root, signal);
 			assertCurrent(flow);
 			if (merged.code !== 0 || merged.killed) {
-				return terminal(flow, "integration", commandFailure(`git merge --no-overwrite-ignore --ff-only ${evidence.tip}`, merged), meter);
-			}
-			main.expectedHead = evidence.tip;
+				const diagnostic = commandFailure(`git merge --no-overwrite-ignore --ff-only ${evidence.tip}`, merged);
+				const previousHead = main.expectedHead;
+				main.expectedHead = evidence.tip;
+				try {
+					await checkMain(main);
+				} catch (error) {
+					main.expectedHead = previousHead;
+					return terminal(flow, "integration", capOutput([
+						diagnostic,
+						"Merge reported failure and Main did not reconcile to the approved clean state.",
+						errorText(error),
+					].join("\n")), meter);
+				}
+				flow.warnings.push(capOutput(`Unit ${JSON.stringify(unit.request.id)} integrated after merge reported failure: ${diagnostic}`));
+			} else main.expectedHead = evidence.tip;
 			flow.completed.push({ id: unit.request.id, noOp: false });
 			try {
 				await checkMain(main);

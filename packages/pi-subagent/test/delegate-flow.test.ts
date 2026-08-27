@@ -622,6 +622,46 @@ test("successful units rebase in place onto exact expected Main, review final OI
 	]);
 });
 
+test("a killed merge reconciles only the exact clean reviewed tip", async (t) => {
+	for (const dirty of [false, true]) {
+		const repo = await repository(t);
+		let approvedTip = "";
+		const app = harness(repo, async (prepared) => {
+			if (childRole(prepared) === "implementer") {
+				await commit(prepared.cwd, "approved.txt", "approved\n");
+				return success();
+			}
+			approvedTip = reviewPacket(prepared.task).tip;
+			return success("PASS");
+		}, (command, args, _options, next) => {
+			if (command !== "git" || args[1] !== "merge") return next();
+			return next().then(async () => {
+				if (dirty) await writeFile(join(repo, "base.txt"), "dirty after merge\n");
+				return { stdout: "", stderr: "post-merge hook stalled", code: -1, killed: true };
+			});
+		});
+
+		const result = await flowTool(app).execute(`killed-merge-${dirty}`, { units: [unit("approved")] }, undefined, undefined, app.ctx);
+
+		assert.equal(git(repo, "rev-parse", "HEAD"), approvedTip);
+		if (dirty) {
+			assert.equal(result.details.outcome, "failed");
+			assert.equal(result.details.failure.classification, "integration");
+			assert.match(result.details.failure.diagnostic, /failed with exit -1 \(killed\)/);
+			assert.match(result.details.failure.diagnostic, /did not reconcile to the approved clean state/);
+			assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["approved"]);
+			assert.notEqual(git(repo, "status", "--porcelain"), "");
+		} else {
+			assert.equal(result.details.outcome, "completed");
+			assert.deepEqual(result.details.completed, [{ id: "approved", noOp: false }]);
+			assert.deepEqual(result.details.retained, []);
+			assert.equal(result.details.warnings.length, 1);
+			assert.match(result.details.warnings[0], /integrated after merge reported failure/);
+			assert.match(result.details.warnings[0], /post-merge hook stalled/);
+		}
+	}
+});
+
 test("pre-rebase dirty proof preserves a later Unit's ignored collision bytes", async (t) => {
 	const repo = await repository(t);
 	await writeFile(join(repo, ".gitignore"), "*.cache\n");

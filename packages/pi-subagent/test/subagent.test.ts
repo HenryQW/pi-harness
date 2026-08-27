@@ -1886,6 +1886,7 @@ test("maximum runtime stops a child that keeps emitting Pi events", async () => 
 		await writeWorkerRole(agentDir);
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `process.on("SIGTERM", () => {});
+console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } }));
 setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } })), 25);`);
 		process.argv[1] = runner;
 		const app = harness({ timeoutPolicy: { idleMs: 80, maxMs: 180 } });

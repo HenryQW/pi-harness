@@ -15,7 +15,7 @@ For each unit, Flow verifies Main, rebases the Unit Worktree in place when earli
 
 If rebase drops all unit commits, `base === tip` is a no-op. Flow validates the state, skips Reviewer and merge, then cleans up ordinarily.
 
-Implementer failure, dirty or missing committed work, validation failure, and reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance })` reruns the package-shipped Implementer in that same Unit Worktree once and derives, validates, and reviews again. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure and fast-forward failures also terminate it. Terminal outcomes retain worktrees for Main to reslice, and earlier integrations are never rolled back.
+Implementer failure, dirty or missing committed work, validation failure, and reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance })` reruns the package-shipped Implementer in that same Unit Worktree once and derives, validates, and reviews again. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures also terminate it. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact reviewed tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice, and earlier integrations are never rolled back.
 
 ## Consequences
 
