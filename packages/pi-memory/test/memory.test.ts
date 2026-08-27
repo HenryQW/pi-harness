@@ -110,6 +110,7 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
 		await mkdir(memoryDir, { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
+		await writeFile(join(agentDir, "SYSTEM.md"), "initial system");
 		await writeFile(join(memoryDir, "MEMORY.md"), "stable fact");
 		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
 
@@ -133,7 +134,9 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		assert.equal(notifications[1], "Cannot run /dream while the agent is busy.");
 
 		await dream.handler("", context(true));
-		assert.match(messages[0]!, /USER PROFILE\/MEMORY and SYSTEM content already in your system context; do not reread those files/);
+		assert.match(messages[0]!, /USER PROFILE\/MEMORY already in your system context; do not reread those files/);
+		assert.match(messages[0]!, /SYSTEM\.md content already in your system context; do not reread SYSTEM\.md/);
+		assert.doesNotMatch(messages[0]!, /read live SYSTEM\.md/);
 		assert.doesNotMatch(messages[0]!, /Live entries by target/);
 		assert.doesNotMatch(messages[0]!, /stable fact/);
 
@@ -149,6 +152,10 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		await writeFile(join(memoryDir, "MEMORY.md"), "changed fact");
 		await dream.handler("", context(true));
 		assert.ok(messages[2]!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
+
+		await writeFile(join(agentDir, "SYSTEM.md"), "updated system");
+		await dream.handler("", context(true));
+		assert.match(messages[3]!, /SYSTEM\.md changed since session start; read live SYSTEM\.md before semantic deduplication or editing/);
 
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
 		await dream.handler("", context(true));
