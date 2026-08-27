@@ -1,11 +1,11 @@
 # `@henryqw/pi-subagent`
 
-Delegate bounded work to isolated Pi child processes. The `delegate_task` tool has one flat contract with exactly one selected mode: single, parallel, or chain. Package authors can reuse the same Role launch policy and active-Pi executor from JavaScript.
+Delegate bounded work to isolated Pi child processes. Generic `delegate_task` selects one flat single, parallel, or chain mode. Package-owned `delegate_flow` runs a fixed Git implementation-and-review Flow. Package authors can reuse the same Role launch policy and active-Pi executor from JavaScript.
 
 ## Why
 
 - **Created for**: Pi users who need to delegate bounded work to isolated child Pi processes without losing Main's context.
-- **Advantage**: One flat `delegate_task` tool contract with single, parallel, and chain modes, plus reusable Role launch policies for package authors.
+- **Advantage**: Generic bounded delegation plus a deterministic package-owned Git Flow, with reusable Role launch policies for package authors.
 
 ## Install
 
@@ -26,7 +26,9 @@ pi install npm:@henryqw/pi-subagent
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `delegate_task` | tool | Delegate bounded work to one or more isolated Pi child processes. |
+| `delegate_task` | tool | Generic bounded delegation in one single, parallel, or chain mode. |
+| `delegate_flow` | tool | Package-owned parallel implementation and declared-order Git integration for 1–8 independent units. |
+| `delegate_flow_continue` | tool | Repair the blocked Flow unit once in its existing worktree. |
 
 ### `delegate_task`
 
@@ -51,7 +53,22 @@ Background workflows are session-scoped. Session shutdown or reload aborts them 
 
 Each delegation resolves its own Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
 
-See [Orchestration, isolation, and the public API](./docs/orchestration.md) for the complete contract and JavaScript composition examples.
+See [Orchestration, isolation, and the public API](./docs/orchestration.md) for generic delegation, Flow behavior, and JavaScript composition examples.
+
+### `delegate_flow`
+
+Use Flow only for independent, commuting Git changes. It accepts 1–8 uniquely identified units, each with a bounded task and direct command/argument validation gate:
+
+```text
+delegate_flow({ units: [{ id, task, validation: [{ command, args }] }] })
+delegate_flow_continue({ guidance })
+```
+
+One memory-only Flow may be active. It creates one Unit Worktree per unit, runs package-shipped Implementers in parallel, then processes settled results in declared order. For each unit, Flow rebases onto the current Flow Main when needed, runs its declared validation, gives a read-only package-shipped Reviewer the exact `{base, tip, patchPath}` packet in that same worktree, and only exact `PASS` permits `git merge --ff-only` of the full reviewed OID. It removes the worktree and branch non-forcibly after integration; a refusal is a completion warning with the retained path.
+
+A rebase that drops all unit commits is a no-op: Flow still validates and reviews it, then skips the merge after `PASS`. Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. Rebase conflicts and infrastructure or merge failures are terminal and retain affected worktrees. Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge gate.
+
+`delegate_task` is unchanged: it remains generic and can use user Roles and its ordinary isolation behavior. Flow always uses the package-shipped Implementer and Reviewer Roles, so user Role overrides do not affect it.
 
 ## Config
 
@@ -90,7 +107,7 @@ An unreadable or invalid Role file fails role loading fast; duplicate role names
 The package ships two working built-in Roles, always available without any configuration:
 
 - `implementer`: focused edits requesting worktree isolation; commits completed scoped changes locally and never pushes or opens PRs without authorization
-- `reviewer`: read-only correctness review from a supplied exact patch file reference (path, bytes, SHA-256) and referenced files; never edits or commits
+- `reviewer`: read-only correctness review of supplied plans/files, or of Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits
 
 A same-named Markdown file in `~/.pi/agent/config/pi-subagent/` explicitly overrides the built-in default.
 
@@ -112,7 +129,7 @@ The package never installs or writes Role configuration. Sample names are not bu
 
 ## Skill
 
-The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is concise Main-side policy for slicing cohesive units, using structured worktree results, and integrating only an exact reviewed commit. It generates each private binary patch once, binds review to the stored file's byte count and SHA-256, serializes integration of parallel work through fresh candidates, and avoids repeating validation after an unchanged fast-forward. One fresh repair is allowed; failures preserve recovery evidence. The Skill adds no runtime code, configuration, or Role installation and preserves the [composition-outside-the-executor](./docs/adr/001-composable-ephemeral-execution.md) boundary.
+The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side policy only. `delegate_flow` owns its fixed Git mechanics; the Skill adds no runtime code, configuration, or Role installation. Generic orchestration remains outside the executor under [ADR 001](./docs/adr/001-composable-ephemeral-execution.md).
 
 A Role owns its base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Ambient extension and Skill discovery is disabled in children. With neither Role tools nor caller tools, Pi defaults remain; caller tools with omitted Role tools snapshot Main's effective active built-ins and install the child policy. Loaded Role/caller extension tools still activate, parent-only tools stay excluded, and unavailable named Skills warn and skip.
 

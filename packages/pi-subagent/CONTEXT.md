@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide validated built-in and user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, a `delegate_task` extension that runs one selected bounded workflow in one or more ephemeral child processes, and a bundled Main-side `pi-subagent-delegated-development` policy Skill. The Skill requires clean committed state, one hash-bound exact patch per review, serial candidate integration for parallel work, and bounded repair/cleanup; it adds no runtime behavior or changes generic fallback.
+Provide validated built-in and user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, generic `delegate_task` delegation, and package-owned `delegate_flow` Git orchestration. `delegate_task` remains a flat bounded delegation tool; Flow uses package-shipped Roles and owns its fixed implementation, validation, exact review, integration, and cleanup mechanics. The bundled Main-side Skill adds no runtime behavior or changes generic fallback.
 
 ## Domain glossary
 
@@ -12,8 +12,11 @@ Provide validated built-in and user Roles, shared task-model Pi launch policy, g
 - **Model Class**: `fast`, `balanced`, `frontier`, or `fav`, assigned in shared task-model settings or overridden by Main from task complexity.
 - **Route**: configured model and thinking-level pair selected from a shared Model Class profile; the primary route precedes its optional fallback.
 - **Delegated Task**: one bounded work request sent from Main to one Role.
-- **Workflow**: orchestration of one or more Delegated Tasks; `delegate_task` owns its selected mode, while library callers compose executor runs in JavaScript.
+- **Workflow**: generic orchestration of one or more Delegated Tasks; `delegate_task` owns its selected mode, while library callers compose executor runs in JavaScript.
 - **Workflow Mode**: `delegate_task` tool policy selected per call for `single`, `parallel`, or `chain` execution; not a Role property or executor API.
+- **Flow**: package-owned, memory-only Git implementation and integration workflow started by `delegate_flow`.
+- **Unit Worktree**: one Flow-owned worktree and branch for one Flow unit; it is reused for rebase, validation, review, and one repair.
+- **Review Packet**: exact `{base, tip, patchPath}` evidence delivered to the Flow Reviewer in the Unit Worktree.
 - **Resource Policy**: Role ownership of base tools, extensions, and Skill names, plus explicit caller additions of tools, extensions, and environment through `createRoleLaunch`.
 - **Pi Launch**: reusable `{env,args}` policy for one Role, resolved model route, explicit caller resources, and project trust.
 - **Ephemeral Executor**: mechanism that receives a prepared Pi Launch, runs one bounded Delegated Task in one no-session child process, and returns its result without discovering resources or composing a Workflow.
@@ -27,6 +30,9 @@ Provide validated built-in and user Roles, shared task-model Pi launch policy, g
 - Role Skill names resolve through Main's effective Pi Skill registry; unavailable names warn and skip without blocking delegation.
 - Main selects Role and may override Model Class and thinking level per task; omitted class uses shared `pi-subagent/delegateTask` assignment, initially `balanced`. Library callers select Role plus their own shared task ID.
 - The selected profile resolves primary then fallback only before launch when a route, model, or thinking level is unavailable. If neither route is usable, launch rejects with `Run /task-models`; a started child is never retried by this package.
-- User Role Markdown files and Subagent JSON config live only in the user `config/pi-subagent` directory; model routes live in shared `config/pi-task-models.json`. Package-shipped built-in Roles (`implementer`, `reviewer`) resolve from the package's own `examples/roles/` Markdown through the same parser; a same-named user file explicitly overrides a built-in.
+- User Role Markdown files and Subagent JSON config live only in the user `config/pi-subagent` directory; model routes live in shared `config/pi-task-models.json`. Package-shipped built-in Roles (`implementer`, `reviewer`) resolve from the package's own `examples/roles/` Markdown through the same parser; a same-named user file explicitly overrides a built-in for generic `delegate_task`. Flow loads its package-shipped Roles directly.
+- `delegate_flow` accepts 1–8 independent units with direct validation commands. One active Flow creates every Unit Worktree before launching package-shipped Implementers in parallel, then processes settled units in declared order. For each unit Flow rebases in place when earlier units advanced Main, validates in that worktree, sends the exact Review Packet to a read-only Reviewer in the same worktree, and integrates only exact `PASS` using `git merge --ff-only` with the full reviewed OID.
+- Flow is memory-only. A no-op (`base === tip`) still validates and reviews, then skips merging after `PASS`. Implementer, validation, or reviewer blocks allow one `delegate_flow_continue({ guidance })` repair in the same worktree; a second block is terminal. Rebase conflicts, evidence/Reviewer/infrastructure failures, and fast-forward failure are terminal and retain worktrees. Cleanup uses non-forced worktree removal and branch deletion; cleanup refusal is a completion warning.
+- Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge validation. It never changes generic `delegate_task` Role resolution, isolation, non-Git fallback, or ordinary direct plan/file review.
 - Numbered Codex routes prefer Main's active account slot and explicitly load the multi-Codex child extension.
 - Generic Herdr host functions validate workspace ownership and provisioning identity while callers retain domain state, prompts, and lifecycle decisions.
