@@ -48,19 +48,25 @@ test("missing config directory still returns validated built-in implementer and 
 	assert.equal(implementer!.name, "implementer");
 	assert.equal(implementer!.isolation, "worktree");
 	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
-	assert.match(implementer!.systemPrompt, /base commit, tip commit, changed files/i);
-	assert.match(implementer!.systemPrompt, /git status --porcelain=v1 --untracked-files=all/);
+	assert.match(implementer!.systemPrompt, /assigned cwd/i);
+	assert.match(implementer!.systemPrompt, /Flow packet declares an authoritative validation gate/i);
+	assert.match(implementer!.systemPrompt, /narrow development checks/i);
+	assert.match(implementer!.systemPrompt, /do not duplicate the declared gate/i);
 	assert.match(implementer!.systemPrompt, /Do not remove the retained worktree or task branch/i);
 	assert.match(implementer!.systemPrompt, /[Nn]ever push or open pull requests without explicit authorization/i);
 	assert.match(implementer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
 
 	assert.equal(reviewer!.name, "reviewer");
 	assert.deepEqual(reviewer!.tools, ["read", "grep", "find", "ls"]);
-	assert.match(reviewer!.systemPrompt, /Refuse review unless.*base commit, tip commit.*patch file reference \(path, byte count, SHA-256\).*review context: `\{type:'child_branch', branch\}` or `\{type:'integration_head'\}`/i);
-	assert.match(reviewer!.systemPrompt, /use only `read`, `grep`, `find`, or `ls`/i);
+	assert.match(reviewer!.systemPrompt, /ordinary delegation.*supplied plan.*explicitly named files.*Do not prepare Git/i);
+	assert.match(reviewer!.systemPrompt, /Flow exact review.*Review Packet `\{base, tip, patchPath\}`.*same assigned Unit Worktree context/i);
+	assert.match(reviewer!.systemPrompt, /exact patch as authoritative/i);
+	assert.match(reviewer!.systemPrompt, /use only.*read.*grep.*find.*ls/i);
 	assert.doesNotMatch(reviewer!.systemPrompt, /\bbash\b/i);
-	assert.match(reviewer!.systemPrompt, /[Nn]ever edit files, commit, push/i);
-	assert.match(reviewer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
+	assert.match(reviewer!.systemPrompt, /Never manage Main, Git, or tests; never edit or write files, commit, push/i);
+	assert.match(reviewer!.systemPrompt, /Emit exactly `PASS` when there are zero findings/i);
+	assert.match(reviewer!.systemPrompt, /Do not emit `PASS` alongside findings/i);
+	assert.doesNotMatch(reviewer!.systemPrompt, /bytes|SHA-256|child_branch/i);
 });
 
 test("a same-named user role overrides a built-in while other roles are added", async (t) => {
