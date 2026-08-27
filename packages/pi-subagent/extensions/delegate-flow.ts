@@ -262,25 +262,40 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		return result;
 	};
 
+	const inspectMainClean = async (root: string, signal?: AbortSignal): Promise<string | undefined> => {
+		const refreshed = await git(["update-index", "--really-refresh"], root, signal);
+		if (signal?.aborted) signal.throwIfAborted();
+		if ((refreshed.code !== 0 && refreshed.code !== 1) || refreshed.killed) {
+			throw new Error(commandFailure("git update-index --really-refresh", refreshed));
+		}
+		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], root, signal);
+		const flags = await requireGit(["ls-files", "-v", "-z"], root, signal);
+		if (flags.split("\0").some((entry) => /^(?:[a-z]|S) /.test(entry))) {
+			return "assume-unchanged or skip-worktree index entries remain";
+		}
+		if (refreshed.code === 1 || status) return status || capOutput(refreshed.stdout || refreshed.stderr || "index refresh reported tracked changes");
+		return;
+	};
+
 	const snapshotMain = async (cwd: string, signal?: AbortSignal): Promise<MainState> => {
 		const root = oneLine(await requireGit(["rev-parse", "--show-toplevel"], cwd, signal), "Main root");
 		const branchRef = oneLine(await requireGit(["symbolic-ref", "--quiet", "HEAD"], root, signal), "Main branch");
 		const expectedHead = oid(await requireGit(["rev-parse", "--verify", "HEAD^{commit}"], root, signal), "Main HEAD");
-		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all"], root, signal);
-		if (status) throw new Error(`delegate_flow requires clean Git Main; status:\n${capOutput(status)}`);
+		const dirty = await inspectMainClean(root, signal);
+		if (dirty) throw new Error(`delegate_flow requires clean Git Main:\n${capOutput(dirty)}`);
 		return { root, branchRef, expectedHead };
 	};
 
 	const checkMain = async (main: MainState, signal?: AbortSignal): Promise<void> => {
 		const branchRef = oneLine(await requireGit(["symbolic-ref", "--quiet", "HEAD"], main.root, signal), "Main branch");
 		const head = oid(await requireGit(["rev-parse", "--verify", "HEAD^{commit}"], main.root, signal), "Main HEAD");
-		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all"], main.root, signal);
-		if (branchRef !== main.branchRef || head !== main.expectedHead || status) {
+		const dirty = await inspectMainClean(main.root, signal);
+		if (branchRef !== main.branchRef || head !== main.expectedHead || dirty) {
 			throw new Error(capOutput([
 				"Git Main changed outside the active Flow.",
 				`Expected branch=${JSON.stringify(main.branchRef)} HEAD=${main.expectedHead} clean=true.`,
-				`Actual branch=${JSON.stringify(branchRef)} HEAD=${head} clean=${!status}.`,
-				status ? `Status:\n${status}` : "",
+				`Actual branch=${JSON.stringify(branchRef)} HEAD=${head} clean=${!dirty}.`,
+				dirty ? `Status:\n${dirty}` : "",
 			].filter(Boolean).join("\n")));
 		}
 	};
@@ -353,9 +368,17 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	const cleanupUnit = async (
 		unit: UnitState,
 		main: MainState,
+		expectedTip: string,
 		signal?: AbortSignal,
 	): Promise<string | undefined> => {
 		try {
+			const branchResult = await git(["symbolic-ref", "--quiet", "HEAD"], unit.worktree.path, signal);
+			const tipResult = await git(["rev-parse", "--verify", "HEAD^{commit}"], unit.worktree.path, signal);
+			const branch = branchResult.code === 0 && !branchResult.killed ? oneLine(branchResult.stdout, "Unit cleanup branch") : "detached or unreadable";
+			const tip = tipResult.code === 0 && !tipResult.killed ? oid(tipResult.stdout, "Unit cleanup HEAD") : "unreadable";
+			if (branch !== `refs/heads/${unit.worktree.branch}` || tip !== expectedTip) {
+				return `Unit Worktree no longer matches approved state: expected branch=${JSON.stringify(`refs/heads/${unit.worktree.branch}`)} HEAD=${expectedTip}; actual branch=${JSON.stringify(branch)} HEAD=${tip}.`;
+			}
 			const inspection = await inspectWorktreeDirty(unit.worktree.path, async (args, cwd) => git(args, cwd, signal));
 			if (inspection.failure) return `Worktree cleanup inspection failed: ${inspection.failure}`;
 			if (inspection.dirty) return "Unit Worktree contains uncommitted or ignored work.";
@@ -543,6 +566,14 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			let tip = inspected.tip!;
 
 			if (unit.base !== main.expectedHead) {
+				const rebaseInspection = await inspectWorktreeDirty(unit.worktree.path, async (args, cwd) => git(args, cwd, signal));
+				assertCurrent(flow);
+				if (rebaseInspection.failure) {
+					return terminal(flow, "infrastructure", `Pre-rebase Unit Worktree inspection failed: ${rebaseInspection.failure}`, meter);
+				}
+				if (rebaseInspection.dirty) {
+					return block(flow, unit, "implementer", "Unit Worktree contains uncommitted or ignored work; rebase was refused.", meter);
+				}
 				const rebased = await git(["rebase", main.expectedHead], unit.worktree.cwd, signal);
 				if (signal?.aborted) {
 					const aborted = await git(["rebase", "--abort"], unit.worktree.cwd);
@@ -639,7 +670,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			} else {
 				flow.completed.push({ id: unit.request.id, noOp: true });
 			}
-			const cleanupWarning = await cleanupUnit(unit, main, flow.sessionController.signal);
+			const cleanupWarning = await cleanupUnit(unit, main, evidence.tip, flow.sessionController.signal);
 			assertCurrent(flow);
 			if (cleanupWarning) flow.warnings.push(`Unit ${JSON.stringify(unit.request.id)} integrated, but cleanup refused: ${cleanupWarning}`);
 			flow.index += 1;
@@ -729,7 +760,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				if (!setupComplete) {
 					for (const unit of [...flow.units].reverse()) {
 						const warning = flow.main
-							? await cleanupUnit(unit, flow.main, flow.sessionController.signal)
+							? await cleanupUnit(unit, flow.main, unit.base, flow.sessionController.signal)
 							: "Main identity was unavailable for cleanup.";
 						if (warning) flow.warnings.push(`Partial setup cleanup refused for ${JSON.stringify(unit.request.id)}: ${warning}`);
 					}

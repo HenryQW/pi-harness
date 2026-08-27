@@ -307,6 +307,64 @@ test("setup preserves a clean registered collision, cleans earlier allocations n
 	assert.equal(children, 0);
 });
 
+test("Main cleanliness rejects hidden tracked bytes at setup and integration while allowing ignored dependencies", async (t) => {
+	const repo = await repository(t);
+	let children = 0;
+	let mutateAtReview = false;
+	const app = harness(repo, async (prepared) => {
+		children++;
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, "approved.txt", "approved\n");
+			return success();
+		}
+		if (mutateAtReview) {
+			git(repo, "update-index", "--skip-worktree", "base.txt");
+			await writeFile(join(repo, "base.txt"), "hidden during review\n");
+		}
+		return success("PASS");
+	});
+
+	for (const [enable, disable] of [
+		[["--assume-unchanged"], ["--no-assume-unchanged"]],
+		[["--skip-worktree"], ["--no-skip-worktree"]],
+	] as const) {
+		git(repo, "update-index", ...enable, "base.txt");
+		const flagged = await flowTool(app).execute(`flag-${enable[0]}`, { units: [unit("flagged")] }, undefined, undefined, app.ctx);
+		assert.equal(flagged.details.failure.classification, "setup");
+		assert.match(flagged.details.failure.diagnostic, /assume-unchanged or skip-worktree/);
+		git(repo, "update-index", ...disable, "base.txt");
+	}
+	git(repo, "update-index", "--assume-unchanged", "base.txt");
+	await writeFile(join(repo, "base.txt"), "hidden before Flow\n");
+	const setup = await flowTool(app).execute("hidden-setup", { units: [unit("setup")] }, undefined, undefined, app.ctx);
+	assert.equal(setup.details.failure.classification, "setup");
+	assert.match(setup.details.failure.diagnostic, /requires clean Git Main/);
+	assert.equal(await readFile(join(repo, "base.txt"), "utf8"), "hidden before Flow\n");
+	assert.equal(children, 0);
+	assert.equal((gitRaw(repo, "worktree", "list", "--porcelain").match(/^worktree /gm) ?? []).length, 1);
+
+	git(repo, "update-index", "--no-assume-unchanged", "base.txt");
+	git(repo, "checkout", "--", "base.txt");
+	await writeFile(join(repo, ".gitignore"), "node_modules/\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore dependencies");
+	await mkdir(join(repo, "node_modules", "dependency"), { recursive: true });
+	await writeFile(join(repo, "node_modules", "dependency", "data"), "ordinary ignored dependency\n");
+	const mainHead = git(repo, "rev-parse", "HEAD");
+	mutateAtReview = true;
+
+	const integration = await flowTool(app).execute("hidden-integration", { units: [unit("integration")] }, undefined, undefined, app.ctx);
+	assert.equal(integration.details.failure.classification, "main");
+	assert.match(integration.details.failure.diagnostic, /changed outside the active Flow/);
+	assert.equal(children, 2);
+	assert.equal(git(repo, "rev-parse", "HEAD"), mainHead);
+	assert.equal(await readFile(join(repo, "base.txt"), "utf8"), "hidden during review\n");
+	assert.equal(await readFile(join(repo, "node_modules", "dependency", "data"), "utf8"), "ordinary ignored dependency\n");
+	assert.deepEqual(integration.details.retained.map(({ id }: any) => id), ["integration"]);
+	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 0);
+	assert.ok(app.execLogs.some(({ command, args }) => command === "git" && args.slice(1).join(" ") === "update-index --really-refresh"));
+});
+
 test("a post-checkout setup failure preserves and reports the attempted allocation", async (t) => {
 	const repo = await repository(t);
 	const hook = join(repo, ".git", "hooks", "post-checkout");
@@ -531,6 +589,37 @@ test("successful units rebase in place onto exact expected Main, review final OI
 		["merge", "--no-overwrite-ignore", "--ff-only", packets[0]!.tip],
 		["merge", "--no-overwrite-ignore", "--ff-only", packets[1]!.tip],
 	]);
+});
+
+test("pre-rebase dirty proof preserves a later Unit's ignored collision bytes", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	let secondPath = "";
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		if (unitId(prepared.task) === "first") {
+			await writeFile(join(prepared.cwd, "collision.cache"), "first tracked bytes\n");
+			git(prepared.cwd, "add", "-f", "collision.cache");
+			git(prepared.cwd, "commit", "-qm", "track collision");
+		} else {
+			secondPath = prepared.cwd;
+			await commit(prepared.cwd, "second.txt", "second commit\n");
+			await writeFile(join(prepared.cwd, "collision.cache"), "second ignored bytes\n");
+		}
+		return success();
+	});
+
+	const result = await flowTool(app).execute("pre-rebase-dirty", { units: [unit("first"), unit("second")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "blocked");
+	assert.equal(result.details.blocked.id, "second");
+	assert.equal(result.details.blocked.classification, "implementer");
+	assert.match(result.details.blocked.diagnostic, /rebase was refused/);
+	assert.equal(await readFile(join(repo, "collision.cache"), "utf8"), "first tracked bytes\n");
+	assert.equal(await readFile(join(secondPath, "collision.cache"), "utf8"), "second ignored bytes\n");
+	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "rebase" && args[2] !== "--abort").length, 0);
+	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["second"]);
 });
 
 test("a rebase-dropped duplicate is still validated and exactly reviewed as a no-op", async (t) => {
@@ -780,6 +869,35 @@ test("cleanup refusal after exact integration preserves ignored work with a boun
 	assert.equal(result.details.retained.length, 1);
 	assert.equal(await readFile(join(result.details.retained[0].path, "result.cache"), "utf8"), "retain\n");
 	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 1);
+});
+
+test("cleanup retains a detached clean commit after approved integration", async (t) => {
+	const repo = await repository(t);
+	let approvedTip = "";
+	let detachedTip = "";
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, "approved.txt", "approved\n");
+			return success();
+		}
+		approvedTip = reviewPacket(prepared.task).tip;
+		git(prepared.cwd, "checkout", "--detach", "-q");
+		await commit(prepared.cwd, "detached.txt", "retain detached bytes\n");
+		detachedTip = git(prepared.cwd, "rev-parse", "HEAD");
+		return success("PASS");
+	});
+
+	const result = await flowTool(app).execute("detached-cleanup", { units: [unit("detached-cleanup")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(git(repo, "rev-parse", "HEAD"), approvedTip);
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /cleanup refused: Unit Worktree no longer matches approved state/);
+	assert.equal(result.details.retained.length, 1);
+	const retained = result.details.retained[0];
+	assert.equal(git(retained.path, "branch", "--show-current"), "");
+	assert.equal(git(retained.path, "rev-parse", "HEAD"), detachedTip);
+	assert.equal(await readFile(join(retained.path, "detached.txt"), "utf8"), "retain detached bytes\n");
+	assert.equal(git(repo, "rev-parse", `refs/heads/${retained.branch}`), approvedTip);
 });
 
 test("external Main mutation fails terminally before review and all retained work is reported", async (t) => {
