@@ -72,14 +72,14 @@ test("finalizeChildWorktree prunes a worktree with zero commits and a clean tree
 	]);
 });
 
-test("finalizeChildWorktree preserves work appearing during its final recheck", async (t) => {
+test("finalizeChildWorktree performs its final root recheck without initialized submodules", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
 	const calls: string[][] = [];
 	let statusCalls = 0;
 	const run: GitRunner = async (args) => {
 		calls.push(args);
 		if (args[0] === "rev-list") return ok("0\n");
-		if (args[0] === "status") return ok(statusCalls++ === 0 ? "" : "?? late.txt\n");
+		if (args[0] === "status") return ok(statusCalls++ < 2 ? "" : "?? late.txt\n");
 		if (args[0] === "symbolic-ref") return ok(`refs/heads/${info.branch}\n`);
 		return ok();
 	};
@@ -87,6 +87,7 @@ test("finalizeChildWorktree preserves work appearing during its final recheck", 
 	const payload = await finalizeChildWorktree(info, run);
 	assert.equal(payload.dirty, true);
 	assert.equal(payload.pruned, false);
+	assert.equal(statusCalls, 3);
 	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
 });
 

@@ -74,10 +74,21 @@ type BlockedState = {
 	diagnostic: string;
 };
 
+type SetupRecovery = {
+	id: string;
+	path: string;
+	branch: string;
+	base: string;
+	diagnostic: string;
+};
+
 type FlowState = {
 	phase: FlowPhase;
+	generation: number;
+	sessionController: AbortController;
 	main?: MainState;
 	units: UnitState[];
+	setupRecoveries: SetupRecovery[];
 	index: number;
 	blocked?: BlockedState;
 	completed: Array<{ id: string; noOp: boolean }>;
@@ -95,6 +106,7 @@ type CommandResult = {
 
 export interface DelegateFlowRuntime {
 	executor: EphemeralSubagentExecutor;
+	getSessionGeneration: () => number;
 	resolveLaunch: (role: Role, ctx: ExtensionContext) => ResolvedRoleLaunch;
 	startWidget: (
 		id: string,
@@ -198,10 +210,24 @@ function reviewerTask(unit: FlowUnitRequest, packet: { base: string; tip: string
 }
 
 /** Registers the two memory-only Flow tools on the package's sole manifest entrypoint. */
-export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRuntime): void {
+export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRuntime): () => void {
 	const implementer = loadBuiltinRole("implementer");
 	const reviewer = loadBuiltinRole("reviewer");
 	let active: FlowState | undefined;
+
+	const assertCurrent = (flow: FlowState): void => {
+		if (flow.generation !== runtime.getSessionGeneration()) {
+			throw new Error("Flow session changed while work was in flight; stale work was retained without review or integration.");
+		}
+	};
+
+	const bindSignal = (flow: FlowState, signal: AbortSignal | undefined): AbortSignal =>
+		signal ? AbortSignal.any([signal, flow.sessionController.signal]) : flow.sessionController.signal;
+
+	const invalidateActive = (): void => {
+		active?.sessionController.abort(new Error("Flow session ended."));
+		active = undefined;
+	};
 
 	const execute = async (
 		command: string,
@@ -264,6 +290,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	};
 
 	const runChild = async (
+		flow: FlowState,
 		role: Role,
 		task: string,
 		cwd: string,
@@ -274,10 +301,12 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	): Promise<ChildSettlement> => {
 		let started = false;
 		try {
+			assertCurrent(flow);
 			const result = await runDelegation(runtime.executor, {
 				signal,
 				onTokens: (tokens) => runtime.updateWidgetTokens(widgetId, tokens),
 				prepare: async () => {
+					assertCurrent(flow);
 					const launch = runtime.resolveLaunch(role, ctx);
 					if (launch.missingSkills.length) {
 						ctx.ui.notify(`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`, "warning");
@@ -287,6 +316,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					return { launch, task, cwd };
 				},
 			});
+			assertCurrent(flow);
 			addMeterUsage(meter, result.usage);
 			if (started) {
 				try {
@@ -320,17 +350,21 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		);
 	};
 
-	const cleanupUnit = async (unit: UnitState, main: MainState): Promise<string | undefined> => {
+	const cleanupUnit = async (
+		unit: UnitState,
+		main: MainState,
+		signal?: AbortSignal,
+	): Promise<string | undefined> => {
 		try {
-			const inspection = await inspectWorktreeDirty(unit.worktree.path);
+			const inspection = await inspectWorktreeDirty(unit.worktree.path, async (args, cwd) => git(args, cwd, signal));
 			if (inspection.failure) return `Worktree cleanup inspection failed: ${inspection.failure}`;
 			if (inspection.dirty) return "Unit Worktree contains uncommitted or ignored work.";
-			const removed = await git(["worktree", "remove", unit.worktree.path], main.root);
+			const removed = await git(["worktree", "remove", unit.worktree.path], main.root, signal);
 			if (removed.code !== 0 || removed.killed) {
 				return commandFailure(`git worktree remove ${JSON.stringify(unit.worktree.path)}`, removed);
 			}
 			unit.worktreeRetained = false;
-			const deleted = await git(["branch", "-d", unit.worktree.branch], main.root);
+			const deleted = await git(["branch", "-d", unit.worktree.branch], main.root, signal);
 			if (deleted.code !== 0 || deleted.killed) {
 				return commandFailure(`git branch -d ${JSON.stringify(unit.worktree.branch)}`, deleted);
 			}
@@ -363,6 +397,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		const details = {
 			outcome,
 			completed: flow.completed,
+			...(flow.setupRecoveries.length ? { setupRecoveries: flow.setupRecoveries } : {}),
 			...(blocked === undefined ? {} : { blocked: {
 				id: blocked.unit.request.id,
 				classification: blocked.classification,
@@ -387,6 +422,10 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			] : []),
 			...(failure ? [`Classification: ${failure.classification}.`, `Diagnostic:\n${failure.diagnostic}`] : []),
 			...(flow.warnings.length ? ["Warnings:", ...flow.warnings.map((warning) => `- ${warning}`)] : []),
+			...(flow.setupRecoveries.length ? [
+				"Attempted allocations preserved without cleanup:",
+				...flow.setupRecoveries.map((recovery) => `- unit=${JSON.stringify(recovery.id)} path=${JSON.stringify(recovery.path)} branch=${JSON.stringify(recovery.branch)} base=${recovery.base}`),
+			] : []),
 			...(retainedUnits.length ? [
 				"Retained Flow state:",
 				...retainedUnits.map((unit) => `- unit=${JSON.stringify(unit.id)} path=${JSON.stringify(unit.path)} branch=${JSON.stringify(unit.branch)} base=${unit.base} worktree=${unit.worktreeRetained} branch_ref=${unit.branchRetained}`),
@@ -483,19 +522,23 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		ctx: ExtensionContext,
 		meter: UsageMeter,
 	) => {
+		assertCurrent(flow);
 		const main = flow.main!;
 		while (flow.index < flow.units.length) {
+			assertCurrent(flow);
 			const unit = flow.units[flow.index]!;
 			try {
 				await checkMain(main, signal);
 			} catch (error) {
 				return terminal(flow, "main", errorText(error), meter);
 			}
+			assertCurrent(flow);
 
 			const implementationFailure = settlementFailure(unit.implementation!);
 			if (implementationFailure) return block(flow, unit, "implementer", implementationFailure, meter);
 
 			let inspected = await inspectUnit(unit, false, signal);
+			assertCurrent(flow);
 			if (inspected.block) return block(flow, unit, "implementer", inspected.block, meter);
 			let tip = inspected.tip!;
 
@@ -511,6 +554,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					}
 					signal.throwIfAborted();
 				}
+				assertCurrent(flow);
 				if (rebased.code !== 0 || rebased.killed) {
 					const aborted = await git(["rebase", "--abort"], unit.worktree.cwd);
 					const diagnostic = [
@@ -521,11 +565,13 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				}
 				unit.base = main.expectedHead;
 				inspected = await inspectUnit(unit, true, signal);
+				assertCurrent(flow);
 				if (inspected.block) return terminal(flow, "infrastructure", inspected.block, meter);
 				tip = inspected.tip!;
 			}
 
 			const validationFailure = await validateUnit(unit, tip, signal);
+			assertCurrent(flow);
 			if (validationFailure) return block(flow, unit, "validation", validationFailure, meter);
 
 			let evidence;
@@ -538,7 +584,9 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			let review: ChildSettlement;
 			let cleanupError: unknown;
 			try {
+				assertCurrent(flow);
 				review = await runChild(
+					flow,
 					reviewer,
 					reviewerTask(unit.request, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
 					unit.worktree.cwd,
@@ -555,6 +603,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				}
 			}
 			if (cleanupError !== undefined) return terminal(flow, "infrastructure", errorText(cleanupError), meter);
+			assertCurrent(flow);
 			if ("error" in review) return terminal(flow, "infrastructure", errorText(review.error), meter);
 			if (review.result.outcome !== "success") {
 				return terminal(flow, "infrastructure", settlementFailure(review)!, meter);
@@ -571,9 +620,11 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			} catch (error) {
 				return terminal(flow, "main", errorText(error), meter);
 			}
+			assertCurrent(flow);
 			const noOp = evidence.base === evidence.tip;
 			if (!noOp) {
 				const merged = await git(["merge", "--ff-only", evidence.tip], main.root, signal);
+				assertCurrent(flow);
 				if (merged.code !== 0 || merged.killed) {
 					return terminal(flow, "integration", commandFailure(`git merge --ff-only ${evidence.tip}`, merged), meter);
 				}
@@ -584,13 +635,16 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				} catch (error) {
 					return terminal(flow, "integration", errorText(error), meter);
 				}
+				assertCurrent(flow);
 			} else {
 				flow.completed.push({ id: unit.request.id, noOp: true });
 			}
-			const cleanupWarning = await cleanupUnit(unit, main);
+			const cleanupWarning = await cleanupUnit(unit, main, flow.sessionController.signal);
+			assertCurrent(flow);
 			if (cleanupWarning) flow.warnings.push(`Unit ${JSON.stringify(unit.request.id)} integrated, but cleanup refused: ${cleanupWarning}`);
 			flow.index += 1;
 		}
+		assertCurrent(flow);
 		if (active === flow) active = undefined;
 		return response(flow, "completed", meter);
 	};
@@ -612,25 +666,35 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			if (active) throw new Error("delegate_flow rejected because another Flow is active.");
 			const flow: FlowState = {
 				phase: "running",
+				generation: runtime.getSessionGeneration(),
+				sessionController: new AbortController(),
 				units: [],
+				setupRecoveries: [],
 				index: 0,
 				completed: [],
 				warnings: [],
 			};
 			active = flow;
+			const operationSignal = bindSignal(flow, signal);
 			const meter: UsageMeter = {};
 			let setupComplete = false;
 			try {
-				flow.main = await snapshotMain(ctx.cwd, signal);
+				flow.main = await snapshotMain(ctx.cwd, operationSignal);
+				assertCurrent(flow);
 				for (const [index, unit] of request.units.entries()) {
-					let setupError: WorktreeSetupError | undefined;
 					let worktree: WorktreeInfo | undefined;
 					try {
-						worktree = await createChildWorktree(ctx.cwd, `${toolCallId}:flow:${index}:${unit.id}`, undefined, signal);
+						worktree = await createChildWorktree(ctx.cwd, `${toolCallId}:flow:${index}:${unit.id}`, undefined, operationSignal);
 					} catch (error) {
 						if (!(error instanceof WorktreeSetupError)) throw error;
-						setupError = error;
-						worktree = error.worktree;
+						flow.setupRecoveries.push({
+							id: unit.id,
+							path: error.worktree.path,
+							branch: error.worktree.branch,
+							base: error.worktree.baseCommit,
+							diagnostic: errorText(error),
+						});
+						throw error;
 					}
 					if (!worktree) throw new Error("Flow Unit Worktrees require a Git repository with a committed HEAD; generic cwd fallback is disabled.");
 					flow.units.push({
@@ -641,27 +705,32 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 						worktreeRetained: true,
 						branchRetained: true,
 					});
-					if (setupError) throw setupError;
+					assertCurrent(flow);
 					if (worktree.baseCommit !== flow.main.expectedHead) throw new Error("Git Main changed while Flow Unit Worktrees were being created.");
 				}
-				await checkMain(flow.main, signal);
+				await checkMain(flow.main, operationSignal);
+				assertCurrent(flow);
 				setupComplete = true;
 				const settlements = await Promise.all(flow.units.map((unit, index) => runChild(
+					flow,
 					implementer,
 					implementerTask(unit.request),
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
-					signal,
+					operationSignal,
 					ctx,
 					meter,
 				)));
 				for (const [index, settlement] of settlements.entries()) flow.units[index]!.implementation = settlement;
-				if (signal?.aborted) signal.throwIfAborted();
-				return await processFlow(flow, toolCallId, signal, ctx, meter);
+				assertCurrent(flow);
+				if (operationSignal.aborted) operationSignal.throwIfAborted();
+				return await processFlow(flow, toolCallId, operationSignal, ctx, meter);
 			} catch (error) {
 				if (!setupComplete) {
 					for (const unit of [...flow.units].reverse()) {
-						const warning = flow.main ? await cleanupUnit(unit, flow.main) : "Main identity was unavailable for cleanup.";
+						const warning = flow.main
+							? await cleanupUnit(unit, flow.main, flow.sessionController.signal)
+							: "Main identity was unavailable for cleanup.";
 						if (warning) flow.warnings.push(`Partial setup cleanup refused for ${JSON.stringify(unit.request.id)}: ${warning}`);
 					}
 				}
@@ -682,6 +751,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const { guidance } = parseDelegateFlowContinue(params);
 			const flow = active;
 			if (!flow) throw new Error("delegate_flow_continue requires an active blocked Flow.");
+			assertCurrent(flow);
 			if (flow.phase !== "blocked" || !flow.blocked) throw new Error("delegate_flow_continue rejected because the active Flow is not blocked.");
 			const blocked = flow.blocked;
 			const unit = blocked.unit;
@@ -689,22 +759,27 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			flow.phase = "running";
 			flow.blocked = undefined;
 			unit.repairUsed = true;
+			const operationSignal = bindSignal(flow, signal);
 			const meter: UsageMeter = {};
 			try {
 				unit.implementation = await runChild(
+					flow,
 					implementer,
 					repairTask(unit.request, blocked, guidance),
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,
-					signal,
+					operationSignal,
 					ctx,
 					meter,
 				);
-				if (signal?.aborted) signal.throwIfAborted();
-				return await processFlow(flow, toolCallId, signal, ctx, meter);
+				assertCurrent(flow);
+				if (operationSignal.aborted) operationSignal.throwIfAborted();
+				return await processFlow(flow, toolCallId, operationSignal, ctx, meter);
 			} catch (error) {
 				return terminal(flow, "infrastructure", errorText(error), meter);
 			}
 		},
 	});
+
+	return invalidateActive;
 }

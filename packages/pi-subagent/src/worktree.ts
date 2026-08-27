@@ -215,18 +215,19 @@ export async function inspectWorktreeDirty(cwd: string, run: GitRunner = runGit)
 	const modules = await run(["submodule", "status", "--recursive"], cwd);
 	if (modules.code !== 0) return { dirty: false, failure: `submodule list exit ${modules.code}: ${modules.stderr.trim().slice(0, 200)}` };
 	const initializedSubmodules = modules.stdout.split("\n").some((line) => line && !line.startsWith("-"));
-	if (!initializedSubmodules) return { dirty: false };
-	const listed = await run(["submodule", "foreach", "--recursive", "--quiet", "printf '%s\\0' \"$PWD\""], cwd);
-	if (listed.code !== 0) return { dirty: false, failure: `submodule list exit ${listed.code}: ${listed.stderr.trim().slice(0, 200)}` };
-	const paths = listed.stdout.split("\0").filter(Boolean);
-	if (!paths.length) return { dirty: false, failure: "initialized submodule paths unavailable" };
-	for (const path of paths) {
-		const nested = await inspectDirty(run, path);
-		if (nested.failure) return { dirty: false, failure: `submodule ${path}: ${nested.failure}` };
-		if (nested.dirty) return { dirty: true };
+	if (initializedSubmodules) {
+		const listed = await run(["submodule", "foreach", "--recursive", "--quiet", "printf '%s\\0' \"$PWD\""], cwd);
+		if (listed.code !== 0) return { dirty: false, failure: `submodule list exit ${listed.code}: ${listed.stderr.trim().slice(0, 200)}` };
+		const paths = listed.stdout.split("\0").filter(Boolean);
+		if (!paths.length) return { dirty: false, failure: "initialized submodule paths unavailable" };
+		for (const path of paths) {
+			const nested = await inspectDirty(run, path);
+			if (nested.failure) return { dirty: false, failure: `submodule ${path}: ${nested.failure}` };
+			if (nested.dirty) return { dirty: true };
+		}
 	}
 	const rechecked = await inspectDirty(run, cwd);
-	return { ...rechecked, initializedSubmodules };
+	return initializedSubmodules ? { ...rechecked, initializedSubmodules } : rechecked;
 }
 
 /**

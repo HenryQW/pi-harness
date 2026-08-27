@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -110,6 +110,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 	const roles: Role[] = [];
 	const execLogs: ExecLog[] = [];
 	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string }> = [];
+	let sessionGeneration = 0;
 	const executor: EphemeralSubagentExecutor = {
 		async run(input) {
 			const prepared = await input.prepare();
@@ -130,8 +131,9 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		hasUI: false,
 		ui: { notify() {} },
 	} as unknown as ExtensionContext;
-	registerDelegateFlow(api, {
+	const invalidateSession = registerDelegateFlow(api, {
 		executor,
+		getSessionGeneration: () => sessionGeneration,
 		resolveLaunch(role) {
 			roles.push(role);
 			return {
@@ -146,7 +148,18 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		updateWidgetTokens() {},
 		finishWidget(id, status) { widgets.push({ action: "finish", id, status }); },
 	});
-	return { tools, childCalls, roles, execLogs, widgets, ctx };
+	return {
+		tools,
+		childCalls,
+		roles,
+		execLogs,
+		widgets,
+		ctx,
+		async emitSession(_event: "session_start" | "session_shutdown") {
+			sessionGeneration += 1;
+			invalidateSession();
+		},
+	};
 }
 
 function flowTool(app: ReturnType<typeof harness>): Tool {
@@ -225,7 +238,7 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/subagent.ts"]);
 });
 
-test("setup is all-or-nothing, non-forced, and never falls back outside committed Git", async (t) => {
+test("setup preserves a clean registered collision, cleans earlier allocations non-forcibly, and never falls back outside committed Git", async (t) => {
 	const repo = await repository(t);
 	let children = 0;
 	const app = harness(repo, () => { children++; return success(); });
@@ -234,8 +247,12 @@ test("setup is all-or-nothing, non-forced, and never falls back outside committe
 	const childName = (id: string) => `subagent-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
 	const firstName = childName(firstId);
 	const secondName = childName(secondId);
+	const collisionPath = join(await realpath(repo), ".worktrees", secondName);
 	const collisionBranch = `pi-subagent/${secondName}`;
-	git(repo, "branch", collisionBranch);
+	await writeFile(join(repo, ".git", "info", "exclude"), "/.worktrees/\n");
+	await mkdir(join(repo, ".worktrees"), { recursive: true });
+	git(repo, "worktree", "add", "-qb", collisionBranch, collisionPath);
+	const collisionHead = git(collisionPath, "rev-parse", "HEAD");
 
 	const partial = await flowTool(app).execute("partial", { units: [unit("one"), unit("two")] }, undefined, undefined, app.ctx);
 	assert.equal(partial.details.outcome, "failed");
@@ -243,21 +260,28 @@ test("setup is all-or-nothing, non-forced, and never falls back outside committe
 	assert.equal(children, 0);
 	assert.equal(existsSync(join(repo, ".worktrees", firstName)), false);
 	assert.equal(git(repo, "branch", "--list", `pi-subagent/${firstName}`), "");
-	assert.match(partial.content[0].text, new RegExp(secondName));
-	assert.equal(partial.details.retained.length, 1);
-	const { path: retainedPath, ...retainedEvidence } = partial.details.retained[0];
-	assert.equal(retainedPath.endsWith(join(".worktrees", secondName)), true);
-	assert.deepEqual(retainedEvidence, {
+	assert.match(partial.content[0].text, /Attempted allocations preserved without cleanup/);
+	assert.deepEqual(partial.details.retained, []);
+	assert.equal(partial.details.setupRecoveries.length, 1);
+	const recovery = partial.details.setupRecoveries[0];
+	assert.deepEqual({ id: recovery.id, path: recovery.path, branch: recovery.branch, base: recovery.base }, {
 		id: "two",
+		path: collisionPath,
 		branch: collisionBranch,
-		base: git(repo, "rev-parse", "HEAD"),
-		worktreeRetained: true,
-		branchRetained: true,
+		base: collisionHead,
 	});
-	assert.match(partial.details.warnings[0], /Partial setup cleanup refused/);
+	assert.match(recovery.diagnostic, /worktree add failed after attempting/);
+	assert.equal(existsSync(collisionPath), true);
+	assert.equal(git(collisionPath, "status", "--porcelain"), "");
+	assert.equal(git(collisionPath, "rev-parse", "HEAD"), collisionHead);
+	assert.equal(git(collisionPath, "branch", "--show-current"), collisionBranch);
+	assert.match(gitRaw(repo, "worktree", "list", "--porcelain"), new RegExp(collisionPath));
+	const cleanupCalls = app.execLogs.filter(({ command, args }) => command === "git" && args.includes("worktree") && args.includes("remove"));
+	assert.ok(cleanupCalls.every(({ args }) => !args.includes("--force")));
+	assert.ok(cleanupCalls.every(({ args }) => !args.includes(collisionPath)));
 	assert.ok(app.execLogs
-		.filter(({ command, args }) => command === "git" && args.includes("worktree") && args.includes("remove"))
-		.every(({ args }) => !args.includes("--force")));
+		.filter(({ command, args }) => command === "git" && args.includes("branch") && args.includes("-d"))
+		.every(({ args }) => !args.includes(collisionBranch)));
 
 	await writeFile(join(repo, "dirty-main.txt"), "dirty\n");
 	const dirty = await flowTool(app).execute("dirty-main", { units: [unit("dirty")] }, undefined, undefined, app.ctx);
@@ -283,7 +307,7 @@ test("setup is all-or-nothing, non-forced, and never falls back outside committe
 	assert.equal(children, 0);
 });
 
-test("a post-checkout setup failure cleans the attempted empty worktree before launching children", async (t) => {
+test("a post-checkout setup failure preserves and reports the attempted allocation", async (t) => {
 	const repo = await repository(t);
 	const hook = join(repo, ".git", "hooks", "post-checkout");
 	await writeFile(hook, "#!/bin/sh\necho post-checkout failed >&2\nexit 1\n");
@@ -298,9 +322,15 @@ test("a post-checkout setup failure cleans the attempted empty worktree before l
 	assert.equal(result.details.failure.classification, "setup");
 	assert.match(result.details.failure.diagnostic, /post-checkout failed/);
 	assert.equal(children, 0);
-	assert.equal(existsSync(join(repo, ".worktrees", name)), false);
-	assert.equal(git(repo, "branch", "--list", `pi-subagent/${name}`), "");
+	const attemptedPath = join(await realpath(repo), ".worktrees", name);
+	assert.equal(existsSync(attemptedPath), true);
+	assert.match(git(repo, "branch", "--list", `pi-subagent/${name}`), new RegExp(name));
 	assert.deepEqual(result.details.retained, []);
+	assert.deepEqual(result.details.setupRecoveries.map(({ id, path, branch }: any) => ({ id, path, branch })), [{
+		id: "unit",
+		path: attemptedPath,
+		branch: `pi-subagent/${name}`,
+	}]);
 });
 
 test("Flow uses package Implementer/Reviewer policy in the caller-relative Unit cwd without nesting", async (t) => {
@@ -410,6 +440,64 @@ test("one continuation repairs the blocked Unit in the same worktree and then cl
 		continueTool(app).execute("again", { guidance: "again" }, undefined, undefined, app.ctx),
 		/requires an active blocked Flow/,
 	);
+});
+
+test("session reload invalidates blocked Flow state without persistence", async (t) => {
+	const repo = await repository(t);
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		const id = unitId(prepared.task);
+		if (id === "blocked") return failure("needs guidance");
+		await commit(prepared.cwd, `${id}.txt`, `${id}\n`);
+		return success();
+	});
+	const blocked = await flowTool(app).execute("reload", { units: [unit("blocked")] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	const retainedPath = blocked.details.blocked.path;
+
+	await app.emitSession("session_shutdown");
+	await app.emitSession("session_start");
+
+	await assert.rejects(
+		continueTool(app).execute("stale-continue", { guidance: "repair" }, undefined, undefined, app.ctx),
+		/requires an active blocked Flow/,
+	);
+	assert.equal(existsSync(retainedPath), true);
+	assert.equal((await flowTool(app).execute("fresh", { units: [unit("fresh")] }, undefined, undefined, app.ctx)).details.outcome, "completed");
+});
+
+test("an Implementer settling after session reload cannot reach review or integration", async (t) => {
+	const repo = await repository(t);
+	const base = git(repo, "rev-parse", "HEAD");
+	const gate = deferred<void>();
+	let started = false;
+	let reviewers = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") {
+			reviewers++;
+			return success("PASS");
+		}
+		started = true;
+		await gate.promise;
+		await commit(prepared.cwd, "stale.txt", "stale\n");
+		return success();
+	});
+	const running = flowTool(app).execute("stale", { units: [unit("stale")] }, undefined, undefined, app.ctx);
+	await waitFor(() => started);
+
+	await app.emitSession("session_shutdown");
+	await app.emitSession("session_start");
+	gate.resolve();
+	const result = await running;
+
+	assert.equal(result.details.outcome, "failed");
+	assert.equal(result.details.failure.classification, "infrastructure");
+	assert.match(result.details.failure.diagnostic, /session changed while work was in flight/);
+	assert.equal(reviewers, 0);
+	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 0);
+	assert.equal(git(repo, "rev-parse", "HEAD"), base);
+	assert.equal(result.details.retained.length, 1);
+	assert.equal(await readFile(join(result.details.retained[0].path, "stale.txt"), "utf8"), "stale\n");
 });
 
 test("successful units rebase in place onto exact expected Main, review final OIDs, and ff-only integrate", async (t) => {

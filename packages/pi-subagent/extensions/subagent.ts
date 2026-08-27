@@ -226,6 +226,7 @@ export default function subagentExtension(
 	// Bumped by session_start and session_shutdown; background tasks may only
 	// deliver into the exact session that launched them.
 	let sessionEpoch = 0;
+	let invalidateDelegateFlow = () => {};
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
@@ -304,6 +305,7 @@ export default function subagentExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionEpoch += 1;
+		invalidateDelegateFlow();
 		latestCtx = ctx;
 		ensureWidget(ctx);
 		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
@@ -318,6 +320,7 @@ export default function subagentExtension(
 		// Invalidate ordinary outcomes, abort children, then let preserved isolated
 		// work report into the outgoing session before Pi tears it down.
 		sessionEpoch += 1;
+		invalidateDelegateFlow();
 		const tasks = [...backgroundTasks.values()];
 		for (const { controller } of tasks) controller.abort();
 		await Promise.allSettled(tasks.map(({ settled }) => settled));
@@ -399,8 +402,9 @@ export default function subagentExtension(
 		}
 	};
 
-	registerDelegateFlow(pi, {
+	invalidateDelegateFlow = registerDelegateFlow(pi, {
 		executor,
+		getSessionGeneration: () => sessionEpoch,
 		resolveLaunch: (role, ctx) => {
 			const launchCtx = latestCtx ?? ctx;
 			return createRoleLaunch(pi, launchCtx, {
