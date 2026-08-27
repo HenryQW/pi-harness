@@ -71,9 +71,9 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 
 			const choices = suppliedOptions.map((option, index) => {
 				const label = index === 0 ? withRecommended(option.label) : option.label;
-				return `${label}${option.description ? ` — ${option.description}` : ""}`;
+				return `${index + 1}. ${label}${option.description ? ` — ${option.description}` : ""}`;
 			});
-			choices.push(CUSTOM_OPTION_LABEL);
+			choices.push(`${choices.length + 1}. ${CUSTOM_OPTION_LABEL}`);
 
 			const selected = await ctx.ui.select(question, choices, { signal });
 			const selectedIndex = selected === undefined ? -1 : choices.indexOf(selected);

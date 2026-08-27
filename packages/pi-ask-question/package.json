@@ -19,8 +19,9 @@
     "LICENSE"
   ],
   "scripts": {
+    "test": "node --test test/*.test.ts",
     "test:manual": "pi --no-extensions -e ./extensions/ask-question.ts --tools ask_question --no-session \"We need storage for a small team app. Before making changes, ask me to choose storage.\"",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/ask-question.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/ask-question.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
