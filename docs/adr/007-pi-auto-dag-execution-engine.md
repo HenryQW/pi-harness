@@ -1,6 +1,6 @@
 # 007. pi-auto-dag Execution Engine
 
-- **Status:** accepted
+- **Status:** retired
 - **Date:** 2026-08-24
 
 ## Context

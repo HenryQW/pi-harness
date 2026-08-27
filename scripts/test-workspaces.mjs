@@ -25,7 +25,7 @@ const workspaces = Object.entries(manifests)
 
 if (!workspaces.length) throw new Error("No workspace test scripts found.");
 
-const prioritizedWorkspaces = ["@henryqw/pi-auto-dag", "@henryqw/pi-subagent"];
+const prioritizedWorkspaces = ["@henryqw/pi-subagent"];
 const scheduledWorkspaces = [
 	...prioritizedWorkspaces.filter((workspace) => workspaces.includes(workspace)),
 	...workspaces.filter((workspace) => !prioritizedWorkspaces.includes(workspace)),

@@ -30,8 +30,6 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 				"pi-herdr-rename/rename": "fast",
 				"pi-auto-compact/autoCompact": "fast",
 				"pi-subagent/delegateTask": "balanced",
-				"pi-auto-dag/implement": "balanced",
-				"pi-auto-dag/review": "frontier",
 			},
 		});
 
@@ -103,8 +101,8 @@ test("resolves configured task routes through assignment, profile, and fallback"
 		} as any;
 
 		assert.throws(
-			() => resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir),
-			/Task pi-auto-dag\/implement profile balanced is not configured\. Run \/task-models\./,
+			() => resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir),
+			/Task pi-subagent\/delegateTask profile balanced is not configured\. Run \/task-models\./,
 		);
 		const file = join(dir, "config", "pi-task-models.json");
 		mkdirSync(join(dir, "config"), { recursive: true });
@@ -115,13 +113,13 @@ test("resolves configured task routes through assignment, profile, and fallback"
 					fallback: { model: "provider/fallback", thinkingLevel: "off" },
 				},
 			},
-			tasks: { "pi-auto-dag/implement": "frontier" },
+			tasks: { "pi-subagent/delegateTask": "frontier" },
 		}));
-		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-auto-dag/implement", dir), [
+		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-subagent/delegateTask", dir), [
 			{ model: primary, thinkingLevel: "off" },
 			{ model: fallback, thinkingLevel: "off" },
 		]);
-		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir), {
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir), {
 			model: primary,
 			thinkingLevel: "off",
 		});
@@ -133,13 +131,13 @@ test("resolves configured task routes through assignment, profile, and fallback"
 					fallback: { model: "provider/fallback", thinkingLevel: "off" },
 				},
 			},
-			tasks: { "pi-auto-dag/implement": "frontier" },
+			tasks: { "pi-subagent/delegateTask": "frontier" },
 		}));
-		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir), {
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir), {
 			model: fallback,
 			thinkingLevel: "off",
 		});
-		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-auto-dag/implement", dir), [
+		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-subagent/delegateTask", dir), [
 			{ model: fallback, thinkingLevel: "off" },
 		]);
 		assert.throws(
@@ -149,15 +147,15 @@ test("resolves configured task routes through assignment, profile, and fallback"
 
 		writeFileSync(file, JSON.stringify({
 			profiles: { frontier: { primary: { model: "provider/unavailable", thinkingLevel: "off" } } },
-			tasks: { "pi-auto-dag/implement": "frontier" },
+			tasks: { "pi-subagent/delegateTask": "frontier" },
 		}));
 		assert.throws(
-			() => resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir),
-			/Task pi-auto-dag\/implement profile frontier has no available route\. Run \/task-models\./,
+			() => resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir),
+			/Task pi-subagent\/delegateTask profile frontier has no available route\. Run \/task-models\./,
 		);
 		writeFileSync(file, "{ not json\n");
 		assert.throws(
-			() => resolveConfiguredTaskRoute(ctx, "pi-auto-dag/implement", dir),
+			() => resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir),
 			/Couldn't read task model config\. Run \/task-models\./,
 		);
 	} finally {
@@ -170,7 +168,6 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 		getCommands() {
 			return [
 				{ sourceInfo: { source: "npm:@henryqw/pi-herdr-rename", path: "/tmp/node_modules/@henryqw/pi-herdr-rename/extensions/rename.ts", scope: "user", origin: "package" } },
-				{ sourceInfo: { source: "npm:@henryqw/pi-auto-dag", path: "/tmp/node_modules/@henryqw/pi-auto-dag/extensions/auto-dag.ts", scope: "user", origin: "package" } },
 				{ sourceInfo: { source: "npm:@henryqw/pi-new", path: "/tmp/node_modules/@henryqw/pi-new/extensions/new.ts", scope: "user", origin: "package" } },
 				{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts", scope: "user", origin: "package" } },
 			] as never;
@@ -188,8 +185,6 @@ test("discovers active HenryQW task packages from Pi sourceInfo", () => {
 
 	assert.deepEqual(active.map((entry) => entry.task).sort(), [
 		"pi-auto-compact/autoCompact",
-		"pi-auto-dag/implement",
-		"pi-auto-dag/review",
 		"pi-herdr-rename/rename",
 		"pi-new/customTask",
 		"pi-subagent/delegateTask",
