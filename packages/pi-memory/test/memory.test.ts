@@ -100,6 +100,47 @@ test("/remember validates input, rejects busy agents, and sends live state", asy
 	}
 });
 
+test("/dream stops when the agent becomes busy after reading SYSTEM.md", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-race-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
+		await writeFile(join(agentDir, "SYSTEM.md"), "system");
+		await writeFile(join(memoryDir, "MEMORY.md"), "fact");
+		await writeFile(join(memoryDir, "USER.md"), "user");
+
+		const handlers = new Map<string, Handler>();
+		const commands = new Map<string, CapturedCommand>();
+		const messages: string[] = [];
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
+			sendUserMessage(message: string) { messages.push(message); },
+			registerTool() {},
+		} as unknown as ExtensionAPI);
+		await handlers.get("session_start")!({ type: "session_start" });
+
+		const notifications: string[] = [];
+		const idle = [true, true, false];
+		await commands.get("dream")!.handler("", {
+			isIdle: () => idle.shift() ?? false,
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+
+		assert.deepEqual(notifications, ["Cannot run /dream while the agent is busy."]);
+		assert.equal(messages.length, 0);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("/dream reuses unchanged snapshots and reports unavailable live state", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-"));
 	const agentDir = join(root, "agent");

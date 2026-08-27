@@ -185,6 +185,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const entries = await loadLiveEntries("dream", ctx.isIdle, (message) => ctx.ui.notify(message, "warning"));
 			if (!entries) return;
 			const system = await loadSystemState();
+			if (!ctx.isIdle()) {
+				ctx.ui.notify("Cannot run /dream while the agent is busy.", "warning");
+				return;
+			}
 			if (system.kind === "unreadable") {
 				ctx.ui.notify("Cannot run /dream: SYSTEM.md is unreadable.", "warning");
 				return;
