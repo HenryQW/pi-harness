@@ -9,9 +9,9 @@ delegate_flow({ units: [{ id, task, validation: [{ command, args }] }] });
 delegate_flow_continue({ guidance });
 ```
 
-A Flow accepts 1–8 independent units with unique IDs. Only one memory-only Flow may be active. It requires clean committed Main and creates one Unit Worktree per unit before launching package-shipped Implementers in parallel. All started Implementers settle; Flow then processes units in declared order.
+A Flow accepts 1–8 independent units with unique IDs. Only one memory-only Flow may be active. It requires a clean committed attached Main branch and creates one Unit Worktree per unit before launching package-shipped Implementers in parallel. All started Implementers settle; Flow then processes units in declared order.
 
-For each unit, Flow verifies Main, rebases the Unit Worktree in place when earlier Flow units advanced Main, runs the declared validation commands there, and gives a package-shipped read-only Reviewer the exact `{base, tip, patchPath}` packet in that same worktree. Only reviewer output exactly equal to `PASS` approves. Flow then fast-forwards Main with the full reviewed OID and uses non-forced worktree removal and branch deletion. Cleanup refusal does not undo integration; it returns completion with retained worktree path and/or branch warnings.
+For each unit, Flow verifies Main, rebases the Unit Worktree in place when earlier Flow units advanced Main, runs the declared validation commands there, and gives a package-shipped read-only Reviewer the exact `{base, tip, patchPath}` packet in that same worktree. Reviewer output whose trimmed text equals `PASS` approves. Flow then fast-forwards Main with the full reviewed OID and uses non-forced worktree removal and branch deletion. Cleanup refusal does not undo integration; it returns completion with retained worktree path and/or branch warnings.
 
 If rebase drops all unit commits, `base === tip` is a no-op. Flow still validates and reviews the state, then skips the merge after `PASS`.
 
