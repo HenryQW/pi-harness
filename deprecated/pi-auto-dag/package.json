@@ -38,7 +38,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-packages.git",
-    "directory": "packages/pi-auto-dag"
+    "directory": "deprecated/pi-auto-dag"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-packages/issues"

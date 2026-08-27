@@ -11,7 +11,6 @@ Public Pi packages under `@henryqw` scope.
 | [`@henryqw/pi-add-dir`](./packages/pi-add-dir) | Add external directories with context, skills, and file search. |
 | [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | Compact context at the set threshold and resume current task. |
-| [`@henryqw/pi-auto-dag`](./packages/pi-auto-dag) | Execute an approved local Delivery Graph through Pi workers. |
 | [`@henryqw/pi-herdr`](./packages/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
 | [`@henryqw/pi-herdr-btw`](./packages/pi-herdr-btw) | Open and merge Pi side threads in Herdr panes. |
 | [`@henryqw/pi-herdr-clone`](./packages/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |

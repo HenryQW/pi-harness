@@ -18,7 +18,6 @@
       "./packages/pi-ask-question/extensions/ask-question.ts",
       "./packages/pi-add-dir/extensions/add-dir.ts",
       "./packages/pi-auto-compact/extensions",
-      "./packages/pi-auto-dag/extensions/auto-dag.ts",
       "./packages/pi-session-recall/extensions/session-recall.ts",
       "./packages/pi-deps/extensions/deps.ts",
       "./packages/pi-footer/extensions/footer.ts",
