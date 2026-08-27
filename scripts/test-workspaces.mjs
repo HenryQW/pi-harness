@@ -25,10 +25,11 @@ const workspaces = Object.entries(manifests)
 
 if (!workspaces.length) throw new Error("No workspace test scripts found.");
 
-// This suite has sub-100ms timing expectations and must not contend with another workspace runner.
-const serialWorkspaces = new Set(["@henryqw/pi-subagent"]);
-const serial = workspaces.filter((workspace) => serialWorkspaces.has(workspace));
-const parallel = workspaces.filter((workspace) => !serialWorkspaces.has(workspace));
+const prioritizedWorkspaces = ["@henryqw/pi-auto-dag", "@henryqw/pi-subagent"];
+const scheduledWorkspaces = [
+	...prioritizedWorkspaces.filter((workspace) => workspaces.includes(workspace)),
+	...workspaces.filter((workspace) => !prioritizedWorkspaces.includes(workspace)),
+];
 const failures = [];
 
 function run(workspace) {
@@ -44,21 +45,16 @@ function run(workspace) {
 	});
 }
 
-for (const workspace of serial) {
-	const code = await run(workspace);
-	if (code !== 0) failures.push({ workspace, code });
-}
-
 let next = 0;
 async function worker() {
-	while (next < parallel.length) {
-		const workspace = parallel[next++];
+	while (next < scheduledWorkspaces.length) {
+		const workspace = scheduledWorkspaces[next++];
 		const code = await run(workspace);
 		if (code !== 0) failures.push({ workspace, code });
 	}
 }
 
-await Promise.all(Array.from({ length: Math.min(concurrency, parallel.length) }, worker));
+await Promise.all(Array.from({ length: Math.min(concurrency, scheduledWorkspaces.length) }, worker));
 
 if (failures.length) {
 	for (const { workspace, code } of failures) {

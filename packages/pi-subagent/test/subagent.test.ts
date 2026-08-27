@@ -1843,16 +1843,20 @@ Do bounded work.
 `);
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
-setTimeout(() => event({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} }), 80);
+setTimeout(() => event({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} }), 200);
+setTimeout(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 600);
 setTimeout(() => {
 	event({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", result: {}, isError: false });
 	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
-}, 180);
+}, 1_000);
 `);
 		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 120, maxMs: 270 } });
+		const timeoutPolicy = { idleMs: 800, maxMs: 1_500 };
+		const app = harness({ timeoutPolicy });
+		const startedAt = Date.now();
 		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
 		assert.equal(singleOutput(result), "done");
+		assert.ok(Date.now() - startedAt > timeoutPolicy.idleMs, "completion did not outlast the original idle deadline");
 	});
 });
 
@@ -1866,7 +1870,7 @@ test("workflow transport retains executor rejection Usage when no child result e
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `console.log(JSON.stringify({ type: "message_update", usage: ${JSON.stringify(observedUsage)} })); setInterval(() => {}, 1_000);`);
 		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 40, maxMs: 100 } });
+		const app = harness({ timeoutPolicy: { idleMs: 500, maxMs: 800 } });
 		const error = await app.tool.execute("usage-rejection", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected workflow failure"),
 			(reason) => reason,
