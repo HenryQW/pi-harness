@@ -30,4 +30,4 @@ pi install npm:@henryqw/pi-ask-question
 }
 ```
 
-Supply one to three options in preference order. UI marks the first `(Recommended)` and adds `Something else.` for a custom answer. Number keys select options. Empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions return an error. Aborting the tool closes the pending question.
+Supply one to three options in preference order. UI marks the first `(Recommended)` and adds `Something else.`, which opens a text input for a custom answer. Empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions return an error. Aborting the tool closes the pending question.
