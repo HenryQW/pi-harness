@@ -537,6 +537,31 @@ test("external update between reload and rename aborts instead of overwriting V2
 	}
 });
 
+test("same-metadata external update aborts instead of overwriting V2", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-memory-same-fingerprint-"));
+	try {
+		const path = memoryPath(dir);
+		await writeFile(path, "V1 content", "utf-8");
+		let statCalls = 0;
+		const fingerprint = { mtimeMs: 1, size: 10 } as import("node:fs").Stats;
+		const store = new MemoryStore({
+			directory: dir,
+			memoryCharLimit: LIMIT,
+			userCharLimit: LIMIT,
+			statFn: async () => {
+				statCalls++;
+				if (statCalls === 2) await writeFile(path, "V2 content", "utf-8");
+				return fingerprint;
+			},
+			renameFn: async () => { throw new Error("rename must not run after content changed"); },
+		});
+		await assert.rejects(store.add("memory", "local mutation"), /changed during this mutation/);
+		assert.equal(await readFile(path, "utf-8"), "V2 content");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("symlinked store file is rejected with a clear reason", async () => {
 	const { dir, cleanup } = await makeStore();
 	try {

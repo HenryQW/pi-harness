@@ -8,6 +8,7 @@ import memoryExtension from "../extensions/memory.ts";
 import { ENTRY_DELIMITER, MAX_FILE_BYTES } from "../src/store.ts";
 
 const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
+const SESSION_CONTEXT = { ui: { notify() {} } };
 
 type Handler = (event: any, ctx?: any) => unknown | Promise<unknown>;
 type CapturedCommand = {
@@ -62,7 +63,7 @@ test("/remember validates input, rejects busy agents, and sends live state", asy
 		assert.equal(notify[1], "Cannot run /remember: persistent memory is not initialized.");
 		assert.equal(messages.length, 0);
 
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		await remember.handler("save this", context(false));
 		assert.equal(notify[2], "Cannot run /remember while the agent is busy.");
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
@@ -100,6 +101,62 @@ test("/remember validates input, rejects busy agents, and sends live state", asy
 	}
 });
 
+test("session start recommends /dream when memory is new, stale, or 70% full", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-reminder-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const statePath = join(agentDir, "config", "pi-memory", "last-dream.txt");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir, memoryCharLimit: 10, userCharLimit: 10 }));
+		await writeFile(join(memoryDir, "MEMORY.md"), "123456");
+		await writeFile(join(memoryDir, "USER.md"), "");
+
+		const handlers = new Map<string, Handler>();
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerTool() {},
+		} as unknown as ExtensionAPI);
+		const notifications: string[] = [];
+		const ctx = { ui: { notify: (message: string) => notifications.push(message) } };
+
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, ["Memory dream recommended; run /dream."]);
+
+		notifications.length = 0;
+		await writeFile(statePath, `${new Date().toISOString()}\n`);
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, []);
+
+		await writeFile(statePath, `${new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString()}\n`);
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, ["Memory dream recommended; run /dream."]);
+
+		notifications.length = 0;
+		await writeFile(statePath, `${new Date().toISOString()}\n`);
+		await writeFile(join(memoryDir, "MEMORY.md"), "1234567");
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, []);
+
+		await writeFile(statePath, `${new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()}\n`);
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, ["Memory dream recommended; run /dream."]);
+
+		notifications.length = 0;
+		await writeFile(statePath, "x".repeat(65));
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.match(notifications[0]!, /Timestamp file is too large/);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("/dream stops when the agent becomes busy after reading SYSTEM.md", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-race-"));
 	const agentDir = join(root, "agent");
@@ -123,7 +180,7 @@ test("/dream stops when the agent becomes busy after reading SYSTEM.md", async (
 			sendUserMessage(message: string) { messages.push(message); },
 			registerTool() {},
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 
 		const notifications: string[] = [];
 		const idle = [true, true, false];
@@ -173,11 +230,16 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 
 		await dream.handler("", context(true));
 		assert.equal(notifications[0], "Cannot run /dream: persistent memory is not initialized.");
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		await dream.handler("", context(false));
 		assert.equal(notifications[1], "Cannot run /dream while the agent is busy.");
 
+		const lastDreamPath = join(agentDir, "config", "pi-memory", "last-dream.txt");
 		await dream.handler("", context(true));
+		await assert.rejects(readFile(lastDreamPath), /ENOENT/);
+		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
+		assert.ok(Number.isFinite(Date.parse((await readFile(lastDreamPath, "utf8")).trim())));
 		assert.match(messages[0]!, /USER PROFILE\/MEMORY already in your system context; do not reread those files/);
 		assert.doesNotMatch(messages[0]!, /Live entries by target/);
 		assert.doesNotMatch(messages[0]!, /stable fact/);
@@ -199,6 +261,13 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		await writeFile(join(memoryDir, "MEMORY.md"), "changed fact");
 		await dream.handler("", context(true));
 		assert.ok(messages[2]!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
+
+		await rm(lastDreamPath);
+		await dream.handler("", context(true));
+		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "error" }] });
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
+		await assert.rejects(readFile(lastDreamPath), /ENOENT/);
+		assert.equal(notifications.at(-1), "Dream did not complete; its timestamp was not updated.");
 
 		await rm(systemPath);
 		const dispatchedBeforeAbsentSystem = messages.length;
@@ -256,7 +325,7 @@ test("/dream rereads when sanitization omits a later entry", async () => {
 			sendUserMessage(message: string) { messages.push(message); },
 			registerTool() {},
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		await commands.get("dream")!.handler("", { isIdle: () => true, ui: { notify: (message: string) => notifications.push(message) } });
 		assert.deepEqual(notifications, []);
 		assert.ok(messages[0]!.includes("Live entries by target"));
@@ -298,7 +367,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		const before = handlers.get("before_agent_start")!;
 		// Uninitialized: silent no-op, never throws.
 		assert.equal(await before({ systemPrompt: "base" }), undefined);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		assert.ok(tool);
 		const memoryTool = tool;
 		assert.match(memoryTool.description, /read MEMORY\.md in the configured memory directory/);
@@ -380,7 +449,7 @@ test("injects the memory check even when stores are empty", async () => {
 			registerCommand() {},
 			registerTool() {},
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.equal(
 			injected.systemPrompt,
@@ -418,7 +487,7 @@ test("errors carry match previews/usage, snapshots filter frame tokens, backups 
 			sendUserMessage(message: string) { messages.push(message); },
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const memoryTool = tool!;
 
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
@@ -475,7 +544,7 @@ test("concurrent memory tool calls are serialized: both adds survive", async () 
 			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const memoryTool = tool!;
 
 		const outcomes = await Promise.allSettled([
@@ -515,7 +584,7 @@ test("init failure disables extension silently; oversized and capped snapshots w
 		} as unknown as ExtensionAPI);
 		const before = handlers.get("before_agent_start")!;
 		const memoryTool = tool!;
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		// Failed init stays visible: warning injected every turn, never thrown.
 		const failed = await before({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.match(failed.systemPrompt, /persistent memory is DISABLED this session/);
@@ -541,7 +610,7 @@ test("init failure disables extension silently; oversized and capped snapshots w
 				registerCommand() {},
 				registerTool(value: CapturedTool) { tool2 = value; },
 			} as unknown as ExtensionAPI);
-			await handlers2.get("session_start")!({ type: "session_start" });
+			await handlers2.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 			const injected = await handlers2.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 			assert.ok(injected.systemPrompt.includes("a".repeat(30)), "first entry within cap must be injected");
 			assert.ok(!injected.systemPrompt.includes("c".repeat(30)), "overflow entry must be omitted from snapshot");
@@ -579,7 +648,7 @@ test("first oversized entry is omitted with warning; unexpected-file warnings ar
 			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.ok(!injected.systemPrompt.includes("x".repeat(100)), "oversized single entry must not be injected");
 		assert.match(injected.systemPrompt, /1 entry was omitted/);
@@ -610,7 +679,7 @@ test("memory directory overlapping the backup directory fails init loudly", asyn
 			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.match(injected.systemPrompt, /persistent memory is DISABLED/);
 		assert.match(injected.systemPrompt, /must not overlap the backup directory/);
@@ -643,7 +712,7 @@ test("ambiguous old_text retries hit the consolidation cap; symlinked overlap re
 			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" });
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const memoryTool = tool!;
 		await memoryTool.execute("a", { action: "add", content: "alpha one shared" });
 		await memoryTool.execute("b", { action: "add", content: "alpha two shared" });
@@ -671,7 +740,7 @@ test("ambiguous old_text retries hit the consolidation cap; symlinked overlap re
 				registerCommand() {},
 				registerTool() {},
 			} as unknown as ExtensionAPI);
-			await handlers3.get("session_start")!({ type: "session_start" });
+			await handlers3.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 			const injected = await handlers3.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 			assert.match(injected.systemPrompt, /persistent memory is DISABLED/);
 		} finally {

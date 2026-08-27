@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -6,14 +6,18 @@ import { Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
 import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
-import { ENTRY_DELIMITER, MemoryStore, usage, type Target } from "../src/store.ts";
+import { ENTRY_DELIMITER, isReservedFrameLine, MemoryStore, usage, type Target } from "../src/store.ts";
 
 const SEPARATOR = "═".repeat(46);
 // Backups and the lock file live OUTSIDE config.directory (which may be
 // iCloud-synced) so the memory dir holds exactly MEMORY.md and USER.md (ADR 005).
 const BACKUP_DIR = () => join(getAgentDir(), "config", "pi-memory", "backups");
+const LAST_DREAM_PATH = () => join(getAgentDir(), "config", "pi-memory", "last-dream.txt");
+const DREAM_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+const DREAM_FULL_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+const DREAM_USAGE_PERCENT = 70;
+const LAST_DREAM_MAX_BYTES = 64;
 // Defense-in-depth against snapshot frame spoofing by poisoned on-disk entries.
-const FRAME_TOKEN_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/;
 const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
 const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
 // @henryqw/pi-herdr-btw does not export internal/core.ts from its package root.
@@ -51,8 +55,31 @@ async function loadSystemState(path: string): Promise<SystemState> {
 	}
 }
 
+async function loadLastDreamAt(): Promise<number | undefined> {
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	try {
+		handle = await open(LAST_DREAM_PATH(), "r");
+		const buffer = Buffer.alloc(LAST_DREAM_MAX_BYTES + 1);
+		let total = 0;
+		while (total < buffer.length) {
+			const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
+			if (bytesRead === 0) break;
+			total += bytesRead;
+		}
+		if (total > LAST_DREAM_MAX_BYTES) throw new Error(`Timestamp file is too large: ${LAST_DREAM_PATH()}`);
+		const value = Date.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)).trim());
+		if (!Number.isFinite(value) || value > Date.now()) throw new Error(`Invalid timestamp in ${LAST_DREAM_PATH()}`);
+		return value;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+		throw error;
+	} finally {
+		await handle?.close();
+	}
+}
+
 function sanitizeEntry(entry: string): string {
-	return entry.split("\n").map((line) => FRAME_TOKEN_LINE.test(line) ? FRAME_TOKEN_REPLACEMENT : line).join("\n");
+	return entry.split("\n").map((line) => isReservedFrameLine(line) ? FRAME_TOKEN_REPLACEMENT : line).join("\n");
 }
 
 // Strip control characters so externally-influenced names can't smuggle
@@ -123,6 +150,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		snapshotSanitized?: boolean;
 		conflictWarnings: string[];
 		initError?: string;
+		dreamPending?: boolean;
+		dreamSucceeded?: boolean;
 	} = { conflictWarnings: [] };
 
 	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void): Promise<Record<Target, string[]> | undefined> => {
@@ -204,11 +233,44 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const memoryMessage = unchanged
 				? "Use USER PROFILE/MEMORY already in your system context; do not reread those files."
 				: `Live entries by target:\n${JSON.stringify(entries)}`;
-			pi.sendUserMessage(`${DREAM_INSTRUCTION}\n\n${memoryMessage}\n\nRead ${JSON.stringify(systemPath)} before semantic deduplication or editing. Edit only ${JSON.stringify(systemPath)}; never edit a project SYSTEM.md.`);
+			state.dreamPending = true;
+			state.dreamSucceeded = false;
+			try {
+				pi.sendUserMessage(`${DREAM_INSTRUCTION}\n\n${memoryMessage}\n\nRead ${JSON.stringify(systemPath)} before semantic deduplication or editing. Edit only ${JSON.stringify(systemPath)}; never edit a project SYSTEM.md.`);
+			} catch (error) {
+				state.dreamPending = false;
+				throw error;
+			}
 		},
 	});
 
-	pi.on("session_start", async () => {
+	pi.on("agent_end", (event) => {
+		if (!state.dreamPending) return;
+		for (let index = event.messages.length - 1; index >= 0; index--) {
+			const message = event.messages[index];
+			if (message?.role !== "assistant") continue;
+			state.dreamSucceeded = message.stopReason !== "error" && message.stopReason !== "aborted" && message.stopReason !== "length";
+			break;
+		}
+	});
+
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (!state.dreamPending) return;
+		const succeeded = state.dreamSucceeded;
+		state.dreamPending = false;
+		state.dreamSucceeded = false;
+		if (!succeeded) {
+			ctx.ui.notify("Dream did not complete; its timestamp was not updated.", "warning");
+			return;
+		}
+		try {
+			await writeFile(LAST_DREAM_PATH(), `${new Date().toISOString()}\n`, { mode: 0o600 });
+		} catch (error) {
+			ctx.ui.notify(`Dream completed, but its timestamp could not be recorded: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
 		state.config = undefined;
 		state.stores = undefined;
 		state.initialEntries = undefined;
@@ -216,6 +278,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.snapshotSanitized = undefined;
 		state.conflictWarnings = [];
 		state.initError = undefined;
+		state.dreamPending = false;
+		state.dreamSucceeded = false;
 		try {
 			await mkdir(BACKUP_DIR(), { recursive: true });
 			const config = loadMemoryConfig();
@@ -258,6 +322,22 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			state.snapshotBlocks = rendered.map(({ block }) => block);
 			state.snapshotSanitized = rendered.some(({ sanitized }) => sanitized);
 			state.conflictWarnings = conflictWarnings;
+
+			if (!process.argv.includes(BTW_CHILD_PAYLOAD_ARG) && (memory.entries.length || user.entries.length)) {
+				try {
+					const lastDreamAt = await loadLastDreamAt();
+					const age = lastDreamAt === undefined ? undefined : Date.now() - lastDreamAt;
+					const memoryChars = memory.entries.join(ENTRY_DELIMITER).length;
+					const userChars = user.entries.join(ENTRY_DELIMITER).length;
+					const full = memoryChars * 100 >= config.memoryCharLimit * DREAM_USAGE_PERCENT
+						|| userChars * 100 >= config.userCharLimit * DREAM_USAGE_PERCENT;
+					if (age === undefined || age >= DREAM_AFTER_MS || (full && age >= DREAM_FULL_COOLDOWN_MS)) {
+						ctx.ui.notify("Memory dream recommended; run /dream.", "info");
+					}
+				} catch (error) {
+					ctx.ui.notify(`Cannot check dream reminder: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				}
+			}
 		} catch (error) {
 			// Surface once, disable quietly: no throw-loop every turn.
 			state.initError = error instanceof Error ? error.message : String(error);
