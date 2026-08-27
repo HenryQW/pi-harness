@@ -84,7 +84,7 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 		used += cost;
 	}
 	const content = kept.map(({ value }) => value).join(ENTRY_DELIMITER);
-	const sanitized = kept.some((entry) => entry.sanitized);
+	const sanitized = sanitizedEntries.some((entry) => entry.sanitized);
 	if (sanitized) {
 		warnings.push(`WARNING: frame-token-like lines were filtered out of the ${target} snapshot (see "${FRAME_TOKEN_REPLACEMENT}").`);
 	}

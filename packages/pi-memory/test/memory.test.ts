@@ -158,6 +158,42 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 	}
 });
 
+test("/dream rereads when sanitization omits a later entry", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-sanitized-cap-"));
+	const agentDir = join(root, "agent");
+	const memoryDir = join(root, "memory");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
+		await mkdir(memoryDir, { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir, memoryCharLimit: 15 }));
+		await writeFile(join(memoryDir, "MEMORY.md"), "raw\n§\nlater\n═══");
+		await writeFile(join(memoryDir, "USER.md"), "");
+
+		const handlers = new Map<string, Handler>();
+		const commands = new Map<string, CapturedCommand>();
+		const messages: string[] = [];
+		const notifications: string[] = [];
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
+			sendUserMessage(message: string) { messages.push(message); },
+			registerTool() {},
+		} as unknown as ExtensionAPI);
+		await handlers.get("session_start")!({ type: "session_start" });
+		await commands.get("dream")!.handler("", { isIdle: () => true, ui: { notify: (message: string) => notifications.push(message) } });
+		assert.deepEqual(notifications, []);
+		assert.ok(messages[0]!.includes("Live entries by target"));
+		assert.ok(messages[0]!.includes(JSON.stringify({ memory: ["raw", "later\n═══"], user: [] })));
+		assert.doesNotMatch(messages[0]!, /do not reread those files/);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("extension loads a frozen snapshot, dispatches writes, caps retries, and skips btw children", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-extension-"));
 	const agentDir = join(root, "agent");
