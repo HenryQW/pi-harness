@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -87,14 +87,34 @@ test("exact evidence rejects dirty and wrong-tip registered worktrees", async (t
 	await assert.rejects(prepareExactReviewEvidence(context), /not registered at the requested tip/);
 });
 
-test("oversized patches remove partial private evidence", async (t) => {
+test("a patch exactly one byte over the limit removes partial private evidence", async (t) => {
 	const context = await candidate(t, await repository(t), "large");
-	await writeFile(join(context.worktree, "changed.txt"), "x\n".repeat(REVIEW_MAX_PATCH_BYTES));
+	const target = REVIEW_MAX_PATCH_BYTES + 1;
+	const changed = join(context.worktree, "changed.txt");
+	await writeFile(changed, Buffer.alloc(target, "x"));
 	git(context.worktree, "commit", "-am", "large patch");
+	let patch = execFileSync("git", ["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--binary", context.base, "HEAD"], { cwd: context.worktree });
+	await writeFile(changed, Buffer.alloc(target - (patch.length - target), "x"));
+	git(context.worktree, "commit", "--amend", "-am", "large patch");
 	context.tip = git(context.worktree, "rev-parse", "HEAD");
+	patch = execFileSync("git", ["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--binary", context.base, context.tip], { cwd: context.worktree });
+	assert.equal(patch.length, target);
 	const before = await evidenceDirectories();
 	await assert.rejects(prepareExactReviewEvidence(context), /exceeds 524288 bytes/);
 	assert.deepEqual(await evidenceDirectories(), before);
+});
+
+test("exact evidence accepts changed symbolic links", async (t) => {
+	const context = await candidate(t, await repository(t), "symlink");
+	await rm(join(context.worktree, "changed.txt"));
+	await symlink("target.txt", join(context.worktree, "changed.txt"));
+	git(context.worktree, "add", "-A");
+	git(context.worktree, "commit", "-qm", "symlink");
+	context.tip = git(context.worktree, "rev-parse", "HEAD");
+
+	const evidence = await prepareExactReviewEvidence(context);
+	assert.deepEqual(evidence.changedPaths, ["changed.txt"]);
+	await evidence.cleanup();
 });
 
 test("exact evidence rejects over-limit paths and changed gitlinks", async (t) => {
@@ -121,6 +141,25 @@ test("exact evidence rejects over-limit paths and changed gitlinks", async (t) =
 	git(gitlink.worktree, "commit", "-qm", "gitlink");
 	gitlink.tip = git(gitlink.worktree, "rev-parse", "HEAD");
 	await assert.rejects(prepareExactReviewEvidence(gitlink), /changed gitlinks/);
+});
+
+test("exact evidence ignores unrelated bare and stale worktree registrations", async (t) => {
+	const repo = await repository(t);
+	const context = await candidate(t, repo, "registered");
+	const stale = await candidate(t, repo, "stale");
+	await rm(stale.worktree, { recursive: true, force: true });
+	const evidence = await prepareExactReviewEvidence(context);
+	await evidence.cleanup();
+
+	const parent = await mkdtemp(join(tmpdir(), "pi-subagent-review-bare-"));
+	t.after(async () => { await rm(parent, { recursive: true, force: true }); });
+	const bare = join(parent, "repo.git");
+	git(repo, "clone", "--bare", repo, bare);
+	git(bare, "config", "user.name", "Test");
+	git(bare, "config", "user.email", "test@example.com");
+	const bareContext = await candidate(t, bare, "bare");
+	const bareEvidence = await prepareExactReviewEvidence(bareContext);
+	await bareEvidence.cleanup();
 });
 
 test("package-shipped Roles bypass same-name user overrides", async (t) => {

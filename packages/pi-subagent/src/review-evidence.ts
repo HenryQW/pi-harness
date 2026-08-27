@@ -89,7 +89,7 @@ function assertSupportedChanges(value: string): void {
 		if (!match) throw new Error("Git returned malformed raw diff.");
 		for (const mode of [match[1], match[2]]) {
 			if (mode === "160000") throw new Error("Review evidence rejects changed gitlinks.");
-			if (!new Set(["000000", "100644", "100755"]).has(mode!)) {
+			if (!new Set(["000000", "100644", "100755", "120000"]).has(mode!)) {
 				throw new Error(`Review evidence rejects unsupported file mode: ${mode}.`);
 			}
 		}
@@ -102,21 +102,18 @@ function assertSupportedChanges(value: string): void {
 }
 
 interface RegisteredWorktree {
-	path: string;
-	head: string;
+	path?: string;
+	head?: string;
 }
 
 function registeredWorktrees(value: string): RegisteredWorktree[] {
 	if (!value.endsWith("\0") || value.includes("�")) throw new Error("Git returned malformed worktree list.");
 	const result: RegisteredWorktree[] = [];
-	let record: Partial<RegisteredWorktree> = {};
+	let record: RegisteredWorktree = {};
 	for (const field of [...value.slice(0, -1).split("\0"), ""]) {
 		if (!field) {
-			if (Object.keys(record).length) {
-				if (!record.path || !record.head) throw new Error("Git returned malformed worktree registration.");
-				result.push(record as RegisteredWorktree);
-				record = {};
-			}
+			if (Object.keys(record).length) result.push(record);
+			record = {};
 		} else if (field.startsWith("worktree ")) record.path = field.slice("worktree ".length);
 		else if (field.startsWith("HEAD ")) record.head = oid(`${field.slice("HEAD ".length)}\n`, "worktree HEAD");
 	}
@@ -127,8 +124,10 @@ async function assertCleanRegisteredWorktree(worktree: string, tip: string, sign
 	const root = await realpath(line(await runGit(["rev-parse", "--show-toplevel"], worktree, signal), "worktree root"));
 	if (root !== worktree) throw new Error("Review evidence requires a registered worktree root.");
 	const registrations = registeredWorktrees(await runGit(["worktree", "list", "--porcelain", "-z"], worktree, signal));
-	const registered = await Promise.all(registrations.map(async (entry) => ({ ...entry, path: await realpath(entry.path) })));
-	if (!registered.some((entry) => entry.path === worktree && entry.head === tip)) {
+	const registered = await Promise.all(registrations
+		.filter((entry) => entry.path === worktree)
+		.map(async (entry) => ({ ...entry, path: await realpath(entry.path!) })));
+	if (!registered.some((entry) => entry.head === tip)) {
 		throw new Error("Review evidence worktree is not registered at the requested tip.");
 	}
 	if (oid(await runGit(["rev-parse", "HEAD"], worktree, signal), "worktree HEAD") !== tip) {
@@ -159,15 +158,15 @@ async function streamPatch(base: string, tip: string, worktree: string, path: st
 		try {
 			for await (const chunk of child.stdout) {
 				const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-				const available = REVIEW_MAX_PATCH_BYTES + 1 - bytes;
+				const available = REVIEW_MAX_PATCH_BYTES - bytes;
 				if (data.length > available) {
-					if (available > 0) await file.write(data.subarray(0, available));
+					if (available > 0) await file.writeFile(data.subarray(0, available));
 					bytes += Math.max(available, 0);
 					overflow = true;
 					child.kill();
 					break;
 				}
-				await file.write(data);
+				await file.writeFile(data);
 				bytes += data.length;
 			}
 		} catch (error) {
