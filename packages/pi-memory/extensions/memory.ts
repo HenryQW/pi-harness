@@ -168,7 +168,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 			const entries = await loadLiveEntries("dream", ctx.isIdle, (message) => ctx.ui.notify(message, "warning"));
 			if (!entries) return;
-			const unchanged = !state.snapshotSanitized && state.initialEntries
+			const unchanged = !process.argv.includes(BTW_CHILD_PAYLOAD_ARG) && !state.snapshotSanitized && state.initialEntries
 				&& entries.memory.join(ENTRY_DELIMITER) === state.initialEntries.memory.join(ENTRY_DELIMITER)
 				&& entries.user.join(ENTRY_DELIMITER) === state.initialEntries.user.join(ENTRY_DELIMITER);
 			pi.sendUserMessage(unchanged

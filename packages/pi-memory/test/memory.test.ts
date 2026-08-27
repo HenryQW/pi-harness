@@ -137,9 +137,18 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		assert.doesNotMatch(messages[0]!, /Live entries by target/);
 		assert.doesNotMatch(messages[0]!, /stable fact/);
 
+		process.argv.push(CHILD_PAYLOAD_ARG);
+		try {
+			await dream.handler("", context(true));
+			assert.ok(messages[1]!.includes(JSON.stringify({ memory: ["stable fact"], user: ["likes concise replies"] })));
+			assert.doesNotMatch(messages[1]!, /do not reread those files/);
+		} finally {
+			process.argv.pop();
+		}
+
 		await writeFile(join(memoryDir, "MEMORY.md"), "changed fact");
 		await dream.handler("", context(true));
-		assert.ok(messages[1]!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
+		assert.ok(messages[2]!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
 
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
 		await dream.handler("", context(true));
