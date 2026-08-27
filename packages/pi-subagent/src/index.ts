@@ -32,7 +32,10 @@ export {
 export {
 	createChildWorktree,
 	finalizeChildWorktree,
+	inspectWorktreeDirty,
+	WorktreeSetupError,
 	worktreeContextNote,
+	type WorktreeDirtyInspection,
 	type WorktreeInfo,
 	type WorktreePayload,
 } from "./worktree.ts";

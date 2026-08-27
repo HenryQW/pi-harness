@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -244,6 +244,17 @@ test("setup is all-or-nothing, non-forced, and never falls back outside committe
 	assert.equal(existsSync(join(repo, ".worktrees", firstName)), false);
 	assert.equal(git(repo, "branch", "--list", `pi-subagent/${firstName}`), "");
 	assert.match(partial.content[0].text, new RegExp(secondName));
+	assert.equal(partial.details.retained.length, 1);
+	const { path: retainedPath, ...retainedEvidence } = partial.details.retained[0];
+	assert.equal(retainedPath.endsWith(join(".worktrees", secondName)), true);
+	assert.deepEqual(retainedEvidence, {
+		id: "two",
+		branch: collisionBranch,
+		base: git(repo, "rev-parse", "HEAD"),
+		worktreeRetained: true,
+		branchRetained: true,
+	});
+	assert.match(partial.details.warnings[0], /Partial setup cleanup refused/);
 	assert.ok(app.execLogs
 		.filter(({ command, args }) => command === "git" && args.includes("worktree") && args.includes("remove"))
 		.every(({ args }) => !args.includes("--force")));
@@ -270,6 +281,26 @@ test("setup is all-or-nothing, non-forced, and never falls back outside committe
 	const unbornResult = await flowTool(noHead).execute("unborn", { units: [unit("none")] }, undefined, undefined, noHead.ctx);
 	assert.equal(unbornResult.details.failure.classification, "setup");
 	assert.equal(children, 0);
+});
+
+test("a post-checkout setup failure cleans the attempted empty worktree before launching children", async (t) => {
+	const repo = await repository(t);
+	const hook = join(repo, ".git", "hooks", "post-checkout");
+	await writeFile(hook, "#!/bin/sh\necho post-checkout failed >&2\nexit 1\n");
+	await chmod(hook, 0o755);
+	let children = 0;
+	const app = harness(repo, () => { children++; return success(); });
+	const toolCallId = "post-create";
+	const name = `subagent-${createHash("sha256").update(`${toolCallId}:flow:0:unit`).digest("hex").slice(0, 24)}`;
+
+	const result = await flowTool(app).execute(toolCallId, { units: [unit("unit")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "failed");
+	assert.equal(result.details.failure.classification, "setup");
+	assert.match(result.details.failure.diagnostic, /post-checkout failed/);
+	assert.equal(children, 0);
+	assert.equal(existsSync(join(repo, ".worktrees", name)), false);
+	assert.equal(git(repo, "branch", "--list", `pi-subagent/${name}`), "");
+	assert.deepEqual(result.details.retained, []);
 });
 
 test("Flow uses package Implementer/Reviewer policy in the caller-relative Unit cwd without nesting", async (t) => {
@@ -459,6 +490,55 @@ test("a real rebase conflict aborts, launches no conflicting Reviewer, and retai
 	assert.equal(git(retained.path, "branch", "--show-current"), retained.branch);
 });
 
+test("failed rebase abort during cancellation is exposed in terminal diagnostics", async (t) => {
+	const repo = await repository(t);
+	const controller = new AbortController();
+	let reviewers = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") { reviewers++; return success("PASS"); }
+		const id = unitId(prepared.task);
+		await commit(prepared.cwd, `${id}.txt`, `${id}\n`);
+		return success();
+	}, (command, args, _options, next) => {
+		if (command === "git" && args[1] === "rebase" && args[2] !== "--abort") {
+			controller.abort(new Error("cancelled by test"));
+			return Promise.resolve({ stdout: "", stderr: "cancelled", code: -1, killed: false });
+		}
+		if (command === "git" && args[1] === "rebase" && args[2] === "--abort") {
+			return Promise.resolve({ stdout: "", stderr: "cannot lock index", code: 1, killed: false });
+		}
+		return next();
+	});
+
+	const result = await flowTool(app).execute("cancel-rebase", { units: [unit("first"), unit("second")] }, controller.signal, undefined, app.ctx);
+	assert.equal(result.details.outcome, "failed");
+	assert.equal(result.details.failure.classification, "infrastructure");
+	assert.match(result.details.failure.diagnostic, /cancelled by test/);
+	assert.match(result.details.failure.diagnostic, /git rebase --abort failed with exit 1/);
+	assert.match(result.details.failure.diagnostic, /cannot lock index/);
+	assert.equal(reviewers, 1);
+	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["second"]);
+});
+
+test("validation-induced detached HEAD is a repairable validation block", async (t) => {
+	const repo = await repository(t);
+	let reviewers = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") { reviewers++; return success("PASS"); }
+		await commit(prepared.cwd, "change.txt", "change\n");
+		return success();
+	});
+	const gate = [{ command: "git", args: ["checkout", "--detach", "-q"] }];
+
+	const result = await flowTool(app).execute("detached-validation", { units: [unit("detached", "work", gate)] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "blocked");
+	assert.equal(result.details.blocked.classification, "validation");
+	assert.equal(result.details.blocked.repairAvailable, true);
+	assert.match(result.details.blocked.diagnostic, /off its Flow-owned branch/);
+	assert.equal(reviewers, 0);
+	assert.equal(git(result.details.blocked.path, "branch", "--show-current"), "");
+});
+
 test("validation, Reviewer findings, and Reviewer transport failures keep distinct classifications", async (t) => {
 	const validationRepo = await repository(t);
 	let validationReviewers = 0;
@@ -548,16 +628,19 @@ test("a second same-Unit failure is terminal, clears active state, and permits a
 	assert.equal(completed.details.outcome, "completed");
 });
 
-test("cleanup refusal after exact integration completes once with a bounded retained warning", async (t) => {
+test("cleanup refusal after exact integration preserves ignored work with a bounded warning", async (t) => {
 	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
 	let approvedTip = "";
 	const app = harness(repo, async (prepared) => {
 		if (childRole(prepared) === "implementer") {
 			await commit(prepared.cwd, "integrated.txt", "integrated\n");
+			await writeFile(join(prepared.cwd, "result.cache"), "retain\n");
 			return success();
 		}
 		approvedTip = reviewPacket(prepared.task).tip;
-		await writeFile(join(prepared.cwd, "reviewer-dirty.tmp"), "retain\n");
 		return success("PASS");
 	});
 	const result = await flowTool(app).execute("cleanup", { units: [unit("cleanup")] }, undefined, undefined, app.ctx);
@@ -568,7 +651,7 @@ test("cleanup refusal after exact integration completes once with a bounded reta
 	assert.match(result.details.warnings[0], /integrated, but cleanup refused/);
 	assert.ok(Buffer.byteLength(result.details.warnings[0], "utf8") <= 50 * 1024 + 200);
 	assert.equal(result.details.retained.length, 1);
-	assert.equal(existsSync(join(result.details.retained[0].path, "reviewer-dirty.tmp")), true);
+	assert.equal(await readFile(join(result.details.retained[0].path, "result.cache"), "utf8"), "retain\n");
 	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 1);
 });
 

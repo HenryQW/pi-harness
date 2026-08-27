@@ -5,8 +5,10 @@ import {
 	capEphemeralSubagentOutput as capOutput,
 	createChildWorktree,
 	EphemeralSubagentError,
+	inspectWorktreeDirty,
 	loadBuiltinRole,
 	prepareExactReviewEvidence,
+	WorktreeSetupError,
 	type EphemeralSubagentExecutor,
 	type EphemeralSubagentResult,
 	type ResolvedRoleLaunch,
@@ -56,11 +58,8 @@ type UnitState = {
 	base: string;
 	implementation?: ChildSettlement;
 	repairUsed: boolean;
-	integrated: boolean;
-	noOp?: boolean;
 	worktreeRetained: boolean;
 	branchRetained: boolean;
-	overlapRecorded: boolean;
 };
 
 type MainState = {
@@ -83,7 +82,6 @@ type FlowState = {
 	blocked?: BlockedState;
 	completed: Array<{ id: string; noOp: boolean }>;
 	warnings: string[];
-	reviewedPaths: Set<string>;
 };
 
 type UsageMeter = { usage?: Usage };
@@ -324,6 +322,9 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 
 	const cleanupUnit = async (unit: UnitState, main: MainState): Promise<string | undefined> => {
 		try {
+			const inspection = await inspectWorktreeDirty(unit.worktree.path);
+			if (inspection.failure) return `Worktree cleanup inspection failed: ${inspection.failure}`;
+			if (inspection.dirty) return "Unit Worktree contains uncommitted or ignored work.";
 			const removed = await git(["worktree", "remove", unit.worktree.path], main.root);
 			if (removed.code !== 0 || removed.killed) {
 				return commandFailure(`git worktree remove ${JSON.stringify(unit.worktree.path)}`, removed);
@@ -346,6 +347,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			id: unit.request.id,
 			path: unit.worktree.path,
 			branch: unit.worktree.branch,
+			base: unit.base,
 			worktreeRetained: unit.worktreeRetained,
 			branchRetained: unit.branchRetained,
 		}));
@@ -387,7 +389,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			...(flow.warnings.length ? ["Warnings:", ...flow.warnings.map((warning) => `- ${warning}`)] : []),
 			...(retainedUnits.length ? [
 				"Retained Flow state:",
-				...retainedUnits.map((unit) => `- unit=${JSON.stringify(unit.id)} path=${JSON.stringify(unit.path)} branch=${JSON.stringify(unit.branch)} worktree=${unit.worktreeRetained} branch_ref=${unit.branchRetained}`),
+				...retainedUnits.map((unit) => `- unit=${JSON.stringify(unit.id)} path=${JSON.stringify(unit.path)} branch=${JSON.stringify(unit.branch)} base=${unit.base} worktree=${unit.worktreeRetained} branch_ref=${unit.branchRetained}`),
 			] : []),
 		];
 		return {
@@ -463,16 +465,13 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			if (signal?.aborted) signal.throwIfAborted();
 			if (result.code !== 0 || result.killed) return commandFailure(`Validation ${index + 1}`, result);
 		}
-		const branch = oneLine(await requireGit(["symbolic-ref", "--quiet", "HEAD"], unit.worktree.cwd, signal), "Unit branch");
-		const after = oid(await requireGit(["rev-parse", "--verify", "HEAD^{commit}"], unit.worktree.cwd, signal), "Unit HEAD");
-		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all"], unit.worktree.cwd, signal);
-		if (branch !== `refs/heads/${unit.worktree.branch}` || after !== tip || status) {
+		const inspected = await inspectUnit(unit, true, signal);
+		if (inspected.block || inspected.tip !== tip) {
 			return capOutput([
 				"Validation changed the Flow-owned committed Unit state.",
 				`Expected branch=${JSON.stringify(unit.worktree.branch)} HEAD=${tip} clean=true.`,
-				`Actual branch=${JSON.stringify(branch)} HEAD=${after} clean=${!status}.`,
-				status ? `Status:\n${status}` : "",
-			].filter(Boolean).join("\n"));
+				inspected.block ?? `Actual HEAD=${inspected.tip}.`,
+			].join("\n"));
 		}
 		return;
 	};
@@ -499,12 +498,17 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			let inspected = await inspectUnit(unit, false, signal);
 			if (inspected.block) return block(flow, unit, "implementer", inspected.block, meter);
 			let tip = inspected.tip!;
-			let allowNoOp = false;
 
 			if (unit.base !== main.expectedHead) {
 				const rebased = await git(["rebase", main.expectedHead], unit.worktree.cwd, signal);
 				if (signal?.aborted) {
-					await git(["rebase", "--abort"], unit.worktree.cwd);
+					const aborted = await git(["rebase", "--abort"], unit.worktree.cwd);
+					if (aborted.code !== 0 || aborted.killed) {
+						return terminal(flow, "infrastructure", [
+							`Flow cancelled: ${errorText(signal.reason)}`,
+							commandFailure("git rebase --abort", aborted),
+						].join("\n"), meter);
+					}
 					signal.throwIfAborted();
 				}
 				if (rebased.code !== 0 || rebased.killed) {
@@ -516,14 +520,9 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					return terminal(flow, "conflict", diagnostic, meter);
 				}
 				unit.base = main.expectedHead;
-				allowNoOp = true;
 				inspected = await inspectUnit(unit, true, signal);
 				if (inspected.block) return terminal(flow, "infrastructure", inspected.block, meter);
 				tip = inspected.tip!;
-			}
-
-			if (!allowNoOp && tip === main.expectedHead) {
-				return block(flow, unit, "implementer", `Unit ${JSON.stringify(unit.request.id)} has no committed change.`, meter);
 			}
 
 			const validationFailure = await validateUnit(unit, tip, signal);
@@ -534,13 +533,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				evidence = await prepareExactReviewEvidence({ base: main.expectedHead, tip, worktree: unit.worktree.path }, signal);
 			} catch (error) {
 				return terminal(flow, "infrastructure", errorText(error), meter);
-			}
-			if (!unit.overlapRecorded) {
-				const overlap = evidence.changedPaths.filter((path) => flow.reviewedPaths.has(path));
-				if (overlap.length) {
-					flow.warnings.push(capOutput(`Unit ${JSON.stringify(unit.request.id)} overlaps earlier Flow paths: ${overlap.map((path) => JSON.stringify(path)).join(", ")}.`));
-				}
-				unit.overlapRecorded = true;
 			}
 
 			let review: ChildSettlement;
@@ -585,8 +577,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				if (merged.code !== 0 || merged.killed) {
 					return terminal(flow, "integration", commandFailure(`git merge --ff-only ${evidence.tip}`, merged), meter);
 				}
-				unit.integrated = true;
-				unit.noOp = false;
 				main.expectedHead = evidence.tip;
 				flow.completed.push({ id: unit.request.id, noOp: false });
 				try {
@@ -595,11 +585,8 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					return terminal(flow, "integration", errorText(error), meter);
 				}
 			} else {
-				unit.integrated = true;
-				unit.noOp = true;
 				flow.completed.push({ id: unit.request.id, noOp: true });
 			}
-			for (const path of evidence.changedPaths) flow.reviewedPaths.add(path);
 			const cleanupWarning = await cleanupUnit(unit, main);
 			if (cleanupWarning) flow.warnings.push(`Unit ${JSON.stringify(unit.request.id)} integrated, but cleanup refused: ${cleanupWarning}`);
 			flow.index += 1;
@@ -629,7 +616,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				index: 0,
 				completed: [],
 				warnings: [],
-				reviewedPaths: new Set(),
 			};
 			active = flow;
 			const meter: UsageMeter = {};
@@ -637,19 +623,25 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			try {
 				flow.main = await snapshotMain(ctx.cwd, signal);
 				for (const [index, unit] of request.units.entries()) {
-					const worktree = await createChildWorktree(ctx.cwd, `${toolCallId}:flow:${index}:${unit.id}`, undefined, signal);
+					let setupError: WorktreeSetupError | undefined;
+					let worktree: WorktreeInfo | undefined;
+					try {
+						worktree = await createChildWorktree(ctx.cwd, `${toolCallId}:flow:${index}:${unit.id}`, undefined, signal);
+					} catch (error) {
+						if (!(error instanceof WorktreeSetupError)) throw error;
+						setupError = error;
+						worktree = error.worktree;
+					}
 					if (!worktree) throw new Error("Flow Unit Worktrees require a Git repository with a committed HEAD; generic cwd fallback is disabled.");
-					const state: UnitState = {
+					flow.units.push({
 						request: unit,
 						worktree,
 						base: worktree.baseCommit,
 						repairUsed: false,
-						integrated: false,
 						worktreeRetained: true,
 						branchRetained: true,
-						overlapRecorded: false,
-					};
-					flow.units.push(state);
+					});
+					if (setupError) throw setupError;
 					if (worktree.baseCommit !== flow.main.expectedHead) throw new Error("Git Main changed while Flow Unit Worktrees were being created.");
 				}
 				await checkMain(flow.main, signal);

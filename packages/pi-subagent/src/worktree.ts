@@ -28,8 +28,14 @@ const GIT_TIMEOUT_MS = 30_000;
 const WORKTREES_DIRNAME = ".worktrees";
 const BRANCH_NAMESPACE = "pi-subagent";
 
-class WorktreeSetupError extends Error {
+export class WorktreeSetupError extends Error {
 	override name = "WorktreeSetupError";
+	readonly worktree: WorktreeInfo;
+
+	constructor(message: string, worktree: WorktreeInfo) {
+		super(message);
+		this.worktree = worktree;
+	}
 }
 
 /** Runs git, capturing output; never throws on non-zero exit or spawn failure. */
@@ -76,7 +82,7 @@ async function ensureLocalExclude(gitDir: string): Promise<void> {
 		if (existing.split("\n").some((line) => line.trim() === entry)) return;
 		await appendFile(exclude, `${existing && !existing.endsWith("\n") ? "\n" : ""}${entry}\n`);
 	} catch (error) {
-		throw new WorktreeSetupError(`Could not update ${exclude}: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(`Could not update ${exclude}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -160,11 +166,15 @@ export async function createChildWorktree(
 	}
 	await ensureLocalExclude(gitDir);
 	signal?.throwIfAborted();
+	const worktree = { path, cwd: join(path, relativeCwd), branch, repoRoot: stableRepoRoot, baseCommit };
 	const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot, signal);
 	if (added.code !== 0) {
-		throw new WorktreeSetupError(`git worktree add failed; preserved ${path} and ${branch}: ${added.stderr.trim().slice(0, 200)}`);
+		throw new WorktreeSetupError(
+			`git worktree add failed after attempting path=${JSON.stringify(path)} branch=${JSON.stringify(branch)} base=${baseCommit}: ${added.stderr.trim().slice(0, 200)}`,
+			worktree,
+		);
 	}
-	return { path, cwd: join(path, relativeCwd), branch, repoRoot: stableRepoRoot, baseCommit };
+	return worktree;
 }
 
 /** Flags a payload whose state could not be measured (#88113): unmeasured is not zero. */
@@ -176,7 +186,13 @@ function markUnproven(payload: WorktreePayload, reason: string, unmeasured = "co
 	return payload;
 }
 
-async function inspectDirty(run: GitRunner, cwd: string): Promise<{ dirty: boolean; failure?: string }> {
+export interface WorktreeDirtyInspection {
+	dirty: boolean;
+	failure?: string;
+	initializedSubmodules?: boolean;
+}
+
+async function inspectDirty(run: GitRunner, cwd: string): Promise<WorktreeDirtyInspection> {
 	const refreshed = await run(["update-index", "--really-refresh"], cwd);
 	if (refreshed.code !== 0 && refreshed.code !== 1) {
 		return { dirty: false, failure: `update-index exit ${refreshed.code}: ${refreshed.stderr.trim().slice(0, 200)}` };
@@ -190,6 +206,27 @@ async function inspectDirty(run: GitRunner, cwd: string): Promise<{ dirty: boole
 		return { dirty: false, failure: "assume-unchanged or skip-worktree index entries remain" };
 	}
 	return { dirty: false };
+}
+
+/** Proves a worktree has no tracked, untracked, ignored, index-hidden, or nested submodule work. */
+export async function inspectWorktreeDirty(cwd: string, run: GitRunner = runGit): Promise<WorktreeDirtyInspection> {
+	const root = await inspectDirty(run, cwd);
+	if (root.dirty || root.failure) return root;
+	const modules = await run(["submodule", "status", "--recursive"], cwd);
+	if (modules.code !== 0) return { dirty: false, failure: `submodule list exit ${modules.code}: ${modules.stderr.trim().slice(0, 200)}` };
+	const initializedSubmodules = modules.stdout.split("\n").some((line) => line && !line.startsWith("-"));
+	if (!initializedSubmodules) return { dirty: false };
+	const listed = await run(["submodule", "foreach", "--recursive", "--quiet", "printf '%s\\0' \"$PWD\""], cwd);
+	if (listed.code !== 0) return { dirty: false, failure: `submodule list exit ${listed.code}: ${listed.stderr.trim().slice(0, 200)}` };
+	const paths = listed.stdout.split("\0").filter(Boolean);
+	if (!paths.length) return { dirty: false, failure: "initialized submodule paths unavailable" };
+	for (const path of paths) {
+		const nested = await inspectDirty(run, path);
+		if (nested.failure) return { dirty: false, failure: `submodule ${path}: ${nested.failure}` };
+		if (nested.dirty) return { dirty: true };
+	}
+	const rechecked = await inspectDirty(run, cwd);
+	return { ...rechecked, initializedSubmodules };
 }
 
 /**
@@ -227,29 +264,13 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 		if (head.code !== 0 || head.stdout.trim() !== `refs/heads/${info.branch}`) {
 			return markUnproven(payload, "HEAD is detached, switched, or unreadable", "checked-out commits");
 		}
-		const modules = await run(["submodule", "status", "--recursive"], info.path);
-		if (modules.code !== 0) return markUnproven(payload, `submodule list exit ${modules.code}: ${modules.stderr.trim().slice(0, 200)}`, "dirty");
-		forceRemove = modules.stdout.split("\n").some((line) => line && !line.startsWith("-"));
-		if (forceRemove) {
-			const listed = await run(["submodule", "foreach", "--recursive", "--quiet", "printf '%s\\0' \"$PWD\""], info.path);
-			if (listed.code !== 0) return markUnproven(payload, `submodule list exit ${listed.code}: ${listed.stderr.trim().slice(0, 200)}`, "dirty");
-			const paths = listed.stdout.split("\0").filter(Boolean);
-			if (!paths.length) return markUnproven(payload, "initialized submodule paths unavailable", "dirty");
-			for (const path of paths) {
-				const nested = await inspectDirty(run, path);
-				if (nested.failure) return markUnproven(payload, `submodule ${path}: ${nested.failure}`, "dirty");
-				if (nested.dirty) {
-					payload.dirty = true;
-					return payload;
-				}
-			}
-		}
-		const rechecked = await inspectDirty(run, info.path);
+		const rechecked = await inspectWorktreeDirty(info.path, run);
 		if (rechecked.failure) return markUnproven(payload, `final ${rechecked.failure}`, "dirty");
 		if (rechecked.dirty) {
 			payload.dirty = true;
 			return payload;
 		}
+		forceRemove = Boolean(rechecked.initializedSubmodules);
 	} else if (payload.commits > 0) return payload;
 
 	const cleanupCwd = info.repoRoot || info.path;

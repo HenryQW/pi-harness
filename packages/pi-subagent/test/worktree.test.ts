@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { createChildWorktree, finalizeChildWorktree, type GitRunner } from "../src/worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type GitRunner } from "../src/worktree.ts";
 import { loadRoles } from "../src/index.ts";
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
@@ -311,7 +311,13 @@ test("createChildWorktree preserves ambiguous state after a failed worktree add"
 			"rev-parse --git-common-dir": ok(join(repo, ".git") + "\n"),
 			"worktree add": fail("error: smudge filter died"),
 		}, calls)),
-		/worktree add failed; preserved/,
+		(error) => {
+			assert.ok(error instanceof WorktreeSetupError);
+			assert.equal(error.worktree.repoRoot, repo);
+			assert.equal(error.worktree.baseCommit, "abc123");
+			assert.match(error.message, /path=.*branch=.*base=abc123/);
+			return true;
+		},
 	);
 	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
 	assert.equal(calls.some((args) => args[0] === "branch"), false);
@@ -400,7 +406,7 @@ test("createChildWorktree preserves a dirty existing worktree on ID collision", 
 	assert.ok(first);
 	await writeFile(join(first.path, "dirty.txt"), "keep me\n");
 
-	await assert.rejects(createChildWorktree(repo, "same-id"), /worktree add failed; preserved/);
+	await assert.rejects(createChildWorktree(repo, "same-id"), /worktree add failed after attempting/);
 	assert.equal(await readFile(join(first.path, "dirty.txt"), "utf8"), "keep me\n");
 	assert.equal(git(repo, "branch", "--list", first.branch).includes(first.branch), true);
 });
