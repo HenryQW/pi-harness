@@ -35,7 +35,8 @@ const failures = [];
 function run(workspace) {
 	return new Promise((resolve) => {
 		const args = ["run", "test", "--workspace", workspace];
-		if (testArgs.length) args.push("--", ...testArgs);
+		if (workspace === "@henryqw/pi-subagent") args.push("--", "--test-concurrency=2", ...testArgs);
+		else if (testArgs.length) args.push("--", ...testArgs);
 		const child = spawn(process.execPath, [npmExecPath, ...args], { stdio: "inherit" });
 		child.once("error", (error) => {
 			console.error(`Failed to start tests for ${workspace}: ${error.message}`);
