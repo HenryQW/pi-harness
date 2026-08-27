@@ -14,7 +14,6 @@
 	"license": "MIT",
 	"files": [
 		"extensions",
-		"prompts",
 		"src",
 		"README.md",
 		"LICENSE"
@@ -50,9 +49,6 @@
 	"pi": {
 		"extensions": [
 			"./extensions/memory.ts"
-		],
-		"prompts": [
-			"./prompts"
 		]
 	}
 }
