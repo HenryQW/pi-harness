@@ -7,6 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const MAX_NOTES = 4;
 const WIDGET_KEY = "pi-notes";
@@ -70,8 +71,29 @@ export function renderNotes(notes: string[]): string[] {
 	return notes.map((note, i) => `${i + 1}. ${note}`);
 }
 
+export function renderNotesWidget(notes: string[], width: number): string[] {
+	const renderWidth = Math.max(1, width);
+	return renderNotes(notes).flatMap((note) => {
+		const lines = wrapTextWithAnsi(note, renderWidth);
+		return lines.length > 2
+			? [lines[0]!, truncateToWidth(`${lines[1]}…`, renderWidth, "…")]
+			: lines;
+	});
+}
+
 function setNotesWidget(ctx: ExtensionContext, notes: string[]): void {
-	ctx.ui.setWidget(WIDGET_KEY, notes.length ? renderNotes(notes) : undefined);
+	if (!notes.length) {
+		ctx.ui.setWidget(WIDGET_KEY, undefined);
+		return;
+	}
+	if (ctx.mode !== "tui") {
+		ctx.ui.setWidget(WIDGET_KEY, renderNotes(notes));
+		return;
+	}
+	ctx.ui.setWidget(WIDGET_KEY, () => ({
+		invalidate() {},
+		render: (width) => renderNotesWidget(notes, width),
+	}));
 }
 
 async function resolveWorktree(pi: ExtensionAPI, cwd: string): Promise<WorktreeIdentity> {
