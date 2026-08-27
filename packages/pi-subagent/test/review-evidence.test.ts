@@ -42,13 +42,28 @@ async function candidate(
 	return { base, tip: git(worktree, "rev-parse", "HEAD"), worktree };
 }
 
-async function evidenceDirectories(): Promise<Set<string>> {
-	return new Set((await readdir(tmpdir())).filter((name) => name.startsWith("pi-subagent-review-")));
+function trackEvidenceDirectories(t: import("node:test").TestContext): string[] {
+	const directories: string[] = [];
+	const evidencePrefix = join(tmpdir(), "pi-subagent-review-");
+	const originalMkdtemp = fs.mkdtemp.bind(fs);
+	const trackedMkdtemp = mock.method(fs, "mkdtemp", async (prefix: string) => {
+		const directory = await originalMkdtemp(prefix);
+		if (String(prefix) === evidencePrefix) directories.push(directory);
+		return directory;
+	});
+	t.after(() => trackedMkdtemp.mock.restore());
+	return directories;
+}
+
+function assertEvidenceDirectoriesRemoved(directories: readonly string[]): void {
+	assert.ok(directories.length > 0, "review evidence did not create a temporary directory");
+	for (const directory of directories) assert.equal(existsSync(directory), false);
 }
 
 test("exact evidence creates one private binary patch and idempotently cleans it up", async (t) => {
 	const repo = await repository(t);
 	const context = await candidate(t, repo, "patch");
+	const directories = trackEvidenceDirectories(t);
 	const evidence = await prepareExactReviewEvidence(context);
 
 	assert.equal(evidence.base, context.base);
@@ -65,6 +80,8 @@ test("exact evidence creates one private binary patch and idempotently cleans it
 	await evidence.cleanup();
 	await evidence.cleanup();
 	assert.equal(existsSync(evidence.patchPath), false);
+	assert.equal(directories.length, 1);
+	assertEvidenceDirectoriesRemoved(directories);
 });
 
 test("exact evidence accepts an empty base-to-tip patch", async (t) => {
@@ -77,7 +94,7 @@ test("exact evidence accepts an empty base-to-tip patch", async (t) => {
 
 test("exact evidence cleans up failed temporary artifact setup", async (t) => {
 	const context = await candidate(t, await repository(t), "chmod");
-	const before = await evidenceDirectories();
+	const directories = trackEvidenceDirectories(t);
 	const chmod = fs.chmod.bind(fs);
 	const directoryChmod = mock.method(fs, "chmod", async (path: PathLike, mode: Mode) => {
 		if (String(path).startsWith(join(tmpdir(), "pi-subagent-review-"))) throw new Error("directory chmod failed");
@@ -85,7 +102,8 @@ test("exact evidence cleans up failed temporary artifact setup", async (t) => {
 	});
 	t.after(() => directoryChmod.mock.restore());
 	await assert.rejects(prepareExactReviewEvidence(context), /directory chmod failed/);
-	assert.deepEqual(await evidenceDirectories(), before);
+	assert.equal(directories.length, 1);
+	assertEvidenceDirectoriesRemoved(directories);
 
 	directoryChmod.mock.restore();
 	let closed = false;
@@ -108,7 +126,8 @@ test("exact evidence cleans up failed temporary artifact setup", async (t) => {
 	t.after(() => fileChmod.mock.restore());
 	await assert.rejects(prepareExactReviewEvidence(context), /file chmod failed/);
 	assert.equal(closed, true);
-	assert.deepEqual(await evidenceDirectories(), before);
+	assert.equal(directories.length, 2);
+	assertEvidenceDirectoriesRemoved(directories);
 });
 
 test("exact evidence rejects dirty and wrong-tip registered worktrees", async (t) => {
@@ -134,9 +153,10 @@ test("a patch exactly one byte over the limit removes partial private evidence",
 	context.tip = git(context.worktree, "rev-parse", "HEAD");
 	patch = execFileSync("git", ["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--binary", context.base, context.tip], { cwd: context.worktree });
 	assert.equal(patch.length, target);
-	const before = await evidenceDirectories();
+	const directories = trackEvidenceDirectories(t);
 	await assert.rejects(prepareExactReviewEvidence(context), /exceeds 524288 bytes/);
-	assert.deepEqual(await evidenceDirectories(), before);
+	assert.equal(directories.length, 1);
+	assertEvidenceDirectoriesRemoved(directories);
 });
 
 test("exact evidence accepts changed symbolic links", async (t) => {
