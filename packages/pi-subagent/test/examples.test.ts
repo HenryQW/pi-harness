@@ -21,18 +21,16 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	);
 	assert.match(skill, /^name: pi-subagent-delegated-development$/m);
 	assert.match(skill, /^description: .+/m);
-	assert.match(skill, /git rev-parse --verify -q HEAD\^\{commit\}/);
-	assert.match(skill, /structured worktree result/i);
-	assert.match(skill, /Parallelize only units expected to commute/i);
-	assert.match(skill, /Never merge an earlier raw parallel tip into a changed Main/i);
-	assert.match(skill, /Do not repeat validation after an exact fast-forward/i);
-	assert.match(skill, /git diff --no-textconv --no-ext-diff --ignore-submodules=none --binary/);
-	assert.match(skill, /Hash the stored bytes and record `\{path, bytes, sha256\}`/i);
-	assert.match(skill, /never inline patch contents/i);
-	assert.match(skill, /context `\{type:'child_branch', branch\}`/i);
-	assert.match(skill, /git merge --ff-only/i);
-	assert.match(skill, /one fresh repair Implementer per unit/i);
-	assert.match(skill, /non-forcibly remove the integrated worktree/i);
+	assert.match(skill, /call `delegate_flow`/i);
+	assert.match(skill, /independent units expected to commute/i);
+	assert.match(skill, /runtime owns.*worktrees.*Git identity.*rebasing.*declared validation.*exact read-only review.*fast-forward integration.*cleanup/is);
+	assert.match(skill, /integrates only the exact reviewed tip OID/i);
+	assert.match(skill, /never edit a child worktree.*reimplement Flow/is);
+	assert.match(skill, /delegate_flow_continue\(\{ guidance:/);
+	assert.match(skill, /one explicit continuation and no more/i);
+	assert.match(skill, /terminal conflict\/failure.*retained path/is);
+	assert.match(skill, /Dependent work remains outside Flow/i);
+	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|candidate|advisory|reconsideration|public review/i);
 });
 
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {
