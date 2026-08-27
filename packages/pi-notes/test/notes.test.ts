@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import notesExtension, { parseNotes, renderNotes } from "../extensions/notes.ts";
+import notesExtension, { parseNotes, renderNotes, renderNotesWidget } from "../extensions/notes.ts";
 
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
 type Identity = { repository: string; worktree: string; gitDir: string };
@@ -52,8 +52,13 @@ async function harness(t: TestContext) {
 	let select: ((options: string[]) => Promise<string | undefined>) | undefined;
 	const context = (cwd: string) => ({
 		cwd,
+		mode: "tui",
 		ui: {
-			setWidget(_key: string, content: string[] | undefined) { widget = content; },
+			setWidget(_key: string, content: unknown) {
+				widget = typeof content === "function"
+					? (content as () => { render(width: number): string[] })().render(80)
+					: content as string[] | undefined;
+			},
 			notify(message: string) { notified = message; },
 			select(_title: string, options: string[]) { return select ? select(options) : Promise.resolve(undefined); },
 		},
@@ -95,6 +100,13 @@ test("parseNotes validates safe worktree records", () => {
 test("renderNotes numbers entries", () => {
 	assert.deepEqual(renderNotes(["a"]), ["1. a"]);
 	assert.deepEqual(renderNotes([]), []);
+});
+
+test("widget limits each note to two lines", () => {
+	assert.deepEqual(
+		renderNotesWidget(["short", "alpha beta gamma delta"], 12),
+		["1. short", "2. alpha", "beta gamma…"],
+	);
 });
 
 test("notes persist independently per worktree without creating config on startup", async (t) => {
