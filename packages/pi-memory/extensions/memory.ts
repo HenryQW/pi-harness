@@ -12,11 +12,11 @@ const SEPARATOR = "═".repeat(46);
 // Backups and the lock file live OUTSIDE config.directory (which may be
 // iCloud-synced) so the memory dir holds exactly MEMORY.md and USER.md (ADR 005).
 const BACKUP_DIR = () => join(getAgentDir(), "config", "pi-memory", "backups");
-const LAST_DREAM_PATH = () => join(getAgentDir(), "config", "pi-memory", "last-dream.txt");
+const DREAM_STATE_PATH = () => join(getAgentDir(), "config", "pi-memory", "dream.json");
 const DREAM_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 const DREAM_FULL_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DREAM_USAGE_PERCENT = 70;
-const LAST_DREAM_MAX_BYTES = 64;
+const DREAM_STATE_MAX_BYTES = 4 * 1024;
 // Defense-in-depth against snapshot frame spoofing by poisoned on-disk entries.
 const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
 const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
@@ -58,17 +58,21 @@ async function loadSystemState(path: string): Promise<SystemState> {
 async function loadLastDreamAt(): Promise<number | undefined> {
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	try {
-		handle = await open(LAST_DREAM_PATH(), "r");
-		const buffer = Buffer.alloc(LAST_DREAM_MAX_BYTES + 1);
+		handle = await open(DREAM_STATE_PATH(), "r");
+		const buffer = Buffer.alloc(DREAM_STATE_MAX_BYTES + 1);
 		let total = 0;
 		while (total < buffer.length) {
 			const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
 			if (bytesRead === 0) break;
 			total += bytesRead;
 		}
-		if (total > LAST_DREAM_MAX_BYTES) throw new Error(`Timestamp file is too large: ${LAST_DREAM_PATH()}`);
-		const value = Date.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)).trim());
-		if (!Number.isFinite(value) || value > Date.now()) throw new Error(`Invalid timestamp in ${LAST_DREAM_PATH()}`);
+		if (total > DREAM_STATE_MAX_BYTES) throw new Error(`Dream state file is too large: ${DREAM_STATE_PATH()}`);
+		const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)));
+		const lastDreamAt = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>).lastDreamAt
+			: undefined;
+		const value = typeof lastDreamAt === "string" ? Date.parse(lastDreamAt) : Number.NaN;
+		if (!Number.isFinite(value) || value > Date.now()) throw new Error(`Invalid lastDreamAt in ${DREAM_STATE_PATH()}`);
 		return value;
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
@@ -79,14 +83,14 @@ async function loadLastDreamAt(): Promise<number | undefined> {
 }
 
 async function saveLastDreamAt(): Promise<void> {
-	const path = LAST_DREAM_PATH();
+	const path = DREAM_STATE_PATH();
 	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
 	let created = false;
 	try {
 		const handle = await open(tempPath, "wx", 0o600);
 		created = true;
 		try {
-			await handle.writeFile(`${new Date().toISOString()}\n`);
+			await handle.writeFile(`${JSON.stringify({ lastDreamAt: new Date().toISOString() }, null, 2)}\n`);
 		} finally {
 			await handle.close();
 		}

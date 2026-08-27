@@ -105,7 +105,7 @@ test("session start recommends /dream only for valid stores within their caps", 
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-reminder-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
-	const statePath = join(agentDir, "config", "pi-memory", "last-dream.txt");
+	const statePath = join(agentDir, "config", "pi-memory", "dream.json");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
@@ -128,21 +128,21 @@ test("session start recommends /dream only for valid stores within their caps", 
 		assert.deepEqual(notifications, ["Memory dream recommended; run /dream."]);
 
 		notifications.length = 0;
-		await writeFile(statePath, `${new Date().toISOString()}\n`);
+		await writeFile(statePath, JSON.stringify({ lastDreamAt: new Date().toISOString() }));
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.deepEqual(notifications, []);
 
-		await writeFile(statePath, `${new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString()}\n`);
+		await writeFile(statePath, JSON.stringify({ lastDreamAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() }));
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.deepEqual(notifications, ["Memory dream recommended; run /dream."]);
 
 		notifications.length = 0;
-		await writeFile(statePath, `${new Date().toISOString()}\n`);
+		await writeFile(statePath, JSON.stringify({ lastDreamAt: new Date().toISOString() }));
 		await writeFile(join(memoryDir, "MEMORY.md"), "1234567");
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.deepEqual(notifications, []);
 
-		await writeFile(statePath, `${new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()}\n`);
+		await writeFile(statePath, JSON.stringify({ lastDreamAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() }));
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.deepEqual(notifications, ["Memory dream recommended; run /dream."]);
 
@@ -169,9 +169,9 @@ test("session start recommends /dream only for valid stores within their caps", 
 
 		await rm(join(memoryDir, "MEMORY.md"));
 		await writeFile(join(memoryDir, "MEMORY.md"), "123456");
-		await writeFile(statePath, "x".repeat(65));
+		await writeFile(statePath, "x".repeat(4097));
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
-		assert.match(notifications[0]!, /Timestamp file is too large/);
+		assert.match(notifications[0]!, /Dream state file is too large/);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -256,12 +256,12 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		await dream.handler("", context(false));
 		assert.equal(notifications[1], "Cannot run /dream while the agent is busy.");
 
-		const lastDreamPath = join(agentDir, "config", "pi-memory", "last-dream.txt");
+		const dreamStatePath = join(agentDir, "config", "pi-memory", "dream.json");
 		await dream.handler("", context(true));
-		await assert.rejects(readFile(lastDreamPath), /ENOENT/);
+		await assert.rejects(readFile(dreamStatePath), /ENOENT/);
 		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
 		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
-		assert.ok(Number.isFinite(Date.parse((await readFile(lastDreamPath, "utf8")).trim())));
+		assert.ok(Number.isFinite(Date.parse(JSON.parse(await readFile(dreamStatePath, "utf8")).lastDreamAt)));
 		assert.match(messages[0]!, /USER PROFILE\/MEMORY already in your system context; do not reread those files/);
 		assert.doesNotMatch(messages[0]!, /Live entries by target/);
 		assert.doesNotMatch(messages[0]!, /stable fact/);
@@ -270,22 +270,22 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		assert.match(messages[0]!, /one memory batch per affected target/);
 		assert.match(messages[0]!, /no memory call if none/);
 
-		await rm(lastDreamPath);
+		await rm(dreamStatePath);
 		await dream.handler("", context(true));
 		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "toolUse" }] });
 		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
-		await assert.rejects(readFile(lastDreamPath), /ENOENT/);
+		await assert.rejects(readFile(dreamStatePath), /ENOENT/);
 		assert.equal(notifications.at(-1), "Dream did not complete; its timestamp was not updated.");
 
 		const dreamTarget = join(root, "dream-target.txt");
 		await writeFile(dreamTarget, "keep this target");
-		await symlink(dreamTarget, lastDreamPath);
+		await symlink(dreamTarget, dreamStatePath);
 		await dream.handler("", context(true));
 		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
 		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
 		assert.equal(await readFile(dreamTarget, "utf8"), "keep this target");
-		assert.equal((await lstat(lastDreamPath)).isSymbolicLink(), false);
-		assert.ok(Number.isFinite(Date.parse((await readFile(lastDreamPath, "utf8")).trim())));
+		assert.equal((await lstat(dreamStatePath)).isSymbolicLink(), false);
+		assert.ok(Number.isFinite(Date.parse(JSON.parse(await readFile(dreamStatePath, "utf8")).lastDreamAt)));
 
 		process.argv.push(CHILD_PAYLOAD_ARG);
 		try {
@@ -301,11 +301,11 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		await dream.handler("", context(true));
 		assert.ok(messages.at(-1)!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
 
-		await rm(lastDreamPath);
+		await rm(dreamStatePath);
 		await dream.handler("", context(true));
 		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "error" }] });
 		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
-		await assert.rejects(readFile(lastDreamPath), /ENOENT/);
+		await assert.rejects(readFile(dreamStatePath), /ENOENT/);
 		assert.equal(notifications.at(-1), "Dream did not complete; its timestamp was not updated.");
 
 		await rm(systemPath);
