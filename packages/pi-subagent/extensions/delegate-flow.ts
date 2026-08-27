@@ -623,10 +623,10 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			assertCurrent(flow);
 			const noOp = evidence.base === evidence.tip;
 			if (!noOp) {
-				const merged = await git(["merge", "--ff-only", evidence.tip], main.root, signal);
+				const merged = await git(["merge", "--no-overwrite-ignore", "--ff-only", evidence.tip], main.root, signal);
 				assertCurrent(flow);
 				if (merged.code !== 0 || merged.killed) {
-					return terminal(flow, "integration", commandFailure(`git merge --ff-only ${evidence.tip}`, merged), meter);
+					return terminal(flow, "integration", commandFailure(`git merge --no-overwrite-ignore --ff-only ${evidence.tip}`, merged), meter);
 				}
 				main.expectedHead = evidence.tip;
 				flow.completed.push({ id: unit.request.id, noOp: false });

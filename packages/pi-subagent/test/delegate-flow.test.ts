@@ -528,8 +528,8 @@ test("successful units rebase in place onto exact expected Main, review final OI
 	assert.equal(await readFile(join(repo, "second.txt"), "utf8"), "second\n");
 	const merges = app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge");
 	assert.deepEqual(merges.map(({ args }) => args.slice(1)), [
-		["merge", "--ff-only", packets[0]!.tip],
-		["merge", "--ff-only", packets[1]!.tip],
+		["merge", "--no-overwrite-ignore", "--ff-only", packets[0]!.tip],
+		["merge", "--no-overwrite-ignore", "--ff-only", packets[1]!.tip],
 	]);
 });
 
@@ -714,6 +714,45 @@ test("a second same-Unit failure is terminal, clears active state, and permits a
 
 	const completed = await flowTool(app).execute("later", { units: [unit("later")] }, undefined, undefined, app.ctx);
 	assert.equal(completed.details.outcome, "completed");
+});
+
+test("ignored Main collision rejects integration without overwriting data and retains the reported Unit", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	const mainHead = git(repo, "rev-parse", "HEAD");
+	const mainCache = join(repo, "result.cache");
+	await writeFile(mainCache, "Main ignored bytes\n");
+	let approvedTip = "";
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			await writeFile(join(prepared.cwd, "result.cache"), "Unit reviewed bytes\n");
+			git(prepared.cwd, "add", "-f", "result.cache");
+			git(prepared.cwd, "commit", "-qm", "track result cache");
+			return success();
+		}
+		approvedTip = reviewPacket(prepared.task).tip;
+		return success("PASS");
+	});
+
+	const result = await flowTool(app).execute("ignored-collision", { units: [unit("collision")] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "failed");
+	assert.equal(result.details.failure.classification, "integration");
+	assert.match(approvedTip, /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i);
+	assert.match(result.details.failure.diagnostic, /would be overwritten by merge/);
+	assert.equal(git(repo, "rev-parse", "HEAD"), mainHead);
+	assert.equal(await readFile(mainCache, "utf8"), "Main ignored bytes\n");
+	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["collision"]);
+	const retained = result.details.retained[0];
+	assert.equal(existsSync(retained.path), true);
+	assert.equal(await readFile(join(retained.path, "result.cache"), "utf8"), "Unit reviewed bytes\n");
+	assert.equal(git(retained.path, "rev-parse", "HEAD"), approvedTip);
+	assert.equal(git(retained.path, "status", "--porcelain"), "");
+	assert.deepEqual(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").map(({ args }) => args.slice(1)), [
+		["merge", "--no-overwrite-ignore", "--ff-only", approvedTip],
+	]);
 });
 
 test("cleanup refusal after exact integration preserves ignored work with a bounded warning", async (t) => {
