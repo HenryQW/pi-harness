@@ -1,7 +1,13 @@
+import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, open, rename, stat, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export const ENTRY_DELIMITER: string = "\n§\n";
+const RESERVED_FRAME_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/;
+
+export function isReservedFrameLine(line: string): boolean {
+	return RESERVED_FRAME_LINE.test(line);
+}
 
 export type Target = "memory" | "user";
 
@@ -103,8 +109,8 @@ export class MemoryStore {
 	private readonly observedExisting = new Set<Target>();
 	private disappearanceDetected = false;
 	private unreadableReason: string | undefined;
-	// mtime/size of the last successfully loaded file, per target.
-	private readonly loadedFingerprints = new Map<Target, { mtimeMs: number; size: number }>();
+	// Metadata and content digest of the last successfully loaded file, per target.
+	private readonly loadedFingerprints = new Map<Target, { mtimeMs: number; size: number; digest: string }>();
 
 	constructor(config: StoreConfig) {
 		this.config = config;
@@ -183,6 +189,24 @@ export class MemoryStore {
 		return { entries: file.kind === "ok" ? parseEntries(file.raw) : [] };
 	}
 
+	private async digestFile(path: string): Promise<string> {
+		const handle = await open(path, "r");
+		try {
+			const hash = createHash("sha256");
+			const buffer = Buffer.alloc(64 * 1024);
+			let total = 0;
+			for (;;) {
+				const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+				if (bytesRead === 0) return hash.digest("base64url");
+				total += bytesRead;
+				if (total > MAX_FILE_BYTES) throw new Error(`${path} grew over the ${MAX_FILE_BYTES.toLocaleString()}-byte limit during mutation.`);
+				hash.update(buffer.subarray(0, bytesRead));
+			}
+		} finally {
+			await handle.close();
+		}
+	}
+
 	/**
 	 * Returns file state: "absent" for a missing file, "unreadable" when the file
 	 * EXISTS but could not be read (permissions or invalid UTF-8), "oversized"
@@ -221,7 +245,11 @@ export class MemoryStore {
 			// by V1-plus-mutation.
 			try {
 				const st = await (this.config.statFn ?? stat)(this.pathFor(target));
-				this.loadedFingerprints.set(target, { mtimeMs: st.mtimeMs, size: st.size });
+				this.loadedFingerprints.set(target, {
+					mtimeMs: st.mtimeMs,
+					size: st.size,
+					digest: createHash("sha256").update(buffer.subarray(0, total)).digest("base64url"),
+				});
 			} catch {
 				this.loadedFingerprints.delete(target);
 			}
@@ -317,7 +345,8 @@ export class MemoryStore {
 				const fingerprint = this.loadedFingerprints.get(target);
 				if (fingerprint) {
 					const current = await (this.config.statFn ?? stat)(path);
-					if (current.mtimeMs !== fingerprint.mtimeMs || current.size !== fingerprint.size) {
+					if (current.mtimeMs !== fingerprint.mtimeMs || current.size !== fingerprint.size
+						|| await this.digestFile(path) !== fingerprint.digest) {
 						throw new Error(`${path} changed during this mutation (likely sync); retry to merge its content.`);
 					}
 				}
@@ -339,7 +368,7 @@ export class MemoryStore {
 		// included): anything the sanitizer would filter must be rejected here,
 		// or writes report success while vanishing from snapshots.
 		for (const line of normalized.split("\n")) {
-			if (/^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/.test(line)) {
+			if (isReservedFrameLine(line)) {
 				return "Content must not contain lines starting with '═' separators or the reserved headers 'MEMORY (your personal notes' / 'USER PROFILE (who the user is'.";
 			}
 		}
