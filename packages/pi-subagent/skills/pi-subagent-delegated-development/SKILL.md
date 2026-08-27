@@ -1,54 +1,47 @@
 ---
 name: pi-subagent-delegated-development
-description: Orchestrate delegated development with pi-subagent delegate_task. Use when splitting implementation work into bounded units for isolated implementer children reviewed by a read-only reviewer before merging.
+description: Orchestrate bounded implementation with isolated implementers and exact read-only review before integration.
 ---
 
 # Delegated Development
 
-You are Main. Decompose work into bounded units and coordinate; never edit files yourself.
+You are Main: slice, delegate, gate, and integrate. Never implement child work yourself or use external model APIs/CLIs.
 
-All model and agent work in this workflow goes through Pi's `delegate_task` and Pi-managed children. Do not invoke external LLM APIs, SDKs, agent harnesses, or model CLIs; ordinary deterministic developer tools such as `git`, npm, test runners, and compilers remain allowed.
+## Preconditions
 
-## Required preflight
-
-Before any delegation, require that Main's cwd is a Git working tree with a committed `HEAD`:
+Before delegation and immediately before integration, require a committed `HEAD` and an entirely clean Main worktree:
 
 ```bash
-test "$(git rev-parse --is-inside-work-tree)" = true &&
-git rev-parse --verify -q HEAD^{commit} >/dev/null
+git rev-parse --verify -q HEAD^{commit} >/dev/null &&
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
 ```
 
-If this fails, stop before delegation and report that this Skill requires a Git repository with a committed `HEAD`; do not rely on the generic worktree fallback to Main's cwd.
+Stop on failure; never stash, discard, or hide user changes. Built-in `implementer` must retain worktree isolation and `reviewer` must remain read-only; reject user overrides that weaken either contract.
 
-Before recording each unit's `base=$(git rev-parse HEAD)`, and again immediately before integration and validation, require `git status --porcelain=v1 --untracked-files=all` to be empty. If Git cannot inspect status or any tracked or untracked change is present, stop and ask the user to preserve the changes; never stash, discard, hide, or work around them.
+## Slice
 
-## Roles
+Use the fewest cohesive units. Parallelize only units expected to commute and own non-overlapping files and invariants; otherwise combine or sequence them. Record Main's base before launching each wave.
 
-The package-shipped built-in Roles `implementer` (`isolation: worktree`) and `reviewer` (read-only patch-and-file review) are always available; no installation step is required. A same-name user override replaces the built-in entirely. Before using this workflow, Main must verify that each override preserves implementer worktree isolation and reviewer read-only patch-and-file constraints; fail clearly if it does not. Do not invent substitute Roles.
+## Implement
 
-## Per-unit loop
+Call `delegate_task` with `implementer`. Give each unit its objective, owned scope, exclusions, acceptance criteria, validation, and base. Require all intended changes and tests committed in the retained worktree.
 
-For each bounded unit:
+Use `delegate_task`'s structured worktree result instead of asking the child to repeat path, branch, base, or cleanliness evidence. Reject missing, dirty, uncommitted, moved, or non-descendant results.
 
-1. **Implement** — one `delegate_task` single call to `implementer`. The packet states the objective, touched scope, required validation, and recorded base commit. Require its output to identify the retained worktree path, branch, base commit, tip commit, changed files from the base-to-tip committed diff, and clean `git status --porcelain=v1 --untracked-files=all` result.
-2. **Verify and review** — refuse review or merge unless Main independently verifies that the worktree was retained and is clean (including untracked files), the reported base/branch/tip identities are complete and match Git, the tip is descended from the recorded base, and the reported changed files equal `git diff --name-only "$base" "$tip"`. All intended changes must be in that committed base-to-tip diff. If any evidence is missing or any check fails, send the work to a fresh implementer repair; never review dirty or uncommitted work.
+## Gate and integrate
 
-   Create a private temporary exact-patch artifact outside the repository from `git diff --no-textconv --no-ext-diff --ignore-submodules=none --binary "$base" "$tip"`. Independently regenerate that same diff and byte-compare it with the artifact, then record its path, byte count, and SHA-256. If creation, regeneration, comparison, byte count, or checksum fails, stop and report the artifact failure clearly; do not review or merge. Do not put any complete patch content in `delegate_task` text or argv.
+Process completed units in declared order:
 
-   Make one `delegate_task` single call to `reviewer` with only a bounded metadata packet: base, tip, review context `{type:'child_branch', branch}`, the verified complete patch file reference (`path`, `bytes`, `sha256`), and the verified changed paths. If that complete metadata cannot fit the task transport bound, stop and report it rather than truncating or inlining patch content. Chain entries do not share files: `{previous}` passes text only.
-3. **Merge** — only after an approving review, re-check Main's clean status, verify the branch tip still equals the reviewed tip commit, then merge that exact commit (not the branch name) into Main's current worktree and run focused validation there. Never merge on unresolved findings.
-4. **Clean up after success** — only after the exact reviewed tip is integrated and focused validation passes, remove each reported retained worktree, then safely delete its task branch. Include a superseded repair-round worktree only when its exact tip is an ancestor of integrated `HEAD`. For each candidate, verify ancestry first, use non-forced worktree removal followed by `git branch -d`, and stop/report cleanup failure without deleting later evidence. On any integration or validation failure, preserve every temporary patch artifact, retained worktree, and task branch for recovery. After integration and validation succeed, remove the temporary reviewer patch artifacts.
+1. Resolve the retained branch tip and changed paths once. Verify its worktree is clean and its complete `base..tip` range contains the intended change.
+2. If Main no longer equals that base, replay the complete range onto current clean Main in a fresh candidate worktree. Never merge an earlier raw parallel tip into a changed Main.
+3. Run the unit validation only when replay produced a new candidate state. Do not repeat validation after an exact fast-forward of the same tree.
+4. Generate the exact binary `base..tip` patch once into a private temporary file using `git diff --no-textconv --no-ext-diff --ignore-submodules=none --binary`. Hash the stored bytes and record `{path, bytes, sha256}`; never inline patch contents in a task or argv.
+5. Call `delegate_task` with `reviewer`, supplying requirements, resolved base/tip, context `{type:'child_branch', branch}`, changed paths, and the patch reference. Integrate only `PASS` with zero findings.
+6. Recheck clean Main at the reviewed base, then `git merge --ff-only` the full reviewed tip OID—not a branch name.
+7. Remove the patch, then non-forcibly remove the integrated worktree and delete its branch with `git branch -d`. Preserve evidence on any failure.
 
-## Findings
+## Findings and failures
 
-Any reviewer finding goes back as a **fresh** `implementer` delegation containing the findings plus the reviewed base/branch/tip identities and complete exact patch file reference, followed by a fresh review of the new state. A fresh repair implementer starts in a new worktree from Main HEAD and does not contain the prior unit commit: the repair packet must first bring the whole reviewed `$base..$tip` range into its fresh worktree by merging the exact `$tip`, or cherry-picking every range commit in order. Cherry-pick `$tip` alone only after `git rev-list --count "$base..$tip"` verifies the range is exactly one commit; then address the findings. Dirty or uncommitted work also goes only to this fresh repair path. Bound the loop (e.g. three rounds); past the bound, stop and report to the user instead of merging.
+Allow one fresh repair Implementer per unit. Give it the original requirements, exact source range, findings or failure, and current Main base. The repair must produce a clean committed replacement that receives fresh validation and exact review. If repair fails, stop; never loop, guess conflict resolutions, or reuse an old verdict.
 
-## Parallelism
-
-Independent units may run concurrently via one `delegate_task` parallel call (max 8 entries) or concurrent single calls, each still following its own implement → review cycle. Never parallelize a unit's review ahead of its implementation. Each child gets its own deterministic worktree; they never share files implicitly.
-
-## Boundaries
-
-- Never bypass review, edit inside a child's worktree, or re-implement a child's work yourself.
-- On child failure, recover from the reported preserved-worktree evidence; retry at most once per unit before escalating to the user.
-- Do not push, publish, release, or open PRs without explicit user authorization.
+Never bypass review, mutate a child worktree, push, publish, release, or open a pull request without explicit authorization.

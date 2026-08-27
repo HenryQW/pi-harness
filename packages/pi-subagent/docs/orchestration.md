@@ -348,6 +348,6 @@ cp <package-install-dir>/examples/roles/scout.md ~/.pi/agent/config/pi-subagent/
 
 The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the files and their names are entirely user-owned.
 
-The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It prescribes an implement → review → merge loop over the built-in `implementer` and `reviewer` Roles, with private byte-verified exact-patch file references rather than inline patch text and cleanup only after integration validation. It defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
+The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side orchestration policy only. It slices commuting units, trusts `delegate_task`'s structured worktree evidence, creates and hashes each private exact patch once, reviews serial integration candidates, and permits one fresh repair. Exact fast-forwards are not validated twice. It defines no workflow AST, runtime code, or configuration; `delegate_task` remains the flat single/parallel/chain mechanism.
 
 See the architectural decision: [Compose workflows outside the ephemeral executor](./adr/001-composable-ephemeral-execution.md).

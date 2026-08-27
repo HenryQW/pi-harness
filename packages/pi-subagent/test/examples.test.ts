@@ -22,21 +22,17 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /^name: pi-subagent-delegated-development$/m);
 	assert.match(skill, /^description: .+/m);
 	assert.match(skill, /git rev-parse --verify -q HEAD\^\{commit\}/);
-	assert.match(skill, /refuse review or merge unless/i);
-	assert.match(skill, /never review dirty or uncommitted work/i);
-	assert.match(skill, /git diff --no-textconv --no-ext-diff --ignore-submodules=none --binary "\$base" "\$tip"/);
-	assert.match(skill, /same diff and byte-compare it with the artifact/i);
-	assert.match(skill, /whole reviewed `\$base\.\.\$tip` range/i);
-	assert.match(skill, /cherry-picking every range commit in order/i);
-	assert.match(skill, /git rev-list --count "\$base\.\.\$tip"/);
-	assert.match(skill, /private temporary exact-patch artifact/i);
-	assert.match(skill, /byte-compare it with the artifact/i);
-	assert.match(skill, /review context `\{type:'child_branch', branch\}`/i);
-	assert.match(skill, /patch file reference \(`path`, `bytes`, `sha256`\)/i);
-	assert.match(skill, /Do not put any complete patch content in `delegate_task` text or argv/i);
-	assert.match(skill, /immediately before integration and validation/i);
-	assert.match(skill, /non-forced worktree removal followed by `git branch -d`/i);
-	assert.match(skill, /merge that exact commit \(not the branch name\)/i);
+	assert.match(skill, /structured worktree result/i);
+	assert.match(skill, /Parallelize only units expected to commute/i);
+	assert.match(skill, /Never merge an earlier raw parallel tip into a changed Main/i);
+	assert.match(skill, /Do not repeat validation after an exact fast-forward/i);
+	assert.match(skill, /git diff --no-textconv --no-ext-diff --ignore-submodules=none --binary/);
+	assert.match(skill, /Hash the stored bytes and record `\{path, bytes, sha256\}`/i);
+	assert.match(skill, /never inline patch contents/i);
+	assert.match(skill, /context `\{type:'child_branch', branch\}`/i);
+	assert.match(skill, /git merge --ff-only/i);
+	assert.match(skill, /one fresh repair Implementer per unit/i);
+	assert.match(skill, /non-forcibly remove the integrated worktree/i);
 });
 
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {

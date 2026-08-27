@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide validated built-in and user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, a `delegate_task` extension that runs one selected bounded workflow in one or more ephemeral child processes, and a bundled Main-side `pi-subagent-delegated-development` policy Skill. The Skill requires a clean committed Git `HEAD`, exact clean committed-diff review through a private byte-verified patch file reference, and post-validation recovery cleanup; it adds no runtime behavior or changes generic fallback.
+Provide validated built-in and user Roles, shared task-model Pi launch policy, generic managed Herdr Subagent hosting, a `delegate_task` extension that runs one selected bounded workflow in one or more ephemeral child processes, and a bundled Main-side `pi-subagent-delegated-development` policy Skill. The Skill requires clean committed state, one hash-bound exact patch per review, serial candidate integration for parallel work, and bounded repair/cleanup; it adds no runtime behavior or changes generic fallback.
 
 ## Domain glossary
 
