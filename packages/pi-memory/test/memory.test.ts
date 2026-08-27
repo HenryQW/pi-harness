@@ -144,6 +144,13 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
 		await dream.handler("", context(true));
 		assert.match(notifications[2]!, /Cannot run \/dream: live memory state is unreadable or oversized/);
+
+		const dispatchedBeforeUnreadableState = messages.length;
+		await rm(join(memoryDir, "MEMORY.md"));
+		await symlink(join(root, "missing-MEMORY.md"), join(memoryDir, "MEMORY.md"));
+		await dream.handler("", context(true));
+		assert.match(notifications[3]!, /Cannot run \/dream: live memory state is unreadable or oversized/);
+		assert.equal(messages.length, dispatchedBeforeUnreadableState);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
