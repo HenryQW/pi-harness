@@ -19,6 +19,7 @@ pi install npm:@henryqw/pi-add-dir
 | --- | --- | --- |
 | `/dir-add` | command | Add directory; no path opens input. Supports `~`. |
 | `/dir-ls` | command | List directories; select one to remove. |
+| `/dir-reload` | command | Reload external directory resources. |
 | `add_directory` | tool | Add a directory. |
 | `search_external_files` | tool | Glob-search added directories. |
 
@@ -28,4 +29,4 @@ Search uses Node filesystem traversal, skips `.git` and `node_modules`, supports
 
 ## State
 
-Pi session entry `add-dir:state` stores added directories; package-managed, do not edit.
+Pi session entry `add-dir:state` stores added directories; package-managed, do not edit. Tree navigation restores the active branch's directories and reloads resources when that set changes.

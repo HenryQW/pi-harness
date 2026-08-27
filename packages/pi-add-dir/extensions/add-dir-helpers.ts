@@ -18,6 +18,11 @@ const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 const SKILL_DIRS = [".pi/skills", ".agents/skills", ".claude/skills"] as const;
 const SKIPPED_SEARCH_DIRS = new Set([".git", "node_modules"]);
 
+function isMissingPathError(error: unknown): boolean {
+	if (!error || typeof error !== "object" || !("code" in error)) return false;
+	return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
 export function expandUserPath(input: string): string {
 	if (input === "~") return homedir();
 	if (input.startsWith("~/") || input.startsWith(`~${path.sep}`)) return path.join(homedir(), input.slice(2));
@@ -29,16 +34,18 @@ export function resolveDir(input: string, cwd: string): string {
 	const resolved = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
 	try {
 		return realpathSync(resolved);
-	} catch {
-		return path.resolve(resolved);
+	} catch (error) {
+		if (isMissingPathError(error)) return path.resolve(resolved);
+		throw error;
 	}
 }
 
 export function dirExists(dir: string): boolean {
 	try {
 		return statSync(dir).isDirectory();
-	} catch {
-		return false;
+	} catch (error) {
+		if (isMissingPathError(error)) return false;
+		throw error;
 	}
 }
 
@@ -63,7 +70,6 @@ function skillFiles(dir: string): Array<{ name: string; path: string }> {
 
 	for (const skillDir of SKILL_DIRS) {
 		const fullSkillDir = path.join(dir, skillDir);
-		if (!dirExists(fullSkillDir)) continue;
 		try {
 			for (const entry of readdirSync(fullSkillDir, { withFileTypes: true })) {
 				if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -97,7 +103,6 @@ export function collectSkillPaths(dirs: AddedDir[]): string[] {
 	const paths: string[] = [];
 	const names = new Set<string>();
 	for (const dir of dirs) {
-		if (!dirExists(dir.absolutePath)) continue;
 		for (const skill of skillFiles(dir.absolutePath)) {
 			if (names.has(skill.name)) continue;
 			names.add(skill.name);
