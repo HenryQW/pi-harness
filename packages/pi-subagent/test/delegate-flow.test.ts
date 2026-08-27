@@ -1,0 +1,624 @@
+import assert from "node:assert/strict";
+import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import type { ExtensionAPI, ExtensionContext, ExecOptions } from "@earendil-works/pi-coding-agent";
+import type {
+	EphemeralSubagentExecutor,
+	EphemeralSubagentResult,
+	EphemeralSubagentRunInput,
+	ResolvedRoleLaunch,
+	Role,
+} from "@henryqw/pi-subagent";
+import {
+	DelegateFlowContinueSchema,
+	DelegateFlowSchema,
+	parseDelegateFlow,
+	parseDelegateFlowContinue,
+	registerDelegateFlow,
+} from "../extensions/delegate-flow.ts";
+import { CHILD_EXCLUDED_TOOLS } from "../src/index.ts";
+
+type Tool = {
+	name: string;
+	parameters: unknown;
+	prepareArguments?: (value: unknown) => unknown;
+	execute: (...args: any[]) => Promise<any>;
+};
+
+type PreparedChild = Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>;
+type ChildHandler = (prepared: PreparedChild, input: EphemeralSubagentRunInput) => Promise<EphemeralSubagentResult> | EphemeralSubagentResult;
+
+type ExecLog = {
+	command: string;
+	args: string[];
+	options: ExecOptions | undefined;
+};
+
+const model = {
+	provider: "test",
+	id: "flow-model",
+	name: "Flow Model",
+	api: "openai-responses",
+	baseUrl: "https://example.test",
+	input: ["text"],
+	contextWindow: 100_000,
+	maxTokens: 10_000,
+	reasoning: true,
+	thinkingLevelMap: { low: "low" },
+} as const;
+
+const success = (output = "done"): EphemeralSubagentResult => ({ outcome: "success", exitCode: 0, output, stderr: "" });
+const failure = (message = "child failed"): EphemeralSubagentResult => ({
+	outcome: "failure",
+	exitCode: 1,
+	output: "",
+	stderr: message,
+	errorMessage: message,
+});
+
+function git(cwd: string, ...args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function gitRaw(cwd: string, ...args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8" });
+}
+
+async function repository(t: import("node:test").TestContext): Promise<string> {
+	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-flow-test-"));
+	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
+	git(repo, "init", "-q");
+	git(repo, "config", "user.name", "Flow Test");
+	git(repo, "config", "user.email", "flow@example.com");
+	await writeFile(join(repo, "base.txt"), "base\n");
+	await writeFile(join(repo, "shared.txt"), "base\n");
+	git(repo, "add", ".");
+	git(repo, "commit", "-qm", "base");
+	return repo;
+}
+
+function runExec(command: string, args: string[], options?: ExecOptions): Promise<{ stdout: string; stderr: string; code: number; killed: boolean }> {
+	return new Promise((resolve) => {
+		execFile(command, args, {
+			cwd: options?.cwd,
+			signal: options?.signal,
+			timeout: options?.timeout,
+		}, (error, stdout, stderr) => {
+			resolve({
+				stdout: String(stdout),
+				stderr: String(stderr),
+				code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
+				killed: Boolean(error && "killed" in error && error.killed),
+			});
+		});
+	});
+}
+
+function harness(cwd: string, handler: ChildHandler, overrideExec?: (
+	command: string,
+	args: string[],
+	options: ExecOptions | undefined,
+	next: () => ReturnType<typeof runExec>,
+) => ReturnType<typeof runExec>) {
+	const tools = new Map<string, Tool>();
+	const childCalls: PreparedChild[] = [];
+	const roles: Role[] = [];
+	const execLogs: ExecLog[] = [];
+	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string }> = [];
+	const executor: EphemeralSubagentExecutor = {
+		async run(input) {
+			const prepared = await input.prepare();
+			childCalls.push(prepared);
+			return await handler(prepared, input);
+		},
+	};
+	const api = {
+		registerTool(tool: Tool) { tools.set(tool.name, tool); },
+		exec(command: string, args: string[], options?: ExecOptions) {
+			execLogs.push({ command, args: [...args], options });
+			const next = () => runExec(command, args, options);
+			return overrideExec ? overrideExec(command, args, options, next) : next();
+		},
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		cwd,
+		hasUI: false,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	registerDelegateFlow(api, {
+		executor,
+		resolveLaunch(role) {
+			roles.push(role);
+			return {
+				args: [],
+				env: { FLOW_ROLE: role.name },
+				model,
+				thinkingLevel: "low",
+				missingSkills: [],
+			} as unknown as ResolvedRoleLaunch;
+		},
+		startWidget(id, role) { widgets.push({ action: "start", id, role }); },
+		updateWidgetTokens() {},
+		finishWidget(id, status) { widgets.push({ action: "finish", id, status }); },
+	});
+	return { tools, childCalls, roles, execLogs, widgets, ctx };
+}
+
+function flowTool(app: ReturnType<typeof harness>): Tool {
+	return app.tools.get("delegate_flow")!;
+}
+
+function continueTool(app: ReturnType<typeof harness>): Tool {
+	return app.tools.get("delegate_flow_continue")!;
+}
+
+const validation = (code = "process.exit(0)") => [{ command: process.execPath, args: ["-e", code] }];
+const unit = (id: string, task = `Implement ${id}`, gate = validation()) => ({ id, task, validation: gate });
+
+function childRole(prepared: PreparedChild): string {
+	return prepared.launch.env.FLOW_ROLE!;
+}
+
+function unitId(task: string): string {
+	const match = /(?:Flow Unit|Repair Flow Unit) "([^"]+)"/.exec(task);
+	assert.ok(match, task);
+	return match[1]!;
+}
+
+function reviewPacket(task: string): { base: string; tip: string; patchPath: string } {
+	const match = /^Review Packet: (.+)$/m.exec(task);
+	assert.ok(match, task);
+	return JSON.parse(match[1]!);
+}
+
+async function commit(cwd: string, path: string, content: string, message = `change ${path}`): Promise<void> {
+	const target = join(cwd, path);
+	await mkdir(join(target, ".."), { recursive: true });
+	await writeFile(target, content);
+	git(cwd, "add", path);
+	git(cwd, "commit", "-qm", message);
+}
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+
+async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!check()) {
+		if (Date.now() >= deadline) throw new Error("Timed out waiting for Flow test state.");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+test("Flow schemas enforce the small public boundary and child tools cannot recurse", async () => {
+	assert.equal((DelegateFlowSchema as any).additionalProperties, false);
+	assert.equal((DelegateFlowSchema as any).properties.units.minItems, 1);
+	assert.equal((DelegateFlowSchema as any).properties.units.maxItems, 8);
+	assert.equal((DelegateFlowContinueSchema as any).additionalProperties, false);
+	assert.deepEqual(parseDelegateFlow({ units: [{ id: " one ", task: " work ", validation: [{ command: " node ", args: ["", "x"] }] }] }), {
+		units: [{ id: "one", task: "work", validation: [{ command: "node", args: ["", "x"] }] }],
+	});
+	assert.deepEqual(parseDelegateFlowContinue({ guidance: " fix it " }), { guidance: "fix it" });
+	for (const value of [
+		{},
+		{ units: [] },
+		{ units: Array.from({ length: 9 }, (_, index) => unit(String(index))) },
+		{ units: [{ id: "x", task: "work", validation: [] }] },
+		{ units: [{ ...unit("x"), extra: true }] },
+		{ units: [{ id: "x", task: "work", validation: [{ command: "node", args: [], extra: true }] }] },
+		{ units: [{ id: "x", task: "work", validation: [{ command: "node", args: ["bad\0arg"] }] }] },
+	]) assert.throws(() => parseDelegateFlow(value));
+	assert.throws(() => parseDelegateFlow({ units: [unit("same"), unit(" same ")] }), /unique/);
+	assert.throws(() => parseDelegateFlowContinue({ guidance: " \n " }));
+	assert.deepEqual(CHILD_EXCLUDED_TOOLS.split(",").filter((name) => name.startsWith("delegate_")), [
+		"delegate_task", "delegate_flow", "delegate_flow_continue",
+	]);
+	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
+	assert.deepEqual(manifest.pi.extensions, ["./extensions/subagent.ts"]);
+});
+
+test("setup is all-or-nothing, non-forced, and never falls back outside committed Git", async (t) => {
+	const repo = await repository(t);
+	let children = 0;
+	const app = harness(repo, () => { children++; return success(); });
+	const firstId = "partial:flow:0:one";
+	const secondId = "partial:flow:1:two";
+	const childName = (id: string) => `subagent-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
+	const firstName = childName(firstId);
+	const secondName = childName(secondId);
+	const collisionBranch = `pi-subagent/${secondName}`;
+	git(repo, "branch", collisionBranch);
+
+	const partial = await flowTool(app).execute("partial", { units: [unit("one"), unit("two")] }, undefined, undefined, app.ctx);
+	assert.equal(partial.details.outcome, "failed");
+	assert.equal(partial.details.failure.classification, "setup");
+	assert.equal(children, 0);
+	assert.equal(existsSync(join(repo, ".worktrees", firstName)), false);
+	assert.equal(git(repo, "branch", "--list", `pi-subagent/${firstName}`), "");
+	assert.match(partial.content[0].text, new RegExp(secondName));
+	assert.ok(app.execLogs
+		.filter(({ command, args }) => command === "git" && args.includes("worktree") && args.includes("remove"))
+		.every(({ args }) => !args.includes("--force")));
+
+	await writeFile(join(repo, "dirty-main.txt"), "dirty\n");
+	const dirty = await flowTool(app).execute("dirty-main", { units: [unit("dirty")] }, undefined, undefined, app.ctx);
+	assert.equal(dirty.details.failure.classification, "setup");
+	assert.match(dirty.details.failure.diagnostic, /requires clean Git Main/);
+	assert.equal(children, 0);
+
+	const outside = await mkdtemp(join(tmpdir(), "pi-subagent-flow-nongit-"));
+	t.after(async () => { await rm(outside, { recursive: true, force: true }); });
+	const nonGit = harness(outside, () => { children++; return success(); });
+	const missing = await flowTool(nonGit).execute("non-git", { units: [unit("none")] }, undefined, undefined, nonGit.ctx);
+	assert.equal(missing.details.outcome, "failed");
+	assert.equal(missing.details.failure.classification, "setup");
+	assert.equal(children, 0);
+	assert.equal(existsSync(join(outside, ".worktrees")), false);
+
+	const unborn = await mkdtemp(join(tmpdir(), "pi-subagent-flow-unborn-"));
+	t.after(async () => { await rm(unborn, { recursive: true, force: true }); });
+	git(unborn, "init", "-q");
+	const noHead = harness(unborn, () => { children++; return success(); });
+	const unbornResult = await flowTool(noHead).execute("unborn", { units: [unit("none")] }, undefined, undefined, noHead.ctx);
+	assert.equal(unbornResult.details.failure.classification, "setup");
+	assert.equal(children, 0);
+});
+
+test("Flow uses package Implementer/Reviewer policy in the caller-relative Unit cwd without nesting", async (t) => {
+	const repo = await repository(t);
+	const caller = join(repo, "packages", "feature");
+	await mkdir(caller, { recursive: true });
+	await writeFile(join(caller, "package.json"), "{}\n");
+	git(repo, "add", ".");
+	git(repo, "commit", "-qm", "add package");
+	const childCwds: string[] = [];
+	let patch = "";
+	const app = harness(caller, async (prepared) => {
+		childCwds.push(prepared.cwd);
+		if (childRole(prepared) === "implementer") {
+			assert.equal((gitRaw(repo, "worktree", "list", "--porcelain").match(/^worktree /gm) ?? []).length, 2);
+			await commit(prepared.cwd, "change.txt", "implemented\n");
+			return success("implemented");
+		}
+		const packet = reviewPacket(prepared.task);
+		patch = await readFile(packet.patchPath, "utf8");
+		assert.equal(git(prepared.cwd, "rev-parse", "HEAD"), packet.tip);
+		return success("PASS\n");
+	});
+	const result = await flowTool(app).execute("caller-cwd", { units: [unit("feature")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(childCwds.length, 2);
+	assert.equal(childCwds[0], childCwds[1]);
+	assert.ok(childCwds[0]!.replace(/\/$/, "").endsWith(join("packages", "feature")));
+	assert.match(patch, /change\.txt/);
+	assert.deepEqual(app.roles.map(({ name, description }) => ({ name, description })), [
+		{ name: "implementer", description: "Implements and validates one bounded change, requesting worktree isolation" },
+		{ name: "reviewer", description: "Reviews one bounded change for correctness without changing files" },
+	]);
+	assert.equal((gitRaw(repo, "worktree", "list", "--porcelain").match(/^worktree /gm) ?? []).length, 1);
+	const validationCall = app.execLogs.find(({ command }) => command === process.execPath)!;
+	assert.deepEqual(validationCall.args, ["-e", "process.exit(0)"]);
+	assert.equal(validationCall.options?.cwd, childCwds[0]);
+});
+
+test("parallel Implementers all settle before declared-order processing stops at the first failure", async (t) => {
+	const repo = await repository(t);
+	const base = git(repo, "rev-parse", "HEAD");
+	const gates = [deferred<void>(), deferred<void>()];
+	const started: string[] = [];
+	let reviewers = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") {
+			reviewers++;
+			return success("PASS");
+		}
+		const id = unitId(prepared.task);
+		started.push(id);
+		await gates[id === "first" ? 0 : 1]!.promise;
+		if (id === "first") return failure("first failed");
+		await commit(prepared.cwd, "later.txt", "later completed\n");
+		return success();
+	});
+	let settled = false;
+	const running = flowTool(app).execute("settle", { units: [unit("first"), unit("later")] }, undefined, undefined, app.ctx)
+		.then((value) => { settled = true; return value; });
+	await waitFor(() => started.length === 2);
+	gates[0]!.resolve();
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(settled, false);
+	gates[1]!.resolve();
+	const result = await running;
+	assert.equal(result.details.outcome, "blocked");
+	assert.equal(result.details.blocked.id, "first");
+	assert.equal(result.details.blocked.classification, "implementer");
+	assert.equal(reviewers, 0);
+	assert.equal(git(repo, "rev-parse", "HEAD"), base);
+	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["first", "later"]);
+	const later = result.details.retained.find(({ id }: any) => id === "later");
+	assert.equal(git(later.path, "status", "--porcelain"), "");
+	assert.notEqual(git(later.path, "rev-parse", "HEAD"), base);
+});
+
+test("one continuation repairs the blocked Unit in the same worktree and then clears the Flow", async (t) => {
+	const repo = await repository(t);
+	let initialCwd = "";
+	let repairCwd = "";
+	let implementerRuns = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		implementerRuns++;
+		if (prepared.task.startsWith("Flow Unit")) {
+			initialCwd = prepared.cwd;
+			return failure("implementation crashed");
+		}
+		repairCwd = prepared.cwd;
+		assert.match(prepared.task, /Previous implementer block:[\s\S]*implementation crashed/);
+		assert.match(prepared.task, /Main guidance:\nCommit the requested file/);
+		await commit(prepared.cwd, "repaired.txt", "fixed\n");
+		return success();
+	});
+	const blocked = await flowTool(app).execute("repair", { units: [unit("repairable")] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	await assert.rejects(
+		flowTool(app).execute("blocked-concurrent", { units: [unit("other")] }, undefined, undefined, app.ctx),
+		/another Flow is active/,
+	);
+	const completed = await continueTool(app).execute("continue", { guidance: "Commit the requested file" }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+	assert.equal(initialCwd, repairCwd);
+	assert.equal(implementerRuns, 2);
+	await assert.rejects(
+		continueTool(app).execute("again", { guidance: "again" }, undefined, undefined, app.ctx),
+		/requires an active blocked Flow/,
+	);
+});
+
+test("successful units rebase in place onto exact expected Main, review final OIDs, and ff-only integrate", async (t) => {
+	const repo = await repository(t);
+	const initial = git(repo, "rev-parse", "HEAD");
+	const packets: Array<{ base: string; tip: string; patchPath: string; cwd: string; patch: string }> = [];
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			const id = unitId(prepared.task);
+			await commit(prepared.cwd, `${id}.txt`, `${id}\n`);
+			return success();
+		}
+		const packet = reviewPacket(prepared.task);
+		packets.push({ ...packet, cwd: prepared.cwd, patch: await readFile(packet.patchPath, "utf8") });
+		return success("PASS");
+	});
+	const result = await flowTool(app).execute("serial", { units: [unit("first"), unit("second")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(packets.length, 2);
+	assert.equal(packets[0]!.base, initial);
+	assert.equal(packets[1]!.base, packets[0]!.tip);
+	assert.equal(git(repo, "rev-parse", `${packets[1]!.tip}^`), packets[1]!.base);
+	assert.match(packets[0]!.patch, /first\.txt/);
+	assert.match(packets[1]!.patch, /second\.txt/);
+	assert.doesNotMatch(packets[1]!.patch, /first\.txt/);
+	assert.equal(git(repo, "rev-parse", "HEAD"), packets[1]!.tip);
+	assert.equal(await readFile(join(repo, "first.txt"), "utf8"), "first\n");
+	assert.equal(await readFile(join(repo, "second.txt"), "utf8"), "second\n");
+	const merges = app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge");
+	assert.deepEqual(merges.map(({ args }) => args.slice(1)), [
+		["merge", "--ff-only", packets[0]!.tip],
+		["merge", "--ff-only", packets[1]!.tip],
+	]);
+});
+
+test("a rebase-dropped duplicate is still validated and exactly reviewed as a no-op", async (t) => {
+	const repo = await repository(t);
+	const packets: Array<{ base: string; tip: string; patchPath: string; bytes: number }> = [];
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, "duplicate.txt", "same\n", `duplicate ${unitId(prepared.task)}`);
+			return success();
+		}
+		const packet = reviewPacket(prepared.task);
+		packets.push({ ...packet, bytes: (await readFile(packet.patchPath)).length });
+		return success("PASS");
+	});
+	const result = await flowTool(app).execute("noop", { units: [unit("one"), unit("two")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "completed");
+	assert.deepEqual(result.details.completed, [{ id: "one", noOp: false }, { id: "two", noOp: true }]);
+	assert.equal(packets[1]!.base, packets[1]!.tip);
+	assert.equal(packets[1]!.bytes, 0);
+	assert.equal(app.execLogs.filter(({ command }) => command === process.execPath).length, 2);
+	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 1);
+});
+
+test("a real rebase conflict aborts, launches no conflicting Reviewer, and retains the Unit", async (t) => {
+	const repo = await repository(t);
+	let reviewers = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") {
+			reviewers++;
+			return success("PASS");
+		}
+		const id = unitId(prepared.task);
+		await commit(prepared.cwd, "shared.txt", `${id}\n`, `${id} conflict`);
+		return success();
+	});
+	const result = await flowTool(app).execute("conflict", { units: [unit("first"), unit("second")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "failed");
+	assert.equal(result.details.failure.classification, "conflict");
+	assert.equal(reviewers, 1);
+	assert.deepEqual(result.details.completed, [{ id: "first", noOp: false }]);
+	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["second"]);
+	const retained = result.details.retained[0];
+	assert.equal(existsSync(retained.path), true);
+	assert.equal(git(retained.path, "status", "--porcelain"), "");
+	assert.equal(git(retained.path, "branch", "--show-current"), retained.branch);
+});
+
+test("validation, Reviewer findings, and Reviewer transport failures keep distinct classifications", async (t) => {
+	const validationRepo = await repository(t);
+	let validationReviewers = 0;
+	const validationApp = harness(validationRepo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") { validationReviewers++; return success("PASS"); }
+		await commit(prepared.cwd, "change.txt", "change\n");
+		return success();
+	});
+	const skippedMarker = join(validationRepo, "must-not-run");
+	const noisyGate = [
+		...validation("process.stderr.write('x'.repeat(60000)); process.exit(3)"),
+		{ command: process.execPath, args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", skippedMarker] },
+	];
+	const validationResult = await flowTool(validationApp).execute("validation", { units: [unit("validation", "work", noisyGate)] }, undefined, undefined, validationApp.ctx);
+	assert.equal(validationResult.details.outcome, "blocked");
+	assert.equal(validationResult.details.blocked.classification, "validation");
+	assert.equal(validationReviewers, 0);
+	assert.ok(Buffer.byteLength(validationResult.details.blocked.diagnostic, "utf8") <= 50 * 1024);
+	assert.match(validationResult.details.blocked.diagnostic, /exit 3/);
+	assert.equal(existsSync(skippedMarker), false);
+
+	const findingsRepo = await repository(t);
+	const findingsApp = harness(findingsRepo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("Finding: change.txt is wrong");
+		await commit(prepared.cwd, "change.txt", "change\n");
+		return success();
+	});
+	const findings = await flowTool(findingsApp).execute("findings", { units: [unit("findings")] }, undefined, undefined, findingsApp.ctx);
+	assert.equal(findings.details.outcome, "blocked");
+	assert.equal(findings.details.blocked.classification, "reviewer_findings");
+	assert.match(findings.details.blocked.diagnostic, /change\.txt is wrong/);
+
+	const infrastructureRepo = await repository(t);
+	let truncated = false;
+	const infrastructureApp = harness(infrastructureRepo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") {
+			return truncated ? success("PASS\n\n[Output truncated: 1 bytes omitted]") : failure("reviewer crashed");
+		}
+		await commit(prepared.cwd, `${unitId(prepared.task)}.txt`, "change\n");
+		return success();
+	});
+	const infrastructure = await flowTool(infrastructureApp).execute("infrastructure", { units: [unit("infra")] }, undefined, undefined, infrastructureApp.ctx);
+	assert.equal(infrastructure.details.outcome, "failed");
+	assert.equal(infrastructure.details.failure.classification, "infrastructure");
+	assert.match(infrastructure.details.failure.diagnostic, /reviewer crashed/);
+	truncated = true;
+	const malformed = await flowTool(infrastructureApp).execute("truncated", { units: [unit("truncated")] }, undefined, undefined, infrastructureApp.ctx);
+	assert.equal(malformed.details.outcome, "failed");
+	assert.equal(malformed.details.failure.classification, "infrastructure");
+	assert.match(malformed.details.failure.diagnostic, /transport output was truncated/);
+});
+
+test("missing commits and dirty repairs are implementer failures, with only one repair", async (t) => {
+	const repo = await repository(t);
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		if (prepared.task.startsWith("Repair")) await writeFile(join(prepared.cwd, "dirty.txt"), "dirty\n");
+		return success();
+	});
+	const missing = await flowTool(app).execute("missing", { units: [unit("missing")] }, undefined, undefined, app.ctx);
+	assert.equal(missing.details.outcome, "blocked");
+	assert.equal(missing.details.blocked.classification, "implementer");
+	assert.match(missing.details.blocked.diagnostic, /no committed change/);
+	const dirty = await continueTool(app).execute("dirty", { guidance: "finish the commit" }, undefined, undefined, app.ctx);
+	assert.equal(dirty.details.outcome, "failed");
+	assert.equal(dirty.details.failure.classification, "implementer");
+	assert.match(dirty.details.failure.diagnostic, /Worktree is dirty/);
+});
+
+test("a second same-Unit failure is terminal, clears active state, and permits a later Flow", async (t) => {
+	const repo = await repository(t);
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		const id = unitId(prepared.task);
+		await commit(prepared.cwd, `${id}-${prepared.task.startsWith("Repair") ? "repair" : "initial"}.txt`, "change\n");
+		return success();
+	});
+	const badGate = validation("process.exit(2)");
+	const blocked = await flowTool(app).execute("twice", { units: [unit("twice", "work", badGate)] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.blocked.classification, "validation");
+	const failed = await continueTool(app).execute("twice-continue", { guidance: "repair it" }, undefined, undefined, app.ctx);
+	assert.equal(failed.details.outcome, "failed");
+	assert.equal(failed.details.failure.classification, "validation");
+	await assert.rejects(continueTool(app).execute("third", { guidance: "again" }, undefined, undefined, app.ctx), /requires an active blocked Flow/);
+
+	const completed = await flowTool(app).execute("later", { units: [unit("later")] }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+});
+
+test("cleanup refusal after exact integration completes once with a bounded retained warning", async (t) => {
+	const repo = await repository(t);
+	let approvedTip = "";
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, "integrated.txt", "integrated\n");
+			return success();
+		}
+		approvedTip = reviewPacket(prepared.task).tip;
+		await writeFile(join(prepared.cwd, "reviewer-dirty.tmp"), "retain\n");
+		return success("PASS");
+	});
+	const result = await flowTool(app).execute("cleanup", { units: [unit("cleanup")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(git(repo, "rev-parse", "HEAD"), approvedTip);
+	assert.equal(await readFile(join(repo, "integrated.txt"), "utf8"), "integrated\n");
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /integrated, but cleanup refused/);
+	assert.ok(Buffer.byteLength(result.details.warnings[0], "utf8") <= 50 * 1024 + 200);
+	assert.equal(result.details.retained.length, 1);
+	assert.equal(existsSync(join(result.details.retained[0].path, "reviewer-dirty.tmp")), true);
+	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 1);
+});
+
+test("external Main mutation fails terminally before review and all retained work is reported", async (t) => {
+	const repo = await repository(t);
+	let mutate = true;
+	let reviewers = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") { reviewers++; return success("PASS"); }
+		await commit(prepared.cwd, `${unitId(prepared.task)}.txt`, "unit\n");
+		if (mutate) {
+			mutate = false;
+			await commit(repo, "external.txt", "external\n", "external mutation");
+		}
+		return success();
+	});
+	const result = await flowTool(app).execute("external", { units: [unit("unit")] }, undefined, undefined, app.ctx);
+	assert.equal(result.details.outcome, "failed");
+	assert.equal(result.details.failure.classification, "main");
+	assert.equal(reviewers, 0);
+	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["unit"]);
+	assert.match(result.details.failure.diagnostic, /changed outside the active Flow/);
+});
+
+test("concurrent Flow calls reject immediately while later sequential Flow calls succeed", async (t) => {
+	const repo = await repository(t);
+	const gate = deferred<void>();
+	let held = true;
+	let started = false;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		if (held) {
+			started = true;
+			await gate.promise;
+			held = false;
+		}
+		await commit(prepared.cwd, `${unitId(prepared.task)}.txt`, "done\n");
+		return success();
+	});
+	const first = flowTool(app).execute("concurrent-one", { units: [unit("one")] }, undefined, undefined, app.ctx);
+	await waitFor(() => started);
+	await assert.rejects(
+		flowTool(app).execute("concurrent-two", { units: [unit("two")] }, undefined, undefined, app.ctx),
+		/another Flow is active/,
+	);
+	await assert.rejects(
+		continueTool(app).execute("concurrent-continue", { guidance: "not blocked" }, undefined, undefined, app.ctx),
+		/not blocked/,
+	);
+	gate.resolve();
+	assert.equal((await first).details.outcome, "completed");
+	assert.equal((await flowTool(app).execute("sequential", { units: [unit("two")] }, undefined, undefined, app.ctx)).details.outcome, "completed");
+});

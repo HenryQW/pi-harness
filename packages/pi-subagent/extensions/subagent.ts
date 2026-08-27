@@ -28,6 +28,7 @@ import {
 	type WorktreePayload,
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import { registerDelegateFlow } from "./delegate-flow.ts";
 import { runDelegation } from "./delegation.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -397,6 +398,20 @@ export default function subagentExtension(
 			}
 		}
 	};
+
+	registerDelegateFlow(pi, {
+		executor,
+		resolveLaunch: (role, ctx) => {
+			const launchCtx = latestCtx ?? ctx;
+			return createRoleLaunch(pi, launchCtx, {
+				role,
+				route: resolveConfiguredTaskRoute(launchCtx, SUBAGENT_TASK),
+			});
+		},
+		startWidget: startWidgetItem,
+		updateWidgetTokens,
+		finishWidget: finishWidgetItem,
+	});
 
 	pi.registerTool({
 		name: "delegate_task",
