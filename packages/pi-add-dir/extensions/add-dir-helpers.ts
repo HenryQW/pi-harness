@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { glob } from "node:fs/promises";
 import { homedir } from "node:os";
 import * as path from "node:path";
 
@@ -18,6 +18,11 @@ const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 const SKILL_DIRS = [".pi/skills", ".agents/skills", ".claude/skills"] as const;
 const SKIPPED_SEARCH_DIRS = new Set([".git", "node_modules"]);
 
+function isMissingPathError(error: unknown): boolean {
+	if (!error || typeof error !== "object" || !("code" in error)) return false;
+	return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
 export function expandUserPath(input: string): string {
 	if (input === "~") return homedir();
 	if (input.startsWith("~/") || input.startsWith(`~${path.sep}`)) return path.join(homedir(), input.slice(2));
@@ -29,16 +34,18 @@ export function resolveDir(input: string, cwd: string): string {
 	const resolved = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
 	try {
 		return realpathSync(resolved);
-	} catch {
-		return path.resolve(resolved);
+	} catch (error) {
+		if (isMissingPathError(error)) return path.resolve(resolved);
+		throw error;
 	}
 }
 
 export function dirExists(dir: string): boolean {
 	try {
 		return statSync(dir).isDirectory();
-	} catch {
-		return false;
+	} catch (error) {
+		if (isMissingPathError(error)) return false;
+		throw error;
 	}
 }
 
@@ -63,7 +70,6 @@ function skillFiles(dir: string): Array<{ name: string; path: string }> {
 
 	for (const skillDir of SKILL_DIRS) {
 		const fullSkillDir = path.join(dir, skillDir);
-		if (!dirExists(fullSkillDir)) continue;
 		try {
 			for (const entry of readdirSync(fullSkillDir, { withFileTypes: true })) {
 				if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -97,7 +103,6 @@ export function collectSkillPaths(dirs: AddedDir[]): string[] {
 	const paths: string[] = [];
 	const names = new Set<string>();
 	for (const dir of dirs) {
-		if (!dirExists(dir.absolutePath)) continue;
 		for (const skill of skillFiles(dir.absolutePath)) {
 			if (names.has(skill.name)) continue;
 			names.add(skill.name);
@@ -146,33 +151,21 @@ export async function findFiles(
 
 	const matchPath = normalizedPattern.includes(path.sep);
 	const results: string[] = [];
-	const pending = [root];
 
 	signal?.throwIfAborted();
-	while (pending.length > 0) {
+	for await (const entry of glob("**/@(*|.*)", {
+		cwd: root,
+		withFileTypes: true,
+		exclude: (entry) => entry.isSymbolicLink() || (entry.isDirectory() && SKIPPED_SEARCH_DIRS.has(entry.name)),
+	})) {
 		signal?.throwIfAborted();
-		const current = pending.pop()!;
-		let entries;
-		try {
-			entries = await readdir(current, { withFileTypes: true });
-		} catch {
-			continue;
-		}
+		if (!entry.isFile()) continue;
 
-		for (const entry of entries) {
-			signal?.throwIfAborted();
-			const fullPath = path.join(current, entry.name);
-			if (entry.isDirectory()) {
-				if (!SKIPPED_SEARCH_DIRS.has(entry.name)) pending.push(fullPath);
-				continue;
-			}
-			if (!entry.isFile()) continue;
-
-			const candidate = matchPath ? path.relative(root, fullPath) : entry.name;
-			if (!path.matchesGlob(candidate, normalizedPattern)) continue;
-			results.push(fullPath);
-			if (results.length >= maxResults) return results;
-		}
+		const fullPath = path.join(entry.parentPath, entry.name);
+		const candidate = matchPath ? path.relative(root, fullPath) : entry.name;
+		if (!path.matchesGlob(candidate, normalizedPattern)) continue;
+		results.push(fullPath);
+		if (results.length >= maxResults) return results;
 	}
 
 	return results;

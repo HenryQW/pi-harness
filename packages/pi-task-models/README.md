@@ -18,7 +18,6 @@ pi install npm:@henryqw/pi-task-models
 | Package | Why |
 | --- | --- |
 | `@henryqw/pi-auto-compact` | Consumer. Compaction defaults to the `fast` profile. |
-| `@henryqw/pi-auto-dag` | Consumer. Implement uses `balanced`; review uses `frontier`. |
 | `@henryqw/pi-herdr-btw` | Consumer. Side-thread launch uses the `fast` profile. |
 | `@henryqw/pi-herdr-rename` | Consumer. Rename uses the `fast` profile. |
 | `@henryqw/pi-subagent` | Consumer. Delegation defaults to `balanced`; caller may override it. |
@@ -61,9 +60,7 @@ Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-t
     "pi-herdr-btw/btw": "fast",
     "pi-herdr-rename/rename": "fast",
     "pi-auto-compact/autoCompact": "fast",
-    "pi-subagent/delegateTask": "balanced",
-    "pi-auto-dag/implement": "balanced",
-    "pi-auto-dag/review": "frontier"
+    "pi-subagent/delegateTask": "balanced"
   }
 }
 ```

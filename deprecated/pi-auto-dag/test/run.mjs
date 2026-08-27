@@ -11,7 +11,7 @@ if (!files.length || files.some((file) => !existsSync(file))) {
 	throw new Error(`Unknown pi-auto-dag test suite: ${suite ?? "(none)"}`);
 }
 
-const child = spawn(process.execPath, ["--test", ...files], { stdio: "inherit" });
+const child = spawn(process.execPath, ["--test", "--test-concurrency=2", ...files], { stdio: "inherit" });
 child.on("exit", (code) => {
 	process.exitCode = code ?? 1;
 });

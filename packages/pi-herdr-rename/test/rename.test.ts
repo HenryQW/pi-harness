@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { withWorktreeLock } from "@henryqw/pi-herdr";
 import herdrRenameExtension from "../extensions/rename.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
@@ -213,8 +214,10 @@ test("manual rename disarms a pending automatic rename", async () => {
 });
 
 test("saved display titles keep semantic branches, replace generated branches, and preserve custom workspace names", async () => {
-	await withAgentDir(async () => {
+	await withAgentDir(async (dir) => {
 		process.env.HERDR_PANE_ID = "pane-1";
+		const checkoutPath = join(dir, "worktree");
+		await mkdir(checkoutPath);
 		for (const [paneCount, workspaceName, isLinkedWorktree, currentBranch, existingBranches, renameWorkspace, gitMutation] of [
 			[1, "worktree-brave-meadow-4aa8", true, "fix/title-length", [], true, undefined],
 			[2, "lucky-field-f694", true, "feat/new-loader", [], true, undefined],
@@ -239,14 +242,14 @@ test("saved display titles keep semantic branches, replace generated branches, a
 						return success(JSON.stringify({ result: { tab: { pane_count: paneCount } } }));
 					}
 					if (args[0] === "workspace" && args[1] === "get") {
-						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: "/repo/worktree", is_linked_worktree: isLinkedWorktree } } } }));
+						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: checkoutPath, is_linked_worktree: isLinkedWorktree } } } }));
 					}
 					return success("{}");
 				},
 			});
 			await app.handlers.get("session_start")?.({}, app.ctx);
 			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await eventually(() => !isLinkedWorktree || gitCwds.length === 1 + Number(Boolean(gitMutation)) * 2);
 			assert.equal(app.completionCalls.length, 0);
 			assert.equal(app.names.length, 0);
 			assert.ok(app.execCalls.some((args) => args.join("\0") === "pane\0rename\0pane-1\0Saved title"));
@@ -257,7 +260,7 @@ test("saved display titles keep semantic branches, replace generated branches, a
 				app.execCalls.filter((args) => (args[0] === "branch" && args[1] === "-m") || args[0] === "switch"),
 				gitMutation ? [gitMutation] : [],
 			);
-			assert.deepEqual(gitCwds, Array(isLinkedWorktree ? 1 + Number(Boolean(gitMutation)) * 2 : 0).fill("/repo/worktree"));
+			assert.deepEqual(gitCwds, Array(isLinkedWorktree ? 1 + Number(Boolean(gitMutation)) * 2 : 0).fill(checkoutPath));
 			assert.equal(app.execCalls.filter((args) => args[0] === "for-each-ref").length, Number(Boolean(gitMutation)));
 			if (gitMutation) {
 				assert.ok(app.execCalls.some((args) => args.join("\0") === "for-each-ref\0--format=%(refname:short)\0refs/heads"));
@@ -270,38 +273,83 @@ test("saved display titles keep semantic branches, replace generated branches, a
 	});
 });
 
-test("manual rename updates its previous generated workspace title", async () => {
-	await withAgentDir(async () => {
+test("manual rename updates generated and custom workspace titles", async () => {
+	await withAgentDir(async (dir) => {
 		process.env.HERDR_PANE_ID = "pane-1";
-		const app = harness({
-			sessionName: "Saved title",
-			branch: [
-				{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } },
-				{ type: "message", message: { role: "user", content: "update task logic" } },
-			],
-			complete: async () => response("refactor: update task logic"),
-			exec: async (args) => {
-				if (args.join("\0") === "branch\0--show-current") return success("fix/saved-title\n");
-				if (args[0] === "pane" && args[1] === "get") {
-					return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
-				}
-				if (args[0] === "tab" && args[1] === "get") {
-					return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
-				}
-				if (args[0] === "workspace" && args[1] === "get") {
-					return success(JSON.stringify({ result: { workspace: { label: "Saved title", worktree: { checkout_path: "/repo/worktree", is_linked_worktree: true } } } }));
-				}
-				return success("{}");
-			},
-		});
-		await app.handlers.get("session_start")?.({}, app.ctx);
-		await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
-		await app.commands.get("rename")?.("", app.ctx);
+		const checkoutPath = join(dir, "worktree");
+		await mkdir(checkoutPath);
+		for (const workspaceName of ["Saved title", "Custom workspace"]) {
+			const app = harness({
+				sessionName: "Saved title",
+				branch: [
+					{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } },
+					{ type: "message", message: { role: "user", content: "update task logic" } },
+				],
+				complete: async () => response("refactor: update task logic"),
+				exec: async (args) => {
+					if (args.join("\0") === "branch\0--show-current") return success("fix/saved-title\n");
+					if (args[0] === "pane" && args[1] === "get") {
+						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
+					}
+					if (args[0] === "tab" && args[1] === "get") {
+						return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
+					}
+					if (args[0] === "workspace" && args[1] === "get") {
+						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: checkoutPath, is_linked_worktree: true } } } }));
+					}
+					return success("{}");
+				},
+			});
+			await app.handlers.get("session_start")?.({}, app.ctx);
+			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
+			await app.commands.get("rename")?.("", app.ctx);
 
-		assert.deepEqual(
-			app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "rename"),
-			[["workspace", "rename", "workspace-1", "Update task logic"]],
-		);
+			assert.deepEqual(
+				app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "rename"),
+				[["workspace", "rename", "workspace-1", "Update task logic"]],
+			);
+		}
+	});
+});
+
+test("semantic branch mutation honors the shared worktree lock", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_PANE_ID = "pane-1";
+		const checkoutPath = join(dir, "worktree");
+		await mkdir(checkoutPath);
+		let releaseLock!: () => void;
+		const heldLock = withWorktreeLock(checkoutPath, () => new Promise<void>((resolve) => {
+			releaseLock = resolve;
+		}));
+		await eventually(() => Boolean(releaseLock));
+		try {
+			const app = harness({
+				sessionName: "Saved title",
+				branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
+				exec: async (args) => {
+					if (args.join("\0") === "branch\0--show-current") return success("worktree/generated\n");
+					if (args[0] === "for-each-ref") return success("");
+					if (args[0] === "pane" && args[1] === "get") {
+						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
+					}
+					if (args[0] === "tab" && args[1] === "get") {
+						return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
+					}
+					if (args[0] === "workspace" && args[1] === "get") {
+						return success(JSON.stringify({ result: { workspace: { label: "worktree-rapid-meadow-04ae", worktree: { checkout_path: checkoutPath, is_linked_worktree: true } } } }));
+					}
+					return success("{}");
+				},
+			});
+			await app.handlers.get("session_start")?.({}, app.ctx);
+			await app.commands.get("rename")?.("", app.ctx);
+
+			assert.equal(app.execCalls.filter((args) => args[0] === "branch" || args[0] === "for-each-ref" || args[0] === "switch").length, 0);
+			assert.match(app.notifications.at(-1) ?? "", /lock/i);
+		} finally {
+			releaseLock();
+			await heldLock;
+		}
 	});
 });
 
@@ -318,6 +366,40 @@ test("existing and manually changed titles remain untouched", async () => {
 		});
 		await changed.handlers.get("session_start")?.({}, changed.ctx);
 		assert.deepEqual(changed.execCalls, []);
+
+		const malformed = harness({
+			sessionName: "One two three four five",
+			branch: [{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "One two three four five", branch: "fix/saved-title" } }],
+		});
+		await malformed.handlers.get("session_start")?.({}, malformed.ctx);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.deepEqual(malformed.execCalls, []);
+	});
+});
+
+test("automatic and resumed Herdr failures warn", async () => {
+	await withAgentDir(async () => {
+		process.env.HERDR_PANE_ID = "pane-1";
+		const exec = async (args: string[]) =>
+			args[0] === "pane" && args[1] === "get"
+				? { stdout: "", stderr: "gone", code: 7, killed: false }
+				: success("{}");
+
+		const automatic = harness({ exec });
+		await automatic.handlers.get("session_start")?.({}, automatic.ctx);
+		automatic.handlers.get("input")?.({ source: "interactive", text: "prompt" }, automatic.ctx);
+		await automatic.handlers.get("before_agent_start")?.({ prompt: "prompt" }, automatic.ctx);
+		await eventually(() => automatic.notifications.length > 0);
+		assert.match(automatic.notifications.at(-1) ?? "", /herdr pane get failed/);
+
+		const resumed = harness({
+			sessionName: "Saved title",
+			branch: [{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } }],
+			exec,
+		});
+		await resumed.handlers.get("session_start")?.({}, resumed.ctx);
+		await eventually(() => resumed.notifications.length > 0);
+		assert.match(resumed.notifications.at(-1) ?? "", /herdr pane get failed/);
 	});
 });
 

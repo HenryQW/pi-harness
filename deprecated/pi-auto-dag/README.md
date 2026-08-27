@@ -1,13 +1,27 @@
-# `@henryqw/pi-auto-dag`
+# `@henryqw/pi-auto-dag` (retired)
+
+Package retired and no longer maintained.
+
+This package is preserved for source history and is no longer an active workspace. There is no replacement.
+
+Remove existing installs with:
+
+```bash
+pi remove npm:@henryqw/pi-auto-dag
+```
+
+## Historical documentation
+
+> **Historical reference only:** The following pre-retirement documentation is retained for source history. The package is retired; the installation and usage instructions below are not current guidance.
 
 Execute an exact Delivery Graph with Pi and Herdr: one hash-bound confirmation, dependency-aware workers, and exactly one PR.
 
-## Why
+### Why
 
 - **Created for**: Executing an approved Delivery Graph of dependent tasks through a single entry point.
 - **Advantage**: One exact graph in, one PR out — with every command visibly confirmed once before any process starts.
 
-## Install
+### Install
 
 ```bash
 pi install npm:@henryqw/pi-auto-dag
@@ -29,7 +43,7 @@ Declare the orchestrator extension only; the worker extension ships internally a
 
 Workers run through user-owned `@henryqw/pi-subagent` Roles with package-fixed implementer and reviewer Roles. Subagent resolves Role Skills, tools, extensions, shared task-model route, Pi arguments, and managed Herdr lifecycle. Auto DAG adds its internal `extensions/worker.ts` with graph protocol tools and owns graph state, prompts, gates, receipts, and execution decisions.
 
-## Use
+### Use
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -39,7 +53,7 @@ Workers run through user-owned `@henryqw/pi-subagent` Roles with package-fixed i
 | `auto_dag_abort` | tool | Abort the active run while retaining evidence. |
 | `auto_dag_acknowledge` | tool | Idempotently acknowledge one exact notification `event_id` after durably handling it; delivery is at-least-once and unacknowledged events are redelivered. Releases a settled terminal run once every event is acknowledged. |
 
-## Config
+### Config
 
 Package-owned: `~/.pi/agent/config/pi-auto-dag.json`
 
@@ -65,7 +79,7 @@ Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-mod
 
 Package-owned generated state: `<project>/.context/pi-auto-dag/`; do not edit it.
 
-## Delivery Graph
+### Delivery Graph
 
 Pass the exact graph object to `auto_dag_execute`. It is immutable for the duration of the run.
 
@@ -98,7 +112,7 @@ Pass the exact graph object to `auto_dag_execute`. It is immutable for the durat
 }
 ```
 
-## Workflow
+### Workflow
 
 1. The caller normalizes an approved plan into the exact graph and calls `auto_dag_execute`. Planning is externally owned (for example by `/ship`).
 2. Auto DAG validates structure, then shows one TUI confirmation bound to the SHA-256 of the exact graph. It display-escapes every exact `testing` command that will later run through `sh -c`, alongside both fixed Roles. Execution never starts without this confirmation.
@@ -107,6 +121,6 @@ Pass the exact graph object to `auto_dag_execute`. It is immutable for the durat
 5. After every implementation task, Final Check runs on clean integration `HEAD`; product failure repairs through the owning Local Issue.
 6. When all gates pass, Auto DAG pushes one branch and opens exactly one PR. Ownership ends there; post-PR sweep and CI status are caller-owned (for example `/ship`).
 
-## Events
+### Events
 
 Blocked and completed outcomes persist through a durable at-least-once outbox with stable event IDs. Consumers dedupe on event ID; redelivery never changes action, payload, or Git HEAD. Infrastructure-invalid Final Check evidence surfaces as a blocked outcome; only what durable receipts prove incomplete is ever rerun.

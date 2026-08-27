@@ -13,7 +13,7 @@ Git-safe branch combining task type with display-title words: `Update task logic
 _Avoid_: display title, raw generated branch, arbitrary Git mutation
 
 **Generated worktree label**:
-Herdr linked-worktree label matching its `worktree-<adjective>-<noun>-<hex>` default. It is replaced with current display title; custom workspace labels remain unchanged.
+Herdr linked-worktree label matching its `worktree-<adjective>-<noun>-<hex>` default. It is replaced automatically with current display title; an explicit rename may also replace a custom workspace label.
 _Avoid_: semantic branch, custom workspace name
 
 **Sole-pane tab**:

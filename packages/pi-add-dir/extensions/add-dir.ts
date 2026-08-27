@@ -117,13 +117,21 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		}));
 	}
 
-	function reconstructState(ctx: ExtensionContext): void {
+	function reconstructState(ctx: ExtensionContext): boolean {
 		currentCwd = ctx.cwd;
 		const stateEntry = [...ctx.sessionManager.getBranch()]
 			.reverse()
 			.find((entry) => entry.type === "custom" && entry.customType === STATE_TYPE);
-		addedDirs = stateEntry?.type === "custom" ? readState(stateEntry.data) : [];
+		const nextDirs = stateEntry?.type === "custom" ? readState(stateEntry.data) : [];
+		const changed =
+			addedDirs.length !== nextDirs.length ||
+			addedDirs.some(
+				(dir, index) =>
+					dir.absolutePath !== nextDirs[index]?.absolutePath || dir.label !== nextDirs[index]?.label,
+			);
+		addedDirs = nextDirs;
 		updateWidget(ctx);
+		return changed;
 	}
 
 	function persistState(): void {
@@ -138,17 +146,24 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		const input = dirPath.trim();
 		if (!input) return { ok: false, message: "Directory path must not be blank.", hasNewSkills: false };
 
-		const absolutePath = resolveDir(input, cwd);
-		if (!dirExists(absolutePath)) {
-			return { ok: false, message: `Directory does not exist: ${absolutePath}`, hasNewSkills: false };
+		let absolutePath: string;
+		try {
+			absolutePath = resolveDir(input, cwd);
+			if (!dirExists(absolutePath)) {
+				return { ok: false, message: `Directory does not exist: ${absolutePath}`, hasNewSkills: false };
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return { ok: false, message: `Cannot access directory: ${message}`, hasNewSkills: false };
 		}
 		if (addedDirs.some((dir) => dir.absolutePath === absolutePath)) {
 			return { ok: false, message: `Already added: ${absolutePath}`, hasNewSkills: false };
 		}
-		if (isWithinDir(resolveDir(cwd, cwd), absolutePath)) {
+		const cwdPath = resolveDir(cwd, cwd);
+		if (isWithinDir(cwdPath, absolutePath) || isWithinDir(absolutePath, cwdPath)) {
 			return {
 				ok: false,
-				message: "Directory is already in current working directory scope.",
+				message: "Directory overlaps current working directory scope.",
 				hasNewSkills: false,
 			};
 		}
@@ -195,12 +210,24 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		return skillPaths.length > 0 ? { skillPaths } : undefined;
 	});
 
-	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
-	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
+	pi.on("session_start", async (_event, ctx) => {
+		reconstructState(ctx);
+	});
+	pi.on("session_tree", async (_event, ctx) => {
+		if (reconstructState(ctx)) pi.sendUserMessage("/dir-reload", { expandPromptTemplates: true });
+	});
 
 	pi.on("before_agent_start", async (event) => {
 		if (addedDirs.length === 0) return;
 		return { systemPrompt: event.systemPrompt + buildContextInjection(addedDirs) };
+	});
+
+	pi.registerCommand("dir-reload", {
+		description: "Reload external directory resources",
+		handler: async (_args, ctx) => {
+			await ctx.reload();
+			return;
+		},
 	});
 
 	pi.registerCommand("dir-add", {

@@ -521,44 +521,6 @@ test("process interruption after claiming leaves inspectable execution state and
 	assert.deepEqual((await readdir(stateRoot(project.root))).filter((name) => name.startsWith(".lifecycle")), []);
 });
 
-test("abort retains an undelivered blocked notification until acknowledgement", async (t) => {
-	const project = await setupProject(t);
-	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
-	const initial = createInitialRunState({
-		run_id: RUN_ID,
-		graph,
-		source_commit: await git(project.root, "rev-parse", "HEAD"),
-		main_worktree: project.root,
-		integration_branch: "integration",
-		default_branch: "main",
-		created_at: "2026-08-09T00:00:00.000Z",
-		main_pane: "main-pane",
-		workspace_id: "main-workspace",
-	});
-	await createRun(project.root, initial, () => "create");
-	await writeRunState(project.root, {
-		...initial,
-		phase: "blocked",
-		block_reason: "API needs a decision.",
-		tasks: {
-			...initial.tasks,
-			api: { status: "blocked", attempts: 1, block_reason: "Choose a protocol.", blocked_role: "implementer" },
-		},
-	}, () => "blocked");
-	const pending = (await readRunState(project.root, RUN_ID))!.notifications[0];
-	const lifecycle = createCoreLifecycle({ uuid: () => "lifecycle", now: () => "2026-08-09T01:00:00.000Z" });
-	const aborted = await lifecycle.abort(project.root, "Cancelled by user");
-	assert.equal(aborted.phase, "aborted");
-	assert.equal(aborted.abort_cleanup_complete, true);
-	assert.equal(await readActiveRunId(project.root), RUN_ID);
-	const resumed = await lifecycle.resume(project.root);
-	assert.equal(resumed.phase, "aborted");
-	assert.equal(resumed.notifications.find(({ event_id }) => event_id === pending.event_id)?.delivered_at, undefined);
-	assert.equal(await readActiveRunId(project.root), RUN_ID);
-	await lifecycle.acknowledgeNotification(project.root, pending.event_id);
-	assert.equal(await readActiveRunId(project.root), undefined);
-});
-
 test("terminal settlement retains an aborted lock without cleanup proof", async (t) => {
 	const project = await setupProject(t);
 	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
@@ -579,49 +541,7 @@ test("terminal settlement retains an aborted lock without cleanup proof", async 
 	assert.equal(await readActiveRunId(project.root), RUN_ID);
 });
 
-test("terminal settlement releases a completed lock after acknowledgement persistence", async (t) => {
-	const project = await setupProject(t);
-	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
-	const initial = createInitialRunState({
-		run_id: RUN_ID,
-		graph,
-		source_commit: await git(project.root, "rev-parse", "HEAD"),
-		main_worktree: project.root,
-		integration_branch: "integration",
-		default_branch: "main",
-		created_at: "2026-08-09T00:00:00.000Z",
-		main_pane: "main-pane",
-		workspace_id: "main-workspace",
-	});
-	await createRun(project.root, initial, () => "create");
-	await writeRunState(project.root, {
-		...initial,
-		phase: "completed",
-		tasks: Object.fromEntries(Object.entries(initial.tasks).map(([id, task]) => [id, { status: "completed", attempts: task.attempts }])),
-		pr: {
-			number: 42,
-			url: "https://example.test/pull/42",
-			head_ref: "integration",
-			base_ref: "main",
-			head_oid: initial.integration_head,
-		},
-	}, () => "completed");
-	const completed = (await readRunState(project.root, RUN_ID))!;
-	await assert.rejects(createCoreLifecycle().abort(project.root, "Too late"), /Cannot abort a completed run/);
-	assert.equal((await readRunState(project.root, RUN_ID))!.phase, "completed");
-	await writeRunState(project.root, {
-		...completed,
-		notifications: completed.notifications.map((notification) => ({
-			...notification,
-			delivered_at: "2026-08-09T01:00:00.000Z",
-		})),
-	}, () => "delivered");
-	assert.equal(await readActiveRunId(project.root), RUN_ID);
-	await createCoreLifecycle().settleTerminal(project.root);
-	assert.equal(await readActiveRunId(project.root), undefined);
-});
-
-test("durable blocked/completed notifications retain stable IDs and release completion only after ack", async (t) => {
+test("durable blocked/completed notifications retain stable IDs and settle delivered completion", async (t) => {
 	const project = await setupProject(t);
 	const graph = parseDeliveryGraph({ ...graphInput, issues: [graphInput.issues[2]] });
 	const initial = createInitialRunState({
@@ -703,10 +623,17 @@ test("durable blocked/completed notifications retain stable IDs and release comp
 	const completedRoundTrip = (await readRunState(project.root, RUN_ID))!;
 	assert.equal(completedRoundTrip.notifications.find(({ kind }) => kind === "completed")!.event_id, completedId);
 	assert.equal(completedRoundTrip.notifications.length, 3);
-
-	const delivered = await lifecycle.acknowledgeNotification(project.root, completedId);
+	await assert.rejects(lifecycle.abort(project.root, "Too late"), /Cannot abort a completed run/);
+	assert.deepEqual(await readRunState(project.root, RUN_ID), completedRoundTrip);
+	await writeRunState(project.root, {
+		...completedRoundTrip,
+		notifications: completedRoundTrip.notifications.map((notification) => notification.kind === "completed"
+			? { ...notification, delivered_at: "2026-08-09T01:00:00.000Z" }
+			: notification),
+	}, () => "completed-delivered");
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+	await lifecycle.settleTerminal(project.root);
 	assert.equal(await readActiveRunId(project.root), undefined);
-	assert.deepEqual(await lifecycle.acknowledgeNotification(project.root, completedId), delivered);
 });
 
 test("followUp delivery is fire-and-forget: failed or unacknowledged dispatch stays pending until explicit acknowledgement", async (t) => {
@@ -731,8 +658,15 @@ test("followUp delivery is fire-and-forget: failed or unacknowledged dispatch st
 		tasks: { ...initial.tasks, api: { status: "blocked", attempts: 1, block_reason: "Choose a protocol.", blocked_role: "implementer" } },
 	}, () => "blocked");
 	const lifecycle = createCoreLifecycle({ uuid: () => "lifecycle", now: () => "2026-08-09T01:00:00.000Z" });
-	await lifecycle.abort(project.root, "Cancelled by user");
 	const eventId = (await readRunState(project.root, RUN_ID))!.notifications[0].event_id;
+	const aborted = await lifecycle.abort(project.root, "Cancelled by user");
+	assert.equal(aborted.phase, "aborted");
+	assert.equal(aborted.abort_cleanup_complete, true);
+	assert.equal(await readActiveRunId(project.root), RUN_ID);
+	assert.equal((await lifecycle.resume(project.root)).phase, "aborted");
+	const pending = (await readRunState(project.root, RUN_ID))!.notifications[0];
+	assert.equal(pending.event_id, eventId);
+	assert.equal(pending.delivered_at, undefined);
 
 	let failSend = true;
 	const sent: string[] = [];
