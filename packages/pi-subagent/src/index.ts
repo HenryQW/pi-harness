@@ -36,6 +36,13 @@ export {
 	type WorktreeInfo,
 	type WorktreePayload,
 } from "./worktree.ts";
+export {
+	prepareExactReviewEvidence,
+	REVIEW_MAX_PATCH_BYTES,
+	REVIEW_MAX_PATHS,
+	type PreparedReviewEvidence,
+	type PrepareExactReviewEvidenceInput,
+} from "./review-evidence.ts";
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));

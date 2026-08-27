@@ -1,10 +1,16 @@
 import { execFile, spawn } from "node:child_process";
-import { chmod, mkdtemp, open, realpath, rm } from "node:fs/promises";
+import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 export const REVIEW_MAX_PATHS = 1_000;
 export const REVIEW_MAX_PATCH_BYTES = 512 * 1024;
+
+export interface PrepareExactReviewEvidenceInput {
+	base: string;
+	tip: string;
+	worktree: string;
+}
 
 export interface PreparedReviewEvidence {
 	base: string;
@@ -121,12 +127,12 @@ function registeredWorktrees(value: string): RegisteredWorktree[] {
 }
 
 async function assertCleanRegisteredWorktree(worktree: string, tip: string, signal?: AbortSignal): Promise<void> {
-	const root = await realpath(line(await runGit(["rev-parse", "--show-toplevel"], worktree, signal), "worktree root"));
+	const root = await fs.realpath(line(await runGit(["rev-parse", "--show-toplevel"], worktree, signal), "worktree root"));
 	if (root !== worktree) throw new Error("Review evidence requires a registered worktree root.");
 	const registrations = registeredWorktrees(await runGit(["worktree", "list", "--porcelain", "-z"], worktree, signal));
 	const registered = await Promise.all(registrations
 		.filter((entry) => entry.path === worktree)
-		.map(async (entry) => ({ ...entry, path: await realpath(entry.path!) })));
+		.map(async (entry) => ({ ...entry, path: await fs.realpath(entry.path!) })));
 	if (!registered.some((entry) => entry.head === tip)) {
 		throw new Error("Review evidence worktree is not registered at the requested tip.");
 	}
@@ -139,9 +145,9 @@ async function assertCleanRegisteredWorktree(worktree: string, tip: string, sign
 }
 
 async function streamPatch(base: string, tip: string, worktree: string, path: string, signal?: AbortSignal): Promise<void> {
-	const file = await open(path, "wx", 0o600);
-	await chmod(path, 0o600);
+	const file = await fs.open(path, "wx", 0o600);
 	try {
+		await fs.chmod(path, 0o600);
 		signal?.throwIfAborted();
 		const args = ["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--binary", base, tip];
 		const child = spawn("git", args, { cwd: worktree, signal, stdio: ["ignore", "pipe", "pipe"] });
@@ -185,22 +191,27 @@ async function streamPatch(base: string, tip: string, worktree: string, path: st
 }
 
 async function makeEvidenceDirectory(): Promise<{ directory: string; cleanup: () => Promise<void> }> {
-	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-review-"));
-	await chmod(directory, 0o700);
+	const directory = await fs.mkdtemp(join(tmpdir(), "pi-subagent-review-"));
+	try {
+		await fs.chmod(directory, 0o700);
+	} catch (error) {
+		await fs.rm(directory, { recursive: true, force: true });
+		throw error;
+	}
 	let cleanup: Promise<void> | undefined;
 	return {
 		directory,
-		cleanup: () => cleanup ??= rm(directory, { recursive: true, force: true }),
+		cleanup: () => cleanup ??= fs.rm(directory, { recursive: true, force: true }),
 	};
 }
 
 /** Prepares the one exact private patch Flow supplies to its Reviewer. */
 export async function prepareExactReviewEvidence(
-	request: { base: string; tip: string; worktree: string },
+	request: PrepareExactReviewEvidenceInput,
 	signal?: AbortSignal,
 ): Promise<PreparedReviewEvidence> {
 	const requestedWorktree = requestText(request.worktree, "review worktree");
-	const worktree = await realpath(requestedWorktree);
+	const worktree = await fs.realpath(requestedWorktree);
 	const [base, tip] = await Promise.all([
 		resolveCommit(request.base, worktree, signal),
 		resolveCommit(request.tip, worktree, signal),

@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { existsSync, type Mode, type PathLike } from "node:fs";
+import fs, { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
-import { loadBuiltinRole, loadRoles } from "../src/index.ts";
-import { prepareExactReviewEvidence, REVIEW_MAX_PATCH_BYTES } from "../src/review-evidence.ts";
+import test, { mock } from "node:test";
+import { loadBuiltinRole, loadRoles, prepareExactReviewEvidence, REVIEW_MAX_PATCH_BYTES } from "../src/index.ts";
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -74,6 +73,42 @@ test("exact evidence accepts an empty base-to-tip patch", async (t) => {
 	assert.deepEqual(evidence.changedPaths, []);
 	assert.equal((await stat(evidence.patchPath)).size, 0);
 	await evidence.cleanup();
+});
+
+test("exact evidence cleans up failed temporary artifact setup", async (t) => {
+	const context = await candidate(t, await repository(t), "chmod");
+	const before = await evidenceDirectories();
+	const chmod = fs.chmod.bind(fs);
+	const directoryChmod = mock.method(fs, "chmod", async (path: PathLike, mode: Mode) => {
+		if (String(path).startsWith(join(tmpdir(), "pi-subagent-review-"))) throw new Error("directory chmod failed");
+		return await chmod(path, mode);
+	});
+	t.after(() => directoryChmod.mock.restore());
+	await assert.rejects(prepareExactReviewEvidence(context), /directory chmod failed/);
+	assert.deepEqual(await evidenceDirectories(), before);
+
+	directoryChmod.mock.restore();
+	let closed = false;
+	const open = fs.open.bind(fs);
+	const fileOpen = mock.method(fs, "open", async (path: PathLike, flags?: string | number, mode?: Mode) => {
+		const file = await open(path, flags, mode);
+		const close = file.close.bind(file);
+		file.close = async () => {
+			closed = true;
+			await close();
+			return undefined;
+		};
+		return file;
+	});
+	const fileChmod = mock.method(fs, "chmod", async (path: PathLike, mode: Mode) => {
+		if (String(path).endsWith("review.patch")) throw new Error("file chmod failed");
+		return await chmod(path, mode);
+	});
+	t.after(() => fileOpen.mock.restore());
+	t.after(() => fileChmod.mock.restore());
+	await assert.rejects(prepareExactReviewEvidence(context), /file chmod failed/);
+	assert.equal(closed, true);
+	assert.deepEqual(await evidenceDirectories(), before);
 });
 
 test("exact evidence rejects dirty and wrong-tip registered worktrees", async (t) => {
