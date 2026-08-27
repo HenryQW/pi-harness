@@ -32,6 +32,7 @@ export {
 export {
 	createChildWorktree,
 	finalizeChildWorktree,
+	inspectIndexFlags,
 	inspectWorktreeDirty,
 	WorktreeSetupError,
 	worktreeContextNote,

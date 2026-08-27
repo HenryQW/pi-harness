@@ -13,9 +13,9 @@ A Flow accepts 1–8 independent units with unique IDs. Only one memory-only Flo
 
 For each unit, Flow verifies Main, rebases the Unit Worktree in place when earlier Flow units advanced Main, runs the declared validation commands there, and gives a package-shipped read-only Reviewer the exact `{base, tip, patchPath}` packet in that same worktree. Reviewer output whose trimmed text equals `PASS` approves. Flow then fast-forwards Main with the full reviewed OID and uses non-forced worktree removal and branch deletion. Cleanup refusal does not undo integration; it returns completion with retained worktree path and/or branch warnings.
 
-If rebase drops all unit commits, `base === tip` is a no-op. Flow still validates and reviews the state, then skips the merge after `PASS`.
+If rebase drops all unit commits, `base === tip` is a no-op. Flow validates the state, skips Reviewer and merge, then cleans up ordinarily.
 
-Implementer failure, dirty or missing committed work, validation failure, and reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance })` reruns the package-shipped Implementer in that same Unit Worktree once and derives, validates, and reviews again. A second block is terminal. Rebase conflicts abort and terminate the Flow; infrastructure and fast-forward failures also terminate it. Terminal outcomes retain worktrees for Main to reslice, and earlier integrations are never rolled back.
+Implementer failure, dirty or missing committed work, validation failure, and reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance })` reruns the package-shipped Implementer in that same Unit Worktree once and derives, validates, and reviews again. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure and fast-forward failures also terminate it. Terminal outcomes retain worktrees for Main to reslice, and earlier integrations are never rolled back.
 
 ## Consequences
 

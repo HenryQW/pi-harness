@@ -28,7 +28,7 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /never edit a child worktree.*reimplement Flow/is);
 	assert.match(skill, /delegate_flow_continue\(\{ guidance:/);
 	assert.match(skill, /one explicit continuation and no more/i);
-	assert.match(skill, /terminal conflict\/failure.*retained path/is);
+	assert.match(skill, /terminal failure.*retained path/is);
 	assert.match(skill, /Dependent work remains outside Flow/i);
 	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|candidate|advisory|reconsideration|public review/i);
 });

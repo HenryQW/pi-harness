@@ -2,7 +2,9 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { inspectIndexFlags } from "./worktree.ts";
 
+const GIT_TIMEOUT_MS = 30_000;
 export const REVIEW_MAX_PATHS = 1_000;
 export const REVIEW_MAX_PATCH_BYTES = 512 * 1024;
 
@@ -26,7 +28,7 @@ type GitResult = { code: number; stdout: string; stderr: string };
 const STDERR_LIMIT = 200;
 const git = (args: string[], cwd: string, signal?: AbortSignal): Promise<GitResult> =>
 	new Promise((resolve) => {
-		execFile("git", ["--no-pager", ...args], { cwd, signal }, (error, stdout, stderr) => {
+		execFile("git", ["--no-pager", ...args], { cwd, signal, timeout: GIT_TIMEOUT_MS }, (error, stdout, stderr) => {
 			resolve({
 				code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
 				stdout: String(stdout),
@@ -142,6 +144,9 @@ async function assertCleanRegisteredWorktree(worktree: string, tip: string, sign
 	if (await runGit(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], worktree, signal)) {
 		throw new Error("Review evidence worktree is not clean.");
 	}
+	const flags = await inspectIndexFlags(worktree, git, signal);
+	if (flags.failure) throw new Error(`Review evidence index inspection failed: ${flags.failure}`);
+	if (flags.hidden) throw new Error("Review evidence rejects assume-unchanged or skip-worktree index entries.");
 }
 
 async function streamPatch(base: string, tip: string, worktree: string, path: string, signal?: AbortSignal): Promise<void> {
@@ -150,7 +155,7 @@ async function streamPatch(base: string, tip: string, worktree: string, path: st
 		await fs.chmod(path, 0o600);
 		signal?.throwIfAborted();
 		const args = ["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--binary", base, tip];
-		const child = spawn("git", args, { cwd: worktree, signal, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("git", args, { cwd: worktree, signal, timeout: GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
 		let stderr = Buffer.alloc(0);
 		let childError: Error | undefined;
 		child.stderr.on("data", (chunk: Buffer) => {

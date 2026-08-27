@@ -5,6 +5,7 @@ import {
 	capEphemeralSubagentOutput as capOutput,
 	createChildWorktree,
 	EphemeralSubagentError,
+	inspectIndexFlags,
 	inspectWorktreeDirty,
 	loadBuiltinRole,
 	prepareExactReviewEvidence,
@@ -44,7 +45,7 @@ export const DelegateFlowContinueSchema = Type.Object({
 
 type FlowRequest = Static<typeof DelegateFlowSchema>;
 type FlowUnitRequest = Static<typeof UnitSchema>;
-type FlowClassification = "setup" | "implementer" | "validation" | "reviewer_findings" | "conflict" | "main" | "infrastructure" | "integration";
+type FlowClassification = "setup" | "implementer" | "validation" | "reviewer_findings" | "main" | "infrastructure" | "integration";
 type FlowPhase = "running" | "blocked";
 type WidgetStatus = "success" | "failure" | "aborted";
 
@@ -70,7 +71,7 @@ type MainState = {
 
 type BlockedState = {
 	unit: UnitState;
-	classification: Exclude<FlowClassification, "setup" | "conflict" | "main" | "infrastructure" | "integration">;
+	classification: Exclude<FlowClassification, "setup" | "main" | "infrastructure" | "integration">;
 	diagnostic: string;
 };
 
@@ -106,6 +107,7 @@ type CommandResult = {
 
 export interface DelegateFlowRuntime {
 	executor: EphemeralSubagentExecutor;
+	maxRuntimeMs: number;
 	getSessionGeneration: () => number;
 	resolveLaunch: (role: Role, ctx: ExtensionContext) => ResolvedRoleLaunch;
 	startWidget: (
@@ -269,10 +271,9 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			throw new Error(commandFailure("git update-index --really-refresh", refreshed));
 		}
 		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], root, signal);
-		const flags = await requireGit(["ls-files", "-v", "-z"], root, signal);
-		if (flags.split("\0").some((entry) => /^(?:[a-z]|S) /.test(entry))) {
-			return "assume-unchanged or skip-worktree index entries remain";
-		}
+		const flags = await inspectIndexFlags(root, git, signal);
+		if (flags.failure) throw new Error(`Git index inspection failed: ${flags.failure}`);
+		if (flags.hidden) return "assume-unchanged or skip-worktree index entries remain";
 		if (refreshed.code === 1 || status) return status || capOutput(refreshed.stdout || refreshed.stderr || "index refresh reported tracked changes");
 		return;
 	};
@@ -506,6 +507,9 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		if (tip !== branchTip) return { block: `Unit ${JSON.stringify(unit.request.id)} branch no longer names its checked-out HEAD.` };
 		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all"], unit.worktree.cwd, signal);
 		if (status) return { block: `Unit Worktree is dirty:\n${capOutput(status)}` };
+		const flags = await inspectIndexFlags(unit.worktree.cwd, git, signal);
+		if (flags.failure) throw new Error(`Unit index inspection failed: ${flags.failure}`);
+		if (flags.hidden) return { block: "Unit Worktree has assume-unchanged or skip-worktree index entries." };
 		const ancestor = await git(["merge-base", "--is-ancestor", unit.base, tip], unit.worktree.cwd, signal);
 		if (signal?.aborted) signal.throwIfAborted();
 		if (ancestor.code === 1) return { block: `Unit HEAD does not descend from its Flow-owned base ${unit.base}.` };
@@ -523,7 +527,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		signal?: AbortSignal,
 	): Promise<string | undefined> => {
 		for (const [index, validation] of unit.request.validation.entries()) {
-			const result = await execute(validation.command, validation.args, unit.worktree.cwd, signal);
+			const result = await execute(validation.command, validation.args, unit.worktree.cwd, signal, runtime.maxRuntimeMs);
 			if (signal?.aborted) signal.throwIfAborted();
 			if (result.code !== 0 || result.killed) return commandFailure(`Validation ${index + 1}`, result);
 		}
@@ -589,10 +593,11 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				if (rebased.code !== 0 || rebased.killed) {
 					const aborted = await git(["rebase", "--abort"], unit.worktree.cwd);
 					const diagnostic = [
+						`Rebase failed; git rebase --abort ${aborted.code === 0 && !aborted.killed ? "restored the Unit Worktree for recovery." : "also failed; inspect the retained Unit Worktree."}`,
 						commandFailure(`git rebase ${main.expectedHead}`, rebased),
 						...(aborted.code === 0 && !aborted.killed ? [] : [commandFailure("git rebase --abort", aborted)]),
 					].join("\n");
-					return terminal(flow, "conflict", diagnostic, meter);
+					return terminal(flow, "infrastructure", diagnostic, meter);
 				}
 				unit.base = main.expectedHead;
 				inspected = await inspectUnit(unit, true, signal);
@@ -604,6 +609,20 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const validationFailure = await validateUnit(unit, tip, signal);
 			assertCurrent(flow);
 			if (validationFailure) return block(flow, unit, "validation", validationFailure, meter);
+			if (unit.base === tip) {
+				try {
+					await checkMain(main, signal);
+				} catch (error) {
+					return terminal(flow, "main", errorText(error), meter);
+				}
+				assertCurrent(flow);
+				flow.completed.push({ id: unit.request.id, noOp: true });
+				const cleanupWarning = await cleanupUnit(unit, main, tip, flow.sessionController.signal);
+				assertCurrent(flow);
+				if (cleanupWarning) flow.warnings.push(`Unit ${JSON.stringify(unit.request.id)} completed as a no-op, but cleanup refused: ${cleanupWarning}`);
+				flow.index += 1;
+				continue;
+			}
 
 			let evidence;
 			try {
@@ -652,24 +671,19 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				return terminal(flow, "main", errorText(error), meter);
 			}
 			assertCurrent(flow);
-			const noOp = evidence.base === evidence.tip;
-			if (!noOp) {
-				const merged = await git(["merge", "--no-overwrite-ignore", "--ff-only", evidence.tip], main.root, signal);
-				assertCurrent(flow);
-				if (merged.code !== 0 || merged.killed) {
-					return terminal(flow, "integration", commandFailure(`git merge --no-overwrite-ignore --ff-only ${evidence.tip}`, merged), meter);
-				}
-				main.expectedHead = evidence.tip;
-				flow.completed.push({ id: unit.request.id, noOp: false });
-				try {
-					await checkMain(main);
-				} catch (error) {
-					return terminal(flow, "integration", errorText(error), meter);
-				}
-				assertCurrent(flow);
-			} else {
-				flow.completed.push({ id: unit.request.id, noOp: true });
+			const merged = await git(["merge", "--no-overwrite-ignore", "--ff-only", evidence.tip], main.root, signal);
+			assertCurrent(flow);
+			if (merged.code !== 0 || merged.killed) {
+				return terminal(flow, "integration", commandFailure(`git merge --no-overwrite-ignore --ff-only ${evidence.tip}`, merged), meter);
 			}
+			main.expectedHead = evidence.tip;
+			flow.completed.push({ id: unit.request.id, noOp: false });
+			try {
+				await checkMain(main);
+			} catch (error) {
+				return terminal(flow, "integration", errorText(error), meter);
+			}
+			assertCurrent(flow);
 			const cleanupWarning = await cleanupUnit(unit, main, evidence.tip, flow.sessionController.signal);
 			assertCurrent(flow);
 			if (cleanupWarning) flow.warnings.push(`Unit ${JSON.stringify(unit.request.id)} integrated, but cleanup refused: ${cleanupWarning}`);

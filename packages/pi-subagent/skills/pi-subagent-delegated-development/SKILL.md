@@ -25,7 +25,7 @@ A successful Flow owns integration and cleanup. A blocked outcome is repairable:
 delegate_flow_continue({ guidance: "Address the reported block and complete the bounded unit." })
 ```
 
-Make the guidance specific to the reported implementation, validation, or review failure. Do not call continuation unless Flow reports a repairable block. If continuation or Flow returns a terminal conflict/failure, inspect every retained path reported by the runtime, then reslice or manually recover from Main; do not retry the Flow or guess a conflict resolution. A cleanup warning does not undo successful integration.
+Make the guidance specific to the reported implementation, validation, or review failure. Do not call continuation unless Flow reports a repairable block. If continuation or Flow returns a terminal failure, inspect every retained path reported by the runtime, then reslice or manually recover from Main; do not retry the Flow or guess a rebase resolution. A cleanup warning does not undo successful integration.
 
 ## Ordinary delegation
 

@@ -404,6 +404,7 @@ export default function subagentExtension(
 
 	invalidateDelegateFlow = registerDelegateFlow(pi, {
 		executor,
+		maxRuntimeMs: timeoutPolicy.maxMs,
 		getSessionGeneration: () => sessionEpoch,
 		resolveLaunch: (role, ctx) => {
 			const launchCtx = latestCtx ?? ctx;

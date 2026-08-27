@@ -130,6 +130,18 @@ test("exact evidence cleans up failed temporary artifact setup", async (t) => {
 	assertEvidenceDirectoriesRemoved(directories);
 });
 
+test("exact evidence rejects assume-unchanged and skip-worktree tracked changes", async (t) => {
+	for (const [enable, disable] of [
+		["--assume-unchanged", "--no-assume-unchanged"],
+		["--skip-worktree", "--no-skip-worktree"],
+	] as const) {
+		const context = await candidate(t, await repository(t), enable);
+		git(context.worktree, "update-index", enable, "tracked.txt");
+		await assert.rejects(prepareExactReviewEvidence(context), /assume-unchanged or skip-worktree/);
+		git(context.worktree, "update-index", disable, "tracked.txt");
+	}
+});
+
 test("exact evidence rejects dirty and wrong-tip registered worktrees", async (t) => {
 	const context = await candidate(t, await repository(t), "invalid");
 	await writeFile(join(context.worktree, "dirty.txt"), "dirty\n");

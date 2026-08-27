@@ -192,6 +192,12 @@ export interface WorktreeDirtyInspection {
 	initializedSubmodules?: boolean;
 }
 
+export async function inspectIndexFlags(cwd: string, run: GitRunner = runGit, signal?: AbortSignal): Promise<{ hidden: boolean; failure?: string }> {
+	const flags = await run(["ls-files", "-v", "-z"], cwd, signal);
+	if (flags.code !== 0) return { hidden: false, failure: `ls-files exit ${flags.code}: ${flags.stderr.trim().slice(0, 200)}` };
+	return { hidden: flags.stdout.split("\0").some((entry) => /^(?:[a-z]|S) /.test(entry)) };
+}
+
 async function inspectDirty(run: GitRunner, cwd: string): Promise<WorktreeDirtyInspection> {
 	const refreshed = await run(["update-index", "--really-refresh"], cwd);
 	if (refreshed.code !== 0 && refreshed.code !== 1) {
@@ -200,11 +206,9 @@ async function inspectDirty(run: GitRunner, cwd: string): Promise<WorktreeDirtyI
 	const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], cwd);
 	if (status.code !== 0) return { dirty: false, failure: `status exit ${status.code}: ${status.stderr.trim().slice(0, 200)}` };
 	if (refreshed.code === 1 || status.stdout.trim()) return { dirty: true };
-	const flags = await run(["ls-files", "-v", "-z"], cwd);
-	if (flags.code !== 0) return { dirty: false, failure: `ls-files exit ${flags.code}: ${flags.stderr.trim().slice(0, 200)}` };
-	if (flags.stdout.split("\0").some((entry) => /^(?:[a-z]|S) /.test(entry))) {
-		return { dirty: false, failure: "assume-unchanged or skip-worktree index entries remain" };
-	}
+	const flags = await inspectIndexFlags(cwd, run);
+	if (flags.failure) return { dirty: false, failure: flags.failure };
+	if (flags.hidden) return { dirty: false, failure: "assume-unchanged or skip-worktree index entries remain" };
 	return { dirty: false };
 }
 
