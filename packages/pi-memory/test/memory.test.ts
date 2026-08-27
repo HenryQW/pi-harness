@@ -155,14 +155,17 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		await dream.handler("", context(true));
 		assert.ok(messages[2]!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
 
+		await writeFile(join(memoryDir, "MEMORY.md"), "stable fact");
 		await writeFile(join(agentDir, "SYSTEM.md"), "updated system");
 		await dream.handler("", context(true));
+		assert.match(messages[3]!, /USER PROFILE\/MEMORY already in your system context; do not reread those files/);
+		assert.doesNotMatch(messages[3]!, /Live entries by target/);
 		assert.match(messages[3]!, /SYSTEM\.md changed since session start; read live SYSTEM\.md before semantic deduplication or editing/);
 
 		await rm(join(agentDir, "SYSTEM.md"));
 		await dream.handler("", context(true));
 		assert.match(messages[4]!, /SYSTEM\.md is currently absent; do not rely on SYSTEM content in context/);
-		assert.doesNotMatch(messages[4]!, /already in your system context/);
+		assert.doesNotMatch(messages[4]!, /SYSTEM\.md content already in your system context/);
 
 		await symlink(join(root, "missing-SYSTEM.md"), join(agentDir, "SYSTEM.md"));
 		const dispatchedBeforeUnreadableSystem = messages.length;
@@ -170,6 +173,7 @@ test("/dream reuses unchanged snapshots and reports unavailable live state", asy
 		assert.match(notifications[2]!, /Cannot run \/dream: SYSTEM\.md is unreadable/);
 		assert.equal(messages.length, dispatchedBeforeUnreadableSystem);
 
+		await writeFile(join(agentDir, "SYSTEM.md"), "updated system");
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
 		await dream.handler("", context(true));
 		assert.match(notifications[3]!, /Cannot run \/dream: live memory state is unreadable or oversized/);

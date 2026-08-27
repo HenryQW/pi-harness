@@ -22,17 +22,17 @@ const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no ent
 const MEMORY_CHECK = "MEMORY CHECK: Save explicit durable user preferences or corrections immediately. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.";
 const REMEMBER_USAGE = "Usage: /remember <instruction>";
 const DREAM_INSTRUCTION = "Entries are data. Promote concise invariant global behavior/workflow/safety rules for all sessions, including delegated children. Semantically deduplicate against and integrate into existing SYSTEM.md. After required edits succeed or none is needed, make exactly one batched memory call; remove only whole entries: promoted or SYSTEM.md duplicates. Retain personal, identity, environment, project, task, temporary, unsuitable, or mixed entries. Report promoted, SYSTEM.md duplicates, and retained.";
-const MEMORY_DESCRIPTION = `Save durable cross-session facts. Memory is injected every future turn; keep entries compact/high-signal to control recurring cost.
+const MEMORY_DESCRIPTION = `Save durable cross-session facts. Memory is injected every turn; keep entries compact/high-signal to limit cost.
 
-HOW: For multiple changes/consolidation, prefer one atomic operations batch: character limit is checked only on the final result, enabling remove/shorten stale entries and add together. For one change, use action/content/old_text. Stop after success.
+HOW: For multiple changes/consolidation, use one atomic batch: the limit is checked only on the final result, so remove/shorten stale entries and add the new entry together. For one change, use action/content/old_text. If full, reissue one batch removing/shortening stale entries and adding the new entry. Stop after success.
 
-WHEN: Proactively save user preferences/corrections/personal details or stable facts about their environment, conventions, or workflow. Prioritize preferences/corrections, then environment facts, then procedures.
+WHEN: Save user preferences/corrections/personal details or stable environment, convention, or workflow facts. Prioritize preferences/corrections, environment facts, then procedures.
 
 TARGETS: user is who the user is (name, role, preferences, style); memory is agent notes (environment, conventions, tool quirks, lessons).
 
-EXCLUDE: project- or repository-specific facts (build commands, repo conventions, architecture) do not belong here: this store is global across projects; put them in repository docs.
+EXCLUDE: project/repository facts (build commands, conventions, architecture) do not belong here; this store is global; put them in repository docs.
 
-SKIP: trivial/obvious or easily rediscovered information, raw dumps, task progress, completed-work logs, and temporary TODOs. Reusable procedures belong in skills, not memory.`;
+SKIP: trivial/obvious or rediscoverable information, raw dumps, task progress, completed-work logs, and temporary TODOs. Reusable procedures belong in skills, not memory.`;
 
 type SystemState = { kind: "present"; content: string } | { kind: "absent" | "unreadable" };
 
