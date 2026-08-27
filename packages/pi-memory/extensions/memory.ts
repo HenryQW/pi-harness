@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -75,6 +75,29 @@ async function loadLastDreamAt(): Promise<number | undefined> {
 		throw error;
 	} finally {
 		await handle?.close();
+	}
+}
+
+async function saveLastDreamAt(): Promise<void> {
+	const path = LAST_DREAM_PATH();
+	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+	let created = false;
+	try {
+		const handle = await open(tempPath, "wx", 0o600);
+		created = true;
+		try {
+			await handle.writeFile(`${new Date().toISOString()}\n`);
+		} finally {
+			await handle.close();
+		}
+		// rename replaces a destination symlink rather than following it.
+		await rename(tempPath, path);
+	} finally {
+		if (created) {
+			await unlink(tempPath).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+			});
+		}
 	}
 }
 
@@ -249,7 +272,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		for (let index = event.messages.length - 1; index >= 0; index--) {
 			const message = event.messages[index];
 			if (message?.role !== "assistant") continue;
-			state.dreamSucceeded = message.stopReason !== "error" && message.stopReason !== "aborted" && message.stopReason !== "length";
+			state.dreamSucceeded = message.stopReason === "stop";
 			break;
 		}
 	});
@@ -264,7 +287,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		try {
-			await writeFile(LAST_DREAM_PATH(), `${new Date().toISOString()}\n`, { mode: 0o600 });
+			await saveLastDreamAt();
 		} catch (error) {
 			ctx.ui.notify(`Dream completed, but its timestamp could not be recorded: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
@@ -323,12 +346,14 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			state.snapshotSanitized = rendered.some(({ sanitized }) => sanitized);
 			state.conflictWarnings = conflictWarnings;
 
-			if (!process.argv.includes(BTW_CHILD_PAYLOAD_ARG) && (memory.entries.length || user.entries.length)) {
+			const memoryChars = memory.entries.join(ENTRY_DELIMITER).length;
+			const userChars = user.entries.join(ENTRY_DELIMITER).length;
+			const validWithinCap = !memory.status && !user.status
+				&& memoryChars <= config.memoryCharLimit && userChars <= config.userCharLimit;
+			if (!process.argv.includes(BTW_CHILD_PAYLOAD_ARG) && validWithinCap && (memory.entries.length || user.entries.length)) {
 				try {
 					const lastDreamAt = await loadLastDreamAt();
 					const age = lastDreamAt === undefined ? undefined : Date.now() - lastDreamAt;
-					const memoryChars = memory.entries.join(ENTRY_DELIMITER).length;
-					const userChars = user.entries.join(ENTRY_DELIMITER).length;
 					const full = memoryChars * 100 >= config.memoryCharLimit * DREAM_USAGE_PERCENT
 						|| userChars * 100 >= config.userCharLimit * DREAM_USAGE_PERCENT;
 					if (age === undefined || age >= DREAM_AFTER_MS || (full && age >= DREAM_FULL_COOLDOWN_MS)) {

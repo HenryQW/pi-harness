@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -101,7 +101,7 @@ test("/remember validates input, rejects busy agents, and sends live state", asy
 	}
 });
 
-test("session start recommends /dream when memory is new, stale, or 70% full", async () => {
+test("session start recommends /dream only for valid stores within their caps", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-reminder-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
@@ -147,6 +147,28 @@ test("session start recommends /dream when memory is new, stale, or 70% full", a
 		assert.deepEqual(notifications, ["Memory dream recommended; run /dream."]);
 
 		notifications.length = 0;
+		await rm(statePath);
+		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(11));
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, []);
+
+		await writeFile(join(memoryDir, "MEMORY.md"), "123456");
+		await writeFile(join(memoryDir, "USER.md"), "x".repeat(11));
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, []);
+
+		await writeFile(join(memoryDir, "USER.md"), "");
+		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, []);
+
+		await rm(join(memoryDir, "MEMORY.md"));
+		await symlink(join(root, "missing-MEMORY.md"), join(memoryDir, "MEMORY.md"));
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, []);
+
+		await rm(join(memoryDir, "MEMORY.md"));
+		await writeFile(join(memoryDir, "MEMORY.md"), "123456");
 		await writeFile(statePath, "x".repeat(65));
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.match(notifications[0]!, /Timestamp file is too large/);
@@ -248,19 +270,36 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		assert.match(messages[0]!, /one memory batch per affected target/);
 		assert.match(messages[0]!, /no memory call if none/);
 
+		await rm(lastDreamPath);
+		await dream.handler("", context(true));
+		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "toolUse" }] });
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
+		await assert.rejects(readFile(lastDreamPath), /ENOENT/);
+		assert.equal(notifications.at(-1), "Dream did not complete; its timestamp was not updated.");
+
+		const dreamTarget = join(root, "dream-target.txt");
+		await writeFile(dreamTarget, "keep this target");
+		await symlink(dreamTarget, lastDreamPath);
+		await dream.handler("", context(true));
+		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
+		assert.equal(await readFile(dreamTarget, "utf8"), "keep this target");
+		assert.equal((await lstat(lastDreamPath)).isSymbolicLink(), false);
+		assert.ok(Number.isFinite(Date.parse((await readFile(lastDreamPath, "utf8")).trim())));
+
 		process.argv.push(CHILD_PAYLOAD_ARG);
 		try {
 			await dream.handler("", context(true));
-			assert.ok(messages[1]!.includes(JSON.stringify({ memory: ["stable fact"], user: ["likes concise replies"] })));
-			assert.doesNotMatch(messages[1]!, /do not reread those files/);
-			assert.ok(messages[1]!.includes(`Read ${JSON.stringify(systemPath)} before semantic deduplication or editing.`));
+			assert.ok(messages.at(-1)!.includes(JSON.stringify({ memory: ["stable fact"], user: ["likes concise replies"] })));
+			assert.doesNotMatch(messages.at(-1)!, /do not reread those files/);
+			assert.ok(messages.at(-1)!.includes(`Read ${JSON.stringify(systemPath)} before semantic deduplication or editing.`));
 		} finally {
 			process.argv.pop();
 		}
 
 		await writeFile(join(memoryDir, "MEMORY.md"), "changed fact");
 		await dream.handler("", context(true));
-		assert.ok(messages[2]!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
+		assert.ok(messages.at(-1)!.includes(JSON.stringify({ memory: ["changed fact"], user: ["likes concise replies"] })));
 
 		await rm(lastDreamPath);
 		await dream.handler("", context(true));
