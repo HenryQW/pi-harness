@@ -216,6 +216,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		displayTitle: string,
 		branchCandidate: string,
 		previousDisplayTitle: string | undefined,
+		forceWorkspaceRename: boolean,
 		request: number,
 		controller: AbortController,
 	): Promise<void> => {
@@ -247,6 +248,16 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		const workspaceName = workspace?.label;
 		if (typeof workspaceName !== "string") throw new Error("Herdr workspace response omitted label.");
 		const worktree = workspace?.worktree;
+		if (
+			workspaceName !== displayTitle &&
+			(forceWorkspaceRename ||
+				(worktree?.is_linked_worktree === true &&
+					(HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) || workspaceName === previousDisplayTitle))) &&
+			isCurrent(request, controller)
+		) {
+			await herdr.run(["workspace", "rename", workspaceId, displayTitle], { signal: controller.signal });
+		}
+
 		const checkoutPath = worktree?.checkout_path;
 		if (worktree?.is_linked_worktree !== true || typeof checkoutPath !== "string" || !checkoutPath) return;
 
@@ -266,13 +277,6 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 				.filter(Boolean);
 			const semanticBranch = availableBranch(branchCandidate, branches);
 			await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
-		}
-		if (
-			workspaceName !== displayTitle &&
-			(HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) || workspaceName === previousDisplayTitle) &&
-			isCurrent(request, controller)
-		) {
-			await herdr.run(["workspace", "rename", workspaceId, displayTitle], { signal: controller.signal });
 		}
 	};
 
@@ -300,7 +304,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 			const previousDisplayTitle = saved && pi.getSessionName() === saved.display ? saved.display : undefined;
 			pi.setSessionName(title.display);
 			pi.appendEntry(TITLE_STATE_TYPE, title);
-			await applyHerdr(title.display, title.branch, previousDisplayTitle, request, controller);
+			await applyHerdr(title.display, title.branch, previousDisplayTitle, manual, request, controller);
 			return title.display;
 		} catch (error) {
 			if (isCurrent(request, controller) && (manual || error instanceof RenameModelError)) {
@@ -341,7 +345,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (!title || title !== saved?.display) return;
 
 		const { request, controller } = begin();
-		void applyHerdr(title, saved.branch, saved.display, request, controller)
+		void applyHerdr(title, saved.branch, saved.display, false, request, controller)
 			.catch(() => undefined)
 			.finally(() => finish(request, controller));
 	});

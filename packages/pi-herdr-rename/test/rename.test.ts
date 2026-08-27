@@ -270,38 +270,40 @@ test("saved display titles keep semantic branches, replace generated branches, a
 	});
 });
 
-test("manual rename updates its previous generated workspace title", async () => {
+test("manual rename updates generated and custom workspace titles", async () => {
 	await withAgentDir(async () => {
 		process.env.HERDR_PANE_ID = "pane-1";
-		const app = harness({
-			sessionName: "Saved title",
-			branch: [
-				{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } },
-				{ type: "message", message: { role: "user", content: "update task logic" } },
-			],
-			complete: async () => response("refactor: update task logic"),
-			exec: async (args) => {
-				if (args.join("\0") === "branch\0--show-current") return success("fix/saved-title\n");
-				if (args[0] === "pane" && args[1] === "get") {
-					return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
-				}
-				if (args[0] === "tab" && args[1] === "get") {
-					return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
-				}
-				if (args[0] === "workspace" && args[1] === "get") {
-					return success(JSON.stringify({ result: { workspace: { label: "Saved title", worktree: { checkout_path: "/repo/worktree", is_linked_worktree: true } } } }));
-				}
-				return success("{}");
-			},
-		});
-		await app.handlers.get("session_start")?.({}, app.ctx);
-		await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
-		await app.commands.get("rename")?.("", app.ctx);
+		for (const workspaceName of ["Saved title", "Custom workspace"]) {
+			const app = harness({
+				sessionName: "Saved title",
+				branch: [
+					{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } },
+					{ type: "message", message: { role: "user", content: "update task logic" } },
+				],
+				complete: async () => response("refactor: update task logic"),
+				exec: async (args) => {
+					if (args.join("\0") === "branch\0--show-current") return success("fix/saved-title\n");
+					if (args[0] === "pane" && args[1] === "get") {
+						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
+					}
+					if (args[0] === "tab" && args[1] === "get") {
+						return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
+					}
+					if (args[0] === "workspace" && args[1] === "get") {
+						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: "/repo/worktree", is_linked_worktree: true } } } }));
+					}
+					return success("{}");
+				},
+			});
+			await app.handlers.get("session_start")?.({}, app.ctx);
+			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
+			await app.commands.get("rename")?.("", app.ctx);
 
-		assert.deepEqual(
-			app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "rename"),
-			[["workspace", "rename", "workspace-1", "Update task logic"]],
-		);
+			assert.deepEqual(
+				app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "rename"),
+				[["workspace", "rename", "workspace-1", "Update task logic"]],
+			);
+		}
 	});
 });
 
