@@ -1,11 +1,11 @@
 # `@henryqw/pi-notes`
 
-Persistent notes shown in a Pi widget, managed with slash commands.
+Persistent post-it reminders shown in a Pi widget, managed with slash commands.
 
 ## Why
 
-- **Created for**: Keeping persistent scratch notes visible per worktree without leaving the Pi session.
-- **Advantage**: Slash-command-managed notes render in a widget and survive across sessions without leaking between worktrees.
+- **Created for**: Keeping a few brief, post-it-style reminders visible per worktree without leaving the Pi session.
+- **Advantage**: Notes stay intentionally bounded and visible instead of becoming clipboard storage or history.
 
 ## Install
 
