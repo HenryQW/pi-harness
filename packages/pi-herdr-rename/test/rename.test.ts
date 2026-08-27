@@ -249,7 +249,7 @@ test("saved display titles keep semantic branches, replace generated branches, a
 			});
 			await app.handlers.get("session_start")?.({}, app.ctx);
 			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await eventually(() => !isLinkedWorktree || gitCwds.length === 1 + Number(Boolean(gitMutation)) * 2);
 			assert.equal(app.completionCalls.length, 0);
 			assert.equal(app.names.length, 0);
 			assert.ok(app.execCalls.some((args) => args.join("\0") === "pane\0rename\0pane-1\0Saved title"));
