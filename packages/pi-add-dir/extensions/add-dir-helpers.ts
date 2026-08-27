@@ -156,7 +156,7 @@ export async function findFiles(
 	for await (const entry of glob("**/@(*|.*)", {
 		cwd: root,
 		withFileTypes: true,
-		exclude: (entry) => entry.isDirectory() && SKIPPED_SEARCH_DIRS.has(entry.name),
+		exclude: (entry) => entry.isSymbolicLink() || (entry.isDirectory() && SKIPPED_SEARCH_DIRS.has(entry.name)),
 	})) {
 		signal?.throwIfAborted();
 		if (!entry.isFile()) continue;

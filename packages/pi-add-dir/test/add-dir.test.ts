@@ -88,6 +88,24 @@ test("finds files recursively while skipping dependency and Git trees", async ()
 	}
 });
 
+test("ignores symbolic links and their descendants when finding files", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	const target = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	try {
+		const included = join(root, "src", "main.ts");
+		await mkdir(join(included, ".."), { recursive: true });
+		await mkdir(join(target, "nested"), { recursive: true });
+		await writeFile(included, "");
+		await writeFile(join(target, "nested", "linked.ts"), "");
+		await symlink(target, join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
+
+		assert.deepEqual(await findFiles(root, "*.ts", 10), [included]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+		await rm(target, { recursive: true, force: true });
+	}
+});
+
 test("returns no results when an external directory disappears", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	await rm(dir, { recursive: true, force: true });
