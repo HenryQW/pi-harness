@@ -49,6 +49,7 @@ test("missing config directory still returns validated built-in implementer and 
 	assert.equal(implementer!.isolation, "worktree");
 	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
 	assert.match(implementer!.systemPrompt, /assigned cwd/i);
+	assert.match(implementer!.systemPrompt, /ordinary delegation.*focused validation.*needed to establish that the change is correct/i);
 	assert.match(implementer!.systemPrompt, /Flow packet declares an authoritative validation gate/i);
 	assert.match(implementer!.systemPrompt, /narrow development checks/i);
 	assert.match(implementer!.systemPrompt, /do not duplicate the declared gate/i);
