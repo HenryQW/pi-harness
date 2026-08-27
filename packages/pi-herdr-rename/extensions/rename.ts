@@ -3,7 +3,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { createHerdrClient } from "@henryqw/pi-herdr";
+import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 import {
 	readTaskModelsConfig,
 	resolveConfiguredTaskRoutes,
@@ -42,15 +42,22 @@ function configuredRenameRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
 	}
 }
 
+function validSubject(subject: string): boolean {
+	return /^[a-z0-9]+(?: [a-z0-9]+)*$/.test(subject)
+		&& subject.length <= DISPLAY_MAX_CHARS
+		&& subject.split(" ").length <= DISPLAY_MAX_WORDS;
+}
+
+function isDisplayTitle(value: unknown): value is string {
+	if (typeof value !== "string" || !value) return false;
+	const subject = value[0].toLowerCase() + value.slice(1);
+	return validSubject(subject) && value === subject[0].toUpperCase() + subject.slice(1);
+}
+
 function parseGeneratedTitle(title: string): GeneratedTitle | undefined {
-	const match = /^([a-z][a-z0-9-]*): ([a-z0-9]+(?: [a-z0-9]+)*)$/.exec(title);
-	if (!match) return undefined;
+	const match = /^([a-z][a-z0-9-]*): (.+)$/.exec(title);
+	if (!match || match[1].length > SEMANTIC_TYPE_MAX_CHARS || !validSubject(match[2])) return undefined;
 	const subject = match[2];
-	if (
-		match[1].length > SEMANTIC_TYPE_MAX_CHARS ||
-		subject.length > DISPLAY_MAX_CHARS ||
-		subject.split(" ").length > DISPLAY_MAX_WORDS
-	) return undefined;
 	return {
 		display: subject[0].toUpperCase() + subject.slice(1),
 		branch: `${match[1]}/${subject.replaceAll(" ", "-")}`,
@@ -63,7 +70,7 @@ function savedTitle(ctx: ExtensionContext): GeneratedTitle | undefined {
 		.find((candidate) => candidate.type === "custom" && candidate.customType === TITLE_STATE_TYPE);
 	if (entry?.type !== "custom" || !entry.data || typeof entry.data !== "object" || Array.isArray(entry.data)) return undefined;
 	const { display, branch } = entry.data as { display?: unknown; branch?: unknown };
-	return typeof display === "string" && typeof branch === "string" && SEMANTIC_BRANCH.test(branch)
+	return isDisplayTitle(display) && typeof branch === "string" && SEMANTIC_BRANCH.test(branch)
 		? { display, branch }
 		: undefined;
 }
@@ -269,15 +276,18 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 			return result.stdout.trim();
 		};
 
-		const branch = await runGit(["branch", "--show-current"]);
-		if (!branch || branch.startsWith("worktree/")) {
+		await withWorktreeLock(checkoutPath, async () => {
 			if (!isCurrent(request, controller)) return;
-			const branches = (await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
-				.split("\n")
-				.filter(Boolean);
-			const semanticBranch = availableBranch(branchCandidate, branches);
-			await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
-		}
+			const branch = await runGit(["branch", "--show-current"]);
+			if (!branch || branch.startsWith("worktree/")) {
+				if (!isCurrent(request, controller)) return;
+				const branches = (await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
+					.split("\n")
+					.filter(Boolean);
+				const semanticBranch = availableBranch(branchCandidate, branches);
+				await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
+			}
+		});
 	};
 
 	const begin = () => {
@@ -307,7 +317,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 			await applyHerdr(title.display, title.branch, previousDisplayTitle, manual, request, controller);
 			return title.display;
 		} catch (error) {
-			if (isCurrent(request, controller) && (manual || error instanceof RenameModelError)) {
+			if (isCurrent(request, controller)) {
 				ctx.ui.notify(error instanceof Error ? error.message : "Rename failed.", "warning");
 			}
 			return undefined;
@@ -346,7 +356,11 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 
 		const { request, controller } = begin();
 		void applyHerdr(title, saved.branch, saved.display, false, request, controller)
-			.catch(() => undefined)
+			.catch((error) => {
+				if (isCurrent(request, controller)) {
+					ctx.ui.notify(error instanceof Error ? error.message : "Rename failed.", "warning");
+				}
+			})
 			.finally(() => finish(request, controller));
 	});
 
