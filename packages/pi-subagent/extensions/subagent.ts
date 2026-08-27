@@ -28,6 +28,7 @@ import {
 	type WorktreePayload,
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import { runDelegation } from "./delegation.ts";
 import {
 	formatBackgroundWorkflowResult,
 	formatWorkflowResult,
@@ -512,7 +513,7 @@ export default function subagentExtension(
 							: { ...base, status: nextStatus, assistantOutput: nextText });
 					};
 					try {
-						child = await executor.run({
+						child = await runDelegation(executor, {
 							signal: workflowSignal,
 							onUpdate: (output) => {
 								setState("running", output);
