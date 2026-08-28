@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -183,6 +183,53 @@ test("Bun virtual entrypoints reuse the active executable instead of PATH", asyn
 	});
 	assert.equal(result.outcome, "failure");
 	assert.match(result.stderr, /(?:bad|unknown|illegal) option/i);
+});
+
+test("post-exit stdio drain releases one queued permit held by an escaped descendant", async (t) => {
+	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const task = process.argv.at(-1);
+if (task === "Task: first") {
+	const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { detached: true, stdio: "inherit" });
+	escaped.unref();
+	writeFileSync(process.env.EPHEMERAL_ESCAPED_PID_FILE, String(escaped.pid));
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" } }));
+} else {
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "second" }], stopReason: "stop" } }));
+}
+`);
+	const pidFile = join(cwd, "escaped.pid");
+	t.after(async () => {
+		try { process.kill(Number(await readFile(pidFile, "utf8")), "SIGKILL"); } catch {}
+	});
+	const executorInstance = executor();
+	const preparedTasks: string[] = [];
+	const first = executorInstance.run({
+		prepare: async () => {
+			preparedTasks.push("first");
+			return prepared(cwd, "first", { env: { EPHEMERAL_ESCAPED_PID_FILE: pidFile }, args: [] });
+		},
+	});
+	const second = executorInstance.run({
+		prepare: async () => {
+			preparedTasks.push("second");
+			return prepared(cwd, "second");
+		},
+	});
+	let rejectDeadline!: (error: Error) => void;
+	const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+	const deadlineTimer = setTimeout(
+		() => rejectDeadline(new Error("post-exit stdio drain did not release the queued permit")),
+		1_500,
+	);
+	try {
+		const [firstResult, secondResult] = await Promise.race([Promise.all([first, second]), deadline]);
+		assert.equal(firstResult.output, "first");
+		assert.equal(secondResult.output, "second");
+		assert.deepEqual(preparedTasks, ["first", "second"]);
+	} finally {
+		clearTimeout(deadlineTimer);
+	}
 });
 
 test("callback failure terminates the child and releases the next queued run", async (t) => {

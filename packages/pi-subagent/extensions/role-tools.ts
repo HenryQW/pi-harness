@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_EXCLUDED_TOOLS, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import { CHILD_EXCLUDED_TOOL_NAMES, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 
-const childExcludedTools = new Set(CHILD_EXCLUDED_TOOLS.split(","));
+const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 
 function configuredTools(value: unknown): string[] | undefined {
 	if (value === undefined) return;
@@ -26,9 +26,16 @@ export default function roleTools(pi: ExtensionAPI): void {
 	pi.on("session_start", () => {
 		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
 		if (!selected) return;
-		const extensionTools = pi.getAllTools()
+		const allTools = pi.getAllTools();
+		const registeredTools = new Set(allTools.map((tool) => tool.name));
+		const extensionTools = allTools
 			.filter((tool) => !["builtin", "sdk", "inline"].includes(tool.sourceInfo.source))
 			.map((tool) => tool.name);
 		pi.setActiveTools([...new Set([...selected, ...extensionTools])].filter((name) => !childExcludedTools.has(name)));
+		const activeTools = new Set(pi.getActiveTools().filter((name) => registeredTools.has(name) && !childExcludedTools.has(name)));
+		const unavailable = selected.filter((name) => !activeTools.has(name));
+		if (unavailable.length) {
+			throw new Error(`Subagent requested unavailable tools: ${unavailable.join(", ")}. Check spelling and load the provider extension that registers them.`);
+		}
 	});
 }

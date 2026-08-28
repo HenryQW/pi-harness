@@ -136,7 +136,7 @@ A Role file owns:
 
 At launch, a package caller may add `tools`, `extensions`, and `env`. With an explicit Role tool list, caller tools are unioned into that base list. When Role tools and caller tools are both omitted, no allowlist is installed and Pi defaults remain active. When Role tools are omitted but caller tools are supplied, launch snapshots Main's effective active built-ins, unions the caller tools, and installs that policy. Loaded extension tools activate in every case. Caller `env` adds to or overrides the active Pi process environment for the child.
 
-Children start with ambient extension and Skill discovery disabled. Only explicit Role/caller extensions, explicitly resolved Skill paths, resources supplied by those extension packages, and any required internal tool-policy or Codex adapter load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `delegate_flow`, `delegate_flow_continue`, and `ask_question`.
+Children start with ambient extension and Skill discovery disabled. Only explicit Role/caller extensions, explicitly resolved Skill paths, resources supplied by those extension packages, and any required internal tool-policy or Codex adapter load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `delegate_flow`, `delegate_flow_continue`, and `ask_question`. Explicit Role/caller tool names are verified against the final filtered active child registry after every explicit provider extension completes `session_start`; unavailable names fail before the first model turn and identify the missing names with provider-extension guidance.
 
 Role Skill names resolve through Main's effective Pi Skill registry at launch. Missing names are returned in `ResolvedRoleLaunch.missingSkills`; `delegate_task` warns and skips them. Library callers must surface that warning themselves. Missing Skills do not block launch.
 
@@ -166,7 +166,7 @@ const executorOptions = {
 
 Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, and `onTokens(number)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency`, `idleMs`, and `maxMs` must be positive; `maxMs` must exceed `idleMs`.
 
-The executor is **active-Pi-only**. It reuses the currently running Pi invocation and does not locate or support a standalone Node.js Pi installation.
+The executor is **active-Pi-only**. It reuses the currently running Pi invocation and does not locate or support a standalone Node.js Pi installation. Once direct Pi exits, stdout/stderr drain normally until EOF; an escaped descendant retaining either stream is cut off after short output inactivity or a one-second hard deadline so it cannot retain the FIFO permit.
 
 ### Prepare after the permit
 
