@@ -797,6 +797,8 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
 		assert.ok(narrow.some((line) => line.includes("Recovery:")));
 
+		const empty = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, worktree: undefined, summary: "" }] } }, {}, theme, {}).render(100);
+		assert.deepEqual(empty, ["implementer: (no output)"]);
 		const background = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { background: true } }, {}, theme, {}).render(100);
 		assert.deepEqual(background, ["Background workflow accepted."]);
 		for (const [name, entry] of [
@@ -809,7 +811,13 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 			["summary", { ...terminal.details.entries[0]!, summary: 1 }],
 			["model", { ...terminal.details.entries[0]!, model: 1 }],
 			["thinking level", { ...terminal.details.entries[0]!, thinkingLevel: 1 }],
-			["worktree", { ...terminal.details.entries[0]!, worktree: { path: 1, pruned: false } }],
+			["worktree path", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, path: 1 } }],
+			["worktree branch", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, branch: 1 } }],
+			["worktree commits", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, commits: Infinity } }],
+			["worktree dirty", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, dirty: 1 } }],
+			["worktree pruned", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, pruned: 1 } }],
+			["worktree inspection_failed", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, inspection_failed: 1 } }],
+			["worktree note", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, note: 1 } }],
 		] as const) {
 			const raw = `Malformed ${name}.`;
 			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details: { mode: "parallel", entries: [entry] } }, {}, theme, {}).render(100), [raw], name);
@@ -820,6 +828,12 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 			["duplicate indexes", { mode: "parallel", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "duplicate" }] }],
 			["out-of-order indexes", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, index: 1 }, { ...terminal.details.entries[0]!, id: "out-of-order", index: 0 }] }],
 			["multiple single-mode entries", { mode: "single", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "second", index: 1 }] }],
+			["missing running summary", { mode: "parallel", entries: [{ ...partial.details.entries[1]!, summary: undefined }] }],
+			["missing succeeded summary", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, summary: undefined }] }],
+			["missing failed summary", { mode: "parallel", entries: [{ ...terminal.details.entries[1]!, summary: undefined }] }],
+			["missing rejected summary", { mode: "parallel", entries: [{ ...terminal.details.entries[1]!, status: "rejected", summary: undefined }] }],
+			["pending summary", { mode: "parallel", entries: [{ ...partial.details.entries[0]!, summary: "" }] }],
+			["skipped summary", { mode: "parallel", entries: [{ ...terminal.details.entries[2]!, summary: "" }] }],
 		] as const) {
 			const raw = `Malformed ${name}.`;
 			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details }, {}, theme, {}).render(100), [raw], name);

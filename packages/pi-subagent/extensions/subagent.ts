@@ -119,9 +119,16 @@ function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportD
 		&& entries.every((entry) => isRecord(entry)
 			&& typeof entry.id === "string" && typeof entry.index === "number" && Number.isFinite(entry.index) && Number.isInteger(entry.index) && entry.index >= 0
 			&& typeof entry.role === "string" && ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
-			&& (entry.summary === undefined || typeof entry.summary === "string" && entry.summary === displaySummary(entry.summary))
+			&& (["running", "succeeded", "failed", "rejected"].includes(entry.status as string)
+				? typeof entry.summary === "string" && entry.summary === displaySummary(entry.summary)
+				: entry.summary === undefined)
 			&& isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
-			&& (entry.worktree === undefined || isRecord(entry.worktree) && typeof entry.worktree.path === "string" && typeof entry.worktree.pruned === "boolean"))
+			&& (entry.worktree === undefined || isRecord(entry.worktree)
+				&& typeof entry.worktree.path === "string" && typeof entry.worktree.branch === "string"
+				&& typeof entry.worktree.commits === "number" && Number.isFinite(entry.worktree.commits) && Number.isInteger(entry.worktree.commits) && entry.worktree.commits >= 0
+				&& typeof entry.worktree.dirty === "boolean" && typeof entry.worktree.pruned === "boolean"
+				&& (entry.worktree.inspection_failed === undefined || typeof entry.worktree.inspection_failed === "boolean")
+				&& (entry.worktree.note === undefined || typeof entry.worktree.note === "string")))
 		&& entries.every((entry, index) => index === 0 || (entry as { index: number }).index > (entries[index - 1] as { index: number }).index);
 }
 
