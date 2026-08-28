@@ -9,6 +9,8 @@ import type { PiLaunch } from "./index.ts";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
 const MAX_ACTIVITY_TEXT_BYTES = 4 * 1024;
+// A JSON string byte can take six source bytes (for example, \u0000).
+const MAX_ACTIVITY_PREFIX_BYTES = 2 * MAX_ACTIVITY_TEXT_BYTES * 6 + 1024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const POST_EXIT_STDIO_IDLE_MS = 250;
 const POST_EXIT_STDIO_HARD_MS = 1_000;
@@ -39,6 +41,10 @@ const PI_JSON_EVENTS = {
 } satisfies Record<AgentSessionEvent["type"], true>;
 const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
 const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
+const JSON_STRING = `"(?:[^"\\\\\u0000-\u001f]|\\\\(?:["\\\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
+const JSON_OVERSIZED_TOOL_START = new RegExp(
+	`^\\s*\\{\\s*"type"\\s*:\\s*"tool_execution_start"\\s*,\\s*"toolCallId"\\s*:\\s*(${JSON_STRING})\\s*,\\s*"toolName"\\s*:\\s*(${JSON_STRING})(?=\\s*,)`,
+);
 
 export interface EphemeralSubagentTimeout {
 	idleMs: number;
@@ -296,6 +302,19 @@ function hasTerminalControlChars(text: string): boolean {
 
 function activityText(value: unknown): value is string {
 	return typeof value === "string" && value.trim().length > 0 && !activityTooLong(value) && !hasTerminalControlChars(value);
+}
+
+function oversizedToolStart(prefix: string): EphemeralSubagentActivityEvent | undefined {
+	const match = JSON_OVERSIZED_TOOL_START.exec(prefix);
+	if (!match) return;
+	try {
+		const toolCallId: unknown = JSON.parse(match[1]);
+		const toolName: unknown = JSON.parse(match[2]);
+		if (!activityText(toolCallId) || !activityText(toolName)) return;
+		return { type: "tool_execution_start", toolCallId, toolName };
+	} catch {
+		return;
+	}
 }
 
 function utf8Prefix(text: string, maxBytes: number): string {
@@ -708,7 +727,8 @@ async function runPi(
 				const end = newline === -1 ? data.length : newline;
 				const part = data.slice(offset, end);
 				if (!ignoreLine) {
-					linePrefix += part.slice(0, Math.max(0, 256 - linePrefix.length));
+					const remainingPrefix = MAX_ACTIVITY_PREFIX_BYTES - Buffer.byteLength(linePrefix, "utf8");
+					if (remainingPrefix > 0) linePrefix += utf8Prefix(part, remainingPrefix);
 					const eventType = JSON_EVENT_TYPE.exec(linePrefix)?.[1];
 					if (eventType && !lineEventType) lineEventType = eventType;
 					lineBytes += Buffer.byteLength(part, "utf8");
@@ -726,6 +746,13 @@ async function runPi(
 				}
 				if (newline === -1) return;
 				if (!ignoreLine) processLine(lineParts.join(""));
+				else if (lineEventType === "tool_execution_start") {
+					const activity = oversizedToolStart(linePrefix);
+					if (activity) {
+						observeEvent();
+						invokeCallback("onActivity", input.onActivity, activity);
+					}
+				}
 				if (callbackFailure) return;
 				lineParts = [];
 				lineBytes = 0;

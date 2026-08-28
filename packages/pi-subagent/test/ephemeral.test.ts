@@ -357,6 +357,25 @@ event({ type: "message_end", message: { role: "assistant", content: [{ type: "te
 	]);
 });
 
+test("executor projects tool starts from oversized args without a path", async (t) => {
+	const toolCallId = "i".repeat(4 * 1024);
+	const toolName = "n".repeat(4 * 1024);
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "tool_execution_start", toolCallId: "i".repeat(4 * 1024), toolName: "n".repeat(4 * 1024), args: { path: "src/large.ts", text: "x".repeat(2 * 1024 * 1024) } });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	const activity: EphemeralSubagentActivityEvent[] = [];
+	const result = await executor().run({
+		onActivity: (event) => activity.push(event),
+		prepare: async () => prepared(cwd),
+	});
+	assert.equal(result.output, "done");
+	assert.deepEqual(activity, [
+		{ type: "tool_execution_start", toolCallId, toolName },
+		{ type: "message_end" },
+	]);
+});
+
 test("executor serializes asynchronous activity callbacks in event order", async (t) => {
 	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
 event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: {} });
