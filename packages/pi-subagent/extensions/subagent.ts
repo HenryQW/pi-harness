@@ -110,10 +110,15 @@ function statusLabel(status: WidgetStatus): string {
 }
 
 function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
-	return typeof value === "object" && value !== null && Array.isArray((value as { entries?: unknown }).entries)
-		&& (value as { entries: unknown[] }).entries.every((entry) => typeof entry === "object" && entry !== null
-			&& typeof (entry as { role?: unknown }).role === "string" && typeof (entry as { task?: unknown }).task === "string"
-			&& typeof (entry as { aborted?: unknown }).aborted === "boolean");
+	const isRecord = (candidate: unknown): candidate is Record<string, unknown> => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
+	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
+	const isMetric = (candidate: unknown) => candidate === undefined || typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0;
+	return isRecord(value) && Array.isArray(value.entries) && value.entries.every((entry) => isRecord(entry)
+		&& ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
+		&& typeof entry.role === "string" && typeof entry.task === "string" && typeof entry.aborted === "boolean"
+		&& isOptionalString(entry.summary) && isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
+		&& isMetric(entry.tokens) && isMetric(entry.durationMs)
+		&& (entry.worktree === undefined || isRecord(entry.worktree) && typeof entry.worktree.path === "string" && typeof entry.worktree.pruned === "boolean"));
 }
 
 function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme, spinner: number): string[] {

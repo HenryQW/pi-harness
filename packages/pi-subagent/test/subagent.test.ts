@@ -813,6 +813,16 @@ test("delegate_task renders bounded collapsed workflow entries after the widget 
 	assert.deepEqual(background, ["Background workflow accepted."]);
 	const fallback = app.tool.renderResult!({ content: [{ type: "text", text: "Pre-execution validation failed." }], details: { entries: [{ role: "worker", task: 1 }] } }, {}, theme, {}).render(100);
 	assert.deepEqual(fallback, ["Pre-execution validation failed."]);
+	for (const [name, entry] of [
+		["unknown status", { ...terminal.details.entries[0]!, status: "done" }],
+		["numeric model", { ...terminal.details.entries[0]!, model: 1 }],
+		["non-finite tokens", { ...terminal.details.entries[0]!, tokens: Infinity }],
+		["negative duration", { ...terminal.details.entries[0]!, durationMs: -1 }],
+		["malformed worktree", { ...terminal.details.entries[0]!, worktree: { path: 1, pruned: false } }],
+	] as const) {
+		const raw = `Malformed ${name}.`;
+		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details: { entries: [entry] } }, {}, theme, {}).render(100), [raw], name);
+	}
 	});
 });
 
