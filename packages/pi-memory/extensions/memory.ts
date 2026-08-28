@@ -179,7 +179,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		initError?: string;
 		dreamPending?: boolean;
 		dreamSucceeded?: boolean;
-	} = { conflictWarnings: [] };
+		rememberQueue: string[];
+		sessionGeneration: number;
+	} = { conflictWarnings: [], rememberQueue: [], sessionGeneration: 0 };
 
 	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void): Promise<Record<Target, string[]> | undefined> => {
 		if (state.initError) {
@@ -212,6 +214,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	const sendRemember = (candidate: string, entries: Record<Target, string[]>) => {
+		pi.sendUserMessage(`Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory, choose the correct memory target, semantically compare it with the live entries, and merge or replace overlap instead of adding duplicates. Use the existing memory tool. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`);
+	};
+
 	pi.registerCommand("remember", {
 		description: "Process an instruction into durable memory",
 		handler: async (args, ctx) => {
@@ -221,12 +227,13 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (!ctx.isIdle()) {
-				ctx.ui.notify("Cannot run /remember while the agent is busy.", "warning");
+				const pending = state.rememberQueue.push(candidate);
+				ctx.ui.notify(pending === 1 ? "Remember queued — will run after the current response." : `Remember queued — ${pending} pending.`, "info");
 				return;
 			}
 			const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => ctx.ui.notify(message, "warning"));
 			if (!entries) return;
-			pi.sendUserMessage(`Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory, choose the correct memory target, semantically compare it with the live entries, and merge or replace overlap instead of adding duplicates. Use the existing memory tool. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`);
+			sendRemember(candidate, entries);
 		},
 	});
 
@@ -282,22 +289,34 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!state.dreamPending) return;
-		const succeeded = state.dreamSucceeded;
-		state.dreamPending = false;
-		state.dreamSucceeded = false;
-		if (!succeeded) {
-			ctx.ui.notify("Dream did not complete; its timestamp was not updated.", "warning");
-			return;
+		const sessionGeneration = state.sessionGeneration;
+		if (state.dreamPending) {
+			const succeeded = state.dreamSucceeded;
+			state.dreamPending = false;
+			state.dreamSucceeded = false;
+			if (!succeeded) {
+				ctx.ui.notify("Dream did not complete; its timestamp was not updated.", "warning");
+			} else {
+				try {
+					await saveLastDreamAt();
+				} catch (error) {
+					ctx.ui.notify(`Dream completed, but its timestamp could not be recorded: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				}
+			}
 		}
-		try {
-			await saveLastDreamAt();
-		} catch (error) {
-			ctx.ui.notify(`Dream completed, but its timestamp could not be recorded: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
+		if (state.sessionGeneration !== sessionGeneration || !ctx.isIdle()) return;
+		const candidate = state.rememberQueue.shift();
+		if (candidate === undefined) return;
+		const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => {
+			if (state.sessionGeneration === sessionGeneration) ctx.ui.notify(message, "warning");
+		});
+		if (!entries || state.sessionGeneration !== sessionGeneration) return;
+		sendRemember(candidate, entries);
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		state.sessionGeneration++;
+		state.rememberQueue = [];
 		state.config = undefined;
 		state.stores = undefined;
 		state.initialEntries = undefined;
