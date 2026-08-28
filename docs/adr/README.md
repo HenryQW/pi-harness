@@ -10,6 +10,7 @@ Current durable architecture for the pi-packages monorepo. Package-specific ADRs
 - [004 — Extension Config Safety](004-extension-config-safety.md)
 - [005 — Knowledge Tier Model](005-knowledge-tier-model.md)
 - [006 — pi-memory Global Store Threat Model](006-pi-memory-global-store-threat-model.md)
+- [017 — Consumer-Owned Task-Model Routing](017-consumer-owned-task-model-routing.md)
 
 ## Package architecture
 
