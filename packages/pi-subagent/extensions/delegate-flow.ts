@@ -22,7 +22,7 @@ import { Check } from "typebox/value";
 import { runDelegation } from "./delegation.ts";
 
 const MAX_UNITS = 8;
-const MAX_RENDERED_RESULT_LINES = 4;
+const MAX_RENDERED_RESULT_LINES = 3;
 const GIT_TIMEOUT_MS = 30_000;
 const TRUNCATED_OUTPUT = /\n\n\[Output truncated: \d+ bytes omitted\]$/;
 
@@ -185,7 +185,7 @@ function flowResultLines(text: string): string[] {
 	const diagnosticHeader = lines.findIndex((line) => line.trim() === "Diagnostic:");
 	const diagnostic = diagnosticHeader === -1 ? undefined : lines[diagnosticHeader + 1];
 	if (diagnostic === undefined) return lines;
-	const leading = lines.slice(0, Math.min(2, diagnosticHeader));
+	const leading = lines.slice(0, Math.min(1, diagnosticHeader));
 	// Promote the first diagnostic ahead of the result cap.
 	return [
 		...leading,
@@ -755,6 +755,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance.",
 		],
 		parameters: DelegateFlowSchema,
+		renderShell: "self",
 		renderCall(args, theme, _context) {
 			return renderToolLines([theme.fg("toolTitle", flowCallLabel(args))], theme);
 		},
@@ -855,6 +856,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Repair and continue the blocked deterministic Flow",
 		promptGuidelines: ["Call delegate_flow_continue only after delegate_flow reports a repairable block, with explicit guidance addressing that block."],
 		parameters: DelegateFlowContinueSchema,
+		renderShell: "self",
 		renderCall(_args, theme, _context) {
 			return renderToolLines([theme.fg("toolTitle", "delegate_flow_continue · working: repair continuation")], theme);
 		},

@@ -57,7 +57,7 @@ const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ROWS = 8;
-const MAX_RENDERED_RESULT_LINES = 4;
+const MAX_RENDERED_RESULT_LINES = 3;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
 	maxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
@@ -569,6 +569,7 @@ export default function subagentExtension(
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
 		parameters: WorkflowSchema,
+		renderShell: "self",
 		renderCall(args, theme, _context) {
 			return renderToolLines([theme.fg("toolTitle", workflowCallLabel(args))], theme);
 		},

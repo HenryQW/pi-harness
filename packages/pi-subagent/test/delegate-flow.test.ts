@@ -6,8 +6,8 @@ import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ExecOptions } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { type ExecOptions, type ExtensionAPI, type ExtensionContext, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type {
 	EphemeralSubagentActivityEvent,
 	EphemeralSubagentExecutor,
@@ -29,6 +29,7 @@ type Tool = {
 	name: string;
 	parameters: unknown;
 	prepareArguments?: (value: unknown) => unknown;
+	renderShell?: "default" | "self";
 	renderCall?: (...args: any[]) => { render: (width: number) => string[] };
 	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
@@ -287,7 +288,9 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 		},
 	] as const;
 
+	initTheme("dark");
 	for (const { tool, args, label } of tools) {
+		assert.equal(tool.renderShell, "self");
 		const call = tool.renderCall!(args, theme, {}).render(100);
 		assert.equal(call.length, 1);
 		assert.match(call[0]!, new RegExp(label));
@@ -303,8 +306,8 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 			const collapsed = tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(100);
 			const expanded = tool.renderResult!(result, { expanded: true, isPartial: false }, theme, {}).render(100);
 			assert.deepEqual(expanded, collapsed, `${label} ${name}`);
-			assert.ok(collapsed.length <= 4, `${label} ${name}`);
-			assert.ok(call.length + collapsed.length <= 5, `${label} ${name}`);
+			assert.ok(collapsed.length <= 3, `${label} ${name}`);
+			assert.ok(call.length + collapsed.length <= 4, `${label} ${name}`);
 			assert.ok(collapsed.every((line) => visibleWidth(line) <= 100), `${label} ${name}`);
 			assert.match(collapsed.join("\n"), /… \d+ more/, `${label} ${name}`);
 			if (diagnostic) assert.match(collapsed.join("\n"), new RegExp(`Diagnostic: ${diagnostic}`), `${label} ${name}`);
@@ -312,9 +315,32 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 				const working = tool.renderCall!(args, theme, {}).render(width);
 				for (const expanded of [false, true]) {
 					const lines = tool.renderResult!(result, { expanded, isPartial: false }, theme, {}).render(width);
-					assert.ok(lines.length <= 4, `${label} ${name} expanded=${expanded} width=${width}`);
-					assert.ok(working.length + lines.length <= 5, `${label} ${name} expanded=${expanded} width=${width}`);
+					assert.ok(lines.length <= 3, `${label} ${name} expanded=${expanded} width=${width}`);
+					assert.ok(working.length + lines.length <= 4, `${label} ${name} expanded=${expanded} width=${width}`);
 					assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} ${name} expanded=${expanded} width=${width}`);
+				}
+			}
+
+			const component = new ToolExecutionComponent(
+				tool.name,
+				`bounded-${tool.name}-${name}`,
+				args,
+				undefined,
+				tool as never,
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+			component.markExecutionStarted();
+			component.setArgsComplete();
+			assert.equal(component.render(100).length, 2);
+			component.updateResult({ ...result, isError: false });
+			for (const width of [100, 24, 1]) {
+				for (const expanded of [false, true]) {
+					component.setExpanded(expanded);
+					const lines = component.render(width);
+					assert.ok(lines.length <= 5, `${label} ${name} composed expanded=${expanded} width=${width}`);
+					assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} ${name} composed expanded=${expanded} width=${width}`);
+					assert.doesNotMatch(lines.join("\n"), prohibited);
 				}
 			}
 		}

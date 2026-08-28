@@ -6,8 +6,8 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	capEphemeralSubagentOutput as capOutput,
 	EphemeralSubagentError,
@@ -19,10 +19,12 @@ import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
 
 type Tool = {
+	name: string;
 	description: string;
 	parameters: unknown;
 	promptGuidelines?: string[];
 	prepareArguments?: (args: unknown) => any;
+	renderShell?: "default" | "self";
 	renderCall?: (...args: any[]) => { render: (width: number) => string[] };
 	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
@@ -973,7 +975,7 @@ test("delegate_task renders one-line working status and bounded terminal summari
 		assert.deepEqual(collapsed, ["implementer: Implemented the fix. · Recovery: /repo/.worktrees/retained", "reviewer: Validation failed."]);
 		assert.doesNotMatch(collapsed.join("\n"), /status|✓|✗|task|model|thinking|tok|\d+m|opaque-|branch|ignored/);
 		const narrow = app.tool.renderResult!(result, {}, theme, {}).render(20);
-		assert.ok(narrow.length <= 4);
+		assert.ok(narrow.length <= 3);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
 
 		const eight = formatWorkflowResult("parallel", Array.from({ length: 8 }, (_, index) => ({
@@ -992,17 +994,41 @@ test("delegate_task renders one-line working status and bounded terminal summari
 		assert.deepEqual(eightCollapsed, [
 			"worker-1: result 1 · Recovery: /repo/.worktrees/recover",
 			"worker-2: result 2",
-			"worker-3: result 3",
-			"… 5 more",
+			"… 6 more",
 		]);
-		assert.equal(eightCall.length + eightCollapsed.length, 5);
+		assert.equal(eightCall.length + eightCollapsed.length, 4);
 		for (const width of [100, 24, 1]) {
 			const call = app.tool.renderCall!({ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) }, theme, {}).render(width);
 			for (const expanded of [false, true]) {
 				const lines = app.tool.renderResult!(eightResult, { expanded }, theme, {}).render(width);
-				assert.ok(lines.length <= 4);
-				assert.ok(call.length + lines.length <= 5);
+				assert.ok(lines.length <= 3);
+				assert.ok(call.length + lines.length <= 4);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			}
+		}
+
+		assert.equal(app.tool.renderShell, "self");
+		initTheme("dark");
+		const component = new ToolExecutionComponent(
+			app.tool.name,
+			"bounded-delegate-task",
+			{ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) },
+			undefined,
+			app.tool as never,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		assert.equal(component.render(100).length, 2);
+		component.updateResult({ ...eightResult, isError: false });
+		for (const width of [100, 24, 1]) {
+			for (const expanded of [false, true]) {
+				component.setExpanded(expanded);
+				const lines = component.render(width);
+				assert.ok(lines.length <= 5);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+				assert.doesNotMatch(lines.join("\n"), /FULL TASK TEXT|--secret/);
 			}
 		}
 
