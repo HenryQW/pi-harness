@@ -15,10 +15,13 @@ type TransportEntryBase = {
 	id: WorkflowEntry["id"];
 	index: WorkflowEntry["index"];
 	role: WorkflowEntry["delegation"]["role"];
+	task: string;
 	model?: string;
 	thinkingLevel?: string;
 	worktreePayload?: WorktreePayload;
 	usage?: Usage;
+	startedAt?: number;
+	finishedAt?: number;
 };
 
 export type WorkflowTransportEntry =
@@ -35,8 +38,12 @@ export type WorkflowTransportEntryDetails = {
 	index: number;
 	role: string;
 	status: WorkflowTransportStatus;
+	task: string;
+	summary?: string;
 	model?: string;
 	thinkingLevel?: string;
+	tokens?: number;
+	durationMs?: number;
 	worktree?: WorktreePayload;
 };
 
@@ -69,6 +76,11 @@ function label(kind: TransportKind, failed: boolean): string {
 	if (kind === "background") return `Background workflow ${failed ? "failed" : "succeeded"}.`;
 	if (kind === "abort") return "Workflow aborted.";
 	return `Workflow ${failed ? "failed" : "succeeded"}.`;
+}
+
+function displaySummary(text: string): string {
+	const line = text.split(/\r?\n/).find((candidate) => candidate.trim()) ?? "";
+	return Array.from(line.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).join(" ")).slice(0, 160).join("");
 }
 
 function evidenceFor(entry: WorkflowTransportEntry): Evidence | undefined {
@@ -123,15 +135,23 @@ function formatWorkflowTransport(
 		text: capEphemeralSubagentOutput(lines.join("\n")),
 		details: {
 			mode,
-			entries: ordered.map((entry) => ({
-				id: entry.id,
-				index: entry.index,
-				role: entry.role,
-				status: entry.status,
-				...(entry.model === undefined ? {} : { model: entry.model }),
-				...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
-				...(entry.worktreePayload === undefined ? {} : { worktree: { ...entry.worktreePayload } }),
-			})),
+			entries: ordered.map((entry) => {
+				const source = entry.status === "failed" || entry.status === "rejected" ? entry.failure
+					: entry.status === "running" || entry.status === "succeeded" ? entry.assistantOutput : undefined;
+				return {
+					id: entry.id,
+					index: entry.index,
+					role: entry.role,
+					status: entry.status,
+					task: entry.task,
+					...(source === undefined ? {} : { summary: displaySummary(source) }),
+					...(entry.model === undefined ? {} : { model: entry.model }),
+					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
+					...(entry.usage?.totalTokens === undefined ? {} : { tokens: entry.usage.totalTokens }),
+					...(entry.startedAt === undefined ? {} : { durationMs: (entry.finishedAt ?? Date.now()) - entry.startedAt }),
+					...(entry.worktreePayload === undefined ? {} : { worktree: { ...entry.worktreePayload } }),
+				};
+			}),
 		},
 		...(usage === undefined ? {} : { usage }),
 		failed,

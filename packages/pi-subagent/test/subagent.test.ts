@@ -13,7 +13,7 @@ import {
 	EphemeralSubagentError,
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
-import { WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
+import { formatWorkflowResult, formatWorkflowUpdate, WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
 import subagentExtension from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
@@ -23,6 +23,7 @@ type Tool = {
 	parameters: unknown;
 	promptGuidelines?: string[];
 	prepareArguments?: (args: unknown) => any;
+	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
 };
 
@@ -765,6 +766,44 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		assert.match(afterInput, /worker · working/);
 		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+	});
+});
+
+test("delegate_task renders bounded collapsed workflow entries after the widget clears", async () => {
+	await environment(async () => {
+	const app = harness();
+	const theme = { fg: (_color: string, value: string) => value };
+	const renderUsage = (totalTokens: number) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+	const startedAt = Date.now() - 37_000;
+	const partial = formatWorkflowUpdate("parallel", [
+		{ id: "opaque-running", index: 1, role: "reviewer", task: "Review the bounded renderer change", status: "running", assistantOutput: "partial", model: "provider/gpt-5.3-codex/with-slash", thinkingLevel: "high", usage: renderUsage(8_400), startedAt },
+		{ id: "opaque-pending", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", status: "pending" },
+	]);
+	const partialResult = { content: [{ type: "text" as const, text: partial.text }], details: partial.details };
+	const partialBefore = structuredClone(partialResult.content);
+	const partialLines = app.tool.renderResult!(partialResult, { expanded: false }, theme, {}).render(100);
+	assert.deepEqual(partialResult.content, partialBefore);
+	assert.match(partialLines.join("\n"), /implementer · pending[\s\S]*Normalize Windows registered-worktree paths/);
+	assert.match(partialLines.join("\n"), /reviewer · running[\s\S]*gpt-5\.3-codex\/with-slash · high · 8\.4k tok/);
+
+	const terminal = formatWorkflowResult("parallel", [
+		{ id: "opaque-first", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", status: "succeeded", assistantOutput: "Implemented and committed breaking Role schema change.\ncontinued evidence must not render", model: "provider/gpt-5.3-codex", thinkingLevel: "high", usage: renderUsage(18_700), startedAt, finishedAt: startedAt + 68_000, worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
+		{ id: "opaque-second", index: 1, role: "reviewer", task: "Review renderer", status: "failed", failure: "Validation failed with a concise reason.\nopaque evidence", model: "provider/model/with-slash", thinkingLevel: "low", usage: renderUsage(200), startedAt, finishedAt: startedAt + 1_000 },
+	]);
+	const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
+	const before = structuredClone(result.content);
+	const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
+	const expanded = app.tool.renderResult!(result, { expanded: true }, theme, {}).render(100);
+	assert.deepEqual(result.content, before);
+	assert.deepEqual(expanded, collapsed);
+	const rendered = collapsed.join("\n");
+	assert.ok(rendered.indexOf("implementer") < rendered.indexOf("reviewer"));
+	assert.match(rendered, /✓ implementer · complete[\s\S]*Implemented and committed breaking Role schema change\.[\s\S]*gpt-5\.3-codex · high · 18\.7k tok · 1m 8s[\s\S]*Recovery: \/repo\/.worktrees\/retained/);
+	assert.match(rendered, /✗ reviewer · failed[\s\S]*Validation failed with a concise reason\.[\s\S]*model\/with-slash/);
+	assert.doesNotMatch(rendered, /opaque-|Workflow succeeded|Mode:|Entries:|Evidence:|continued evidence/);
+	const narrow = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(24);
+	assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
+	assert.ok(narrow.some((line) => line.includes("Recovery:")));
 	});
 });
 

@@ -37,6 +37,7 @@ import {
 	WorkflowAbortedError,
 	WorkflowFailureError,
 	type WorkflowTransportEntry,
+	type WorkflowTransportDetails,
 } from "./result-transport.ts";
 import {
 	identifyWorkflowEntries,
@@ -106,6 +107,34 @@ function statusLabel(status: WidgetStatus): string {
 		case "failure": return "failed";
 		case "aborted": return "stopped";
 	}
+}
+
+function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
+	return typeof value === "object" && value !== null && Array.isArray((value as { entries?: unknown }).entries)
+		&& (value as { entries: unknown[] }).entries.every((entry) => typeof entry === "object" && entry !== null
+			&& typeof (entry as { role?: unknown }).role === "string" && typeof (entry as { task?: unknown }).task === "string");
+}
+
+function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme, spinner: number): string[] {
+	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
+	const contentWidth = Math.max(1, width - indent.length);
+	return details.entries.flatMap((entry) => {
+		const stopped = entry.status === "rejected" && /\babort(?:ed)?\b/i.test(entry.summary ?? "");
+		const status = stopped ? "stopped" : entry.status === "succeeded" ? "complete" : entry.status;
+		const glyph = entry.status === "running" ? theme.fg("accent", SPINNER_FRAMES[spinner % SPINNER_FRAMES.length]!)
+			: status === "complete" ? theme.fg("success", "✓")
+			: status === "failed" || status === "rejected" ? theme.fg("error", "✗")
+			: status === "stopped" ? theme.fg("warning", "■") : theme.fg("muted", "○");
+		const model = entry.model?.includes("/") ? entry.model.slice(entry.model.indexOf("/") + 1) : entry.model;
+		const metric = [model, entry.thinkingLevel, entry.tokens === undefined ? undefined : `${formatTokens(entry.tokens)} tok`, entry.durationMs === undefined ? undefined : formatDuration(entry.durationMs)].filter(Boolean).join(" · ");
+		const recovery = entry.worktree && !entry.worktree.pruned ? `Recovery: ${entry.worktree.path}` : undefined;
+		return [
+			...wrapTextWithAnsi(`${glyph} ${theme.fg("accent", entry.role)} · ${status}`, Math.max(1, width)),
+			...wrapTextWithAnsi(theme.fg("text", entry.status === "running" || entry.status === "pending" ? entry.task : entry.summary || entry.task), contentWidth).map((line) => `${indent}${line}`),
+			...(metric ? wrapTextWithAnsi(theme.fg("muted", metric), contentWidth).map((line) => `${indent}${line}`) : []),
+			...(recovery ? wrapTextWithAnsi(theme.fg("warning", recovery), contentWidth).map((line) => `${indent}${line}`) : []),
+		];
+	});
 }
 
 function renderWidgetRows(
@@ -420,6 +449,20 @@ export default function subagentExtension(
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
 		parameters: WorkflowSchema,
+		renderResult(result, _options, theme, _context) {
+			const details = result.details;
+			if (isWorkflowTransportDetails(details)) {
+				return {
+					invalidate() {},
+					render: (width) => renderWorkflowResult(details, width, theme, spinnerIndex),
+				};
+			}
+			if (typeof details === "object" && details !== null && (details as { background?: unknown }).background === true) {
+				return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", "Background workflow accepted."), Math.max(1, width)) };
+			}
+			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
+			return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", text), Math.max(1, width)) };
+		},
 		prepareArguments(args) {
 			try {
 				const workflow = parseWorkflow(args);
@@ -477,6 +520,7 @@ export default function subagentExtension(
 				id: entry.id,
 				index: entry.index,
 				role: entry.delegation.role,
+				task: taskSummary(entry.delegation.task),
 				status: "pending",
 			}]));
 			const setupRecoveries = new Map<string, string>();
@@ -503,6 +547,7 @@ export default function subagentExtension(
 					let aborted = false;
 					let status: "succeeded" | "failed" | "rejected" = "rejected";
 					let text = "Subagent did not start.";
+					let startedAt: number | undefined;
 					const setState = (
 						nextStatus: "running" | "succeeded" | "failed" | "rejected",
 						nextText: string,
@@ -512,10 +557,13 @@ export default function subagentExtension(
 							id: entry.id,
 							index: entry.index,
 							role: role.name,
+							task: taskSummary(entry.delegation.task),
 							...(model === undefined ? {} : { model }),
 							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 							...(worktreePayload === undefined ? {} : { worktreePayload }),
 							...(usage === undefined ? {} : { usage }),
+							...(startedAt === undefined ? {} : { startedAt }),
+							...(nextStatus === "running" ? {} : { finishedAt: Date.now() }),
 						};
 						states.set(entry.id, nextStatus === "failed" || nextStatus === "rejected"
 							? { ...base, status: nextStatus, failure: nextText }
@@ -539,6 +587,7 @@ export default function subagentExtension(
 								if (role.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
+								startedAt = Date.now();
 								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.task, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
@@ -626,10 +675,12 @@ export default function subagentExtension(
 					id: target.id,
 					index: target.index,
 					role: target.role,
+					task: target.task,
 					...(target.model === undefined ? {} : { model: target.model }),
 					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
 					...(target.worktreePayload === undefined ? {} : { worktreePayload: target.worktreePayload }),
 					...(target.usage === undefined ? {} : { usage: target.usage }),
+					...(target.startedAt === undefined ? {} : { startedAt: target.startedAt, finishedAt: Date.now() }),
 					status: "rejected",
 					failure: capOutput(error instanceof Error ? error.message : String(error)),
 				});
