@@ -165,6 +165,10 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 	}
 }
 
+function workingWidgetHeaders(lines: string[]): string[] {
+	return lines.filter((line) => / · working$/.test(line));
+}
+
 async function writeWorkerRole(agentDir: string, isolation = false): Promise<void> {
 	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 	await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -1387,7 +1391,7 @@ const timer = setInterval(() => {
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf("--extension") + 1], "/user/reviewer.ts");
 		assert.equal(launches[0]!.args[launches[0]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["read"]));
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["grep"]));
-		const widget = app.widget!.render(120);
+		const widget = workingWidgetHeaders(app.widget!.render(120));
 		assert.equal(widget.length, 2);
 		assert.match(widget.join("\n"), /scout/);
 		assert.match(widget.join("\n"), /reviewer/);
@@ -1518,8 +1522,8 @@ async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
 			app.ctx,
 		));
 		try {
-			await waitFor(() => (app.widget?.render(80).length ?? 0) >= 4);
-			assert.equal(app.widget!.render(80).length, 4);
+			await waitFor(() => workingWidgetHeaders(app.widget?.render(80) ?? []).length >= 4);
+			assert.equal(workingWidgetHeaders(app.widget!.render(80)).length, 4);
 			await waitFor(() => runner.started().length === 4);
 			assert.deepEqual(runner.started(), tasks.slice(0, 4));
 			await runner.release(tasks[0]!);
@@ -1588,7 +1592,7 @@ test("PI_SUBAGENT_MAX_SUBAGENTS overrides the default child cap", async () => {
 			try {
 				await waitFor(() => runner.started().length === 1);
 				assert.deepEqual(runner.started(), ["task-1"]);
-				assert.equal(app.widget!.render(80).length, 1);
+				assert.equal(workingWidgetHeaders(app.widget!.render(80)).length, 1);
 				await runner.release("task-1");
 				await waitFor(() => runner.started().includes("task-2"));
 				for (const task of tasks) await runner.release(task);
@@ -1724,7 +1728,7 @@ test("drops an aborted queued delegation and transfers its permit", async () => 
 			calls.push(fifth, sixth);
 			abort.abort();
 			await fifthAborted;
-			assert.equal(app.widget!.render(80).length, 4);
+			assert.equal(workingWidgetHeaders(app.widget!.render(80)).length, 4);
 			await runner.release(tasks[0]!);
 			await waitFor(() => runner.started().includes(tasks[5]!));
 			assert.deepEqual(runner.started(), [...tasks.slice(0, 4), tasks[5]!]);
