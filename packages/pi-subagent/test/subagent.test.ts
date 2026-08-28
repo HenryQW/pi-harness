@@ -774,18 +774,18 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 		const app = harness();
 		const theme = { fg: (_color: string, value: string) => value };
 		const partial = formatWorkflowUpdate("parallel", [
-			{ id: "opaque-running", index: 1, role: "reviewer", task: "Review renderer", status: "running", assistantOutput: "partial" },
-			{ id: "opaque-pending", index: 0, role: "implementer", task: "Implement fix", status: "pending" },
+			{ id: "opaque-running", index: 1, role: "reviewer", status: "running", assistantOutput: "partial" },
+			{ id: "opaque-pending", index: 0, role: "implementer", status: "pending" },
 		]);
 		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, {}, theme, {}).render(100), []);
 
-		const single = formatWorkflowResult("single", [{ id: "opaque-single", index: 0, role: "worker", task: "task", status: "succeeded", assistantOutput: "Implemented the fix.\nignored" }]);
+		const single = formatWorkflowResult("single", [{ id: "opaque-single", index: 0, role: "worker", status: "succeeded", assistantOutput: "Implemented the fix.\nignored" }]);
 		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: single.text }], details: single.details }, {}, theme, {}).render(100), ["Implemented the fix."]);
 
 		const terminal = formatWorkflowResult("parallel", [
-			{ id: "opaque-first", index: 0, role: "implementer", task: "task", status: "succeeded", assistantOutput: "Implemented the fix.\nignored", model: "provider/model", thinkingLevel: "high", worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
-			{ id: "opaque-second", index: 1, role: "reviewer", task: "task", status: "failed", failure: "Validation failed.", model: "provider/reviewer", thinkingLevel: "low" },
-			{ id: "opaque-skipped", index: 2, role: "worker", task: "task", status: "skipped" },
+			{ id: "opaque-first", index: 0, role: "implementer", status: "succeeded", assistantOutput: "Implemented the fix.\nignored", model: "provider/model", thinkingLevel: "high", worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
+			{ id: "opaque-second", index: 1, role: "reviewer", status: "failed", failure: "Validation failed.", model: "provider/reviewer", thinkingLevel: "low" },
+			{ id: "opaque-skipped", index: 2, role: "worker", status: "skipped" },
 		]);
 		const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
 		const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
@@ -799,8 +799,21 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 
 		const background = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { background: true } }, {}, theme, {}).render(100);
 		assert.deepEqual(background, ["Background workflow accepted."]);
-		const fallback = app.tool.renderResult!({ content: [{ type: "text", text: "Pre-execution validation failed." }], details: { entries: [{ role: "worker", summary: 1 }] } }, {}, theme, {}).render(100);
-		assert.deepEqual(fallback, ["Pre-execution validation failed."]);
+		for (const [name, entry] of [
+			["id", { ...terminal.details.entries[0]!, id: 1 }],
+			["negative index", { ...terminal.details.entries[0]!, index: -1 }],
+			["fractional index", { ...terminal.details.entries[0]!, index: 0.5 }],
+			["non-finite index", { ...terminal.details.entries[0]!, index: Infinity }],
+			["role", { ...terminal.details.entries[0]!, role: 1 }],
+			["status", { ...terminal.details.entries[0]!, status: "done" }],
+			["summary", { ...terminal.details.entries[0]!, summary: 1 }],
+			["model", { ...terminal.details.entries[0]!, model: 1 }],
+			["thinking level", { ...terminal.details.entries[0]!, thinkingLevel: 1 }],
+			["worktree", { ...terminal.details.entries[0]!, worktree: { path: 1, pruned: false } }],
+		] as const) {
+			const raw = `Malformed ${name}.`;
+			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details: { mode: "parallel", entries: [entry] } }, {}, theme, {}).render(100), [raw], name);
+		}
 	});
 });
 

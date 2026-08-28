@@ -114,8 +114,9 @@ function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportD
 	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
 	return isRecord(value) && (value.mode === "single" || value.mode === "parallel" || value.mode === "chain")
 		&& Array.isArray(value.entries) && value.entries.every((entry) => isRecord(entry)
-			&& ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
-			&& typeof entry.role === "string" && isOptionalString(entry.summary)
+			&& typeof entry.id === "string" && typeof entry.index === "number" && Number.isFinite(entry.index) && Number.isInteger(entry.index) && entry.index >= 0
+			&& typeof entry.role === "string" && ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
+			&& isOptionalString(entry.summary) && isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
 			&& (entry.worktree === undefined || isRecord(entry.worktree) && typeof entry.worktree.path === "string" && typeof entry.worktree.pruned === "boolean"));
 }
 
@@ -517,7 +518,6 @@ export default function subagentExtension(
 				id: entry.id,
 				index: entry.index,
 				role: entry.delegation.role,
-				task: taskSummary(entry.delegation.task),
 				status: "pending",
 			}]));
 			const setupRecoveries = new Map<string, string>();
@@ -553,7 +553,6 @@ export default function subagentExtension(
 							id: entry.id,
 							index: entry.index,
 							role: role.name,
-							task: taskSummary(entry.delegation.task),
 							...(model === undefined ? {} : { model }),
 							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 							...(worktreePayload === undefined ? {} : { worktreePayload }),
@@ -668,7 +667,6 @@ export default function subagentExtension(
 					id: target.id,
 					index: target.index,
 					role: target.role,
-					task: target.task,
 					...(target.model === undefined ? {} : { model: target.model }),
 					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
 					...(target.worktreePayload === undefined ? {} : { worktreePayload: target.worktreePayload }),

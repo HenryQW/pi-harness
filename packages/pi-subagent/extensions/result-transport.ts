@@ -15,7 +15,6 @@ type TransportEntryBase = {
 	id: WorkflowEntry["id"];
 	index: WorkflowEntry["index"];
 	role: WorkflowEntry["delegation"]["role"];
-	task: string;
 	model?: string;
 	thinkingLevel?: string;
 	worktreePayload?: WorktreePayload;
@@ -36,7 +35,6 @@ export type WorkflowTransportEntryDetails = {
 	index: number;
 	role: string;
 	status: WorkflowTransportStatus;
-	task: string;
 	summary?: string;
 	model?: string;
 	thinkingLevel?: string;
@@ -139,7 +137,6 @@ function formatWorkflowTransport(
 					index: entry.index,
 					role: entry.role,
 					status: entry.status,
-					task: entry.task,
 					...(source === undefined ? {} : { summary: displaySummary(source) }),
 					...(entry.model === undefined ? {} : { model: entry.model }),
 					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
