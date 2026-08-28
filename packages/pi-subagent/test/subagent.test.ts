@@ -828,6 +828,8 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 			["duplicate indexes", { mode: "parallel", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "duplicate" }] }],
 			["out-of-order indexes", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, index: 1 }, { ...terminal.details.entries[0]!, id: "out-of-order", index: 0 }] }],
 			["multiple single-mode entries", { mode: "single", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "second", index: 1 }] }],
+			["empty parallel entries", { mode: "parallel", entries: [] }],
+			["nine parallel entries", { mode: "parallel", entries: Array.from({ length: 9 }, (_, index) => ({ ...terminal.details.entries[0]!, id: `overflow-${index}`, index })) }],
 			["missing running summary", { mode: "parallel", entries: [{ ...partial.details.entries[1]!, summary: undefined }] }],
 			["missing succeeded summary", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, summary: undefined }] }],
 			["missing failed summary", { mode: "parallel", entries: [{ ...terminal.details.entries[1]!, summary: undefined }] }],

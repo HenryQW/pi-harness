@@ -42,6 +42,7 @@ import {
 } from "./result-transport.ts";
 import {
 	identifyWorkflowEntries,
+	MAX_WORKFLOW_ENTRIES,
 	parseWorkflow,
 	runForegroundWorkflow,
 	WorkflowSchema,
@@ -115,7 +116,8 @@ function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportD
 	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
 	if (!isRecord(value) || !(value.mode === "single" || value.mode === "parallel" || value.mode === "chain") || !Array.isArray(value.entries)) return false;
 	const entries = value.entries;
-	return (value.mode !== "single" || entries.length === 1)
+	return entries.length >= 1 && entries.length <= MAX_WORKFLOW_ENTRIES
+		&& (value.mode !== "single" || entries.length === 1)
 		&& entries.every((entry) => isRecord(entry)
 			&& typeof entry.id === "string" && typeof entry.index === "number" && Number.isFinite(entry.index) && Number.isInteger(entry.index) && entry.index >= 0
 			&& typeof entry.role === "string" && ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
