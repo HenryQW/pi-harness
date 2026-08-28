@@ -18,6 +18,7 @@ function succeeded(index: number, assistantOutput: string, extra: Partial<Workfl
 		index,
 		role: `role-${index}`,
 		task: `task-${index}`,
+		aborted: false,
 		status: "succeeded",
 		assistantOutput,
 		...extra,
@@ -30,6 +31,7 @@ function failed(index: number, failure: string, extra: Partial<WorkflowTransport
 		index,
 		role: `role-${index}`,
 		task: `task-${index}`,
+		aborted: false,
 		status: "failed",
 		failure,
 		...extra,
@@ -37,7 +39,7 @@ function failed(index: number, failure: string, extra: Partial<WorkflowTransport
 }
 
 function skipped(index: number): WorkflowTransportEntry {
-	return { id: `call:chain:${index}`, index, role: `role-${index}`, task: `task-${index}`, status: "skipped" };
+	return { id: `call:chain:${index}`, index, role: `role-${index}`, task: `task-${index}`, aborted: false, status: "skipped" };
 }
 
 function usage(factor: number, optional = true): Usage {
@@ -95,6 +97,7 @@ test("orders entries by index without mutating input", () => {
 		summary: "evidence-two",
 		model: "provider/two",
 		thinkingLevel: "high",
+		aborted: false,
 	});
 });
 
@@ -157,6 +160,7 @@ test("uses deterministic success, failure, update, and background labels", () =>
 		index: 0,
 		role: "worker",
 		task: "work",
+		aborted: false,
 		status: "running",
 		assistantOutput: "in progress",
 	}]).text, /^Workflow update\.\nMode: chain/);
@@ -171,8 +175,8 @@ test("final transports allow skipped entries without evidence and reject non-ter
 	assert.doesNotMatch(result.text, /call:chain:1 (?:assistant|failure):/);
 	for (const status of ["pending", "running"] as const) {
 		const entry = status === "pending"
-			? { id: "call:chain:0", index: 0, role: "worker", task: "work", status }
-			: { id: "call:chain:0", index: 0, role: "worker", task: "work", status, assistantOutput: "partial" };
+			? { id: "call:chain:0", index: 0, role: "worker", task: "work", aborted: false, status }
+			: { id: "call:chain:0", index: 0, role: "worker", task: "work", aborted: false, status, assistantOutput: "partial" };
 		assert.throws(() => formatWorkflowResult("chain", [entry]), /terminal/);
 		assert.throws(() => formatBackgroundWorkflowResult("chain", [entry]), /terminal/);
 	}

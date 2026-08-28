@@ -112,15 +112,15 @@ function statusLabel(status: WidgetStatus): string {
 function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
 	return typeof value === "object" && value !== null && Array.isArray((value as { entries?: unknown }).entries)
 		&& (value as { entries: unknown[] }).entries.every((entry) => typeof entry === "object" && entry !== null
-			&& typeof (entry as { role?: unknown }).role === "string" && typeof (entry as { task?: unknown }).task === "string");
+			&& typeof (entry as { role?: unknown }).role === "string" && typeof (entry as { task?: unknown }).task === "string"
+			&& typeof (entry as { aborted?: unknown }).aborted === "boolean");
 }
 
 function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme, spinner: number): string[] {
 	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
 	const contentWidth = Math.max(1, width - indent.length);
 	return details.entries.flatMap((entry) => {
-		const stopped = entry.status === "rejected" && /\babort(?:ed)?\b/i.test(entry.summary ?? "");
-		const status = stopped ? "stopped" : entry.status === "succeeded" ? "complete" : entry.status;
+		const status = entry.aborted ? "stopped" : entry.status === "succeeded" ? "complete" : entry.status;
 		const glyph = entry.status === "running" ? theme.fg("accent", SPINNER_FRAMES[spinner % SPINNER_FRAMES.length]!)
 			: status === "complete" ? theme.fg("success", "✓")
 			: status === "failed" || status === "rejected" ? theme.fg("error", "✗")
@@ -521,6 +521,7 @@ export default function subagentExtension(
 				index: entry.index,
 				role: entry.delegation.role,
 				task: taskSummary(entry.delegation.task),
+				aborted: false,
 				status: "pending",
 			}]));
 			const setupRecoveries = new Map<string, string>();
@@ -564,6 +565,7 @@ export default function subagentExtension(
 							...(usage === undefined ? {} : { usage }),
 							...(startedAt === undefined ? {} : { startedAt }),
 							...(nextStatus === "running" ? {} : { finishedAt: Date.now() }),
+							aborted,
 						};
 						states.set(entry.id, nextStatus === "failed" || nextStatus === "rejected"
 							? { ...base, status: nextStatus, failure: nextText }
@@ -681,6 +683,7 @@ export default function subagentExtension(
 					...(target.worktreePayload === undefined ? {} : { worktreePayload: target.worktreePayload }),
 					...(target.usage === undefined ? {} : { usage: target.usage }),
 					...(target.startedAt === undefined ? {} : { startedAt: target.startedAt, finishedAt: Date.now() }),
+					aborted: target.aborted,
 					status: "rejected",
 					failure: capOutput(error instanceof Error ? error.message : String(error)),
 				});

@@ -776,8 +776,8 @@ test("delegate_task renders bounded collapsed workflow entries after the widget 
 	const renderUsage = (totalTokens: number) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 	const startedAt = Date.now() - 37_000;
 	const partial = formatWorkflowUpdate("parallel", [
-		{ id: "opaque-running", index: 1, role: "reviewer", task: "Review the bounded renderer change", status: "running", assistantOutput: "partial", model: "provider/gpt-5.3-codex/with-slash", thinkingLevel: "high", usage: renderUsage(8_400), startedAt },
-		{ id: "opaque-pending", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", status: "pending" },
+		{ id: "opaque-running", index: 1, role: "reviewer", task: "Review the bounded renderer change", aborted: false, status: "running", assistantOutput: "partial", model: "provider/gpt-5.3-codex/with-slash", thinkingLevel: "high", usage: renderUsage(8_400), startedAt },
+		{ id: "opaque-pending", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", aborted: false, status: "pending" },
 	]);
 	const partialResult = { content: [{ type: "text" as const, text: partial.text }], details: partial.details };
 	const partialBefore = structuredClone(partialResult.content);
@@ -787,11 +787,11 @@ test("delegate_task renders bounded collapsed workflow entries after the widget 
 	assert.match(partialLines.join("\n"), /reviewer · running[\s\S]*gpt-5\.3-codex\/with-slash · high · 8\.4k tok/);
 
 	const terminal = formatWorkflowResult("parallel", [
-		{ id: "opaque-first", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", status: "succeeded", assistantOutput: "Implemented and committed breaking Role schema change.\ncontinued evidence must not render", model: "provider/gpt-5.3-codex", thinkingLevel: "high", usage: renderUsage(18_700), startedAt, finishedAt: startedAt + 68_000, worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
-		{ id: "opaque-second", index: 1, role: "reviewer", task: "Review renderer", status: "failed", failure: "Validation failed with a concise reason.\nopaque evidence", model: "provider/model/with-slash", thinkingLevel: "low", usage: renderUsage(200), startedAt, finishedAt: startedAt + 1_000 },
-		{ id: "opaque-rejected", index: 2, role: "worker", task: "Retry setup", status: "rejected", failure: "Route unavailable." },
-		{ id: "opaque-aborted", index: 3, role: "worker", task: "Stop safely", status: "rejected", failure: "Subagent was aborted." },
-		{ id: "opaque-skipped", index: 4, role: "worker", task: "Skipped follow-up", status: "skipped" },
+		{ id: "opaque-first", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", aborted: false, status: "succeeded", assistantOutput: "Implemented and committed breaking Role schema change.\ncontinued evidence must not render", model: "provider/gpt-5.3-codex", thinkingLevel: "high", usage: renderUsage(18_700), startedAt, finishedAt: startedAt + 68_000, worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
+		{ id: "opaque-second", index: 1, role: "reviewer", task: "Review renderer", aborted: false, status: "failed", failure: "Validation failed with a concise reason.\nopaque evidence", model: "provider/model/with-slash", thinkingLevel: "low", usage: renderUsage(200), startedAt, finishedAt: startedAt + 1_000 },
+		{ id: "opaque-rejected", index: 2, role: "worker", task: "Retry setup", aborted: false, status: "rejected", failure: "Upstream request aborted unexpectedly." },
+		{ id: "opaque-aborted", index: 3, role: "worker", task: "Stop safely", aborted: true, status: "rejected", failure: "Stopped by lifecycle." },
+		{ id: "opaque-skipped", index: 4, role: "worker", task: "Skipped follow-up", aborted: false, status: "skipped" },
 	]);
 	const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
 	const before = structuredClone(result.content);
@@ -803,7 +803,7 @@ test("delegate_task renders bounded collapsed workflow entries after the widget 
 	assert.ok(rendered.indexOf("implementer") < rendered.indexOf("reviewer"));
 	assert.match(rendered, /✓ implementer · complete[\s\S]*Implemented and committed breaking Role schema change\.[\s\S]*gpt-5\.3-codex · high · 18\.7k tok · 1m 8s[\s\S]*Recovery: \/repo\/.worktrees\/retained/);
 	assert.match(rendered, /✗ reviewer · failed[\s\S]*Validation failed with a concise reason\.[\s\S]*model\/with-slash/);
-	assert.match(rendered, /✗ worker · rejected[\s\S]*Route unavailable\.[\s\S]*■ worker · stopped[\s\S]*Subagent was aborted\.[\s\S]*○ worker · skipped[\s\S]*Skipped follow-up/);
+	assert.match(rendered, /✗ worker · rejected[\s\S]*Upstream request aborted unexpectedly\.[\s\S]*■ worker · stopped[\s\S]*Stopped by lifecycle\.[\s\S]*○ worker · skipped[\s\S]*Skipped follow-up/);
 	assert.doesNotMatch(rendered, /opaque-|Workflow succeeded|Mode:|Entries:|Evidence:|continued evidence/);
 	const narrow = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(24);
 	assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
@@ -1534,13 +1534,14 @@ setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { 
 		);
 		assert.ok(error instanceof WorkflowAbortedError);
 		assert.equal(error.cause, reason);
-		assert.deepEqual(error.details.entries.map(({ status, worktree }: any) => ({
+		assert.deepEqual(error.details.entries.map(({ status, aborted, worktree }: any) => ({
 			status,
+			aborted,
 			dirty: worktree.dirty,
 			pruned: worktree.pruned,
 		})), [
-			{ status: "rejected", dirty: true, pruned: false },
-			{ status: "rejected", dirty: true, pruned: false },
+			{ status: "rejected", aborted: true, dirty: true, pruned: false },
+			{ status: "rejected", aborted: true, dirty: true, pruned: false },
 		]);
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
 		for (const path of paths) {

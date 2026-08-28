@@ -22,6 +22,7 @@ type TransportEntryBase = {
 	usage?: Usage;
 	startedAt?: number;
 	finishedAt?: number;
+	aborted: boolean;
 };
 
 export type WorkflowTransportEntry =
@@ -44,6 +45,7 @@ export type WorkflowTransportEntryDetails = {
 	thinkingLevel?: string;
 	tokens?: number;
 	durationMs?: number;
+	aborted: boolean;
 	worktree?: WorktreePayload;
 };
 
@@ -149,6 +151,7 @@ function formatWorkflowTransport(
 					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
 					...(entry.usage?.totalTokens === undefined ? {} : { tokens: entry.usage.totalTokens }),
 					...(entry.startedAt === undefined ? {} : { durationMs: (entry.finishedAt ?? Date.now()) - entry.startedAt }),
+					aborted: entry.aborted,
 					...(entry.worktreePayload === undefined ? {} : { worktree: { ...entry.worktreePayload } }),
 				};
 			}),
