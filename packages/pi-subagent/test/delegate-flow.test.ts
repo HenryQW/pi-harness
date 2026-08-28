@@ -6,8 +6,10 @@ import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ExecOptions } from "@earendil-works/pi-coding-agent";
+import { type ExecOptions, type ExtensionAPI, type ExtensionContext, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type {
+	EphemeralSubagentActivityEvent,
 	EphemeralSubagentExecutor,
 	EphemeralSubagentResult,
 	EphemeralSubagentRunInput,
@@ -27,6 +29,9 @@ type Tool = {
 	name: string;
 	parameters: unknown;
 	prepareArguments?: (value: unknown) => unknown;
+	renderShell?: "default" | "self";
+	renderCall?: (...args: any[]) => { render: (width: number) => string[] };
+	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
 };
 
@@ -110,7 +115,8 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 	const roles: Role[] = [];
 	const routes: Array<{ role: string; modelClass: string | undefined }> = [];
 	const execLogs: ExecLog[] = [];
-	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string }> = [];
+	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string; task?: string }> = [];
+	const widgetActivity: Array<{ id: string; event: EphemeralSubagentActivityEvent }> = [];
 	let sessionGeneration = 0;
 	const executor: EphemeralSubagentExecutor = {
 		async run(input) {
@@ -148,8 +154,9 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 				missingSkills: [],
 			} as unknown as ResolvedRoleLaunch;
 		},
-		startWidget(id, role) { widgets.push({ action: "start", id, role }); },
+		startWidget(id, role, _model, _thinkingLevel, task) { widgets.push({ action: "start", id, role, task }); },
 		updateWidgetTokens() {},
+		updateWidgetActivity(id, event) { widgetActivity.push({ id, event }); },
 		finishWidget(id, status) { widgets.push({ action: "finish", id, status }); },
 	});
 	return {
@@ -159,6 +166,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		routes,
 		execLogs,
 		widgets,
+		widgetActivity,
 		ctx,
 		async emitSession(_event: "session_start" | "session_shutdown") {
 			sessionGeneration += 1;
@@ -256,6 +264,141 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	]);
 	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/subagent.ts"]);
+});
+
+test("Flow tool blocks are concise and bounded", async (t) => {
+	const app = harness(await repository(t), () => success());
+	const theme = { fg: (_color: string, value: string) => `\x1b[36m${value}\x1b[0m` };
+	const hiddenTask = "FULL FLOW TASK";
+	const hiddenValidation = "--validation-should-not-render";
+	const hiddenGuidance = "FULL REPAIR GUIDANCE";
+	const prohibited = /FULL FLOW TASK|--validation-should-not-render|FULL REPAIR GUIDANCE/;
+	const tools = [
+		{
+			tool: flowTool(app),
+			args: { units: [
+				{ id: "one", task: hiddenTask, validation: [{ command: "hidden-validation", args: [hiddenValidation] }] },
+				{ id: "two", task: hiddenTask, validation: [{ command: "hidden-validation", args: [hiddenValidation] }] },
+			] },
+			label: "delegate_flow · working: 2 units",
+		},
+		{
+			tool: continueTool(app),
+			args: { guidance: hiddenGuidance },
+			label: "delegate_flow_continue · working: repair continuation",
+		},
+	] as const;
+	const results = [
+		{
+			name: "completed",
+			text: ["", "Flow completed.", "", 'Completed units: "one".', "Warnings:", "- cleanup warning", "Retained Flow state:", "- retained path"].join("\n"),
+			diagnostic: undefined,
+		},
+		{
+			name: "blocked",
+			text: ["Flow blocked.", "Completed units: none.", 'Blocked unit: "one".', "Classification: validation.", "Repair available: true.", "", "Diagnostic:", "blocked diagnostic", "diagnostic continuation", "Call delegate_flow_continue."].join("\n"),
+			diagnostic: "blocked diagnostic",
+		},
+		{
+			name: "failed",
+			text: ["Flow failed.", "Completed units: none.", "Classification: infrastructure.", "Diagnostic:", "failed diagnostic", "diagnostic continuation", "Retained Flow state:", "- retained path"].join("\n"),
+			diagnostic: "failed diagnostic",
+		},
+	] as const;
+
+	initTheme("dark");
+	for (const { tool, args, label } of tools) {
+		assert.equal(tool.renderShell, "self");
+		const call = tool.renderCall!(args, theme, {}).render(100);
+		assert.equal(call.length, 1);
+		assert.match(call[0]!, new RegExp(label));
+		assert.doesNotMatch(call.join("\n"), prohibited);
+		for (const width of [100, 24, 1]) {
+			const lines = tool.renderCall!(args, theme, {}).render(width);
+			assert.equal(lines.length, 1);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		}
+
+		for (const { name, text, diagnostic } of results) {
+			const result = { content: [{ type: "text", text }], details: {} };
+			const collapsed = tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(100);
+			const expanded = tool.renderResult!(result, { expanded: true, isPartial: false }, theme, {}).render(100);
+			assert.deepEqual(expanded, collapsed, `${label} ${name}`);
+			assert.ok(collapsed.length <= 3, `${label} ${name}`);
+			assert.ok(call.length + collapsed.length <= 4, `${label} ${name}`);
+			assert.ok(collapsed.every((line) => visibleWidth(line) <= 100), `${label} ${name}`);
+			assert.match(collapsed.join("\n"), /… \d+ more/, `${label} ${name}`);
+			if (diagnostic) assert.match(collapsed.join("\n"), new RegExp(`Diagnostic: ${diagnostic}`), `${label} ${name}`);
+			for (const width of [100, 24, 1]) {
+				const working = tool.renderCall!(args, theme, {}).render(width);
+				for (const expanded of [false, true]) {
+					const lines = tool.renderResult!(result, { expanded, isPartial: false }, theme, {}).render(width);
+					assert.ok(lines.length <= 3, `${label} ${name} expanded=${expanded} width=${width}`);
+					assert.ok(working.length + lines.length <= 4, `${label} ${name} expanded=${expanded} width=${width}`);
+					assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} ${name} expanded=${expanded} width=${width}`);
+				}
+			}
+
+			const component = new ToolExecutionComponent(
+				tool.name,
+				`bounded-${tool.name}-${name}`,
+				args,
+				undefined,
+				tool as never,
+				{ requestRender() {} } as unknown as TUI,
+				process.cwd(),
+			);
+			component.markExecutionStarted();
+			component.setArgsComplete();
+			assert.equal(component.render(100).length, 2);
+			component.updateResult({ ...result, isError: false });
+			for (const width of [100, 24, 1]) {
+				for (const expanded of [false, true]) {
+					component.setExpanded(expanded);
+					const lines = component.render(width);
+					assert.ok(lines.length <= 5, `${label} ${name} composed expanded=${expanded} width=${width}`);
+					assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} ${name} composed expanded=${expanded} width=${width}`);
+					assert.doesNotMatch(lines.join("\n"), prohibited);
+				}
+			}
+		}
+	}
+});
+
+test("Flow result renderers retain a recovery path beside long diagnostics", async (t) => {
+	const app = harness(await repository(t), () => success());
+	const theme = { fg: (_color: string, value: string) => value };
+	const recovery = '- unit="x" path="/repo/.worktrees/retained" branch="pi-subagent/retained" base=abc123 worktree=true branch_ref=true';
+	const result = {
+		content: [{ type: "text" as const, text: [
+			"Flow failed.",
+			"Completed units: none.",
+			"Classification: infrastructure.",
+			"Diagnostic:",
+			"x".repeat(160),
+			"diagnostic continuation",
+			"Retained Flow state:",
+			recovery,
+		].join("\n") }],
+		details: {},
+	};
+
+	for (const [label, tool] of [["delegate_flow", flowTool(app)], ["delegate_flow_continue", continueTool(app)]] as const) {
+		const collapsed = tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(100);
+		const expanded = tool.renderResult!(result, { expanded: true, isPartial: false }, theme, {}).render(100);
+		assert.deepEqual(expanded, collapsed, label);
+		assert.equal(collapsed.length, 3, label);
+		assert.match(collapsed[1]!, /^Diagnostic:/, label);
+		assert.match(collapsed[2]!, /path="\/repo\/\.worktrees\/retained"/, label);
+		assert.doesNotMatch(collapsed.join("\n"), /… \d+ more/, label);
+
+		for (const width of [24, 1]) {
+			const lines = tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(width);
+			assert.equal(lines.length, 3, `${label} width=${width}`);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} width=${width}`);
+		}
+		assert.match(tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(24)[2]!, /path="\/rep/, label);
+	}
 });
 
 test("setup preserves a clean registered collision, cleans earlier allocations non-forcibly, and never falls back outside committed Git", async (t) => {
@@ -622,6 +765,87 @@ test("one continuation replaces the blocked Unit class in the same worktree and 
 	);
 });
 
+test("Flow widgets use the original unit task for implementer, reviewer, and repair", async (t) => {
+	const repo = await repository(t);
+	const task = "Show the original unit task in the Flow widget";
+	let implementationRuns = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") {
+			assert.match(prepared.task, /^Review Flow Unit /);
+			return success("PASS");
+		}
+		if (++implementationRuns === 1) {
+			assert.match(prepared.task, /^Flow Unit /);
+			return failure("implementation crashed");
+		}
+		assert.match(prepared.task, /^Repair Flow Unit /);
+		await commit(prepared.cwd, "repaired.txt", "fixed\n");
+		return success();
+	});
+
+	const blocked = await flowTool(app).execute("widget-label", { units: [reviewedUnit("widget", task)] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	const completed = await continueTool(app).execute("widget-label-continue", { guidance: "Commit the fix" }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+
+	const starts = app.widgets.filter(({ action }) => action === "start");
+	assert.deepEqual(starts.map(({ role, task: widgetTask }) => [role, widgetTask]), [
+		["implementer", task],
+		["implementer", task],
+		["reviewer", task],
+	]);
+	for (const { task: widgetTask } of starts) assert.doesNotMatch(widgetTask!, /^(?:Flow Unit|Review Flow Unit|Repair Flow Unit)/);
+});
+
+test("Flow wires activity to each child widget without changing prompts", async (t) => {
+	const repo = await repository(t);
+	const prompts: string[] = [];
+	const app = harness(repo, async (prepared, input) => {
+		prompts.push(prepared.task);
+		if (!input.onActivity) throw new Error("Flow child activity callback was not wired.");
+		if (prepared.task.startsWith("Flow Unit")) {
+			input.onActivity({ type: "tool_execution_start", toolCallId: "initial-read", toolName: "initial-tool", path: "src/private.ts" });
+			return failure("implementation crashed");
+		}
+		if (prepared.task.startsWith("Repair Flow Unit")) {
+			input.onActivity({ type: "tool_execution_start", toolCallId: "repair-write", toolName: "repair-tool" });
+			await commit(prepared.cwd, "repaired.txt", "fixed\n");
+			return success();
+		}
+		if (prepared.task.startsWith("Review Flow Unit")) {
+			input.onActivity({ type: "message_end" });
+			return success("PASS");
+		}
+		throw new Error(`Unexpected Flow child prompt: ${prepared.task}`);
+	});
+
+	const blocked = await flowTool(app).execute("activity-wire", { units: [reviewedUnit("activity", "Keep child prompts unchanged")] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	const completed = await continueTool(app).execute("activity-wire-continue", { guidance: "Commit the fix" }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+
+	assert.deepEqual(app.widgetActivity, [
+		{
+			id: "activity-wire:flow:0:implement",
+			event: { type: "tool_execution_start", toolCallId: "initial-read", toolName: "initial-tool", path: "src/private.ts" },
+		},
+		{
+			id: "activity-wire-continue:flow:0:repair",
+			event: { type: "tool_execution_start", toolCallId: "repair-write", toolName: "repair-tool" },
+		},
+		{
+			id: "activity-wire-continue:flow:0:review",
+			event: { type: "message_end" },
+		},
+	]);
+	assert.deepEqual(prompts.map((prompt) => prompt.match(/^(?:Flow Unit|Repair Flow Unit|Review Flow Unit)/)?.[0]), [
+		"Flow Unit",
+		"Repair Flow Unit",
+		"Review Flow Unit",
+	]);
+	for (const prompt of prompts) assert.doesNotMatch(prompt, /initial-tool|repair-tool|src\/private\.ts/);
+});
+
 test("session reload invalidates blocked Flow state without persistence", async (t) => {
 	const repo = await repository(t);
 	const app = harness(repo, async (prepared) => {
@@ -898,6 +1122,14 @@ test("validation, Reviewer findings, and Reviewer transport failures keep distin
 	assert.ok(Buffer.byteLength(validationResult.details.blocked.diagnostic, "utf8") <= 50 * 1024);
 	assert.match(validationResult.details.blocked.diagnostic, /exit 3/);
 	assert.equal(existsSync(skippedMarker), false);
+	const validationLines = flowTool(validationApp).renderResult!(
+		validationResult,
+		{ expanded: false, isPartial: false },
+		{ fg: (_color: string, value: string) => value },
+		{},
+	).render(200);
+	assert.equal(validationLines.length, 3);
+	assert.ok(validationLines.some((line) => line.includes(validationResult.details.blocked.path)));
 
 	const findingsRepo = await repository(t);
 	let reviewerTaskText = "";

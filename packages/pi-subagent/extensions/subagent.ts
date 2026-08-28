@@ -1,6 +1,7 @@
+import { basename } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
 	type ThinkingLevel,
@@ -21,6 +22,7 @@ import {
 	loadRoles,
 	resolveTaskRoute,
 	worktreeContextNote,
+	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentResult,
 	type EphemeralSubagentTimeout,
 	type Role,
@@ -29,6 +31,7 @@ import {
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
+import { renderToolLines } from "./tool-render.ts";
 import { runDelegation } from "./delegation.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -55,6 +58,7 @@ const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ROWS = 8;
+export const MAX_WIDGET_ACTIVE_TOOLS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
 	maxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
@@ -71,6 +75,12 @@ export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined)
 	};
 }
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
+type WidgetActiveTool = {
+	toolName: string;
+	path?: string;
+	startedAt: number;
+	order: number;
+};
 type WidgetItem = {
 	role: string;
 	model: string;
@@ -80,6 +90,11 @@ type WidgetItem = {
 	startedAt: number;
 	status: WidgetStatus;
 	finishedAt?: number;
+	completedAssistantTurns: number;
+	startedToolCount: number;
+	activeTools: Map<string, WidgetActiveTool>;
+	activeToolId?: string;
+	activityOrder: number;
 };
 
 function taskSummary(task: string): string {
@@ -111,6 +126,34 @@ function statusLabel(status: WidgetStatus): string {
 	}
 }
 
+function activityLabel(item: WidgetItem, now: number): string {
+	if (item.status === "success") return "Done";
+	if (item.status === "failure") return "Failed";
+	if (item.status === "aborted") return "Stopped";
+	const activeTool = item.activeToolId === undefined ? undefined : item.activeTools.get(item.activeToolId);
+	if (!activeTool) return "thinking…";
+	return [
+		activeTool.toolName,
+		formatDuration(now - activeTool.startedAt),
+		...(activeTool.path === undefined ? [] : [activeTool.path]),
+	].join(" · ");
+}
+
+function activityMetrics(item: WidgetItem, now: number): string {
+	return [
+		...(item.completedAssistantTurns === 0
+			? []
+			: [`${item.completedAssistantTurns} turn${item.completedAssistantTurns === 1 ? "" : "s"}`]),
+		...(item.startedToolCount === 0
+			? []
+			: [`${item.startedToolCount} tool${item.startedToolCount === 1 ? "" : "s"}`]),
+		item.model,
+		item.thinkingLevel,
+		`${formatTokens(item.tokens)} tok`,
+		formatDuration((item.finishedAt ?? now) - item.startedAt),
+	].join(" · ");
+}
+
 function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
 	const isRecord = (candidate: unknown): candidate is Record<string, unknown> => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
 	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
@@ -134,18 +177,34 @@ function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportD
 		&& entries.every((entry, index) => index === 0 || (entry as { index: number }).index > (entries[index - 1] as { index: number }).index);
 }
 
-function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme): string[] {
+function workflowCallLabel(args: { tasks?: unknown; chain?: unknown }): string {
+	if (Array.isArray(args.chain)) return `delegate_task · working: chain · ${args.chain.length} task${args.chain.length === 1 ? "" : "s"}`;
+	if (Array.isArray(args.tasks)) return `delegate_task · working: parallel · ${args.tasks.length} task${args.tasks.length === 1 ? "" : "s"}`;
+	return "delegate_task · working: single · 1 task";
+}
+
+function workflowResultLines(details: WorkflowTransportDetails, theme: Theme): string[] {
 	if (details.entries.some(({ status }) => status === "pending" || status === "running")) return [];
-	return details.entries.flatMap((entry) => {
-		if (entry.status === "skipped") return [];
+	const entries = details.entries.filter(({ status }) => status !== "skipped");
+	const withRecovery = (entry: typeof entries[0]) => entry.worktree && !entry.worktree.pruned;
+	const isTerminalFailure = (entry: typeof entries[0]) => entry.status === "failed" || entry.status === "rejected";
+	const sorted = [...entries].sort((a, b) => {
+		const aFailure = isTerminalFailure(a);
+		const bFailure = isTerminalFailure(b);
+		if (aFailure !== bFailure) return aFailure ? -1 : 1;
+		const aRecovery = !aFailure && withRecovery(a);
+		const bRecovery = !bFailure && withRecovery(b);
+		if (aRecovery !== bRecovery) return aRecovery ? -1 : 1;
+		return 0;
+	});
+	return sorted.map((entry) => {
 		const summary = entry.summary || "(no output)";
 		const text = details.mode === "single" ? summary : `${entry.role}: ${summary}`;
 		const style = entry.status === "failed" || entry.status === "rejected" ? "error" : "text";
-		const recovery = entry.worktree && !entry.worktree.pruned ? `Recovery: ${entry.worktree.path}` : undefined;
-		return [
-			...wrapTextWithAnsi(theme.fg(style, text), Math.max(1, width)),
-			...(recovery ? wrapTextWithAnsi(theme.fg("warning", recovery), Math.max(1, width)) : []),
-		];
+		const recovery = withRecovery(entry) ? `Recovery: ${entry.worktree!.path}` : undefined;
+		return recovery === undefined
+			? theme.fg(style, text)
+			: `${theme.fg("warning", recovery)} · ${theme.fg(style, text)}`;
 	});
 }
 
@@ -159,13 +218,15 @@ function renderWidgetRows(
 	const visible = items.slice(0, MAX_WIDGET_ROWS);
 	if (!visible.length) return [];
 	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
-	const contentWidth = Math.max(1, width - indent.length);
+	const contentWidth = Math.max(0, width - indent.length);
 	const lines = visible.flatMap((item) => [
-		...wrapTextWithAnsi(`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)}`, Math.max(1, width)),
-		...wrapTextWithAnsi(theme.fg("text", item.task), contentWidth).map((line) => `${indent}${line}`),
-		...wrapTextWithAnsi(theme.fg("muted", `${item.model} · ${item.thinkingLevel} · ${formatTokens(item.tokens)} tok · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`), contentWidth).map((line) => `${indent}${line}`),
+		truncateToWidth(
+			`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("text", item.task)}`,
+			width,
+		),
+		`${indent}${truncateToWidth(`${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`, contentWidth)}`,
 	]);
-	if (items.length > visible.length) lines.push(...wrapTextWithAnsi(theme.fg("muted", `… ${items.length - visible.length} more`), Math.max(1, width)));
+	if (items.length > visible.length) lines.push(truncateToWidth(theme.fg("muted", `… ${items.length - visible.length} more`), width));
 	return lines;
 }
 
@@ -311,6 +372,10 @@ export default function subagentExtension(
 			tokens: 0,
 			startedAt: Date.now(),
 			status: "working",
+			completedAssistantTurns: 0,
+			startedToolCount: 0,
+			activeTools: new Map(),
+			activityOrder: 0,
 		});
 		startWidgetTimer();
 		requestWidgetRender();
@@ -323,11 +388,55 @@ export default function subagentExtension(
 		requestWidgetRender();
 	};
 
+	const updateWidgetActivity = (id: string, event: EphemeralSubagentActivityEvent) => {
+		const item = widgetItems.get(id);
+		if (!item || item.status !== "working") return;
+		switch (event.type) {
+			case "tool_execution_start": {
+				if (item.activeTools.has(event.toolCallId)) break;
+				if (item.activeTools.size >= MAX_WIDGET_ACTIVE_TOOLS) {
+					let oldest: [string, WidgetActiveTool] | undefined;
+					for (const candidate of item.activeTools) {
+						if (!oldest || candidate[1].order < oldest[1].order) oldest = candidate;
+					}
+					if (oldest) item.activeTools.delete(oldest[0]);
+				}
+				const path = event.path === undefined ? undefined : basename(event.path);
+				item.startedToolCount += 1;
+				item.activeTools.set(event.toolCallId, {
+					toolName: event.toolName,
+					...(path ? { path } : {}),
+					startedAt: Date.now(),
+					order: ++item.activityOrder,
+				});
+				item.activeToolId = event.toolCallId;
+				break;
+			}
+			case "tool_execution_end": {
+				item.activeTools.delete(event.toolCallId);
+				if (item.activeToolId === event.toolCallId) {
+					let latest: [string, WidgetActiveTool] | undefined;
+					for (const candidate of item.activeTools) {
+						if (!latest || candidate[1].order > latest[1].order) latest = candidate;
+					}
+					item.activeToolId = latest?.[0];
+				}
+				break;
+			}
+			case "message_end":
+				item.completedAssistantTurns += 1;
+				break;
+		}
+		requestWidgetRender();
+	};
+
 	const finishWidgetItem = (id: string, status: Exclude<WidgetStatus, "working">) => {
 		const item = widgetItems.get(id);
 		if (!item) return;
 		item.status = status;
 		item.finishedAt = Date.now();
+		item.activeTools.clear();
+		item.activeToolId = undefined;
 		if (![...widgetItems.values()].some(({ status }) => status === "working")) stopWidgetTimer();
 		requestWidgetRender();
 	};
@@ -454,6 +563,7 @@ export default function subagentExtension(
 		},
 		startWidget: startWidgetItem,
 		updateWidgetTokens,
+		updateWidgetActivity,
 		finishWidget: finishWidgetItem,
 	});
 
@@ -470,19 +580,19 @@ export default function subagentExtension(
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
 		parameters: WorkflowSchema,
-		renderResult(result, _options, theme, _context) {
+		renderShell: "self",
+		renderCall(args, theme, _context) {
+			return renderToolLines([theme.fg("toolTitle", workflowCallLabel(args))], theme);
+		},
+		renderResult(result, { isPartial }, theme, _context) {
+			if (isPartial) return renderToolLines([], theme);
 			const details = result.details;
-			if (isWorkflowTransportDetails(details)) {
-				return {
-					invalidate() {},
-					render: (width) => renderWorkflowResult(details, width, theme),
-				};
-			}
+			if (isWorkflowTransportDetails(details)) return renderToolLines(workflowResultLines(details, theme), theme);
 			if (typeof details === "object" && details !== null && (details as { background?: unknown }).background === true) {
-				return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", "Background workflow accepted."), Math.max(1, width)) };
+				return renderToolLines([theme.fg("muted", "Background workflow accepted.")], theme);
 			}
 			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
-			return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", text), Math.max(1, width)) };
+			return renderToolLines([theme.fg("muted", text)], theme);
 		},
 		prepareArguments(args) {
 			try {
@@ -593,6 +703,7 @@ export default function subagentExtension(
 								emitUpdate(emitToolUpdates);
 							},
 							onTokens: (tokens) => updateWidgetTokens(entry.id, tokens),
+							onActivity: (event) => updateWidgetActivity(entry.id, event),
 							prepare: async () => {
 								// Route and effective Role resources resolve only after this entry's
 								// shared executor permit, before isolated state is created.

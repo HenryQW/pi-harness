@@ -6,23 +6,26 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	capEphemeralSubagentOutput as capOutput,
 	EphemeralSubagentError,
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
 import { formatWorkflowResult, formatWorkflowUpdate, WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
-import subagentExtension from "../extensions/subagent.ts";
+import subagentExtension, { MAX_WIDGET_ACTIVE_TOOLS } from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
 
 type Tool = {
+	name: string;
 	description: string;
 	parameters: unknown;
 	promptGuidelines?: string[];
 	prepareArguments?: (args: unknown) => any;
+	renderShell?: "default" | "self";
+	renderCall?: (...args: any[]) => { render: (width: number) => string[] };
 	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
 };
@@ -167,7 +170,7 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 }
 
 function workingWidgetHeaders(lines: string[]): string[] {
-	return lines.filter((line) => / · working$/.test(line));
+	return lines.filter((line) => / · working ·/.test(line));
 }
 
 async function writeWorkerRole(agentDir: string, isolation = false): Promise<void> {
@@ -722,7 +725,7 @@ Return concise findings.
 	});
 });
 
-test("widget wraps task and metrics, retains terminal entries, and clears them on user input", async () => {
+test("widget renders two truncated lines, retains terminal entries, and clears them on user input", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		for (const [name, description] of [["scout", "Finds code"], ["worker", "Does work"]]) {
@@ -746,17 +749,26 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		const app = harness({ ui: true });
 		const completed = app.tool.execute("call-1", { role: "scout", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
 		await waitFor(() => app.widget?.render(100).join("\n").includes("1.1k tok") ?? false);
-		const working = app.widget!.render(100).join("\n");
-		assert.match(working, /scout · working/);
-		assert.match(working, /text-model · low · 1\.1k tok ·/);
-		assert.doesNotMatch(working, /test\//);
+		const wide = app.widget!.render(100);
+		assert.equal(wide.length, 2);
+		assert.ok(wide.every((line) => visibleWidth(line) <= 100));
+		assert.match(wide[0]!, /scout · working · Normalize Windows registered-worktree paths/);
+		assert.match(wide[1]!, /^  thinking… · text-model · low · 1\.1k tok ·/);
+		assert.doesNotMatch(wide.join("\n"), /test\//);
 		const narrow = app.widget!.render(24);
+		assert.equal(narrow.length, 2);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-		assert.ok(narrow.some((line) => line.includes("Normalize Windows")));
-		assert.ok(narrow.some((line) => line.includes("registered-worktree")));
+		assert.match(narrow[0]!, /scout · working/);
+		assert.match(narrow[1]!, /^  thinking…/);
+		const tiny = app.widget!.render(1);
+		assert.equal(tiny.length, 2);
+		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
 		await completed;
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
-		assert.match(app.widget!.render(100).join("\n"), /scout · complete/);
+		const terminal = app.widget!.render(100);
+		assert.equal(terminal.length, 2);
+		assert.match(terminal[0]!, /scout · complete/);
+		assert.match(terminal[1]!, /Done · 1 turn/);
 
 		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
 		const running = app.tool.execute("call-2", { role: "worker", task: "keep working" }, undefined, undefined, app.ctx);
@@ -769,6 +781,176 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		assert.match(afterInput, /worker · working/);
 		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+	});
+});
+
+test("widget renders deterministic live activity across overlapping tools", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const stages = join(agentDir, "widget-activity-stages");
+		await mkdir(stages);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const stages = ${JSON.stringify(stages)};
+const event = (value) => console.log(JSON.stringify(value));
+const waitFor = (stage, next) => {
+	const timer = setInterval(() => {
+		if (!existsSync(join(stages, stage))) return;
+		clearInterval(timer);
+		next();
+	}, 5);
+};
+writeFileSync(join(stages, "started"), "");
+waitFor("read", () => {
+	event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/target.ts" } });
+	waitFor("bash", () => {
+		event({ type: "tool_execution_start", toolCallId: "bash-2", toolName: "bash", args: {} });
+		waitFor("bash-end", () => {
+			event({ type: "tool_execution_end", toolCallId: "bash-2", toolName: "bash" });
+			waitFor("read-end", () => {
+				event({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" });
+				waitFor("done", () => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));
+			});
+		});
+	});
+});
+`);
+		process.argv[1] = runner;
+		const app = harness({ ui: true });
+		const stagesToRelease = ["read", "bash", "bash-end", "read-end", "done"];
+		const release = async (stage: string) => { await writeFile(join(stages, stage), ""); };
+		const renderRows = () => {
+			for (const width of [100, 24, 1]) {
+				const lines = app.widget!.render(width);
+				assert.equal(lines.length, 2);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			}
+			return app.widget!.render(100).join("\n");
+		};
+		const running = app.tool.execute("activity", { role: "worker", task: "trace deterministic widget activity" }, undefined, undefined, app.ctx);
+		try {
+			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
+			let widget = renderRows();
+			assert.match(widget, /worker · working · trace deterministic widget activity/);
+			assert.match(widget, /thinking…/);
+			assert.doesNotMatch(widget, /\b(?:turn|tool)s?\b/);
+
+			await release("read");
+			await waitFor(() => app.widget?.render(100).join("\n").includes("read ·") ?? false);
+			widget = renderRows();
+			assert.match(widget, /read · \d+s · target\.ts · 1 tool/);
+
+			await release("bash");
+			await waitFor(() => app.widget?.render(100).join("\n").includes("bash ·") ?? false);
+			widget = renderRows();
+			assert.match(widget, /bash · \d+s · 2 tools/);
+			assert.doesNotMatch(widget, /target\.ts/);
+
+			await release("bash-end");
+			await waitFor(() => {
+				const text = app.widget?.render(100).join("\n") ?? "";
+				return text.includes("read ·") && !text.includes("bash ·");
+			});
+			widget = renderRows();
+			assert.match(widget, /read · \d+s · target\.ts · 2 tools/);
+
+			await release("read-end");
+			await waitFor(() => app.widget?.render(100).join("\n").includes("thinking… · 2 tools") ?? false);
+			widget = renderRows();
+			assert.match(widget, /thinking… · 2 tools/);
+
+			await release("done");
+			assert.equal(singleOutput(await running), "done");
+			widget = renderRows();
+			assert.match(widget, /Done · 1 turn · 2 tools/);
+		} finally {
+			await Promise.all(stagesToRelease.map(release));
+			await Promise.allSettled([running]);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+	});
+});
+
+test("widget bounds retained activity without losing counts or overlap fallback", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const stages = join(agentDir, "widget-activity-cap-stages");
+		await mkdir(stages);
+		const toolIds = Array.from({ length: MAX_WIDGET_ACTIVE_TOOLS + 1 }, (_, index) => `tool-${index + 1}`);
+		const retainedIds = toolIds.slice(1);
+		const oversized = "x".repeat(64 * 1024);
+		const actions = [
+			{ stage: "oversized", event: { type: "tool_execution_start", toolCallId: "oversized", toolName: oversized, args: {} } },
+			...toolIds.map((toolCallId) => ({ stage: `start-${toolCallId}`, event: { type: "tool_execution_start", toolCallId, toolName: toolCallId, args: {} } })),
+			{ stage: "duplicate", event: { type: "tool_execution_start", toolCallId: toolIds.at(-1)!, toolName: toolIds.at(-1)!, args: {} } },
+			{ stage: "end-evicted", event: { type: "tool_execution_end", toolCallId: toolIds[0]!, toolName: toolIds[0]! } },
+			{ stage: "end-latest", event: { type: "tool_execution_end", toolCallId: toolIds.at(-1)!, toolName: toolIds.at(-1)! } },
+			...retainedIds.slice(0, -1).reverse().map((toolCallId) => ({ stage: `end-${toolCallId}`, event: { type: "tool_execution_end", toolCallId, toolName: toolCallId } })),
+			{ stage: "done", event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } } },
+		];
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const stages = ${JSON.stringify(stages)};
+const actions = ${JSON.stringify(actions)};
+const event = (value) => console.log(JSON.stringify(value));
+writeFileSync(join(stages, "started"), "");
+const next = () => {
+	const action = actions.shift();
+	if (!action) return;
+	const timer = setInterval(() => {
+		if (!existsSync(join(stages, action.stage))) return;
+		clearInterval(timer);
+		event(action.event);
+		next();
+	}, 5);
+};
+next();
+`);
+		process.argv[1] = runner;
+		const app = harness({ ui: true });
+		const release = async (stage: string) => { await writeFile(join(stages, stage), ""); };
+		const rendered = () => app.widget!.render(100).join("\n");
+		const running = app.tool.execute("activity-cap", { role: "worker", task: "bound retained widget activity" }, undefined, undefined, app.ctx);
+		try {
+			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
+			await release("oversized");
+			for (const toolCallId of toolIds) {
+				await release(`start-${toolCallId}`);
+				await waitFor(() => rendered().includes(`${toolCallId} ·`));
+			}
+			let widget = rendered();
+			assert.match(widget, new RegExp(`${toolIds.at(-1)!} · \\d+s · ${toolIds.length} tools`));
+			assert.doesNotMatch(widget, /x{100}/);
+
+			await release("duplicate");
+			await release("end-evicted");
+			await release("end-latest");
+			const fallback = retainedIds.at(-1)!;
+			await waitFor(() => rendered().includes(`${fallback} ·`) && rendered().includes(`${toolIds.length} tools`));
+			widget = rendered();
+			assert.match(widget, new RegExp(`${fallback} · \\d+s · ${toolIds.length} tools`));
+
+			const endingIds = retainedIds.slice(0, -1).reverse();
+			for (const [index, toolCallId] of endingIds.entries()) {
+				await release(`end-${toolCallId}`);
+				const next = endingIds[index + 1];
+				await waitFor(() => next === undefined ? rendered().includes("thinking…") : rendered().includes(`${next} ·`));
+			}
+			widget = rendered();
+			assert.match(widget, new RegExp(`thinking… · ${toolIds.length} tools`));
+
+			await release("done");
+			assert.equal(singleOutput(await running), "done");
+			widget = rendered();
+			assert.match(widget, new RegExp(`Done · 1 turn · ${toolIds.length} tools`));
+			assert.doesNotMatch(widget, /tool-\d+ ·/);
+		} finally {
+			await Promise.all(actions.map(({ stage }) => release(stage)));
+			await Promise.allSettled([running]);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
 	});
 });
 
@@ -834,15 +1016,34 @@ test("widget evicts enough terminal rows to recover capacity without hiding work
 	});
 });
 
-test("delegate_task leaves partial progress to the widget and renders minimal terminal summaries", async () => {
+test("delegate_task renders one-line working status and bounded terminal summaries", async () => {
 	await environment(async () => {
 		const app = harness();
 		const theme = { fg: (_color: string, value: string) => value };
+		const hiddenTask = "FULL TASK TEXT validation --secret";
+		for (const [args, label] of [
+			[{ role: "worker", task: hiddenTask }, "single · 1 task"],
+			[{ tasks: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "parallel · 2 tasks"],
+			[{ chain: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "chain · 2 tasks"],
+		] as const) {
+			const call = app.tool.renderCall!(args, theme, {}).render(100);
+			assert.equal(call.length, 1);
+			assert.match(call[0]!, new RegExp(label));
+			assert.doesNotMatch(call.join("\n"), /FULL TASK TEXT|--secret/);
+			for (const width of [100, 24, 1]) {
+				const narrow = app.tool.renderCall!(args, theme, {}).render(width);
+				assert.equal(narrow.length, 1);
+				assert.ok(narrow.every((line) => visibleWidth(line) <= width));
+			}
+		}
+
 		const partial = formatWorkflowUpdate("parallel", [
 			{ id: "opaque-running", index: 1, role: "reviewer", status: "running", assistantOutput: "partial" },
 			{ id: "opaque-pending", index: 0, role: "implementer", status: "pending" },
 		]);
-		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, {}, theme, {}).render(100), []);
+		for (const options of [{ isPartial: true }, {}]) {
+			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, options, theme, {}).render(100), []);
+		}
 
 		const single = formatWorkflowResult("single", [{ id: "opaque-single", index: 0, role: "worker", status: "succeeded", assistantOutput: "Implemented the fix.\nignored" }]);
 		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: single.text }], details: single.details }, {}, theme, {}).render(100), ["Implemented the fix."]);
@@ -856,11 +1057,86 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 		const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
 		const expanded = app.tool.renderResult!(result, { expanded: true }, theme, {}).render(100);
 		assert.deepEqual(expanded, collapsed);
-		assert.deepEqual(collapsed, ["implementer: Implemented the fix.", "Recovery: /repo/.worktrees/retained", "reviewer: Validation failed."]);
+		assert.deepEqual(collapsed, ["reviewer: Validation failed.", "Recovery: /repo/.worktrees/retained · implementer: Implemented the fix."]);
 		assert.doesNotMatch(collapsed.join("\n"), /status|✓|✗|task|model|thinking|tok|\d+m|opaque-|branch|ignored/);
 		const narrow = app.tool.renderResult!(result, {}, theme, {}).render(20);
+		assert.ok(narrow.length <= 3);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
-		assert.ok(narrow.some((line) => line.includes("Recovery:")));
+
+		const retained = formatWorkflowResult("parallel", [
+			{ id: "opaque-failed", index: 0, role: "reviewer", status: "failed", failure: "Validation failed." },
+			{ id: "opaque-ordinary", index: 1, role: "worker-2", status: "succeeded", assistantOutput: "ordinary result" },
+			{ id: "opaque-retained", index: 2, role: "worker-3", status: "succeeded", assistantOutput: "x".repeat(160), worktreePayload: { path: "/repo/.worktrees/late", branch: "pi-subagent/late", commits: 1, dirty: false, pruned: false } },
+			{ id: "opaque-last", index: 3, role: "worker-4", status: "succeeded", assistantOutput: "last result" },
+		]);
+		const retainedResult = { content: [{ type: "text" as const, text: retained.text }], details: retained.details };
+		const retainedCollapsed = app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(100);
+		const retainedExpanded = app.tool.renderResult!(retainedResult, { expanded: true }, theme, {}).render(100);
+		assert.deepEqual(retainedExpanded, retainedCollapsed);
+		assert.equal(retainedCollapsed.length, 3);
+		assert.match(retainedCollapsed[0]!, /^reviewer: Validation failed\./);
+		assert.match(retainedCollapsed[1]!, /^Recovery: \/repo\/\.worktrees\/late/);
+		assert.match(retainedCollapsed[2]!, /^… 2 more$/);
+		for (const width of [24, 1]) {
+			const lines = app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(width);
+			assert.equal(lines.length, 3, `width=${width}`);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `width=${width}`);
+		}
+		assert.match(app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(24)[1]!, /\/repo/);
+
+		const eight = formatWorkflowResult("parallel", Array.from({ length: 8 }, (_, index) => ({
+			id: `opaque-${index}`,
+			index,
+			role: `worker-${index + 1}`,
+			status: "succeeded" as const,
+			assistantOutput: `result ${index + 1}`,
+			...(index === 0 ? { worktreePayload: { path: "/repo/.worktrees/recover", branch: "pi-subagent/recover", commits: 1, dirty: false, pruned: false } } : {}),
+		})));
+		const eightResult = { content: [{ type: "text" as const, text: eight.text }], details: eight.details };
+		const eightCall = app.tool.renderCall!({ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) }, theme, {}).render(100);
+		const eightCollapsed = app.tool.renderResult!(eightResult, { expanded: false }, theme, {}).render(100);
+		const eightExpanded = app.tool.renderResult!(eightResult, { expanded: true }, theme, {}).render(100);
+		assert.deepEqual(eightExpanded, eightCollapsed);
+		assert.deepEqual(eightCollapsed, [
+			"Recovery: /repo/.worktrees/recover · worker-1: result 1",
+			"worker-2: result 2",
+			"… 6 more",
+		]);
+		assert.equal(eightCall.length + eightCollapsed.length, 4);
+		for (const width of [100, 24, 1]) {
+			const call = app.tool.renderCall!({ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) }, theme, {}).render(width);
+			for (const expanded of [false, true]) {
+				const lines = app.tool.renderResult!(eightResult, { expanded }, theme, {}).render(width);
+				assert.ok(lines.length <= 3);
+				assert.ok(call.length + lines.length <= 4);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			}
+		}
+
+		assert.equal(app.tool.renderShell, "self");
+		initTheme("dark");
+		const component = new ToolExecutionComponent(
+			app.tool.name,
+			"bounded-delegate-task",
+			{ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) },
+			undefined,
+			app.tool as never,
+			{ requestRender() {} } as unknown as TUI,
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		assert.equal(component.render(100).length, 2);
+		component.updateResult({ ...eightResult, isError: false });
+		for (const width of [100, 24, 1]) {
+			for (const expanded of [false, true]) {
+				component.setExpanded(expanded);
+				const lines = component.render(width);
+				assert.ok(lines.length <= 5);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+				assert.doesNotMatch(lines.join("\n"), /FULL TASK TEXT|--secret/);
+			}
+		}
 
 		const empty = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, worktree: undefined, summary: "" }] } }, {}, theme, {}).render(100);
 		assert.deepEqual(empty, ["implementer: (no output)"]);

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
+	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentExecutor,
 	type PiLaunch,
 } from "../src/index.ts";
@@ -279,6 +280,145 @@ if (task === "Task: first") {
 	const [firstResult, secondResult] = await Promise.all([first, second]);
 	assert.equal(firstResult.output, "first");
 	assert.equal(secondResult.output, "second");
+});
+
+test("executor projects validated child activity", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/ephemeral.ts" } });
+event({ type: "tool_execution_start", toolCallId: "bash-2", toolName: "bash", args: {} });
+event({ type: "tool_execution_start", toolCallId: "write-3", toolName: "write", args: { path: "one\\ntwo" } });
+event({ type: "tool_execution_start", toolCallId: "esc-4", toolName: "read", args: { path: "one\\u001b[2Jtwo" } });
+event({ type: "tool_execution_start", toolCallId: "c1-5", toolName: "read", args: { path: "one\\u009btwo" } });
+event({ type: "tool_execution_end", toolCallId: "bash-2", toolName: "bash" });
+event({ type: "tool_execution_end", toolCallId: "write-3", toolName: "write" });
+event({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	const activity: EphemeralSubagentActivityEvent[] = [];
+	const result = await executor().run({
+		onActivity: (event) => activity.push(event),
+		prepare: async () => prepared(cwd),
+	});
+	assert.equal(result.output, "done");
+	assert.deepEqual(activity, [
+		{ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", path: "src/ephemeral.ts" },
+		{ type: "tool_execution_start", toolCallId: "bash-2", toolName: "bash" },
+		{ type: "tool_execution_start", toolCallId: "write-3", toolName: "write" },
+		{ type: "tool_execution_start", toolCallId: "esc-4", toolName: "read" },
+		{ type: "tool_execution_start", toolCallId: "c1-5", toolName: "read" },
+		{ type: "tool_execution_end", toolCallId: "bash-2", toolName: "bash" },
+		{ type: "tool_execution_end", toolCallId: "write-3", toolName: "write" },
+		{ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" },
+		{ type: "message_end" },
+	]);
+});
+
+test("executor excludes malformed activity telemetry without failing the child", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "tool_execution_start", toolCallId: "", toolName: "read", args: {} });
+event({ type: "tool_execution_start", toolCallId: "tool-2", toolName: " ", args: {} });
+event({ type: "tool_execution_end", toolCallId: 3, toolName: "read" });
+event({ type: "tool_execution_end", toolCallId: "tool-4", toolName: null });
+event({ type: "message_end", message: { role: "user", content: [] } });
+event({ type: "message_end", message: null });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	const activity: EphemeralSubagentActivityEvent[] = [];
+	const result = await executor().run({
+		onActivity: (event) => activity.push(event),
+		prepare: async () => prepared(cwd),
+	});
+	assert.equal(result.output, "done");
+	assert.deepEqual(activity, [{ type: "message_end" }]);
+});
+
+test("executor excludes oversized activity fields before telemetry", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+const oversized = "x".repeat(64 * 1024);
+event({ type: "tool_execution_start", toolCallId: oversized, toolName: "read", args: {} });
+event({ type: "tool_execution_start", toolCallId: "tool-name", toolName: oversized, args: {} });
+event({ type: "tool_execution_start", toolCallId: "tool-path", toolName: "read", args: { path: oversized } });
+event({ type: "tool_execution_end", toolCallId: oversized, toolName: "read" });
+event({ type: "tool_execution_end", toolCallId: "tool-end-name", toolName: oversized });
+event({ type: "tool_execution_start", toolCallId: "tool-ok", toolName: "read", args: { path: "src/ok.ts" } });
+event({ type: "tool_execution_end", toolCallId: "tool-ok", toolName: "read" });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	const activity: EphemeralSubagentActivityEvent[] = [];
+	const result = await executor().run({
+		onActivity: (event) => activity.push(event),
+		prepare: async () => prepared(cwd),
+	});
+	assert.equal(result.output, "done");
+	assert.deepEqual(activity, [
+		{ type: "tool_execution_start", toolCallId: "tool-ok", toolName: "read", path: "src/ok.ts" },
+		{ type: "tool_execution_end", toolCallId: "tool-ok", toolName: "read" },
+		{ type: "message_end" },
+	]);
+});
+
+test("executor projects tool starts from oversized args without a path", async (t) => {
+	const toolCallId = "i".repeat(4 * 1024);
+	const toolName = "n".repeat(4 * 1024);
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "tool_execution_start", toolCallId: "i".repeat(4 * 1024), toolName: "n".repeat(4 * 1024), args: { path: "src/large.ts", text: "x".repeat(2 * 1024 * 1024) } });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	const activity: EphemeralSubagentActivityEvent[] = [];
+	const result = await executor().run({
+		onActivity: (event) => activity.push(event),
+		prepare: async () => prepared(cwd),
+	});
+	assert.equal(result.output, "done");
+	assert.deepEqual(activity, [
+		{ type: "tool_execution_start", toolCallId, toolName },
+		{ type: "message_end" },
+	]);
+});
+
+test("executor serializes asynchronous activity callbacks in event order", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: {} });
+event({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	let releaseStart!: () => void;
+	const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+	let startObserved!: () => void;
+	const started = new Promise<void>((resolve) => { startObserved = resolve; });
+	const activity: string[] = [];
+	const running = executor().run({
+		onActivity: async (event) => {
+			if (event.type === "tool_execution_start") {
+				activity.push("start-begin");
+				startObserved();
+				await startGate;
+				activity.push("start-end");
+				return;
+			}
+			activity.push(event.type);
+		},
+		prepare: async () => prepared(cwd),
+	});
+	await started;
+	assert.deepEqual(activity, ["start-begin"]);
+	releaseStart();
+	assert.equal((await running).output, "done");
+	assert.deepEqual(activity, ["start-begin", "start-end", "tool_execution_end", "message_end"]);
+});
+
+test("activity callback failures are typed executor failures", async (t) => {
+	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: {} })); setInterval(() => {}, 1_000);\n`);
+	const cause = new Error("activity observer failed");
+	await assert.rejects(executor().run({
+		onActivity: async () => { throw cause; },
+		prepare: async () => prepared(cwd),
+	}), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "callback");
+		assert.equal(error.cause, cause);
+		return true;
+	});
 });
 
 test("callback failure terminates the child and releases the next queued run", async (t) => {
@@ -560,6 +700,7 @@ test("executor validates run input and prepared launch at the boundary", async (
 		{ prepare: 1 },
 		{ prepare: async () => prepared(cwd), onUpdate: 1 },
 		{ prepare: async () => prepared(cwd), onTokens: 1 },
+		{ prepare: async () => prepared(cwd), onActivity: 1 },
 	]) {
 		await assert.rejects(executor().run(input as never), TypeError);
 	}
