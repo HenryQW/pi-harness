@@ -16,13 +16,8 @@ type TransportEntryBase = {
 	index: WorkflowEntry["index"];
 	role: WorkflowEntry["delegation"]["role"];
 	task: string;
-	model?: string;
-	thinkingLevel?: string;
 	worktreePayload?: WorktreePayload;
 	usage?: Usage;
-	startedAt?: number;
-	finishedAt?: number;
-	aborted: boolean;
 };
 
 export type WorkflowTransportEntry =
@@ -35,17 +30,9 @@ export type WorkflowTransportEntry =
 	| TransportEntryBase & { status: "failed" | "rejected"; assistantOutput?: never; failure: string };
 
 export type WorkflowTransportEntryDetails = {
-	id: string;
-	index: number;
 	role: string;
 	status: WorkflowTransportStatus;
-	task: string;
 	summary?: string;
-	model?: string;
-	thinkingLevel?: string;
-	tokens?: number;
-	durationMs?: number;
-	aborted: boolean;
 	worktree?: WorktreePayload;
 };
 
@@ -141,17 +128,9 @@ function formatWorkflowTransport(
 				const source = entry.status === "failed" || entry.status === "rejected" ? entry.failure
 					: entry.status === "running" || entry.status === "succeeded" ? entry.assistantOutput : undefined;
 				return {
-					id: entry.id,
-					index: entry.index,
 					role: entry.role,
 					status: entry.status,
-					task: entry.task,
 					...(source === undefined ? {} : { summary: displaySummary(source) }),
-					...(entry.model === undefined ? {} : { model: entry.model }),
-					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
-					...(entry.usage?.totalTokens === undefined ? {} : { tokens: entry.usage.totalTokens }),
-					...(entry.startedAt === undefined ? {} : { durationMs: (entry.finishedAt ?? Date.now()) - entry.startedAt }),
-					aborted: entry.aborted,
 					...(entry.worktreePayload === undefined ? {} : { worktree: { ...entry.worktreePayload } }),
 				};
 			}),

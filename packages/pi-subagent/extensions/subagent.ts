@@ -112,32 +112,24 @@ function statusLabel(status: WidgetStatus): string {
 function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
 	const isRecord = (candidate: unknown): candidate is Record<string, unknown> => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
 	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
-	const isMetric = (candidate: unknown) => candidate === undefined || typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0;
-	return isRecord(value) && Array.isArray(value.entries) && value.entries.every((entry) => isRecord(entry)
-		&& ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
-		&& typeof entry.role === "string" && typeof entry.task === "string" && typeof entry.aborted === "boolean"
-		&& isOptionalString(entry.summary) && isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
-		&& isMetric(entry.tokens) && isMetric(entry.durationMs)
-		&& (entry.worktree === undefined || isRecord(entry.worktree) && typeof entry.worktree.path === "string" && typeof entry.worktree.pruned === "boolean"));
+	return isRecord(value) && (value.mode === "single" || value.mode === "parallel" || value.mode === "chain")
+		&& Array.isArray(value.entries) && value.entries.every((entry) => isRecord(entry)
+			&& ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
+			&& typeof entry.role === "string" && isOptionalString(entry.summary)
+			&& (entry.worktree === undefined || isRecord(entry.worktree) && typeof entry.worktree.path === "string" && typeof entry.worktree.pruned === "boolean"));
 }
 
-function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme, spinner: number): string[] {
-	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
-	const contentWidth = Math.max(1, width - indent.length);
+function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme): string[] {
+	if (details.entries.some(({ status }) => status === "pending" || status === "running")) return [];
 	return details.entries.flatMap((entry) => {
-		const status = entry.aborted ? "stopped" : entry.status === "succeeded" ? "complete" : entry.status;
-		const glyph = entry.status === "running" ? theme.fg("accent", SPINNER_FRAMES[spinner % SPINNER_FRAMES.length]!)
-			: status === "complete" ? theme.fg("success", "✓")
-			: status === "failed" || status === "rejected" ? theme.fg("error", "✗")
-			: status === "stopped" ? theme.fg("warning", "■") : theme.fg("muted", "○");
-		const model = entry.model?.includes("/") ? entry.model.slice(entry.model.indexOf("/") + 1) : entry.model;
-		const metric = [model, entry.thinkingLevel, entry.tokens === undefined ? undefined : `${formatTokens(entry.tokens)} tok`, entry.durationMs === undefined ? undefined : formatDuration(entry.durationMs)].filter(Boolean).join(" · ");
+		if (entry.status === "skipped") return [];
+		const summary = entry.summary || "(no output)";
+		const text = details.mode === "single" ? summary : `${entry.role}: ${summary}`;
+		const style = entry.status === "failed" || entry.status === "rejected" ? "error" : "text";
 		const recovery = entry.worktree && !entry.worktree.pruned ? `Recovery: ${entry.worktree.path}` : undefined;
 		return [
-			...wrapTextWithAnsi(`${glyph} ${theme.fg("accent", entry.role)} · ${status}`, Math.max(1, width)),
-			...wrapTextWithAnsi(theme.fg("text", entry.status === "running" || entry.status === "pending" ? entry.task : entry.summary || entry.task), contentWidth).map((line) => `${indent}${line}`),
-			...(metric ? wrapTextWithAnsi(theme.fg("muted", metric), contentWidth).map((line) => `${indent}${line}`) : []),
-			...(recovery ? wrapTextWithAnsi(theme.fg("warning", recovery), contentWidth).map((line) => `${indent}${line}`) : []),
+			...wrapTextWithAnsi(theme.fg(style, text), Math.max(1, width)),
+			...(recovery ? wrapTextWithAnsi(theme.fg("warning", recovery), Math.max(1, width)) : []),
 		];
 	});
 }
@@ -459,7 +451,7 @@ export default function subagentExtension(
 			if (isWorkflowTransportDetails(details)) {
 				return {
 					invalidate() {},
-					render: (width) => renderWorkflowResult(details, width, theme, spinnerIndex),
+					render: (width) => renderWorkflowResult(details, width, theme),
 				};
 			}
 			if (typeof details === "object" && details !== null && (details as { background?: unknown }).background === true) {
@@ -526,7 +518,6 @@ export default function subagentExtension(
 				index: entry.index,
 				role: entry.delegation.role,
 				task: taskSummary(entry.delegation.task),
-				aborted: false,
 				status: "pending",
 			}]));
 			const setupRecoveries = new Map<string, string>();
@@ -543,17 +534,14 @@ export default function subagentExtension(
 				try {
 					return await runForegroundWorkflow<EphemeralSubagentResult>(toolCallId, foregroundWorkflow, async (entry: WorkflowEntry) => {
 					const role = rolesByName.get(entry.delegation.role)!;
-					let model: string | undefined;
-					let thinkingLevel: string | undefined;
 					let worktree: WorktreeInfo | undefined;
 					let worktreePayload: WorktreePayload | undefined;
 					let child: EphemeralSubagentResult | undefined;
 					let rejected: unknown;
 					let rejectedUsage: Usage | undefined;
-					let aborted = false;
+					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
 					let status: "succeeded" | "failed" | "rejected" = "rejected";
 					let text = "Subagent did not start.";
-					let startedAt: number | undefined;
 					const setState = (
 						nextStatus: "running" | "succeeded" | "failed" | "rejected",
 						nextText: string,
@@ -564,13 +552,8 @@ export default function subagentExtension(
 							index: entry.index,
 							role: role.name,
 							task: taskSummary(entry.delegation.task),
-							...(model === undefined ? {} : { model }),
-							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 							...(worktreePayload === undefined ? {} : { worktreePayload }),
 							...(usage === undefined ? {} : { usage }),
-							...(startedAt === undefined ? {} : { startedAt }),
-							...(nextStatus === "running" ? {} : { finishedAt: Date.now() }),
-							aborted,
 						};
 						states.set(entry.id, nextStatus === "failed" || nextStatus === "rejected"
 							? { ...base, status: nextStatus, failure: nextText }
@@ -589,12 +572,9 @@ export default function subagentExtension(
 								// shared executor permit, before isolated state is created.
 								const launch = resolveLaunch(role, entry.delegation);
 								notifyMissingSkills(role, launch);
-								model = modelReference(launch.model);
-								thinkingLevel = launch.thinkingLevel;
 								if (role.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
-								startedAt = Date.now();
 								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.task, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
@@ -610,11 +590,12 @@ export default function subagentExtension(
 							text = capOutput(child.errorMessage || child.stderr.trim() || child.output || `Subagent exited with code ${child.exitCode}.`);
 						} else {
 							status = "succeeded";
+							widgetStatus = "success";
 							text = child.output;
 						}
 					} catch (error) {
 						rejected = error;
-						aborted = error instanceof EphemeralSubagentError && error.code === "aborted";
+						widgetStatus = error instanceof EphemeralSubagentError && error.code === "aborted" ? "aborted" : "failure";
 						rejectedUsage = error instanceof EphemeralSubagentError
 							? (error as EphemeralSubagentError & { usage?: Usage }).usage
 							: undefined;
@@ -628,7 +609,6 @@ export default function subagentExtension(
 						worktreePayload = worktree ? await finalizeChildWorktree(worktree) : undefined;
 					} catch (error) {
 						rejected = error;
-						aborted = false;
 						status = "rejected";
 						text = capOutput(error instanceof Error ? error.message : String(error));
 						worktreePayload = worktree ? {
@@ -651,7 +631,7 @@ export default function subagentExtension(
 					if (rejected !== undefined) status = "rejected";
 					setState(status, text);
 					try {
-						finishWidgetItem(entry.id, aborted ? "aborted" : status === "succeeded" ? "success" : "failure");
+						finishWidgetItem(entry.id, widgetStatus);
 						emitUpdate(emitToolUpdates);
 					} catch (error) {
 						rejected = error;
@@ -683,12 +663,8 @@ export default function subagentExtension(
 					index: target.index,
 					role: target.role,
 					task: target.task,
-					...(target.model === undefined ? {} : { model: target.model }),
-					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
 					...(target.worktreePayload === undefined ? {} : { worktreePayload: target.worktreePayload }),
 					...(target.usage === undefined ? {} : { usage: target.usage }),
-					...(target.startedAt === undefined ? {} : { startedAt: target.startedAt, finishedAt: Date.now() }),
-					aborted: target.aborted,
 					status: "rejected",
 					failure: capOutput(error instanceof Error ? error.message : String(error)),
 				});

@@ -27,17 +27,16 @@ type Tool = {
 	execute: (...args: any[]) => Promise<any>;
 };
 
-function singleEvidence(text: string, details: any, kind: "assistant" | "failure"): string {
-	const id = details.entries[0].id;
-	const heading = `- [0] ${JSON.stringify(id)} ${kind}:\n`;
-	const start = text.indexOf(heading);
-	assert.notEqual(start, -1);
-	const contentStart = start + heading.length;
+function singleEvidence(text: string, _details: any, kind: "assistant" | "failure"): string {
+	const match = /^- \[0\] .+? (assistant|failure):\n/m.exec(text);
+	assert.ok(match);
+	assert.equal(match[1], kind);
+	const contentStart = match.index + match[0].length;
 	const continued = text.indexOf("\nContinued evidence:\n", contentStart);
 	if (continued === -1) return text.slice(contentStart);
-	const remainder = text.indexOf(heading, continued);
+	const remainder = text.indexOf(match[0], continued);
 	assert.notEqual(remainder, -1);
-	return text.slice(contentStart, continued) + text.slice(remainder + heading.length);
+	return text.slice(contentStart, continued) + text.slice(remainder + match[0].length);
 }
 
 function singleOutput(result: any): string {
@@ -769,60 +768,38 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 	});
 });
 
-test("delegate_task renders bounded collapsed workflow entries after the widget clears", async () => {
+test("delegate_task leaves partial progress to the widget and renders minimal terminal summaries", async () => {
 	await environment(async () => {
-	const app = harness();
-	const theme = { fg: (_color: string, value: string) => value };
-	const renderUsage = (totalTokens: number) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
-	const startedAt = Date.now() - 37_000;
-	const partial = formatWorkflowUpdate("parallel", [
-		{ id: "opaque-running", index: 1, role: "reviewer", task: "Review the bounded renderer change", aborted: false, status: "running", assistantOutput: "partial", model: "provider/gpt-5.3-codex/with-slash", thinkingLevel: "high", usage: renderUsage(8_400), startedAt },
-		{ id: "opaque-pending", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", aborted: false, status: "pending" },
-	]);
-	const partialResult = { content: [{ type: "text" as const, text: partial.text }], details: partial.details };
-	const partialBefore = structuredClone(partialResult.content);
-	const partialLines = app.tool.renderResult!(partialResult, { expanded: false }, theme, {}).render(100);
-	assert.deepEqual(partialResult.content, partialBefore);
-	assert.match(partialLines.join("\n"), /implementer · pending[\s\S]*Normalize Windows registered-worktree paths/);
-	assert.match(partialLines.join("\n"), /reviewer · running[\s\S]*gpt-5\.3-codex\/with-slash · high · 8\.4k tok/);
+		const app = harness();
+		const theme = { fg: (_color: string, value: string) => value };
+		const partial = formatWorkflowUpdate("parallel", [
+			{ id: "opaque-running", index: 1, role: "reviewer", task: "Review renderer", status: "running", assistantOutput: "partial" },
+			{ id: "opaque-pending", index: 0, role: "implementer", task: "Implement fix", status: "pending" },
+		]);
+		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, {}, theme, {}).render(100), []);
 
-	const terminal = formatWorkflowResult("parallel", [
-		{ id: "opaque-first", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", aborted: false, status: "succeeded", assistantOutput: "Implemented and committed breaking Role schema change.\ncontinued evidence must not render", model: "provider/gpt-5.3-codex", thinkingLevel: "high", usage: renderUsage(18_700), startedAt, finishedAt: startedAt + 68_000, worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
-		{ id: "opaque-second", index: 1, role: "reviewer", task: "Review renderer", aborted: false, status: "failed", failure: "Validation failed with a concise reason.\nopaque evidence", model: "provider/model/with-slash", thinkingLevel: "low", usage: renderUsage(200), startedAt, finishedAt: startedAt + 1_000 },
-		{ id: "opaque-rejected", index: 2, role: "worker", task: "Retry setup", aborted: false, status: "rejected", failure: "Upstream request aborted unexpectedly." },
-		{ id: "opaque-aborted", index: 3, role: "worker", task: "Stop safely", aborted: true, status: "rejected", failure: "Stopped by lifecycle." },
-		{ id: "opaque-skipped", index: 4, role: "worker", task: "Skipped follow-up", aborted: false, status: "skipped" },
-	]);
-	const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
-	const before = structuredClone(result.content);
-	const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
-	const expanded = app.tool.renderResult!(result, { expanded: true }, theme, {}).render(100);
-	assert.deepEqual(result.content, before);
-	assert.deepEqual(expanded, collapsed);
-	const rendered = collapsed.join("\n");
-	assert.ok(rendered.indexOf("implementer") < rendered.indexOf("reviewer"));
-	assert.match(rendered, /✓ implementer · complete[\s\S]*Implemented and committed breaking Role schema change\.[\s\S]*gpt-5\.3-codex · high · 18\.7k tok · 1m 8s[\s\S]*Recovery: \/repo\/.worktrees\/retained/);
-	assert.match(rendered, /✗ reviewer · failed[\s\S]*Validation failed with a concise reason\.[\s\S]*model\/with-slash/);
-	assert.match(rendered, /✗ worker · rejected[\s\S]*Upstream request aborted unexpectedly\.[\s\S]*■ worker · stopped[\s\S]*Stopped by lifecycle\.[\s\S]*○ worker · skipped[\s\S]*Skipped follow-up/);
-	assert.doesNotMatch(rendered, /opaque-|Workflow succeeded|Mode:|Entries:|Evidence:|continued evidence/);
-	const narrow = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(24);
-	assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-	assert.ok(narrow.some((line) => line.includes("Recovery:")));
+		const single = formatWorkflowResult("single", [{ id: "opaque-single", index: 0, role: "worker", task: "task", status: "succeeded", assistantOutput: "Implemented the fix.\nignored" }]);
+		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: single.text }], details: single.details }, {}, theme, {}).render(100), ["Implemented the fix."]);
 
-	const background = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { background: true } }, {}, theme, {}).render(100);
-	assert.deepEqual(background, ["Background workflow accepted."]);
-	const fallback = app.tool.renderResult!({ content: [{ type: "text", text: "Pre-execution validation failed." }], details: { entries: [{ role: "worker", task: 1 }] } }, {}, theme, {}).render(100);
-	assert.deepEqual(fallback, ["Pre-execution validation failed."]);
-	for (const [name, entry] of [
-		["unknown status", { ...terminal.details.entries[0]!, status: "done" }],
-		["numeric model", { ...terminal.details.entries[0]!, model: 1 }],
-		["non-finite tokens", { ...terminal.details.entries[0]!, tokens: Infinity }],
-		["negative duration", { ...terminal.details.entries[0]!, durationMs: -1 }],
-		["malformed worktree", { ...terminal.details.entries[0]!, worktree: { path: 1, pruned: false } }],
-	] as const) {
-		const raw = `Malformed ${name}.`;
-		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details: { entries: [entry] } }, {}, theme, {}).render(100), [raw], name);
-	}
+		const terminal = formatWorkflowResult("parallel", [
+			{ id: "opaque-first", index: 0, role: "implementer", task: "task", status: "succeeded", assistantOutput: "Implemented the fix.\nignored", worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
+			{ id: "opaque-second", index: 1, role: "reviewer", task: "task", status: "failed", failure: "Validation failed." },
+			{ id: "opaque-skipped", index: 2, role: "worker", task: "task", status: "skipped" },
+		]);
+		const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
+		const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
+		const expanded = app.tool.renderResult!(result, { expanded: true }, theme, {}).render(100);
+		assert.deepEqual(expanded, collapsed);
+		assert.deepEqual(collapsed, ["implementer: Implemented the fix.", "Recovery: /repo/.worktrees/retained", "reviewer: Validation failed."]);
+		assert.doesNotMatch(collapsed.join("\n"), /status|✓|✗|task|model|thinking|tok|\d+m|opaque-|branch|ignored/);
+		const narrow = app.tool.renderResult!(result, {}, theme, {}).render(20);
+		assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
+		assert.ok(narrow.some((line) => line.includes("Recovery:")));
+
+		const background = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { background: true } }, {}, theme, {}).render(100);
+		assert.deepEqual(background, ["Background workflow accepted."]);
+		const fallback = app.tool.renderResult!({ content: [{ type: "text", text: "Pre-execution validation failed." }], details: { entries: [{ role: "worker", summary: 1 }] } }, {}, theme, {}).render(100);
+		assert.deepEqual(fallback, ["Pre-execution validation failed."]);
 	});
 });
 
@@ -903,8 +880,6 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const result = await app.tool.execute("call-1", { role: "scout", task }, undefined, (update: any) => updates.push(update), app.ctx);
 		const original = "a".repeat(60 * 1024);
 		assertTruncated(singleOutput(result), capOutput(original));
-		assert.equal(Array.from(result.details.entries[0].task).length, 160);
-		assert.equal(result.details.entries[0].task.includes("�"), false);
 		assert.equal(result.details.entries[0].summary.length, 160);
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
 		assert.ok(updates.length >= 2);
@@ -1101,9 +1076,9 @@ const timer = setInterval(() => {
 		await writeFile(join(release, "alpha"), "");
 		const result = await running;
 
-		assert.deepEqual(result.details.entries.map(({ id, status, model }: any) => ({ id, status, model })), [
-			{ id: "workflow-1:parallel:0", status: "succeeded", model: "provider/fast" },
-			{ id: "workflow-1:parallel:1", status: "succeeded", model: "provider/deep" },
+		assert.deepEqual(result.details.entries.map(({ role, status }: any) => ({ role, status })), [
+			{ role: "scout", status: "succeeded" },
+			{ role: "reviewer", status: "succeeded" },
 		]);
 		assert.ok(result.content[0].text.indexOf("alpha-done") < result.content[0].text.indexOf("beta-done"));
 		assert.deepEqual(result.usage, {
@@ -1191,9 +1166,9 @@ const timer = setInterval(() => {
 		assert.equal(message.customType, "subagent-background-result");
 		assert.equal(message.details.taskId, acknowledgement.details.taskId);
 		assert.equal(message.details.outcome, "failed");
-		assert.deepEqual(message.details.entries.map(({ id, role, status }: any) => ({ id, role, status })), [
-			{ id: "background-parallel:parallel:0", role: "scout", status: "succeeded" },
-			{ id: "background-parallel:parallel:1", role: "reviewer", status: "failed" },
+		assert.deepEqual(message.details.entries.map(({ role, status }: any) => ({ role, status })), [
+			{ role: "scout", status: "succeeded" },
+			{ role: "reviewer", status: "failed" },
 		]);
 		assert.deepEqual(message.details.usage, {
 			input: 3, output: 3, cacheRead: 3, cacheWrite: 3, totalTokens: 12,
@@ -1249,12 +1224,7 @@ if (task === "first") {
 			"second sees [FIRST {previous}]",
 			"third sees []",
 		]);
-		assert.deepEqual(error.details.entries.map(({ id, status }: any) => ({ id, status })), [
-			{ id: "chain-call:chain:0", status: "succeeded" },
-			{ id: "chain-call:chain:1", status: "succeeded" },
-			{ id: "chain-call:chain:2", status: "failed" },
-			{ id: "chain-call:chain:3", status: "skipped" },
-		]);
+		assert.deepEqual(error.details.entries.map(({ status }: any) => status), ["succeeded", "succeeded", "failed", "skipped"]);
 		const [firstName, secondName, thirdName] = [0, 1, 2].map((index) => childName(`chain-call:chain:${index}`));
 		const root = await realpath(repo);
 		const [firstPath, secondPath, thirdPath] = [firstName, secondName, thirdName]
@@ -1462,10 +1432,7 @@ const timer = setInterval(() => {
 
 		const entries = app.sentMessages[0]!.message.details.entries;
 		assert.equal(app.sentMessages[0]!.message.details.taskId, acknowledgement.details.taskId);
-		assert.deepEqual(entries.map(({ id, role }: any) => ({ id, role })), [
-			{ id: "identity:parallel:0", role: "scout" },
-			{ id: "identity:parallel:1", role: "reviewer" },
-		]);
+		assert.deepEqual(entries.map(({ role }: any) => role), ["scout", "reviewer"]);
 		assert.deepEqual(entries.map(({ worktree }: any) => worktree), names.map((name, index) => ({
 			path: paths[index],
 			branch: `pi-subagent/${name}`,
@@ -1544,14 +1511,13 @@ setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { 
 		);
 		assert.ok(error instanceof WorkflowAbortedError);
 		assert.equal(error.cause, reason);
-		assert.deepEqual(error.details.entries.map(({ status, aborted, worktree }: any) => ({
+		assert.deepEqual(error.details.entries.map(({ status, worktree }: any) => ({
 			status,
-			aborted,
 			dirty: worktree.dirty,
 			pruned: worktree.pruned,
 		})), [
-			{ status: "rejected", aborted: true, dirty: true, pruned: false },
-			{ status: "rejected", aborted: true, dirty: true, pruned: false },
+			{ status: "rejected", dirty: true, pruned: false },
+			{ status: "rejected", dirty: true, pruned: false },
 		]);
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
 		for (const path of paths) {
@@ -2292,10 +2258,7 @@ setInterval(() => {}, 1_000);
 		assert.equal(message.details.taskId, started.details.taskId);
 		assert.equal(message.details.outcome, "aborted");
 		assert.equal(message.details.recovery, true);
-		assert.deepEqual(message.details.entries.map(({ id, status }: any) => ({ id, status })), tasks.map((_, index) => ({
-			id: `shutdown:parallel:${index}`,
-			status: "rejected",
-		})));
+		assert.deepEqual(message.details.entries.map(({ status }: any) => status), tasks.map(() => "rejected"));
 		assert.equal(options.triggerTurn, false);
 		assert.ok(Buffer.byteLength(message.content, "utf8") <= 50 * 1024);
 		assert.ok(message.content.indexOf("Recovery locations:") < message.content.indexOf("Evidence:"));
