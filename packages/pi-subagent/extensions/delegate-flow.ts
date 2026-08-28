@@ -9,6 +9,7 @@ import {
 	inspectWorktreeDirty,
 	prepareExactReviewEvidence,
 	WorktreeSetupError,
+	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentExecutor,
 	type EphemeralSubagentResult,
 	type ResolvedRoleLaunch,
@@ -121,6 +122,7 @@ export interface DelegateFlowRuntime {
 		ctx: ExtensionContext,
 	) => void;
 	updateWidgetTokens: (id: string, tokens: number) => void;
+	updateWidgetActivity: (id: string, event: EphemeralSubagentActivityEvent) => void;
 	finishWidget: (id: string, status: WidgetStatus) => void;
 }
 
@@ -322,6 +324,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const result = await runDelegation(runtime.executor, {
 				signal,
 				onTokens: (tokens) => runtime.updateWidgetTokens(widgetId, tokens),
+				onActivity: (event) => runtime.updateWidgetActivity(widgetId, event),
 				prepare: async () => {
 					assertCurrent(flow);
 					const launch = runtime.resolveLaunch(role, ctx);

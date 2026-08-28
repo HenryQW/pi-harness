@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -21,6 +22,7 @@ import {
 	loadRoles,
 	resolveTaskRoute,
 	worktreeContextNote,
+	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentResult,
 	type EphemeralSubagentTimeout,
 	type Role,
@@ -71,6 +73,12 @@ export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined)
 	};
 }
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
+type WidgetActiveTool = {
+	toolName: string;
+	path?: string;
+	startedAt: number;
+	order: number;
+};
 type WidgetItem = {
 	role: string;
 	model: string;
@@ -80,6 +88,11 @@ type WidgetItem = {
 	startedAt: number;
 	status: WidgetStatus;
 	finishedAt?: number;
+	completedAssistantTurns: number;
+	startedToolIds: Set<string>;
+	activeTools: Map<string, WidgetActiveTool>;
+	activeToolId?: string;
+	activityOrder: number;
 };
 
 function taskSummary(task: string): string {
@@ -109,6 +122,34 @@ function statusLabel(status: WidgetStatus): string {
 		case "failure": return "failed";
 		case "aborted": return "stopped";
 	}
+}
+
+function activityLabel(item: WidgetItem, now: number): string {
+	if (item.status === "success") return "Done";
+	if (item.status === "failure") return "Failed";
+	if (item.status === "aborted") return "Stopped";
+	const activeTool = item.activeToolId === undefined ? undefined : item.activeTools.get(item.activeToolId);
+	if (!activeTool) return "thinking…";
+	return [
+		activeTool.toolName,
+		formatDuration(now - activeTool.startedAt),
+		...(activeTool.path === undefined ? [] : [activeTool.path]),
+	].join(" · ");
+}
+
+function activityMetrics(item: WidgetItem, now: number): string {
+	return [
+		...(item.completedAssistantTurns === 0
+			? []
+			: [`${item.completedAssistantTurns} turn${item.completedAssistantTurns === 1 ? "" : "s"}`]),
+		...(item.startedToolIds.size === 0
+			? []
+			: [`${item.startedToolIds.size} tool${item.startedToolIds.size === 1 ? "" : "s"}`]),
+		item.model,
+		item.thinkingLevel,
+		`${formatTokens(item.tokens)} tok`,
+		formatDuration((item.finishedAt ?? now) - item.startedAt),
+	].join(" · ");
 }
 
 function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
@@ -162,10 +203,10 @@ function renderWidgetRows(
 	const contentWidth = Math.max(0, width - indent.length);
 	const lines = visible.flatMap((item) => [
 		truncateToWidth(
-			`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("muted", `${item.model} · ${item.thinkingLevel} · ${formatTokens(item.tokens)} tok · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`)}`,
+			`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("text", item.task)}`,
 			width,
 		),
-		`${indent}${truncateToWidth(theme.fg("text", item.task), contentWidth)}`,
+		`${indent}${truncateToWidth(`${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`, contentWidth)}`,
 	]);
 	if (items.length > visible.length) lines.push(truncateToWidth(theme.fg("muted", `… ${items.length - visible.length} more`), width));
 	return lines;
@@ -313,6 +354,10 @@ export default function subagentExtension(
 			tokens: 0,
 			startedAt: Date.now(),
 			status: "working",
+			completedAssistantTurns: 0,
+			startedToolIds: new Set(),
+			activeTools: new Map(),
+			activityOrder: 0,
 		});
 		startWidgetTimer();
 		requestWidgetRender();
@@ -325,11 +370,48 @@ export default function subagentExtension(
 		requestWidgetRender();
 	};
 
+	const updateWidgetActivity = (id: string, event: EphemeralSubagentActivityEvent) => {
+		const item = widgetItems.get(id);
+		if (!item || item.status !== "working") return;
+		switch (event.type) {
+			case "tool_execution_start": {
+				if (item.activeTools.has(event.toolCallId)) break;
+				const path = event.path === undefined ? undefined : basename(event.path);
+				item.startedToolIds.add(event.toolCallId);
+				item.activeTools.set(event.toolCallId, {
+					toolName: event.toolName,
+					...(path ? { path } : {}),
+					startedAt: Date.now(),
+					order: ++item.activityOrder,
+				});
+				item.activeToolId = event.toolCallId;
+				break;
+			}
+			case "tool_execution_end": {
+				item.activeTools.delete(event.toolCallId);
+				if (item.activeToolId === event.toolCallId) {
+					let latest: [string, WidgetActiveTool] | undefined;
+					for (const candidate of item.activeTools) {
+						if (!latest || candidate[1].order > latest[1].order) latest = candidate;
+					}
+					item.activeToolId = latest?.[0];
+				}
+				break;
+			}
+			case "message_end":
+				item.completedAssistantTurns += 1;
+				break;
+		}
+		requestWidgetRender();
+	};
+
 	const finishWidgetItem = (id: string, status: Exclude<WidgetStatus, "working">) => {
 		const item = widgetItems.get(id);
 		if (!item) return;
 		item.status = status;
 		item.finishedAt = Date.now();
+		item.activeTools.clear();
+		item.activeToolId = undefined;
 		if (![...widgetItems.values()].some(({ status }) => status === "working")) stopWidgetTimer();
 		requestWidgetRender();
 	};
@@ -454,6 +536,7 @@ export default function subagentExtension(
 		},
 		startWidget: startWidgetItem,
 		updateWidgetTokens,
+		updateWidgetActivity,
 		finishWidget: finishWidgetItem,
 	});
 
@@ -593,6 +676,7 @@ export default function subagentExtension(
 								emitUpdate(emitToolUpdates);
 							},
 							onTokens: (tokens) => updateWidgetTokens(entry.id, tokens),
+							onActivity: (event) => updateWidgetActivity(entry.id, event),
 							prepare: async () => {
 								// Route and effective Role resources resolve only after this entry's
 								// shared executor permit, before isolated state is created.

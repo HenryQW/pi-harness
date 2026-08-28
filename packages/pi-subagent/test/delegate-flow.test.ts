@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext, ExecOptions } from "@earendil-works/pi-coding-agent";
 import type {
+	EphemeralSubagentActivityEvent,
 	EphemeralSubagentExecutor,
 	EphemeralSubagentResult,
 	EphemeralSubagentRunInput,
@@ -110,6 +111,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 	const roles: Role[] = [];
 	const execLogs: ExecLog[] = [];
 	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string; task?: string }> = [];
+	const widgetActivity: Array<{ id: string; event: EphemeralSubagentActivityEvent }> = [];
 	let sessionGeneration = 0;
 	const executor: EphemeralSubagentExecutor = {
 		async run(input) {
@@ -148,6 +150,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		},
 		startWidget(id, role, _model, _thinkingLevel, task) { widgets.push({ action: "start", id, role, task }); },
 		updateWidgetTokens() {},
+		updateWidgetActivity(id, event) { widgetActivity.push({ id, event }); },
 		finishWidget(id, status) { widgets.push({ action: "finish", id, status }); },
 	});
 	return {
@@ -156,6 +159,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		roles,
 		execLogs,
 		widgets,
+		widgetActivity,
 		ctx,
 		async emitSession(_event: "session_start" | "session_shutdown") {
 			sessionGeneration += 1;
@@ -566,6 +570,55 @@ test("Flow widgets use the original unit task for implementer, reviewer, and rep
 		["reviewer", task],
 	]);
 	for (const { task: widgetTask } of starts) assert.doesNotMatch(widgetTask!, /^(?:Flow Unit|Review Flow Unit|Repair Flow Unit)/);
+});
+
+test("Flow wires activity to each child widget without changing prompts", async (t) => {
+	const repo = await repository(t);
+	const prompts: string[] = [];
+	const app = harness(repo, async (prepared, input) => {
+		prompts.push(prepared.task);
+		if (!input.onActivity) throw new Error("Flow child activity callback was not wired.");
+		if (prepared.task.startsWith("Flow Unit")) {
+			input.onActivity({ type: "tool_execution_start", toolCallId: "initial-read", toolName: "initial-tool", path: "src/private.ts" });
+			return failure("implementation crashed");
+		}
+		if (prepared.task.startsWith("Repair Flow Unit")) {
+			input.onActivity({ type: "tool_execution_start", toolCallId: "repair-write", toolName: "repair-tool" });
+			await commit(prepared.cwd, "repaired.txt", "fixed\n");
+			return success();
+		}
+		if (prepared.task.startsWith("Review Flow Unit")) {
+			input.onActivity({ type: "message_end" });
+			return success("PASS");
+		}
+		throw new Error(`Unexpected Flow child prompt: ${prepared.task}`);
+	});
+
+	const blocked = await flowTool(app).execute("activity-wire", { units: [unit("activity", "Keep child prompts unchanged")] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	const completed = await continueTool(app).execute("activity-wire-continue", { guidance: "Commit the fix" }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+
+	assert.deepEqual(app.widgetActivity, [
+		{
+			id: "activity-wire:flow:0:implement",
+			event: { type: "tool_execution_start", toolCallId: "initial-read", toolName: "initial-tool", path: "src/private.ts" },
+		},
+		{
+			id: "activity-wire-continue:flow:0:repair",
+			event: { type: "tool_execution_start", toolCallId: "repair-write", toolName: "repair-tool" },
+		},
+		{
+			id: "activity-wire-continue:flow:0:review",
+			event: { type: "message_end" },
+		},
+	]);
+	assert.deepEqual(prompts.map((prompt) => prompt.match(/^(?:Flow Unit|Repair Flow Unit|Review Flow Unit)/)?.[0]), [
+		"Flow Unit",
+		"Repair Flow Unit",
+		"Review Flow Unit",
+	]);
+	for (const prompt of prompts) assert.doesNotMatch(prompt, /initial-tool|repair-tool|src\/private\.ts/);
 });
 
 test("session reload invalidates blocked Flow state without persistence", async (t) => {

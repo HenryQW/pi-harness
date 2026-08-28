@@ -746,14 +746,14 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		const wide = app.widget!.render(100);
 		assert.equal(wide.length, 2);
 		assert.ok(wide.every((line) => visibleWidth(line) <= 100));
-		assert.match(wide[0]!, /scout · working · text-model · low · 1\.1k tok ·/);
-		assert.match(wide[1]!, /^  Normalize Windows registered-worktree paths$/);
+		assert.match(wide[0]!, /scout · working · Normalize Windows registered-worktree paths/);
+		assert.match(wide[1]!, /^  thinking… · text-model · low · 1\.1k tok ·/);
 		assert.doesNotMatch(wide.join("\n"), /test\//);
 		const narrow = app.widget!.render(24);
 		assert.equal(narrow.length, 2);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
 		assert.match(narrow[0]!, /scout · working/);
-		assert.match(narrow[1]!, /^  Normalize Windows/);
+		assert.match(narrow[1]!, /^  thinking…/);
 		const tiny = app.widget!.render(1);
 		assert.equal(tiny.length, 2);
 		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
@@ -762,6 +762,7 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		const terminal = app.widget!.render(100);
 		assert.equal(terminal.length, 2);
 		assert.match(terminal[0]!, /scout · complete/);
+		assert.match(terminal[1]!, /Done · 1 turn/);
 
 		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
 		const running = app.tool.execute("call-2", { role: "worker", task: "keep working" }, undefined, undefined, app.ctx);
@@ -774,6 +775,94 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		assert.match(afterInput, /worker · working/);
 		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+	});
+});
+
+test("widget renders deterministic live activity across overlapping tools", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const stages = join(agentDir, "widget-activity-stages");
+		await mkdir(stages);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const stages = ${JSON.stringify(stages)};
+const event = (value) => console.log(JSON.stringify(value));
+const waitFor = (stage, next) => {
+	const timer = setInterval(() => {
+		if (!existsSync(join(stages, stage))) return;
+		clearInterval(timer);
+		next();
+	}, 5);
+};
+writeFileSync(join(stages, "started"), "");
+waitFor("read", () => {
+	event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/target.ts" } });
+	waitFor("bash", () => {
+		event({ type: "tool_execution_start", toolCallId: "bash-2", toolName: "bash", args: {} });
+		waitFor("bash-end", () => {
+			event({ type: "tool_execution_end", toolCallId: "bash-2", toolName: "bash" });
+			waitFor("read-end", () => {
+				event({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" });
+				waitFor("done", () => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));
+			});
+		});
+	});
+});
+`);
+		process.argv[1] = runner;
+		const app = harness({ ui: true });
+		const stagesToRelease = ["read", "bash", "bash-end", "read-end", "done"];
+		const release = async (stage: string) => { await writeFile(join(stages, stage), ""); };
+		const renderRows = () => {
+			for (const width of [100, 24, 1]) {
+				const lines = app.widget!.render(width);
+				assert.equal(lines.length, 2);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			}
+			return app.widget!.render(100).join("\n");
+		};
+		const running = app.tool.execute("activity", { role: "worker", task: "trace deterministic widget activity" }, undefined, undefined, app.ctx);
+		try {
+			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
+			let widget = renderRows();
+			assert.match(widget, /worker · working · trace deterministic widget activity/);
+			assert.match(widget, /thinking…/);
+			assert.doesNotMatch(widget, /\b(?:turn|tool)s?\b/);
+
+			await release("read");
+			await waitFor(() => app.widget?.render(100).join("\n").includes("read ·") ?? false);
+			widget = renderRows();
+			assert.match(widget, /read · \d+s · target\.ts · 1 tool/);
+
+			await release("bash");
+			await waitFor(() => app.widget?.render(100).join("\n").includes("bash ·") ?? false);
+			widget = renderRows();
+			assert.match(widget, /bash · \d+s · 2 tools/);
+			assert.doesNotMatch(widget, /target\.ts/);
+
+			await release("bash-end");
+			await waitFor(() => {
+				const text = app.widget?.render(100).join("\n") ?? "";
+				return text.includes("read ·") && !text.includes("bash ·");
+			});
+			widget = renderRows();
+			assert.match(widget, /read · \d+s · target\.ts · 2 tools/);
+
+			await release("read-end");
+			await waitFor(() => app.widget?.render(100).join("\n").includes("thinking… · 2 tools") ?? false);
+			widget = renderRows();
+			assert.match(widget, /thinking… · 2 tools/);
+
+			await release("done");
+			assert.equal(singleOutput(await running), "done");
+			widget = renderRows();
+			assert.match(widget, /Done · 1 turn · 2 tools/);
+		} finally {
+			await Promise.all(stagesToRelease.map(release));
+			await Promise.allSettled([running]);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
 	});
 });
 

@@ -51,7 +51,7 @@ Parallel mode starts entries concurrently, waits for every entry, and reports th
 
 Background workflows are session-scoped. Session shutdown or reload aborts them and may deliver only recoverable-work evidence or no follow-up message.
 
-The transient status widget owns live progress: spinner or terminal state, wrapped task summary, model, thinking level, tokens, and duration; at capacity, it evicts the oldest terminal row so new active work remains visible, and terminal rows otherwise clear on the next real user input. The final `delegate_task` block is deliberately minimal: bounded final summaries, role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
+The transient two-line status widget owns deterministic live progress: status and task summary above thinking or the active tool (with elapsed time and path basename), completed turns, started tools, model, thinking level, tokens, and total duration; terminal activity is Done, Failed, or Stopped. At capacity, it evicts the oldest terminal row so new active work remains visible, and terminal rows otherwise clear on the next real user input. The final `delegate_task` block is deliberately minimal: bounded final summaries, role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
 
 Each delegation resolves its own Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
 
