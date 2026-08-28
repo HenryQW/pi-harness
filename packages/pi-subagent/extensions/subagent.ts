@@ -296,6 +296,14 @@ export default function subagentExtension(
 	) => {
 		if (!ctx.hasUI) return;
 		ensureWidget(ctx);
+		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ROWS) {
+			for (const [oldestId, item] of widgetItems) {
+				if (item.status !== "working") {
+					widgetItems.delete(oldestId);
+					break;
+				}
+			}
+		}
 		widgetItems.set(id, {
 			role,
 			model,

@@ -769,6 +769,34 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 	});
 });
 
+test("widget evicts the oldest terminal row so new active work remains visible at capacity", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const runner = await blockedPiRunner(agentDir, ["active ninth"]);
+		const app = harness({ ui: true });
+		for (let index = 1; index <= 8; index++) {
+			const task = `completed ${index}`;
+			const completed = app.tool.execute(`call-${index}`, { role: "worker", task }, undefined, undefined, app.ctx);
+			await waitFor(() => runner.started().includes(task));
+			runner.release(task);
+			await completed;
+		}
+
+		const active = app.tool.execute("call-9", { role: "worker", task: "active ninth" }, undefined, undefined, app.ctx);
+		await waitFor(() => runner.started().includes("active ninth"));
+		try {
+			const widget = app.widget!.render(100).join("\n");
+			assert.match(widget, /worker · working/);
+			assert.match(widget, /active ninth/);
+			assert.doesNotMatch(widget, /completed 1/);
+			for (let index = 2; index <= 8; index++) assert.match(widget, new RegExp(`completed ${index}`));
+		} finally {
+			runner.release("active ninth");
+			await active;
+		}
+	});
+});
+
 test("delegate_task leaves partial progress to the widget and renders minimal terminal summaries", async () => {
 	await environment(async () => {
 		const app = harness();
