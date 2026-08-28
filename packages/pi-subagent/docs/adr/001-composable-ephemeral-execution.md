@@ -2,7 +2,7 @@
 
 ## Decision
 
-The public task executor is an execution mechanism: it receives a prepared Pi Launch, runs one bounded Delegated Task, and returns the result. `delegate_task` selects its flat `single`, `parallel`, or `chain` tool policy; those modes are not executor primitives.
+The public task executor is an execution mechanism: it receives a prepared Pi Launch, runs one bounded Delegated Task, and returns the result. Main plans and orchestrates; `delegate_task` selects its flat `single`, `parallel`, or `chain` tool policy, while those modes are not executor primitives.
 
 Generic callers compose workflows with JavaScript. Fan-out and fan-in use promises and collections; sequencing uses ordinary control flow; review loops use explicit caller-owned bounds. The package does not define a recursive workflow AST.
 
@@ -13,6 +13,8 @@ Resource Policy is split at launch preparation:
 - The executor receives the resulting Pi Launch and does not discover resources.
 
 Built-in `implementer` and `reviewer` Roles ship as Markdown in `examples/roles/` and use the same parser as user Roles. For generic delegation, a same-named user Role explicitly overrides a built-in. The package does not install, copy, or write user configuration.
+
+Main populates direct `model` and `thinking` only for explicit user overrides; otherwise it chooses only `modelClass` (`fast` normally, `balanced` upfront for obvious complexity). This is tool policy, not executor provenance tracking or runtime enforcement.
 
 ## Scope boundary
 

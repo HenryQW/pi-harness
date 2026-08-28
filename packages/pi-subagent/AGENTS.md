@@ -10,12 +10,13 @@ These rules apply to `packages/pi-subagent` in addition to the repository-level 
 ## Architecture boundaries
 
 - Keep `createRoleLaunch` as the launch-policy boundary: it resolves Role resources, route, project trust, environment, and Pi arguments. The Ephemeral Executor receives a prepared launch and must not discover Roles, resources, worktrees, or workflow policy.
-- Keep `delegate_task` generic and caller-composable. Keep `delegate_flow` a separate package-owned Git protocol using the effective `implementer` and `reviewer` Roles; do not make ordinary delegation inherit Flow's commit, validation, review, integration, or cleanup requirements.
-- Resolve effective Flow Roles once when a Flow starts and freeze them through continuation. Same-named user Roles override package defaults without changing Flow's Git, validation, review-packet, approval, integration, or cleanup protocol.
+- Keep `delegate_task` generic and caller-composable. Keep `delegate_flow` a separate package-owned Git protocol using the effective `implementer` Role and, only for units with `review`, the effective `reviewer` Role; do not make ordinary delegation inherit Flow's commit, validation, review, integration, or cleanup requirements.
+- Resolve and freeze the effective Flow Implementer when a Flow starts. Resolve and freeze its Reviewer only when a requested unit declares `review`; same-named user Roles override package defaults without changing Flow's Git, validation, conditional review-packet, approval, integration, or cleanup protocol.
 
 ## Launches and prompts
 
 - Keep stable child identity and Role instructions separate from per-run task text, cwd/worktree paths, review packets, and recovery guidance. Stable prompt material must precede variable material to preserve clear ownership and provider cache reuse.
+- Main populates direct `model` and `thinking` only for explicit user-requested overrides; otherwise it selects only `modelClass` (`fast` normally, `balanced` upfront for obvious complexity). This is policy only: add no provenance tracking or runtime enforcement.
 - Fail fast on malformed configuration and unavailable explicitly requested resources. Name the invalid or unavailable values and their provider requirement; do not silently launch an under-capable child. Documented optional resources, such as unavailable optional Skills, may retain their explicit warning behavior.
 - Launch only through the active Pi process invocation. Do not add standalone Pi discovery, install probing, shell execution, or a fallback child runtime.
 - Ambient child extensions and Skills stay disabled. An explicitly selected Role/caller extension is a trusted atomic capability bundle: activate every tool it registers and every Skill supplied through its Pi package metadata or dynamic `resources_discover`, alongside separately named Role Skills. Do not infer or externally narrow undocumented extension dependencies; an extension may rely on its tools, Skills, lifecycle, and prompt behavior, and loading it is not sandboxing. Scope children by selecting fewer trusted extensions; finer granularity requires separate extension entry points/configuration or an upstream split. Keep recursive delegation tools excluded from every child, and retain final-registry verification for explicit Role/caller tool names.
@@ -30,8 +31,8 @@ These rules apply to `packages/pi-subagent` in addition to the repository-level 
 
 ## Flow and Git
 
-- One Flow unit owns one retained Unit Worktree reused for implementation, rebase, validation, exact review, one repair, and cleanup. Never create nested or reviewer-only candidate worktrees.
-- Derive review identity from Git, not child prose. Review the private exact base-to-tip patch, accept only exact `PASS`, and integrate only the full approved tip OID with `git merge --ff-only`.
+- One Flow unit owns one retained Unit Worktree reused for implementation, rebase, validation, optional exact review, one repair, and cleanup. Never create nested or reviewer-only candidate worktrees.
+- Declared validation is authoritative for objective verification. Only a unit's explicit `review` criterion may trigger judgment review: derive its identity from Git, review the private exact base-to-tip patch, accept only exact `PASS`, and integrate only the full approved tip OID with `git merge --ff-only`. Units without `review` integrate their exact validated tip through the same guarded fast-forward path.
 - Preserve the existing no-op rule: only a post-rebase `base === tip` skips Reviewer and merge, after validation. An initial zero-commit implementation remains a block.
 - Cleanup is non-forced. On failed rebase, validation/review failure, uncertain integration, dirty state, or cleanup refusal, preserve actionable recovery evidence and never delete work that cannot be proven integrated.
 - Do not add automatic retries, post-merge validation, saved Flow state, aggregate review, dependency graphs, or compatibility paths without an explicit architecture decision.
