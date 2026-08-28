@@ -36,6 +36,7 @@ import {
 	formatWorkflowUpdate,
 	WorkflowAbortedError,
 	WorkflowFailureError,
+	displaySummary,
 	type WorkflowTransportEntry,
 	type WorkflowTransportDetails,
 } from "./result-transport.ts";
@@ -112,12 +113,16 @@ function statusLabel(status: WidgetStatus): string {
 function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
 	const isRecord = (candidate: unknown): candidate is Record<string, unknown> => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
 	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
-	return isRecord(value) && (value.mode === "single" || value.mode === "parallel" || value.mode === "chain")
-		&& Array.isArray(value.entries) && value.entries.every((entry) => isRecord(entry)
+	if (!isRecord(value) || !(value.mode === "single" || value.mode === "parallel" || value.mode === "chain") || !Array.isArray(value.entries)) return false;
+	const entries = value.entries;
+	return (value.mode !== "single" || entries.length === 1)
+		&& entries.every((entry) => isRecord(entry)
 			&& typeof entry.id === "string" && typeof entry.index === "number" && Number.isFinite(entry.index) && Number.isInteger(entry.index) && entry.index >= 0
 			&& typeof entry.role === "string" && ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
-			&& isOptionalString(entry.summary) && isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
-			&& (entry.worktree === undefined || isRecord(entry.worktree) && typeof entry.worktree.path === "string" && typeof entry.worktree.pruned === "boolean"));
+			&& (entry.summary === undefined || typeof entry.summary === "string" && entry.summary === displaySummary(entry.summary))
+			&& isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
+			&& (entry.worktree === undefined || isRecord(entry.worktree) && typeof entry.worktree.path === "string" && typeof entry.worktree.pruned === "boolean"))
+		&& entries.every((entry, index) => index === 0 || (entry as { index: number }).index > (entries[index - 1] as { index: number }).index);
 }
 
 function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme): string[] {

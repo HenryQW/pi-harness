@@ -814,6 +814,16 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 			const raw = `Malformed ${name}.`;
 			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details: { mode: "parallel", entries: [entry] } }, {}, theme, {}).render(100), [raw], name);
 		}
+		for (const [name, details] of [
+			["multiline summary", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, summary: "first\nsecond" }] }],
+			["oversized summary", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, summary: "x".repeat(161) }] }],
+			["duplicate indexes", { mode: "parallel", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "duplicate" }] }],
+			["out-of-order indexes", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, index: 1 }, { ...terminal.details.entries[0]!, id: "out-of-order", index: 0 }] }],
+			["multiple single-mode entries", { mode: "single", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "second", index: 1 }] }],
+		] as const) {
+			const raw = `Malformed ${name}.`;
+			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details }, {}, theme, {}).render(100), [raw], name);
+		}
 	});
 });
 

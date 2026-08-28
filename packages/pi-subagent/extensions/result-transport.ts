@@ -72,7 +72,7 @@ function label(kind: TransportKind, failed: boolean): string {
 	return `Workflow ${failed ? "failed" : "succeeded"}.`;
 }
 
-function displaySummary(text: string): string {
+export function displaySummary(text: string): string {
 	const line = text.split(/\r?\n/).find((candidate) => candidate.trim()) ?? "";
 	return Array.from(line.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).join(" ")).slice(0, 160).join("");
 }
