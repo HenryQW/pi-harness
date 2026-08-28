@@ -81,7 +81,7 @@ type WidgetItem = {
 };
 
 function taskSummary(task: string): string {
-	return task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ");
+	return Array.from(task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ")).slice(0, 160).join("");
 }
 
 function formatTokens(tokens: number): string {

@@ -789,6 +789,9 @@ test("delegate_task renders bounded collapsed workflow entries after the widget 
 	const terminal = formatWorkflowResult("parallel", [
 		{ id: "opaque-first", index: 0, role: "implementer", task: "Normalize Windows registered-worktree paths", status: "succeeded", assistantOutput: "Implemented and committed breaking Role schema change.\ncontinued evidence must not render", model: "provider/gpt-5.3-codex", thinkingLevel: "high", usage: renderUsage(18_700), startedAt, finishedAt: startedAt + 68_000, worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
 		{ id: "opaque-second", index: 1, role: "reviewer", task: "Review renderer", status: "failed", failure: "Validation failed with a concise reason.\nopaque evidence", model: "provider/model/with-slash", thinkingLevel: "low", usage: renderUsage(200), startedAt, finishedAt: startedAt + 1_000 },
+		{ id: "opaque-rejected", index: 2, role: "worker", task: "Retry setup", status: "rejected", failure: "Route unavailable." },
+		{ id: "opaque-aborted", index: 3, role: "worker", task: "Stop safely", status: "rejected", failure: "Subagent was aborted." },
+		{ id: "opaque-skipped", index: 4, role: "worker", task: "Skipped follow-up", status: "skipped" },
 	]);
 	const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
 	const before = structuredClone(result.content);
@@ -800,10 +803,16 @@ test("delegate_task renders bounded collapsed workflow entries after the widget 
 	assert.ok(rendered.indexOf("implementer") < rendered.indexOf("reviewer"));
 	assert.match(rendered, /✓ implementer · complete[\s\S]*Implemented and committed breaking Role schema change\.[\s\S]*gpt-5\.3-codex · high · 18\.7k tok · 1m 8s[\s\S]*Recovery: \/repo\/.worktrees\/retained/);
 	assert.match(rendered, /✗ reviewer · failed[\s\S]*Validation failed with a concise reason\.[\s\S]*model\/with-slash/);
+	assert.match(rendered, /✗ worker · rejected[\s\S]*Route unavailable\.[\s\S]*■ worker · stopped[\s\S]*Subagent was aborted\.[\s\S]*○ worker · skipped[\s\S]*Skipped follow-up/);
 	assert.doesNotMatch(rendered, /opaque-|Workflow succeeded|Mode:|Entries:|Evidence:|continued evidence/);
 	const narrow = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(24);
 	assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
 	assert.ok(narrow.some((line) => line.includes("Recovery:")));
+
+	const background = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { background: true } }, {}, theme, {}).render(100);
+	assert.deepEqual(background, ["Background workflow accepted."]);
+	const fallback = app.tool.renderResult!({ content: [{ type: "text", text: "Pre-execution validation failed." }], details: { entries: [{ role: "worker", task: 1 }] } }, {}, theme, {}).render(100);
+	assert.deepEqual(fallback, ["Pre-execution validation failed."]);
 	});
 });
 
@@ -880,9 +889,13 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		process.argv[1] = runner;
 		const app = harness();
 		const updates: any[] = [];
-		const result = await app.tool.execute("call-1", { role: "scout", task: "find auth" }, undefined, (update: any) => updates.push(update), app.ctx);
+		const task = "🙂".repeat(10_000);
+		const result = await app.tool.execute("call-1", { role: "scout", task }, undefined, (update: any) => updates.push(update), app.ctx);
 		const original = "a".repeat(60 * 1024);
 		assertTruncated(singleOutput(result), capOutput(original));
+		assert.equal(Array.from(result.details.entries[0].task).length, 160);
+		assert.equal(result.details.entries[0].task.includes("�"), false);
+		assert.equal(result.details.entries[0].summary.length, 160);
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
 		assert.ok(updates.length >= 2);
 		assert.ok(updates.every((update) => Buffer.byteLength(update.content[0].text, "utf8") <= 50 * 1024));
