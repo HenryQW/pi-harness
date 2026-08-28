@@ -7,10 +7,10 @@ import test from "node:test";
 import {
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
+	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentExecutor,
 	type PiLaunch,
 } from "../src/index.ts";
-import type { EphemeralSubagentActivityEvent } from "../src/ephemeral.ts";
 
 const timeout = { idleMs: 1_000, maxMs: 2_000 };
 const launch: PiLaunch = { env: {}, args: [] };
