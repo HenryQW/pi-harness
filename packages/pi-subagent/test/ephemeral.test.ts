@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { ChildProcess } from "node:child_process";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -185,6 +186,101 @@ test("Bun virtual entrypoints reuse the active executable instead of PATH", asyn
 	assert.match(result.stderr, /(?:bad|unknown|illegal) option/i);
 });
 
+test("post-exit stdio drain releases one queued permit held by an escaped descendant", async (t) => {
+	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const task = process.argv.at(-1);
+if (task === "Task: first") {
+	const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { detached: true, stdio: "inherit" });
+	escaped.unref();
+	writeFileSync(process.env.EPHEMERAL_ESCAPED_PID_FILE, String(escaped.pid));
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" } }));
+} else {
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "second" }], stopReason: "stop" } }));
+}
+`);
+	const pidFile = join(cwd, "escaped.pid");
+	t.after(async () => {
+		try { process.kill(Number(await readFile(pidFile, "utf8")), "SIGKILL"); } catch {}
+	});
+	const executorInstance = executor();
+	const preparedTasks: string[] = [];
+	const first = executorInstance.run({
+		prepare: async () => {
+			preparedTasks.push("first");
+			return prepared(cwd, "first", { env: { EPHEMERAL_ESCAPED_PID_FILE: pidFile }, args: [] });
+		},
+	});
+	const second = executorInstance.run({
+		prepare: async () => {
+			preparedTasks.push("second");
+			return prepared(cwd, "second");
+		},
+	});
+	let rejectDeadline!: (error: Error) => void;
+	const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+	const deadlineTimer = setTimeout(
+		() => rejectDeadline(new Error("post-exit stdio drain did not release the queued permit")),
+		1_500,
+	);
+	try {
+		const [firstResult, secondResult] = await Promise.race([Promise.all([first, second]), deadline]);
+		assert.equal(firstResult.output, "first");
+		assert.equal(secondResult.output, "second");
+		assert.deepEqual(preparedTasks, ["first", "second"]);
+	} finally {
+		clearTimeout(deadlineTimer);
+	}
+});
+
+test("post-exit hard stdio deadline releases a queued permit despite inherited output", async (t) => {
+	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const task = process.argv.at(-1);
+if (task === "Task: first") {
+	const escaped = spawn(process.execPath, ["-e", "setInterval(() => process.stdout.write('.'), 50)"], { detached: true, stdio: "inherit" });
+	escaped.unref();
+	writeFileSync(process.env.EPHEMERAL_ESCAPED_PID_FILE, String(escaped.pid));
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" } }));
+} else {
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "second" }], stopReason: "stop" } }));
+}
+`);
+	const pidFile = join(cwd, "escaped.pid");
+	t.after(async () => {
+		try { process.kill(Number(await readFile(pidFile, "utf8")), "SIGKILL"); } catch {}
+	});
+	const executorInstance = executor();
+	const launches: string[] = [];
+	let firstOutputAt = 0;
+	let secondStarted!: () => void;
+	const secondStart = new Promise<void>((resolve) => { secondStarted = resolve; });
+	const first = executorInstance.run({
+		onUpdate: (output) => { if (output === "first") firstOutputAt = Date.now(); },
+		prepare: async () => {
+			launches.push("first");
+			return prepared(cwd, "first", { env: { EPHEMERAL_ESCAPED_PID_FILE: pidFile }, args: [] });
+		},
+	});
+	const second = executorInstance.run({
+		prepare: async () => {
+			launches.push("second");
+			secondStarted();
+			return prepared(cwd, "second");
+		},
+	});
+	await Promise.race([
+		secondStart,
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("post-exit hard stdio deadline did not release the queued permit")), 1_250)),
+	]);
+	assert.ok(firstOutputAt > 0);
+	assert.ok(Date.now() - firstOutputAt < 1_250);
+	assert.deepEqual(launches, ["first", "second"]);
+	const [firstResult, secondResult] = await Promise.all([first, second]);
+	assert.equal(firstResult.output, "first");
+	assert.equal(secondResult.output, "second");
+});
+
 test("callback failure terminates the child and releases the next queued run", async (t) => {
 	const observedUsage = usage(1);
 	const cwd = await useRunner(t, `const task = process.argv.at(-1);
@@ -288,6 +384,94 @@ test("launched abort rejects with accumulated Usage", async (t) => {
 		assert.deepEqual(error.usage, observedUsage);
 		return true;
 	});
+});
+
+test("abort keeps its permit through a child error until close and stdio drain", async (t) => {
+	if (process.platform === "win32") {
+		t.skip("The executor uses taskkill instead of ChildProcess.kill on Windows.");
+		return;
+	}
+	const firstUsage = usage(1);
+	const finalUsage = usage(2);
+	const cwd = await useRunner(t, `import { existsSync } from "node:fs";
+const update = (usage) => JSON.stringify({ type: "message_update", usage });
+const end = (usage) => JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], usage, stopReason: "toolUse" } });
+if (process.argv.at(-1) === "Task: first") {
+	process.on("SIGTERM", () => process.stdout.write(update(${JSON.stringify(finalUsage)}) + "\\n"));
+	process.stdout.write(end(${JSON.stringify(firstUsage)}) + "\\n");
+	const timer = setInterval(() => {
+		if (existsSync(process.env.EPHEMERAL_RELEASE_FILE)) {
+			clearInterval(timer);
+			process.exit(0);
+		}
+	}, 10);
+} else {
+	${successfulRunner}
+}
+`);
+	const releaseFile = join(cwd, "release");
+	const controller = new AbortController();
+	const cause = new Error("stop launched child");
+	const originalProcessKill = process.kill;
+	const originalChildKill = ChildProcess.prototype.kill;
+	let injectError = true;
+	process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+		if (pid < 0 && injectError) throw new Error("induced tree-kill failure");
+		return originalProcessKill(pid, signal);
+	}) as typeof process.kill;
+	ChildProcess.prototype.kill = function(signal) {
+		if (injectError) {
+			injectError = false;
+			this.emit("error", new Error("induced abort error"));
+		}
+		return originalChildKill.call(this, signal);
+	};
+	t.after(() => {
+		process.kill = originalProcessKill;
+		ChildProcess.prototype.kill = originalChildKill;
+	});
+
+	const starts: string[] = [];
+	let observedFirst!: () => void;
+	const firstObserved = new Promise<void>((resolve) => { observedFirst = resolve; });
+	let drained!: () => void;
+	const usageDrained = new Promise<void>((resolve) => { drained = resolve; });
+	const executorInstance = executor();
+	const first = executorInstance.run({
+		signal: controller.signal,
+		onTokens: (tokens) => {
+			if (tokens === firstUsage.totalTokens) {
+				observedFirst();
+				controller.abort(cause);
+			}
+			if (tokens === firstUsage.totalTokens + finalUsage.totalTokens) drained();
+		},
+		prepare: async () => {
+			starts.push("first");
+			return prepared(cwd, "first", { env: { EPHEMERAL_RELEASE_FILE: releaseFile }, args: [] });
+		},
+	});
+	const firstError = first.then<unknown>(undefined, (error) => error);
+	const second = executorInstance.run({
+		prepare: async () => {
+			starts.push("second");
+			return prepared(cwd, "second");
+		},
+	});
+	await firstObserved;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.deepEqual(starts, ["first"]);
+	await Promise.race([
+		usageDrained,
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("aborted child did not drain usage")), 1_000)),
+	]);
+	await writeFile(releaseFile, "");
+	const error = await firstError;
+	assert.ok(error instanceof EphemeralSubagentError);
+	assert.equal(error.code, "aborted");
+	assert.equal(error.cause, cause);
+	assert.deepEqual(error.usage, usage(3));
+	assert.equal((await second).output, "done");
 });
 
 test("executor rejects timeout with accumulated Usage without double counting", async (t) => {

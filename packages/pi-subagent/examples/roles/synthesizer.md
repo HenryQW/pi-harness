@@ -2,6 +2,8 @@
 name: synthesizer
 description: Reconciles bounded worker reports into one evidence-based result
 tools: [read]
+extensions: []
+skills: []
 ---
 
 Synthesize the supplied worker reports into one decision-ready result.

@@ -9,6 +9,8 @@ import type { PiLaunch } from "./index.ts";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const POST_EXIT_STDIO_IDLE_MS = 250;
+const POST_EXIT_STDIO_HARD_MS = 1_000;
 const PI_JSON_EVENTS = {
 	agent_start: true,
 	agent_end: true,
@@ -419,10 +421,79 @@ async function runPi(
 		const accumulatedUsage = () => addUsage(completedUsage, currentUsage);
 		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let postExitIdleTimer: ReturnType<typeof setTimeout> | undefined;
+		let postExitHardTimer: ReturnType<typeof setTimeout> | undefined;
+		let callbackDrainTimer: ReturnType<typeof setTimeout> | undefined;
+		let stdoutEnded = false;
+		let stderrEnded = false;
+		let settled = false;
+		let cleaned = false;
 		let callbackFailure: EphemeralSubagentError | undefined;
 		const pendingCallbacks = new Set<Promise<void>>();
 		let signalCallbackFailure!: () => void;
 		const callbackFailed = new Promise<void>((resolve) => { signalCallbackFailure = resolve; });
+		let onStdoutData: ((data: string) => void) | undefined;
+		let onStderrData: ((data: string) => void) | undefined;
+		let onStdoutEnd: (() => void) | undefined;
+		let onStderrEnd: (() => void) | undefined;
+		let onStdoutClose: (() => void) | undefined;
+		let onStderrClose: (() => void) | undefined;
+		let onChildError: ((error: Error) => void) | undefined;
+		let onChildExit: (() => void) | undefined;
+		let onChildClose: ((code: number | null) => void) | undefined;
+
+		const clearTimer = (timer: ReturnType<typeof setTimeout> | undefined) => {
+			if (timer) clearTimeout(timer);
+		};
+		const clearLifecycle = () => {
+			if (cleaned) return;
+			cleaned = true;
+			clearTimer(deadlineTimer);
+			clearTimer(killTimer);
+			clearTimer(postExitIdleTimer);
+			clearTimer(postExitHardTimer);
+			clearTimer(callbackDrainTimer);
+			input.signal?.removeEventListener("abort", abort);
+			if (onStdoutData) child.stdout!.off("data", onStdoutData);
+			if (onStderrData) child.stderr!.off("data", onStderrData);
+			if (onStdoutEnd) child.stdout!.off("end", onStdoutEnd);
+			if (onStderrEnd) child.stderr!.off("end", onStderrEnd);
+			if (onStdoutClose) child.stdout!.off("close", onStdoutClose);
+			if (onStderrClose) child.stderr!.off("close", onStderrClose);
+			if (onChildError) child.off("error", onChildError);
+			if (onChildExit) child.off("exit", onChildExit);
+			if (onChildClose) child.off("close", onChildClose);
+		};
+		const complete = (code: number | null) => {
+			if (settled) return;
+			settled = true;
+			clearLifecycle();
+			if (callbackFailure) {
+				reject(new EphemeralSubagentError("callback", callbackFailure.message, callbackFailure.cause, accumulatedUsage()));
+			} else if (aborted) reject(abortError(input.signal, input.signal?.reason, accumulatedUsage()));
+			else if (timedOutAfterMs !== undefined) {
+				const message = timeoutReason === "maximum"
+					? `Subagent reached its maximum runtime after ${formatDuration(timedOutAfterMs)}.`
+					: `Subagent timed out after ${formatDuration(timeoutPolicy.idleMs)} without a recognized Pi event.`;
+				reject(new EphemeralSubagentError("timeout", message, new Error(message), accumulatedUsage()));
+			} else if (protocolError) {
+				reject(new EphemeralSubagentError("protocol", protocolError.message, protocolError, accumulatedUsage()));
+			} else if (spawnError) {
+				reject(new EphemeralSubagentError("spawn", spawnError.message, spawnError));
+			} else {
+				const exitCode = code ?? 1;
+				const outcome = exitCode !== 0 || stopReason === "error" || stopReason === "aborted" ? "failure" : "success";
+				resolve({
+					outcome,
+					exitCode,
+					output,
+					stderr: boundedText(stderr),
+					stopReason,
+					errorMessage,
+					usage: addUsage(completedUsage, currentUsage),
+				});
+			}
+		};
 
 		const failCallback = (name: "onUpdate" | "onTokens", cause: unknown) => {
 			if (callbackFailure) return;
@@ -551,7 +622,29 @@ async function runPi(
 			}
 		}
 
-		child.stdout!.on("data", (data: string) => {
+		// `close` waits for stdio EOF, which an escaped descendant can retain after Pi exits.
+		const clearPostExitTimers = () => {
+			clearTimer(postExitIdleTimer);
+			clearTimer(postExitHardTimer);
+			postExitIdleTimer = undefined;
+			postExitHardTimer = undefined;
+		};
+		const destroyOpenStdio = () => {
+			if (!stdoutEnded) child.stdout!.destroy();
+			if (!stderrEnded) child.stderr!.destroy();
+		};
+		const armPostExitIdleDeadline = () => {
+			if (!childExited || (stdoutEnded && stderrEnded)) return;
+			clearTimer(postExitIdleTimer);
+			postExitIdleTimer = setTimeout(destroyOpenStdio, POST_EXIT_STDIO_IDLE_MS);
+			postExitIdleTimer.unref();
+		};
+		const endStdio = () => {
+			if (stdoutEnded && stderrEnded) clearPostExitTimers();
+		};
+
+		onStdoutData = (data: string) => {
+			armPostExitIdleDeadline();
 			if (callbackFailure || protocolError) return;
 			let offset = 0;
 			while (offset < data.length) {
@@ -585,11 +678,27 @@ async function runPi(
 				ignoreLine = false;
 				offset = newline + 1;
 			}
-		});
-		child.stderr!.on("data", (data: string) => {
+		};
+		onStderrData = (data: string) => {
+			armPostExitIdleDeadline();
 			appendBounded(stderr, data);
-		});
-		child.on("error", (error) => { spawnError = error; });
+		};
+		onStdoutEnd = () => {
+			stdoutEnded = true;
+			endStdio();
+		};
+		onStderrEnd = () => {
+			stderrEnded = true;
+			endStdio();
+		};
+		onStdoutClose = onStdoutEnd;
+		onStderrClose = onStderrEnd;
+		child.stdout!.on("data", onStdoutData);
+		child.stderr!.on("data", onStderrData);
+		child.stdout!.on("end", onStdoutEnd);
+		child.stderr!.on("end", onStderrEnd);
+		child.stdout!.on("close", onStdoutClose);
+		child.stderr!.on("close", onStderrClose);
 
 		function stop(force = false) {
 			if (force) {
@@ -623,24 +732,26 @@ async function runPi(
 			timeoutReason = reason;
 			stop();
 		}
-		scheduleDeadline();
-		input.signal?.addEventListener("abort", abort, { once: true });
-		if (input.signal?.aborted) abort();
-
-		// `close` waits for stdio EOF, which descendants can hold after Pi exits.
-		// Kill the process group at Pi's exit boundary so `close` can settle.
-		child.once("exit", () => {
+		onChildError = (error) => {
+			spawnError = error;
+			if (input.signal?.aborted) aborted = true;
+		};
+		onChildExit = () => {
 			childExited = true;
-			if (deadlineTimer) clearTimeout(deadlineTimer);
-			input.signal?.removeEventListener("abort", abort);
+			clearTimer(deadlineTimer);
+			clearTimer(killTimer);
 			void killTree(true);
-		});
-		child.on("close", async (code) => {
+			armPostExitIdleDeadline();
+			postExitHardTimer = setTimeout(destroyOpenStdio, POST_EXIT_STDIO_HARD_MS);
+			postExitHardTimer.unref();
+		};
+		onChildClose = async (code) => {
+			if (settled) return;
 			if (!callbackFailure && !protocolError && lineBytes) processLine(lineParts.join(""));
 			await killTree(true);
 			// A caller callback that never settles must not hold `run()` or its permit
 			// past child exit; bound the drain by what remains of the maximum runtime.
-			const drainTimer = setTimeout(() => {
+			callbackDrainTimer = setTimeout(() => {
 				callbackFailure ??= new EphemeralSubagentError(
 					"callback",
 					"Subagent callback did not settle before the post-exit drain deadline.",
@@ -648,35 +759,13 @@ async function runPi(
 				signalCallbackFailure();
 			}, Math.min(5_000, Math.max(0, maxDeadline - Date.now())));
 			await Promise.race([Promise.all(pendingCallbacks), callbackFailed]);
-			clearTimeout(drainTimer);
-			if (deadlineTimer) clearTimeout(deadlineTimer);
-			if (killTimer) clearTimeout(killTimer);
-			input.signal?.removeEventListener("abort", abort);
-			if (callbackFailure) {
-				reject(new EphemeralSubagentError("callback", callbackFailure.message, callbackFailure.cause, accumulatedUsage()));
-			} else if (aborted) reject(abortError(input.signal, input.signal?.reason, accumulatedUsage()));
-			else if (timedOutAfterMs !== undefined) {
-				const message = timeoutReason === "maximum"
-					? `Subagent reached its maximum runtime after ${formatDuration(timedOutAfterMs)}.`
-					: `Subagent timed out after ${formatDuration(timeoutPolicy.idleMs)} without a recognized Pi event.`;
-				reject(new EphemeralSubagentError("timeout", message, new Error(message), accumulatedUsage()));
-			} else if (protocolError) {
-				reject(new EphemeralSubagentError("protocol", protocolError.message, protocolError, accumulatedUsage()));
-			} else if (spawnError) {
-				reject(new EphemeralSubagentError("spawn", spawnError.message, spawnError));
-			} else {
-				const exitCode = code ?? 1;
-				const outcome = exitCode !== 0 || stopReason === "error" || stopReason === "aborted" ? "failure" : "success";
-				resolve({
-					outcome,
-					exitCode,
-					output,
-					stderr: boundedText(stderr),
-					stopReason,
-					errorMessage,
-					usage: addUsage(completedUsage, currentUsage),
-				});
-			}
-		});
+			complete(code);
+		};
+		child.once("error", onChildError);
+		child.once("exit", onChildExit);
+		child.once("close", onChildClose);
+		scheduleDeadline();
+		input.signal?.addEventListener("abort", abort, { once: true });
+		if (input.signal?.aborted) abort();
 	});
 }

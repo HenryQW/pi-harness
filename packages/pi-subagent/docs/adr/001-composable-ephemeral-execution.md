@@ -1,10 +1,10 @@
-# Compose workflows outside the ephemeral executor
+# Compose generic workflows outside the ephemeral executor
 
 ## Decision
 
-The public task executor is an execution mechanism: it receives a prepared Pi Launch, runs one bounded Delegated Task, and returns the result. `single`, `parallel`, and `chain` are tool policy selected by a downstream caller, not executor workflow primitives.
+The public task executor is an execution mechanism: it receives a prepared Pi Launch, runs one bounded Delegated Task, and returns the result. `delegate_task` selects its flat `single`, `parallel`, or `chain` tool policy; those modes are not executor primitives.
 
-Downstream callers compose Workflows directly with JavaScript. Fan-out and fan-in use promises and collections; sequencing uses ordinary control flow; review loops use explicit iteration and caller-owned bounds. This package will not define or interpret a recursive workflow AST.
+Generic callers compose workflows with JavaScript. Fan-out and fan-in use promises and collections; sequencing uses ordinary control flow; review loops use explicit caller-owned bounds. The package does not define a recursive workflow AST.
 
 Resource Policy is split at launch preparation:
 
@@ -12,8 +12,12 @@ Resource Policy is split at launch preparation:
 - Caller may add explicit tools, extensions, and environment through `createRoleLaunch`.
 - The executor receives the resulting Pi Launch and does not discover resources.
 
-Built-in `implementer` and `reviewer` Roles ship with the package as Markdown in `examples/roles/` and resolve through the same single-file parser at load time; a same-named user file in `~/.pi/agent/config/pi-subagent/` explicitly overrides a built-in. Other repository samples are inert and user-owned only after manual copying to `~/.pi/agent/config/pi-subagent/`. This package does not install, copy, or write user configuration; copy instructions belong in downstream user documentation.
+Built-in `implementer` and `reviewer` Roles ship as Markdown in `examples/roles/` and use the same parser as user Roles. For generic delegation, a same-named user Role explicitly overrides a built-in. The package does not install, copy, or write user configuration.
+
+## Scope boundary
+
+`delegate_flow` is a fixed package-owned Git workflow, documented in [ADR 002](./002-package-owned-delegate-flow-orchestration.md). It reuses the prepared-child runner but is not a general executor workflow primitive: it has its own fixed unit, worktree, validation, review, integration, and cleanup contract. `delegate_task` and library callers remain generic.
 
 ## Consequences
 
-The executor remains a stable mechanism while callers own orchestration, state, retry decisions, concurrency, fan-in, and review bounds. Callers can express the required Workflow without coupling this package to a recursive schema, validation language, or migration surface.
+The executor remains a stable mechanism while generic callers own semantic protocols, shared workspace/state, retry decisions, and bounds. The package-owned Flow removes only its repeated deterministic Git mechanics; it does not turn the executor into a workflow language.

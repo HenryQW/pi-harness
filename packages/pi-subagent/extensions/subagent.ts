@@ -1,6 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
 	type ThinkingLevel,
@@ -28,16 +28,21 @@ import {
 	type WorktreePayload,
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import { registerDelegateFlow } from "./delegate-flow.ts";
+import { runDelegation } from "./delegation.ts";
 import {
 	formatBackgroundWorkflowResult,
 	formatWorkflowResult,
 	formatWorkflowUpdate,
 	WorkflowAbortedError,
 	WorkflowFailureError,
+	displaySummary,
 	type WorkflowTransportEntry,
+	type WorkflowTransportDetails,
 } from "./result-transport.ts";
 import {
 	identifyWorkflowEntries,
+	MAX_WORKFLOW_ENTRIES,
 	parseWorkflow,
 	runForegroundWorkflow,
 	WorkflowSchema,
@@ -49,7 +54,6 @@ import {
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
-const TERMINAL_DISPLAY_MS = 1_000;
 const MAX_WIDGET_ROWS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
@@ -68,17 +72,18 @@ export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined)
 }
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
 type WidgetItem = {
-	roleRoute: string;
+	role: string;
+	model: string;
+	thinkingLevel: string;
 	task: string;
 	tokens: number;
 	startedAt: number;
 	status: WidgetStatus;
 	finishedAt?: number;
-	removeAt?: number;
 };
 
 function taskSummary(task: string): string {
-	return task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ");
+	return Array.from(task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ")).slice(0, 160).join("");
 }
 
 function formatTokens(tokens: number): string {
@@ -97,12 +102,51 @@ function statusGlyph(status: WidgetStatus, spinnerIndex: number, theme: Theme): 
 	}
 }
 
-function leftColumn(value: string, width: number): string {
-	return truncateToWidth(value, width, "…", true);
+function statusLabel(status: WidgetStatus): string {
+	switch (status) {
+		case "working": return "working";
+		case "success": return "complete";
+		case "failure": return "failed";
+		case "aborted": return "stopped";
+	}
 }
 
-function rightColumn(value: string, width: number): string {
-	return " ".repeat(Math.max(0, width - visibleWidth(value))) + value;
+function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
+	const isRecord = (candidate: unknown): candidate is Record<string, unknown> => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
+	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
+	if (!isRecord(value) || !(value.mode === "single" || value.mode === "parallel" || value.mode === "chain") || !Array.isArray(value.entries)) return false;
+	const entries = value.entries;
+	return entries.length >= 1 && entries.length <= MAX_WORKFLOW_ENTRIES
+		&& (value.mode !== "single" || entries.length === 1)
+		&& entries.every((entry) => isRecord(entry)
+			&& typeof entry.id === "string" && typeof entry.index === "number" && Number.isFinite(entry.index) && Number.isInteger(entry.index) && entry.index >= 0
+			&& typeof entry.role === "string" && ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
+			&& (["running", "succeeded", "failed", "rejected"].includes(entry.status as string)
+				? typeof entry.summary === "string" && entry.summary === displaySummary(entry.summary)
+				: entry.summary === undefined)
+			&& isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
+			&& (entry.worktree === undefined || isRecord(entry.worktree)
+				&& typeof entry.worktree.path === "string" && typeof entry.worktree.branch === "string"
+				&& typeof entry.worktree.commits === "number" && Number.isFinite(entry.worktree.commits) && Number.isInteger(entry.worktree.commits) && entry.worktree.commits >= 0
+				&& typeof entry.worktree.dirty === "boolean" && typeof entry.worktree.pruned === "boolean"
+				&& (entry.worktree.inspection_failed === undefined || typeof entry.worktree.inspection_failed === "boolean")
+				&& (entry.worktree.note === undefined || typeof entry.worktree.note === "string")))
+		&& entries.every((entry, index) => index === 0 || (entry as { index: number }).index > (entries[index - 1] as { index: number }).index);
+}
+
+function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme): string[] {
+	if (details.entries.some(({ status }) => status === "pending" || status === "running")) return [];
+	return details.entries.flatMap((entry) => {
+		if (entry.status === "skipped") return [];
+		const summary = entry.summary || "(no output)";
+		const text = details.mode === "single" ? summary : `${entry.role}: ${summary}`;
+		const style = entry.status === "failed" || entry.status === "rejected" ? "error" : "text";
+		const recovery = entry.worktree && !entry.worktree.pruned ? `Recovery: ${entry.worktree.path}` : undefined;
+		return [
+			...wrapTextWithAnsi(theme.fg(style, text), Math.max(1, width)),
+			...(recovery ? wrapTextWithAnsi(theme.fg("warning", recovery), Math.max(1, width)) : []),
+		];
+	});
 }
 
 function renderWidgetRows(
@@ -114,30 +158,14 @@ function renderWidgetRows(
 ): string[] {
 	const visible = items.slice(0, MAX_WIDGET_ROWS);
 	if (!visible.length) return [];
-	const tokens = visible.map((item) => formatTokens(item.tokens));
-	const elapsed = visible.map((item) => formatDuration((item.finishedAt ?? now) - item.startedAt));
-	const tokenWidth = Math.max(...tokens.map(visibleWidth));
-	const elapsedWidth = Math.max(...elapsed.map(visibleWidth));
-	const fixedWidth = 1 + 8 + tokenWidth + elapsedWidth;
-	if (width < fixedWidth) {
-		return visible.map((item, index) => truncateToWidth(
-			`${statusGlyph(item.status, spinnerIndex, theme)} ${tokens[index]} ${elapsed[index]}`,
-			width,
-			"",
-		));
-	}
-	const contentWidth = width - fixedWidth;
-	const naturalRoleWidth = Math.min(32, Math.max(...visible.map((item) => visibleWidth(item.roleRoute))));
-	const roleWidth = Math.min(naturalRoleWidth, contentWidth);
-	const taskWidth = contentWidth - roleWidth;
-	const lines = visible.map((item, index) => [
-		statusGlyph(item.status, spinnerIndex, theme),
-		theme.fg("accent", leftColumn(item.roleRoute, roleWidth)),
-		theme.fg("text", leftColumn(item.task, taskWidth)),
-		theme.fg("muted", rightColumn(tokens[index]!, tokenWidth)),
-		theme.fg("dim", rightColumn(elapsed[index]!, elapsedWidth)),
-	].join("  "));
-	if (items.length > visible.length) lines.push(theme.fg("muted", `… ${items.length - visible.length} more`));
+	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
+	const contentWidth = Math.max(1, width - indent.length);
+	const lines = visible.flatMap((item) => [
+		...wrapTextWithAnsi(`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)}`, Math.max(1, width)),
+		...wrapTextWithAnsi(theme.fg("text", item.task), contentWidth).map((line) => `${indent}${line}`),
+		...wrapTextWithAnsi(theme.fg("muted", `${item.model} · ${item.thinkingLevel} · ${formatTokens(item.tokens)} tok · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`), contentWidth).map((line) => `${indent}${line}`),
+	]);
+	if (items.length > visible.length) lines.push(...wrapTextWithAnsi(theme.fg("muted", `… ${items.length - visible.length} more`), Math.max(1, width)));
 	return lines;
 }
 
@@ -224,6 +252,7 @@ export default function subagentExtension(
 	// Bumped by session_start and session_shutdown; background tasks may only
 	// deliver into the exact session that launched them.
 	let sessionEpoch = 0;
+	let invalidateDelegateFlow = () => {};
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
@@ -240,12 +269,7 @@ export default function subagentExtension(
 		if (widgetTimer) return;
 		widgetTimer = setInterval(() => {
 			spinnerIndex = (spinnerIndex + 1) % SPINNER_FRAMES.length;
-			const now = Date.now();
-			for (const [id, item] of widgetItems) {
-				if (item.removeAt !== undefined && item.removeAt <= now) widgetItems.delete(id);
-			}
 			requestWidgetRender();
-			if (!widgetItems.size) stopWidgetTimer();
 		}, WIDGET_INTERVAL_MS);
 		widgetTimer.unref();
 	};
@@ -272,8 +296,17 @@ export default function subagentExtension(
 	) => {
 		if (!ctx.hasUI) return;
 		ensureWidget(ctx);
+		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ROWS) {
+			for (const [oldestId, item] of widgetItems) {
+				if (item.status === "working") continue;
+				widgetItems.delete(oldestId);
+				if (widgetItems.size < MAX_WIDGET_ROWS) break;
+			}
+		}
 		widgetItems.set(id, {
-			roleRoute: `${role}[${model}:${thinkingLevel ?? "default"}]`,
+			role,
+			model,
+			thinkingLevel: thinkingLevel ?? "default",
 			task: taskSummary(task),
 			tokens: 0,
 			startedAt: Date.now(),
@@ -295,13 +328,13 @@ export default function subagentExtension(
 		if (!item) return;
 		item.status = status;
 		item.finishedAt = Date.now();
-		item.removeAt = item.finishedAt + TERMINAL_DISPLAY_MS;
-		startWidgetTimer();
+		if (![...widgetItems.values()].some(({ status }) => status === "working")) stopWidgetTimer();
 		requestWidgetRender();
 	};
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionEpoch += 1;
+		invalidateDelegateFlow();
 		latestCtx = ctx;
 		ensureWidget(ctx);
 		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
@@ -316,6 +349,7 @@ export default function subagentExtension(
 		// Invalidate ordinary outcomes, abort children, then let preserved isolated
 		// work report into the outgoing session before Pi tears it down.
 		sessionEpoch += 1;
+		invalidateDelegateFlow();
 		const tasks = [...backgroundTasks.values()];
 		for (const { controller } of tasks) controller.abort();
 		await Promise.allSettled(tasks.map(({ settled }) => settled));
@@ -323,6 +357,13 @@ export default function subagentExtension(
 	});
 	// btw-style context refresh: model_select carries the new model on the event,
 	// agent_settled delivers the freshest full context after each turn.
+	pi.on("input", (event) => {
+		if (event.source === "extension") return;
+		for (const [id, item] of widgetItems) {
+			if (item.status !== "working") widgetItems.delete(id);
+		}
+		requestWidgetRender();
+	});
 	pi.on("model_select", (event, ctx) => {
 		latestCtx = { ...ctx, model: event.model } as ExtensionContext;
 	});
@@ -397,6 +438,23 @@ export default function subagentExtension(
 		}
 	};
 
+	invalidateDelegateFlow = registerDelegateFlow(pi, {
+		executor,
+		maxRuntimeMs: timeoutPolicy.maxMs,
+		getSessionGeneration: () => sessionEpoch,
+		loadRoles,
+		resolveLaunch: (role, ctx) => {
+			const launchCtx = latestCtx ?? ctx;
+			return createRoleLaunch(pi, launchCtx, {
+				role,
+				route: resolveConfiguredTaskRoute(launchCtx, SUBAGENT_TASK),
+			});
+		},
+		startWidget: startWidgetItem,
+		updateWidgetTokens,
+		finishWidget: finishWidgetItem,
+	});
+
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
@@ -410,6 +468,20 @@ export default function subagentExtension(
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
 		parameters: WorkflowSchema,
+		renderResult(result, _options, theme, _context) {
+			const details = result.details;
+			if (isWorkflowTransportDetails(details)) {
+				return {
+					invalidate() {},
+					render: (width) => renderWorkflowResult(details, width, theme),
+				};
+			}
+			if (typeof details === "object" && details !== null && (details as { background?: unknown }).background === true) {
+				return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", "Background workflow accepted."), Math.max(1, width)) };
+			}
+			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
+			return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", text), Math.max(1, width)) };
+		},
 		prepareArguments(args) {
 			try {
 				const workflow = parseWorkflow(args);
@@ -512,7 +584,7 @@ export default function subagentExtension(
 							: { ...base, status: nextStatus, assistantOutput: nextText });
 					};
 					try {
-						child = await executor.run({
+						child = await runDelegation(executor, {
 							signal: workflowSignal,
 							onUpdate: (output) => {
 								setState("running", output);
@@ -586,7 +658,6 @@ export default function subagentExtension(
 					setState(status, text);
 					try {
 						finishWidgetItem(entry.id, aborted ? "aborted" : status === "succeeded" ? "success" : "failure");
-						emitUpdate(emitToolUpdates);
 					} catch (error) {
 						rejected = error;
 						status = "rejected";

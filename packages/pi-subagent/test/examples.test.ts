@@ -21,22 +21,16 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	);
 	assert.match(skill, /^name: pi-subagent-delegated-development$/m);
 	assert.match(skill, /^description: .+/m);
-	assert.match(skill, /git rev-parse --verify -q HEAD\^\{commit\}/);
-	assert.match(skill, /refuse review or merge unless/i);
-	assert.match(skill, /never review dirty or uncommitted work/i);
-	assert.match(skill, /git diff --no-textconv --no-ext-diff --ignore-submodules=none --binary "\$base" "\$tip"/);
-	assert.match(skill, /same diff and byte-compare it with the artifact/i);
-	assert.match(skill, /whole reviewed `\$base\.\.\$tip` range/i);
-	assert.match(skill, /cherry-picking every range commit in order/i);
-	assert.match(skill, /git rev-list --count "\$base\.\.\$tip"/);
-	assert.match(skill, /private temporary exact-patch artifact/i);
-	assert.match(skill, /byte-compare it with the artifact/i);
-	assert.match(skill, /review context `\{type:'child_branch', branch\}`/i);
-	assert.match(skill, /patch file reference \(`path`, `bytes`, `sha256`\)/i);
-	assert.match(skill, /Do not put any complete patch content in `delegate_task` text or argv/i);
-	assert.match(skill, /immediately before integration and validation/i);
-	assert.match(skill, /non-forced worktree removal followed by `git branch -d`/i);
-	assert.match(skill, /merge that exact commit \(not the branch name\)/i);
+	assert.match(skill, /call `delegate_flow`/i);
+	assert.match(skill, /independent units expected to commute/i);
+	assert.match(skill, /runtime owns.*worktrees.*Git identity.*rebasing.*declared validation.*exact read-only review.*fast-forward integration.*cleanup/is);
+	assert.match(skill, /integrates only the exact reviewed tip OID/i);
+	assert.match(skill, /never edit a child worktree.*reimplement Flow/is);
+	assert.match(skill, /delegate_flow_continue\(\{ guidance:/);
+	assert.match(skill, /one explicit continuation and no more/i);
+	assert.match(skill, /terminal failure.*retained path/is);
+	assert.match(skill, /Dependent work remains outside Flow/i);
+	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|candidate|advisory|reconsideration|public review/i);
 });
 
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {
@@ -52,19 +46,26 @@ test("missing config directory still returns validated built-in implementer and 
 	assert.equal(implementer!.name, "implementer");
 	assert.equal(implementer!.isolation, "worktree");
 	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
-	assert.match(implementer!.systemPrompt, /base commit, tip commit, changed files/i);
-	assert.match(implementer!.systemPrompt, /git status --porcelain=v1 --untracked-files=all/);
+	assert.match(implementer!.systemPrompt, /assigned cwd/i);
+	assert.match(implementer!.systemPrompt, /ordinary delegation.*focused validation.*needed to establish that the change is correct/i);
+	assert.match(implementer!.systemPrompt, /Flow packet declares an authoritative validation gate/i);
+	assert.match(implementer!.systemPrompt, /narrow development checks/i);
+	assert.match(implementer!.systemPrompt, /do not duplicate the declared gate/i);
 	assert.match(implementer!.systemPrompt, /Do not remove the retained worktree or task branch/i);
 	assert.match(implementer!.systemPrompt, /[Nn]ever push or open pull requests without explicit authorization/i);
 	assert.match(implementer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
 
 	assert.equal(reviewer!.name, "reviewer");
 	assert.deepEqual(reviewer!.tools, ["read", "grep", "find", "ls"]);
-	assert.match(reviewer!.systemPrompt, /Refuse review unless.*base commit, tip commit.*patch file reference \(path, byte count, SHA-256\).*review context: `\{type:'child_branch', branch\}` or `\{type:'integration_head'\}`/i);
-	assert.match(reviewer!.systemPrompt, /use only `read`, `grep`, `find`, or `ls`/i);
+	assert.match(reviewer!.systemPrompt, /ordinary delegation.*supplied plan.*explicitly named files.*Do not prepare Git/i);
+	assert.match(reviewer!.systemPrompt, /Flow exact review.*Review Packet `\{base, tip, patchPath\}`.*same assigned Unit Worktree context/i);
+	assert.match(reviewer!.systemPrompt, /exact patch as authoritative/i);
+	assert.match(reviewer!.systemPrompt, /use only.*read.*grep.*find.*ls/i);
 	assert.doesNotMatch(reviewer!.systemPrompt, /\bbash\b/i);
-	assert.match(reviewer!.systemPrompt, /[Nn]ever edit files, commit, push/i);
-	assert.match(reviewer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
+	assert.match(reviewer!.systemPrompt, /Never manage Main, Git, or tests; never edit or write files, commit, push/i);
+	assert.match(reviewer!.systemPrompt, /Emit exactly `PASS` when there are zero findings/i);
+	assert.match(reviewer!.systemPrompt, /Do not emit `PASS` alongside findings/i);
+	assert.doesNotMatch(reviewer!.systemPrompt, /bytes|SHA-256|child_branch/i);
 });
 
 test("a same-named user role overrides a built-in while other roles are added", async (t) => {
@@ -75,6 +76,8 @@ test("a same-named user role overrides a built-in while other roles are added", 
 name: implementer
 description: Custom implementation policy
 tools: [read]
+extensions: []
+skills: []
 ---
 Custom body.
 `);
@@ -93,12 +96,35 @@ Custom body.
 	});
 });
 
+test("Role capability lists are required arrays", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	const rolePath = join(rolesDir, "role.md");
+	await mkdir(rolesDir, { recursive: true });
+	for (const field of ["tools", "extensions", "skills"]) {
+		const fields = ["tools: []", "extensions: []", "skills: []"]
+			.filter((value) => !value.startsWith(`${field}:`));
+		await writeFile(rolePath, `---\nname: role\ndescription: d\n${fields.join("\n")}\n---\nBody.\n`);
+		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} is required\\.`));
+	}
+	for (const [field, value] of [["tools", "read, grep"], ["extensions", "/role.ts"], ["skills", "review"]]) {
+		const fields = ["tools: []", "extensions: []", "skills: []"]
+			.map((entry) => entry.startsWith(`${field}:`) ? `${field}: ${value}` : entry);
+		await writeFile(rolePath, `---\nname: role\ndescription: d\n${fields.join("\n")}\n---\nBody.\n`);
+		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} must be an array of strings\\.`));
+	}
+	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	const role = loadRoles(agentDir).find((candidate) => candidate.name === "role")!;
+	assert.deepEqual([role.tools, role.extensions, role.skills], [[], [], []]);
+});
+
 test("duplicate names among user role files remain an error", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
-	await writeFile(join(rolesDir, "a.md"), "---\nname: dup\ndescription: d\n---\nBody.\n");
-	await writeFile(join(rolesDir, "b.md"), "---\nname: dup\ndescription: d\n---\nBody.\n");
+	const role = "---\nname: dup\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n";
+	await writeFile(join(rolesDir, "a.md"), role);
+	await writeFile(join(rolesDir, "b.md"), role);
 
 	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
 });

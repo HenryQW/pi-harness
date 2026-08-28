@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { createChildWorktree, finalizeChildWorktree, type GitRunner } from "../src/worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type GitRunner } from "../src/worktree.ts";
 import { loadRoles } from "../src/index.ts";
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
@@ -72,14 +72,14 @@ test("finalizeChildWorktree prunes a worktree with zero commits and a clean tree
 	]);
 });
 
-test("finalizeChildWorktree preserves work appearing during its final recheck", async (t) => {
+test("finalizeChildWorktree performs its final root recheck without initialized submodules", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
 	const calls: string[][] = [];
 	let statusCalls = 0;
 	const run: GitRunner = async (args) => {
 		calls.push(args);
 		if (args[0] === "rev-list") return ok("0\n");
-		if (args[0] === "status") return ok(statusCalls++ === 0 ? "" : "?? late.txt\n");
+		if (args[0] === "status") return ok(statusCalls++ < 2 ? "" : "?? late.txt\n");
 		if (args[0] === "symbolic-ref") return ok(`refs/heads/${info.branch}\n`);
 		return ok();
 	};
@@ -87,6 +87,7 @@ test("finalizeChildWorktree preserves work appearing during its final recheck", 
 	const payload = await finalizeChildWorktree(info, run);
 	assert.equal(payload.dirty, true);
 	assert.equal(payload.pruned, false);
+	assert.equal(statusCalls, 3);
 	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
 });
 
@@ -311,7 +312,13 @@ test("createChildWorktree preserves ambiguous state after a failed worktree add"
 			"rev-parse --git-common-dir": ok(join(repo, ".git") + "\n"),
 			"worktree add": fail("error: smudge filter died"),
 		}, calls)),
-		/worktree add failed; preserved/,
+		(error) => {
+			assert.ok(error instanceof WorktreeSetupError);
+			assert.equal(error.worktree.repoRoot, repo);
+			assert.equal(error.worktree.baseCommit, "abc123");
+			assert.match(error.message, /path=.*branch=.*base=abc123/);
+			return true;
+		},
 	);
 	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
 	assert.equal(calls.some((args) => args[0] === "branch"), false);
@@ -400,7 +407,7 @@ test("createChildWorktree preserves a dirty existing worktree on ID collision", 
 	assert.ok(first);
 	await writeFile(join(first.path, "dirty.txt"), "keep me\n");
 
-	await assert.rejects(createChildWorktree(repo, "same-id"), /worktree add failed; preserved/);
+	await assert.rejects(createChildWorktree(repo, "same-id"), /worktree add failed after attempting/);
 	assert.equal(await readFile(join(first.path, "dirty.txt"), "utf8"), "keep me\n");
 	assert.equal(git(repo, "branch", "--list", first.branch).includes(first.branch), true);
 });
@@ -625,8 +632,8 @@ test("loadRoles accepts isolation worktree and rejects other values", async (t) 
 	t.after(async () => {
 		await Promise.all([acceptDir, rejectDir].map((dir) => rm(dir, { recursive: true, force: true })));
 	});
-	await writeFile(join(acceptDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: worktree\n---\nBody.\n");
-	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\n---\nBody.\n");
+	await writeFile(join(acceptDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 
 	const roles = loadRoles(acceptDir);
 	assert.equal(roles.length, 3);

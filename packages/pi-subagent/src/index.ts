@@ -32,22 +32,34 @@ export {
 export {
 	createChildWorktree,
 	finalizeChildWorktree,
+	inspectIndexFlags,
+	inspectWorktreeDirty,
+	WorktreeSetupError,
 	worktreeContextNote,
+	type WorktreeDirtyInspection,
 	type WorktreeInfo,
 	type WorktreePayload,
 } from "./worktree.ts";
+export {
+	prepareExactReviewEvidence,
+	REVIEW_MAX_PATCH_BYTES,
+	REVIEW_MAX_PATHS,
+	type PreparedReviewEvidence,
+	type PrepareExactReviewEvidenceInput,
+} from "./review-evidence.ts";
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-export const CHILD_EXCLUDED_TOOLS = "delegate_task,ask_question";
+export const CHILD_EXCLUDED_TOOL_NAMES = ["delegate_task", "delegate_flow", "delegate_flow_continue", "ask_question"] as const;
+export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");
 const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";
 
 export interface Role {
 	name: string;
 	description: string;
-	tools?: string[];
+	tools: string[];
 	isolation?: string;
 	extensions: string[];
 	skills: string[];
@@ -90,16 +102,12 @@ const cleanText = (value: unknown, field: string, source: string): string => {
 	return value.trim();
 };
 
-const stringList = (value: unknown, field: string, source: string, required = false): string[] => {
-	if (value === undefined) {
-		if (required) throw new Error(`${source}: ${field} is required.`);
-		return [];
-	}
-	const values = typeof value === "string" ? value.split(",") : value;
-	if (!Array.isArray(values) || values.some((item) => typeof item !== "string" || !item.trim() || item.includes("\0"))) {
+const stringList = (value: unknown, field: string, source: string): string[] => {
+	if (value === undefined) throw new Error(`${source}: ${field} is required.`);
+	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.includes("\0"))) {
 		throw new Error(`${source}: ${field} must be an array of strings.`);
 	}
-	return values.map((item) => item.trim());
+	return value.map((item) => item.trim());
 };
 
 function validateExtension(extension: string, source: string): string {
@@ -118,7 +126,8 @@ function extensionList(value: unknown, source: string): string[] {
 
 // Built-in Roles required by the bundled pi-subagent-delegated-development Skill;
 // resolved from the package-shipped Markdown relative to this module.
-const BUILTIN_ROLE_FILES = ["implementer.md", "reviewer.md"] as const;
+const BUILTIN_ROLE_NAMES = ["implementer", "reviewer"] as const;
+export type BuiltinRoleName = (typeof BUILTIN_ROLE_NAMES)[number];
 
 /** Single-file Role parser shared by built-in and user roles. */
 function parseRoleFile(file: string, raw: string): Role {
@@ -134,7 +143,7 @@ function parseRoleFile(file: string, raw: string): Role {
 	return {
 		name: cleanText(frontmatter.name, "name", file),
 		description: cleanText(frontmatter.description, "description", file),
-		tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
+		tools: stringList(frontmatter.tools, "tools", file),
 		isolation,
 		extensions: extensionList(frontmatter.extensions, file),
 		skills: stringList(frontmatter.skills, "skills", file),
@@ -151,9 +160,12 @@ function readRoleFile(file: string): Role {
 	}
 }
 
+export function loadBuiltinRole(name: BuiltinRoleName): Role {
+	return readRoleFile(fileURLToPath(new URL(`../examples/roles/${name}.md`, import.meta.url)));
+}
+
 function builtinRoles(): Role[] {
-	return BUILTIN_ROLE_FILES.map((name) =>
-		readRoleFile(fileURLToPath(new URL(`../examples/roles/${name}`, import.meta.url))));
+	return BUILTIN_ROLE_NAMES.map(loadBuiltinRole);
 }
 
 /**
@@ -232,27 +244,18 @@ export function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: R
 }
 
 export function createRoleLaunch(
-	pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">,
+	pi: Pick<ExtensionAPI, "getCommands">,
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
 	input: CreateRoleLaunchInput,
 ): ResolvedRoleLaunch {
 	const role = input.role;
 	const skills = resolveRoleSkills(pi, role);
-	let baseTools = role.tools;
-	if (baseTools === undefined && input.tools !== undefined) {
-		const builtins = new Set(pi.getAllTools()
-			.filter((tool) => tool.sourceInfo.source === "builtin")
-			.map((tool) => tool.name));
-		baseTools = pi.getActiveTools().filter((tool) => builtins.has(tool));
-	}
-	const tools = baseTools === undefined
-		? undefined
-		: [...new Set([...baseTools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+	const tools = [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
 	const extensions = [
 		...role.extensions,
 		...(input.extensions ?? []),
 		...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
-		...(tools === undefined ? [] : [ROLE_TOOLS_EXTENSION]),
+		ROLE_TOOLS_EXTENSION,
 	].map((extension) => validateExtension(extension, `Role ${role.name}`));
 	const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid launch environment name: ${key}`);
@@ -262,7 +265,7 @@ export function createRoleLaunch(
 	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
 	for (const extension of new Set(extensions)) args.push("--extension", extension);
 	for (const skill of skills.paths) args.push("--skill", skill);
-	if (tools !== undefined) args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));
+	args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));
 	args.push("--model", modelReference(input.route.model));
 	if (input.route.thinkingLevel) args.push("--thinking", input.route.thinkingLevel);
 	args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
@@ -277,7 +280,7 @@ export function createRoleLaunch(
 }
 
 export function resolveRoleLaunch(
-	pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">,
+	pi: Pick<ExtensionAPI, "getCommands">,
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput,
 ): ResolvedRoleLaunch {
