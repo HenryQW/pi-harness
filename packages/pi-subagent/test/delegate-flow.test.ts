@@ -113,6 +113,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 	const tools = new Map<string, Tool>();
 	const childCalls: PreparedChild[] = [];
 	const roles: Role[] = [];
+	const routes: Array<{ role: string; modelClass: string | undefined }> = [];
 	const execLogs: ExecLog[] = [];
 	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string; task?: string }> = [];
 	const widgetActivity: Array<{ id: string; event: EphemeralSubagentActivityEvent }> = [];
@@ -142,11 +143,12 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		maxRuntimeMs: 123_456,
 		getSessionGeneration: () => sessionGeneration,
 		loadRoles: () => flowRoles,
-		resolveLaunch(role) {
+		resolveLaunch(role, modelClass) {
 			roles.push(role);
+			routes.push({ role: role.name, modelClass });
 			return {
 				args: [],
-				env: { FLOW_ROLE: role.name },
+				env: { FLOW_ROLE: role.name, FLOW_MODEL_CLASS: modelClass ?? "assignment" },
 				model,
 				thinkingLevel: "low",
 				missingSkills: [],
@@ -161,6 +163,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		tools,
 		childCalls,
 		roles,
+		routes,
 		execLogs,
 		widgets,
 		widgetActivity,
@@ -182,9 +185,17 @@ function continueTool(app: ReturnType<typeof harness>): Tool {
 
 const validation = (code = "process.exit(0)") => [{ command: process.execPath, args: ["-e", code] }];
 const unit = (id: string, task = `Implement ${id}`, gate = validation()) => ({ id, task, validation: gate });
+const reviewedUnit = (id: string, task = `Implement ${id}`, gate = validation()) => ({
+	...unit(id, task, gate),
+	review: "Confirm the change meets the stated requirements.",
+});
 
 function childRole(prepared: PreparedChild): string {
 	return prepared.launch.env.FLOW_ROLE!;
+}
+
+function childModelClass(prepared: PreparedChild): string {
+	return prepared.launch.env.FLOW_MODEL_CLASS!;
 }
 
 function unitId(task: string): string {
@@ -226,10 +237,12 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	assert.equal((DelegateFlowSchema as any).properties.units.minItems, 1);
 	assert.equal((DelegateFlowSchema as any).properties.units.maxItems, 8);
 	assert.equal((DelegateFlowContinueSchema as any).additionalProperties, false);
-	assert.deepEqual(parseDelegateFlow({ units: [{ id: " one ", task: " work ", validation: [{ command: " node ", args: ["", "x"] }] }] }), {
-		units: [{ id: "one", task: "work", validation: [{ command: "node", args: ["", "x"] }] }],
+	assert.deepEqual(parseDelegateFlow({ units: [{
+		id: " one ", task: " work ", validation: [{ command: " node ", args: ["", "x"] }], modelClass: "fast", review: " use judgment ",
+	}] }), {
+		units: [{ id: "one", task: "work", validation: [{ command: "node", args: ["", "x"] }], modelClass: "fast", review: "use judgment" }],
 	});
-	assert.deepEqual(parseDelegateFlowContinue({ guidance: " fix it " }), { guidance: "fix it" });
+	assert.deepEqual(parseDelegateFlowContinue({ guidance: " fix it ", modelClass: "balanced" }), { guidance: "fix it", modelClass: "balanced" });
 	for (const value of [
 		{},
 		{ units: [] },
@@ -238,9 +251,14 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 		{ units: [{ ...unit("x"), extra: true }] },
 		{ units: [{ id: "x", task: "work", validation: [{ command: "node", args: [], extra: true }] }] },
 		{ units: [{ id: "x", task: "work", validation: [{ command: "node", args: ["bad\0arg"] }] }] },
+		{ units: [{ ...unit("x"), modelClass: "slow" }] },
+		{ units: [{ ...unit("x"), review: " \n " }] },
+		{ units: [{ ...unit("x"), review: "bad\0review" }] },
 	]) assert.throws(() => parseDelegateFlow(value));
 	assert.throws(() => parseDelegateFlow({ units: [unit("same"), unit(" same ")] }), /unique/);
 	assert.throws(() => parseDelegateFlowContinue({ guidance: " \n " }));
+	assert.throws(() => parseDelegateFlowContinue({ guidance: "repair", modelClass: "slow" }));
+	assert.throws(() => parseDelegateFlowContinue({ guidance: "repair", extra: true }));
 	assert.deepEqual(CHILD_EXCLUDED_TOOLS.split(",").filter((name) => name.startsWith("delegate_")), [
 		"delegate_task", "delegate_flow", "delegate_flow_continue",
 	]);
@@ -462,7 +480,7 @@ test("Main cleanliness rejects hidden tracked bytes at setup and integration whi
 	const mainHead = git(repo, "rev-parse", "HEAD");
 	mutateAtReview = true;
 
-	const integration = await flowTool(app).execute("hidden-integration", { units: [unit("integration")] }, undefined, undefined, app.ctx);
+	const integration = await flowTool(app).execute("hidden-integration", { units: [reviewedUnit("integration")] }, undefined, undefined, app.ctx);
 	assert.equal(integration.details.failure.classification, "main");
 	assert.match(integration.details.failure.diagnostic, /changed outside the active Flow/);
 	assert.equal(children, 2);
@@ -492,7 +510,7 @@ test("Unit validation rejects hidden tracked changes without rejecting ignored g
 			return success();
 		});
 		const result = await flowTool(app).execute(`hidden-unit-${enable}`, {
-			units: [unit("hidden", "work", [{ command: "git", args: ["update-index", enable, "base.txt"] }])],
+			units: [reviewedUnit("hidden", "work", [{ command: "git", args: ["update-index", enable, "base.txt"] }])],
 		}, undefined, undefined, app.ctx);
 		assert.equal(result.details.outcome, "blocked");
 		assert.equal(result.details.blocked.classification, "validation");
@@ -554,7 +572,7 @@ test("Flow uses effective Implementer/Reviewer overrides in the caller-relative 
 		assert.equal(git(prepared.cwd, "rev-parse", "HEAD"), packet.tip);
 		return success("PASS\n");
 	}, undefined, flowRoles);
-	const result = await flowTool(app).execute("caller-cwd", { units: [unit("feature")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("caller-cwd", { units: [reviewedUnit("feature")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.equal(childCwds.length, 2);
 	assert.equal(childCwds[0], childCwds[1]);
@@ -569,6 +587,68 @@ test("Flow uses effective Implementer/Reviewer overrides in the caller-relative 
 	assert.deepEqual(validationCall.args, ["-e", "process.exit(0)"]);
 	assert.equal(validationCall.options?.cwd, childCwds[0]);
 	assert.equal(validationCall.options?.timeout, 123_456);
+});
+
+test("validated units without review integrate mechanically without resolving a Reviewer", async (t) => {
+	const repo = await repository(t);
+	let tip = "";
+	const app = harness(repo, async (prepared) => {
+		assert.equal(childRole(prepared), "implementer");
+		await commit(prepared.cwd, "mechanical.txt", "validated\n");
+		tip = git(prepared.cwd, "rev-parse", "HEAD");
+		return success();
+	}, undefined, [loadBuiltinRole("implementer")]);
+
+	const result = await flowTool(app).execute("mechanical", { units: [unit("mechanical")] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.deepEqual(app.roles.map(({ name }) => name), ["implementer"]);
+	assert.deepEqual(app.childCalls.map(childRole), ["implementer"]);
+	assert.equal(app.execLogs.filter(({ command }) => command === process.execPath).length, 1);
+	assert.deepEqual(app.execLogs
+		.filter(({ command, args }) => command === "git" && args[1] === "merge")
+		.map(({ args }) => args.slice(1)), [["merge", "--no-overwrite-ignore", "--ff-only", tip]]);
+	assert.equal(git(repo, "rev-parse", "HEAD"), tip);
+});
+
+test("Flow routes each unit class to its Implementer and applicable Reviewer", async (t) => {
+	const repo = await repository(t);
+	const seen: Array<{ id: string; role: string; modelClass: string }> = [];
+	const app = harness(repo, async (prepared) => {
+		const id = unitId(prepared.task);
+		seen.push({ id, role: childRole(prepared), modelClass: childModelClass(prepared) });
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, `${id}.txt`, `${id}\n`);
+			return success();
+		}
+		reviewPacket(prepared.task);
+		return success("PASS");
+	});
+	const result = await flowTool(app).execute("classes", { units: [
+		{ ...reviewedUnit("assigned"), review: "Judge the assignment route." },
+		{ ...reviewedUnit("fast"), modelClass: "fast" },
+		{ ...reviewedUnit("balanced"), modelClass: "balanced" },
+	] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.deepEqual(seen.sort((left, right) => `${left.id}:${left.role}`.localeCompare(`${right.id}:${right.role}`)), [
+		{ id: "assigned", role: "implementer", modelClass: "assignment" },
+		{ id: "assigned", role: "reviewer", modelClass: "assignment" },
+		{ id: "balanced", role: "implementer", modelClass: "balanced" },
+		{ id: "balanced", role: "reviewer", modelClass: "balanced" },
+		{ id: "fast", role: "implementer", modelClass: "fast" },
+		{ id: "fast", role: "reviewer", modelClass: "fast" },
+	]);
+	assert.deepEqual(app.routes
+		.map(({ role, modelClass }) => ({ role, modelClass: modelClass ?? "assignment" }))
+		.sort((left, right) => `${left.role}:${left.modelClass}`.localeCompare(`${right.role}:${right.modelClass}`)), [
+		{ role: "implementer", modelClass: "assignment" },
+		{ role: "implementer", modelClass: "balanced" },
+		{ role: "implementer", modelClass: "fast" },
+		{ role: "reviewer", modelClass: "assignment" },
+		{ role: "reviewer", modelClass: "balanced" },
+		{ role: "reviewer", modelClass: "fast" },
+	]);
 });
 
 test("parallel Implementers all settle before declared-order processing stops at the first failure", async (t) => {
@@ -609,34 +689,40 @@ test("parallel Implementers all settle before declared-order processing stops at
 	assert.notEqual(git(later.path, "rev-parse", "HEAD"), base);
 });
 
-test("one continuation repairs the blocked Unit in the same worktree and then clears the Flow", async (t) => {
+test("one continuation replaces the blocked Unit class in the same worktree and then clears the Flow", async (t) => {
 	const repo = await repository(t);
+	const criterion = "The repaired change must meet this deliberate review criterion.";
 	let initialCwd = "";
 	let repairCwd = "";
 	let implementerRuns = 0;
+	const classes: string[] = [];
 	const app = harness(repo, async (prepared) => {
+		classes.push(childModelClass(prepared));
 		if (childRole(prepared) === "reviewer") return success("PASS");
 		implementerRuns++;
 		if (prepared.task.startsWith("Flow Unit")) {
 			initialCwd = prepared.cwd;
+			assert.ok(prepared.task.includes(criterion));
 			return failure("implementation crashed");
 		}
 		repairCwd = prepared.cwd;
+		assert.ok(prepared.task.includes(criterion));
 		assert.match(prepared.task, /Previous implementer block:[\s\S]*implementation crashed/);
 		assert.match(prepared.task, /Main guidance:\nCommit the requested file/);
 		await commit(prepared.cwd, "repaired.txt", "fixed\n");
 		return success();
 	});
-	const blocked = await flowTool(app).execute("repair", { units: [unit("repairable")] }, undefined, undefined, app.ctx);
+	const blocked = await flowTool(app).execute("repair", { units: [{ ...reviewedUnit("repairable"), review: criterion, modelClass: "fast" }] }, undefined, undefined, app.ctx);
 	assert.equal(blocked.details.outcome, "blocked");
 	await assert.rejects(
 		flowTool(app).execute("blocked-concurrent", { units: [unit("other")] }, undefined, undefined, app.ctx),
 		/another Flow is active/,
 	);
-	const completed = await continueTool(app).execute("continue", { guidance: "Commit the requested file" }, undefined, undefined, app.ctx);
+	const completed = await continueTool(app).execute("continue", { guidance: "Commit the requested file", modelClass: "balanced" }, undefined, undefined, app.ctx);
 	assert.equal(completed.details.outcome, "completed");
 	assert.equal(initialCwd, repairCwd);
 	assert.equal(implementerRuns, 2);
+	assert.deepEqual(classes, ["fast", "balanced", "balanced"]);
 	await assert.rejects(
 		continueTool(app).execute("again", { guidance: "again" }, undefined, undefined, app.ctx),
 		/requires an active blocked Flow/,
@@ -661,7 +747,7 @@ test("Flow widgets use the original unit task for implementer, reviewer, and rep
 		return success();
 	});
 
-	const blocked = await flowTool(app).execute("widget-label", { units: [unit("widget", task)] }, undefined, undefined, app.ctx);
+	const blocked = await flowTool(app).execute("widget-label", { units: [reviewedUnit("widget", task)] }, undefined, undefined, app.ctx);
 	assert.equal(blocked.details.outcome, "blocked");
 	const completed = await continueTool(app).execute("widget-label-continue", { guidance: "Commit the fix" }, undefined, undefined, app.ctx);
 	assert.equal(completed.details.outcome, "completed");
@@ -697,7 +783,7 @@ test("Flow wires activity to each child widget without changing prompts", async 
 		throw new Error(`Unexpected Flow child prompt: ${prepared.task}`);
 	});
 
-	const blocked = await flowTool(app).execute("activity-wire", { units: [unit("activity", "Keep child prompts unchanged")] }, undefined, undefined, app.ctx);
+	const blocked = await flowTool(app).execute("activity-wire", { units: [reviewedUnit("activity", "Keep child prompts unchanged")] }, undefined, undefined, app.ctx);
 	assert.equal(blocked.details.outcome, "blocked");
 	const completed = await continueTool(app).execute("activity-wire-continue", { guidance: "Commit the fix" }, undefined, undefined, app.ctx);
 	assert.equal(completed.details.outcome, "completed");
@@ -764,7 +850,7 @@ test("an Implementer settling after session reload cannot reach review or integr
 		await commit(prepared.cwd, "stale.txt", "stale\n");
 		return success();
 	});
-	const running = flowTool(app).execute("stale", { units: [unit("stale")] }, undefined, undefined, app.ctx);
+	const running = flowTool(app).execute("stale", { units: [reviewedUnit("stale")] }, undefined, undefined, app.ctx);
 	await waitFor(() => started);
 
 	await app.emitSession("session_shutdown");
@@ -796,7 +882,7 @@ test("successful units rebase in place onto exact expected Main, review final OI
 		packets.push({ ...packet, cwd: prepared.cwd, patch: await readFile(packet.patchPath, "utf8") });
 		return success("PASS");
 	});
-	const result = await flowTool(app).execute("serial", { units: [unit("first"), unit("second")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("serial", { units: [reviewedUnit("first"), reviewedUnit("second")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.equal(packets.length, 2);
 	assert.equal(packets[0]!.base, initial);
@@ -834,7 +920,7 @@ test("a killed merge reconciles only the exact clean reviewed tip", async (t) =>
 			});
 		});
 
-		const result = await flowTool(app).execute(`killed-merge-${dirty}`, { units: [unit("approved")] }, undefined, undefined, app.ctx);
+		const result = await flowTool(app).execute(`killed-merge-${dirty}`, { units: [reviewedUnit("approved")] }, undefined, undefined, app.ctx);
 
 		assert.equal(git(repo, "rev-parse", "HEAD"), approvedTip);
 		if (dirty) {
@@ -897,7 +983,7 @@ test("a rebase-dropped duplicate is validated and completes as a no-op without R
 		reviewers++;
 		return success("PASS");
 	});
-	const result = await flowTool(app).execute("noop", { units: [unit("one"), unit("two")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("noop", { units: [reviewedUnit("one"), reviewedUnit("two")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.deepEqual(result.details.completed, [{ id: "one", noOp: false }, { id: "two", noOp: true }]);
 	assert.equal(reviewers, 1);
@@ -918,7 +1004,7 @@ test("a failed rebase aborts, reports infrastructure diagnostics, and retains th
 		await commit(prepared.cwd, "shared.txt", `${id}\n`, `${id} overlap`);
 		return success();
 	});
-	const result = await flowTool(app).execute("rebase-failure", { units: [unit("first"), unit("second")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("rebase-failure", { units: [reviewedUnit("first"), reviewedUnit("second")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "failed");
 	assert.equal(result.details.failure.classification, "infrastructure");
 	assert.match(result.details.failure.diagnostic, /Rebase failed; git rebase --abort restored the Unit Worktree for recovery/);
@@ -951,7 +1037,7 @@ test("failed rebase abort during cancellation is exposed in terminal diagnostics
 		return next();
 	});
 
-	const result = await flowTool(app).execute("cancel-rebase", { units: [unit("first"), unit("second")] }, controller.signal, undefined, app.ctx);
+	const result = await flowTool(app).execute("cancel-rebase", { units: [reviewedUnit("first"), reviewedUnit("second")] }, controller.signal, undefined, app.ctx);
 	assert.equal(result.details.outcome, "failed");
 	assert.equal(result.details.failure.classification, "infrastructure");
 	assert.match(result.details.failure.diagnostic, /cancelled by test/);
@@ -971,7 +1057,7 @@ test("validation-induced detached HEAD is a repairable validation block", async 
 	});
 	const gate = [{ command: "git", args: ["checkout", "--detach", "-q"] }];
 
-	const result = await flowTool(app).execute("detached-validation", { units: [unit("detached", "work", gate)] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("detached-validation", { units: [reviewedUnit("detached", "work", gate)] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "blocked");
 	assert.equal(result.details.blocked.classification, "validation");
 	assert.equal(result.details.blocked.repairAvailable, true);
@@ -993,7 +1079,7 @@ test("validation, Reviewer findings, and Reviewer transport failures keep distin
 		...validation("process.stderr.write('x'.repeat(60000)); process.exit(3)"),
 		{ command: process.execPath, args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", skippedMarker] },
 	];
-	const validationResult = await flowTool(validationApp).execute("validation", { units: [unit("validation", "work", noisyGate)] }, undefined, undefined, validationApp.ctx);
+	const validationResult = await flowTool(validationApp).execute("validation", { units: [reviewedUnit("validation", "work", noisyGate)] }, undefined, undefined, validationApp.ctx);
 	assert.equal(validationResult.details.outcome, "blocked");
 	assert.equal(validationResult.details.blocked.classification, "validation");
 	assert.equal(validationReviewers, 0);
@@ -1002,15 +1088,26 @@ test("validation, Reviewer findings, and Reviewer transport failures keep distin
 	assert.equal(existsSync(skippedMarker), false);
 
 	const findingsRepo = await repository(t);
+	let reviewerTaskText = "";
+	let reviewedPatch = "";
 	const findingsApp = harness(findingsRepo, async (prepared) => {
-		if (childRole(prepared) === "reviewer") return success("Finding: change.txt is wrong");
+		if (childRole(prepared) === "reviewer") {
+			reviewerTaskText = prepared.task;
+			reviewedPatch = await readFile(reviewPacket(prepared.task).patchPath, "utf8");
+			return success("Finding: change.txt is wrong");
+		}
 		await commit(prepared.cwd, "change.txt", "change\n");
 		return success();
 	});
-	const findings = await flowTool(findingsApp).execute("findings", { units: [unit("findings")] }, undefined, undefined, findingsApp.ctx);
+	const findings = await flowTool(findingsApp).execute("findings", { units: [{
+		...unit("findings"), review: "Judge whether the changed name is clear.",
+	}] }, undefined, undefined, findingsApp.ctx);
 	assert.equal(findings.details.outcome, "blocked");
 	assert.equal(findings.details.blocked.classification, "reviewer_findings");
 	assert.match(findings.details.blocked.diagnostic, /change\.txt is wrong/);
+	assert.match(reviewerTaskText, /explicit judgment criterion:\nJudge whether the changed name is clear\./);
+	assert.match(reviewedPatch, /change\.txt/);
+	assert.equal(findingsApp.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 0);
 
 	const infrastructureRepo = await repository(t);
 	let truncated = false;
@@ -1021,25 +1118,27 @@ test("validation, Reviewer findings, and Reviewer transport failures keep distin
 		await commit(prepared.cwd, `${unitId(prepared.task)}.txt`, "change\n");
 		return success();
 	});
-	const infrastructure = await flowTool(infrastructureApp).execute("infrastructure", { units: [unit("infra")] }, undefined, undefined, infrastructureApp.ctx);
+	const infrastructure = await flowTool(infrastructureApp).execute("infrastructure", { units: [reviewedUnit("infra")] }, undefined, undefined, infrastructureApp.ctx);
 	assert.equal(infrastructure.details.outcome, "failed");
 	assert.equal(infrastructure.details.failure.classification, "infrastructure");
 	assert.match(infrastructure.details.failure.diagnostic, /reviewer crashed/);
 	truncated = true;
-	const malformed = await flowTool(infrastructureApp).execute("truncated", { units: [unit("truncated")] }, undefined, undefined, infrastructureApp.ctx);
+	const malformed = await flowTool(infrastructureApp).execute("truncated", { units: [reviewedUnit("truncated")] }, undefined, undefined, infrastructureApp.ctx);
 	assert.equal(malformed.details.outcome, "failed");
 	assert.equal(malformed.details.failure.classification, "infrastructure");
 	assert.match(malformed.details.failure.diagnostic, /transport output was truncated/);
 });
 
-test("missing commits and dirty repairs are implementer failures, with only one repair", async (t) => {
+test("missing commits and dirty repairs are implementer failures, with one repair retaining its class", async (t) => {
 	const repo = await repository(t);
+	const classes: string[] = [];
 	const app = harness(repo, async (prepared) => {
+		classes.push(childModelClass(prepared));
 		if (childRole(prepared) === "reviewer") return success("PASS");
 		if (prepared.task.startsWith("Repair")) await writeFile(join(prepared.cwd, "dirty.txt"), "dirty\n");
 		return success();
 	});
-	const missing = await flowTool(app).execute("missing", { units: [unit("missing")] }, undefined, undefined, app.ctx);
+	const missing = await flowTool(app).execute("missing", { units: [{ ...unit("missing"), modelClass: "fast" }] }, undefined, undefined, app.ctx);
 	assert.equal(missing.details.outcome, "blocked");
 	assert.equal(missing.details.blocked.classification, "implementer");
 	assert.match(missing.details.blocked.diagnostic, /no committed change/);
@@ -1047,6 +1146,7 @@ test("missing commits and dirty repairs are implementer failures, with only one 
 	assert.equal(dirty.details.outcome, "failed");
 	assert.equal(dirty.details.failure.classification, "implementer");
 	assert.match(dirty.details.failure.diagnostic, /Worktree is dirty/);
+	assert.deepEqual(classes, ["fast", "fast"]);
 });
 
 test("a second same-Unit failure is terminal, clears active state, and permits a later Flow", async (t) => {
@@ -1089,7 +1189,7 @@ test("ignored Main collision rejects integration without overwriting data and re
 		return success("PASS");
 	});
 
-	const result = await flowTool(app).execute("ignored-collision", { units: [unit("collision")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("ignored-collision", { units: [reviewedUnit("collision")] }, undefined, undefined, app.ctx);
 
 	assert.equal(result.details.outcome, "failed");
 	assert.equal(result.details.failure.classification, "integration");
@@ -1123,7 +1223,7 @@ test("cleanup refusal after exact integration preserves ignored work with a boun
 		approvedTip = reviewPacket(prepared.task).tip;
 		return success("PASS");
 	});
-	const result = await flowTool(app).execute("cleanup", { units: [unit("cleanup")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("cleanup", { units: [reviewedUnit("cleanup")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.equal(git(repo, "rev-parse", "HEAD"), approvedTip);
 	assert.equal(await readFile(join(repo, "integrated.txt"), "utf8"), "integrated\n");
@@ -1151,7 +1251,7 @@ test("cleanup retains a detached clean commit after approved integration", async
 		return success("PASS");
 	});
 
-	const result = await flowTool(app).execute("detached-cleanup", { units: [unit("detached-cleanup")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("detached-cleanup", { units: [reviewedUnit("detached-cleanup")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.equal(git(repo, "rev-parse", "HEAD"), approvedTip);
 	assert.equal(result.details.warnings.length, 1);
@@ -1177,7 +1277,7 @@ test("external Main mutation fails terminally before review and all retained wor
 		}
 		return success();
 	});
-	const result = await flowTool(app).execute("external", { units: [unit("unit")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("external", { units: [reviewedUnit("unit")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "failed");
 	assert.equal(result.details.failure.classification, "main");
 	assert.equal(reviewers, 0);

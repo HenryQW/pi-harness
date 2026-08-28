@@ -179,9 +179,11 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		initError?: string;
 		dreamPending?: boolean;
 		dreamSucceeded?: boolean;
-	} = { conflictWarnings: [] };
+		rememberQueue: string[];
+		sessionGeneration: number;
+	} = { conflictWarnings: [], rememberQueue: [], sessionGeneration: 0 };
 
-	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void): Promise<Record<Target, string[]> | undefined> => {
+	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<Record<Target, string[]> | undefined> => {
 		if (state.initError) {
 			warn(`Cannot run /${command}: persistent memory is disabled — ${sanitizeName(state.initError)}`);
 			return;
@@ -195,6 +197,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const invalid = loaded.filter(([, result]) => result.status);
 			if (invalid.length) {
 				warn(`Cannot run /${command}: live memory state is unreadable or oversized. ${invalid.map(([, result]) => result.conflictWarning).join(" ")}`);
+				onUnusable?.();
 				return;
 			}
 			if (!isIdle()) {
@@ -204,12 +207,17 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const overLimit = loaded.filter(([target, result]) => result.entries.join(ENTRY_DELIMITER).length > (target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit));
 			if (overLimit.length) {
 				warn(`Cannot run /${command}: live ${overLimit.map(([target]) => target).join(" and ")} entries exceed the configured character limit. Consolidate them before using /${command}.`);
+				onUnusable?.();
 				return;
 			}
 			return Object.fromEntries(loaded.map(([target, result]) => [target, result.entries])) as Record<Target, string[]>;
 		} catch (error) {
 			warn(`Cannot run /${command}: ${error instanceof Error ? error.message : String(error)}`);
 		}
+	};
+
+	const sendRemember = (candidate: string, entries: Record<Target, string[]>) => {
+		pi.sendUserMessage(`Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory, choose the correct memory target, semantically compare it with the live entries, and merge or replace overlap instead of adding duplicates. Use the existing memory tool. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`);
 	};
 
 	pi.registerCommand("remember", {
@@ -221,12 +229,13 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (!ctx.isIdle()) {
-				ctx.ui.notify("Cannot run /remember while the agent is busy.", "warning");
+				const pending = state.rememberQueue.push(candidate);
+				ctx.ui.notify(pending === 1 ? "Remember queued — will run after the current response." : `Remember queued — ${pending} pending.`, "info");
 				return;
 			}
 			const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => ctx.ui.notify(message, "warning"));
 			if (!entries) return;
-			pi.sendUserMessage(`Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory, choose the correct memory target, semantically compare it with the live entries, and merge or replace overlap instead of adding duplicates. Use the existing memory tool. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`);
+			sendRemember(candidate, entries);
 		},
 	});
 
@@ -282,22 +291,59 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!state.dreamPending) return;
-		const succeeded = state.dreamSucceeded;
-		state.dreamPending = false;
-		state.dreamSucceeded = false;
-		if (!succeeded) {
-			ctx.ui.notify("Dream did not complete; its timestamp was not updated.", "warning");
+		const sessionGeneration = state.sessionGeneration;
+		if (state.dreamPending) {
+			const succeeded = state.dreamSucceeded;
+			state.dreamPending = false;
+			state.dreamSucceeded = false;
+			if (!succeeded) {
+				ctx.ui.notify("Dream did not complete; its timestamp was not updated.", "warning");
+			} else {
+				try {
+					await saveLastDreamAt();
+				} catch (error) {
+					ctx.ui.notify(`Dream completed, but its timestamp could not be recorded: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				}
+			}
+		}
+		if (state.sessionGeneration !== sessionGeneration || !ctx.isIdle()) return;
+		const candidate = state.rememberQueue[0];
+		if (candidate === undefined) return;
+		const model = ctx.model;
+		if (!model) return;
+		const modelName = `${model.provider}/${model.id}`;
+		const isCurrent = () => {
+			if (state.sessionGeneration !== sessionGeneration) return false;
+			const currentModel = ctx.model;
+			return ctx.isIdle() && !!currentModel && `${currentModel.provider}/${currentModel.id}` === modelName;
+		};
+		try {
+			if (!(await ctx.modelRegistry.getApiKeyAndHeaders(model)).ok || !isCurrent()) return;
+		} catch {
 			return;
 		}
-		try {
-			await saveLastDreamAt();
-		} catch (error) {
-			ctx.ui.notify(`Dream completed, but its timestamp could not be recorded: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
+		const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => {
+			if (state.sessionGeneration === sessionGeneration) ctx.ui.notify(message, "warning");
+		}, () => {
+			if (isCurrent()) state.rememberQueue.shift();
+		});
+		if (!entries || !isCurrent()) return;
+		sendRemember(candidate, entries);
+		state.rememberQueue.shift();
+	});
+
+	pi.on("model_select", () => {
+		state.sessionGeneration++;
+	});
+
+	pi.on("session_shutdown", () => {
+		state.sessionGeneration++;
+		state.rememberQueue = [];
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		state.sessionGeneration++;
+		state.rememberQueue = [];
 		state.config = undefined;
 		state.stores = undefined;
 		state.initialEntries = undefined;

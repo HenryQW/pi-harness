@@ -13,7 +13,7 @@ export const DEFAULT_TASK_ASSIGNMENTS = {
 	"pi-herdr-btw/btw": "fast",
 	"pi-herdr-rename/rename": "fast",
 	"pi-auto-compact/autoCompact": "fast",
-	"pi-subagent/delegateTask": "balanced",
+	"pi-subagent/delegateTask": "fast",
 } as const satisfies Readonly<Record<string, ProfileName>>;
 
 export type TaskModelRoute = {

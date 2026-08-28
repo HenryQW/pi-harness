@@ -67,6 +67,7 @@ async function environment(run: (agentDir: string) => Promise<void>): Promise<vo
 		await mkdir(join(agentDir, "config"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
 			profiles: {
+				fast: { primary: { model: "test/text-model", thinkingLevel: "low" } },
 				balanced: { primary: { model: "test/text-model", thinkingLevel: "low" } },
 			},
 		}));
@@ -673,6 +674,7 @@ Return concise findings.
 					fallback: { model: "provider/fallback", thinkingLevel: "low" },
 				},
 			},
+			tasks: { "pi-subagent/delegateTask": "balanced" },
 		}));
 		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
 		const fallback = { provider: "provider", id: "fallback", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low" } };
@@ -707,6 +709,7 @@ Return concise findings.
 					fallback: { model: "provider/fallback", thinkingLevel: "off" },
 				},
 			},
+			tasks: { "pi-subagent/delegateTask": "balanced" },
 		}));
 		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
 		const fallback = { provider: "provider", id: "fallback", input: ["text"], reasoning: false };
@@ -1295,6 +1298,7 @@ Do work.
 		assert.equal(app.tool.parameters, WorkflowSchema);
 		assert.match(app.tool.description, /single, parallel, or chain/);
 		assert.ok(app.tool.promptGuidelines?.every((guideline) => guideline.includes("delegate_task")));
+		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes("populate model and thinking only for an explicit user override") && guideline.includes("fast normally") && guideline.includes("not runtime enforcement")));
 		assert.match(app.tool.description, /configuration error/);
 		await assert.rejects(
 			app.tool.execute("invalid", { role: "broken", task: "work", tasks: [] }, undefined, undefined, app.ctx),
@@ -1952,6 +1956,7 @@ const timer = setInterval(() => {
 			const second = app.tool.execute("call-2", { role: "worker", task: "task-2" }, undefined, undefined, app.ctx);
 			await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
 				profiles: { balanced: { primary: { model: "provider/late-model", thinkingLevel: "low" } } },
+				tasks: { "pi-subagent/delegateTask": "balanced" },
 			}));
 			await writeFile(join(release, "task-1"), "");
 			await first;

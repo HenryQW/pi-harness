@@ -10,9 +10,9 @@ caller-owned task, cwd, signal ────────────────�
                                      active-Pi ephemeral executor
 ```
 
-`delegate_task` owns its flat single/parallel/chain policy. The public executor runs one prepared delegation. Downstream packages compose their own workflows with ordinary JavaScript and own semantic protocols, shared workspace/state, retry decisions, and bounds. There is no recursive workflow AST.
+Main plans and orchestrates. `delegate_task` owns its flat single/parallel/chain policy, while the public executor runs one prepared delegation. Downstream packages compose their own workflows with ordinary JavaScript and own semantic protocols, shared workspace/state, retry decisions, and bounds. There is no recursive workflow AST.
 
-`delegate_flow` is the exception: it is a fixed package-owned Git workflow, not an executor primitive or general workflow language. It uses the effective `implementer` and `reviewer` Roles and the same prepared-child runner; its contract is below.
+`delegate_flow` is the exception: it is a fixed package-owned Git workflow, not an executor primitive or general workflow language. It uses the effective `implementer` Role and, only for explicit judgment review, the effective `reviewer` Role through the same prepared-child runner; its contract is below.
 
 ## Frozen `delegate_task` contract
 
@@ -67,11 +67,11 @@ Single mode puts one delegation's fields at the top level.
 | --- | --- | --- |
 | `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory or a package-shipped built-in (`implementer`, `reviewer`); a same-named user file overrides the built-in. |
 | `task` | yes | Non-empty bounded task packet. |
-| `model` | no | Designated `provider/modelId`; takes precedence over `modelClass`. |
-| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; omission uses shared task assignment. |
-| `thinking` | no | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; route selection skips models that cannot honor it. |
+| `model` | no | Designated `provider/modelId`; takes precedence over `modelClass`, and Main supplies it only for an explicit user override. |
+| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; Main normally chooses `fast`, may choose `balanced` upfront for obvious complexity, and omission uses shared task assignment. |
+| `thinking` | no | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; Main supplies it only for an explicit user override. Route selection skips models that cannot honor it. |
 
-Those five fields are the complete delegation object. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
+Those five fields are the complete delegation object. The direct-model/thinking rule is Main-facing policy only: the runtime adds no provenance tracking or enforcement. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
 
 ### Background, failures, and transport
 
@@ -83,9 +83,9 @@ All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transp
 
 ## `delegate_flow`
 
-`delegate_flow({ units })` accepts 1–8 units with unique non-empty `id` and `task` fields plus one or more direct `{command, args}` validation commands. `delegate_flow_continue({ guidance })` is available only for the one blocked unit of the active Flow.
+`delegate_flow({ units })` accepts 1–8 units with unique non-empty `id` and `task`, one or more direct `{command, args}` validation commands, optional `modelClass`, and optional non-empty `review` text. `delegate_flow_continue({ guidance, modelClass? })` is available only for the one blocked unit of the active Flow.
 
-A Flow is memory-only and permits one active Flow. At start it resolves the effective `implementer` and `reviewer` Roles, including same-named user overrides, and freezes them through any continuation. Overrides must preserve the Flow Role protocols: Implementers commit scoped work, and Reviewers inspect the exact packet and emit exactly `PASS` only with zero findings. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
+A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. Omitted unit classes use the shared `pi-subagent/delegateTask` assignment; a selected class resolves through its existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
 
 ```text
 Implementers (parallel, one Unit Worktree each)
@@ -93,19 +93,20 @@ Implementers (parallel, one Unit Worktree each)
                  v
 for each declared unit:
   rebase in its Unit Worktree when earlier units advanced Main
-  run declared validation in that worktree
-  read-only Reviewer receives exact {base, tip, patchPath} there
-  exact PASS → git merge --ff-only <full reviewed OID>
+  inspect committed state; run declared validation (objective authority)
+  ├─ no review: git merge --ff-only <exact validated tip>
+  └─ review: Reviewer receives exact {base, tip, patchPath}
+             exact PASS → git merge --ff-only <full reviewed OID>
   git worktree remove; git branch -d
 ```
 
-Flow derives identity from Git, not child output. Reviewer reads the exact patch as authoritative and may use the same worktree only for referenced context. A full-OID fast-forward is the only integration path. Cleanup is non-forced; after a successful integration, cleanup refusal returns `completed` with a retained path/branch warning.
+Flow derives identity from Git, not child output. Add `review` only for an explicit judgment criterion that automated validation cannot establish; it is not a second generic verification pass. The Reviewer reads the exact patch as authoritative and may use the same worktree only for referenced context. A full-OID fast-forward is the only integration path. Cleanup is non-forced; after a successful integration, cleanup refusal returns `completed` with a retained path/branch warning.
 
-If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance })` reruns the Flow's frozen Implementer Role in that same worktree once, then repeats derivation, validation, and review with fresh exact evidence. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact reviewed tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
+If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance, modelClass? })` reruns the Flow's frozen Implementer Role in that same worktree once, then repeats derivation, validation, and conditional review with fresh exact evidence. Omitting continuation `modelClass` retains the blocked unit's current class; providing it replaces that class for the one repair. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact integrated tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
 
 Flow has no dependency graph, saved state, automatic retry, aggregate review, or post-merge validation. Use it only for commuting changes; combine or sequence units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
-`delegate_task` remains generic: its optional worktree isolation, non-Git behavior, and direct plan/file review are unchanged. Flow uses the same effective Role resolution for `implementer` and `reviewer`, with package-shipped Roles as defaults.
+`delegate_task` remains generic: its optional worktree isolation, non-Git behavior, and direct plan/file review are unchanged. Flow uses package-shipped Roles as defaults while retaining same-named user Role overrides; the Reviewer is needed only for a requested review criterion.
 
 ## Per-delegation resources and isolation
 
@@ -356,7 +357,7 @@ The package ships two working built-in Roles, validated by the same parser as us
 | Built-in | Behavior |
 | --- | --- |
 | `implementer` | Focused implementation requesting `isolation: worktree`; commits scoped changes locally, never pushes or opens PRs without authorization. Non-Git or unborn-`HEAD` contexts may use Main's cwd. |
-| `reviewer` | Read-only correctness review of supplied plans/files, or Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits. |
+| `reviewer` | Read-only correctness review of supplied plans/files, or—when a Flow unit declares `review`—Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits. |
 
 A same-named Markdown file in `config/pi-subagent/` explicitly overrides the built-in default.
 
@@ -376,6 +377,6 @@ cp <package-install-dir>/examples/roles/scout.md ~/.pi/agent/config/pi-subagent/
 
 The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the files and their names are entirely user-owned.
 
-The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side policy only. `delegate_flow` owns its fixed Git mechanics; the Skill defines no runtime code or configuration. `delegate_task` remains the generic flat single/parallel/chain mechanism.
+The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side planner/orchestrator policy only. `delegate_flow` owns its fixed Git mechanics and objective validation authority; the Skill defines no runtime code or configuration. `delegate_task` remains the generic flat single/parallel/chain mechanism.
 
 See [ADR 001](./adr/001-composable-ephemeral-execution.md) for the executor boundary and [ADR 002](./adr/002-package-owned-delegate-flow-orchestration.md) for Flow.
