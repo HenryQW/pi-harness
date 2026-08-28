@@ -534,12 +534,14 @@ export default function subagentExtension(
 				try {
 					return await runForegroundWorkflow<EphemeralSubagentResult>(toolCallId, foregroundWorkflow, async (entry: WorkflowEntry) => {
 					const role = rolesByName.get(entry.delegation.role)!;
+					let model: string | undefined;
+					let thinkingLevel: string | undefined;
 					let worktree: WorktreeInfo | undefined;
 					let worktreePayload: WorktreePayload | undefined;
 					let child: EphemeralSubagentResult | undefined;
 					let rejected: unknown;
 					let rejectedUsage: Usage | undefined;
-					let widgetStatus: Exclude<WidgetStatus, "working"> = "failure";
+					let aborted = false;
 					let status: "succeeded" | "failed" | "rejected" = "rejected";
 					let text = "Subagent did not start.";
 					const setState = (
@@ -552,6 +554,8 @@ export default function subagentExtension(
 							index: entry.index,
 							role: role.name,
 							task: taskSummary(entry.delegation.task),
+							...(model === undefined ? {} : { model }),
+							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 							...(worktreePayload === undefined ? {} : { worktreePayload }),
 							...(usage === undefined ? {} : { usage }),
 						};
@@ -572,6 +576,8 @@ export default function subagentExtension(
 								// shared executor permit, before isolated state is created.
 								const launch = resolveLaunch(role, entry.delegation);
 								notifyMissingSkills(role, launch);
+								model = modelReference(launch.model);
+								thinkingLevel = launch.thinkingLevel;
 								if (role.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
@@ -590,12 +596,11 @@ export default function subagentExtension(
 							text = capOutput(child.errorMessage || child.stderr.trim() || child.output || `Subagent exited with code ${child.exitCode}.`);
 						} else {
 							status = "succeeded";
-							widgetStatus = "success";
 							text = child.output;
 						}
 					} catch (error) {
 						rejected = error;
-						widgetStatus = error instanceof EphemeralSubagentError && error.code === "aborted" ? "aborted" : "failure";
+						aborted = error instanceof EphemeralSubagentError && error.code === "aborted";
 						rejectedUsage = error instanceof EphemeralSubagentError
 							? (error as EphemeralSubagentError & { usage?: Usage }).usage
 							: undefined;
@@ -609,6 +614,7 @@ export default function subagentExtension(
 						worktreePayload = worktree ? await finalizeChildWorktree(worktree) : undefined;
 					} catch (error) {
 						rejected = error;
+						aborted = false;
 						status = "rejected";
 						text = capOutput(error instanceof Error ? error.message : String(error));
 						worktreePayload = worktree ? {
@@ -631,7 +637,7 @@ export default function subagentExtension(
 					if (rejected !== undefined) status = "rejected";
 					setState(status, text);
 					try {
-						finishWidgetItem(entry.id, widgetStatus);
+						finishWidgetItem(entry.id, aborted ? "aborted" : status === "succeeded" ? "success" : "failure");
 						emitUpdate(emitToolUpdates);
 					} catch (error) {
 						rejected = error;
@@ -663,6 +669,8 @@ export default function subagentExtension(
 					index: target.index,
 					role: target.role,
 					task: target.task,
+					...(target.model === undefined ? {} : { model: target.model }),
+					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
 					...(target.worktreePayload === undefined ? {} : { worktreePayload: target.worktreePayload }),
 					...(target.usage === undefined ? {} : { usage: target.usage }),
 					status: "rejected",

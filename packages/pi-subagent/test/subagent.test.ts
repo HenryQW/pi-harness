@@ -352,7 +352,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 `);
 		process.argv[1] = runner;
 
-		const app = harness({ cwd: repo });
+		const app = harness({ cwd: repo, ui: true });
 		const error = await app.tool.execute("inspection", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected finalization rejection"),
 			(reason) => reason,
@@ -366,6 +366,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(worktree.pruned, false);
 		assert.match(worktree.note!, /HEAD is detached/);
 		assert.match(error.message, /HEAD is detached/);
+		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
 		assert.ok(error.message.indexOf(worktree.path) < error.message.indexOf("Evidence:"));
 		assert.equal(existsSync(worktree.path), true);
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
@@ -782,8 +783,8 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: single.text }], details: single.details }, {}, theme, {}).render(100), ["Implemented the fix."]);
 
 		const terminal = formatWorkflowResult("parallel", [
-			{ id: "opaque-first", index: 0, role: "implementer", task: "task", status: "succeeded", assistantOutput: "Implemented the fix.\nignored", worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
-			{ id: "opaque-second", index: 1, role: "reviewer", task: "task", status: "failed", failure: "Validation failed." },
+			{ id: "opaque-first", index: 0, role: "implementer", task: "task", status: "succeeded", assistantOutput: "Implemented the fix.\nignored", model: "provider/model", thinkingLevel: "high", worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
+			{ id: "opaque-second", index: 1, role: "reviewer", task: "task", status: "failed", failure: "Validation failed.", model: "provider/reviewer", thinkingLevel: "low" },
 			{ id: "opaque-skipped", index: 2, role: "worker", task: "task", status: "skipped" },
 		]);
 		const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
@@ -1076,9 +1077,9 @@ const timer = setInterval(() => {
 		await writeFile(join(release, "alpha"), "");
 		const result = await running;
 
-		assert.deepEqual(result.details.entries.map(({ role, status }: any) => ({ role, status })), [
-			{ role: "scout", status: "succeeded" },
-			{ role: "reviewer", status: "succeeded" },
+		assert.deepEqual(result.details.entries.map(({ id, index, role, status, model, thinkingLevel }: any) => ({ id, index, role, status, model, thinkingLevel })), [
+			{ id: "workflow-1:parallel:0", index: 0, role: "scout", status: "succeeded", model: "provider/fast", thinkingLevel: "off" },
+			{ id: "workflow-1:parallel:1", index: 1, role: "reviewer", status: "succeeded", model: "provider/deep", thinkingLevel: "high" },
 		]);
 		assert.ok(result.content[0].text.indexOf("alpha-done") < result.content[0].text.indexOf("beta-done"));
 		assert.deepEqual(result.usage, {

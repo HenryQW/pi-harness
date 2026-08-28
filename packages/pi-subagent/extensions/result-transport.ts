@@ -16,6 +16,8 @@ type TransportEntryBase = {
 	index: WorkflowEntry["index"];
 	role: WorkflowEntry["delegation"]["role"];
 	task: string;
+	model?: string;
+	thinkingLevel?: string;
 	worktreePayload?: WorktreePayload;
 	usage?: Usage;
 };
@@ -30,9 +32,14 @@ export type WorkflowTransportEntry =
 	| TransportEntryBase & { status: "failed" | "rejected"; assistantOutput?: never; failure: string };
 
 export type WorkflowTransportEntryDetails = {
+	id: string;
+	index: number;
 	role: string;
 	status: WorkflowTransportStatus;
+	task: string;
 	summary?: string;
+	model?: string;
+	thinkingLevel?: string;
 	worktree?: WorktreePayload;
 };
 
@@ -128,9 +135,14 @@ function formatWorkflowTransport(
 				const source = entry.status === "failed" || entry.status === "rejected" ? entry.failure
 					: entry.status === "running" || entry.status === "succeeded" ? entry.assistantOutput : undefined;
 				return {
+					id: entry.id,
+					index: entry.index,
 					role: entry.role,
 					status: entry.status,
+					task: entry.task,
 					...(source === undefined ? {} : { summary: displaySummary(source) }),
+					...(entry.model === undefined ? {} : { model: entry.model }),
+					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
 					...(entry.worktreePayload === undefined ? {} : { worktree: { ...entry.worktreePayload } }),
 				};
 			}),
