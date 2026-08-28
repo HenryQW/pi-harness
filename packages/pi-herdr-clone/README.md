@@ -20,7 +20,7 @@ pi install npm:@henryqw/pi-herdr-clone
 | `/clone-tab` | command | Clone the current conversation into a new tab of the current Herdr workspace. |
 | `/clone-worktree` | command | Clone the current conversation into a new Herdr Git worktree workspace. |
 
-Both commands wait until Pi is idle, then validate the current Herdr pane (`HERDR_ENV=1`, `HERDR_PANE_ID`), the persisted session file, and the current session leaf. They copy only the active root-to-leaf path into a new persisted session file: sibling branches are excluded and the original Pi session is not switched. Neither command has configuration.
+Both commands immediately validate the current Herdr pane (`HERDR_ENV=1`, `HERDR_PANE_ID`), the session file, and the current session leaf. They copy only the active root-to-leaf path available when invoked into a new persisted session file: sibling branches and any still-streaming assistant output are excluded, and the original Pi session is not switched. Neither command has configuration.
 
 ### `/clone-tab` behavior
 
