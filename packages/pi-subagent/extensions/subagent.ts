@@ -186,14 +186,22 @@ function workflowCallLabel(args: { tasks?: unknown; chain?: unknown }): string {
 function workflowResultLines(details: WorkflowTransportDetails, theme: Theme): string[] {
 	if (details.entries.some(({ status }) => status === "pending" || status === "running")) return [];
 	const entries = details.entries.filter(({ status }) => status !== "skipped");
-	return [
-		...entries.filter(({ worktree }) => worktree && !worktree.pruned),
-		...entries.filter(({ worktree }) => !worktree || worktree.pruned),
-	].map((entry) => {
+	const withRecovery = (entry: typeof entries[0]) => entry.worktree && !entry.worktree.pruned;
+	const isTerminalFailure = (entry: typeof entries[0]) => entry.status === "failed" || entry.status === "rejected";
+	const sorted = [...entries].sort((a, b) => {
+		const aFailure = isTerminalFailure(a);
+		const bFailure = isTerminalFailure(b);
+		if (aFailure !== bFailure) return aFailure ? -1 : 1;
+		const aRecovery = !aFailure && withRecovery(a);
+		const bRecovery = !bFailure && withRecovery(b);
+		if (aRecovery !== bRecovery) return aRecovery ? -1 : 1;
+		return 0;
+	});
+	return sorted.map((entry) => {
 		const summary = entry.summary || "(no output)";
 		const text = details.mode === "single" ? summary : `${entry.role}: ${summary}`;
 		const style = entry.status === "failed" || entry.status === "rejected" ? "error" : "text";
-		const recovery = entry.worktree && !entry.worktree.pruned ? `Recovery: ${entry.worktree.path}` : undefined;
+		const recovery = withRecovery(entry) ? `Recovery: ${entry.worktree!.path}` : undefined;
 		return recovery === undefined
 			? theme.fg(style, text)
 			: `${theme.fg("warning", recovery)} · ${theme.fg(style, text)}`;
