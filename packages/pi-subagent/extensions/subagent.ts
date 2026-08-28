@@ -298,10 +298,9 @@ export default function subagentExtension(
 		ensureWidget(ctx);
 		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ROWS) {
 			for (const [oldestId, item] of widgetItems) {
-				if (item.status !== "working") {
-					widgetItems.delete(oldestId);
-					break;
-				}
+				if (item.status === "working") continue;
+				widgetItems.delete(oldestId);
+				if (widgetItems.size < MAX_WIDGET_ROWS) break;
 			}
 		}
 		widgetItems.set(id, {

@@ -797,6 +797,40 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 	});
 });
 
+test("widget evicts enough terminal rows to recover capacity without hiding working rows", async () => {
+	await environment(async (agentDir) => {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "9";
+		const tasks = Array.from({ length: 9 }, (_, index) => `blocked-${String(index + 1).padStart(2, "0")}`);
+		const tenth = "blocked-10";
+		const calls: Promise<unknown>[] = [];
+		let releaseAll: () => Promise<unknown> = () => Promise.resolve();
+		try {
+			await writeWorkerRole(agentDir);
+			const fake = await blockedPiRunner(agentDir, tasks);
+			releaseAll = () => Promise.all([...tasks, tenth].map((task) => fake.release(task)));
+			const app = harness({ ui: true });
+			calls.push(...tasks.map((task, index) => app.tool.execute(`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx)));
+			await waitFor(() => fake.started().length === 9);
+			assert.equal(workingWidgetHeaders(app.widget!.render(100)).length, 8);
+
+			for (const task of tasks.slice(0, 2)) fake.release(task);
+			await Promise.all(calls.slice(0, 2));
+			const tenthCall = app.tool.execute("call-10", { role: "worker", task: tenth }, undefined, undefined, app.ctx);
+			calls.push(tenthCall);
+			await waitFor(() => fake.started().includes(tenth));
+
+			const widget = app.widget!.render(100).join("\n");
+			assert.doesNotMatch(widget, /blocked-01|blocked-02/);
+			for (const task of [...tasks.slice(2), tenth]) assert.match(widget, new RegExp(task));
+			assert.equal(workingWidgetHeaders(app.widget!.render(100)).length, 8);
+		} finally {
+			await releaseAll();
+			await Promise.allSettled(calls);
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
+		}
+	});
+});
+
 test("delegate_task leaves partial progress to the widget and renders minimal terminal summaries", async () => {
 	await environment(async () => {
 		const app = harness();
