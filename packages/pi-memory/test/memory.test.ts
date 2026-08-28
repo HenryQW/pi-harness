@@ -99,7 +99,7 @@ test("/remember validates input and sends live state", async () => {
 	}
 });
 
-test("/remember queues busy requests in FIFO order and reloads live entries after settlement", async () => {
+test("/remember queues busy requests in FIFO order, retains unavailable work, and reloads live entries after settlement", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-remember-queue-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
@@ -124,7 +124,20 @@ test("/remember queues busy requests in FIFO order and reloads live entries afte
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 
 		const notifications: Array<{ message: string; level: string }> = [];
+		let model = { provider: "test-provider", id: "test-model" };
+		let authenticated = true;
+		let delayedAuth = false;
+		let authStartedResolve: (() => void) | undefined;
+		let resolveAuth: (value: { ok: boolean }) => void = () => { throw new Error("Authentication did not start"); };
 		const context = (idle: boolean) => ({
+			get model() { return model; },
+			modelRegistry: {
+				getApiKeyAndHeaders: () => {
+					if (!delayedAuth) return Promise.resolve({ ok: authenticated });
+					authStartedResolve?.();
+					return new Promise<{ ok: boolean }>((resolve) => { resolveAuth = resolve; });
+				},
+			},
 			isIdle: () => idle,
 			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
 		});
@@ -152,18 +165,61 @@ test("/remember queues busy requests in FIFO order and reloads live entries afte
 		assert.ok(messages[1]!.includes(`Candidate:\n${JSON.stringify("second candidate")}`));
 		assert.ok(messages[1]!.includes(JSON.stringify({ memory: ["fresh second memory"], user: ["fresh first user"] })));
 
+		await remember.handler("auth first", context(false));
+		await remember.handler("auth second", context(false));
+		authenticated = false;
+		await settled({ type: "agent_settled" }, context(true));
+		assert.equal(messages.length, 2);
+
+		authenticated = true;
+		delayedAuth = true;
+		const authStarted = new Promise<void>((resolve) => { authStartedResolve = resolve; });
+		const staleAuth = settled({ type: "agent_settled" }, context(true));
+		await authStarted;
+		model = { provider: "other-provider", id: "other-model" };
+		await handlers.get("model_select")!({ type: "model_select", model }, context(true));
+		resolveAuth({ ok: true });
+		await staleAuth;
+		assert.equal(messages.length, 2);
+		delayedAuth = false;
+		authStartedResolve = undefined;
+
+		await writeFile(join(memoryDir, "MEMORY.md"), "fresh auth memory");
+		await settled({ type: "agent_settled" }, context(true));
+		assert.equal(messages.length, 3);
+		assert.ok(messages[2]!.includes(`Candidate:\n${JSON.stringify("auth first")}`));
+		await settled({ type: "agent_settled" }, context(true));
+		assert.equal(messages.length, 4);
+		assert.ok(messages[3]!.includes(`Candidate:\n${JSON.stringify("auth second")}`));
+
 		await remember.handler("discarded candidate", context(false));
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));
 		await settled({ type: "agent_settled" }, context(true));
 		assert.match(notifications.at(-1)!.message, /Cannot run \/remember: live memory state is unreadable or oversized/);
 		await writeFile(join(memoryDir, "MEMORY.md"), "restored memory");
 		await settled({ type: "agent_settled" }, context(true));
-		assert.equal(messages.length, 2);
+		assert.equal(messages.length, 4);
 
 		await remember.handler("new session candidate", context(false));
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		await settled({ type: "agent_settled" }, context(true));
-		assert.equal(messages.length, 2);
+		assert.equal(messages.length, 4);
+
+		await remember.handler("shutdown candidate", context(false));
+		delayedAuth = true;
+		const shutdownAuthStarted = new Promise<void>((resolve) => { authStartedResolve = resolve; });
+		const processing = settled({ type: "agent_settled" }, context(true));
+		await shutdownAuthStarted;
+		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, SESSION_CONTEXT);
+		resolveAuth({ ok: true });
+		await processing;
+		assert.equal(messages.length, 4);
+		delayedAuth = false;
+		authStartedResolve = undefined;
+
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
+		await settled({ type: "agent_settled" }, context(true));
+		assert.equal(messages.length, 4);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

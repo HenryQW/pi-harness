@@ -183,7 +183,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		sessionGeneration: number;
 	} = { conflictWarnings: [], rememberQueue: [], sessionGeneration: 0 };
 
-	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void): Promise<Record<Target, string[]> | undefined> => {
+	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<Record<Target, string[]> | undefined> => {
 		if (state.initError) {
 			warn(`Cannot run /${command}: persistent memory is disabled — ${sanitizeName(state.initError)}`);
 			return;
@@ -197,6 +197,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const invalid = loaded.filter(([, result]) => result.status);
 			if (invalid.length) {
 				warn(`Cannot run /${command}: live memory state is unreadable or oversized. ${invalid.map(([, result]) => result.conflictWarning).join(" ")}`);
+				onUnusable?.();
 				return;
 			}
 			if (!isIdle()) {
@@ -206,6 +207,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const overLimit = loaded.filter(([target, result]) => result.entries.join(ENTRY_DELIMITER).length > (target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit));
 			if (overLimit.length) {
 				warn(`Cannot run /${command}: live ${overLimit.map(([target]) => target).join(" and ")} entries exceed the configured character limit. Consolidate them before using /${command}.`);
+				onUnusable?.();
 				return;
 			}
 			return Object.fromEntries(loaded.map(([target, result]) => [target, result.entries])) as Record<Target, string[]>;
@@ -305,13 +307,38 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 		}
 		if (state.sessionGeneration !== sessionGeneration || !ctx.isIdle()) return;
-		const candidate = state.rememberQueue.shift();
+		const candidate = state.rememberQueue[0];
 		if (candidate === undefined) return;
+		const model = ctx.model;
+		if (!model) return;
+		const modelName = `${model.provider}/${model.id}`;
+		const isCurrent = () => {
+			if (state.sessionGeneration !== sessionGeneration) return false;
+			const currentModel = ctx.model;
+			return ctx.isIdle() && !!currentModel && `${currentModel.provider}/${currentModel.id}` === modelName;
+		};
+		try {
+			if (!(await ctx.modelRegistry.getApiKeyAndHeaders(model)).ok || !isCurrent()) return;
+		} catch {
+			return;
+		}
 		const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => {
 			if (state.sessionGeneration === sessionGeneration) ctx.ui.notify(message, "warning");
+		}, () => {
+			if (isCurrent()) state.rememberQueue.shift();
 		});
-		if (!entries || state.sessionGeneration !== sessionGeneration) return;
+		if (!entries || !isCurrent()) return;
 		sendRemember(candidate, entries);
+		state.rememberQueue.shift();
+	});
+
+	pi.on("model_select", () => {
+		state.sessionGeneration++;
+	});
+
+	pi.on("session_shutdown", () => {
+		state.sessionGeneration++;
+		state.rememberQueue = [];
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
