@@ -18,7 +18,7 @@ These rules apply to `packages/pi-subagent` in addition to the repository-level 
 - Keep stable child identity and Role instructions separate from per-run task text, cwd/worktree paths, review packets, and recovery guidance. Stable prompt material must precede variable material to preserve clear ownership and provider cache reuse.
 - Fail fast on malformed configuration and unavailable explicitly requested resources. Name the invalid or unavailable values and their provider requirement; do not silently launch an under-capable child. Documented optional resources, such as unavailable optional Skills, may retain their explicit warning behavior.
 - Launch only through the active Pi process invocation. Do not add standalone Pi discovery, install probing, shell execution, or a fallback child runtime.
-- Ambient child extensions and Skills stay disabled. Add resources only through resolved Role/caller policy, and keep recursive delegation tools excluded from every child.
+- Ambient child extensions and Skills stay disabled. An explicitly selected Role/caller extension is a trusted atomic capability bundle: activate every tool it registers and every Skill supplied through its Pi package metadata or dynamic `resources_discover`, alongside separately named Role Skills. Do not infer or externally narrow undocumented extension dependencies; an extension may rely on its tools, Skills, lifecycle, and prompt behavior, and loading it is not sandboxing. Scope children by selecting fewer trusted extensions; finer granularity requires separate extension entry points/configuration or an upstream split. Keep recursive delegation tools excluded from every child, and retain final-registry verification for explicit Role/caller tool names.
 
 ## Executor protocol
 
