@@ -29,7 +29,7 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 				"pi-herdr-btw/btw": "fast",
 				"pi-herdr-rename/rename": "fast",
 				"pi-auto-compact/autoCompact": "fast",
-				"pi-subagent/delegateTask": "balanced",
+				"pi-subagent/delegateTask": "fast",
 			},
 		});
 
@@ -102,7 +102,7 @@ test("resolves configured task routes through assignment, profile, and fallback"
 
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir),
-			/Task pi-subagent\/delegateTask profile balanced is not configured\. Run \/task-models\./,
+			/Task pi-subagent\/delegateTask profile fast is not configured\. Run \/task-models\./,
 		);
 		const file = join(dir, "config", "pi-task-models.json");
 		mkdirSync(join(dir, "config"), { recursive: true });
