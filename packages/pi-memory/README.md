@@ -15,6 +15,8 @@ pi install npm:@henryqw/pi-task-models # provides /task-models configuration UI
 pi install npm:@henryqw/pi-memory
 ```
 
+`pi-memory` depends on and bundles `@henryqw/pi-ask-question`, so it does not need a separate install. `@henryqw/pi-task-models` remains a separately installed singleton control plane.
+
 ## Use
 
 | Surface | Type | Purpose |
