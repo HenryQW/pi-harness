@@ -165,7 +165,7 @@ const executorOptions = {
 };
 ```
 
-Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, and `onTokens(number)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency`, `idleMs`, and `maxMs` must be positive; `maxMs` must exceed `idleMs`.
+Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency`, `idleMs`, and `maxMs` must be positive; `maxMs` must exceed `idleMs`.
 
 The executor is **active-Pi-only**. It reuses the currently running Pi invocation and does not locate or support a standalone Node.js Pi installation. Once direct Pi exits, stdout/stderr drain normally until EOF; an escaped descendant retaining either stream is cut off after short output inactivity or a one-second hard deadline so it cannot retain the FIFO permit.
 
@@ -230,6 +230,18 @@ async function runRole(role, task, options = {}) {
 ```
 
 `run` resolves to `EphemeralSubagentResult`. Both outcome variants contain `exitCode`, `output`, `stderr`, and optional `stopReason`, `errorMessage`, and `usage`. A launched child/model failure is a typed `{ outcome: "failure", ... }` result. Abort, timeout, spawn, protocol, preparation, and callback failures reject with `EphemeralSubagentError` and a stable `code`. Assistant `output` and `stderr` are bounded, and `usage` contains aggregate child usage when Pi supplies it.
+
+### Activity callbacks
+
+The optional `onActivity` callback receives structured activity events serially in child JSON-event order. This ordering applies only to `onActivity`; `onUpdate` and `onTokens` remain independent. A thrown or rejected activity callback fails the run with an `EphemeralSubagentError` whose code is `callback`.
+
+| Event type | Fields |
+| --- | --- |
+| `tool_execution_start` | `toolCallId: string`, `toolName: string`, `path?: string` |
+| `tool_execution_end` | `toolCallId: string`, `toolName: string` |
+| `message_end` | none |
+
+Activity text is limited to 4 KiB per field. An invalid `toolCallId` or `toolName`, or an oversized `path`, drops the event. A blank path or one containing C0/C1 terminal controls or Unicode line/paragraph separators is omitted from an otherwise valid start event.
 
 The low-level executor does not interpret `Role.isolation`, discover resources, compose modes, create shared state, or promote child failure outcomes to tool errors. A direct caller that wants worktrees must call `createChildWorktree` after the permit, choose the returned `cwd`, call `finalizeChildWorktree` on every exit path, and preserve its recovery payload.
 

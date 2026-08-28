@@ -1057,11 +1057,32 @@ test("delegate_task renders one-line working status and bounded terminal summari
 		const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
 		const expanded = app.tool.renderResult!(result, { expanded: true }, theme, {}).render(100);
 		assert.deepEqual(expanded, collapsed);
-		assert.deepEqual(collapsed, ["implementer: Implemented the fix. · Recovery: /repo/.worktrees/retained", "reviewer: Validation failed."]);
+		assert.deepEqual(collapsed, ["Recovery: /repo/.worktrees/retained · implementer: Implemented the fix.", "reviewer: Validation failed."]);
 		assert.doesNotMatch(collapsed.join("\n"), /status|✓|✗|task|model|thinking|tok|\d+m|opaque-|branch|ignored/);
 		const narrow = app.tool.renderResult!(result, {}, theme, {}).render(20);
 		assert.ok(narrow.length <= 3);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
+
+		const retained = formatWorkflowResult("parallel", [
+			{ id: "opaque-failed", index: 0, role: "reviewer", status: "failed", failure: "Validation failed." },
+			{ id: "opaque-ordinary", index: 1, role: "worker-2", status: "succeeded", assistantOutput: "ordinary result" },
+			{ id: "opaque-retained", index: 2, role: "worker-3", status: "succeeded", assistantOutput: "x".repeat(160), worktreePayload: { path: "/repo/.worktrees/late", branch: "pi-subagent/late", commits: 1, dirty: false, pruned: false } },
+			{ id: "opaque-last", index: 3, role: "worker-4", status: "succeeded", assistantOutput: "last result" },
+		]);
+		const retainedResult = { content: [{ type: "text" as const, text: retained.text }], details: retained.details };
+		const retainedCollapsed = app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(100);
+		const retainedExpanded = app.tool.renderResult!(retainedResult, { expanded: true }, theme, {}).render(100);
+		assert.deepEqual(retainedExpanded, retainedCollapsed);
+		assert.equal(retainedCollapsed.length, 3);
+		assert.match(retainedCollapsed[0]!, /^Recovery: \/repo\/\.worktrees\/late/);
+		assert.match(retainedCollapsed[1]!, /^reviewer: Validation failed\./);
+		assert.match(retainedCollapsed[2]!, /^… 2 more$/);
+		for (const width of [24, 1]) {
+			const lines = app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(width);
+			assert.equal(lines.length, 3, `width=${width}`);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `width=${width}`);
+		}
+		assert.match(app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(24)[0]!, /\/repo/);
 
 		const eight = formatWorkflowResult("parallel", Array.from({ length: 8 }, (_, index) => ({
 			id: `opaque-${index}`,
@@ -1077,7 +1098,7 @@ test("delegate_task renders one-line working status and bounded terminal summari
 		const eightExpanded = app.tool.renderResult!(eightResult, { expanded: true }, theme, {}).render(100);
 		assert.deepEqual(eightExpanded, eightCollapsed);
 		assert.deepEqual(eightCollapsed, [
-			"worker-1: result 1 · Recovery: /repo/.worktrees/recover",
+			"Recovery: /repo/.worktrees/recover · worker-1: result 1",
 			"worker-2: result 2",
 			"… 6 more",
 		]);

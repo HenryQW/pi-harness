@@ -185,14 +185,18 @@ function workflowCallLabel(args: { tasks?: unknown; chain?: unknown }): string {
 
 function workflowResultLines(details: WorkflowTransportDetails, theme: Theme): string[] {
 	if (details.entries.some(({ status }) => status === "pending" || status === "running")) return [];
-	return details.entries.filter(({ status }) => status !== "skipped").map((entry) => {
+	const entries = details.entries.filter(({ status }) => status !== "skipped");
+	return [
+		...entries.filter(({ worktree }) => worktree && !worktree.pruned),
+		...entries.filter(({ worktree }) => !worktree || worktree.pruned),
+	].map((entry) => {
 		const summary = entry.summary || "(no output)";
 		const text = details.mode === "single" ? summary : `${entry.role}: ${summary}`;
 		const style = entry.status === "failed" || entry.status === "rejected" ? "error" : "text";
 		const recovery = entry.worktree && !entry.worktree.pruned ? `Recovery: ${entry.worktree.path}` : undefined;
 		return recovery === undefined
 			? theme.fg(style, text)
-			: `${theme.fg(style, text)} · ${theme.fg("warning", recovery)}`;
+			: `${theme.fg("warning", recovery)} · ${theme.fg(style, text)}`;
 	});
 }
 

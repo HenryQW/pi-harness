@@ -287,8 +287,15 @@ function activityTooLong(value: unknown): boolean {
 	return typeof value === "string" && Buffer.byteLength(value, "utf8") > MAX_ACTIVITY_TEXT_BYTES;
 }
 
+function hasTerminalControlChars(text: string): boolean {
+	return Array.from(text).some((character) => {
+		const code = character.codePointAt(0)!;
+		return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x2028 || code === 0x2029;
+	});
+}
+
 function activityText(value: unknown): value is string {
-	return typeof value === "string" && value.trim().length > 0 && !activityTooLong(value);
+	return typeof value === "string" && value.trim().length > 0 && !activityTooLong(value) && !hasTerminalControlChars(value);
 }
 
 function utf8Prefix(text: string, maxBytes: number): string {
@@ -521,6 +528,8 @@ async function runPi(
 			stop(true);
 		};
 
+		let activityQueue: Promise<void> = Promise.resolve();
+
 		const invokeCallback = <Value>(
 			name: "onUpdate" | "onTokens" | "onActivity",
 			callback: ((value: Value) => void) | undefined,
@@ -528,11 +537,18 @@ async function runPi(
 		) => {
 			if (!callback || callbackFailure) return;
 			let pending: Promise<void>;
-			try {
-				pending = Promise.resolve(callback(value)).then(undefined, (cause) => { failCallback(name, cause); });
-			} catch (cause) {
-				failCallback(name, cause);
-				return;
+			if (name === "onActivity") {
+				pending = activityQueue.then(() => {
+					if (!callbackFailure) return callback(value);
+				}).catch((cause) => { failCallback(name, cause); });
+				activityQueue = pending;
+			} else {
+				try {
+					pending = Promise.resolve(callback(value)).then(undefined, (cause) => { failCallback(name, cause); });
+				} catch (cause) {
+					failCallback(name, cause);
+					return;
+				}
 			}
 			pendingCallbacks.add(pending);
 			void pending.then(() => pendingCallbacks.delete(pending));
@@ -602,22 +618,21 @@ async function runPi(
 			}
 			if (record.type === "tool_execution_start" || record.type === "tool_execution_end") {
 				const { toolCallId, toolName } = record;
-				if (activityText(toolCallId) && activityText(toolName)) {
-					if (record.type === "tool_execution_start") {
-						const args = record.args;
-						const path = args && typeof args === "object" && !Array.isArray(args)
-							? (args as Record<string, unknown>).path
-							: undefined;
-						if (activityTooLong(path)) return;
-						invokeCallback("onActivity", input.onActivity, {
-							type: "tool_execution_start",
-							toolCallId,
-							toolName,
-							...(activityText(path) && !/[\r\n\u2028\u2029]/.test(path) ? { path } : {}),
-						});
-					} else {
-						invokeCallback("onActivity", input.onActivity, { type: "tool_execution_end", toolCallId, toolName });
-					}
+				if (!activityText(toolCallId) || !activityText(toolName)) return;
+				if (record.type === "tool_execution_start") {
+					const args = record.args;
+					const path = args && typeof args === "object" && !Array.isArray(args)
+						? (args as Record<string, unknown>).path
+						: undefined;
+					if (activityTooLong(path)) return;
+					invokeCallback("onActivity", input.onActivity, {
+						type: "tool_execution_start",
+						toolCallId,
+						toolName,
+						...(activityText(path) ? { path } : {}),
+					});
+				} else {
+					invokeCallback("onActivity", input.onActivity, { type: "tool_execution_end", toolCallId, toolName });
 				}
 				return;
 			}

@@ -287,6 +287,8 @@ test("executor projects validated child activity", async (t) => {
 event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/ephemeral.ts" } });
 event({ type: "tool_execution_start", toolCallId: "bash-2", toolName: "bash", args: {} });
 event({ type: "tool_execution_start", toolCallId: "write-3", toolName: "write", args: { path: "one\\ntwo" } });
+event({ type: "tool_execution_start", toolCallId: "esc-4", toolName: "read", args: { path: "one\\u001b[2Jtwo" } });
+event({ type: "tool_execution_start", toolCallId: "c1-5", toolName: "read", args: { path: "one\\u009btwo" } });
 event({ type: "tool_execution_end", toolCallId: "bash-2", toolName: "bash" });
 event({ type: "tool_execution_end", toolCallId: "write-3", toolName: "write" });
 event({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" });
@@ -302,6 +304,8 @@ event({ type: "message_end", message: { role: "assistant", content: [{ type: "te
 		{ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", path: "src/ephemeral.ts" },
 		{ type: "tool_execution_start", toolCallId: "bash-2", toolName: "bash" },
 		{ type: "tool_execution_start", toolCallId: "write-3", toolName: "write" },
+		{ type: "tool_execution_start", toolCallId: "esc-4", toolName: "read" },
+		{ type: "tool_execution_start", toolCallId: "c1-5", toolName: "read" },
 		{ type: "tool_execution_end", toolCallId: "bash-2", toolName: "bash" },
 		{ type: "tool_execution_end", toolCallId: "write-3", toolName: "write" },
 		{ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" },
@@ -351,6 +355,37 @@ event({ type: "message_end", message: { role: "assistant", content: [{ type: "te
 		{ type: "tool_execution_end", toolCallId: "tool-ok", toolName: "read" },
 		{ type: "message_end" },
 	]);
+});
+
+test("executor serializes asynchronous activity callbacks in event order", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: {} });
+event({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	let releaseStart!: () => void;
+	const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+	let startObserved!: () => void;
+	const started = new Promise<void>((resolve) => { startObserved = resolve; });
+	const activity: string[] = [];
+	const running = executor().run({
+		onActivity: async (event) => {
+			if (event.type === "tool_execution_start") {
+				activity.push("start-begin");
+				startObserved();
+				await startGate;
+				activity.push("start-end");
+				return;
+			}
+			activity.push(event.type);
+		},
+		prepare: async () => prepared(cwd),
+	});
+	await started;
+	assert.deepEqual(activity, ["start-begin"]);
+	releaseStart();
+	assert.equal((await running).output, "done");
+	assert.deepEqual(activity, ["start-begin", "start-end", "tool_execution_end", "message_end"]);
 });
 
 test("activity callback failures are typed executor failures", async (t) => {

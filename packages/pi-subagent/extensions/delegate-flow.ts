@@ -185,8 +185,17 @@ function flowResultLines(text: string): string[] {
 	const lines = text.split(/\r?\n/).filter((line) => line.trim());
 	const diagnosticHeader = lines.findIndex((line) => line.trim() === "Diagnostic:");
 	const diagnostic = diagnosticHeader === -1 ? undefined : lines[diagnosticHeader + 1];
-	if (diagnostic === undefined) return lines;
+	const recoveryHeader = lines.findIndex((line) => line.trim() === "Retained Flow state:" || line.trim() === "Attempted allocations preserved without cleanup:");
+	const recovery = recoveryHeader === -1 || !lines[recoveryHeader + 1]?.trim().startsWith("- unit=")
+		? undefined
+		: lines[recoveryHeader + 1];
+	if (diagnostic === undefined) {
+		if (recovery === undefined) return lines;
+		const recoveryIndex = lines.indexOf(recovery);
+		return [lines[0]!, recovery, ...lines.filter((_, index) => index !== 0 && index !== recoveryIndex)];
+	}
 	const leading = lines.slice(0, Math.min(1, diagnosticHeader));
+	if (recovery !== undefined) return [...leading, `Diagnostic: ${diagnostic}`, recovery];
 	// Promote the first diagnostic ahead of the result cap.
 	return [
 		...leading,
@@ -489,6 +498,14 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		const lines = [
 			`Flow ${outcome}.`,
 			flow.completed.length ? `Completed units: ${flow.completed.map(({ id, noOp }) => `${JSON.stringify(id)}${noOp ? " (no-op)" : ""}`).join(", ")}` : "Completed units: none.",
+			...(flow.setupRecoveries.length ? [
+				"Attempted allocations preserved without cleanup:",
+				...flow.setupRecoveries.map((recovery) => `- unit=${JSON.stringify(recovery.id)} path=${JSON.stringify(recovery.path)} branch=${JSON.stringify(recovery.branch)} base=${recovery.base}`),
+			] : []),
+			...(retainedUnits.length ? [
+				"Retained Flow state:",
+				...retainedUnits.map((unit) => `- unit=${JSON.stringify(unit.id)} path=${JSON.stringify(unit.path)} branch=${JSON.stringify(unit.branch)} base=${unit.base} worktree=${unit.worktreeRetained} branch_ref=${unit.branchRetained}`),
+			] : []),
 			...(blocked ? [
 				`Blocked unit: ${JSON.stringify(blocked.unit.request.id)}.`,
 				`Classification: ${blocked.classification}.`,
@@ -498,14 +515,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			] : []),
 			...(failure ? [`Classification: ${failure.classification}.`, `Diagnostic:\n${failure.diagnostic}`] : []),
 			...(flow.warnings.length ? ["Warnings:", ...flow.warnings.map((warning) => `- ${warning}`)] : []),
-			...(flow.setupRecoveries.length ? [
-				"Attempted allocations preserved without cleanup:",
-				...flow.setupRecoveries.map((recovery) => `- unit=${JSON.stringify(recovery.id)} path=${JSON.stringify(recovery.path)} branch=${JSON.stringify(recovery.branch)} base=${recovery.base}`),
-			] : []),
-			...(retainedUnits.length ? [
-				"Retained Flow state:",
-				...retainedUnits.map((unit) => `- unit=${JSON.stringify(unit.id)} path=${JSON.stringify(unit.path)} branch=${JSON.stringify(unit.branch)} base=${unit.base} worktree=${unit.worktreeRetained} branch_ref=${unit.branchRetained}`),
-			] : []),
 		];
 		return {
 			content: [{ type: "text" as const, text: capOutput(lines.join("\n")) }],

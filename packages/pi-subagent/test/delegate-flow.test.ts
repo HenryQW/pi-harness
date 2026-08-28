@@ -365,6 +365,42 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 	}
 });
 
+test("Flow result renderers retain a recovery path beside long diagnostics", async (t) => {
+	const app = harness(await repository(t), () => success());
+	const theme = { fg: (_color: string, value: string) => value };
+	const recovery = '- unit="x" path="/repo/.worktrees/retained" branch="pi-subagent/retained" base=abc123 worktree=true branch_ref=true';
+	const result = {
+		content: [{ type: "text" as const, text: [
+			"Flow failed.",
+			"Completed units: none.",
+			"Classification: infrastructure.",
+			"Diagnostic:",
+			"x".repeat(160),
+			"diagnostic continuation",
+			"Retained Flow state:",
+			recovery,
+		].join("\n") }],
+		details: {},
+	};
+
+	for (const [label, tool] of [["delegate_flow", flowTool(app)], ["delegate_flow_continue", continueTool(app)]] as const) {
+		const collapsed = tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(100);
+		const expanded = tool.renderResult!(result, { expanded: true, isPartial: false }, theme, {}).render(100);
+		assert.deepEqual(expanded, collapsed, label);
+		assert.equal(collapsed.length, 3, label);
+		assert.match(collapsed[1]!, /^Diagnostic:/, label);
+		assert.match(collapsed[2]!, /path="\/repo\/\.worktrees\/retained"/, label);
+		assert.doesNotMatch(collapsed.join("\n"), /… \d+ more/, label);
+
+		for (const width of [24, 1]) {
+			const lines = tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(width);
+			assert.equal(lines.length, 3, `${label} width=${width}`);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} width=${width}`);
+		}
+		assert.match(tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(24)[2]!, /path="\/rep/, label);
+	}
+});
+
 test("setup preserves a clean registered collision, cleans earlier allocations non-forcibly, and never falls back outside committed Git", async (t) => {
 	const repo = await repository(t);
 	let children = 0;
@@ -1086,6 +1122,14 @@ test("validation, Reviewer findings, and Reviewer transport failures keep distin
 	assert.ok(Buffer.byteLength(validationResult.details.blocked.diagnostic, "utf8") <= 50 * 1024);
 	assert.match(validationResult.details.blocked.diagnostic, /exit 3/);
 	assert.equal(existsSync(skippedMarker), false);
+	const validationLines = flowTool(validationApp).renderResult!(
+		validationResult,
+		{ expanded: false, isPartial: false },
+		{ fg: (_color: string, value: string) => value },
+		{},
+	).render(200);
+	assert.equal(validationLines.length, 3);
+	assert.ok(validationLines.some((line) => line.includes(validationResult.details.blocked.path)));
 
 	const findingsRepo = await repository(t);
 	let reviewerTaskText = "";
