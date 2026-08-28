@@ -49,10 +49,16 @@ export interface EphemeralSubagentExecutorOptions {
 	timeout: EphemeralSubagentTimeout;
 }
 
+export type EphemeralSubagentActivityEvent =
+	| { type: "tool_execution_start"; toolCallId: string; toolName: string; path?: string }
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string }
+	| { type: "message_end" };
+
 export interface EphemeralSubagentRunInput {
 	signal?: AbortSignal;
 	onUpdate?: (text: string) => void;
 	onTokens?: (tokens: number) => void;
+	onActivity?: (event: EphemeralSubagentActivityEvent) => void;
 	prepare: () => Promise<{ launch: PiLaunch; task: string; cwd: string }>;
 }
 
@@ -129,11 +135,15 @@ function validateRunInput(value: unknown): EphemeralSubagentRunInput {
 	if (input.onTokens !== undefined && typeof input.onTokens !== "function") {
 		throw new TypeError("run.onTokens must be a function.");
 	}
+	if (input.onActivity !== undefined && typeof input.onActivity !== "function") {
+		throw new TypeError("run.onActivity must be a function.");
+	}
 	return {
 		signal: input.signal as AbortSignal | undefined,
 		prepare: input.prepare as EphemeralSubagentRunInput["prepare"],
 		onUpdate: input.onUpdate as EphemeralSubagentRunInput["onUpdate"],
 		onTokens: input.onTokens as EphemeralSubagentRunInput["onTokens"],
+		onActivity: input.onActivity as EphemeralSubagentRunInput["onActivity"],
 	};
 }
 
@@ -270,6 +280,10 @@ function assistantText(message: unknown): string | undefined {
 		.map((part) => part.text)
 		.join("\n");
 	return text || undefined;
+}
+
+function activityText(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
 }
 
 function utf8Prefix(text: string, maxBytes: number): string {
@@ -495,7 +509,7 @@ async function runPi(
 			}
 		};
 
-		const failCallback = (name: "onUpdate" | "onTokens", cause: unknown) => {
+		const failCallback = (name: "onUpdate" | "onTokens" | "onActivity", cause: unknown) => {
 			if (callbackFailure) return;
 			callbackFailure = new EphemeralSubagentError("callback", `Subagent ${name} callback failed.`, cause);
 			signalCallbackFailure();
@@ -503,7 +517,7 @@ async function runPi(
 		};
 
 		const invokeCallback = <Value>(
-			name: "onUpdate" | "onTokens",
+			name: "onUpdate" | "onTokens" | "onActivity",
 			callback: ((value: Value) => void) | undefined,
 			value: Value,
 		) => {
@@ -581,6 +595,26 @@ async function runPi(
 				}
 				return;
 			}
+			if (record.type === "tool_execution_start" || record.type === "tool_execution_end") {
+				const { toolCallId, toolName } = record;
+				if (activityText(toolCallId) && activityText(toolName)) {
+					if (record.type === "tool_execution_start") {
+						const args = record.args;
+						const path = args && typeof args === "object" && !Array.isArray(args)
+							? (args as Record<string, unknown>).path
+							: undefined;
+						invokeCallback("onActivity", input.onActivity, {
+							type: "tool_execution_start",
+							toolCallId,
+							toolName,
+							...(activityText(path) && !/[\r\n\u2028\u2029]/.test(path) ? { path } : {}),
+						});
+					} else {
+						invokeCallback("onActivity", input.onActivity, { type: "tool_execution_end", toolCallId, toolName });
+					}
+				}
+				return;
+			}
 			if (record.type !== "message_end") return;
 			const text = assistantText(record.message);
 			if (text !== undefined) {
@@ -596,6 +630,7 @@ async function runPi(
 					currentTokens = 0;
 					currentUsage = undefined;
 					invokeCallback("onTokens", input.onTokens, completedTokens);
+					invokeCallback("onActivity", input.onActivity, { type: "message_end" });
 				}
 				if (typeof message.stopReason === "string") stopReason = message.stopReason;
 				if (typeof message.errorMessage === "string") errorMessage = message.errorMessage;
