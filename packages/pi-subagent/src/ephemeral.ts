@@ -8,6 +8,7 @@ import type { PiLaunch } from "./index.ts";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
+const MAX_ACTIVITY_TEXT_BYTES = 4 * 1024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const POST_EXIT_STDIO_IDLE_MS = 250;
 const POST_EXIT_STDIO_HARD_MS = 1_000;
@@ -282,8 +283,12 @@ function assistantText(message: unknown): string | undefined {
 	return text || undefined;
 }
 
+function activityTooLong(value: unknown): boolean {
+	return typeof value === "string" && Buffer.byteLength(value, "utf8") > MAX_ACTIVITY_TEXT_BYTES;
+}
+
 function activityText(value: unknown): value is string {
-	return typeof value === "string" && value.trim().length > 0;
+	return typeof value === "string" && value.trim().length > 0 && !activityTooLong(value);
 }
 
 function utf8Prefix(text: string, maxBytes: number): string {
@@ -603,6 +608,7 @@ async function runPi(
 						const path = args && typeof args === "object" && !Array.isArray(args)
 							? (args as Record<string, unknown>).path
 							: undefined;
+						if (activityTooLong(path)) return;
 						invokeCallback("onActivity", input.onActivity, {
 							type: "tool_execution_start",
 							toolCallId,

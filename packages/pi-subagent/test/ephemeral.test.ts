@@ -328,6 +328,31 @@ event({ type: "message_end", message: { role: "assistant", content: [{ type: "te
 	assert.deepEqual(activity, [{ type: "message_end" }]);
 });
 
+test("executor excludes oversized activity fields before telemetry", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+const oversized = "x".repeat(64 * 1024);
+event({ type: "tool_execution_start", toolCallId: oversized, toolName: "read", args: {} });
+event({ type: "tool_execution_start", toolCallId: "tool-name", toolName: oversized, args: {} });
+event({ type: "tool_execution_start", toolCallId: "tool-path", toolName: "read", args: { path: oversized } });
+event({ type: "tool_execution_end", toolCallId: oversized, toolName: "read" });
+event({ type: "tool_execution_end", toolCallId: "tool-end-name", toolName: oversized });
+event({ type: "tool_execution_start", toolCallId: "tool-ok", toolName: "read", args: { path: "src/ok.ts" } });
+event({ type: "tool_execution_end", toolCallId: "tool-ok", toolName: "read" });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+`);
+	const activity: EphemeralSubagentActivityEvent[] = [];
+	const result = await executor().run({
+		onActivity: (event) => activity.push(event),
+		prepare: async () => prepared(cwd),
+	});
+	assert.equal(result.output, "done");
+	assert.deepEqual(activity, [
+		{ type: "tool_execution_start", toolCallId: "tool-ok", toolName: "read", path: "src/ok.ts" },
+		{ type: "tool_execution_end", toolCallId: "tool-ok", toolName: "read" },
+		{ type: "message_end" },
+	]);
+});
+
 test("activity callback failures are typed executor failures", async (t) => {
 	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: {} })); setInterval(() => {}, 1_000);\n`);
 	const cause = new Error("activity observer failed");

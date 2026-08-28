@@ -31,6 +31,7 @@ import {
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
+import { renderToolLines } from "./tool-render.ts";
 import { runDelegation } from "./delegation.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -57,7 +58,7 @@ const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ROWS = 8;
-const MAX_RENDERED_RESULT_LINES = 3;
+export const MAX_WIDGET_ACTIVE_TOOLS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
 	maxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
@@ -90,7 +91,7 @@ type WidgetItem = {
 	status: WidgetStatus;
 	finishedAt?: number;
 	completedAssistantTurns: number;
-	startedToolIds: Set<string>;
+	startedToolCount: number;
 	activeTools: Map<string, WidgetActiveTool>;
 	activeToolId?: string;
 	activityOrder: number;
@@ -143,9 +144,9 @@ function activityMetrics(item: WidgetItem, now: number): string {
 		...(item.completedAssistantTurns === 0
 			? []
 			: [`${item.completedAssistantTurns} turn${item.completedAssistantTurns === 1 ? "" : "s"}`]),
-		...(item.startedToolIds.size === 0
+		...(item.startedToolCount === 0
 			? []
-			: [`${item.startedToolIds.size} tool${item.startedToolIds.size === 1 ? "" : "s"}`]),
+			: [`${item.startedToolCount} tool${item.startedToolCount === 1 ? "" : "s"}`]),
 		item.model,
 		item.thinkingLevel,
 		`${formatTokens(item.tokens)} tok`,
@@ -174,17 +175,6 @@ function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportD
 				&& (entry.worktree.inspection_failed === undefined || typeof entry.worktree.inspection_failed === "boolean")
 				&& (entry.worktree.note === undefined || typeof entry.worktree.note === "string")))
 		&& entries.every((entry, index) => index === 0 || (entry as { index: number }).index > (entries[index - 1] as { index: number }).index);
-}
-
-function renderBoundedLines(lines: readonly string[], width: number, theme: Theme): string[] {
-	const shown = lines.length > MAX_RENDERED_RESULT_LINES
-		? [...lines.slice(0, MAX_RENDERED_RESULT_LINES - 1), theme.fg("muted", `… ${lines.length - MAX_RENDERED_RESULT_LINES + 1} more`)]
-		: lines;
-	return shown.map((line) => truncateToWidth(line.replace(/[\r\n]+/g, " "), width));
-}
-
-function renderToolLines(lines: readonly string[], theme: Theme): Component {
-	return { invalidate() {}, render: (width) => renderBoundedLines(lines, width, theme) };
 }
 
 function workflowCallLabel(args: { tasks?: unknown; chain?: unknown }): string {
@@ -371,7 +361,7 @@ export default function subagentExtension(
 			startedAt: Date.now(),
 			status: "working",
 			completedAssistantTurns: 0,
-			startedToolIds: new Set(),
+			startedToolCount: 0,
 			activeTools: new Map(),
 			activityOrder: 0,
 		});
@@ -392,8 +382,15 @@ export default function subagentExtension(
 		switch (event.type) {
 			case "tool_execution_start": {
 				if (item.activeTools.has(event.toolCallId)) break;
+				if (item.activeTools.size >= MAX_WIDGET_ACTIVE_TOOLS) {
+					let oldest: [string, WidgetActiveTool] | undefined;
+					for (const candidate of item.activeTools) {
+						if (!oldest || candidate[1].order < oldest[1].order) oldest = candidate;
+					}
+					if (oldest) item.activeTools.delete(oldest[0]);
+				}
 				const path = event.path === undefined ? undefined : basename(event.path);
-				item.startedToolIds.add(event.toolCallId);
+				item.startedToolCount += 1;
 				item.activeTools.set(event.toolCallId, {
 					toolName: event.toolName,
 					...(path ? { path } : {}),

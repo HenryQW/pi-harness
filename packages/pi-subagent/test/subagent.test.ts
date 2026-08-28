@@ -14,7 +14,7 @@ import {
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
 import { formatWorkflowResult, formatWorkflowUpdate, WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
-import subagentExtension from "../extensions/subagent.ts";
+import subagentExtension, { MAX_WIDGET_ACTIVE_TOOLS } from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
 
@@ -863,6 +863,88 @@ waitFor("read", () => {
 			assert.match(widget, /Done · 1 turn · 2 tools/);
 		} finally {
 			await Promise.all(stagesToRelease.map(release));
+			await Promise.allSettled([running]);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+	});
+});
+
+test("widget bounds retained activity without losing counts or overlap fallback", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const stages = join(agentDir, "widget-activity-cap-stages");
+		await mkdir(stages);
+		const toolIds = Array.from({ length: MAX_WIDGET_ACTIVE_TOOLS + 1 }, (_, index) => `tool-${index + 1}`);
+		const retainedIds = toolIds.slice(1);
+		const oversized = "x".repeat(64 * 1024);
+		const actions = [
+			{ stage: "oversized", event: { type: "tool_execution_start", toolCallId: "oversized", toolName: oversized, args: {} } },
+			...toolIds.map((toolCallId) => ({ stage: `start-${toolCallId}`, event: { type: "tool_execution_start", toolCallId, toolName: toolCallId, args: {} } })),
+			{ stage: "duplicate", event: { type: "tool_execution_start", toolCallId: toolIds.at(-1)!, toolName: toolIds.at(-1)!, args: {} } },
+			{ stage: "end-evicted", event: { type: "tool_execution_end", toolCallId: toolIds[0]!, toolName: toolIds[0]! } },
+			{ stage: "end-latest", event: { type: "tool_execution_end", toolCallId: toolIds.at(-1)!, toolName: toolIds.at(-1)! } },
+			...retainedIds.slice(0, -1).reverse().map((toolCallId) => ({ stage: `end-${toolCallId}`, event: { type: "tool_execution_end", toolCallId, toolName: toolCallId } })),
+			{ stage: "done", event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } } },
+		];
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const stages = ${JSON.stringify(stages)};
+const actions = ${JSON.stringify(actions)};
+const event = (value) => console.log(JSON.stringify(value));
+writeFileSync(join(stages, "started"), "");
+const next = () => {
+	const action = actions.shift();
+	if (!action) return;
+	const timer = setInterval(() => {
+		if (!existsSync(join(stages, action.stage))) return;
+		clearInterval(timer);
+		event(action.event);
+		next();
+	}, 5);
+};
+next();
+`);
+		process.argv[1] = runner;
+		const app = harness({ ui: true });
+		const release = async (stage: string) => { await writeFile(join(stages, stage), ""); };
+		const rendered = () => app.widget!.render(100).join("\n");
+		const running = app.tool.execute("activity-cap", { role: "worker", task: "bound retained widget activity" }, undefined, undefined, app.ctx);
+		try {
+			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
+			await release("oversized");
+			for (const toolCallId of toolIds) {
+				await release(`start-${toolCallId}`);
+				await waitFor(() => rendered().includes(`${toolCallId} ·`));
+			}
+			let widget = rendered();
+			assert.match(widget, new RegExp(`${toolIds.at(-1)!} · \\d+s · ${toolIds.length} tools`));
+			assert.doesNotMatch(widget, /x{100}/);
+
+			await release("duplicate");
+			await release("end-evicted");
+			await release("end-latest");
+			const fallback = retainedIds.at(-1)!;
+			await waitFor(() => rendered().includes(`${fallback} ·`) && rendered().includes(`${toolIds.length} tools`));
+			widget = rendered();
+			assert.match(widget, new RegExp(`${fallback} · \\d+s · ${toolIds.length} tools`));
+
+			const endingIds = retainedIds.slice(0, -1).reverse();
+			for (const [index, toolCallId] of endingIds.entries()) {
+				await release(`end-${toolCallId}`);
+				const next = endingIds[index + 1];
+				await waitFor(() => next === undefined ? rendered().includes("thinking…") : rendered().includes(`${next} ·`));
+			}
+			widget = rendered();
+			assert.match(widget, new RegExp(`thinking… · ${toolIds.length} tools`));
+
+			await release("done");
+			assert.equal(singleOutput(await running), "done");
+			widget = rendered();
+			assert.match(widget, new RegExp(`Done · 1 turn · ${toolIds.length} tools`));
+			assert.doesNotMatch(widget, /tool-\d+ ·/);
+		} finally {
+			await Promise.all(actions.map(({ stage }) => release(stage)));
 			await Promise.allSettled([running]);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		}
