@@ -232,7 +232,6 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("clone-tab", {
 		description: "Clone the current conversation path into a new Herdr tab",
 		handler: async (_args, ctx) => {
-			await ctx.waitForIdle();
 			const source = await resolveSource("clone-tab", herdr, ctx);
 			const mutate = async (): Promise<{ createdTab: HerdrExecResult; cloneFile: string }> => {
 				const cloneFile = await createBranchedClone(ctx, source, ctx.cwd);
@@ -275,7 +274,6 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("clone-worktree", {
 		description: "Clone the current conversation into Pi in a new Herdr Git worktree",
 		handler: async (_args, ctx) => {
-			await ctx.waitForIdle();
 			const source = await resolveSource("clone-worktree", herdr, ctx);
 
 			// Herdr only creates worktrees from the repo parent workspace; running

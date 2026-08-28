@@ -44,7 +44,6 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 			await app.command("", app.ctx);
 
 			assert.deepEqual(app.events, [
-				"waitForIdle",
 				"exec:pane get",
 				"exec:workspace get",
 				"exec:worktree create",

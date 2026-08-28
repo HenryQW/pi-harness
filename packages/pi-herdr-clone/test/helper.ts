@@ -105,7 +105,7 @@ function harness(
 	const ctx = {
 		cwd,
 		sessionManager,
-		waitForIdle: async () => { events.push("waitForIdle"); },
+		waitForIdle: async () => { throw new Error("clone command must not wait for idle"); },
 		ui: {
 			notify: (message: string, type?: string) => notifications.push({ message, type }),
 		},

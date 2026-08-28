@@ -38,7 +38,6 @@ test("/clone-tab retries a briefly busy root pane, copies only the active path, 
 			await app.command("", app.ctx);
 
 			assert.deepEqual(app.events, [
-				"waitForIdle",
 				"exec:pane get",
 				"exec:workspace get",
 				"exec:tab create",
@@ -112,7 +111,7 @@ test("trust-boundary failures prevent agent launch and failed tab creation remov
 					} as ExtensionCommandContext["sessionManager"], data.cwd);
 					await assert.rejects(app.command("", app.ctx), expected);
 					assert.deepEqual(app.calls, []);
-					assert.deepEqual(app.events, ["waitForIdle"]);
+					assert.deepEqual(app.events, []);
 				});
 			}
 		});
