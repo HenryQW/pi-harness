@@ -5,7 +5,7 @@
 ```text
 Role (built-in or user override) + latest Pi registries ── resolveRoleLaunch ──> PiLaunch
                                                         │
-caller-owned task, cwd, signal ─────────────────────────┤
+caller-owned Model Task declaration, cwd, signal ────────┤
                                                         v
                                      active-Pi ephemeral executor
 ```
@@ -68,7 +68,7 @@ Single mode puts one delegation's fields at the top level.
 | `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory or a package-shipped built-in (`implementer`, `reviewer`); a same-named user file overrides the built-in. |
 | `task` | yes | Non-empty bounded task packet. |
 | `model` | no | Designated `provider/modelId`; takes precedence over `modelClass`, and Main supplies it only for an explicit user override. |
-| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; Main normally chooses `fast`, may choose `balanced` upfront for obvious complexity, and omission uses shared task assignment. |
+| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; Main normally chooses `fast`, may choose `balanced` upfront for obvious complexity, and omission uses pi-subagent's local Model Task declaration. |
 | `thinking` | no | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; Main supplies it only for an explicit user override. Route selection skips models that cannot honor it. |
 
 Those five fields are the complete delegation object. The direct-model/thinking rule is Main-facing policy only: the runtime adds no provenance tracking or enforcement. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
@@ -85,7 +85,7 @@ All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transp
 
 `delegate_flow({ units })` accepts 1–8 units with unique non-empty `id` and `task`, one or more direct `{command, args}` validation commands, optional `modelClass`, and optional non-empty `review` text. `delegate_flow_continue({ guidance, modelClass? })` is available only for the one blocked unit of the active Flow.
 
-A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. Omitted unit classes use the shared `pi-subagent/delegateTask` assignment; a selected class resolves through its existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
+A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. Omitted unit classes use pi-subagent's local `pi-subagent/delegateTask` declaration (default `fast`); a selected class resolves through its existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
 
 ```text
 Implementers (parallel, one Unit Worktree each)
@@ -149,12 +149,12 @@ The package root exports the following mechanism-level APIs:
 | --- | --- |
 | `loadRoles(agentDir?)` | Validate and load package-shipped built-in and user Role Markdown. |
 | `resolveRoleSkills(pi, role)` | Resolve Role Skill names from Pi's effective registry. |
-| `resolveRoleLaunch(pi, ctx, input)` | Resolve a shared task route and produce `ResolvedRoleLaunch`. |
+| `resolveRoleLaunch(pi, ctx, input)` | Resolve a caller-owned Model Task route and produce `ResolvedRoleLaunch`. |
 | `createRoleLaunch(pi, ctx, input)` | Produce the same launch from a caller-supplied resolved route. |
 | `createEphemeralSubagentExecutor(options)` | Queue and run one prepared no-session child per `run`. |
 | `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle. |
 
-A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, optional `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, `taskId`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
+A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, optional `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, and optional caller `agentDir`, `extensions`, `tools`, and `env`. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
 
 `createEphemeralSubagentExecutor` requires:
 
@@ -196,6 +196,13 @@ function latestContext() {
   return latestCtx;
 }
 
+const MODEL_TASK = {
+  id: "your-package/delegate",
+  label: "Package delegation",
+  purpose: "Run one package-owned delegated task.",
+  defaultProfile: "fast",
+};
+
 async function runRole(role, task, options = {}) {
   const {
     signal,
@@ -212,7 +219,7 @@ async function runRole(role, task, options = {}) {
       const ctx = latestContext();
       const launch = resolveRoleLaunch(pi, ctx, {
         role,
-        taskId: "your-package/delegate",
+        task: MODEL_TASK,
         extensions,
         tools,
         env,

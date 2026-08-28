@@ -48,6 +48,7 @@ function harness(options: {
 	let sessionName = options.sessionName;
 
 	const api = {
+		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: Handler) {
 			handlers.set(event, handler);
 		},

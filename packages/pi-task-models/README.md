@@ -1,11 +1,11 @@
 # `@henryqw/pi-task-models`
 
-Shared `fast`, `balanced`, `frontier`, and `fav` model profiles for HenryQW Pi extensions.
+Shared `fast`, `balanced`, `frontier`, and `fav` model profiles plus routing for consumer-owned Model Tasks.
 
 ## Why
 
 - **Created for**: Deduplicating model pickers and catalogs that each extension previously owned separately.
-- **Advantage**: One shared source of `fast`/`balanced`/`frontier`/`fav` profiles keeps routing consistent across consumers.
+- **Advantage**: One shared profile control plane keeps routes consistent while each consumer owns its task identity, intent, and default profile.
 
 ## Install
 
@@ -17,23 +17,23 @@ pi install npm:@henryqw/pi-task-models
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-auto-compact` | Consumer. Compaction defaults to the `fast` profile. |
-| `@henryqw/pi-herdr-btw` | Consumer. Side-thread launch uses the `fast` profile. |
-| `@henryqw/pi-herdr-rename` | Consumer. Rename uses the `fast` profile. |
-| `@henryqw/pi-subagent` | Consumer. Delegation defaults to `fast`; caller may override it. |
+| `@henryqw/pi-auto-compact` | Consumer. Its local compaction task defaults to `fast`. |
+| `@henryqw/pi-herdr-btw` | Consumer. Its local side-thread task defaults to `fast`. |
+| `@henryqw/pi-herdr-rename` | Consumer. Its local rename task defaults to `fast`. |
+| `@henryqw/pi-subagent` | Consumer. Its local delegation task defaults to `fast`; callers can declare their own task. |
 | `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots dedupe to one route. |
 
 ## Use
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/task-models` | command | Edit a profile or assign a task to a profile. |
+| `/task-models` | command | Edit a profile or override an active task's default profile. |
 
-Selecting a profile sets primary model, primary thinking, optional fallback model, then fallback thinking. One completed flow writes the whole profile. Selecting a task changes its assignment.
+Selecting a profile sets primary model, primary thinking, optional fallback model, then fallback thinking. One completed flow writes the whole profile. Selecting an active task sets its explicit override; choosing its consumer-declared default removes that override.
 
-Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. Empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated. Fallback choices exclude the selected primary. Hidden task assignments stay stored when a package is disabled. BTW selects the first authenticated viable route before pane launch.
+Consumers register their declarations at extension load. The one shared control plane asks active extensions for declarations when `/task-models` opens, so extension load order does not matter. It lists each active task's effective profile. Hidden explicit assignments stay stored when a consumer is disabled.
 
-Package also exports config and route-resolution helpers for consumers.
+Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. Empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated. Fallback choices exclude the selected primary. BTW selects the first authenticated viable route before pane launch.
 
 ## Config
 
@@ -57,10 +57,7 @@ Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-t
     }
   },
   "tasks": {
-    "pi-herdr-btw/btw": "fast",
-    "pi-herdr-rename/rename": "fast",
-    "pi-auto-compact/autoCompact": "fast",
-    "pi-subagent/delegateTask": "fast"
+    "pi-herdr-btw/btw": "balanced"
   }
 }
 ```
@@ -71,13 +68,11 @@ Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-t
 | `profiles.<profile>.primary.model` | Yes within a configured profile's `primary` | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry (or session-scoped models) at resolution time, not from this file | — |
 | `profiles.<profile>.primary.thinkingLevel` | Yes within a configured profile's `primary` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the model must support the level when the route resolves | — |
 | `profiles.<profile>.fallback` | No | When present, requires both `model` and `thinkingLevel` with the corresponding `primary.*` values; not allowed for `fav` | Omitted |
-| `tasks` | No | Object mapping task IDs (`<package>/<task>`) to a profile name | Built-in defaults listed in the example above |
-| `tasks.<taskId>` | Value required if the key is present | `fast`, `balanced`, `frontier`, `fav` | The built-in default for that task, if any |
+| `tasks` | No | Object mapping task IDs (`<package>/<task>`) to explicit user profile overrides | `{}` |
+| `tasks.<taskId>` | Value required if the key is present | `fast`, `balanced`, `frontier`, `fav` | That task declaration's `defaultProfile` |
 
-Model references use canonical `provider/model`; numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
+Task defaults live only in consumer declarations. Existing explicit assignments, including one equal to a declaration's default, remain valid. Model references use canonical `provider/model`; numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
 
-Reads are strict. A missing file yields no profiles and the built-in default task assignments; malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance and never rewrite the file.
+Reads are strict. A missing file yields `{ "profiles": {}, "tasks": {} }`; malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance and never rewrite the file.
 
-Profile thinking is authoritative for task routes.
-
-Consumers can call `resolveConfiguredTaskRoute(ctx, taskId)` for the first usable route or `resolveConfiguredTaskRoutes(ctx, taskId)` for primary and fallback routes. Both read strict shared config and fail with `/task-models` guidance when assignment, profile, or route is unavailable.
+Profile thinking is authoritative for task routes. Consumers define a `ModelTask`, call `registerModelTask(pi, task)` at extension load, then call `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)`. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.

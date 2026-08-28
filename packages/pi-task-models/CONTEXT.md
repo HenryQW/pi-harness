@@ -1,11 +1,11 @@
 # Pi Task Models
 
-Pi Task Models stores shared Task Profiles and explicit user Model Task assignments for HenryQW extensions; `pi-subagent/delegateTask` defaults to `fast` in its consumer package.
+Pi Task Models stores shared Task Profiles and explicit user overrides for consumer-owned Model Tasks. Consumers declare identity, intent, and default profiles; this package has no consumer catalog or package/source discovery.
 
 ## Language
 
 **Model Task**:
-A consumer-owned independently executed model operation. Exists only for independent model execution — not for work performed by the current session agent. Each consumer owns its Model Task ID, label/purpose, execution/prompt, and default Task Profile.
+A consumer-owned independently executed model operation. Exists only for independent model execution — not for work performed by the current session agent. Each consumer owns its Model Task ID, label, purpose, execution/prompt, and default Task Profile.
 _Avoid_: package-wide model setting, centrally owned consumer-task catalog, current-agent work
 
 **Task Profile**:
@@ -16,6 +16,6 @@ _Avoid_: package-owned model picker, per-extension model catalog
 One model reference plus thinking level chosen from current Pi model scope. Empty scope means every available registry model; pinned scope thinking remains binding.
 _Avoid_: free-form provider path, copied model metadata
 
-**Active Task Package**:
-Installed HenryQW package discovered from Pi command/tool sourceInfo.
-_Avoid_: filesystem scan, settings.json scan
+**Task declaration discovery**:
+The single control plane requests active consumer declarations through an idempotent namespaced Pi event request/response handshake when `/task-models` opens. It shows each declaration's effective `config.tasks[id] ?? defaultProfile`; inactive explicit overrides remain stored.
+_Avoid_: filesystem scan, command/tool `sourceInfo` discovery, bundled consumer control planes

@@ -216,6 +216,7 @@ async function createHarness(
 	const timers: Array<ReturnType<typeof setInterval>> = [];
 	const originalSetInterval = globalThis.setInterval;
 	const pi = {
+		events: { on: () => () => {}, emit() {} },
 		registerFlag() {},
 		registerCommand(name: string, command: Command) {
 			commands.set(name, command);

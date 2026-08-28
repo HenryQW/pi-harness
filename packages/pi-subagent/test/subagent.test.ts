@@ -114,6 +114,7 @@ function harness(options: {
 	const tui = { requestRender: () => { renders++; } };
 	const theme = { fg: (_color: string, value: string) => value };
 	const api = {
+		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 		registerTool(candidate: Tool) { tool = candidate; },
 		sendMessage(message: any, deliveryOptions: any) {
@@ -457,7 +458,7 @@ Return concise findings.
 				frontier: { primary: { model: "provider/frontier-model", thinkingLevel: "max" } },
 				fav: { primary: { model: "provider/fav-model", thinkingLevel: "high" } },
 			},
-			tasks: { "pi-subagent/delegateTask": "fast" },
+			tasks: {},
 		}));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);

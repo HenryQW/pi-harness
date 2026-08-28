@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode, startPiAgent } from "@henryqw/pi-herdr";
 import {
+	registerModelTask,
 	resolveConfiguredTaskRoutes,
+	type ModelTask,
 	type ResolvedTaskRoute,
 	type TaskRouteError,
 } from "@henryqw/pi-task-models";
@@ -49,7 +51,12 @@ import {
 } from "../internal/merge.ts";
 import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
 
-const BTW_TASK = "pi-herdr-btw/btw";
+export const BTW_TASK = {
+	id: "pi-herdr-btw/btw",
+	label: "BTW side thread",
+	purpose: "Launch an isolated Herdr side thread.",
+	defaultProfile: "fast",
+} as const satisfies ModelTask;
 const CHILD_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000;
 const LITERAL_DRAFT_PREFIX = "\u200b";
 const MERGE_POLL_INTERVAL_MS = 3_000;
@@ -389,6 +396,7 @@ export async function registerBtwExtension(
 	pi: ExtensionAPI,
 	options: { store?: ContextStorePort; configStore?: ConfigStorePort } = {},
 ): Promise<void> {
+	registerModelTask(pi, BTW_TASK);
 	const store = options.store ?? new ContextStore();
 	// Pi applies extension flag values after factories load, so inspect argv here
 	// while registering the same flag keeps Pi's CLI validation and help intact.

@@ -11,7 +11,7 @@
 | `pi-herdr-clone` | [`packages/pi-herdr-clone/CONTEXT.md`](packages/pi-herdr-clone/CONTEXT.md) | Active-path Pi session clones launched in new Herdr tabs |
 | `pi-herdr-done` | [`packages/pi-herdr-done/CONTEXT.md`](packages/pi-herdr-done/CONTEXT.md) | Clean completion and removal of the current Herdr worktree tab and checkout |
 | `pi-herdr-rename` | [`packages/pi-herdr-rename/CONTEXT.md`](packages/pi-herdr-rename/CONTEXT.md) | Model-generated Pi and Herdr conversation titles |
-| `pi-task-models` | [`packages/pi-task-models/CONTEXT.md`](packages/pi-task-models/CONTEXT.md) | Shared task model profiles and task assignments |
+| `pi-task-models` | [`packages/pi-task-models/CONTEXT.md`](packages/pi-task-models/CONTEXT.md) | Shared task profiles and consumer-owned task routing |
 | `pi-multi-codex` | [`packages/pi-multi-codex/CONTEXT.md`](packages/pi-multi-codex/CONTEXT.md) | Multiple ChatGPT Codex subscription accounts |
 | `pi-memory` | [`packages/pi-memory/CONTEXT.md`](packages/pi-memory/CONTEXT.md) | Auto-managed cross-session markdown memory scratch with size caps and session snapshots |
 | `pi-session-recall` | [`packages/pi-session-recall/CONTEXT.md`](packages/pi-session-recall/CONTEXT.md) | FTS5 search over past Pi session transcripts with four arg-inferred tool modes |
