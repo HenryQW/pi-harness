@@ -651,7 +651,6 @@ export default function subagentExtension(
 					setState(status, text);
 					try {
 						finishWidgetItem(entry.id, aborted ? "aborted" : status === "succeeded" ? "success" : "failure");
-						emitUpdate(emitToolUpdates);
 					} catch (error) {
 						rejected = error;
 						status = "rejected";

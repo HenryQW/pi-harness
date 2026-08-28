@@ -868,7 +868,10 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		assert.ok(updates.every((update) => Buffer.byteLength(update.content[0].text, "utf8") <= 50 * 1024));
 		const result = await running;
 		assert.equal(singleOutput(result), "partial 🙂 done");
-		assert.match(updates.at(-1).content[0].text, /status=succeeded[\s\S]*partial 🙂 done/);
+		assert.ok(updates.length > 0);
+		for (const update of updates) {
+			assert.deepEqual(app.tool.renderResult!(update, {}, { fg: (_color: string, value: string) => value }, {}).render(100), []);
+		}
 	});
 });
 
@@ -1111,8 +1114,6 @@ const timer = setInterval(() => {
 		] }, undefined, (update: any) => updates.push(update), app.ctx);
 		await waitFor(() => readdirSync(started).length === 2);
 		await writeFile(join(release, "beta"), "");
-		await waitFor(() => updates.some((update) =>
-			update.details.entries[0].status === "running" && update.details.entries[1].status === "succeeded"));
 		await writeFile(join(release, "alpha"), "");
 		const result = await running;
 
