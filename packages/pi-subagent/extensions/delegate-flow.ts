@@ -189,6 +189,11 @@ function implementerTask(unit: FlowUnitRequest): string {
 	return [
 		`Flow Unit ${JSON.stringify(unit.id)} requirements:`,
 		unit.task,
+		...(unit.review === undefined ? [] : [
+			"",
+			"Review criterion to satisfy; the Reviewer alone decides approval:",
+			unit.review,
+		]),
 		"",
 		"Authoritative Flow validation (do not duplicate this final gate):",
 		...unit.validation.map((validation) => `- ${JSON.stringify(validation)}`),
@@ -201,6 +206,11 @@ function repairTask(unit: FlowUnitRequest, blocked: BlockedState, guidance: stri
 		"",
 		"Original requirements:",
 		unit.task,
+		...(unit.review === undefined ? [] : [
+			"",
+			"Review criterion to satisfy; the Reviewer alone decides approval:",
+			unit.review,
+		]),
 		"",
 		"Authoritative Flow validation (do not duplicate this final gate):",
 		...unit.validation.map((validation) => `- ${JSON.stringify(validation)}`),

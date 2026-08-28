@@ -584,6 +584,7 @@ test("parallel Implementers all settle before declared-order processing stops at
 
 test("one continuation replaces the blocked Unit class in the same worktree and then clears the Flow", async (t) => {
 	const repo = await repository(t);
+	const criterion = "The repaired change must meet this deliberate review criterion.";
 	let initialCwd = "";
 	let repairCwd = "";
 	let implementerRuns = 0;
@@ -594,15 +595,17 @@ test("one continuation replaces the blocked Unit class in the same worktree and 
 		implementerRuns++;
 		if (prepared.task.startsWith("Flow Unit")) {
 			initialCwd = prepared.cwd;
+			assert.ok(prepared.task.includes(criterion));
 			return failure("implementation crashed");
 		}
 		repairCwd = prepared.cwd;
+		assert.ok(prepared.task.includes(criterion));
 		assert.match(prepared.task, /Previous implementer block:[\s\S]*implementation crashed/);
 		assert.match(prepared.task, /Main guidance:\nCommit the requested file/);
 		await commit(prepared.cwd, "repaired.txt", "fixed\n");
 		return success();
 	});
-	const blocked = await flowTool(app).execute("repair", { units: [{ ...reviewedUnit("repairable"), modelClass: "fast" }] }, undefined, undefined, app.ctx);
+	const blocked = await flowTool(app).execute("repair", { units: [{ ...reviewedUnit("repairable"), review: criterion, modelClass: "fast" }] }, undefined, undefined, app.ctx);
 	assert.equal(blocked.details.outcome, "blocked");
 	await assert.rejects(
 		flowTool(app).execute("blocked-concurrent", { units: [unit("other")] }, undefined, undefined, app.ctx),
