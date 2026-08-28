@@ -234,7 +234,7 @@ test("package-shipped Roles bypass same-name user overrides", async (t) => {
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
-	await writeFile(join(rolesDir, "implementer.md"), "---\nname: implementer\ndescription: override\n---\nOverride.\n");
+	await writeFile(join(rolesDir, "implementer.md"), "---\nname: implementer\ndescription: override\ntools: []\nextensions: []\nskills: []\n---\nOverride.\n");
 
 	assert.equal(loadRoles(agentDir).find((role) => role.name === "implementer")!.description, "override");
 	assert.equal(loadBuiltinRole("implementer").description, "Implements and validates one bounded change, requesting worktree isolation");

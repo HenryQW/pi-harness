@@ -138,26 +138,16 @@ test("child role policy rejects a malformed tool flag", () => {
 	assert.throws(sessionStart, /pi-subagent-role-tools must be JSON tool names/);
 });
 
-test("omitted Role tools preserve active Main built-ins and add caller protocol tools", () => {
+test("empty Role tools activate only trusted extension tools and caller additions", () => {
 	const role: Role = {
 		name: "worker",
-		description: "Uses Main defaults and caller protocol tools",
-		tools: undefined,
+		description: "Uses extension and caller tools",
+		tools: [],
 		extensions: ["/roles/worker.ts"],
 		skills: [],
 		systemPrompt: "Do bounded work.",
 	};
-	const mainPi = {
-		getCommands: () => [],
-		getActiveTools: () => ["read", "bash", "parent_extension", "ask_question"],
-		getAllTools: () => [
-			{ name: "read", sourceInfo: { source: "builtin" } },
-			{ name: "bash", sourceInfo: { source: "builtin" } },
-			{ name: "edit", sourceInfo: { source: "builtin" } },
-			{ name: "parent_extension", sourceInfo: { source: "npm:parent-extension" } },
-			{ name: "ask_question", sourceInfo: { source: "npm:parent-extension" } },
-		],
-	} as unknown as Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">;
+	const mainPi = { getCommands: () => [] } as unknown as Pick<ExtensionAPI, "getCommands">;
 	const launch = createRoleLaunch(mainPi, { isProjectTrusted: () => true }, {
 		role,
 		route: { model, thinkingLevel: "high" },
@@ -167,7 +157,7 @@ test("omitted Role tools preserve active Main built-ins and add caller protocol 
 
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/worker.ts", "/caller/protocol.ts"]);
 	assert.match(valuesAfter(launch.args, "--extension").at(-1)!, /pi-subagent\/extensions\/role-tools\.ts$/);
-	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "bash", "caller_protocol"]));
+	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["caller_protocol"]));
 
 	let sessionStart: (() => void) | undefined;
 	let activeTools = ["read", "bash", "edit", "role_extension", "caller_protocol", "caller_extension"];
@@ -194,7 +184,7 @@ test("omitted Role tools preserve active Main built-ins and add caller protocol 
 	childToolPolicy(childPi);
 	assert.ok(sessionStart);
 	sessionStart();
-	assert.deepEqual(activeTools, ["read", "bash", "caller_protocol", "role_extension", "caller_extension"]);
+	assert.deepEqual(activeTools, ["caller_protocol", "role_extension", "caller_extension"]);
 });
 
 test("assigned Role launch merges caller policy and resolves effective Pi resources", async (t) => {
@@ -219,14 +209,7 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 			source: "skill",
 			sourceInfo: { path: "/effective/security/SKILL.md" },
 		}],
-		getActiveTools: () => ["read", "bash", "parent_tool"],
-		getAllTools: () => [
-			{ name: "read", sourceInfo: { source: "builtin" } },
-			{ name: "bash", sourceInfo: { source: "builtin" } },
-			{ name: "edit", sourceInfo: { source: "builtin" } },
-			{ name: "parent_tool", sourceInfo: { source: "npm:parent-extension" } },
-		],
-	} as unknown as Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">;
+	} as unknown as Pick<ExtensionAPI, "getCommands">;
 	const ctx = {
 		model,
 		scopedModels: [],
@@ -267,18 +250,7 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 		"You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only the requested change.",
 	);
 
-	const defaultTools = resolveRoleLaunch(pi, ctx, {
-		role: { ...role, tools: undefined },
-		taskId: "pi-example/review",
-		agentDir,
-		extensions: ["/caller/adapter.ts"],
-		tools: ["submit"],
-	});
-	assert.equal(defaultTools.args.includes("--tools"), false);
-	assert.equal(defaultTools.args.includes("--no-tools"), false);
-	assert.equal(valueAfter(defaultTools.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "bash", "submit"]));
-	assert.equal(valuesAfter(defaultTools.args, "--extension").some((path) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), true);
-	assert.equal(valueAfter(defaultTools.args, "--exclude-tools"), "delegate_task,delegate_flow,delegate_flow_continue,ask_question");
+	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,delegate_flow,delegate_flow_continue,ask_question");
 });
 
 test("managed Herdr Subagent host reconciles, retries killed pane contention, prompts, lists, and retires", async () => {

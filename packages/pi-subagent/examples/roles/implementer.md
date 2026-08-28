@@ -9,6 +9,8 @@ tools:
   - grep
   - find
   - ls
+extensions: []
+skills: []
 isolation: worktree
 ---
 

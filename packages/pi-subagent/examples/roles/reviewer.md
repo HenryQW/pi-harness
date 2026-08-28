@@ -6,6 +6,8 @@ tools:
   - grep
   - find
   - ls
+extensions: []
+skills: []
 ---
 
 Perform a read-only correctness review of one bounded change.

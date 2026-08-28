@@ -126,15 +126,15 @@ If steps must share files, make that an explicit caller decision: use an intenti
 
 Every Role launch centrally prepends this child identity contract to its system instructions before the Role prompt: the child is a delegated Pi Subagent, not Main; it executes its assigned Role and task directly; Main-only delegation rules do not apply; recursive delegation is unavailable and it must not seek or invoke delegation tools.
 
-A Role file owns:
+A Role file requires:
 
-- base tools (`tools` omitted does not itself define an allowlist; `tools: []` means extension tools only);
-- explicit extension paths or package sources;
-- additional effective Pi Skill names;
+- base tools: a YAML array; `tools: []` activates no base built-ins, while trusted selected extension tools still activate;
+- explicit extension paths or package sources: a YAML array; `extensions: []` selects no Role extension bundle;
+- additional effective Pi Skill names: a YAML array; `skills: []` selects no separately named Role Skills, while trusted selected extension Skills still load;
 - system instructions; and
 - optional `isolation: worktree` for the tool layer.
 
-At launch, a package caller may add `tools`, `extensions`, and `env`. With an explicit Role tool list, caller tools are unioned into that base list. When Role tools and caller tools are both omitted, no allowlist is installed and Pi defaults remain active. When Role tools are omitted but caller tools are supplied, launch snapshots Main's effective active built-ins, unions the caller tools, and installs that policy. Loaded extension tools activate in every case. Caller `env` adds to or overrides the active Pi process environment for the child.
+Every launch installs the Role tool policy. At launch, a package caller may add `tools`, `extensions`, and `env`; caller tools are unioned into the Role base list and loaded extension tools activate in every case. Caller `env` adds to or overrides the active Pi process environment for the child.
 
 Children start with ambient extension and Skill discovery disabled. Only explicit Role/caller extensions, explicitly resolved Skill paths, resources supplied by those extension packages, and any required internal tool-policy or Codex adapter load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `delegate_flow`, `delegate_flow_continue`, and `ask_question`. Explicit Role/caller tool names are verified against the final filtered active child registry after every explicit provider extension completes `session_start`; unavailable names fail before the first model turn and identify the missing names with provider-extension guidance.
 
@@ -153,7 +153,7 @@ The package root exports the following mechanism-level APIs:
 | `createEphemeralSubagentExecutor(options)` | Queue and run one prepared no-session child per `run`. |
 | `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle. |
 
-A loaded `Role` contains `name`, `description`, optional `tools` and `isolation`, plus normalized `extensions`, `skills`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, `taskId`, and optional `agentDir`, `extensions`, `tools`, and `env`. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
+A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, optional `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, `taskId`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
 
 `createEphemeralSubagentExecutor` requires:
 

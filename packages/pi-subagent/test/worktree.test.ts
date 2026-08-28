@@ -632,8 +632,8 @@ test("loadRoles accepts isolation worktree and rejects other values", async (t) 
 	t.after(async () => {
 		await Promise.all([acceptDir, rejectDir].map((dir) => rm(dir, { recursive: true, force: true })));
 	});
-	await writeFile(join(acceptDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: worktree\n---\nBody.\n");
-	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\n---\nBody.\n");
+	await writeFile(join(acceptDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 
 	const roles = loadRoles(acceptDir);
 	assert.equal(roles.length, 3);

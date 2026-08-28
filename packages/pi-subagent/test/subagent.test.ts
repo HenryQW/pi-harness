@@ -171,6 +171,8 @@ async function writeWorkerRole(agentDir: string, isolation = false): Promise<voi
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ${isolation ? "isolation: worktree\n" : ""}---
 Do bounded work.
 `);
@@ -237,6 +239,7 @@ name: unsafe
 description: Loads repository code
 extensions: [./extensions/review.ts]
 tools: []
+skills: []
 ---
 Review code.
 `);
@@ -250,7 +253,7 @@ test("role profile resolves skill names and selects exact extensions, tools, mod
 		await writeFile(join(agentDir, "config", "pi-subagent", "reviewer.md"), `---
 name: reviewer
 description: Reviews focused changes
-tools: read, grep
+tools: [read, grep]
 extensions:
   - /user/extensions/review.ts
 skills:
@@ -365,14 +368,16 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	});
 });
 
-test("role without tools leaves Pi tool policy unoverridden", async () => {
+test("empty Role tools install a tool policy", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
 name: worker
-description: Uses Pi default tools
+description: Uses only extension tools
 extensions:
   - /user/extensions/company-tools.ts
+tools: []
+skills: []
 ---
 Do bounded work.
 `);
@@ -386,9 +391,9 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const args = JSON.parse(singleOutput(result));
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
-		assert.equal(args.includes(`--${ROLE_TOOL_POLICY_FLAG}`), false);
+		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
 		assert.equal(args[args.indexOf("--extension") + 1], "/user/extensions/company-tools.ts");
-		assert.equal(args.filter((value: string, index: number) => args[index - 1] === "--extension").some((path: string) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), false);
+		assert.equal(args.filter((value: string, index: number) => args[index - 1] === "--extension").some((path: string) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), true);
 	});
 });
 
@@ -399,6 +404,8 @@ test("empty role tools leave only loaded extension tools", async () => {
 name: thinker
 description: Reasons without tools
 tools: []
+extensions: []
+skills: []
 ---
 Return a plan.
 `);
@@ -424,6 +431,8 @@ test("shared profiles route explicit and omitted model classes without a subagen
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -475,6 +484,8 @@ test("designated model overrides class routing and unknown reference lists avail
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -506,6 +517,8 @@ test("canonical Codex route follows active account alias in isolated child", asy
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -640,6 +653,8 @@ test("uses a profile fallback when the primary thinking level is unavailable bef
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -671,6 +686,8 @@ test("does not retry a child after launch failure", async () => {
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -705,6 +722,8 @@ test("widget aligns live rows, sums tokens, shows success, and auto-removes", as
 name: ${name}
 description: ${description}
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -749,6 +768,8 @@ test("streams assistant text deltas before final message", async () => {
 name: scout
 description: Finds relevant code
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -776,6 +797,8 @@ test("decodes JSON output across UTF-8 chunk boundaries", async () => {
 name: scout
 description: Finds relevant code
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -799,6 +822,8 @@ test("large child output bounds final result and streaming update", async () => 
 name: scout
 description: Finds relevant code
 tools: [read]
+extensions: []
+skills: []
 ---
 Return conclusions first, then file and line references.
 `);
@@ -826,6 +851,8 @@ test("ignores oversized lifecycle events after final message", async () => {
 name: scout
 description: Finds relevant code
 tools: [read]
+extensions: []
+skills: []
 ---
 Return concise findings.
 `);
@@ -855,6 +882,8 @@ test("invalid role config blocks delegation without blocking extension load", as
 name: broken
 description: Has malformed tool list
 tools: [read, 1]
+extensions: []
+skills: []
 ---
 Do work.
 `);
@@ -1034,6 +1063,8 @@ test("background parallel acknowledges before launch and sends one ordered parti
 name: scout
 description: Finds code
 tools: [read]
+extensions: []
+skills: []
 ---
 Find code.
 `),
@@ -1041,6 +1072,8 @@ Find code.
 name: reviewer
 description: Reviews code
 tools: [grep]
+extensions: []
+skills: []
 ---
 Review code.
 `),
@@ -1304,6 +1337,7 @@ description: Finds code
 tools: [read]
 extensions: [/user/scout.ts]
 isolation: worktree
+skills: []
 ---
 Find code.
 `),
@@ -1313,6 +1347,7 @@ description: Reviews code
 tools: [grep]
 extensions: [/user/reviewer.ts]
 isolation: worktree
+skills: []
 ---
 Review code.
 `),
@@ -1788,6 +1823,8 @@ test("malformed JSON, unknown events, and stderr do not renew the idle deadline"
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Do bounded work.
 `);
@@ -1838,6 +1875,8 @@ test("recognized Pi events extend the idle deadline", async () => {
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Do bounded work.
 `);
@@ -1904,6 +1943,8 @@ test("parent abort remains an abort while timeout cleanup is underway", async ()
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Do bounded work.
 `);
@@ -1930,6 +1971,8 @@ test("abort stops child process tree", async (t) => {
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Do bounded work.
 `);
@@ -1989,6 +2032,8 @@ test("oversized unterminated stdout protocol line fails bounded", async () => {
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Do bounded work.
 `);
@@ -2010,6 +2055,8 @@ test("oversized stderr returns bounded tool error", async () => {
 name: worker
 description: Does bounded work
 tools: [read]
+extensions: []
+skills: []
 ---
 Do bounded work.
 `);

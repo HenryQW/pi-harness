@@ -76,6 +76,8 @@ test("a same-named user role overrides a built-in while other roles are added", 
 name: implementer
 description: Custom implementation policy
 tools: [read]
+extensions: []
+skills: []
 ---
 Custom body.
 `);
@@ -94,12 +96,35 @@ Custom body.
 	});
 });
 
+test("Role capability lists are required arrays", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	const rolePath = join(rolesDir, "role.md");
+	await mkdir(rolesDir, { recursive: true });
+	for (const field of ["tools", "extensions", "skills"]) {
+		const fields = ["tools: []", "extensions: []", "skills: []"]
+			.filter((value) => !value.startsWith(`${field}:`));
+		await writeFile(rolePath, `---\nname: role\ndescription: d\n${fields.join("\n")}\n---\nBody.\n`);
+		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} is required\\.`));
+	}
+	for (const [field, value] of [["tools", "read, grep"], ["extensions", "/role.ts"], ["skills", "review"]]) {
+		const fields = ["tools: []", "extensions: []", "skills: []"]
+			.map((entry) => entry.startsWith(`${field}:`) ? `${field}: ${value}` : entry);
+		await writeFile(rolePath, `---\nname: role\ndescription: d\n${fields.join("\n")}\n---\nBody.\n`);
+		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} must be an array of strings\\.`));
+	}
+	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	const role = loadRoles(agentDir).find((candidate) => candidate.name === "role")!;
+	assert.deepEqual([role.tools, role.extensions, role.skills], [[], [], []]);
+});
+
 test("duplicate names among user role files remain an error", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
-	await writeFile(join(rolesDir, "a.md"), "---\nname: dup\ndescription: d\n---\nBody.\n");
-	await writeFile(join(rolesDir, "b.md"), "---\nname: dup\ndescription: d\n---\nBody.\n");
+	const role = "---\nname: dup\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n";
+	await writeFile(join(rolesDir, "a.md"), role);
+	await writeFile(join(rolesDir, "b.md"), role);
 
 	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
 });

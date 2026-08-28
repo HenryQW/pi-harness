@@ -3,8 +3,7 @@ import { CHILD_EXCLUDED_TOOL_NAMES, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-su
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 
-function configuredTools(value: unknown): string[] | undefined {
-	if (value === undefined) return;
+function configuredTools(value: unknown): string[] {
 	if (typeof value !== "string") throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
 	let parsed: unknown;
 	try {
@@ -25,7 +24,6 @@ export default function roleTools(pi: ExtensionAPI): void {
 	});
 	pi.on("session_start", () => {
 		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
-		if (!selected) return;
 		const allTools = pi.getAllTools();
 		const registeredTools = new Set(allTools.map((tool) => tool.name));
 		const extensionTools = allTools

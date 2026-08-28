@@ -59,7 +59,7 @@ const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execut
 export interface Role {
 	name: string;
 	description: string;
-	tools?: string[];
+	tools: string[];
 	isolation?: string;
 	extensions: string[];
 	skills: string[];
@@ -102,16 +102,12 @@ const cleanText = (value: unknown, field: string, source: string): string => {
 	return value.trim();
 };
 
-const stringList = (value: unknown, field: string, source: string, required = false): string[] => {
-	if (value === undefined) {
-		if (required) throw new Error(`${source}: ${field} is required.`);
-		return [];
-	}
-	const values = typeof value === "string" ? value.split(",") : value;
-	if (!Array.isArray(values) || values.some((item) => typeof item !== "string" || !item.trim() || item.includes("\0"))) {
+const stringList = (value: unknown, field: string, source: string): string[] => {
+	if (value === undefined) throw new Error(`${source}: ${field} is required.`);
+	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.includes("\0"))) {
 		throw new Error(`${source}: ${field} must be an array of strings.`);
 	}
-	return values.map((item) => item.trim());
+	return value.map((item) => item.trim());
 };
 
 function validateExtension(extension: string, source: string): string {
@@ -147,7 +143,7 @@ function parseRoleFile(file: string, raw: string): Role {
 	return {
 		name: cleanText(frontmatter.name, "name", file),
 		description: cleanText(frontmatter.description, "description", file),
-		tools: frontmatter.tools === undefined ? undefined : stringList(frontmatter.tools, "tools", file, true),
+		tools: stringList(frontmatter.tools, "tools", file),
 		isolation,
 		extensions: extensionList(frontmatter.extensions, file),
 		skills: stringList(frontmatter.skills, "skills", file),
@@ -248,27 +244,18 @@ export function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: R
 }
 
 export function createRoleLaunch(
-	pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">,
+	pi: Pick<ExtensionAPI, "getCommands">,
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
 	input: CreateRoleLaunchInput,
 ): ResolvedRoleLaunch {
 	const role = input.role;
 	const skills = resolveRoleSkills(pi, role);
-	let baseTools = role.tools;
-	if (baseTools === undefined && input.tools !== undefined) {
-		const builtins = new Set(pi.getAllTools()
-			.filter((tool) => tool.sourceInfo.source === "builtin")
-			.map((tool) => tool.name));
-		baseTools = pi.getActiveTools().filter((tool) => builtins.has(tool));
-	}
-	const tools = baseTools === undefined
-		? undefined
-		: [...new Set([...baseTools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+	const tools = [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
 	const extensions = [
 		...role.extensions,
 		...(input.extensions ?? []),
 		...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
-		...(tools === undefined ? [] : [ROLE_TOOLS_EXTENSION]),
+		ROLE_TOOLS_EXTENSION,
 	].map((extension) => validateExtension(extension, `Role ${role.name}`));
 	const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid launch environment name: ${key}`);
@@ -278,7 +265,7 @@ export function createRoleLaunch(
 	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
 	for (const extension of new Set(extensions)) args.push("--extension", extension);
 	for (const skill of skills.paths) args.push("--skill", skill);
-	if (tools !== undefined) args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));
+	args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));
 	args.push("--model", modelReference(input.route.model));
 	if (input.route.thinkingLevel) args.push("--thinking", input.route.thinkingLevel);
 	args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
@@ -293,7 +280,7 @@ export function createRoleLaunch(
 }
 
 export function resolveRoleLaunch(
-	pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "getCommands">,
+	pi: Pick<ExtensionAPI, "getCommands">,
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput,
 ): ResolvedRoleLaunch {
