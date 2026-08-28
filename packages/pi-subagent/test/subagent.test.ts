@@ -714,10 +714,10 @@ Return concise findings.
 	});
 });
 
-test("widget aligns live rows, sums tokens, shows success, and auto-removes", async () => {
+test("widget wraps task and metrics, retains terminal entries, and clears them on user input", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		for (const [name, description] of [["scout", "Finds code"], ["reviewer", "Reviews code"]]) {
+		for (const [name, description] of [["scout", "Finds code"], ["worker", "Does work"]]) {
 			await writeFile(join(agentDir, "config", "pi-subagent", `${name}.md`), `---
 name: ${name}
 description: ${description}
@@ -731,32 +731,35 @@ Return concise findings.
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `
 const event = (value) => console.log(JSON.stringify(value));
-event({ type: "message_update", usage: { totalTokens: 400 } });
-event({ type: "message_end", message: { role: "assistant", content: [], usage: { totalTokens: 500 }, stopReason: "toolUse" } });
-event({ type: "message_update", usage: { totalTokens: 600 } });
-setTimeout(() => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], usage: { totalTokens: 700 }, stopReason: "end" } }), 120);
+event({ type: "message_update", usage: { totalTokens: 1_100 } });
+setTimeout(() => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], usage: { totalTokens: 100 }, stopReason: "end" } }), 120);
 `);
 		process.argv[1] = runner;
 		const app = harness({ ui: true });
-		const tasks = [
-			app.tool.execute("call-1", { role: "scout", task: "find auth flow" }, undefined, undefined, app.ctx),
-			app.tool.execute("call-2", { role: "reviewer", task: "inspect authentication changes" }, undefined, undefined, app.ctx),
-		];
-		await waitFor(() => (app.widget?.render(100).filter((line) => line.includes("1.1k")).length ?? 0) === 2);
-		const working = app.widget!.render(100);
-		assert.equal(working.length, 2);
-		assert.ok(working.every((line) => /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line)));
-		assert.ok(working.every((line) => visibleWidth(line) === 100));
-		assert.equal(working[0].indexOf("1.1k"), working[1].indexOf("1.1k"));
-		const narrow = app.widget!.render(25);
-		assert.ok(narrow.every((line) => visibleWidth(line) === 25 && line.includes("1.1k")));
-		assert.ok(app.renders > 0);
+		const completed = app.tool.execute("call-1", { role: "scout", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
+		await waitFor(() => app.widget?.render(100).join("\n").includes("1.1k tok") ?? false);
+		const working = app.widget!.render(100).join("\n");
+		assert.match(working, /scout · working/);
+		assert.match(working, /text-model · low · 1\.1k tok ·/);
+		assert.doesNotMatch(working, /test\//);
+		const narrow = app.widget!.render(24);
+		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
+		assert.ok(narrow.some((line) => line.includes("Normalize Windows")));
+		assert.ok(narrow.some((line) => line.includes("registered-worktree")));
+		await completed;
+		await new Promise((resolve) => setTimeout(resolve, 1_100));
+		assert.match(app.widget!.render(100).join("\n"), /scout · complete/);
 
-		await Promise.all(tasks);
-		const finished = app.widget!.render(100);
-		assert.ok(finished.every((line) => line.startsWith("✓")));
-		assert.ok(finished.every((line) => line.includes("1.2k")));
-		await waitFor(() => app.widget!.render(100).length === 0);
+		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
+		const running = app.tool.execute("call-2", { role: "worker", task: "keep working" }, undefined, undefined, app.ctx);
+		await waitFor(() => app.widget?.render(100).join("\n").includes("worker · working") ?? false);
+		await app.handlers.get("input")?.({ source: "extension", text: "injected" }, app.ctx);
+		assert.match(app.widget!.render(100).join("\n"), /scout · complete/);
+		await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
+		const afterInput = app.widget!.render(100).join("\n");
+		assert.doesNotMatch(afterInput, /scout · complete/);
+		assert.match(afterInput, /worker · working/);
+		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
 });

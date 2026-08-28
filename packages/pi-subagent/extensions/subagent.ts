@@ -1,6 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
 	type ThinkingLevel,
@@ -51,7 +51,6 @@ import {
 const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
-const TERMINAL_DISPLAY_MS = 1_000;
 const MAX_WIDGET_ROWS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
@@ -70,13 +69,14 @@ export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined)
 }
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
 type WidgetItem = {
-	roleRoute: string;
+	role: string;
+	model: string;
+	thinkingLevel: string;
 	task: string;
 	tokens: number;
 	startedAt: number;
 	status: WidgetStatus;
 	finishedAt?: number;
-	removeAt?: number;
 };
 
 function taskSummary(task: string): string {
@@ -99,12 +99,13 @@ function statusGlyph(status: WidgetStatus, spinnerIndex: number, theme: Theme): 
 	}
 }
 
-function leftColumn(value: string, width: number): string {
-	return truncateToWidth(value, width, "…", true);
-}
-
-function rightColumn(value: string, width: number): string {
-	return " ".repeat(Math.max(0, width - visibleWidth(value))) + value;
+function statusLabel(status: WidgetStatus): string {
+	switch (status) {
+		case "working": return "working";
+		case "success": return "complete";
+		case "failure": return "failed";
+		case "aborted": return "stopped";
+	}
 }
 
 function renderWidgetRows(
@@ -116,30 +117,14 @@ function renderWidgetRows(
 ): string[] {
 	const visible = items.slice(0, MAX_WIDGET_ROWS);
 	if (!visible.length) return [];
-	const tokens = visible.map((item) => formatTokens(item.tokens));
-	const elapsed = visible.map((item) => formatDuration((item.finishedAt ?? now) - item.startedAt));
-	const tokenWidth = Math.max(...tokens.map(visibleWidth));
-	const elapsedWidth = Math.max(...elapsed.map(visibleWidth));
-	const fixedWidth = 1 + 8 + tokenWidth + elapsedWidth;
-	if (width < fixedWidth) {
-		return visible.map((item, index) => truncateToWidth(
-			`${statusGlyph(item.status, spinnerIndex, theme)} ${tokens[index]} ${elapsed[index]}`,
-			width,
-			"",
-		));
-	}
-	const contentWidth = width - fixedWidth;
-	const naturalRoleWidth = Math.min(32, Math.max(...visible.map((item) => visibleWidth(item.roleRoute))));
-	const roleWidth = Math.min(naturalRoleWidth, contentWidth);
-	const taskWidth = contentWidth - roleWidth;
-	const lines = visible.map((item, index) => [
-		statusGlyph(item.status, spinnerIndex, theme),
-		theme.fg("accent", leftColumn(item.roleRoute, roleWidth)),
-		theme.fg("text", leftColumn(item.task, taskWidth)),
-		theme.fg("muted", rightColumn(tokens[index]!, tokenWidth)),
-		theme.fg("dim", rightColumn(elapsed[index]!, elapsedWidth)),
-	].join("  "));
-	if (items.length > visible.length) lines.push(theme.fg("muted", `… ${items.length - visible.length} more`));
+	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
+	const contentWidth = Math.max(1, width - indent.length);
+	const lines = visible.flatMap((item) => [
+		...wrapTextWithAnsi(`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)}`, Math.max(1, width)),
+		...wrapTextWithAnsi(theme.fg("text", item.task), contentWidth).map((line) => `${indent}${line}`),
+		...wrapTextWithAnsi(theme.fg("muted", `${item.model} · ${item.thinkingLevel} · ${formatTokens(item.tokens)} tok · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`), contentWidth).map((line) => `${indent}${line}`),
+	]);
+	if (items.length > visible.length) lines.push(...wrapTextWithAnsi(theme.fg("muted", `… ${items.length - visible.length} more`), Math.max(1, width)));
 	return lines;
 }
 
@@ -243,12 +228,7 @@ export default function subagentExtension(
 		if (widgetTimer) return;
 		widgetTimer = setInterval(() => {
 			spinnerIndex = (spinnerIndex + 1) % SPINNER_FRAMES.length;
-			const now = Date.now();
-			for (const [id, item] of widgetItems) {
-				if (item.removeAt !== undefined && item.removeAt <= now) widgetItems.delete(id);
-			}
 			requestWidgetRender();
-			if (!widgetItems.size) stopWidgetTimer();
 		}, WIDGET_INTERVAL_MS);
 		widgetTimer.unref();
 	};
@@ -276,7 +256,9 @@ export default function subagentExtension(
 		if (!ctx.hasUI) return;
 		ensureWidget(ctx);
 		widgetItems.set(id, {
-			roleRoute: `${role}[${model}:${thinkingLevel ?? "default"}]`,
+			role,
+			model,
+			thinkingLevel: thinkingLevel ?? "default",
 			task: taskSummary(task),
 			tokens: 0,
 			startedAt: Date.now(),
@@ -298,8 +280,7 @@ export default function subagentExtension(
 		if (!item) return;
 		item.status = status;
 		item.finishedAt = Date.now();
-		item.removeAt = item.finishedAt + TERMINAL_DISPLAY_MS;
-		startWidgetTimer();
+		if (![...widgetItems.values()].some(({ status }) => status === "working")) stopWidgetTimer();
 		requestWidgetRender();
 	};
 
@@ -328,6 +309,13 @@ export default function subagentExtension(
 	});
 	// btw-style context refresh: model_select carries the new model on the event,
 	// agent_settled delivers the freshest full context after each turn.
+	pi.on("input", (event) => {
+		if (event.source === "extension") return;
+		for (const [id, item] of widgetItems) {
+			if (item.status !== "working") widgetItems.delete(id);
+		}
+		requestWidgetRender();
+	});
 	pi.on("model_select", (event, ctx) => {
 		latestCtx = { ...ctx, model: event.model } as ExtensionContext;
 	});
