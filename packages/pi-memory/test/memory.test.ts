@@ -87,9 +87,10 @@ test("/remember validates input and sends live state", async () => {
 		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
 		await remember.handler("  prefers \"tea\"\n  ", context(true));
 		assert.equal(messages.length, 1);
-		assert.match(messages[0]!, /semantically compare it with the live entries/);
-		assert.match(messages[0]!, /merge or replace overlap instead of adding duplicates/);
-		assert.match(messages[0]!, /Use the existing memory tool/);
+		assert.match(messages[0]!, /agent-global SYSTEM\.md/);
+		assert.match(messages[0]!, /both live stores, MEMORY\.md and USER\.md/);
+		assert.match(messages[0]!, /call ask_question and wait for the user's resolution/);
+		assert.match(messages[0]!, /If no conflict blocks the add, use the existing memory tool/);
 		assert.ok(messages[0]!.includes(JSON.stringify("prefers \"tea\"")));
 		assert.ok(messages[0]!.includes(JSON.stringify({ memory: ["prefers tea", "new live entry"], user: ["likes concise replies"] })));
 	} finally {
@@ -536,6 +537,9 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		assert.ok(tool);
 		const memoryTool = tool;
 		assert.match(memoryTool.description, /read MEMORY\.md in the configured memory directory/);
+		assert.match(memoryTool.description, /agent-global SYSTEM\.md/);
+		assert.match(memoryTool.description, /both live stores, MEMORY\.md and USER\.md/);
+		assert.match(memoryTool.description, /call ask_question and wait for the user's resolution/);
 
 		const injected = await before({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.match(injected.systemPrompt, /MEMORY \(your personal notes\).*stable fact/s);
@@ -598,7 +602,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 	}
 });
 
-test("injects the memory check even when stores are empty", async () => {
+test("injects the memory check and semantic add gate even when stores are empty", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-policy-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
@@ -616,15 +620,29 @@ test("injects the memory check even when stores are empty", async () => {
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.equal(
-			injected.systemPrompt,
-			"base\n\nMEMORY CHECK: Before the final response, check whether the conversation contains qualifying durable facts. Save explicit user identity, preferences, style, or corrections immediately to target=user; save stable cross-project environment facts, conventions, workflow lessons, or tool quirks useful later to target=memory. Use the memory tool immediately only when something qualifies. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.",
-		);
+		assert.match(injected.systemPrompt, /^base\n\nMEMORY CHECK:/);
+		assert.match(injected.systemPrompt, /Before any single add \(action="add"\) or any batch add/);
+		assert.match(injected.systemPrompt, /agent-global SYSTEM\.md/);
+		assert.match(injected.systemPrompt, /both live stores, MEMORY\.md and USER\.md/);
+		assert.match(injected.systemPrompt, /A missing SYSTEM\.md means there are no global instructions/);
+		assert.match(injected.systemPrompt, /if an existing source cannot be read, leave the add blocked/);
+		assert.match(injected.systemPrompt, /model judgment, never a deterministic text or string-matching rule/);
+		assert.match(injected.systemPrompt, /block the write: call ask_question and wait for the user's resolution/);
+		assert.match(injected.systemPrompt, /"Merge with existing" as the first \(recommended\) option/);
+		assert.match(injected.systemPrompt, /"Replace stale existing" as the first \(recommended\) option/);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("bundles ask_question as a package resource", async () => {
+	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
+	assert.equal(manifest.dependencies["@henryqw/pi-ask-question"], "^0.1.11");
+	assert.deepEqual(manifest.bundledDependencies, ["@henryqw/pi-ask-question"]);
+	assert.match(manifest.scripts.prepack, /--workspaces=false.*--no-save.*--package-lock=false.*--offline.*--legacy-peer-deps.*--install-links.*\.\.\/pi-ask-question/);
+	assert.ok(manifest.pi.extensions.includes("./node_modules/@henryqw/pi-ask-question/extensions/ask-question.ts"));
 });
 
 test("errors carry match previews/usage, snapshots filter frame tokens, backups live outside the memory dir", async () => {

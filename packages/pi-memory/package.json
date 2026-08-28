@@ -1,6 +1,6 @@
 {
 	"name": "@henryqw/pi-memory",
-	"version": "1.3.2",
+	"version": "1.4.0",
 	"description": "Auto-managed markdown memory for Pi: capped MEMORY.md/USER.md entry stores with frozen session snapshots.",
 	"keywords": [
 		"pi-package",
@@ -21,11 +21,16 @@
 	"scripts": {
 		"test": "node --test test/*.test.ts",
 		"typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts src/*.ts test/*.test.ts",
+		"prepack": "npm install --prefix . --workspaces=false --no-save --package-lock=false --ignore-scripts --offline --legacy-peer-deps --install-links ../pi-ask-question",
 		"pack:check": "npm pack --dry-run"
 	},
 	"dependencies": {
+		"@henryqw/pi-ask-question": "^0.1.11",
 		"proper-lockfile": "^4.1.2"
 	},
+	"bundledDependencies": [
+		"@henryqw/pi-ask-question"
+	],
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "^0.84.2",
 		"@earendil-works/pi-coding-agent": "^0.84.2",
@@ -48,7 +53,8 @@
 	},
 	"pi": {
 		"extensions": [
-			"./extensions/memory.ts"
+			"./extensions/memory.ts",
+			"./node_modules/@henryqw/pi-ask-question/extensions/ask-question.ts"
 		]
 	}
 }
