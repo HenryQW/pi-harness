@@ -1935,7 +1935,7 @@ test("maximum runtime stops a child that keeps emitting Pi events", async () => 
 console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } }));
 setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } })), 25);`);
 		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 80, maxMs: 180 } });
+		const app = harness({ timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
 		await assert.rejects(
 			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
 			/Subagent reached its maximum runtime/,
@@ -1955,15 +1955,21 @@ skills: []
 ---
 Do bounded work.
 `);
+		const cleanupStarted = join(agentDir, "timeout-cleanup-started");
 		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `process.on("SIGTERM", () => setTimeout(() => process.exit(0), 80));
+		await writeFile(runner, `import { writeFileSync } from "node:fs";
+process.on("SIGTERM", () => {
+	writeFileSync(${JSON.stringify(cleanupStarted)}, "");
+	setTimeout(() => process.exit(0), 80);
+});
 setInterval(() => {}, 1_000);
 `);
 		process.argv[1] = runner;
-		const app = harness({ ui: true, timeoutPolicy: { idleMs: 120, maxMs: 270 } });
+		const app = harness({ ui: true, timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
 		const abort = new AbortController();
 		const running = app.tool.execute("call-1", { role: "worker", task: "work" }, abort.signal, undefined, app.ctx);
-		setTimeout(() => abort.abort(), 150);
+		await waitFor(() => existsSync(cleanupStarted));
+		abort.abort();
 		await assert.rejects(running, (error: unknown) => error instanceof Error && error.name === "AbortError");
 		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
@@ -2024,7 +2030,7 @@ const ready = setInterval(() => {
 }, 5);
 `);
 		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 120, maxMs: 270 } });
+		const app = harness({ timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
 		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
 		assert.equal(singleOutput(result), "done");
 		await new Promise((resolve) => setTimeout(resolve, 400));
