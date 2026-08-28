@@ -1,6 +1,6 @@
 # `@henryqw/pi-subagent`
 
-Delegate bounded work to isolated Pi child processes. Generic `delegate_task` selects one flat single, parallel, or chain mode. Package-owned `delegate_flow` runs a fixed Git implementation-and-review Flow. Package authors can reuse the same Role launch policy and active-Pi executor from JavaScript.
+Delegate bounded work to isolated Pi child processes. Main plans and orchestrates; generic `delegate_task` selects one flat single, parallel, or chain mode. Package-owned `delegate_flow` runs a fixed Git implementation-and-verification Flow. Package authors can reuse the same Role launch policy and active-Pi executor from JavaScript.
 
 ## Why
 
@@ -45,7 +45,7 @@ Select exactly one shape:
 { chain: [{ role, task, model?, modelClass?, thinking? }], background? }
 ```
 
-`model` is `provider/modelId` and overrides `modelClass`. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`; omission uses the shared `pi-subagent/delegateTask` assignment. `background` applies to the entire selected mode and is never a per-delegation field.
+`model` is `provider/modelId` and overrides `modelClass`. Main populates `model` and `thinking` only for an explicit user override; otherwise it chooses only `modelClass`—`fast` normally, or `balanced` upfront for obviously complex work. This is Main policy only: the runtime records no provenance and does not enforce it. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`; omission uses the shared `pi-subagent/delegateTask` assignment. `background` applies to the entire selected mode and is never a per-delegation field.
 
 Parallel mode starts entries concurrently, waits for every entry, and reports them in input order. Chain mode is sequential and fail-fast; every literal `{previous}` receives only the immediately preceding successful assistant output. Foreground failures throw after retaining bounded sibling and recovery evidence. One tool call has one aggregate 50 KiB Main-visible transport cap, not 50 KiB per child.
 
@@ -59,18 +59,20 @@ See [Orchestration, isolation, and the public API](./docs/orchestration.md) for 
 
 ### `delegate_flow`
 
-Use Flow only for independent, commuting Git changes. It accepts 1–8 uniquely identified units, each with a bounded task and direct command/argument validation gate:
+Use Flow only for independent, commuting Git changes. It accepts 1–8 uniquely identified units, each with a bounded task, optional `modelClass`, direct command/argument validation gate, and optional non-empty `review` judgment criterion:
 
 ```text
-delegate_flow({ units: [{ id, task, validation: [{ command, args }] }] })
-delegate_flow_continue({ guidance })
+delegate_flow({ units: [{ id, task, modelClass?, validation: [{ command, args }], review? }] })
+delegate_flow_continue({ guidance, modelClass? })
 ```
 
-One memory-only Flow may be active. At start it resolves the effective `implementer` and `reviewer` Roles, including same-named user overrides, and freezes them through any continuation. Overrides must remain compatible with Flow: Implementers commit scoped work, and Reviewers inspect the exact packet and emit exactly `PASS` only with zero findings. It creates one Unit Worktree per unit, runs Implementers in parallel, then processes settled results in declared order. For each unit, Flow rebases onto the current Flow Main when needed, runs its declared validation, gives the Reviewer the exact `{base, tip, patchPath}` packet in that same worktree, and only exact `PASS` permits `git merge --ff-only` of the full reviewed OID. It removes the worktree and branch non-forcibly after integration; a refusal is a completion warning with the retained worktree path and/or branch.
+Objective verification is authoritative. Flow always inspects committed Git state and runs declared validation. A unit without `review` skips review evidence and Reviewer launch, then fast-forwards its exact validated tip through the existing guarded `git merge --ff-only` path. Add `review` only for an explicit judgment that automation cannot establish; that unit retains the exact `{base, tip, patchPath}` protocol and requires exact `PASS` before the same integration path.
 
-A rebase that drops all unit commits is a no-op: Flow validates it, skips Reviewer and merge, then cleans up ordinarily. Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. Rebase and infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Git left Main clean at the exact reviewed tip; otherwise it is terminal and retains the affected worktree. Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge gate.
+One memory-only Flow may be active. At start it resolves/freezes the effective `implementer` Role, including a same-named user override, and resolves/freezes the effective `reviewer` only if at least one requested unit has `review`. Omitted `modelClass` uses the shared `pi-subagent/delegateTask` assignment; a selected class resolves through its shared profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It creates one Unit Worktree per unit, runs Implementers in parallel, then processes settled results in declared order. It removes the worktree and branch non-forcibly after integration; a refusal is a completion warning with the retained worktree path and/or branch.
 
-`delegate_task` remains generic with its ordinary isolation behavior. Flow uses the same effective Role resolution for `implementer` and `reviewer`; without user overrides, the package-shipped Roles remain the defaults.
+A rebase that drops all unit commits is a no-op: Flow validates it, skips Reviewer and merge, then cleans up ordinarily. Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. Omitted continuation `modelClass` retains the blocked unit's current class; a supplied class replaces it for that one repair. Rebase and infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Git left Main clean at the exact integrated tip; otherwise it is terminal and retains the affected worktree. Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge gate.
+
+`delegate_task` remains generic with its ordinary isolation behavior. Flow uses the package-shipped Implementer by default and the package-shipped Reviewer only when a unit requests review; same-named user Roles remain supported overrides.
 
 ## Config
 
@@ -109,7 +111,7 @@ An unreadable or invalid Role file fails role loading fast; duplicate role names
 The package ships two working built-in Roles, always available without any configuration:
 
 - `implementer`: focused edits requesting worktree isolation; commits completed scoped changes locally and never pushes or opens PRs without authorization
-- `reviewer`: read-only correctness review of supplied plans/files, or of Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits
+- `reviewer`: read-only correctness review of supplied plans/files, or—only when a Flow unit declares `review`—of Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits
 
 A same-named Markdown file in `~/.pi/agent/config/pi-subagent/` explicitly overrides the built-in default.
 
@@ -131,7 +133,7 @@ The package never installs or writes Role configuration. Sample names are not bu
 
 ## Skill
 
-The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side policy only. `delegate_flow` owns its fixed Git mechanics; the Skill adds no runtime code, configuration, or Role installation. Generic orchestration remains outside the executor under [ADR 001](./docs/adr/001-composable-ephemeral-execution.md).
+The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side planner/orchestrator policy only. `delegate_flow` owns its fixed Git mechanics and validation authority; the Skill adds no runtime code, configuration, or Role installation. Generic orchestration remains outside the executor under [ADR 001](./docs/adr/001-composable-ephemeral-execution.md).
 
 A Role explicitly owns base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Every launch installs its Role tool policy: `tools: []` activates no base built-ins, while trusted selected extension tools and explicit caller tool additions still activate. `skills: []` selects no separately named Role Skills, while trusted selected extension Skills still load; `extensions: []` selects no Role extension bundle. Ambient extension and Skill discovery is disabled in children. Selecting an extension explicitly is selecting a trusted atomic capability bundle, not just a provider path: every tool it registers and every Skill supplied through its Pi package metadata or dynamic `resources_discover` loads alongside separately named Role Skills. This is intentional because an extension may depend on its own tools, Skills, lifecycle, and prompt behavior; loading it permits that executable behavior and is not sandboxing. To scope a child, select fewer trusted extensions. Finer-grained selection requires separate extension entry points/configuration or an upstream split—pi-subagent does not infer or externally narrow undocumented dependencies. Parent-only recursive orchestration tools stay excluded. Explicit Role or caller tool names are verified against the child’s final filtered active registry after provider extensions finish `session_start`; all unavailable names fail before the first model turn with provider-extension guidance, while unavailable named Skills warn and skip.
 

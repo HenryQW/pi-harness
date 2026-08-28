@@ -443,11 +443,13 @@ export default function subagentExtension(
 		maxRuntimeMs: timeoutPolicy.maxMs,
 		getSessionGeneration: () => sessionEpoch,
 		loadRoles,
-		resolveLaunch: (role, ctx) => {
+		resolveLaunch: (role, modelClass, ctx) => {
 			const launchCtx = latestCtx ?? ctx;
 			return createRoleLaunch(pi, launchCtx, {
 				role,
-				route: resolveConfiguredTaskRoute(launchCtx, SUBAGENT_TASK),
+				route: modelClass === undefined
+					? resolveConfiguredTaskRoute(launchCtx, SUBAGENT_TASK)
+					: resolveTaskRoute(launchCtx, modelClass),
 			});
 		},
 		startWidget: startWidgetItem,
@@ -463,7 +465,7 @@ export default function subagentExtension(
 		promptGuidelines: [
 			"Call delegate_task with exactly one mode: role+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output.",
 			"Every delegate_task entry must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
-			"For each delegate_task entry, use fav only when the user asks for their favorite model; otherwise choose fast for narrow work, balanced for normal work, and frontier only for ambiguous, cross-cutting, or high-risk work.",
+			"For each delegate_task entry, populate model and thinking only for an explicit user override; otherwise choose only modelClass: fast normally, or balanced upfront for obviously complex work. This is Main policy, not runtime enforcement.",
 			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],

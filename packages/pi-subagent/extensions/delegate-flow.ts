@@ -1,5 +1,6 @@
-import type { Usage } from "@earendil-works/pi-ai";
+import { StringEnum, type Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import {
 	addUsage,
 	capEphemeralSubagentOutput as capOutput,
@@ -28,10 +29,14 @@ const ValidationSchema = Type.Object({
 	args: Type.Array(Type.String()),
 }, { additionalProperties: false });
 
+const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
+
 const UnitSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	task: Type.String({ minLength: 1 }),
 	validation: Type.Array(ValidationSchema, { minItems: 1 }),
+	modelClass: Type.Optional(ModelClassSchema),
+	review: Type.Optional(Type.String({ minLength: 1 })),
 }, { additionalProperties: false });
 
 export const DelegateFlowSchema = Type.Object({
@@ -40,10 +45,12 @@ export const DelegateFlowSchema = Type.Object({
 
 export const DelegateFlowContinueSchema = Type.Object({
 	guidance: Type.String({ minLength: 1 }),
+	modelClass: Type.Optional(ModelClassSchema),
 }, { additionalProperties: false });
 
 type FlowRequest = Static<typeof DelegateFlowSchema>;
 type FlowUnitRequest = Static<typeof UnitSchema>;
+type FlowModelClass = FlowUnitRequest["modelClass"];
 type FlowClassification = "setup" | "implementer" | "validation" | "reviewer_findings" | "main" | "infrastructure" | "integration";
 type FlowPhase = "running" | "blocked";
 type WidgetStatus = "success" | "failure" | "aborted";
@@ -54,6 +61,7 @@ type ChildSettlement =
 
 type UnitState = {
 	request: FlowUnitRequest;
+	modelClass: FlowModelClass;
 	worktree: WorktreeInfo;
 	base: string;
 	implementation?: ChildSettlement;
@@ -87,7 +95,7 @@ type FlowState = {
 	generation: number;
 	sessionController: AbortController;
 	implementer: Role;
-	reviewer: Role;
+	reviewer?: Role;
 	main?: MainState;
 	units: UnitState[];
 	setupRecoveries: SetupRecovery[];
@@ -111,7 +119,7 @@ export interface DelegateFlowRuntime {
 	maxRuntimeMs: number;
 	getSessionGeneration: () => number;
 	loadRoles: () => Role[];
-	resolveLaunch: (role: Role, ctx: ExtensionContext) => ResolvedRoleLaunch;
+	resolveLaunch: (role: Role, modelClass: FlowModelClass, ctx: ExtensionContext) => ResolvedRoleLaunch;
 	startWidget: (
 		id: string,
 		role: string,
@@ -150,6 +158,8 @@ export function parseDelegateFlow(value: unknown): FlowRequest {
 					command: text(validation.command, `units[${unitIndex}].validation[${validationIndex}].command`),
 					args: validation.args.map((value, argumentIndex) => argument(value, `units[${unitIndex}].validation[${validationIndex}].args[${argumentIndex}]`)),
 				})),
+				...(unit.modelClass === undefined ? {} : { modelClass: unit.modelClass }),
+				...(unit.review === undefined ? {} : { review: text(unit.review, `units[${unitIndex}].review`) }),
 			};
 		}),
 	};
@@ -157,7 +167,10 @@ export function parseDelegateFlow(value: unknown): FlowRequest {
 
 export function parseDelegateFlowContinue(value: unknown): Static<typeof DelegateFlowContinueSchema> {
 	if (!Check(DelegateFlowContinueSchema, value)) throw new Error("delegate_flow_continue must match the declared tool schema.");
-	return { guidance: text(value.guidance, "guidance") };
+	return {
+		guidance: text(value.guidance, "guidance"),
+		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
+	};
 }
 
 function errorText(error: unknown): string {
@@ -176,6 +189,11 @@ function implementerTask(unit: FlowUnitRequest): string {
 	return [
 		`Flow Unit ${JSON.stringify(unit.id)} requirements:`,
 		unit.task,
+		...(unit.review === undefined ? [] : [
+			"",
+			"Review criterion to satisfy; the Reviewer alone decides approval:",
+			unit.review,
+		]),
 		"",
 		"Authoritative Flow validation (do not duplicate this final gate):",
 		...unit.validation.map((validation) => `- ${JSON.stringify(validation)}`),
@@ -188,6 +206,11 @@ function repairTask(unit: FlowUnitRequest, blocked: BlockedState, guidance: stri
 		"",
 		"Original requirements:",
 		unit.task,
+		...(unit.review === undefined ? [] : [
+			"",
+			"Review criterion to satisfy; the Reviewer alone decides approval:",
+			unit.review,
+		]),
 		"",
 		"Authoritative Flow validation (do not duplicate this final gate):",
 		...unit.validation.map((validation) => `- ${JSON.stringify(validation)}`),
@@ -200,16 +223,19 @@ function repairTask(unit: FlowUnitRequest, blocked: BlockedState, guidance: stri
 	].join("\n");
 }
 
-function reviewerTask(unit: FlowUnitRequest, packet: { base: string; tip: string; patchPath: string }): string {
+function reviewerTask(unit: FlowUnitRequest, review: string, packet: { base: string; tip: string; patchPath: string }): string {
 	return [
-		`Review Flow Unit ${JSON.stringify(unit.id)} against these requirements:`,
+		`Review Flow Unit ${JSON.stringify(unit.id)} for this explicit judgment criterion:`,
+		review,
+		"",
+		"Original requirements (context only):",
 		unit.task,
 		"",
-		"Declared validation already passed:",
+		"Declared validation already passed and is authoritative for objective verification:",
 		...unit.validation.map((validation) => `- ${JSON.stringify(validation)}`),
 		"",
 		`Review Packet: ${JSON.stringify(packet)}`,
-		"Read the exact patch as authoritative and emit exactly PASS only when there are zero findings.",
+		"Review only the criterion above. Read the exact patch as authoritative and emit exactly PASS only when there are zero findings.",
 	].join("\n");
 }
 
@@ -308,6 +334,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	const runChild = async (
 		flow: FlowState,
 		role: Role,
+		modelClass: FlowModelClass,
 		task: string,
 		cwd: string,
 		widgetId: string,
@@ -323,7 +350,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				onTokens: (tokens) => runtime.updateWidgetTokens(widgetId, tokens),
 				prepare: async () => {
 					assertCurrent(flow);
-					const launch = runtime.resolveLaunch(role, ctx);
+					const launch = runtime.resolveLaunch(role, modelClass, ctx);
 					if (launch.missingSkills.length) {
 						ctx.ui.notify(`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`, "warning");
 					}
@@ -624,45 +651,53 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				continue;
 			}
 
-			let evidence;
-			try {
-				evidence = await prepareExactReviewEvidence({ base: main.expectedHead, tip, worktree: unit.worktree.path }, signal);
-			} catch (error) {
-				return terminal(flow, "infrastructure", errorText(error), meter);
-			}
-
-			let review: ChildSettlement;
-			let cleanupError: unknown;
-			try {
-				assertCurrent(flow);
-				review = await runChild(
-					flow,
-					flow.reviewer,
-					reviewerTask(unit.request, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
-					unit.worktree.cwd,
-					`${toolCallId}:flow:${flow.index}:review`,
-					signal,
-					ctx,
-					meter,
-				);
-			} finally {
+			let approvedTip = tip;
+			const reviewCriterion = unit.request.review;
+			if (reviewCriterion !== undefined) {
+				const reviewer = flow.reviewer;
+				if (!reviewer) return terminal(flow, "infrastructure", "Flow Reviewer was not resolved for a unit that requires review.", meter);
+				let evidence;
 				try {
-					await evidence.cleanup();
+					evidence = await prepareExactReviewEvidence({ base: main.expectedHead, tip, worktree: unit.worktree.path }, signal);
 				} catch (error) {
-					cleanupError = error;
+					return terminal(flow, "infrastructure", errorText(error), meter);
 				}
-			}
-			if (cleanupError !== undefined) return terminal(flow, "infrastructure", errorText(cleanupError), meter);
-			assertCurrent(flow);
-			if ("error" in review) return terminal(flow, "infrastructure", errorText(review.error), meter);
-			if (review.result.outcome !== "success") {
-				return terminal(flow, "infrastructure", settlementFailure(review)!, meter);
-			}
-			if (TRUNCATED_OUTPUT.test(review.result.output)) {
-				return terminal(flow, "infrastructure", "Reviewer transport output was truncated; approval is invalid.", meter);
-			}
-			if (review.result.output.trim() !== "PASS") {
-				return block(flow, unit, "reviewer_findings", review.result.output || "Reviewer returned no PASS approval.", meter);
+
+				let review: ChildSettlement;
+				let cleanupError: unknown;
+				try {
+					assertCurrent(flow);
+					review = await runChild(
+						flow,
+						reviewer,
+						unit.modelClass,
+						reviewerTask(unit.request, reviewCriterion, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
+						unit.worktree.cwd,
+						`${toolCallId}:flow:${flow.index}:review`,
+						signal,
+						ctx,
+						meter,
+					);
+				} finally {
+					try {
+						await evidence.cleanup();
+					} catch (error) {
+						cleanupError = error;
+					}
+				}
+				if (cleanupError !== undefined) return terminal(flow, "infrastructure", errorText(cleanupError), meter);
+				assertCurrent(flow);
+				if ("error" in review) return terminal(flow, "infrastructure", errorText(review.error), meter);
+				if (review.result.outcome !== "success") {
+					return terminal(flow, "infrastructure", settlementFailure(review)!, meter);
+				}
+				if (TRUNCATED_OUTPUT.test(review.result.output)) {
+					return terminal(flow, "infrastructure", "Reviewer transport output was truncated; approval is invalid.", meter);
+				}
+				if (review.result.output.trim() !== "PASS") {
+					return block(flow, unit, "reviewer_findings", review.result.output || "Reviewer returned no PASS approval.", meter);
+				}
+				approvedTip = evidence.tip;
 			}
 
 			try {
@@ -671,12 +706,12 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				return terminal(flow, "main", errorText(error), meter);
 			}
 			assertCurrent(flow);
-			const merged = await git(["merge", "--no-overwrite-ignore", "--ff-only", evidence.tip], main.root, signal);
+			const merged = await git(["merge", "--no-overwrite-ignore", "--ff-only", approvedTip], main.root, signal);
 			assertCurrent(flow);
 			if (merged.code !== 0 || merged.killed) {
-				const diagnostic = commandFailure(`git merge --no-overwrite-ignore --ff-only ${evidence.tip}`, merged);
+				const diagnostic = commandFailure(`git merge --no-overwrite-ignore --ff-only ${approvedTip}`, merged);
 				const previousHead = main.expectedHead;
-				main.expectedHead = evidence.tip;
+				main.expectedHead = approvedTip;
 				try {
 					await checkMain(main);
 				} catch (error) {
@@ -688,7 +723,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					].join("\n")), meter);
 				}
 				flow.warnings.push(capOutput(`Unit ${JSON.stringify(unit.request.id)} integrated after merge reported failure: ${diagnostic}`));
-			} else main.expectedHead = evidence.tip;
+			} else main.expectedHead = approvedTip;
 			flow.completed.push({ id: unit.request.id, noOp: false });
 			try {
 				await checkMain(main);
@@ -696,7 +731,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				return terminal(flow, "integration", errorText(error), meter);
 			}
 			assertCurrent(flow);
-			const cleanupWarning = await cleanupUnit(unit, main, evidence.tip, flow.sessionController.signal);
+			const cleanupWarning = await cleanupUnit(unit, main, approvedTip, flow.sessionController.signal);
 			assertCurrent(flow);
 			if (cleanupWarning) flow.warnings.push(`Unit ${JSON.stringify(unit.request.id)} integrated, but cleanup refused: ${cleanupWarning}`);
 			flow.index += 1;
@@ -709,12 +744,12 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	pi.registerTool({
 		name: "delegate_flow",
 		label: "Delegate Flow",
-		description: "Run 1–8 independent Implementers in isolated Unit Worktrees, then validate, exactly review, and serially fast-forward approved units.",
-		promptSnippet: "Run a deterministic parallel-implementation, serial-review Flow",
+		description: "Run 1–8 independent Implementers in isolated Unit Worktrees, validate and serially fast-forward each tip, with exact review only for units that declare a judgment criterion.",
+		promptSnippet: "Run a deterministic parallel-implementation, serial-verification Flow",
 		promptGuidelines: [
 			"Use delegate_flow only for cohesive units expected to commute; combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
-			"Each unit must include explicit bounded requirements and its authoritative direct command/argument validation gate.",
-			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance.",
+			"Each unit must include explicit bounded requirements and its authoritative direct command/argument validation gate. Add review only for an explicit judgment that validation cannot establish.",
+			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
 		prepareArguments: parseDelegateFlow,
@@ -723,14 +758,16 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			if (active) throw new Error("delegate_flow rejected because another Flow is active.");
 			const roles = runtime.loadRoles();
 			const implementer = roles.find(({ name }) => name === "implementer");
-			const reviewer = roles.find(({ name }) => name === "reviewer");
-			if (!implementer || !reviewer) throw new Error("delegate_flow requires implementer and reviewer Roles.");
+			const needsReviewer = request.units.some(({ review }) => review !== undefined);
+			const reviewer = needsReviewer ? roles.find(({ name }) => name === "reviewer") : undefined;
+			if (!implementer) throw new Error("delegate_flow requires an implementer Role.");
+			if (needsReviewer && !reviewer) throw new Error("delegate_flow requires a reviewer Role when a unit declares review.");
 			const flow: FlowState = {
 				phase: "running",
 				generation: runtime.getSessionGeneration(),
 				sessionController: new AbortController(),
 				implementer,
-				reviewer,
+				...(reviewer === undefined ? {} : { reviewer }),
 				units: [],
 				setupRecoveries: [],
 				index: 0,
@@ -762,6 +799,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					if (!worktree) throw new Error("Flow Unit Worktrees require a Git repository with a committed HEAD; generic cwd fallback is disabled.");
 					flow.units.push({
 						request: unit,
+						modelClass: unit.modelClass,
 						worktree,
 						base: worktree.baseCommit,
 						repairUsed: false,
@@ -777,6 +815,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				const settlements = await Promise.all(flow.units.map((unit, index) => runChild(
 					flow,
 					flow.implementer,
+					unit.modelClass,
 					implementerTask(unit.request),
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
@@ -805,13 +844,13 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	pi.registerTool({
 		name: "delegate_flow_continue",
 		label: "Continue Delegate Flow",
-		description: "Repair the one blocked Flow Unit in its existing Unit Worktree, then resume declared-order validation, exact review, and integration.",
+		description: "Repair the one blocked Flow Unit in its existing Unit Worktree, optionally replace its model class, then resume declared-order validation, conditional exact review, and integration.",
 		promptSnippet: "Repair and continue the blocked deterministic Flow",
 		promptGuidelines: ["Call delegate_flow_continue only after delegate_flow reports a repairable block, with explicit guidance addressing that block."],
 		parameters: DelegateFlowContinueSchema,
 		prepareArguments: parseDelegateFlowContinue,
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
-			const { guidance } = parseDelegateFlowContinue(params);
+			const { guidance, modelClass } = parseDelegateFlowContinue(params);
 			const flow = active;
 			if (!flow) throw new Error("delegate_flow_continue requires an active blocked Flow.");
 			assertCurrent(flow);
@@ -822,12 +861,14 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			flow.phase = "running";
 			flow.blocked = undefined;
 			unit.repairUsed = true;
+			if (modelClass !== undefined) unit.modelClass = modelClass;
 			const operationSignal = bindSignal(flow, signal);
 			const meter: UsageMeter = {};
 			try {
 				unit.implementation = await runChild(
 					flow,
 					flow.implementer,
+					unit.modelClass,
 					repairTask(unit.request, blocked, guidance),
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,
