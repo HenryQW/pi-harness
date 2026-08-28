@@ -1,6 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type Component, type TUI, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
 	type ThinkingLevel,
@@ -159,13 +159,15 @@ function renderWidgetRows(
 	const visible = items.slice(0, MAX_WIDGET_ROWS);
 	if (!visible.length) return [];
 	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
-	const contentWidth = Math.max(1, width - indent.length);
+	const contentWidth = Math.max(0, width - indent.length);
 	const lines = visible.flatMap((item) => [
-		...wrapTextWithAnsi(`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)}`, Math.max(1, width)),
-		...wrapTextWithAnsi(theme.fg("text", item.task), contentWidth).map((line) => `${indent}${line}`),
-		...wrapTextWithAnsi(theme.fg("muted", `${item.model} · ${item.thinkingLevel} · ${formatTokens(item.tokens)} tok · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`), contentWidth).map((line) => `${indent}${line}`),
+		truncateToWidth(
+			`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("muted", `${item.model} · ${item.thinkingLevel} · ${formatTokens(item.tokens)} tok · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`)}`,
+			width,
+		),
+		`${indent}${truncateToWidth(theme.fg("text", item.task), contentWidth)}`,
 	]);
-	if (items.length > visible.length) lines.push(...wrapTextWithAnsi(theme.fg("muted", `… ${items.length - visible.length} more`), Math.max(1, width)));
+	if (items.length > visible.length) lines.push(truncateToWidth(theme.fg("muted", `… ${items.length - visible.length} more`), width));
 	return lines;
 }
 

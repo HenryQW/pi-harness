@@ -166,7 +166,7 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 }
 
 function workingWidgetHeaders(lines: string[]): string[] {
-	return lines.filter((line) => / · working$/.test(line));
+	return lines.filter((line) => / · working ·/.test(line));
 }
 
 async function writeWorkerRole(agentDir: string, isolation = false): Promise<void> {
@@ -719,7 +719,7 @@ Return concise findings.
 	});
 });
 
-test("widget wraps task and metrics, retains terminal entries, and clears them on user input", async () => {
+test("widget renders two truncated lines, retains terminal entries, and clears them on user input", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		for (const [name, description] of [["scout", "Finds code"], ["worker", "Does work"]]) {
@@ -743,17 +743,25 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		const app = harness({ ui: true });
 		const completed = app.tool.execute("call-1", { role: "scout", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
 		await waitFor(() => app.widget?.render(100).join("\n").includes("1.1k tok") ?? false);
-		const working = app.widget!.render(100).join("\n");
-		assert.match(working, /scout · working/);
-		assert.match(working, /text-model · low · 1\.1k tok ·/);
-		assert.doesNotMatch(working, /test\//);
+		const wide = app.widget!.render(100);
+		assert.equal(wide.length, 2);
+		assert.ok(wide.every((line) => visibleWidth(line) <= 100));
+		assert.match(wide[0]!, /scout · working · text-model · low · 1\.1k tok ·/);
+		assert.match(wide[1]!, /^  Normalize Windows registered-worktree paths$/);
+		assert.doesNotMatch(wide.join("\n"), /test\//);
 		const narrow = app.widget!.render(24);
+		assert.equal(narrow.length, 2);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-		assert.ok(narrow.some((line) => line.includes("Normalize Windows")));
-		assert.ok(narrow.some((line) => line.includes("registered-worktree")));
+		assert.match(narrow[0]!, /scout · working/);
+		assert.match(narrow[1]!, /^  Normalize Windows/);
+		const tiny = app.widget!.render(1);
+		assert.equal(tiny.length, 2);
+		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
 		await completed;
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
-		assert.match(app.widget!.render(100).join("\n"), /scout · complete/);
+		const terminal = app.widget!.render(100);
+		assert.equal(terminal.length, 2);
+		assert.match(terminal[0]!, /scout · complete/);
 
 		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
 		const running = app.tool.execute("call-2", { role: "worker", task: "keep working" }, undefined, undefined, app.ctx);
