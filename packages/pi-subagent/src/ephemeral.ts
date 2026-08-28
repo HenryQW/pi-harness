@@ -734,8 +734,7 @@ async function runPi(
 		}
 		onChildError = (error) => {
 			spawnError = error;
-			void killTree(true);
-			complete(null);
+			if (input.signal?.aborted) aborted = true;
 		};
 		onChildExit = () => {
 			childExited = true;
