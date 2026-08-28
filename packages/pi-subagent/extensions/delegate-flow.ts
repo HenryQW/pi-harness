@@ -7,7 +7,6 @@ import {
 	EphemeralSubagentError,
 	inspectIndexFlags,
 	inspectWorktreeDirty,
-	loadBuiltinRole,
 	prepareExactReviewEvidence,
 	WorktreeSetupError,
 	type EphemeralSubagentExecutor,
@@ -87,6 +86,8 @@ type FlowState = {
 	phase: FlowPhase;
 	generation: number;
 	sessionController: AbortController;
+	implementer: Role;
+	reviewer: Role;
 	main?: MainState;
 	units: UnitState[];
 	setupRecoveries: SetupRecovery[];
@@ -109,6 +110,7 @@ export interface DelegateFlowRuntime {
 	executor: EphemeralSubagentExecutor;
 	maxRuntimeMs: number;
 	getSessionGeneration: () => number;
+	loadRoles: () => Role[];
 	resolveLaunch: (role: Role, ctx: ExtensionContext) => ResolvedRoleLaunch;
 	startWidget: (
 		id: string,
@@ -213,8 +215,6 @@ function reviewerTask(unit: FlowUnitRequest, packet: { base: string; tip: string
 
 /** Registers the two memory-only Flow tools on the package's sole manifest entrypoint. */
 export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRuntime): () => void {
-	const implementer = loadBuiltinRole("implementer");
-	const reviewer = loadBuiltinRole("reviewer");
 	let active: FlowState | undefined;
 
 	const assertCurrent = (flow: FlowState): void => {
@@ -637,7 +637,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				assertCurrent(flow);
 				review = await runChild(
 					flow,
-					reviewer,
+					flow.reviewer,
 					reviewerTask(unit.request, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:review`,
@@ -709,7 +709,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	pi.registerTool({
 		name: "delegate_flow",
 		label: "Delegate Flow",
-		description: "Run 1–8 independent package-owned Implementers in isolated Unit Worktrees, then validate, exactly review, and serially fast-forward approved units.",
+		description: "Run 1–8 independent Implementers in isolated Unit Worktrees, then validate, exactly review, and serially fast-forward approved units.",
 		promptSnippet: "Run a deterministic parallel-implementation, serial-review Flow",
 		promptGuidelines: [
 			"Use delegate_flow only for cohesive units expected to commute; combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
@@ -721,10 +721,16 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			const request = parseDelegateFlow(params);
 			if (active) throw new Error("delegate_flow rejected because another Flow is active.");
+			const roles = runtime.loadRoles();
+			const implementer = roles.find(({ name }) => name === "implementer");
+			const reviewer = roles.find(({ name }) => name === "reviewer");
+			if (!implementer || !reviewer) throw new Error("delegate_flow requires implementer and reviewer Roles.");
 			const flow: FlowState = {
 				phase: "running",
 				generation: runtime.getSessionGeneration(),
 				sessionController: new AbortController(),
+				implementer,
+				reviewer,
 				units: [],
 				setupRecoveries: [],
 				index: 0,
@@ -770,7 +776,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				setupComplete = true;
 				const settlements = await Promise.all(flow.units.map((unit, index) => runChild(
 					flow,
-					implementer,
+					flow.implementer,
 					implementerTask(unit.request),
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
@@ -821,7 +827,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			try {
 				unit.implementation = await runChild(
 					flow,
-					implementer,
+					flow.implementer,
 					repairTask(unit.request, blocked, guidance),
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,

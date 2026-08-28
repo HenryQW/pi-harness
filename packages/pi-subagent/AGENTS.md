@@ -10,8 +10,8 @@ These rules apply to `packages/pi-subagent` in addition to the repository-level 
 ## Architecture boundaries
 
 - Keep `createRoleLaunch` as the launch-policy boundary: it resolves Role resources, route, project trust, environment, and Pi arguments. The Ephemeral Executor receives a prepared launch and must not discover Roles, resources, worktrees, or workflow policy.
-- Keep `delegate_task` generic and caller-composable. Keep `delegate_flow` a separate package-owned Git protocol using package-shipped Roles; do not make ordinary delegation inherit Flow's commit, validation, review, integration, or cleanup requirements.
-- User Role overrides apply only to ordinary delegation. Flow must continue loading its package-shipped Implementer and Reviewer directly.
+- Keep `delegate_task` generic and caller-composable. Keep `delegate_flow` a separate package-owned Git protocol using the effective `implementer` and `reviewer` Roles; do not make ordinary delegation inherit Flow's commit, validation, review, integration, or cleanup requirements.
+- Resolve effective Flow Roles once when a Flow starts and freeze them through continuation. Same-named user Roles override package defaults without changing Flow's Git, validation, review-packet, approval, integration, or cleanup protocol.
 
 ## Launches and prompts
 

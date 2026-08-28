@@ -394,6 +394,7 @@ export default function subagentExtension(
 		executor,
 		maxRuntimeMs: timeoutPolicy.maxMs,
 		getSessionGeneration: () => sessionEpoch,
+		loadRoles,
 		resolveLaunch: (role, ctx) => {
 			const launchCtx = latestCtx ?? ctx;
 			return createRoleLaunch(pi, launchCtx, {

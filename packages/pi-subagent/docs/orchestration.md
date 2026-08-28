@@ -12,7 +12,7 @@ caller-owned task, cwd, signal ────────────────�
 
 `delegate_task` owns its flat single/parallel/chain policy. The public executor runs one prepared delegation. Downstream packages compose their own workflows with ordinary JavaScript and own semantic protocols, shared workspace/state, retry decisions, and bounds. There is no recursive workflow AST.
 
-`delegate_flow` is the exception: it is a fixed package-owned Git workflow, not an executor primitive or general workflow language. It uses package-shipped Roles and the same prepared-child runner; its contract is below.
+`delegate_flow` is the exception: it is a fixed package-owned Git workflow, not an executor primitive or general workflow language. It uses the effective `implementer` and `reviewer` Roles and the same prepared-child runner; its contract is below.
 
 ## Frozen `delegate_task` contract
 
@@ -85,7 +85,7 @@ All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transp
 
 `delegate_flow({ units })` accepts 1–8 units with unique non-empty `id` and `task` fields plus one or more direct `{command, args}` validation commands. `delegate_flow_continue({ guidance })` is available only for the one blocked unit of the active Flow.
 
-A Flow is memory-only and permits one active Flow. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one package-shipped Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
+A Flow is memory-only and permits one active Flow. At start it resolves the effective `implementer` and `reviewer` Roles, including same-named user overrides, and freezes them through any continuation. Overrides must preserve the Flow Role protocols: Implementers commit scoped work, and Reviewers inspect the exact packet and emit exactly `PASS` only with zero findings. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
 
 ```text
 Implementers (parallel, one Unit Worktree each)
@@ -101,11 +101,11 @@ for each declared unit:
 
 Flow derives identity from Git, not child output. Reviewer reads the exact patch as authoritative and may use the same worktree only for referenced context. A full-OID fast-forward is the only integration path. Cleanup is non-forced; after a successful integration, cleanup refusal returns `completed` with a retained path/branch warning.
 
-If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance })` reruns its package-shipped Implementer in that same worktree once, then repeats derivation, validation, and review with fresh exact evidence. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact reviewed tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
+If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance })` reruns the Flow's frozen Implementer Role in that same worktree once, then repeats derivation, validation, and review with fresh exact evidence. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact reviewed tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
 
 Flow has no dependency graph, saved state, automatic retry, aggregate review, or post-merge validation. Use it only for commuting changes; combine or sequence units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
-`delegate_task` remains generic: its user Role resolution, optional worktree isolation, non-Git behavior, and direct plan/file review are unchanged. Flow loads package-shipped Implementer and Reviewer Roles directly, so user overrides do not apply.
+`delegate_task` remains generic: its optional worktree isolation, non-Git behavior, and direct plan/file review are unchanged. Flow uses the same effective Role resolution for `implementer` and `reviewer`, with package-shipped Roles as defaults.
 
 ## Per-delegation resources and isolation
 

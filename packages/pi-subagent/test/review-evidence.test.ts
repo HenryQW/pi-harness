@@ -229,7 +229,7 @@ test("exact evidence ignores unrelated bare and stale worktree registrations", a
 	await bareEvidence.cleanup();
 });
 
-test("package-shipped Roles bypass same-name user overrides", async (t) => {
+test("loadBuiltinRole bypasses same-name user overrides", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-role-test-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	const rolesDir = join(agentDir, "config", "pi-subagent");

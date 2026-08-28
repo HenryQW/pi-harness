@@ -21,7 +21,7 @@ import {
 	parseDelegateFlowContinue,
 	registerDelegateFlow,
 } from "../extensions/delegate-flow.ts";
-import { CHILD_EXCLUDED_TOOLS } from "../src/index.ts";
+import { CHILD_EXCLUDED_TOOLS, loadBuiltinRole } from "../src/index.ts";
 
 type Tool = {
 	name: string;
@@ -104,7 +104,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 	args: string[],
 	options: ExecOptions | undefined,
 	next: () => ReturnType<typeof runExec>,
-) => ReturnType<typeof runExec>) {
+) => ReturnType<typeof runExec>, flowRoles = [loadBuiltinRole("implementer"), loadBuiltinRole("reviewer")]) {
 	const tools = new Map<string, Tool>();
 	const childCalls: PreparedChild[] = [];
 	const roles: Role[] = [];
@@ -135,6 +135,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		executor,
 		maxRuntimeMs: 123_456,
 		getSessionGeneration: () => sessionGeneration,
+		loadRoles: () => flowRoles,
 		resolveLaunch(role) {
 			roles.push(role);
 			return {
@@ -421,7 +422,7 @@ test("a post-checkout setup failure preserves and reports the attempted allocati
 	}]);
 });
 
-test("Flow uses package Implementer/Reviewer policy in the caller-relative Unit cwd without nesting", async (t) => {
+test("Flow uses effective Implementer/Reviewer overrides in the caller-relative Unit cwd without nesting", async (t) => {
 	const repo = await repository(t);
 	const caller = join(repo, "packages", "feature");
 	await mkdir(caller, { recursive: true });
@@ -430,6 +431,10 @@ test("Flow uses package Implementer/Reviewer policy in the caller-relative Unit 
 	git(repo, "commit", "-qm", "add package");
 	const childCwds: string[] = [];
 	let patch = "";
+	const flowRoles = [
+		{ ...loadBuiltinRole("implementer"), description: "User Implementer override" },
+		{ ...loadBuiltinRole("reviewer"), description: "User Reviewer override" },
+	];
 	const app = harness(caller, async (prepared) => {
 		childCwds.push(prepared.cwd);
 		if (childRole(prepared) === "implementer") {
@@ -441,7 +446,7 @@ test("Flow uses package Implementer/Reviewer policy in the caller-relative Unit 
 		patch = await readFile(packet.patchPath, "utf8");
 		assert.equal(git(prepared.cwd, "rev-parse", "HEAD"), packet.tip);
 		return success("PASS\n");
-	});
+	}, undefined, flowRoles);
 	const result = await flowTool(app).execute("caller-cwd", { units: [unit("feature")] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.equal(childCwds.length, 2);
@@ -449,8 +454,8 @@ test("Flow uses package Implementer/Reviewer policy in the caller-relative Unit 
 	assert.ok(childCwds[0]!.replace(/\/$/, "").endsWith(join("packages", "feature")));
 	assert.match(patch, /change\.txt/);
 	assert.deepEqual(app.roles.map(({ name, description }) => ({ name, description })), [
-		{ name: "implementer", description: "Implements and validates one bounded change, requesting worktree isolation" },
-		{ name: "reviewer", description: "Reviews one bounded change for correctness without changing files" },
+		{ name: "implementer", description: "User Implementer override" },
+		{ name: "reviewer", description: "User Reviewer override" },
 	]);
 	assert.equal((gitRaw(repo, "worktree", "list", "--porcelain").match(/^worktree /gm) ?? []).length, 1);
 	const validationCall = app.execLogs.find(({ command }) => command === process.execPath)!;
