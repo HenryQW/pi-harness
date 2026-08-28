@@ -109,7 +109,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 	const childCalls: PreparedChild[] = [];
 	const roles: Role[] = [];
 	const execLogs: ExecLog[] = [];
-	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string }> = [];
+	const widgets: Array<{ action: "start" | "finish"; id: string; role?: string; status?: string; task?: string }> = [];
 	let sessionGeneration = 0;
 	const executor: EphemeralSubagentExecutor = {
 		async run(input) {
@@ -146,7 +146,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 				missingSkills: [],
 			} as unknown as ResolvedRoleLaunch;
 		},
-		startWidget(id, role) { widgets.push({ action: "start", id, role }); },
+		startWidget(id, role, _model, _thinkingLevel, task) { widgets.push({ action: "start", id, role, task }); },
 		updateWidgetTokens() {},
 		finishWidget(id, status) { widgets.push({ action: "finish", id, status }); },
 	});
@@ -534,6 +534,38 @@ test("one continuation repairs the blocked Unit in the same worktree and then cl
 		continueTool(app).execute("again", { guidance: "again" }, undefined, undefined, app.ctx),
 		/requires an active blocked Flow/,
 	);
+});
+
+test("Flow widgets use the original unit task for implementer, reviewer, and repair", async (t) => {
+	const repo = await repository(t);
+	const task = "Show the original unit task in the Flow widget";
+	let implementationRuns = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") {
+			assert.match(prepared.task, /^Review Flow Unit /);
+			return success("PASS");
+		}
+		if (++implementationRuns === 1) {
+			assert.match(prepared.task, /^Flow Unit /);
+			return failure("implementation crashed");
+		}
+		assert.match(prepared.task, /^Repair Flow Unit /);
+		await commit(prepared.cwd, "repaired.txt", "fixed\n");
+		return success();
+	});
+
+	const blocked = await flowTool(app).execute("widget-label", { units: [unit("widget", task)] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	const completed = await continueTool(app).execute("widget-label-continue", { guidance: "Commit the fix" }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+
+	const starts = app.widgets.filter(({ action }) => action === "start");
+	assert.deepEqual(starts.map(({ role, task: widgetTask }) => [role, widgetTask]), [
+		["implementer", task],
+		["implementer", task],
+		["reviewer", task],
+	]);
+	for (const { task: widgetTask } of starts) assert.doesNotMatch(widgetTask!, /^(?:Flow Unit|Review Flow Unit|Repair Flow Unit)/);
 });
 
 test("session reload invalidates blocked Flow state without persistence", async (t) => {

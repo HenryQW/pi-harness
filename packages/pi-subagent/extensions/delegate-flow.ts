@@ -309,6 +309,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		flow: FlowState,
 		role: Role,
 		task: string,
+		widgetTask: string,
 		cwd: string,
 		widgetId: string,
 		signal: AbortSignal | undefined,
@@ -327,7 +328,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					if (launch.missingSkills.length) {
 						ctx.ui.notify(`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`, "warning");
 					}
-					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
+					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, widgetTask, ctx);
 					started = true;
 					return { launch, task, cwd };
 				},
@@ -639,6 +640,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow,
 					flow.reviewer,
 					reviewerTask(unit.request, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
+					unit.request.task,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:review`,
 					signal,
@@ -778,6 +780,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow,
 					flow.implementer,
 					implementerTask(unit.request),
+					unit.request.task,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
 					operationSignal,
@@ -829,6 +832,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow,
 					flow.implementer,
 					repairTask(unit.request, blocked, guidance),
+					unit.request.task,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,
 					operationSignal,
