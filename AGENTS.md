@@ -2,7 +2,7 @@
 
 ## Compatibility
 
-Extensions do not consider migrations or backward compatibility. Both add unnecessary code.
+These extensions are highly opinionated tools built for the maintainer's daily work. No support, migrations, or backward compatibility are offered. Breaking changes may be introduced at any time.
 
 ## Extension config paths
 

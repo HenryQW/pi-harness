@@ -1,6 +1,6 @@
 # HenryQW Pi packages
 
-Public Pi packages under `@henryqw` scope.
+This repository contains the Pi extensions I use daily for my work. They are highly opinionated and published as-is: no support or backward compatibility is offered, and breaking changes may be introduced at any time. Packages are published under the `@henryqw` scope.
 
 ![Pi packages in use](./example.png)
 
