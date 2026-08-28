@@ -232,6 +232,54 @@ if (task === "Task: first") {
 	}
 });
 
+test("post-exit hard stdio deadline releases a queued permit despite inherited output", async (t) => {
+	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const task = process.argv.at(-1);
+if (task === "Task: first") {
+	const escaped = spawn(process.execPath, ["-e", "setInterval(() => process.stdout.write('.'), 50)"], { detached: true, stdio: "inherit" });
+	escaped.unref();
+	writeFileSync(process.env.EPHEMERAL_ESCAPED_PID_FILE, String(escaped.pid));
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" } }));
+} else {
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "second" }], stopReason: "stop" } }));
+}
+`);
+	const pidFile = join(cwd, "escaped.pid");
+	t.after(async () => {
+		try { process.kill(Number(await readFile(pidFile, "utf8")), "SIGKILL"); } catch {}
+	});
+	const executorInstance = executor();
+	const launches: string[] = [];
+	let firstOutputAt = 0;
+	let secondStarted!: () => void;
+	const secondStart = new Promise<void>((resolve) => { secondStarted = resolve; });
+	const first = executorInstance.run({
+		onUpdate: (output) => { if (output === "first") firstOutputAt = Date.now(); },
+		prepare: async () => {
+			launches.push("first");
+			return prepared(cwd, "first", { env: { EPHEMERAL_ESCAPED_PID_FILE: pidFile }, args: [] });
+		},
+	});
+	const second = executorInstance.run({
+		prepare: async () => {
+			launches.push("second");
+			secondStarted();
+			return prepared(cwd, "second");
+		},
+	});
+	await Promise.race([
+		secondStart,
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("post-exit hard stdio deadline did not release the queued permit")), 1_250)),
+	]);
+	assert.ok(firstOutputAt > 0);
+	assert.ok(Date.now() - firstOutputAt < 1_250);
+	assert.deepEqual(launches, ["first", "second"]);
+	const [firstResult, secondResult] = await Promise.all([first, second]);
+	assert.equal(firstResult.output, "first");
+	assert.equal(secondResult.output, "second");
+});
+
 test("callback failure terminates the child and releases the next queued run", async (t) => {
 	const observedUsage = usage(1);
 	const cwd = await useRunner(t, `const task = process.argv.at(-1);
