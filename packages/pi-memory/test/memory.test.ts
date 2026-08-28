@@ -492,7 +492,7 @@ test("injects the memory check even when stores are empty", async () => {
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.equal(
 			injected.systemPrompt,
-			"base\n\nMEMORY CHECK: Save explicit durable user preferences or corrections immediately. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.",
+			"base\n\nMEMORY CHECK: Before the final response, check whether the conversation contains qualifying durable facts. Save explicit user identity, preferences, style, or corrections immediately to target=user; save stable cross-project environment facts, conventions, workflow lessons, or tool quirks useful later to target=memory. Use the memory tool immediately only when something qualifies. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Merge overlapping entries; skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.",
 		);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
