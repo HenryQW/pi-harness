@@ -23,6 +23,7 @@ type Tool = {
 	parameters: unknown;
 	promptGuidelines?: string[];
 	prepareArguments?: (args: unknown) => any;
+	renderCall?: (...args: any[]) => { render: (width: number) => string[] };
 	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
 };
@@ -928,15 +929,34 @@ test("widget evicts enough terminal rows to recover capacity without hiding work
 	});
 });
 
-test("delegate_task leaves partial progress to the widget and renders minimal terminal summaries", async () => {
+test("delegate_task renders one-line working status and bounded terminal summaries", async () => {
 	await environment(async () => {
 		const app = harness();
 		const theme = { fg: (_color: string, value: string) => value };
+		const hiddenTask = "FULL TASK TEXT validation --secret";
+		for (const [args, label] of [
+			[{ role: "worker", task: hiddenTask }, "single · 1 task"],
+			[{ tasks: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "parallel · 2 tasks"],
+			[{ chain: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "chain · 2 tasks"],
+		] as const) {
+			const call = app.tool.renderCall!(args, theme, {}).render(100);
+			assert.equal(call.length, 1);
+			assert.match(call[0]!, new RegExp(label));
+			assert.doesNotMatch(call.join("\n"), /FULL TASK TEXT|--secret/);
+			for (const width of [100, 24, 1]) {
+				const narrow = app.tool.renderCall!(args, theme, {}).render(width);
+				assert.equal(narrow.length, 1);
+				assert.ok(narrow.every((line) => visibleWidth(line) <= width));
+			}
+		}
+
 		const partial = formatWorkflowUpdate("parallel", [
 			{ id: "opaque-running", index: 1, role: "reviewer", status: "running", assistantOutput: "partial" },
 			{ id: "opaque-pending", index: 0, role: "implementer", status: "pending" },
 		]);
-		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, {}, theme, {}).render(100), []);
+		for (const options of [{ isPartial: true }, {}]) {
+			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, options, theme, {}).render(100), []);
+		}
 
 		const single = formatWorkflowResult("single", [{ id: "opaque-single", index: 0, role: "worker", status: "succeeded", assistantOutput: "Implemented the fix.\nignored" }]);
 		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: single.text }], details: single.details }, {}, theme, {}).render(100), ["Implemented the fix."]);
@@ -950,11 +970,41 @@ test("delegate_task leaves partial progress to the widget and renders minimal te
 		const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
 		const expanded = app.tool.renderResult!(result, { expanded: true }, theme, {}).render(100);
 		assert.deepEqual(expanded, collapsed);
-		assert.deepEqual(collapsed, ["implementer: Implemented the fix.", "Recovery: /repo/.worktrees/retained", "reviewer: Validation failed."]);
+		assert.deepEqual(collapsed, ["implementer: Implemented the fix. · Recovery: /repo/.worktrees/retained", "reviewer: Validation failed."]);
 		assert.doesNotMatch(collapsed.join("\n"), /status|✓|✗|task|model|thinking|tok|\d+m|opaque-|branch|ignored/);
 		const narrow = app.tool.renderResult!(result, {}, theme, {}).render(20);
+		assert.ok(narrow.length <= 4);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
-		assert.ok(narrow.some((line) => line.includes("Recovery:")));
+
+		const eight = formatWorkflowResult("parallel", Array.from({ length: 8 }, (_, index) => ({
+			id: `opaque-${index}`,
+			index,
+			role: `worker-${index + 1}`,
+			status: "succeeded" as const,
+			assistantOutput: `result ${index + 1}`,
+			...(index === 0 ? { worktreePayload: { path: "/repo/.worktrees/recover", branch: "pi-subagent/recover", commits: 1, dirty: false, pruned: false } } : {}),
+		})));
+		const eightResult = { content: [{ type: "text" as const, text: eight.text }], details: eight.details };
+		const eightCall = app.tool.renderCall!({ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) }, theme, {}).render(100);
+		const eightCollapsed = app.tool.renderResult!(eightResult, { expanded: false }, theme, {}).render(100);
+		const eightExpanded = app.tool.renderResult!(eightResult, { expanded: true }, theme, {}).render(100);
+		assert.deepEqual(eightExpanded, eightCollapsed);
+		assert.deepEqual(eightCollapsed, [
+			"worker-1: result 1 · Recovery: /repo/.worktrees/recover",
+			"worker-2: result 2",
+			"worker-3: result 3",
+			"… 5 more",
+		]);
+		assert.equal(eightCall.length + eightCollapsed.length, 5);
+		for (const width of [100, 24, 1]) {
+			const call = app.tool.renderCall!({ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) }, theme, {}).render(width);
+			for (const expanded of [false, true]) {
+				const lines = app.tool.renderResult!(eightResult, { expanded }, theme, {}).render(width);
+				assert.ok(lines.length <= 4);
+				assert.ok(call.length + lines.length <= 5);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			}
+		}
 
 		const empty = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, worktree: undefined, summary: "" }] } }, {}, theme, {}).render(100);
 		assert.deepEqual(empty, ["implementer: (no output)"]);

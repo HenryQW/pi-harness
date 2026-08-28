@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, type TUI, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
 	type ThinkingLevel,
@@ -57,6 +57,7 @@ const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ROWS = 8;
+const MAX_RENDERED_RESULT_LINES = 4;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
 	maxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
@@ -175,18 +176,33 @@ function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportD
 		&& entries.every((entry, index) => index === 0 || (entry as { index: number }).index > (entries[index - 1] as { index: number }).index);
 }
 
-function renderWorkflowResult(details: WorkflowTransportDetails, width: number, theme: Theme): string[] {
+function renderBoundedLines(lines: readonly string[], width: number, theme: Theme): string[] {
+	const shown = lines.length > MAX_RENDERED_RESULT_LINES
+		? [...lines.slice(0, MAX_RENDERED_RESULT_LINES - 1), theme.fg("muted", `… ${lines.length - MAX_RENDERED_RESULT_LINES + 1} more`)]
+		: lines;
+	return shown.map((line) => truncateToWidth(line.replace(/[\r\n]+/g, " "), width));
+}
+
+function renderToolLines(lines: readonly string[], theme: Theme): Component {
+	return { invalidate() {}, render: (width) => renderBoundedLines(lines, width, theme) };
+}
+
+function workflowCallLabel(args: { tasks?: unknown; chain?: unknown }): string {
+	if (Array.isArray(args.chain)) return `delegate_task · working: chain · ${args.chain.length} task${args.chain.length === 1 ? "" : "s"}`;
+	if (Array.isArray(args.tasks)) return `delegate_task · working: parallel · ${args.tasks.length} task${args.tasks.length === 1 ? "" : "s"}`;
+	return "delegate_task · working: single · 1 task";
+}
+
+function workflowResultLines(details: WorkflowTransportDetails, theme: Theme): string[] {
 	if (details.entries.some(({ status }) => status === "pending" || status === "running")) return [];
-	return details.entries.flatMap((entry) => {
-		if (entry.status === "skipped") return [];
+	return details.entries.filter(({ status }) => status !== "skipped").map((entry) => {
 		const summary = entry.summary || "(no output)";
 		const text = details.mode === "single" ? summary : `${entry.role}: ${summary}`;
 		const style = entry.status === "failed" || entry.status === "rejected" ? "error" : "text";
 		const recovery = entry.worktree && !entry.worktree.pruned ? `Recovery: ${entry.worktree.path}` : undefined;
-		return [
-			...wrapTextWithAnsi(theme.fg(style, text), Math.max(1, width)),
-			...(recovery ? wrapTextWithAnsi(theme.fg("warning", recovery), Math.max(1, width)) : []),
-		];
+		return recovery === undefined
+			? theme.fg(style, text)
+			: `${theme.fg(style, text)} · ${theme.fg("warning", recovery)}`;
 	});
 }
 
@@ -553,19 +569,18 @@ export default function subagentExtension(
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
 		parameters: WorkflowSchema,
-		renderResult(result, _options, theme, _context) {
+		renderCall(args, theme, _context) {
+			return renderToolLines([theme.fg("toolTitle", workflowCallLabel(args))], theme);
+		},
+		renderResult(result, { isPartial }, theme, _context) {
+			if (isPartial) return renderToolLines([], theme);
 			const details = result.details;
-			if (isWorkflowTransportDetails(details)) {
-				return {
-					invalidate() {},
-					render: (width) => renderWorkflowResult(details, width, theme),
-				};
-			}
+			if (isWorkflowTransportDetails(details)) return renderToolLines(workflowResultLines(details, theme), theme);
 			if (typeof details === "object" && details !== null && (details as { background?: unknown }).background === true) {
-				return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", "Background workflow accepted."), Math.max(1, width)) };
+				return renderToolLines([theme.fg("muted", "Background workflow accepted.")], theme);
 			}
 			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
-			return { invalidate() {}, render: (width) => wrapTextWithAnsi(theme.fg("muted", text), Math.max(1, width)) };
+			return renderToolLines([theme.fg("muted", text)], theme);
 		},
 		prepareArguments(args) {
 			try {

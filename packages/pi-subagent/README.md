@@ -30,6 +30,8 @@ pi install npm:@henryqw/pi-subagent
 | `delegate_flow` | tool | Package-owned parallel implementation and declared-order Git integration for 1–8 independent units. |
 | `delegate_flow_continue` | tool | Repair the blocked Flow unit once in its existing worktree. |
 
+All three delegation tool blocks show concise working messages and never exceed five rendered lines: one call line plus at most four result lines, in either collapsed or expanded view.
+
 ### `delegate_task`
 
 Select exactly one shape:

@@ -1,5 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	addUsage,
 	capEphemeralSubagentOutput as capOutput,
@@ -21,6 +22,7 @@ import { Check } from "typebox/value";
 import { runDelegation } from "./delegation.ts";
 
 const MAX_UNITS = 8;
+const MAX_RENDERED_RESULT_LINES = 4;
 const GIT_TIMEOUT_MS = 30_000;
 const TRUNCATED_OUTPUT = /\n\n\[Output truncated: \d+ bytes omitted\]$/;
 
@@ -160,6 +162,37 @@ export function parseDelegateFlow(value: unknown): FlowRequest {
 export function parseDelegateFlowContinue(value: unknown): Static<typeof DelegateFlowContinueSchema> {
 	if (!Check(DelegateFlowContinueSchema, value)) throw new Error("delegate_flow_continue must match the declared tool schema.");
 	return { guidance: text(value.guidance, "guidance") };
+}
+
+function renderBoundedLines(lines: readonly string[], width: number, theme: Theme): string[] {
+	const shown = lines.length > MAX_RENDERED_RESULT_LINES
+		? [...lines.slice(0, MAX_RENDERED_RESULT_LINES - 1), theme.fg("muted", `… ${lines.length - MAX_RENDERED_RESULT_LINES + 1} more`)]
+		: lines;
+	return shown.map((line) => truncateToWidth(line.replace(/[\r\n]+/g, " "), width));
+}
+
+function renderToolLines(lines: readonly string[], theme: Theme): Component {
+	return { invalidate() {}, render: (width) => renderBoundedLines(lines, width, theme) };
+}
+
+function flowCallLabel(args: { units?: unknown }): string {
+	const count = Array.isArray(args.units) ? args.units.length : 0;
+	return `delegate_flow · working: ${count} unit${count === 1 ? "" : "s"}`;
+}
+
+function flowResultLines(text: string): string[] {
+	const lines = text.split(/\r?\n/).filter((line) => line.trim());
+	const diagnosticHeader = lines.findIndex((line) => line.trim() === "Diagnostic:");
+	const diagnostic = diagnosticHeader === -1 ? undefined : lines[diagnosticHeader + 1];
+	if (diagnostic === undefined) return lines;
+	const leading = lines.slice(0, Math.min(2, diagnosticHeader));
+	// Promote the first diagnostic ahead of the result cap.
+	return [
+		...leading,
+		`Diagnostic: ${diagnostic}`,
+		...lines.slice(leading.length, diagnosticHeader),
+		...lines.slice(diagnosticHeader + 2),
+	];
 }
 
 function errorText(error: unknown): string {
@@ -722,6 +755,13 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance.",
 		],
 		parameters: DelegateFlowSchema,
+		renderCall(args, theme, _context) {
+			return renderToolLines([theme.fg("toolTitle", flowCallLabel(args))], theme);
+		},
+		renderResult(result, _options, theme, _context) {
+			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
+			return renderToolLines(flowResultLines(text), theme);
+		},
 		prepareArguments: parseDelegateFlow,
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			const request = parseDelegateFlow(params);
@@ -815,6 +855,13 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Repair and continue the blocked deterministic Flow",
 		promptGuidelines: ["Call delegate_flow_continue only after delegate_flow reports a repairable block, with explicit guidance addressing that block."],
 		parameters: DelegateFlowContinueSchema,
+		renderCall(_args, theme, _context) {
+			return renderToolLines([theme.fg("toolTitle", "delegate_flow_continue · working: repair continuation")], theme);
+		},
+		renderResult(result, _options, theme, _context) {
+			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
+			return renderToolLines(flowResultLines(text), theme);
+		},
 		prepareArguments: parseDelegateFlowContinue,
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			const { guidance } = parseDelegateFlowContinue(params);

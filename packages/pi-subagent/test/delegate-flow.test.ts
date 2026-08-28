@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext, ExecOptions } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type {
 	EphemeralSubagentActivityEvent,
 	EphemeralSubagentExecutor,
@@ -28,6 +29,8 @@ type Tool = {
 	name: string;
 	parameters: unknown;
 	prepareArguments?: (value: unknown) => unknown;
+	renderCall?: (...args: any[]) => { render: (width: number) => string[] };
+	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
 };
 
@@ -242,6 +245,80 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	]);
 	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/subagent.ts"]);
+});
+
+test("Flow tool blocks are concise and bounded", async (t) => {
+	const app = harness(await repository(t), () => success());
+	const theme = { fg: (_color: string, value: string) => `\x1b[36m${value}\x1b[0m` };
+	const hiddenTask = "FULL FLOW TASK";
+	const hiddenValidation = "--validation-should-not-render";
+	const hiddenGuidance = "FULL REPAIR GUIDANCE";
+	const prohibited = /FULL FLOW TASK|--validation-should-not-render|FULL REPAIR GUIDANCE/;
+	const tools = [
+		{
+			tool: flowTool(app),
+			args: { units: [
+				{ id: "one", task: hiddenTask, validation: [{ command: "hidden-validation", args: [hiddenValidation] }] },
+				{ id: "two", task: hiddenTask, validation: [{ command: "hidden-validation", args: [hiddenValidation] }] },
+			] },
+			label: "delegate_flow · working: 2 units",
+		},
+		{
+			tool: continueTool(app),
+			args: { guidance: hiddenGuidance },
+			label: "delegate_flow_continue · working: repair continuation",
+		},
+	] as const;
+	const results = [
+		{
+			name: "completed",
+			text: ["", "Flow completed.", "", 'Completed units: "one".', "Warnings:", "- cleanup warning", "Retained Flow state:", "- retained path"].join("\n"),
+			diagnostic: undefined,
+		},
+		{
+			name: "blocked",
+			text: ["Flow blocked.", "Completed units: none.", 'Blocked unit: "one".', "Classification: validation.", "Repair available: true.", "", "Diagnostic:", "blocked diagnostic", "diagnostic continuation", "Call delegate_flow_continue."].join("\n"),
+			diagnostic: "blocked diagnostic",
+		},
+		{
+			name: "failed",
+			text: ["Flow failed.", "Completed units: none.", "Classification: infrastructure.", "Diagnostic:", "failed diagnostic", "diagnostic continuation", "Retained Flow state:", "- retained path"].join("\n"),
+			diagnostic: "failed diagnostic",
+		},
+	] as const;
+
+	for (const { tool, args, label } of tools) {
+		const call = tool.renderCall!(args, theme, {}).render(100);
+		assert.equal(call.length, 1);
+		assert.match(call[0]!, new RegExp(label));
+		assert.doesNotMatch(call.join("\n"), prohibited);
+		for (const width of [100, 24, 1]) {
+			const lines = tool.renderCall!(args, theme, {}).render(width);
+			assert.equal(lines.length, 1);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		}
+
+		for (const { name, text, diagnostic } of results) {
+			const result = { content: [{ type: "text", text }], details: {} };
+			const collapsed = tool.renderResult!(result, { expanded: false, isPartial: false }, theme, {}).render(100);
+			const expanded = tool.renderResult!(result, { expanded: true, isPartial: false }, theme, {}).render(100);
+			assert.deepEqual(expanded, collapsed, `${label} ${name}`);
+			assert.ok(collapsed.length <= 4, `${label} ${name}`);
+			assert.ok(call.length + collapsed.length <= 5, `${label} ${name}`);
+			assert.ok(collapsed.every((line) => visibleWidth(line) <= 100), `${label} ${name}`);
+			assert.match(collapsed.join("\n"), /… \d+ more/, `${label} ${name}`);
+			if (diagnostic) assert.match(collapsed.join("\n"), new RegExp(`Diagnostic: ${diagnostic}`), `${label} ${name}`);
+			for (const width of [100, 24, 1]) {
+				const working = tool.renderCall!(args, theme, {}).render(width);
+				for (const expanded of [false, true]) {
+					const lines = tool.renderResult!(result, { expanded, isPartial: false }, theme, {}).render(width);
+					assert.ok(lines.length <= 4, `${label} ${name} expanded=${expanded} width=${width}`);
+					assert.ok(working.length + lines.length <= 5, `${label} ${name} expanded=${expanded} width=${width}`);
+					assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} ${name} expanded=${expanded} width=${width}`);
+				}
+			}
+		}
+	}
 });
 
 test("setup preserves a clean registered collision, cleans earlier allocations non-forcibly, and never falls back outside committed Git", async (t) => {
