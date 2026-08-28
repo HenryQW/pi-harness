@@ -25,6 +25,9 @@ export interface StoreConfig {
 
 export interface LoadResult {
 	entries: string[];
+	/** Raw file state for callers that must detect a change between two reads. */
+	state: "ok" | "absent" | "unreadable" | "oversized";
+	raw?: string;
 	status?: "unreadable" | "oversized";
 	conflictWarning?: string;
 }
@@ -85,12 +88,12 @@ export function usage(current: number, limit: number): string {
  * frame headers are advisory context, not a security boundary; revisit only if
  * entries start coming from untrusted writers.
  */
-function normalize(raw: string): string {
+export function normalizeEntry(raw: string): string {
 	return raw.replace(/^\uFEFF/, "").replace(/\r\n?|[\u2028\u2029\u0085\u000B\u000C]/g, "\n").trim();
 }
 
 function parseEntries(raw: string): string[] {
-	const text = normalize(raw);
+	const text = normalizeEntry(raw);
 	if (!text) return [];
 	// Deduplicate, preserving order and first occurrence.
 	return [...new Set(text.split(ENTRY_DELIMITER).map((e) => e.trim()).filter(Boolean))];
@@ -175,6 +178,7 @@ export class MemoryStore {
 		if (file.kind === "unreadable") {
 			return {
 				entries: [],
+				state: "unreadable",
 				status: "unreadable",
 				conflictWarning: `${this.pathFor(target)} exists but could not be read; refusing to serve a possibly-wrong view.`,
 			};
@@ -182,11 +186,24 @@ export class MemoryStore {
 		if (file.kind === "oversized") {
 			return {
 				entries: [],
+				state: "oversized",
 				status: "oversized",
 				conflictWarning: `${this.pathFor(target)} is ${file.bytes.toLocaleString()} bytes, over the ${MAX_FILE_BYTES.toLocaleString()}-byte injection limit; refusing to serve it. Consolidate the file manually.`,
 			};
 		}
-		return { entries: file.kind === "ok" ? parseEntries(file.raw) : [] };
+		if (file.kind === "absent" && this.observedExisting.has(target)) {
+			return {
+				entries: [],
+				state: "unreadable",
+				status: "unreadable",
+				conflictWarning: `${this.pathFor(target)} existed earlier this session but has disappeared; refusing to serve an empty view. Restore it and retry.`,
+			};
+		}
+		return {
+			entries: file.kind === "ok" ? parseEntries(file.raw) : [],
+			state: file.kind,
+			raw: file.kind === "ok" ? file.raw : "",
+		};
 	}
 
 	private async digestFile(path: string): Promise<string> {
@@ -361,7 +378,7 @@ export class MemoryStore {
 	}
 
 	private static checkContent(content: string): string | undefined {
-		const normalized = normalize(content);
+		const normalized = normalizeEntry(content);
 		if (!normalized) return "Content cannot be empty.";
 		if (normalized.includes(ENTRY_DELIMITER)) return `Content must not contain the entry delimiter ("${ENTRY_DELIMITER.trim()}”).`;
 		// Same predicate as the snapshot sanitizer (leading Unicode whitespace
@@ -409,7 +426,7 @@ export class MemoryStore {
 	async add(target: Target, content: string): Promise<Result> {
 		const contentError = MemoryStore.checkContent(content);
 		if (contentError) return { success: false, error: contentError };
-		const text = normalize(content);
+		const text = normalizeEntry(content);
 
 		if (!(await this.reloadTarget(target))) {
 			return this.unreadableAbort(target);
@@ -462,7 +479,7 @@ export class MemoryStore {
 
 		// Reload before validating old_text so failure results reflect DISK state.
 		if (!(await this.reloadTarget(target))) return this.unreadableAbort(target);
-		const trimmedOld = normalize(oldText ?? "");
+		const trimmedOld = normalizeEntry(oldText ?? "");
 		if (!trimmedOld) return MemoryStore.missingOldTextError(target, "replace", this);
 		const entries = this.entries.get(target)!;
 
@@ -475,7 +492,7 @@ export class MemoryStore {
 		}
 		if (resolved[0] === "ambiguous") return MemoryStore.ambiguousError(trimmedOld, resolved[1]);
 
-		const text = normalize(newText);
+		const text = normalizeEntry(newText);
 		const testEntries = [...entries];
 		testEntries[resolved[0]] = text;
 		// A replace can create a duplicate; dedupe order-preserving before budget.
@@ -498,7 +515,7 @@ export class MemoryStore {
 	async remove(target: Target, oldText: string): Promise<Result> {
 		// Reload before validating old_text so failure results reflect DISK state.
 		if (!(await this.reloadTarget(target))) return this.unreadableAbort(target);
-		const trimmedOld = normalize(oldText ?? "");
+		const trimmedOld = normalizeEntry(oldText ?? "");
 		if (!trimmedOld) return MemoryStore.missingOldTextError(target, "remove", this);
 		const entries = this.entries.get(target)!;
 
@@ -542,8 +559,8 @@ export class MemoryStore {
 		for (let i = 0; i < operations.length; i++) {
 			const op = operations[i] ?? {};
 			const action = op.action;
-			const content = normalize(op.content ?? op.new_text ?? "");
-			const oldText = normalize(op.old_text ?? "");
+			const content = normalizeEntry(op.content ?? op.new_text ?? "");
+			const oldText = normalizeEntry(op.old_text ?? "");
 			const pos = `Operation ${i + 1} (${action ?? "unknown"})`;
 
 			if (action === "add") {
