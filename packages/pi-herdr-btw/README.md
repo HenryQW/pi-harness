@@ -1,12 +1,12 @@
 # `@henryqw/pi-herdr-btw`
 
-Open a focused Pi side thread in a Herdr pane, then merge its transcript and follow-up prompt into Main.
+Open a focused Pi side thread in a Herdr pane. Then merge its transcript and follow-up prompt into Main.
 
 ## Why
 
-- **Created for**: Asking quick side questions in a dedicated Pi thread without derailing Main's conversation or context.
+- **Created for**: Ask quick side questions in a dedicated Pi thread without derailing Main's conversation or context.
 - **Advantage**: `/btw merge` returns the side transcript and follow-up to Main without manually copying context.
-- **Inspired by**: [Claude Code](https://github.com/anthropics/claude-code) and its `/btw` side-question mode; this package adds transcript merge back into Main.
+- **Inspired by**: [Claude Code](https://github.com/anthropics/claude-code) and its `/btw` side-question mode. This package adds transcript merge back into Main.
 
 ## Install
 
@@ -25,9 +25,7 @@ Requires Herdr 0.7.4+ and a Herdr-managed pane.
 
 ## Use
 
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `/btw` | command | Open a side thread, configure its defaults, or recover a pending merge. |
+Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 ```text
 /btw                              open an empty side pane
@@ -38,13 +36,28 @@ Requires Herdr 0.7.4+ and a Herdr-managed pane.
 /btw help                         show grammar
 ```
 
-`ask`, `config`, `merge`, and `help` route only when exact first words. Other input is a question. A provided question is an editable draft by default. `/btw` snapshots Main's compaction-aware context, inherits its working directory, and uses its consumer-owned `pi-herdr-btw/btw` task, which defaults to `fast`. It selects the first authenticated viable effective profile route before pane launch.
+### Launch
 
-Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. The local `pi-herdr-btw/btw` declaration defaults to `fast`; a task entry is an explicit user override. Side-thread routes resolve before pane launch.
+- `ask`, `config`, `merge`, and `help` route only when they are exact first words. Other input is a question.
+- A provided question is an editable draft by default.
+- `/btw` snapshots Main's compaction-aware context and inherits its working directory.
+- The consumer-owned `pi-herdr-btw/btw` task defaults to `fast`.
+- Before pane launch, it selects the first authenticated viable effective profile route.
 
-In side pane, `/btw merge <prompt>` sends user/assistant text transcript to Main, refocuses Main, and closes side pane. Main appends transcript without starting a turn, then submits prompt. Bare `/btw merge` opens prompt editor. Pending delivery waits for Main to settle and current model authentication; it survives side-pane shutdown until consumed or 24-hour stale cleanup.
+`~/.pi/agent/config/pi-task-models.json` is shared and owned by `@henryqw/pi-task-models`. A task entry is an explicit user override. Side-thread routes resolve before pane launch.
 
-Side pane gets static parent context and shares Main's working directory, so enabled tools can change parent-visible files. Large parent contexts can exceed child context limits. Launch data stays in private temporary directory.
+### Merge delivery
+
+- In the side pane, `/btw merge <prompt>` sends the user/assistant text transcript to Main, refocuses Main, and closes the side pane.
+- Main appends the transcript without starting a turn, then submits the prompt.
+- Bare `/btw merge` opens the prompt editor.
+- Pending delivery waits for Main to settle and for current model authentication. It survives side-pane shutdown until consumed or 24-hour stale cleanup.
+
+### Limits and privacy
+
+- The side pane gets static parent context and shares Main's working directory. Enabled tools can change parent-visible files.
+- Large parent contexts can exceed child context limits.
+- Launch data stays in a private temporary directory.
 
 ## Config
 
@@ -64,4 +77,9 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw.json`
 | `tools` | No | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), `none` | `inherit` |
 | `split` | No | `right`, `down` — side-pane placement | `right` |
 
-All fields are optional; unknown keys and non-object files are rejected. `/btw config show` prints effective values; `/btw config reset` removes the file. Missing config uses defaults; malformed config fails visibly and remains unchanged.
+- All fields are optional.
+- Unknown keys and non-object files are rejected.
+- `/btw config show` prints effective values.
+- `/btw config reset` removes the file.
+- Missing config uses defaults.
+- Malformed config fails visibly and remains unchanged.

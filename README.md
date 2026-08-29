@@ -1,6 +1,8 @@
 # HenryQW Pi packages
 
-This repository contains the Pi extensions I use daily for my work. They are highly opinionated and published as-is: no support or backward compatibility is offered, and breaking changes may be introduced at any time. Packages are published under the `@henryqw` scope.
+These are the Pi extensions I use daily. They are highly opinionated. I publish them as-is.
+
+I offer no support or backward compatibility. Breaking changes may be introduced at any time. Packages use the `@henryqw` scope.
 
 ![Pi packages in use](./example.png)
 
@@ -29,7 +31,9 @@ This repository contains the Pi extensions I use daily for my work. They are hig
 
 ## Internal package relationships
 
-This graph documents internal `@henryqw` package relationships. All 18 `packages/*` workspaces appear exactly once as Mermaid nodes below. **Legend:** solid arrows (`-->`) are internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`; dashed arrows (`-.->`) are direct runtime protocols or couplings without an internal npm dependency, evidenced by package behavior or documentation. All arrows point from consumer/recognizer to provider/producer.
+Each of the 18 `packages/*` workspaces appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`.
+
+Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
 
 ```mermaid
 flowchart LR
@@ -73,7 +77,7 @@ pi remove npm:@henryqw/<package>
 
 Replace `<package>` with the package's unscoped name, for example `pi-subagent`.
 
-Before removing `@henryqw/pi-deps`, disable each opted-in repository with `/deps`: its copied hook is self-contained.
+Before removing `@henryqw/pi-deps`, disable each opted-in repository with `/deps`. Its copied hook is self-contained.
 
 After removing `@henryqw/pi-session-recall`, delete its derived index to reclaim storage:
 
@@ -98,7 +102,7 @@ Run live Pi integration tests only when authenticated model access is available:
 npm run test:live
 ```
 
-Live tests use real model requests and can incur provider cost. They set a temporary small context window so compaction completes quickly.
+Live tests use real model requests. They can incur provider cost. They set a temporary small context window so compaction completes quickly.
 
 Manual Pi TUI check for `@henryqw/pi-ask-question`:
 
@@ -117,4 +121,4 @@ Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`
 
 ## Release
 
-See [`docs/releasing.md`](./docs/releasing.md). Each package publishes independently; package names use `@henryqw` scope.
+See [`docs/releasing.md`](./docs/releasing.md). Each package publishes independently. Package names use the `@henryqw` scope.

@@ -2,7 +2,7 @@
 
 # `@henryqw/<package>`
 
-<One sentence describing user-visible value.>
+<One sentence describing what users can do.>
 
 ## Why
 
@@ -20,13 +20,15 @@ pi install npm:@henryqw/<package>
 
 <Runtime prerequisite or setup step, if needed. Do not repeat generic Pi version requirements already enforced by peerDependencies.>
 
-<!-- Optional: separately installed companion Pi packages only. Alphabetize rows by package. Reasons begin Required., Improves., or Consumer. -->
+<!-- Optional: use a table only for multiple comparable companion packages. Use a sentence or list for one companion. Alphabetize rows by package. Reasons begin Required., Improves., or Consumer. -->
 ## With
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/<companion>` | Required. <Why.> |
+| `@henryqw/<companion-a>` | Required. <Why.> |
+| `@henryqw/<companion-b>` | Improves. <Why.> |
 
+<!-- Use a table for multiple comparable surfaces. Use a sentence or list for one surface. -->
 ## Use
 
 | Surface | Type | Purpose |
@@ -36,18 +38,19 @@ pi install npm:@henryqw/<package>
 
 <Behavior, limits, integrations, and safety caveats.>
 
-<!-- Optional: include Config only when the package owns a user-editable config file; otherwise omit it. Put companion/shared config guidance in With or Use, not here. Do not present generated state as this package's config. -->
+<!-- Optional: include Config only when the package owns a user-editable config file. Put companion/shared config guidance in With or Use, not here. Do not present generated state as this package's config. Use a table for multiple comparable settings. Use a sentence or list for one setting unless a fixed field layout is clearer. -->
 ## Config
 
 `~/.pi/agent/config/<package>.json`
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
-| `<setting>` | Yes or no | <Valid values> | <Default> |
+| `<setting-a>` | Yes or no | <Valid values> | <Default> |
+| `<setting-b>` | Yes or no | <Valid values> | <Default> |
 
 <Invalid-config behavior.>
 
-<!-- Optional: add feature-specific sections here, for example Library API, Workflow, or Recovery. -->
+<!-- Optional: add feature-specific sections here, for example Library API, Workflow, or Recovery. Add a diagram only when a flow or relationship is clearer than prose. Do not add a Mermaid placeholder. -->
 ## <Feature>
 
 <Feature-specific documentation.>

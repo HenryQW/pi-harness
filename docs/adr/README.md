@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Current durable architecture for the pi-packages monorepo. Package-specific ADRs use the package name in the filename.
+An Architecture Decision Record (ADR) records one current architecture choice. These ADRs describe the current architecture of the pi-packages monorepo. Package-specific ADR filenames include the package name.
 
 ## Repository-wide
 
@@ -23,6 +23,10 @@ Current durable architecture for the pi-packages monorepo. Package-specific ADRs
 
 ## Process
 
-Propose durable decisions through a pull request. ADRs describe the current accepted architecture, not a full implementation chronology. When a decision changes, fold any enduring rationale and invariants into the current ADR and remove obsolete text or files; git retains the history.
+Propose lasting decisions through a pull request. ADRs describe accepted architecture, not a full implementation timeline.
 
-See ADR 005 for knowledge ownership: git owns project knowledge, the memory store holds only auto-managed cross-project memory, and `.context/progress.md` holds resumable task state.
+When a decision changes, move lasting reasons and rules into the current ADR. Remove old text or files. Git keeps the history.
+
+See ADR 005 for knowledge ownership. Git owns project knowledge.
+
+The memory store holds only auto-managed cross-project memory. `.context/progress.md` holds task state that can resume.

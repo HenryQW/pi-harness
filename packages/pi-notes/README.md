@@ -1,10 +1,10 @@
 # `@henryqw/pi-notes`
 
-Persistent post-it reminders shown in a Pi widget, managed with slash commands.
+Keep persistent post-it reminders in a Pi widget. Manage them with slash commands.
 
 ## Why
 
-- **Created for**: Keeping a few brief, post-it-style reminders visible per worktree without leaving the Pi session.
+- **Created for**: Keep a few brief post-it-style reminders visible per worktree without leaving the Pi session.
 - **Advantage**: Notes stay intentionally bounded and visible instead of becoming clipboard storage or history.
 
 ## Install
@@ -21,12 +21,14 @@ pi install npm:@henryqw/pi-notes
 | `/note-rm` | command | Pick a note from current worktree to remove. |
 | `/note-clear` | command | Clear current worktree's notes. |
 
-Notes are isolated per Git worktree, render as a numbered widget above editor with at most two lines per note, and persist across sessions under `~/.pi/agent/config/pi-notes/`. Empty worktrees show no widget. Stale files for removed repositories and worktrees are deleted silently when a session starts or notes change.
+- Each Git worktree has separate notes.
+- The widget numbers notes above the editor and shows at most two lines per note.
+- Each worktree has at most four notes.
+- Empty worktrees show no widget.
+- Stale files for removed repositories and worktrees are deleted silently when a session starts or notes change.
 
-Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for affected worktree until fixed or reset with `/note-clear`.
+Each worktree file is validated as untrusted data. Malformed files are preserved. They block mutation for the affected worktree until fixed or reset with `/note-clear`.
 
 ## State
 
-| Path | Purpose |
-| --- | --- |
-| `~/.pi/agent/config/pi-notes/<worktree-sha256>.json` | Command-managed notes for one Git worktree. |
+The extension generates `~/.pi/agent/config/pi-notes/<worktree-sha256>.json` for command-managed notes in one Git worktree.

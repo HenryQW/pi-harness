@@ -4,8 +4,8 @@ Ask the user one interactive question with up to three choices, or a custom answ
 
 ## Why
 
-- **Created for**: Asking the user one interactive question with up to three choices during a Pi session.
-- **Advantage**: Offers a keyboard-selectable prompt and returns one explicit answer instead of relying on free-form chat parsing.
+- **Created for**: Ask the user one interactive question with up to three choices during a Pi session.
+- **Advantage**: Show a keyboard-selectable prompt and return one explicit answer instead of parsing free-form chat.
 
 ## Install
 
@@ -15,9 +15,7 @@ pi install npm:@henryqw/pi-ask-question
 
 ## Use
 
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `ask_question` | tool | Pause for one interactive answer. |
+Use `ask_question` to pause for one interactive answer.
 
 ```json
 {
@@ -30,6 +28,10 @@ pi install npm:@henryqw/pi-ask-question
 }
 ```
 
-Supply one to three options in preference order. UI marks the first `(Recommended)` and adds `Something else.`, which opens a text input for a custom answer. Empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions return an error. Aborting the tool closes the pending question.
+- Supply one to three options in preference order.
+- The UI marks the first option `(Recommended)`.
+- The UI adds `Something else.`, which opens a text input for a custom answer.
 
-Extensions can reuse the same validated interaction with the `askQuestion(params, ctx, signal)` package export; it returns the tool's answer details without registering another UI flow.
+The tool returns an error for empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions. Aborting the tool closes the pending question.
+
+Extensions can reuse the validated interaction with `askQuestion(params, ctx, signal)`. This package export returns the tool's answer details without registering another UI flow.

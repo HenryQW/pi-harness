@@ -1,10 +1,10 @@
 # `@henryqw/pi-task-models`
 
-Shared `fast`, `balanced`, `frontier`, and `fav` model profiles plus routing for consumer-owned Model Tasks.
+Choose shared `fast`, `balanced`, `frontier`, and `fav` model profiles for consumer-owned Model Tasks.
 
 ## Why
 
-- **Created for**: Deduplicating model pickers and catalogs that each extension previously owned separately.
+- **Created for**: Remove duplicated model pickers and catalogs that extensions once owned separately.
 - **Advantage**: One shared profile control plane keeps routes consistent while each consumer owns its task identity, intent, and default profile.
 
 ## Install
@@ -26,19 +26,29 @@ pi install npm:@henryqw/pi-task-models
 
 ## Use
 
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `/task-models` | command | Edit a profile or override an active task's default profile. |
+Use `/task-models` to select a profile or override an active task's default profile.
 
-Selecting a profile sets primary model, primary thinking, optional fallback model, then fallback thinking. One completed flow writes the whole profile. Selecting an active task sets its explicit override; choosing its consumer-declared default removes that override.
+### Profile selection
 
-Consumers register their declarations at extension load. The one shared control plane asks active extensions for declarations when `/task-models` opens, so extension load order does not matter. It lists each active task's effective profile. Hidden explicit assignments stay stored when a consumer is disabled.
+Selecting a profile sets its primary model, primary thinking, optional fallback model, and fallback thinking. One completed flow writes the whole profile.
 
-Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. Empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated. Fallback choices exclude the selected primary. BTW selects the first authenticated viable route before pane launch.
+Selecting an active task sets its explicit override. Choosing its consumer-declared default removes that override.
+
+### Active declarations
+
+Consumers register declarations at extension load. When `/task-models` opens, the shared control plane asks active extensions for declarations. Extension load order does not matter.
+
+The control plane lists each active task's effective profile. Hidden explicit assignments stay stored when a consumer is disabled.
+
+### Scoped models, aliases, and fallback
+
+Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. An empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated.
+
+Fallback choices exclude the selected primary. BTW selects the first authenticated viable route before pane launch.
 
 ## Config
 
-Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-task-models.json`. Consumers read it but never write it; only explicit `/task-models` actions save it.
+The single shared JSON file is at the exact package-owned path `~/.pi/agent/config/pi-task-models.json`. Consumers read it but never write it. Only explicit `/task-models` actions save it.
 
 ```json
 {
@@ -72,8 +82,18 @@ Single shared JSON file at the exact package-owned path `~/.pi/agent/config/pi-t
 | `tasks` | No | Object mapping task IDs (`<package>/<task>`) to explicit user profile overrides | `{}` |
 | `tasks.<taskId>` | Value required if the key is present | `fast`, `balanced`, `frontier`, `fav` | That task declaration's `defaultProfile` |
 
-Task defaults live only in consumer declarations. Existing explicit assignments, including one equal to a declaration's default, remain valid. Model references use canonical `provider/model`; numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
+Pi's model registry, including session-scoped models, is the source of available models at resolution. This file does not contain a model catalog.
 
-Reads are strict. A missing file yields `{ "profiles": {}, "tasks": {} }`; malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance and never rewrite the file.
+Task defaults live only in consumer declarations. Existing explicit assignments, including one equal to a declaration's default, remain valid.
 
-Profile thinking is authoritative for task routes. Consumers define a `ModelTask`, call `registerModelTask(pi, task)` at extension load, then call `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)`. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+Model references use canonical `provider/model`. Numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
+
+Reads are strict. A missing file yields `{ "profiles": {}, "tasks": {} }`.
+
+Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance. The file is never rewritten.
+
+## For extension authors
+
+A `ModelTask` is a consumer-owned independently executed model operation. Consumers define a `ModelTask` and call `registerModelTask(pi, task)` at extension load.
+
+Use `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)` to resolve routes. Profile thinking is authoritative for task routes. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.

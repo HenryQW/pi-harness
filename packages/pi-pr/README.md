@@ -4,7 +4,7 @@ Show the current branch pull request's lifecycle, CI, mergeability, and review s
 
 ## Why
 
-- **Created for**: Avoiding repeated `gh` commands just to check pull-request status during work.
+- **Created for**: Avoid repeated `gh` commands just to check pull-request status during work.
 - **Advantage**: Branch lifecycle, CI, mergeability, and review state appear at a glance in the footer.
 
 ## Install
@@ -17,9 +17,7 @@ Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repositor
 
 ## With
 
-| Package | Why |
-| --- | --- |
-| `@henryqw/pi-footer` | Improves. Shows current-branch pull-request status in the footer. |
+`@henryqw/pi-footer` improves this package by showing current-branch pull-request status in the footer.
 
 ## Use
 
@@ -28,8 +26,29 @@ Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repositor
 | Footer | ui | Show the current branch pull request. |
 | `/pr` | command | Open current branch PR, or start PR workflow when absent. |
 
-Each entry is one linked `PR #number` plus one plain-language state: `<count> unresolved`, `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `merge conflict`, `merged`, or `closed`. Known unresolved review threads take priority, followed by merge conflict, changes requested, CI failure, then CI progress. Colors support text; they do not carry meaning alone.
+Each entry is one linked `PR #number` plus one plain-language state. Possible states are:
 
-The status loads at session start, polls every 30 seconds, and refreshes after an agent successfully runs `gh pr create`, `git push`, or `/pr`. Unresolved review threads are checked every 30 seconds for 20 minutes after an open PR is first found. Each new push or remote PR update, including new comments, restarts that window. Footer and warning notification show the unresolved count when first found or increased. Last known footer count remains after review checks stop. No pull request leaves the footer blank.
+- `<count> unresolved`, `draft`, `open`, `approved`, and `CI running`
+- `CI failed`, `changes requested`, `merge conflict`, `merged`, and `closed`
 
-`/pr` finds an open PR for current branch. When absent, it starts bundled `/skill:pi-pr-create` workflow. Agent resolves base, inspects and commits scoped changes, runs relevant validation, pushes branch, and creates or updates PR with live title and body. This workflow handles dirty worktrees; it never silently commits unrelated changes.
+Colors support text. They do not carry meaning alone.
+
+Known states have this priority:
+
+1. `<count> unresolved` for known unresolved review threads
+2. `merge conflict`
+3. `changes requested`
+4. `CI failed`
+5. `CI running` for CI progress
+
+The status loads at session start and polls every 30 seconds. It refreshes after an agent successfully runs `gh pr create`, `git push`, or `/pr`.
+
+Unresolved review threads are checked every 30 seconds for 20 minutes after an open PR is first found. Each new push or remote PR update, including new comments, restarts that window.
+
+The footer and warning notification show the unresolved count when first found or increased. The last known footer count remains after review checks stop. No pull request leaves the footer blank.
+
+`/pr` finds an open PR for the current branch. When absent, it starts bundled `/skill:pi-pr-create` workflow.
+
+The agent resolves the base and inspects and commits scoped changes. It runs relevant validation, pushes the branch, and creates or updates the PR with a live title and body.
+
+This workflow handles dirty worktrees. It never silently commits unrelated changes.
