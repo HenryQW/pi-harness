@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-compact",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "Proactively compact Pi context at a configurable threshold and resume the current task.",
   "keywords": [
     "pi-package",
@@ -14,9 +14,9 @@
   },
   "license": "MIT",
   "files": [
+    "LICENSE",
     "extensions",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",

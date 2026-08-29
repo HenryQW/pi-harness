@@ -1,10 +1,10 @@
 # `@henryqw/pi-herdr-done`
 
-Pi extension that closes and removes the current Herdr-managed linked worktree. Requires Pi Coding Agent 0.84.4+ running inside Herdr.
+Close and remove the current Herdr-managed linked worktree safely.
 
 ## Why
 
-- **Created for**: Automating safe cleanup after finishing worktree-based tasks instead of manually removing checkouts, closing tabs, and pulling parents.
+- **Created for**: Clean up finished worktree tasks without manually removing checkouts, closing tabs, and pulling parents.
 - **Advantage**: `/done` removes the checkout, closes workspace tabs, fast-forwards the parent with `--ff-only`, and refuses unsafe cases unless forced.
 
 ## Install
@@ -13,6 +13,8 @@ Pi extension that closes and removes the current Herdr-managed linked worktree. 
 pi install npm:@henryqw/pi-herdr-done
 ```
 
+Requires a Pi session running inside Herdr.
+
 ## Use
 
 | Surface | Type | Purpose |
@@ -20,7 +22,13 @@ pi install npm:@henryqw/pi-herdr-done
 | `/done` | command | Remove the current worktree checkout, close its Herdr workspace's tabs, and fast-forward the parent workspace. |
 | `/done --force` | command | Same, even when the worktree is dirty or used by tabs in another workspace. |
 
-Both forms wait for Pi to become idle. `/done` asks for confirmation first; `/done --force` skips it because the flag already states intent. Normal removal runs:
+### Idle and confirmation
+
+- Both forms wait for Pi to become idle.
+- `/done` asks for confirmation first.
+- `/done --force` skips confirmation because the flag already states intent.
+
+Normal removal runs:
 
 ```bash
 git worktree remove .
@@ -29,8 +37,17 @@ git -C <parent> pull --ff-only
 herdr tab close "$HERDR_TAB_ID"
 ```
 
-The parent pull runs only when this session ran in a linked worktree with a non-bare primary. It fails safely when the parent has diverged. Parent tabs do not block worktree removal or the parent pull. Once removal succeeds, every tab in the current Herdr workspace closes even when the parent pull fails. Concurrent completions serialize on a lock around the parent checkout.
+### Parent pull and tabs
 
-Tabs in the current Herdr workspace close automatically. When a tab from another workspace still uses the current checkout, `/done` refuses and lists it by name; use `/done --force` to remove the checkout regardless. Command requires Pi running inside Herdr with `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_TAB_ID` set.
+- The parent pull runs only when this session ran in a linked worktree with a non-bare primary.
+- It fails safely when the parent has diverged.
+- Parent tabs do not block worktree removal or the parent pull.
+- Once removal succeeds, every tab in the current Herdr workspace closes, even when the parent pull fails.
+- Concurrent completions serialize on a lock around the parent checkout.
 
-Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --force` to explicitly delete them.
+### Herdr requirements and force
+
+- Tabs in the current Herdr workspace close automatically.
+- If a tab from another workspace still uses the current checkout, `/done` refuses and lists it by name. Use `/done --force` to remove the checkout regardless.
+- The command requires Pi inside Herdr with `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_TAB_ID` set.
+- Dirty worktrees make `/done` fail. Commit or discard changes, or use `/done --force` to explicitly delete them.

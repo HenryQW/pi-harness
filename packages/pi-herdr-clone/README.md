@@ -1,17 +1,19 @@
 # `@henryqw/pi-herdr-clone`
 
-Pi extension that clones the current conversation path into a new Pi process in a new tab of the current Herdr workspace, or into a new Herdr Git worktree workspace. Requires Pi Coding Agent 0.84.4+ and a Pi session running inside Herdr.
+Clone the current Pi conversation path into a new Herdr tab or Git worktree workspace.
 
 ## Why
 
-- **Created for**: Spawning a new Pi process that continues the current conversation, either as a workspace tab or in a fresh Git worktree.
-- **Advantage**: Clones copy only the active root-to-leaf session path, leaving sibling branches and the original session untouched.
+- **Created for**: Start a new Pi process that continues the current conversation in a workspace tab or fresh Git worktree.
+- **Advantage**: Clones copy only the active root-to-leaf session path. They leave sibling branches and the original session untouched.
 
 ## Install
 
 ```bash
 pi install npm:@henryqw/pi-herdr-clone
 ```
+
+Requires a Pi session running inside Herdr.
 
 ## Use
 
@@ -20,23 +22,31 @@ pi install npm:@henryqw/pi-herdr-clone
 | `/clone-tab` | command | Clone the current conversation into a new tab of the current Herdr workspace. |
 | `/clone-worktree` | command | Clone the current conversation into a new Herdr Git worktree workspace. |
 
-Both commands immediately validate the current Herdr pane (`HERDR_ENV=1`, `HERDR_PANE_ID`), the session file, and the current session leaf. They copy only the active root-to-leaf path available when invoked into a new persisted session file: sibling branches and any still-streaming assistant output are excluded, and the original Pi session is not switched. Neither command has configuration.
+The active conversation path is the saved messages from the session root to its current leaf. Both commands validate the current Herdr pane (`HERDR_ENV=1`, `HERDR_PANE_ID`), the session file, and the current session leaf immediately.
+
+They copy only the active root-to-leaf path available when invoked into a new persisted session file. Sibling branches and still-streaming assistant output are excluded.
+
+The original Pi session is not switched. Neither command has configuration.
 
 ### `/clone-tab` behavior
 
-1. Creates an unfocused Herdr tab in the current workspace with the current working directory.
-2. Starts Pi in the tab's root pane with `--session <absolute-clone-file>`.
-3. Focuses the new tab after Pi starts successfully.
+1. Create an unfocused Herdr tab in the current workspace with the current working directory.
+2. Start Pi in the tab's root pane with `--session <absolute-clone-file>`.
+3. Focus the new tab after Pi starts successfully.
 
 ### `/clone-worktree` behavior
 
-1. Creates a Git worktree-backed workspace with `herdr worktree create --workspace <current-workspace> --no-focus`; Herdr creates the branch from `HEAD` unless the name exists, checks out the worktree under its configured `worktrees.directory`, and opens it as a grouped workspace.
-2. Waits briefly for any worktree-layout plugin (for example `herdr-plus`) to start its own agent in the new workspace's root pane.
-3. If the root pane is occupied, creates an additional unfocused tab in the new workspace with the checkout as its working directory, so the plugin's agent and the clone coexist. Otherwise the clone uses the root pane.
-4. Copies the active path into a clone session stamped with the fresh checkout path as its working directory.
-5. Starts Pi in the chosen pane with `--session <absolute-clone-file>`.
-6. Focuses the clone's tab after Pi starts successfully.
+1. Create a Git worktree-backed workspace with `herdr worktree create --workspace <current-workspace> --no-focus`.
+   Herdr creates the branch from `HEAD` unless the name exists, checks out the worktree under its configured `worktrees.directory`, and opens it as a grouped workspace.
+2. Wait briefly for a worktree-layout plugin, such as `herdr-plus`, to start its agent in the new workspace's root pane.
+3. If the root pane is occupied, create an additional unfocused tab in the new workspace with the checkout as its working directory. The plugin's agent and the clone then coexist. Otherwise, use the root pane.
+4. Copy the active path into a clone session stamped with the fresh checkout path as its working directory.
+5. Start Pi in the chosen pane with `--session <absolute-clone-file>`.
+6. Focus the clone's tab after Pi starts successfully.
 
 ### Failure semantics
 
-If target creation fails outright, no clone session is kept or created. A killed or incomplete creation response is ambiguous because Herdr may have retained partial state; the error reports every identifier returned so far and suggests inspecting `herdr workspace list`. Once agent start is attempted, the target tab, panes, and session file are retained because the launch outcome can be unknown; the error reports any known IDs for recovery. A later focus failure is shown as a warning and does not report the already-started clone as failed.
+- **Target creation failed:** No clone session is kept or created.
+- **Killed or incomplete creation response:** The result is ambiguous because Herdr may have retained partial state. The error reports every identifier returned so far and suggests inspecting `herdr workspace list`.
+- **Agent start attempted:** Retain the target tab, panes, and session file because the launch outcome can be unknown. The error reports any known IDs for recovery.
+- **Later focus failure:** Show a warning. Do not report the already-started clone as failed.

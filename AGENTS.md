@@ -53,6 +53,23 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 
 ## Documentation fast path
 
+Every `README.md` is for people:
+
+- Use simple English.
+- Keep sentences short; aim for 20 words or fewer.
+- Put one main idea in each sentence.
+- Use direct verbs and active voice.
+- Explain what readers can do or will see before explaining internals.
+- Prefer common words, such as “uses” instead of “consumes,” “starts” instead of “invokes,” and “works with” instead of “integrates with.”
+- Avoid jargon and internal architecture terms unless readers need them. Define necessary technical terms on first use.
+- Keep commands, paths, package names, API names, and error messages exact.
+- Keep paragraphs to three sentences or fewer. Use lists for steps and options.
+- Use tables for comparisons and diagrams for flows or relationships when they are clearer than prose. Do not add a visual when a short sentence or list is easier to read.
+- Remove repeated details, marketing language, and implementation history.
+- State requirements, limits, failures, and safety risks plainly.
+- Never simplify away important technical meaning.
+- After any extension change, check its `README.md` and update it when commands, config, behavior, requirements, limits, safety guidance, or package relationships changed.
+
 For README/template-only changes:
 
 - Keep cohesive work in one bounded implementer/reviewer unit, including any required workspace version bumps and lockfile update.

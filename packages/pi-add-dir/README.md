@@ -1,11 +1,11 @@
 # `@henryqw/pi-add-dir`
 
-Add external directories to the current Pi session: inject context files, load skills, and search those trees.
+Add external directories to the current Pi session. Pi can use their context files and skills, and search their files.
 
 ## Why
 
-- **Created for**: Extending Pi context and skill discovery beyond the current working directory.
-- **Advantage**: Inject files and load skills from external trees without copying them into the repo.
+- **Created for**: Use context and skills outside the current working directory.
+- **Advantage**: Use external trees without copying them into the repository.
 
 ## Install
 
@@ -23,10 +23,16 @@ pi install npm:@henryqw/pi-add-dir
 | `add_directory` | tool | Add a directory. |
 | `search_external_files` | tool | Glob-search added directories. |
 
-Added directories return root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md`, and inject them into later prompts. Skills load from `.pi/skills`, `.agents/skills`, and `.claude/skills`. Their files also appear in the editor's `@` autocomplete with absolute paths. `/dir-add` reloads when it finds skills; `add_directory` reports when a reload is needed.
+Added directories give Pi these resources:
 
-Search uses Node filesystem traversal, skips `.git` and `node_modules`, supports basename and relative-path globs, and caps results at 1,000 per call.
+- Root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md` files. Pi injects them into later prompts.
+- Skills that Pi loads from `.pi/skills`, `.agents/skills`, and `.claude/skills`.
+- Files in the editor's `@` autocomplete, with absolute paths.
+
+`/dir-add` reloads when it finds skills. `add_directory` reports when a reload is needed.
+
+Search supports basename and relative-path globs. It skips `.git` and `node_modules`. It uses Node filesystem traversal and returns at most 1,000 results per call.
 
 ## State
 
-Pi session entry `add-dir:state` stores added directories; package-managed, do not edit. Tree navigation restores the active branch's directories and reloads resources when that set changes.
+Pi session entry `add-dir:state` stores added directories. It is package-managed; do not edit it. Tree navigation restores the active branch's directories and reloads resources when that set changes.

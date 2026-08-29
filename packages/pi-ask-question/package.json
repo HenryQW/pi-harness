@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-ask-question",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Ask Pi users one interactive question with choices or a custom answer.",
   "keywords": [
     "pi-package",
@@ -14,10 +14,10 @@
   },
   "license": "MIT",
   "files": [
+    "LICENSE",
     "dist",
     "extensions",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "types": "./dist/index.d.ts",
   "exports": {

@@ -1,11 +1,11 @@
 # `@henryqw/pi-deps`
 
-Prepare locked Node and uv dependencies whenever Git creates a new worktree for an opted-in repository.
+Prepare locked Node and uv dependencies when Git creates a new worktree for an opted-in repository.
 
 ## Why
 
-- **Created for**: Installing locked dependencies whenever Git creates a new worktree in an opted-in repository.
-- **Advantage**: Prepares each checkout regardless of which tool created it, without paying install cost at every Pi startup.
+- **Created for**: Install locked dependencies whenever Git creates a new worktree in an opted-in repository.
+- **Advantage**: Prepare each checkout regardless of which tool creates it. Do not pay install cost at every Pi startup.
 
 ## Install
 
@@ -17,21 +17,43 @@ Node 22.19 or newer, Git, and each selected package manager must be available on
 
 ## Use
 
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `/deps` | command | Toggle dependency preparation for future worktrees in current repository. |
+Use `/deps` to toggle dependency preparation for future worktrees in the current repository.
 
-Run `/deps` once from any worktree to enable preparation through repository's shared `post-checkout` hook. Run it again to disable. Hooks without this package's marker are never overwritten or removed. After updating the package, run `/deps` twice in each opted-in repository to replace the copied hook with the current version. A configured `core.hooksPath` replaces the shared hooks directory, so `/deps` refuses instead of installing where Git would ignore or share the hook.
+### Enable, disable, and update
 
-Only Git-root lockfiles are inspected. npm, pnpm, Yarn, and Bun use frozen installs; uv uses `uv sync --locked`. Node and uv both run when both lockfile types exist. Root npm and uv workspaces remain package-manager concerns; nested independent projects are not scanned.
+- Run `/deps` once from any worktree to enable preparation through the repository's shared `post-checkout` hook.
+- Run `/deps` again to disable it.
+- Hooks without this package's marker are never overwritten or removed.
+- After updating the package, run `/deps` twice in each opted-in repository. This replaces the copied hook with the current version.
+- A configured `core.hooksPath` replaces the shared hooks directory. `/deps` refuses instead of installing where Git would ignore or share the hook.
 
-Creation returns immediately. The hook validates lockfiles synchronously — conflicting Node lockfiles, `packageManager` mismatches, and unsupported declarations still fail the worktree command fast — then a detached installer runs the frozen installs in the background. Its outcome lands in `<worktree gitdir>/pi-deps/status.json` with command output in the adjacent `install.log`; the file is removed once a Pi session reports it. A Pi session opened in the worktree shows an editor widget while installing, auto-dismisses success after five seconds, and keeps install failures visible (including missing executables). Other tools creating worktrees get the same background install but must consume the status file themselves. Already-present `node_modules`, `.pnp.cjs`, or `.venv` are skipped. Worktrees created with `git worktree add --no-checkout` never run `post-checkout`, so they are not prepared. Because installs finish after creation returns, a consumer may start using a worktree before dependencies are ready.
+### What it prepares
 
-Dependency installation may execute repository-controlled build and install scripts. Enable only repositories you trust.
+- Only Git-root lockfiles are inspected.
+- npm, pnpm, Yarn, and Bun use frozen installs. uv uses `uv sync --locked`.
+- Node and uv both run when both lockfile types exist.
+- Root npm and uv workspaces remain package-manager concerns. Nested independent projects are not scanned.
+
+### Background install and status
+
+- Worktree creation returns immediately.
+- The hook validates lockfiles synchronously. Conflicting Node lockfiles, `packageManager` mismatches, and unsupported declarations still fail the worktree command fast.
+- A detached installer runs frozen installs in the background.
+- Its result is stored in `<worktree gitdir>/pi-deps/status.json`. Command output is in the adjacent `install.log`.
+- The status file is removed once a Pi session reports it.
+- A Pi session in the worktree shows an editor widget while installing. It auto-dismisses success after five seconds and keeps failures visible, including missing executables.
+- Other tools that create worktrees get the same background install. They must consume the status file themselves.
+
+### Limits and safety
+
+- Already-present `node_modules`, `.pnp.cjs`, or `.venv` are skipped.
+- Worktrees created with `git worktree add --no-checkout` never run `post-checkout`, so they are not prepared.
+- Installs finish after creation returns. A consumer may use a worktree before dependencies are ready.
+- Dependency installation may execute repository-controlled build and install scripts. Enable only repositories you trust.
 
 ## Supported managers
 
-Only current major versions are supported; older majors are not handled and fall back to the lockfile default below.
+Only current major versions are supported. Older majors are not handled and fall back to the lockfile default below.
 
 | Manager | Command | Lockfile |
 | --- | --- | --- |
