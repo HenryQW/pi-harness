@@ -85,7 +85,9 @@ Pi recommends `/dream` when memory is non-empty and no previous dream is recorde
 
 It recommends `/dream` when either store is at least 70% full and the last dream was at least 7 days ago.
 
-`/dream` records its completed run time in `~/.pi/agent/config/pi-memory/dream.json`. It validates live state first and reuses unchanged memory snapshots. It always requires the model to read and edit only the agent-global `~/.pi/agent/SYSTEM.md`, never a project `.pi/SYSTEM.md`.
+`/dream` shows a compact tool block. It hides its internal instructions and live entries.
+
+It records its completed run time in `~/.pi/agent/config/pi-memory/dream.json`. It validates live state first and reuses unchanged memory snapshots. It always requires the model to read and edit only the agent-global `~/.pi/agent/SYSTEM.md`, never a project `.pi/SYSTEM.md`.
 
 That global file must already exist and be readable. Establish it deliberately and completely, because a partial SYSTEM replaces Pi's default prompt.
 
