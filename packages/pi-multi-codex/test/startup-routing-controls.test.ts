@@ -53,6 +53,7 @@ async function writeFreshCache(agentDir: string, remaining: Record<number, numbe
 			fetchedAt: now,
 			remaining: value,
 			reset: Date.now() + 3_600_000,
+			limitedUntil: null,
 		})),
 		locks: [],
 	}));
@@ -144,6 +145,19 @@ test("routes once at first agent boundary from fresh seven-day cache", async () 
 		handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
 		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
 		assert.equal(setModels.length, 1);
+	});
+});
+
+test("does not route from a fresh snapshot lacking five-hour observation", async () => {
+	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+		const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
+		const state = JSON.parse(await readFile(cache, "utf8"));
+		for (const snapshot of state.slots) delete snapshot.limitedUntil;
+		await writeFile(cache, JSON.stringify(state));
+
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		assert.equal(setModels.length, 0);
 	});
 });
 

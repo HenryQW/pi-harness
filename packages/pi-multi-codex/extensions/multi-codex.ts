@@ -53,7 +53,7 @@ type UsageSnapshot = {
 	fetchedAt?: number;
 	remaining?: number;
 	reset?: number;
-	limitedUntil?: number;
+	limitedUntil?: number | null;
 };
 
 type UsageLock = {
@@ -172,21 +172,25 @@ function validTier(value: unknown): value is string {
 function readSnapshot(value: unknown): UsageSnapshot | undefined {
 	if (!isRecord(value) || !validSlot(value.slot) || !validHash(value.accountHash) || !validTime(value.checkedAt)) return undefined;
 	const successful = value.fetchedAt !== undefined || value.remaining !== undefined || value.reset !== undefined;
-	if (successful && (!validTime(value.fetchedAt) || typeof value.remaining !== "number" || !Number.isFinite(value.remaining) || !validTime(value.reset))) {
-		return undefined;
-	}
-	if (value.limitedUntil !== undefined && (!successful || !validTime(value.limitedUntil))) return undefined;
+	if (successful && (
+		!validTime(value.fetchedAt) ||
+		typeof value.remaining !== "number" ||
+		!Number.isFinite(value.remaining) ||
+		!validTime(value.reset) ||
+		(value.limitedUntil !== null && !validTime(value.limitedUntil))
+	)) return undefined;
+	if (!successful && value.limitedUntil !== undefined) return undefined;
 	return {
 		slot: value.slot,
 		accountHash: value.accountHash,
 		...(validTier(value.tier) ? { tier: value.tier } : {}),
 		checkedAt: value.checkedAt,
-		...(validTime(value.limitedUntil) ? { limitedUntil: value.limitedUntil } : {}),
 		...(successful
 			? {
 				fetchedAt: value.fetchedAt as number,
 				remaining: Math.max(0, Math.min(100, value.remaining as number)),
 				reset: value.reset as number,
+				limitedUntil: value.limitedUntil as number | null,
 			}
 			: {}),
 	};
@@ -586,7 +590,7 @@ class CodexQuotaStatus {
 					fetchedAt: checkedAt,
 					remaining: outcome.remaining,
 					reset: outcome.reset,
-					...(outcome.limitedUntil && outcome.limitedUntil > checkedAt ? { limitedUntil: outcome.limitedUntil } : {}),
+					limitedUntil: outcome.limitedUntil && outcome.limitedUntil > checkedAt ? outcome.limitedUntil : null,
 				});
 			} else {
 				state.slots.set(slot, previous?.accountHash === identity.accountHash && (!validTime(previous.reset) || previous.reset > checkedAt)
