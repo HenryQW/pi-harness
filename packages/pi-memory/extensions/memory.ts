@@ -69,9 +69,8 @@ const REVIEW_MAX_EVIDENCE_CHARS = 2_000;
 const REVIEW_MAX_MERGE_CHARS = 2_000;
 const REVIEW_MAX_EXPLANATION_CHARS = 800;
 const REVIEW_MAX_TOKENS = 1_200;
-// Deliberately stricter than Pi's generic four-character estimate, with room
-// for provider-specific message framing around the exact JSON request.
-const REVIEW_INPUT_BYTES_PER_TOKEN = 3;
+// One token per UTF-8 byte safely covers arbitrary model tokenizers,
+// including input that yields one-byte tokens. JSON contains the exact Context.
 const REVIEW_REQUEST_OVERHEAD_TOKENS = 64;
 
 type SystemState = "present" | "absent" | "unreadable" | "oversized";
@@ -252,7 +251,7 @@ function createReviewRequest(mutation: MemoryMutation, snapshot: ReviewSnapshot)
 }
 
 function reviewInputTokenBudget(request: ReturnType<typeof createReviewRequest>): number {
-	return Math.ceil(Buffer.byteLength(JSON.stringify(request), "utf8") / REVIEW_INPUT_BYTES_PER_TOKEN) + REVIEW_REQUEST_OVERHEAD_TOKENS;
+	return Buffer.byteLength(JSON.stringify(request), "utf8") + REVIEW_REQUEST_OVERHEAD_TOKENS;
 }
 
 function viableReviewRoutes(routes: ResolvedTaskRoute[], request: ReturnType<typeof createReviewRequest>): ResolvedTaskRoute[] {
@@ -793,6 +792,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				old_text: Type.Optional(Type.String()),
 			}), { description: "Preferred atomic batch of memory changes." })),
 		}),
+		executionMode: "sequential",
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (state.initError) throw new Error(`Memory extension failed to initialize and is disabled: ${state.initError}`);

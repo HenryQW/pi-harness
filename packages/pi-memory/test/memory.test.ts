@@ -29,6 +29,7 @@ type CapturedMessage = {
 
 type CapturedTool = {
 	description: string;
+	executionMode?: "sequential" | "parallel";
 	execute(
 		toolCallId: string,
 		params: Record<string, unknown>,
@@ -807,6 +808,17 @@ test("bundles ask_question but not the task-model control plane", async () => {
 	assert.ok(!manifest.pi.extensions.some((extension: string) => extension.includes("pi-task-models")));
 });
 
+test("registers memory transactions as sequential Pi tool calls", () => {
+	let tool: CapturedTool | undefined;
+	memoryExtension({
+		on() {},
+		registerCommand() {},
+		registerTool(value: CapturedTool) { tool = value; },
+	});
+	assert.ok(tool);
+	assert.equal(tool.executionMode, "sequential");
+});
+
 test("declares a balanced review task and invokes the configured primary route", async () => {
 	assert.deepEqual(MEMORY_REVIEW_TASK, {
 		id: "pi-memory/reviewCandidate",
@@ -872,6 +884,19 @@ test("bounds each review request to a viable configured route", async () => {
 		);
 		assert.equal(calls.length, 0);
 		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+	});
+});
+
+test("uses a byte-per-token bound for many short review tokens", async () => {
+	const shortTokens = " a".repeat(1_500);
+	await withReviewFixture({
+		system: shortTokens,
+		primaryContextWindow: 3_000,
+		fallbackContextWindow: 128_000,
+	}, async ({ tool, ctx, calls }) => {
+		await tool.execute("short-tokens", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		assert.deepEqual(calls.map((call) => call.model.provider), ["review-fallback"]);
+		assert.equal(JSON.parse(calls[0]!.context.messages[0]!.content).sources.system, shortTokens);
 	});
 });
 
