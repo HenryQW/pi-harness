@@ -44,14 +44,14 @@ type CapturedTool = {
 	): { render(width: number): string[] };
 };
 
-const REVIEW_MODEL = { provider: "memory-review", id: "balanced", input: ["text"] };
-const PRIMARY_REVIEW_MODEL = { provider: "review-primary", id: "primary", input: ["text"] };
-const FALLBACK_REVIEW_MODEL = { provider: "review-fallback", id: "fallback", input: ["text"] };
-const SESSION_MODEL = { provider: "session", id: "current", input: ["text"] };
+const REVIEW_MODEL = { provider: "memory-review", id: "balanced", input: ["text"], contextWindow: 128_000 };
+const PRIMARY_REVIEW_MODEL = { provider: "review-primary", id: "primary", input: ["text"], contextWindow: 128_000 };
+const FALLBACK_REVIEW_MODEL = { provider: "review-fallback", id: "fallback", input: ["text"], contextWindow: 128_000 };
+const SESSION_MODEL = { provider: "session", id: "current", input: ["text"], contextWindow: 1_000_000 };
 
 type ReviewCall = {
 	model: { provider: string; id: string };
-	context: { messages: Array<{ content: string }> };
+	context: { systemPrompt: string; messages: Array<{ content: string }> };
 	options: Record<string, unknown>;
 	memoryDir: string;
 };
@@ -63,6 +63,7 @@ type ReviewFixture = {
 	tool: CapturedTool;
 	ctx: ExtensionContext;
 	calls: ReviewCall[];
+	questions: string[];
 	selections: string[][];
 };
 
@@ -103,6 +104,8 @@ async function withReviewFixture(
 		responses?: ReviewReply[];
 		select?: (choices: string[]) => string | undefined;
 		mode?: "tui" | "print";
+		primaryContextWindow?: number;
+		fallbackContextWindow?: number;
 	},
 	run: (fixture: ReviewFixture) => Promise<void>,
 ): Promise<void> {
@@ -138,17 +141,20 @@ async function withReviewFixture(
 		assert.ok(tool);
 
 		const calls: ReviewCall[] = [];
+		const questions: string[] = [];
 		const selections: string[][] = [];
+		const primaryReviewModel = { ...PRIMARY_REVIEW_MODEL, contextWindow: options.primaryContextWindow ?? PRIMARY_REVIEW_MODEL.contextWindow };
+		const fallbackReviewModel = { ...FALLBACK_REVIEW_MODEL, contextWindow: options.fallbackContextWindow ?? FALLBACK_REVIEW_MODEL.contextWindow };
 		let nextReply = 0;
 		const ctx = {
 			mode: options.mode ?? "tui",
 			model: SESSION_MODEL,
 			scopedModels: [],
 			modelRegistry: {
-				getAvailable: () => [PRIMARY_REVIEW_MODEL, FALLBACK_REVIEW_MODEL],
+				getAvailable: () => [primaryReviewModel, fallbackReviewModel],
 				getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }),
 				getProvider: () => ({
-					streamSimple: (model: { provider: string; id: string }, context: { messages: Array<{ content: string }> }, completionOptions: Record<string, unknown>) => ({
+					streamSimple: (model: { provider: string; id: string }, context: { systemPrompt: string; messages: Array<{ content: string }> }, completionOptions: Record<string, unknown>) => ({
 						result: async () => {
 							const call = { model, context, options: completionOptions, memoryDir };
 							calls.push(call);
@@ -162,14 +168,15 @@ async function withReviewFixture(
 				}),
 			},
 			ui: {
-				select: async (_question: string, choices: string[]) => {
+				select: async (question: string, choices: string[]) => {
+					questions.push(question);
 					selections.push(choices);
 					return options.select?.(choices);
 				},
 				input: async () => undefined,
 			},
 		} as unknown as ExtensionContext;
-		await run({ agentDir, memoryDir, tool, ctx, calls, selections });
+		await run({ agentDir, memoryDir, tool, ctx, calls, questions, selections });
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -844,6 +851,30 @@ test("declares a balanced review task and invokes the configured primary route",
 	});
 });
 
+test("bounds each review request to a viable configured route", async () => {
+	await withReviewFixture({ primaryContextWindow: 2_500, fallbackContextWindow: 128_000 }, async ({ agentDir, tool, ctx, calls }) => {
+		await tool.execute("small", { action: "add", content: "small durable fact" }, undefined, undefined, ctx);
+		await writeFile(join(agentDir, "SYSTEM.md"), "x".repeat(3_000));
+		await tool.execute("large", { action: "add", content: "large durable fact" }, undefined, undefined, ctx);
+		assert.deepEqual(calls.map((call) => call.model.provider), ["review-primary", "review-fallback"]);
+		assert.equal(JSON.parse(calls[1]!.context.messages[0]!.content).sources.system, "x".repeat(3_000));
+		assert.ok(calls.every((call) => call.model.provider !== "session"));
+	});
+
+	await withReviewFixture({
+		system: "x".repeat(3_000),
+		primaryContextWindow: 2_500,
+		fallbackContextWindow: 2_500,
+	}, async ({ memoryDir, tool, ctx, calls }) => {
+		await assert.rejects(
+			() => tool.execute("too-large", { action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/Memory review request needs .*input budget \+ 1,200 output reserve.*no configured pi-memory\/reviewCandidate route can fit it.*larger context window/s,
+		);
+		assert.equal(calls.length, 0);
+		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+	});
+});
+
 test("missing SYSTEM is empty, while unreadable and oversized review sources fail closed", async () => {
 	await withReviewFixture({}, async ({ memoryDir, tool, ctx, calls }) => {
 		await tool.execute("missing-system", { action: "add", content: "candidate" }, undefined, undefined, ctx);
@@ -938,6 +969,80 @@ test("overlap and contradiction wait for an explicit user resolution", async () 
 		assert.ok(selections[0]!.some((choice) => choice.includes("Add anyway")));
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "current preference");
 		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "outdated preference");
+	});
+});
+
+test("escapes reviewer-controlled conflict text for TUI rendering", async () => {
+	const evidence = "existing\u001b[31m fact";
+	await withReviewFixture({
+		memory: evidence,
+		responses: [JSON.stringify({
+			verdict: "overlap",
+			source: "memory",
+			evidence,
+			proposedMerge: "merge\u200d candidate",
+			explanation: "review\u0007 complete",
+		})],
+		select: (choices) => choices.find((choice) => choice.includes("Add separately")),
+	}, async ({ memoryDir, tool, ctx, calls, questions, selections }) => {
+		await tool.execute("escaped-conflict", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		assert.equal(calls.length, 1);
+		assert.equal(JSON.parse(calls[0]!.context.messages[0]!.content).sources.memory[0], evidence);
+		const shown = [questions[0]!, ...selections[0]!].join("\n");
+		assert.doesNotMatch(shown, /[\u001b\u0007\u200d]/u);
+		assert.match(questions[0]!, /\\u001b/);
+		assert.match(questions[0]!, /\\u0007/);
+		assert.ok(selections[0]!.some((choice) => choice.includes("\\u200d")));
+		assert.match(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), /candidate/);
+	});
+});
+
+test("cancellation after review, conflict UI, or at the write boundary never writes", async () => {
+	const reviewController = new AbortController();
+	await withReviewFixture({
+		responses: [async () => {
+			reviewController.abort(new Error("review cancelled"));
+			return JSON.stringify({ verdict: "distinct", explanation: "Distinct durable fact." });
+		}],
+	}, async ({ memoryDir, tool, ctx, calls }) => {
+		await assert.rejects(
+			() => tool.execute("cancel-review", { action: "add", content: "candidate" }, reviewController.signal, undefined, ctx),
+			/review cancelled/,
+		);
+		assert.equal(calls.length, 1);
+		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+	});
+
+	const resolutionController = new AbortController();
+	await withReviewFixture({
+		memory: "existing preference",
+		responses: [JSON.stringify({
+			verdict: "overlap",
+			source: "memory",
+			evidence: "existing preference",
+			explanation: "Overlap found.",
+		})],
+		select: (choices) => {
+			resolutionController.abort(new Error("resolution cancelled"));
+			return choices.find((choice) => choice.includes("Add separately"));
+		},
+	}, async ({ memoryDir, tool, ctx }) => {
+		await assert.rejects(
+			() => tool.execute("cancel-resolution", { action: "add", content: "candidate" }, resolutionController.signal, undefined, ctx),
+			/resolution cancelled/,
+		);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing preference");
+	});
+
+	const writeController = new AbortController();
+	writeController.abort(new Error("write cancelled"));
+	await withReviewFixture({ memory: "existing preference" }, async ({ memoryDir, tool, ctx, calls }) => {
+		await assert.rejects(
+			() => tool.execute("cancel-write", { action: "replace", old_text: "existing preference", content: "changed preference" }, writeController.signal, undefined, ctx),
+			/write cancelled/,
+		);
+		assert.equal(calls.length, 0);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing preference");
 	});
 });
 

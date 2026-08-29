@@ -178,23 +178,7 @@ import {
   createEphemeralSubagentExecutor,
   resolveRoleLaunch,
 } from "@henryqw/pi-subagent";
-
-const executor = createEphemeralSubagentExecutor({
-  maxConcurrency: 4,
-  timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
-});
-
-let latestCtx;
-pi.on("session_start", (_event, ctx) => { latestCtx = ctx; });
-pi.on("model_select", (event, ctx) => {
-  latestCtx = { ...ctx, model: event.model };
-});
-pi.on("agent_settled", (_event, ctx) => { latestCtx = ctx; });
-
-function latestContext() {
-  if (!latestCtx) throw new Error("Pi session has not started.");
-  return latestCtx;
-}
+import { registerModelTask } from "@henryqw/pi-task-models";
 
 const MODEL_TASK = {
   id: "your-package/delegate",
@@ -203,36 +187,58 @@ const MODEL_TASK = {
   defaultProfile: "fast",
 };
 
-async function runRole(role, task, options = {}) {
-  const {
-    signal,
-    cwd,
-    extensions = [],
-    tools,
-    env = {},
-  } = options;
+export default function yourExtension(pi) {
+  // Register the Model Task at extension load so /task-models discovery works.
+  registerModelTask(pi, MODEL_TASK);
 
-  return executor.run({
-    signal,
-    prepare: async () => {
-      // prepare runs only after this delegation owns a FIFO permit.
-      const ctx = latestContext();
-      const launch = resolveRoleLaunch(pi, ctx, {
-        role,
-        task: MODEL_TASK,
-        extensions,
-        tools,
-        env,
-      });
-      if (launch.missingSkills.length && ctx.hasUI) {
-        ctx.ui.notify(
-          `Skipped unavailable Skills: ${launch.missingSkills.join(", ")}`,
-          "warning",
-        );
-      }
-      return { launch, task, cwd: cwd ?? ctx.cwd };
-    },
+  const executor = createEphemeralSubagentExecutor({
+    maxConcurrency: 4,
+    timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
   });
+
+  let latestCtx;
+  pi.on("session_start", (_event, ctx) => { latestCtx = ctx; });
+  pi.on("model_select", (event, ctx) => {
+    latestCtx = { ...ctx, model: event.model };
+  });
+  pi.on("agent_settled", (_event, ctx) => { latestCtx = ctx; });
+
+  function latestContext() {
+    if (!latestCtx) throw new Error("Pi session has not started.");
+    return latestCtx;
+  }
+
+  async function runRole(role, task, options = {}) {
+    const {
+      signal,
+      cwd,
+      extensions = [],
+      tools,
+      env = {},
+    } = options;
+
+    return executor.run({
+      signal,
+      prepare: async () => {
+        // prepare runs only after this delegation owns a FIFO permit.
+        const ctx = latestContext();
+        const launch = resolveRoleLaunch(pi, ctx, {
+          role,
+          task: MODEL_TASK,
+          extensions,
+          tools,
+          env,
+        });
+        if (launch.missingSkills.length && ctx.hasUI) {
+          ctx.ui.notify(
+            `Skipped unavailable Skills: ${launch.missingSkills.join(", ")}`,
+            "warning",
+          );
+        }
+        return { launch, task, cwd: cwd ?? ctx.cwd };
+      },
+    });
+  }
 }
 ```
 
