@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import openInExtension, { configuredOpenUri } from "../extensions/open.ts";
+import openInExtension, { configuredOpenUri, loadOpenInConfig } from "../extensions/open.ts";
 
-type Command = (args: string, ctx: { cwd: string }) => Promise<void>;
+type Context = { cwd: string; ui: { notify(message: string, type: string): void } };
+type Command = (args: string, ctx: Context) => Promise<void>;
+type SessionStart = (event: unknown, ctx: Context) => unknown;
 
-test("config validation, default fallback, and safe URI omission", async (t) => {
+test("owner config uses its new home without read-time writes", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-open-in-test-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	t.after(() => {
@@ -17,12 +19,27 @@ test("config validation, default fallback, and safe URI omission", async (t) => 
 		rmSync(agentDir, { recursive: true, force: true });
 	});
 	process.env.PI_CODING_AGENT_DIR = agentDir;
-	const configFile = join(agentDir, "config", "pi-open-in.json");
+
+	const configDir = join(agentDir, "config", "pi-open-in");
+	const configFile = join(configDir, "config.json");
+	const legacyConfigFile = join(agentDir, "config", "pi-open-in.json");
 	mkdirSync(join(agentDir, "config"), { recursive: true });
+	writeFileSync(legacyConfigFile, '{"command":"cursor"}');
+
+	assert.deepEqual(loadOpenInConfig(agentDir), { source: "missing", value: { command: "code" } });
+	assert.equal(configuredOpenUri("/some/path"), "vscode://file/some/path");
+	assert.equal(existsSync(configDir), false);
 
 	const commands = new Map<string, Command>();
 	const execCalls: string[][] = [];
+	let sessionStart: SessionStart | undefined;
+	let sessionStartRegistrations = 0;
 	const api = {
+		on(name: string, handler: SessionStart) {
+			assert.equal(name, "session_start");
+			sessionStartRegistrations++;
+			sessionStart = handler;
+		},
 		registerCommand(name: string, command: { handler: Command }) {
 			commands.set(name, command.handler);
 		},
@@ -32,24 +49,38 @@ test("config validation, default fallback, and safe URI omission", async (t) => 
 		},
 	} as unknown as ExtensionAPI;
 	openInExtension(api);
-	const open = commands.get("open")!;
-	const ctx = { cwd: "/some/cwd" };
+	assert.equal(sessionStartRegistrations, 1);
 
-	// Missing config falls back to the default command.
+	const notifications: Array<[string, string]> = [];
+	const ctx: Context = {
+		cwd: "/some/cwd",
+		ui: { notify: (message, type) => notifications.push([message, type]) },
+	};
+	assert.ok(sessionStart);
+	await sessionStart({}, ctx);
+	assert.deepEqual(notifications, [[`Open-in config is missing: ${configFile}; defaults are used.`, "warning"]]);
+	assert.equal(existsSync(configDir), false);
+
+	const open = commands.get("open")!;
+	const setOpenIn = commands.get("set-open-in")!;
 	await open("", ctx);
 	assert.deepEqual(execCalls.at(-1), ["code", ctx.cwd]);
 
-	// Valid non-code command yields no URI; valid code command yields one.
-	writeFileSync(configFile, `${JSON.stringify({ command: "cursor" })}\n`);
+	await setOpenIn("cursor --reuse-window", ctx);
+	assert.equal(readFileSync(configFile, "utf8"), '{\n  "command": "cursor --reuse-window"\n}\n');
+	assert.equal(readFileSync(legacyConfigFile, "utf8"), '{"command":"cursor"}');
+	assert.deepEqual(loadOpenInConfig(agentDir), { source: "file", value: { command: "cursor --reuse-window" } });
 	assert.equal(configuredOpenUri(ctx.cwd), undefined);
-	writeFileSync(configFile, `${JSON.stringify({ command: "code" })}\n`);
+	await open("", ctx);
+	assert.deepEqual(execCalls.at(-1), ["cursor", "--reuse-window", ctx.cwd]);
+
+	writeFileSync(configFile, '{"command":"code"}');
 	assert.match(configuredOpenUri("/some/path") ?? "", /^vscode:\/\/file\/some\/path$/);
 
-	// Malformed JSON and unknown keys make /open fail visibly and leave the file untouched;
-	// configuredOpenUri omits the URI instead of throwing.
-	for (const invalid of ["{not json", JSON.stringify({ command: "code", extra: 1 }), JSON.stringify({ command: "" })]) {
+	for (const invalid of ["{not json", '{"command":"code","extra":1}', '{"command":""}']) {
 		writeFileSync(configFile, invalid);
-		await assert.rejects(() => open("", ctx), /Invalid/);
+		assert.throws(() => loadOpenInConfig(agentDir));
+		await assert.rejects(() => open("", ctx));
 		assert.equal(readFileSync(configFile, "utf8"), invalid);
 		assert.equal(configuredOpenUri(ctx.cwd), undefined);
 	}
