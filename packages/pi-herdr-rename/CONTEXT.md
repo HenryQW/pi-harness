@@ -21,5 +21,5 @@ Herdr tab containing current pane and no sibling panes. Only this tab receives d
 _Avoid_: single-pane session, empty tab
 
 **Rename task profile**:
-Shared task-model profile assigned to `pi-herdr-rename/rename` (default `fast`) with primary and optional fallback Pi registry routes. Rename never substitutes the current session model; no viable route leaves titles unchanged.
+Consumer-owned Model Task `pi-herdr-rename/rename` defaults to `fast`; shared task-model config can explicitly override it and supplies primary and optional fallback Pi registry routes. Rename never substitutes the current session model; no viable route leaves titles unchanged.
 _Avoid_: package-owned rename model, active model

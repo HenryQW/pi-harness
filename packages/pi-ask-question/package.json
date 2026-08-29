@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-ask-question",
-  "version": "0.1.12",
+  "version": "0.2.1",
   "description": "Ask Pi users one interactive question with choices or a custom answer.",
   "keywords": [
     "pi-package",
@@ -14,14 +14,24 @@
   },
   "license": "MIT",
   "files": [
+    "dist",
     "extensions",
     "README.md",
     "LICENSE"
   ],
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "build": "tsc --project tsconfig.build.json",
+    "test": "npm run build && node --test test/*.test.ts",
     "test:manual": "pi --no-extensions -e ./extensions/ask-question.ts --tools ask_question --no-session \"We need storage for a small team app. Before making changes, ask me to choose storage.\"",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/ask-question.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck src/*.ts extensions/ask-question.ts test/*.test.ts",
+    "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {

@@ -35,7 +35,7 @@
     ]
   },
   "scripts": {
-    "build": "npm run build --workspace @henryqw/pi-herdr --workspace @henryqw/pi-task-models --workspace @henryqw/pi-subagent",
+    "build": "npm run build --workspace @henryqw/pi-herdr --workspace @henryqw/pi-task-models --workspace @henryqw/pi-subagent --workspace @henryqw/pi-ask-question",
     "postinstall": "npm run build",
     "test": "node scripts/test-workspaces.mjs",
     "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",
@@ -43,7 +43,7 @@
     "pack:check": "npm run pack:check --workspaces --if-present"
   },
   "dependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.3.0",
     "@types/proper-lockfile": "^4.1.4",
     "typescript": "^7.0.2"
   }

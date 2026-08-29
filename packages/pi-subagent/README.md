@@ -30,7 +30,7 @@ pi install npm:@henryqw/pi-subagent
 | `delegate_flow` | tool | Package-owned parallel implementation and declared-order Git integration for 1–8 independent units. |
 | `delegate_flow_continue` | tool | Repair the blocked Flow unit once in its existing worktree. |
 
-All three delegation tool blocks use a compact self-rendered shell and never exceed five physical lines, including Pi's leading spacer: one call line plus at most three result lines in either collapsed or expanded view.
+All three delegation tool blocks use Pi's default boxed shell and background. Their compact custom content is an immutable call label, foreground aggregate partial-result status, and bounded final summaries—no expanded view.
 
 ### `delegate_task`
 
@@ -47,13 +47,13 @@ Select exactly one shape:
 { chain: [{ role, task, model?, modelClass?, thinking? }], background? }
 ```
 
-`model` is `provider/modelId` and overrides `modelClass`. Main populates `model` and `thinking` only for an explicit user override; otherwise it chooses only `modelClass`—`fast` normally, or `balanced` upfront for obviously complex work. This is Main policy only: the runtime records no provenance and does not enforce it. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`; omission uses the shared `pi-subagent/delegateTask` assignment. `background` applies to the entire selected mode and is never a per-delegation field.
+`model` is `provider/modelId` and overrides `modelClass`. Main populates `model` and `thinking` only for an explicit user override; otherwise it chooses only `modelClass`—`fast` normally, or `balanced` upfront for obviously complex work. This is Main policy only: the runtime records no provenance and does not enforce it. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`; omission uses pi-subagent's local `pi-subagent/delegateTask` Model Task declaration (default `fast`), which shared config can explicitly override. `background` applies to the entire selected mode and is never a per-delegation field.
 
 Parallel mode starts entries concurrently, waits for every entry, and reports them in input order. Chain mode is sequential and fail-fast; every literal `{previous}` receives only the immediately preceding successful assistant output. Foreground failures throw after retaining bounded sibling and recovery evidence. One tool call has one aggregate 50 KiB Main-visible transport cap, not 50 KiB per child.
 
 Background workflows are session-scoped. Session shutdown or reload aborts them and may deliver only recoverable-work evidence or no follow-up message.
 
-The transient two-line status widget owns deterministic live progress: status and task summary above thinking or the active tool (with elapsed time and path basename), completed turns, started tools, model, thinking level, tokens, and total duration; terminal activity is Done, Failed, or Stopped. At capacity, it evicts the oldest terminal row so new active work remains visible, and terminal rows otherwise clear on the next real user input. The final `delegate_task` block is deliberately minimal: bounded final summaries, role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
+The transient status widget renders one line per child with: status glyph, role, status label, task summary, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, model, thinking level, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: when total items are six or fewer, all child rows render; above six, five child rows plus one status-aware overflow line render (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. The final `delegate_task` block is deliberately minimal: bounded final summaries with role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
 
 Each delegation resolves its own Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
 
@@ -70,15 +70,27 @@ delegate_flow_continue({ guidance, modelClass? })
 
 Objective verification is authoritative. Flow always inspects committed Git state and runs declared validation. A unit without `review` skips review evidence and Reviewer launch, then fast-forwards its exact validated tip through the existing guarded `git merge --ff-only` path. Add `review` only for an explicit judgment that automation cannot establish; that unit retains the exact `{base, tip, patchPath}` protocol and requires exact `PASS` before the same integration path.
 
-One memory-only Flow may be active. At start it resolves/freezes the effective `implementer` Role, including a same-named user override, and resolves/freezes the effective `reviewer` only if at least one requested unit has `review`. Omitted `modelClass` uses the shared `pi-subagent/delegateTask` assignment; a selected class resolves through its shared profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It creates one Unit Worktree per unit, runs Implementers in parallel, then processes settled results in declared order. It removes the worktree and branch non-forcibly after integration; a refusal is a completion warning with the retained worktree path and/or branch.
+One memory-only Flow may be active. At start it resolves/freezes the effective `implementer` Role, including a same-named user override, and resolves/freezes the effective `reviewer` only if at least one requested unit has `review`. Omitted `modelClass` uses pi-subagent's local `pi-subagent/delegateTask` declaration (default `fast`); a selected class resolves through its shared profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It creates one Unit Worktree per unit, runs Implementers in parallel, then processes settled results in declared order. It removes the worktree and branch non-forcibly after integration; a refusal is a completion warning with the retained worktree path and/or branch.
 
 A rebase that drops all unit commits is a no-op: Flow validates it, skips Reviewer and merge, then cleans up ordinarily. Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. Omitted continuation `modelClass` retains the blocked unit's current class; a supplied class replaces it for that one repair. Rebase and infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Git left Main clean at the exact integrated tip; otherwise it is terminal and retains the affected worktree. Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge gate.
 
 `delegate_task` remains generic with its ordinary isolation behavior. Flow uses the package-shipped Implementer by default and the package-shipped Reviewer only when a unit requests review; same-named user Roles remain supported overrides.
 
+### Delegate UI summary
+
+| Aspect | Behavior |
+| --- | --- |
+| Call label | `delegate_task · single/parallel/chain · N task(s)`; `delegate_flow · parallel→serial · N unit(s)`; `delegate_flow_continue · repair continuation` |
+| Partial progress | `delegate_task`: aggregate counts (running/pending/complete/failed/skipped); `delegate_flow`: phase transitions (setup → implement → verify/integrate → review → repair) |
+| Widget rows | One line per child: glyph, role, status, task, activity, metrics |
+| Ordering | Active-first stable (working first, then insertion order) |
+| Line cap | 6 physical lines max (≤6 items: all child rows; >6 items: 5 rows + 1 status-aware overflow) |
+| Terminal retention | Active rows persist; terminal rows clear on next user input |
+| Final result | Bounded summaries with recovery paths; no expanded view |
+
 ## Config
 
-pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-subagent/`, which holds two kinds of user-owned configuration: one Markdown file per Role (see [Roles](#roles)) and its own optional JSON file below. Model routing is *not* configured here; children resolve routes through the shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models.json`.
+pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-subagent/`, which holds two kinds of user-owned configuration: one Markdown file per Role (see [Roles](#roles)) and its own optional JSON file below. Model routing is *not* configured here; children resolve routes through the shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
 
 `~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts. All fields are optional; a missing file uses defaults.
 
@@ -143,4 +155,4 @@ A Role explicitly owns base tools, extensions, named Skills, instructions, and o
 
 The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers. The ephemeral executor is for code already running inside active Pi; it does not provide standalone Node.js Pi discovery or launch support. After Pi itself exits, it drains inherited stdout/stderr normally but destroys streams still held by escaped descendants after a short inactivity deadline or one-second hard deadline, so they cannot retain a pool permit.
 
-Use [`docs/orchestration.md`](./docs/orchestration.md#public-role-and-executor-api) for exact API behavior and a post-permit `prepare` example using `resolveRoleLaunch` against the latest Pi context.
+Use [`docs/orchestration.md`](./docs/orchestration.md#public-role-and-executor-api) for exact API behavior and a post-permit `prepare` example using `resolveRoleLaunch` with a caller-owned Model Task declaration against the latest Pi context.

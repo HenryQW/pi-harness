@@ -2,7 +2,7 @@
 
 ## Domain
 
-Session-scale, cross-session scratch memory for the Pi agent: two auto-managed markdown stores (`MEMORY.md` = agent notes, `USER.md` = user profile), each a list of entries delimited by `\n§\n`, size-capped in characters (model-independent).
+Session-scale, cross-session scratch memory for the Pi agent: two auto-managed markdown stores (`MEMORY.md` = agent notes, `USER.md` = user profile), each a list of entries delimited by `\n§\n`, size-capped in characters (model-independent). Adds are independently reviewed through the local `pi-memory/reviewCandidate` Model Task (default `balanced`) against live SYSTEM and both stores; `/dream` and final memory qualification remain current-session-agent workflows.
 
 ## Boundary
 

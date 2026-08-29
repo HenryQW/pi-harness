@@ -3,7 +3,7 @@
 ## Language
 
 **Ask Question tool**:
-`ask_question` agent tool that pauses execution for one interactive user answer.
+`ask_question` agent tool that pauses execution for one interactive user answer. Its named `askQuestion` helper is the reusable validated interaction for extensions that must wait for that answer.
 _Avoid_: questionnaire, prompt tool
 
 **Question option**:

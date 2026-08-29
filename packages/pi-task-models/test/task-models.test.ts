@@ -1,37 +1,69 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
-	activeTaskPackages,
 	availableTaskModels,
-	DEFAULT_TASK_ASSIGNMENTS,
 	readTaskModelsConfig,
+	registerModelTask,
 	resolveConfiguredTaskRoute,
 	resolveConfiguredTaskRoutes,
 	resolveTaskModelRoute,
 	taskThinkingLevels,
 	writeTaskModelsConfig,
+	type ModelTask,
 } from "@henryqw/pi-task-models";
 import registerTaskModelsExtension from "../extensions/task-models.ts";
+
+const EXAMPLE_TASK = {
+	id: "pi-example/review",
+	label: "Example review",
+	purpose: "Review one requested change.",
+	defaultProfile: "fast",
+} as const satisfies ModelTask;
+const MODEL_TASK_REQUEST_EVENT = "@henryqw/pi-task-models:model-task-request";
+const MODEL_TASK_RESPONSE_EVENT = "@henryqw/pi-task-models:model-task-response";
 
 function tempDir(): string {
 	return mkdtempSync(join(tmpdir(), "pi-task-models-"));
 }
 
-test("reads defaults, preserves malformed files, and writes config explicitly", () => {
+function eventBus() {
+	const listeners = new Map<string, Set<(payload: unknown) => void>>();
+	return {
+		on(channel: string, handler: (payload: unknown) => void) {
+		const handlers = listeners.get(channel) ?? new Set();
+		handlers.add(handler);
+		listeners.set(channel, handlers);
+		return () => handlers.delete(handler);
+		},
+		emit(channel: string, payload: unknown) {
+			for (const handler of [...(listeners.get(channel) ?? [])]) handler(payload);
+		},
+		listenerCount(channel: string) {
+			return listeners.get(channel)?.size ?? 0;
+		},
+	};
+}
+
+function controlPlane(events: ReturnType<typeof eventBus>, agentDir: string) {
+	let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+	const pi = {
+		events,
+		registerCommand(_name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
+			handler = command.handler;
+		},
+	};
+	registerTaskModelsExtension(pi as never, { agentDir });
+	assert.ok(handler);
+	return { pi, handler: handler! };
+}
+
+test("reads only explicit overrides, preserves malformed files, and writes config explicitly", () => {
 	const dir = tempDir();
 	try {
-		assert.deepEqual(readTaskModelsConfig(dir), {
-			profiles: {},
-			tasks: {
-				"pi-herdr-btw/btw": "fast",
-				"pi-herdr-rename/rename": "fast",
-				"pi-auto-compact/autoCompact": "fast",
-				"pi-subagent/delegateTask": "fast",
-			},
-		});
+		assert.deepEqual(readTaskModelsConfig(dir), { profiles: {}, tasks: {} });
 
 		const file = join(dir, "config", "pi-task-models.json");
 		mkdirSync(join(dir, "config"), { recursive: true });
@@ -52,22 +84,16 @@ test("reads defaults, preserves malformed files, and writes config explicitly", 
 		}
 
 		writeFileSync(file, `${JSON.stringify({ tasks: { "pi-new/customTask": "frontier" } })}\n`);
-		assert.equal(readTaskModelsConfig(dir).tasks["pi-new/customTask"], "frontier");
+		assert.deepEqual(readTaskModelsConfig(dir).tasks, { "pi-new/customTask": "frontier" });
 
-		writeTaskModelsConfig(
-			{
-				profiles: {
-					fast: {
-						primary: { model: "openai-codex-2/gpt-5", thinkingLevel: "low" },
-					},
-				},
-				tasks: {
-					"pi-herdr-rename/rename": "fast",
-				},
+		writeTaskModelsConfig({
+			profiles: {
+				fast: { primary: { model: "openai-codex-2/gpt-5", thinkingLevel: "low" } },
 			},
-			dir,
-		);
+			tasks: { "pi-new/customTask": "frontier" },
+		}, dir);
 		assert.match(readFileSync(file, "utf8"), /"openai-codex\/gpt-5"/);
+		assert.match(readFileSync(file, "utf8"), /"pi-new\/customTask"/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -89,7 +115,7 @@ test("uses scoped models and pinned thinking for picker and route resolution", (
 	assert.equal(resolveTaskModelRoute(ctx, { model: "provider/excluded", thinkingLevel: "off" }), undefined);
 });
 
-test("resolves configured task routes through assignment, profile, and fallback", () => {
+test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 	const dir = tempDir();
 	try {
 		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false } as any;
@@ -99,27 +125,24 @@ test("resolves configured task routes through assignment, profile, and fallback"
 			scopedModels: [],
 			modelRegistry: { getAvailable: () => [primary, fallback] },
 		} as any;
-
-		assert.throws(
-			() => resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir),
-			/Task pi-subagent\/delegateTask profile fast is not configured\. Run \/task-models\./,
-		);
 		const file = join(dir, "config", "pi-task-models.json");
 		mkdirSync(join(dir, "config"), { recursive: true });
+
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
+			/Task pi-example\/review profile fast is not configured\. Run \/task-models\./,
+		);
+
 		writeFileSync(file, JSON.stringify({
 			profiles: {
+				fast: { primary: { model: "provider/primary", thinkingLevel: "off" } },
 				frontier: {
 					primary: { model: "provider/primary", thinkingLevel: "off" },
 					fallback: { model: "provider/fallback", thinkingLevel: "off" },
 				},
 			},
-			tasks: { "pi-subagent/delegateTask": "frontier" },
 		}));
-		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-subagent/delegateTask", dir), [
-			{ model: primary, thinkingLevel: "off" },
-			{ model: fallback, thinkingLevel: "off" },
-		]);
-		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir), {
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir), {
 			model: primary,
 			thinkingLevel: "off",
 		});
@@ -131,68 +154,129 @@ test("resolves configured task routes through assignment, profile, and fallback"
 					fallback: { model: "provider/fallback", thinkingLevel: "off" },
 				},
 			},
-			tasks: { "pi-subagent/delegateTask": "frontier" },
+			tasks: { [EXAMPLE_TASK.id]: "frontier" },
 		}));
-		assert.deepEqual(resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir), {
+		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, EXAMPLE_TASK, dir), [
+			{ model: fallback, thinkingLevel: "off" },
+		]);
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir), {
 			model: fallback,
 			thinkingLevel: "off",
 		});
-		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, "pi-subagent/delegateTask", dir), [
-			{ model: fallback, thinkingLevel: "off" },
-		]);
-		assert.throws(
-			() => resolveConfiguredTaskRoute(ctx, "pi-other/run", dir),
-			/Task pi-other\/run is not assigned to a profile\. Run \/task-models\./,
-		);
 
-		writeFileSync(file, JSON.stringify({
-			profiles: { frontier: { primary: { model: "provider/unavailable", thinkingLevel: "off" } } },
-			tasks: { "pi-subagent/delegateTask": "frontier" },
-		}));
-		assert.throws(
-			() => resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir),
-			/Task pi-subagent\/delegateTask profile frontier has no available route\. Run \/task-models\./,
-		);
 		writeFileSync(file, "{ not json\n");
 		assert.throws(
-			() => resolveConfiguredTaskRoute(ctx, "pi-subagent/delegateTask", dir),
+			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
 			/Couldn't read task model config\. Run \/task-models\./,
+		);
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, { id: "bad task", label: "Bad", purpose: "Bad", defaultProfile: "fast" } as ModelTask, dir),
+			/Model Task declaration is invalid/,
 		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
-test("discovers active HenryQW task packages from Pi sourceInfo", () => {
-	const active = activeTaskPackages({
-		getCommands() {
-			return [
-				{ sourceInfo: { source: "npm:@henryqw/pi-herdr-rename", path: "/tmp/node_modules/@henryqw/pi-herdr-rename/extensions/rename.ts", scope: "user", origin: "package" } },
-				{ sourceInfo: { source: "npm:@henryqw/pi-new", path: "/tmp/node_modules/@henryqw/pi-new/extensions/new.ts", scope: "user", origin: "package" } },
-				{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts", scope: "user", origin: "package" } },
-			] as never;
-		},
-		getAllTools() {
-			return [
-				{ sourceInfo: { source: "file:/tmp/packages/pi-auto-compact", path: "/tmp/packages/pi-auto-compact/extensions/auto-compact.ts", scope: "user", origin: "package" } },
-				{ sourceInfo: { source: "npm:@henryqw/pi-subagent", path: "/tmp/node_modules/@henryqw/pi-subagent/extensions/subagent.ts", scope: "user", origin: "package" } },
-			] as never;
-		},
-	}, {
-		...DEFAULT_TASK_ASSIGNMENTS,
-		"pi-new/customTask": "frontier",
-	});
+test("registers model tasks idempotently and discovers them in either load order", async () => {
+	for (const consumerFirst of [true, false]) {
+		const dir = tempDir();
+		try {
+			const events = eventBus();
+			let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+			const pi = {
+				events,
+				registerCommand(_name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
+					handler = command.handler;
+				},
+			};
+			const register = () => registerModelTask(pi as never, EXAMPLE_TASK);
+			if (consumerFirst) register();
+			registerTaskModelsExtension(pi as never, { agentDir: dir });
+			if (!consumerFirst) register();
+			register();
+			assert.equal(events.listenerCount(MODEL_TASK_REQUEST_EVENT), 1, "registration is idempotent");
 
-	assert.deepEqual(active.map((entry) => entry.task).sort(), [
-		"pi-auto-compact/autoCompact",
-		"pi-herdr-rename/rename",
-		"pi-new/customTask",
-		"pi-subagent/delegateTask",
-	]);
-	assert.deepEqual(activeTaskPackages({
-		getCommands: () => [{ sourceInfo: { source: "npm:evil-pi-herdr-rename-copy", path: "/tmp/evil-pi-herdr-rename-copy/extension.ts" } }] as never,
-		getAllTools: () => [] as never,
-	}), []);
+			const responses: unknown[] = [];
+			const offResponses = events.on(MODEL_TASK_RESPONSE_EVENT, (payload) => responses.push(payload));
+			events.emit(MODEL_TASK_REQUEST_EVENT, { requestId: "ignored", extra: true });
+			assert.deepEqual(responses, [], "malformed requests are ignored at the consumer boundary");
+			offResponses();
+
+			// A malformed response from another extension must not enter the control plane.
+			events.on(MODEL_TASK_REQUEST_EVENT, (request) => {
+				events.emit(MODEL_TASK_RESPONSE_EVENT, {
+					requestId: (request as { requestId?: unknown }).requestId,
+					task: { id: "bad task" },
+				});
+			});
+			writeTaskModelsConfig({
+				profiles: {},
+				tasks: { "pi-hidden/disabled": "balanced" },
+			}, dir);
+			assert.ok(handler);
+			await handler!("", {
+				ui: {
+					select: async (_label: string, options: readonly string[]) => {
+						assert.deepEqual(options, [
+							"fast · not configured",
+							"balanced · not configured",
+							"frontier · not configured",
+							"fav · not configured",
+							"Example review · pi-example/review · fast",
+						]);
+						return undefined;
+					},
+					notify() {},
+				},
+			});
+			assert.deepEqual(readTaskModelsConfig(dir).tasks, { "pi-hidden/disabled": "balanced" });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+});
+
+test("task-models stores only non-default active task assignments", async () => {
+	const dir = tempDir();
+	try {
+		const events = eventBus();
+		const { pi, handler } = controlPlane(events, dir);
+		registerModelTask(pi as never, EXAMPLE_TASK);
+		const selections = [
+			"Example review · pi-example/review · fast",
+			"frontier",
+			"Example review · pi-example/review · frontier",
+			"fast",
+		];
+		await handler("", {
+			ui: {
+				select: async (_label: string, options: readonly string[]) => {
+					const selection = selections.shift();
+					assert.ok(selection);
+					assert.ok(options.includes(selection));
+					return selection;
+				},
+				notify() {},
+			},
+		});
+		assert.deepEqual(readTaskModelsConfig(dir).tasks, { [EXAMPLE_TASK.id]: "frontier" });
+
+		await handler("", {
+			ui: {
+				select: async (_label: string, options: readonly string[]) => {
+					const selection = selections.shift();
+					assert.ok(selection);
+					assert.ok(options.includes(selection));
+					return selection;
+				},
+				notify() {},
+			},
+		});
+		assert.deepEqual(readTaskModelsConfig(dir).tasks, {});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("readTaskModelsConfig rejects fallback on fav profile", () => {
@@ -215,97 +299,16 @@ test("readTaskModelsConfig rejects fallback on fav profile", () => {
 	}
 });
 
-test("task-models hides task assignment when no supported task package is active", async () => {
-	const dir = tempDir();
-	try {
-		let handler: ((args: string[], ctx: never) => Promise<void>) | undefined;
-		registerTaskModelsExtension({
-			registerCommand(_name: string, options: { handler: (args: string[], ctx: unknown) => Promise<void> }) {
-				handler = options.handler;
-			},
-			getCommands: () => [] as never,
-			getAllTools: () => [] as never,
-		} as never, { agentDir: dir });
-		assert.ok(handler);
-		await handler!([], {
-			ui: {
-				select: async (_label: string, options: readonly string[]) => {
-					assert.deepEqual(options, ["fast · not configured", "balanced · not configured", "frontier · not configured", "fav · not configured"]);
-					return undefined;
-				},
-				notify() {},
-			} as never,
-		} as never);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("task-models shows unique full IDs for matching task names", async () => {
-	const dir = tempDir();
-	try {
-		mkdirSync(join(dir, "config"), { recursive: true });
-		writeFileSync(join(dir, "config", "pi-task-models.json"), JSON.stringify({
-			tasks: { "pi-a/summarize": "balanced", "pi-b/summarize": "balanced" },
-		}));
-		let handler: ((args: string[], ctx: never) => Promise<void>) | undefined;
-		registerTaskModelsExtension({
-			registerCommand(_name: string, options: { handler: (args: string[], ctx: unknown) => Promise<void> }) {
-				handler = options.handler;
-			},
-			getCommands: () => ["pi-a", "pi-b"].map((name) => ({
-				sourceInfo: { source: `npm:@henryqw/${name}`, path: `/node_modules/@henryqw/${name}/extension.ts` },
-			})) as never,
-			getAllTools: () => [] as never,
-		} as never, { agentDir: dir });
-		await handler!([], {
-			ui: {
-				select: async (_label: string, options: readonly string[]) => {
-					assert.ok(options.includes("pi-a/summarize · balanced"));
-					assert.ok(options.includes("pi-b/summarize · balanced"));
-					return undefined;
-				},
-				notify() {},
-			},
-		} as never);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
 test("task-models configures primary and fallback atomically in one profile flow", async () => {
 	const dir = tempDir();
 	try {
-		const calls: string[] = [];
-		let handler: ((args: string[], ctx: never) => Promise<void>) | undefined;
-		registerTaskModelsExtension({
-			registerCommand(name: string, options: { handler: (args: string[], ctx: unknown) => Promise<void> }) {
-				calls.push(name);
-				handler = options.handler;
-			},
-			getCommands() {
-				return [{ sourceInfo: { source: "npm:@henryqw/pi-herdr-rename", path: "/x/node_modules/@henryqw/pi-herdr-rename/extensions/rename.ts", scope: "user", origin: "package" } }] as never;
-			},
-			getAllTools() {
-				return [] as never;
-			},
-		} as never, { agentDir: dir });
-
-		assert.deepEqual(calls, ["task-models"]);
-		assert.ok(handler);
-
+		const events = eventBus();
+		const { handler } = controlPlane(events, dir);
 		const canonical = { provider: "openai-codex", id: "gpt-5", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low" } };
 		const alias = { ...canonical, provider: "openai-codex-2" };
 		const fallback = { provider: "other", id: "fallback", input: ["text"], reasoning: false };
 		const excluded = { provider: "other", id: "excluded", input: ["text"], reasoning: false };
-		let selections = [
-			"fast · not configured",
-			"openai-codex-2/gpt-5",
-			"low",
-			"other/fallback",
-			"off",
-		];
-		const notifications: string[] = [];
+		let selections = ["fast · not configured", "openai-codex-2/gpt-5", "low", "other/fallback", "off"];
 		const ctx = {
 			ui: {
 				select: async (label: string, options: readonly string[]) => {
@@ -318,17 +321,16 @@ test("task-models configures primary and fallback atomically in one profile flow
 					assert.ok(options.includes(choice));
 					return choice;
 				},
-				notify(message: string) { notifications.push(message); },
-			} as never,
-			modelRegistry: { getAvailable: () => [canonical, alias, fallback, excluded] as never } as never,
-			model: alias as never,
+				notify(_message: string) {},
+			},
+			modelRegistry: { getAvailable: () => [canonical, alias, fallback, excluded] },
+			model: alias,
 			scopedModels: [
 				{ model: alias, thinkingLevel: "low" },
 				{ model: fallback, thinkingLevel: "off" },
-			] as never,
-		} as never;
-		await handler!([], ctx);
-
+			],
+		};
+		await handler("", ctx);
 		assert.deepEqual(readTaskModelsConfig(dir).profiles.fast, {
 			primary: { model: "openai-codex/gpt-5", thinkingLevel: "low" },
 			fallback: { model: "other/fallback", thinkingLevel: "off" },
@@ -337,13 +339,10 @@ test("task-models configures primary and fallback atomically in one profile flow
 
 		const file = join(dir, "config", "pi-task-models.json");
 		chmodSync(file, 0o444);
-		selections = [
-			"fast · openai-codex/gpt-5 (low) → other/fallback (off)",
-			"openai-codex-2/gpt-5",
-			"low",
-			"None",
-		];
-		await handler!([], ctx);
+		selections = ["fast · openai-codex/gpt-5 (low) → other/fallback (off)", "openai-codex-2/gpt-5", "low", "None"];
+		const notifications: string[] = [];
+		ctx.ui.notify = (message: string) => { notifications.push(message); };
+		await handler("", ctx);
 		assert.ok(notifications.includes("Couldn't save task model config."));
 		chmodSync(file, 0o644);
 	} finally {

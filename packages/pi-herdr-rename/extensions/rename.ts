@@ -6,7 +6,9 @@ import {
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 import {
 	readTaskModelsConfig,
+	registerModelTask,
 	resolveConfiguredTaskRoutes,
+	type ModelTask,
 	type ResolvedTaskRoute,
 	type TaskRouteError,
 } from "@henryqw/pi-task-models";
@@ -18,7 +20,12 @@ const MAX_CONTEXT_CHARS = 2_000;
 const DISPLAY_MAX_WORDS = 4;
 const DISPLAY_MAX_CHARS = 20;
 const SEMANTIC_TYPE_MAX_CHARS = 12;
-const RENAME_TASK = "pi-herdr-rename/rename";
+export const RENAME_TASK = {
+	id: "pi-herdr-rename/rename",
+	label: "Conversation rename",
+	purpose: "Generate a short conversation title.",
+	defaultProfile: "fast",
+} as const satisfies ModelTask;
 const TITLE_STATE_TYPE = "pi-herdr-rename/title";
 const HERDR_DEFAULT_WORKTREE_NAME = /^(?:worktree[-/])?(?:brave|calm|clear|green|lucky|quiet|rapid|silver)-(?:river|cloud|field|forest|harbor|meadow|stone|valley)-[0-9a-f]{4}$/;
 const SEMANTIC_BRANCH = /^[a-z][a-z0-9-]{0,11}\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -207,6 +214,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 }
 
 export default function herdrRenameExtension(pi: ExtensionAPI): void {
+	registerModelTask(pi, RENAME_TASK);
 	const herdr = createHerdrClient<{ signal: AbortSignal }>(pi.exec.bind(pi));
 	let latestUserText: string | undefined;
 	let automaticStarted = false;
@@ -342,7 +350,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		latestUserText = latestSessionUserText(ctx);
 		try {
 			const taskModels = readTaskModelsConfig();
-			const profileName = taskModels.tasks[RENAME_TASK];
+			const profileName = taskModels.tasks[RENAME_TASK.id] ?? RENAME_TASK.defaultProfile;
 			if (!taskModels.profiles[profileName]) {
 				ctx.ui.notify(`Configure rename task profile ${profileName} with /task-models.`, "warning");
 			}

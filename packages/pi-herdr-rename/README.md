@@ -30,7 +30,7 @@ Requires Pi Coding Agent 0.84.4+.
 
 First real user prompt generates a title in the background after Pi expands skill and prompt-template shorthand. It does not delay main reply. Extension-injected prompts, empty prompts, and image-only input are ignored.
 
-Shared [`pi-task-models` config](../pi-task-models#config) at `~/.pi/agent/config/pi-task-models.json` routes task `pi-herdr-rename/rename` to the `fast` profile by default.
+Shared [`pi-task-models` config](../pi-task-models#config) at `~/.pi/agent/config/pi-task-models.json` can explicitly override the local `pi-herdr-rename/rename` declaration, which defaults to `fast`.
 
 Display titles are natural task phrases, preferably three or four words and always at most four words and 20 characters. Model classification stays internal: `refactor: update task logic` displays as `Update task logic` and maps to Git branch `refactor/update-task-logic`.
 
