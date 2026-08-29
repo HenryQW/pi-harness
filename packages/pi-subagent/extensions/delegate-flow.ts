@@ -10,6 +10,7 @@ import {
 	inspectWorktreeDirty,
 	prepareExactReviewEvidence,
 	WorktreeSetupError,
+	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentExecutor,
 	type EphemeralSubagentResult,
 	type ResolvedRoleLaunch,
@@ -19,6 +20,7 @@ import {
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 import { runDelegation } from "./delegation.ts";
+import { renderToolLines } from "./tool-render.ts";
 
 const MAX_UNITS = 8;
 const GIT_TIMEOUT_MS = 30_000;
@@ -129,6 +131,7 @@ export interface DelegateFlowRuntime {
 		ctx: ExtensionContext,
 	) => void;
 	updateWidgetTokens: (id: string, tokens: number) => void;
+	updateWidgetActivity: (id: string, event: EphemeralSubagentActivityEvent) => void;
 	finishWidget: (id: string, status: WidgetStatus) => void;
 }
 
@@ -171,6 +174,35 @@ export function parseDelegateFlowContinue(value: unknown): Static<typeof Delegat
 		guidance: text(value.guidance, "guidance"),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
 	};
+}
+
+function flowCallLabel(args: { units?: unknown }): string {
+	const count = Array.isArray(args.units) ? args.units.length : 0;
+	return `delegate_flow · working: ${count} unit${count === 1 ? "" : "s"}`;
+}
+
+function flowResultLines(text: string): string[] {
+	const lines = text.split(/\r?\n/).filter((line) => line.trim());
+	const diagnosticHeader = lines.findIndex((line) => line.trim() === "Diagnostic:");
+	const diagnostic = diagnosticHeader === -1 ? undefined : lines[diagnosticHeader + 1];
+	const recoveryHeader = lines.findIndex((line) => line.trim() === "Retained Flow state:" || line.trim() === "Attempted allocations preserved without cleanup:");
+	const recovery = recoveryHeader === -1 || !lines[recoveryHeader + 1]?.trim().startsWith("- unit=")
+		? undefined
+		: lines[recoveryHeader + 1];
+	if (diagnostic === undefined) {
+		if (recovery === undefined) return lines;
+		const recoveryIndex = lines.indexOf(recovery);
+		return [lines[0]!, recovery, ...lines.filter((_, index) => index !== 0 && index !== recoveryIndex)];
+	}
+	const leading = lines.slice(0, Math.min(1, diagnosticHeader));
+	if (recovery !== undefined) return [...leading, `Diagnostic: ${diagnostic}`, recovery];
+	// Promote the first diagnostic ahead of the result cap.
+	return [
+		...leading,
+		`Diagnostic: ${diagnostic}`,
+		...lines.slice(leading.length, diagnosticHeader),
+		...lines.slice(diagnosticHeader + 2),
+	];
 }
 
 function errorText(error: unknown): string {
@@ -336,6 +368,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		role: Role,
 		modelClass: FlowModelClass,
 		task: string,
+		widgetTask: string,
 		cwd: string,
 		widgetId: string,
 		signal: AbortSignal | undefined,
@@ -348,13 +381,14 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const result = await runDelegation(runtime.executor, {
 				signal,
 				onTokens: (tokens) => runtime.updateWidgetTokens(widgetId, tokens),
+				onActivity: (event) => runtime.updateWidgetActivity(widgetId, event),
 				prepare: async () => {
 					assertCurrent(flow);
 					const launch = runtime.resolveLaunch(role, modelClass, ctx);
 					if (launch.missingSkills.length) {
 						ctx.ui.notify(`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`, "warning");
 					}
-					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, task, ctx);
+					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, widgetTask, ctx);
 					started = true;
 					return { launch, task, cwd };
 				},
@@ -464,6 +498,14 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		const lines = [
 			`Flow ${outcome}.`,
 			flow.completed.length ? `Completed units: ${flow.completed.map(({ id, noOp }) => `${JSON.stringify(id)}${noOp ? " (no-op)" : ""}`).join(", ")}` : "Completed units: none.",
+			...(flow.setupRecoveries.length ? [
+				"Attempted allocations preserved without cleanup:",
+				...flow.setupRecoveries.map((recovery) => `- unit=${JSON.stringify(recovery.id)} path=${JSON.stringify(recovery.path)} branch=${JSON.stringify(recovery.branch)} base=${recovery.base}`),
+			] : []),
+			...(retainedUnits.length ? [
+				"Retained Flow state:",
+				...retainedUnits.map((unit) => `- unit=${JSON.stringify(unit.id)} path=${JSON.stringify(unit.path)} branch=${JSON.stringify(unit.branch)} base=${unit.base} worktree=${unit.worktreeRetained} branch_ref=${unit.branchRetained}`),
+			] : []),
 			...(blocked ? [
 				`Blocked unit: ${JSON.stringify(blocked.unit.request.id)}.`,
 				`Classification: ${blocked.classification}.`,
@@ -473,14 +515,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			] : []),
 			...(failure ? [`Classification: ${failure.classification}.`, `Diagnostic:\n${failure.diagnostic}`] : []),
 			...(flow.warnings.length ? ["Warnings:", ...flow.warnings.map((warning) => `- ${warning}`)] : []),
-			...(flow.setupRecoveries.length ? [
-				"Attempted allocations preserved without cleanup:",
-				...flow.setupRecoveries.map((recovery) => `- unit=${JSON.stringify(recovery.id)} path=${JSON.stringify(recovery.path)} branch=${JSON.stringify(recovery.branch)} base=${recovery.base}`),
-			] : []),
-			...(retainedUnits.length ? [
-				"Retained Flow state:",
-				...retainedUnits.map((unit) => `- unit=${JSON.stringify(unit.id)} path=${JSON.stringify(unit.path)} branch=${JSON.stringify(unit.branch)} base=${unit.base} worktree=${unit.worktreeRetained} branch_ref=${unit.branchRetained}`),
-			] : []),
 		];
 		return {
 			content: [{ type: "text" as const, text: capOutput(lines.join("\n")) }],
@@ -672,6 +706,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 						reviewer,
 						unit.modelClass,
 						reviewerTask(unit.request, reviewCriterion, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
+						unit.request.task,
 						unit.worktree.cwd,
 						`${toolCallId}:flow:${flow.index}:review`,
 						signal,
@@ -752,6 +787,14 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
+		renderShell: "self",
+		renderCall(args, theme, _context) {
+			return renderToolLines([theme.fg("toolTitle", flowCallLabel(args))], theme);
+		},
+		renderResult(result, _options, theme, _context) {
+			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
+			return renderToolLines(flowResultLines(text), theme);
+		},
 		prepareArguments: parseDelegateFlow,
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			const request = parseDelegateFlow(params);
@@ -817,6 +860,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow.implementer,
 					unit.modelClass,
 					implementerTask(unit.request),
+					unit.request.task,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
 					operationSignal,
@@ -848,6 +892,14 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Repair and continue the blocked deterministic Flow",
 		promptGuidelines: ["Call delegate_flow_continue only after delegate_flow reports a repairable block, with explicit guidance addressing that block."],
 		parameters: DelegateFlowContinueSchema,
+		renderShell: "self",
+		renderCall(_args, theme, _context) {
+			return renderToolLines([theme.fg("toolTitle", "delegate_flow_continue · working: repair continuation")], theme);
+		},
+		renderResult(result, _options, theme, _context) {
+			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
+			return renderToolLines(flowResultLines(text), theme);
+		},
 		prepareArguments: parseDelegateFlowContinue,
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			const { guidance, modelClass } = parseDelegateFlowContinue(params);
@@ -870,6 +922,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow.implementer,
 					unit.modelClass,
 					repairTask(unit.request, blocked, guidance),
+					unit.request.task,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,
 					operationSignal,

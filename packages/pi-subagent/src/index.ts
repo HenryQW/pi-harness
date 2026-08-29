@@ -23,6 +23,7 @@ export {
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
 	formatDuration,
+	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentErrorCode,
 	type EphemeralSubagentExecutor,
 	type EphemeralSubagentExecutorOptions,

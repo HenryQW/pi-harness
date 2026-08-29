@@ -8,6 +8,9 @@ import type { PiLaunch } from "./index.ts";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
+const MAX_ACTIVITY_TEXT_BYTES = 4 * 1024;
+// A JSON string byte can take six source bytes (for example, \u0000).
+const MAX_ACTIVITY_PREFIX_BYTES = 2 * MAX_ACTIVITY_TEXT_BYTES * 6 + 1024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const POST_EXIT_STDIO_IDLE_MS = 250;
 const POST_EXIT_STDIO_HARD_MS = 1_000;
@@ -38,6 +41,10 @@ const PI_JSON_EVENTS = {
 } satisfies Record<AgentSessionEvent["type"], true>;
 const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
 const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
+const JSON_STRING = `"(?:[^"\\\\\u0000-\u001f]|\\\\(?:["\\\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
+const JSON_OVERSIZED_TOOL_START = new RegExp(
+	`^\\s*\\{\\s*"type"\\s*:\\s*"tool_execution_start"\\s*,\\s*"toolCallId"\\s*:\\s*(${JSON_STRING})\\s*,\\s*"toolName"\\s*:\\s*(${JSON_STRING})(?=\\s*,)`,
+);
 
 export interface EphemeralSubagentTimeout {
 	idleMs: number;
@@ -49,10 +56,16 @@ export interface EphemeralSubagentExecutorOptions {
 	timeout: EphemeralSubagentTimeout;
 }
 
+export type EphemeralSubagentActivityEvent =
+	| { type: "tool_execution_start"; toolCallId: string; toolName: string; path?: string }
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string }
+	| { type: "message_end" };
+
 export interface EphemeralSubagentRunInput {
 	signal?: AbortSignal;
 	onUpdate?: (text: string) => void;
 	onTokens?: (tokens: number) => void;
+	onActivity?: (event: EphemeralSubagentActivityEvent) => void;
 	prepare: () => Promise<{ launch: PiLaunch; task: string; cwd: string }>;
 }
 
@@ -129,11 +142,15 @@ function validateRunInput(value: unknown): EphemeralSubagentRunInput {
 	if (input.onTokens !== undefined && typeof input.onTokens !== "function") {
 		throw new TypeError("run.onTokens must be a function.");
 	}
+	if (input.onActivity !== undefined && typeof input.onActivity !== "function") {
+		throw new TypeError("run.onActivity must be a function.");
+	}
 	return {
 		signal: input.signal as AbortSignal | undefined,
 		prepare: input.prepare as EphemeralSubagentRunInput["prepare"],
 		onUpdate: input.onUpdate as EphemeralSubagentRunInput["onUpdate"],
 		onTokens: input.onTokens as EphemeralSubagentRunInput["onTokens"],
+		onActivity: input.onActivity as EphemeralSubagentRunInput["onActivity"],
 	};
 }
 
@@ -270,6 +287,34 @@ function assistantText(message: unknown): string | undefined {
 		.map((part) => part.text)
 		.join("\n");
 	return text || undefined;
+}
+
+function activityTooLong(value: unknown): boolean {
+	return typeof value === "string" && Buffer.byteLength(value, "utf8") > MAX_ACTIVITY_TEXT_BYTES;
+}
+
+function hasTerminalControlChars(text: string): boolean {
+	return Array.from(text).some((character) => {
+		const code = character.codePointAt(0)!;
+		return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x2028 || code === 0x2029;
+	});
+}
+
+function activityText(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0 && !activityTooLong(value) && !hasTerminalControlChars(value);
+}
+
+function oversizedToolStart(prefix: string): EphemeralSubagentActivityEvent | undefined {
+	const match = JSON_OVERSIZED_TOOL_START.exec(prefix);
+	if (!match) return;
+	try {
+		const toolCallId: unknown = JSON.parse(match[1]);
+		const toolName: unknown = JSON.parse(match[2]);
+		if (!activityText(toolCallId) || !activityText(toolName)) return;
+		return { type: "tool_execution_start", toolCallId, toolName };
+	} catch {
+		return;
+	}
 }
 
 function utf8Prefix(text: string, maxBytes: number): string {
@@ -495,25 +540,34 @@ async function runPi(
 			}
 		};
 
-		const failCallback = (name: "onUpdate" | "onTokens", cause: unknown) => {
+		const failCallback = (name: "onUpdate" | "onTokens" | "onActivity", cause: unknown) => {
 			if (callbackFailure) return;
 			callbackFailure = new EphemeralSubagentError("callback", `Subagent ${name} callback failed.`, cause);
 			signalCallbackFailure();
 			stop(true);
 		};
 
+		let activityQueue: Promise<void> = Promise.resolve();
+
 		const invokeCallback = <Value>(
-			name: "onUpdate" | "onTokens",
+			name: "onUpdate" | "onTokens" | "onActivity",
 			callback: ((value: Value) => void) | undefined,
 			value: Value,
 		) => {
 			if (!callback || callbackFailure) return;
 			let pending: Promise<void>;
-			try {
-				pending = Promise.resolve(callback(value)).then(undefined, (cause) => { failCallback(name, cause); });
-			} catch (cause) {
-				failCallback(name, cause);
-				return;
+			if (name === "onActivity") {
+				pending = activityQueue.then(() => {
+					if (!callbackFailure) return callback(value);
+				}).catch((cause) => { failCallback(name, cause); });
+				activityQueue = pending;
+			} else {
+				try {
+					pending = Promise.resolve(callback(value)).then(undefined, (cause) => { failCallback(name, cause); });
+				} catch (cause) {
+					failCallback(name, cause);
+					return;
+				}
 			}
 			pendingCallbacks.add(pending);
 			void pending.then(() => pendingCallbacks.delete(pending));
@@ -581,6 +635,26 @@ async function runPi(
 				}
 				return;
 			}
+			if (record.type === "tool_execution_start" || record.type === "tool_execution_end") {
+				const { toolCallId, toolName } = record;
+				if (!activityText(toolCallId) || !activityText(toolName)) return;
+				if (record.type === "tool_execution_start") {
+					const args = record.args;
+					const path = args && typeof args === "object" && !Array.isArray(args)
+						? (args as Record<string, unknown>).path
+						: undefined;
+					if (activityTooLong(path)) return;
+					invokeCallback("onActivity", input.onActivity, {
+						type: "tool_execution_start",
+						toolCallId,
+						toolName,
+						...(activityText(path) ? { path } : {}),
+					});
+				} else {
+					invokeCallback("onActivity", input.onActivity, { type: "tool_execution_end", toolCallId, toolName });
+				}
+				return;
+			}
 			if (record.type !== "message_end") return;
 			const text = assistantText(record.message);
 			if (text !== undefined) {
@@ -596,6 +670,7 @@ async function runPi(
 					currentTokens = 0;
 					currentUsage = undefined;
 					invokeCallback("onTokens", input.onTokens, completedTokens);
+					invokeCallback("onActivity", input.onActivity, { type: "message_end" });
 				}
 				if (typeof message.stopReason === "string") stopReason = message.stopReason;
 				if (typeof message.errorMessage === "string") errorMessage = message.errorMessage;
@@ -652,7 +727,8 @@ async function runPi(
 				const end = newline === -1 ? data.length : newline;
 				const part = data.slice(offset, end);
 				if (!ignoreLine) {
-					linePrefix += part.slice(0, Math.max(0, 256 - linePrefix.length));
+					const remainingPrefix = MAX_ACTIVITY_PREFIX_BYTES - Buffer.byteLength(linePrefix, "utf8");
+					if (remainingPrefix > 0) linePrefix += utf8Prefix(part, remainingPrefix);
 					const eventType = JSON_EVENT_TYPE.exec(linePrefix)?.[1];
 					if (eventType && !lineEventType) lineEventType = eventType;
 					lineBytes += Buffer.byteLength(part, "utf8");
@@ -670,6 +746,13 @@ async function runPi(
 				}
 				if (newline === -1) return;
 				if (!ignoreLine) processLine(lineParts.join(""));
+				else if (lineEventType === "tool_execution_start") {
+					const activity = oversizedToolStart(linePrefix);
+					if (activity) {
+						observeEvent();
+						invokeCallback("onActivity", input.onActivity, activity);
+					}
+				}
 				if (callbackFailure) return;
 				lineParts = [];
 				lineBytes = 0;
