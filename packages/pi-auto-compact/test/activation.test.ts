@@ -13,6 +13,14 @@ import autoCompact from "../extensions/auto-compact.ts";
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 type Command = (args: string, ctx: ExtensionContext) => Promise<void>;
 
+function autoCompactConfigFile(agentDir: string): string {
+	return join(agentDir, "config", "pi-auto-compact", "config.json");
+}
+
+function taskModelsConfigFile(agentDir: string): string {
+	return join(agentDir, "config", "pi-task-models", "config.json");
+}
+
 function loadExtension(
 	commands = new Map<string, Command>(),
 	sendUserMessage: (content: string) => void = () => {},
@@ -48,6 +56,7 @@ test("suppresses only empty abort caused by pending extension compaction", async
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
 			compact() {},
+			ui: { notify() {} },
 			get signal() { return signal; },
 		} as unknown as ExtensionContext;
 		handlers.get("session_start")?.(
@@ -93,12 +102,12 @@ test("suppresses only empty abort caused by pending extension compaction", async
 
 test("configures threshold and ignores obsolete model fields", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-"));
-	const configFile = join(tempRoot, "config", "pi-auto-compact.json");
+	const configFile = autoCompactConfigFile(tempRoot);
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
 
 	try {
-		await mkdir(join(tempRoot, "config"), { recursive: true });
+		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
 		const legacyConfig = {
 			autoCompactThreshold: 65,
@@ -149,6 +158,77 @@ test("configures threshold and ignores obsolete model fields", async () => {
 	}
 });
 
+test("uses only config homes and preserves invalid local config", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-home-"));
+	const configFile = autoCompactConfigFile(tempRoot);
+	const legacyConfigFile = join(tempRoot, "config", "pi-auto-compact.json");
+	const sharedConfigFile = taskModelsConfigFile(tempRoot);
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+
+	try {
+		await mkdir(join(tempRoot, "config"), { recursive: true });
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		const legacy = JSON.stringify({ autoCompactThreshold: 65 });
+		await writeFile(legacyConfigFile, legacy);
+
+		const commands = new Map<string, Command>();
+		const handlers = loadExtension(commands);
+		const notices: Array<[string, string]> = [];
+		let prompt = "";
+		const ctx = {
+			cwd: tempRoot,
+			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
+			compact() {},
+			ui: {
+				input: async (message: string) => {
+					prompt = message;
+					return undefined;
+				},
+				notify: (message: string, level: string) => notices.push([message, level]),
+			},
+		} as unknown as ExtensionContext;
+
+		handlers.get("session_start")?.(
+			{ type: "session_start", reason: "startup" } as never,
+			ctx,
+		);
+		assert.deepEqual(notices, [
+			[`Auto-compact config is missing: ${configFile}; default threshold 50% is used.`, "warning"],
+			["Task model config is missing; defaults are being used.", "warning"],
+		]);
+		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
+		await assert.rejects(() => readFile(sharedConfigFile, "utf8"), { code: "ENOENT" });
+		assert.equal(await readFile(legacyConfigFile, "utf8"), legacy);
+
+		await commands.get("auto-compact")?.("", ctx);
+		assert.equal(prompt, "Auto-compact threshold (%) · current: 50");
+		assert.equal(notices.length, 2);
+		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
+
+		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+		for (const invalid of ["{ not json\n", '{"autoCompactThreshold":20}']) {
+			await writeFile(configFile, invalid);
+			notices.length = 0;
+			const invalidHandlers = loadExtension();
+			invalidHandlers.get("session_start")?.(
+				{ type: "session_start", reason: "startup" } as never,
+				ctx,
+			);
+			assert.deepEqual(notices, [
+				["Couldn't read pi-auto-compact config; using 50%.", "error"],
+				["Task model config is missing; defaults are being used.", "warning"],
+			]);
+			assert.equal(await readFile(configFile, "utf8"), invalid);
+		}
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
 test("reports malformed shared task-model config without rewriting it", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-task-model-config-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -156,9 +236,11 @@ test("reports malformed shared task-model config without rewriting it", async ()
 	const malformed = "{ not json\\n";
 
 	try {
-		await mkdir(join(tempRoot, "config"), { recursive: true });
+		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		const taskModelsFile = join(tempRoot, "config", "pi-task-models.json");
+		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
+		const taskModelsFile = taskModelsConfigFile(tempRoot);
 		await writeFile(taskModelsFile, malformed);
 
 		const handlers = loadExtension();
@@ -214,9 +296,10 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 
 	try {
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		await mkdir(join(tempRoot, "config"), { recursive: true });
-		await writeFile(join(tempRoot, "config", "pi-auto-compact.json"), JSON.stringify({ autoCompactThreshold: 50 }));
-		await writeFile(join(tempRoot, "config", "pi-task-models.json"), JSON.stringify({
+		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
+		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
+		await writeFile(taskModelsConfigFile(tempRoot), JSON.stringify({
 			profiles: {
 				fast: {
 					primary: { model: "primary/model", thinkingLevel: "off" },
@@ -322,10 +405,11 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address();
 		assert.ok(address && typeof address !== "string");
-		await mkdir(join(tempRoot, "config"), { recursive: true });
+		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		await writeFile(join(tempRoot, "config", "pi-auto-compact.json"), JSON.stringify({ autoCompactThreshold: 50 }));
-		await writeFile(join(tempRoot, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
+		await writeFile(taskModelsConfigFile(tempRoot), JSON.stringify({
 			profiles: {
 				fast: {
 					primary: { model: "primary/model", thinkingLevel: "off" },
@@ -421,6 +505,7 @@ test("agent_end compacts without resuming completed work", async () => {
 			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
 			compact: (options: { onComplete: () => void }) => { onComplete = options.onComplete; },
 			isIdle: () => true,
+			ui: { notify() {} },
 		} as unknown as ExtensionContext;
 
 		handlers.get("session_start")?.(
@@ -472,6 +557,7 @@ test("activates only when Pi built-in auto-compaction is disabled", async () => 
 				isProjectTrusted: () => true,
 				getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
 				compact: () => { compactions++; },
+				ui: { notify() {} },
 			} as unknown as ExtensionContext;
 			const start = () => handlers.get("session_start")?.(
 				{ type: "session_start", reason: "startup" } as never,
@@ -508,6 +594,7 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 900, contextWindow: 1000, percent: 90 }),
 			compact: () => { compactions++; },
+			ui: { notify() {} },
 		} as unknown as ExtensionContext;
 
 		handlers.get("session_start")?.(

@@ -1,16 +1,16 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import {
 	compact,
 	estimateTokens,
 	getAgentDir,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { createConfigStore } from "@henryqw/pi-config-store";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
@@ -38,22 +38,13 @@ export const AUTO_COMPACT_TASK = {
 	purpose: "Compact session context before it is exhausted.",
 	defaultProfile: "fast",
 } as const satisfies ModelTask;
-const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
+type AutoCompactConfig = { autoCompactThreshold: number };
 
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
 }
 
-function readConfig(): number {
-	let value: unknown;
-	try {
-		value = JSON.parse(readFileSync(configPath(), "utf8"));
-	} catch (error) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-			return DEFAULT_COMPACT_THRESHOLD_PERCENT;
-		}
-		throw error;
-	}
+function parseAutoCompactConfig(value: unknown): AutoCompactConfig {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error("Config must be an object.");
 	}
@@ -61,13 +52,15 @@ function readConfig(): number {
 	if (!isValidThreshold(threshold)) {
 		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
 	}
-	return threshold;
+	return { autoCompactThreshold: threshold };
 }
 
-function writeConfig(threshold: number): void {
-	const file = configPath();
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${JSON.stringify({ autoCompactThreshold: threshold }, null, 2)}\n`);
+function createAutoCompactConfigStore() {
+	return createConfigStore<AutoCompactConfig>({
+		extensionId: "pi-auto-compact",
+		defaults: () => ({ autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT }),
+		parse: parseAutoCompactConfig,
+	});
 }
 
 function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
@@ -155,6 +148,7 @@ function hasToolCall(message: AgentMessage): boolean {
 
 export default function (pi: ExtensionAPI) {
 	registerModelTask(pi, AUTO_COMPACT_TASK);
+	const configStore = createAutoCompactConfigStore();
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	// Prevent lifecycle hooks from starting duplicate summaries.
@@ -256,7 +250,7 @@ export default function (pi: ExtensionAPI) {
 
 			let currentThreshold: number;
 			try {
-				currentThreshold = readConfig();
+				currentThreshold = configStore.loadSync().value.autoCompactThreshold;
 			} catch {
 				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
 				return;
@@ -275,7 +269,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				writeConfig(threshold);
+				await configStore.save({ autoCompactThreshold: threshold });
 			} catch {
 				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
 				return;
@@ -288,11 +282,30 @@ export default function (pi: ExtensionAPI) {
 	// Pi's built-in automatic compaction competes with this extension. Refuse
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
+		let configMissing = false;
 		try {
-			autoCompactThreshold = readConfig();
+			const config = configStore.loadSync();
+			autoCompactThreshold = config.value.autoCompactThreshold;
+			configMissing = config.source === "missing";
 		} catch {
 			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
+		}
+		if (configMissing) {
+			ctx.ui.notify(
+				`Auto-compact config is missing: ${configStore.path}; default threshold ${DEFAULT_COMPACT_THRESHOLD_PERCENT}% is used.`,
+				"warning",
+			);
+		}
+
+		let taskModelsConfigMissing = false;
+		try {
+			taskModelsConfigMissing = loadTaskModelsConfig().source === "missing";
+		} catch {
+			// Preserve route-time task-model config errors and fallback behavior.
+		}
+		if (taskModelsConfigMissing) {
+			ctx.ui.notify("Task model config is missing; defaults are being used.", "warning");
 		}
 
 		active = !SettingsManager.create(ctx.cwd, getAgentDir(), {
