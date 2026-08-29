@@ -32,7 +32,7 @@ Model routing is not configured here. Children resolve routes through shared `@h
 | `delegate_flow` | tool | Package-owned parallel implementation and declared-order Git integration for 1–8 independent units. |
 | `delegate_flow_continue` | tool | Repair the blocked Flow unit once in its existing worktree. |
 
-All three delegation tool blocks use Pi's default boxed shell and background. Their compact custom content is an immutable call label, foreground aggregate partial-result status, and bounded final summaries. There is no expanded view.
+All three delegation tools use Pi's built-in renderer. Its tool-execution block shows live updates and Pi's configured expansion hint; expanding shows the call and result content.
 
 ### `delegate_task`
 
@@ -40,14 +40,16 @@ Select exactly one shape:
 
 ```text
 // Single
-{ role, task, model?, modelClass?, thinking?, background? }
+{ role, name, task, model?, modelClass?, thinking?, background? }
 
 // Parallel: 1–8 independent delegations
-{ tasks: [{ role, task, model?, modelClass?, thinking? }], background? }
+{ tasks: [{ role, name, task, model?, modelClass?, thinking? }], background? }
 
 // Chain: 1–8 dependent delegations
-{ chain: [{ role, task, model?, modelClass?, thinking? }], background? }
+{ chain: [{ role, name, task, model?, modelClass?, thinking? }], background? }
 ```
+
+Main supplies every delegation's required `name`: a short description of about five words and fewer than 30 characters. Names must not contain C0/C1 control characters, including newlines and terminal escape characters.
 
 #### Model precedence
 
@@ -59,6 +61,8 @@ Select exactly one shape:
    That declaration defaults to `fast` and shared config can explicitly override it.
 
 This is Main policy only. The runtime records no provenance and does not enforce it. `background` applies to the whole selected mode and is never a per-delegation field.
+
+The transient status widget renders one line per child with: status glyph, bracketed uppercase role initial (`[I]` for `implementer`, `[R]` for `reviewer`, and likewise for custom Roles), Main-supplied short name, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, compact `model·thinking` pair, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: when total items are six or fewer, all child rows render; above six, five child rows plus one status-aware overflow line render (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. It is separate from Pi's built-in tool-execution block.
 
 #### Modes, limits, and isolation
 
@@ -77,10 +81,10 @@ See [Orchestration, isolation, and the public API](./docs/orchestration.md) for 
 
 Use Flow only for independent, commuting Git changes. Commuting changes can integrate in any order.
 
-Flow accepts 1–8 uniquely identified units. Each unit has a bounded task, optional `modelClass`, direct command/argument validation gate, and optional non-empty `review` judgment criterion:
+Flow accepts 1–8 uniquely identified units. Each unit has a required Main-supplied short `name`, bounded task, optional `modelClass`, direct command/argument validation gate, and optional non-empty `review` judgment criterion. Names must not contain C0/C1 control characters, including newlines and terminal escape characters.
 
 ```text
-delegate_flow({ units: [{ id, task, modelClass?, validation: [{ command, args }], review? }] })
+delegate_flow({ units: [{ id, name, task, modelClass?, validation: [{ command, args }], review? }] })
 delegate_flow_continue({ guidance, modelClass? })
 ```
 
@@ -137,13 +141,11 @@ The transient status widget shows status glyph, role, status label, task summary
 
 | Aspect | Behavior |
 | --- | --- |
-| Call label | `delegate_task · single/parallel/chain · N task(s)`; `delegate_flow · parallel→serial · N unit(s)`; `delegate_flow_continue · repair continuation` |
-| Partial progress | `delegate_task`: aggregate counts (running/pending/complete/failed/skipped); `delegate_flow`: phase transitions (setup → implement → verify/integrate → review → repair) |
-| Widget rows | One line per child: glyph, role, status, task, activity, metrics |
+| Tool-execution block | Pi's built-in renderer: live updates and expandable call/result content |
+| Widget rows | One line per child: glyph, `[role initial]`, short name, activity, metrics |
 | Ordering | Active-first stable (working first, then insertion order) |
 | Line cap | 6 physical lines max (≤6 items: all child rows; >6 items: 5 rows + 1 status-aware overflow) |
 | Terminal retention | Active rows persist; terminal rows clear on next user input |
-| Final result | Bounded summaries with recovery paths; no expanded view |
 
 - Rows are active-first: working items first, then stable insertion order.
 - The hard six-physical-line maximum shows all child rows for six or fewer items.

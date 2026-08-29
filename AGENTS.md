@@ -91,6 +91,10 @@ Triage uses default canonical labels. See `docs/agents/triage-labels.md`.
 
 Audit and migrate all extension packages to a published Pi release with `docs/agents/pi-version-upgrade.md`.
 
+### Config store migration
+
+Build and migrate extension config homes with `docs/agents/pi-config-store-migration.md`.
+
 ### Domain docs
 
 Multi-context layout uses root `CONTEXT-MAP.md` and per-package `CONTEXT.md` files. See `docs/agents/domain.md`.
