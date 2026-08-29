@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { writeTaskModelsConfig } from "@henryqw/pi-task-models";
-import { DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
+import { createBtwConfigStore, DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
 import type { BtwPayload } from "../internal/core.ts";
 import {
 	MERGE_CUSTOM_TYPE,
@@ -123,26 +123,32 @@ class FakeStore implements ContextStorePort {
 }
 
 class FakeConfigStore implements ConfigStorePort {
+	readonly path = "/tmp/pi-herdr-btw-test/config.json";
 	config: BtwConfig = { ...DEFAULT_CONFIG };
 	readonly saved: BtwConfig[] = [];
-	resetRuns = 0;
+	saveRuns = 0;
+	updateRuns = 0;
+	source: "file" | "missing" = "file";
 	loadError: Error | undefined;
 
-	async load(): Promise<BtwConfig> {
+	loadSync(): { source: "file" | "missing"; value: BtwConfig } {
 		if (this.loadError) throw this.loadError;
-		return { ...this.config };
+		return { source: this.source, value: { ...this.config } };
+	}
+
+	async save(config: BtwConfig): Promise<void> {
+		this.config = { ...config };
+		this.loadError = undefined;
+		this.source = "file";
+		this.saved.push({ ...this.config });
+		this.saveRuns += 1;
 	}
 
 	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
 		this.config = mutator({ ...this.config });
+		this.source = "file";
 		this.saved.push({ ...this.config });
-		return { ...this.config };
-	}
-
-	async reset(): Promise<BtwConfig> {
-		this.config = { ...DEFAULT_CONFIG };
-		this.loadError = undefined;
-		this.resetRuns += 1;
+		this.updateRuns += 1;
 		return { ...this.config };
 	}
 }
@@ -416,12 +422,40 @@ test("config subcommand updates and resets launch defaults, including malformed-
 
 		assert.equal(harness.configStore.config.autoSubmit, true);
 		assert.equal(harness.configStore.config.tools, "read-only");
-		assert.equal(harness.configStore.saved.length, 2);
+		assert.equal(harness.configStore.updateRuns, 2);
 
 		harness.configStore.loadError = new Error("malformed config");
 		await command?.handler("config reset", ctx);
 		assert.deepEqual(harness.configStore.config, DEFAULT_CONFIG);
-		assert.equal(harness.configStore.resetRuns, 1);
+		assert.equal(harness.configStore.saveRuns, 1);
+	});
+});
+
+test("warns once per session when local or shared config is missing", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		await rm(join(agentDir, "config", "pi-task-models"), { recursive: true, force: true });
+		const configStore = createBtwConfigStore(agentDir);
+		const harness = await createHarness(
+			new FakeStore(),
+			async () => ({ code: 0, stdout: "", stderr: "" }),
+			configStore,
+		);
+		const ctx = createCommandContext();
+
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+		await harness.emit("session_start", { reason: "reload" }, ctx);
+		harness.cleanup();
+
+		assert.deepEqual(ctx.notifications, [
+			{
+				message: `BTW config is missing: ${configStore.path}; defaults are used.`,
+				type: "warning",
+			},
+			{
+				message: "Task model config is missing; run /task-models to configure it.",
+				type: "warning",
+			},
+		]);
 	});
 });
 

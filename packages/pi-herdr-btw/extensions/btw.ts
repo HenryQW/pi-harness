@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode, startPiAgent } from "@henryqw/pi-herdr";
 import {
+	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
@@ -16,7 +17,8 @@ import {
 import {
 	applyConfigCommand,
 	CONFIG_COMMAND_USAGE,
-	ConfigStore,
+	createBtwConfigStore,
+	DEFAULT_CONFIG,
 	formatConfig,
 	type BtwConfig,
 } from "../internal/config.ts";
@@ -81,7 +83,10 @@ export type ContextStorePort = Pick<
 	| "readMergeRequest"
 	| "removeIfNoPendingMerge"
 >;
-export type ConfigStorePort = Pick<ConfigStore, "load" | "update" | "reset">;
+export type ConfigStorePort = Pick<
+	ReturnType<typeof createBtwConfigStore>,
+	"path" | "loadSync" | "save" | "update"
+>;
 
 const SIDE_PANE_INSTRUCTIONS = `You are running in a focused /btw side pane spawned from another Pi session.
 
@@ -410,7 +415,7 @@ export async function registerBtwExtension(
 		return;
 	}
 
-	const configStore = options.configStore ?? new ConfigStore();
+	const configStore = options.configStore ?? createBtwConfigStore();
 	const herdr = createHerdrClient<HerdrOptions>(pi.exec.bind(pi));
 
 	// --- Parent-side merge coordination ---------------------------------
@@ -418,6 +423,8 @@ export async function registerBtwExtension(
 		| Pick<ExtensionCommandContext, "sessionManager" | "isIdle" | "model" | "modelRegistry">
 		| undefined;
 	let sessionGeneration = 0;
+	let missingConfigWarningSessionId: string | undefined;
+	let missingTaskModelsConfigWarningSessionId: string | undefined;
 	// Notifications need a UI context; route them through the last known ctx.
 	let notifyFn: ((message: string, type: "info" | "warning" | "error") => void) | undefined;
 	const coordinator = new MergeCoordinator(store, {
@@ -470,6 +477,15 @@ export async function registerBtwExtension(
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (missingConfigWarningSessionId !== sessionId && configStore.loadSync().source === "missing") {
+			missingConfigWarningSessionId = sessionId;
+			ctx.ui.notify(`BTW config is missing: ${configStore.path}; defaults are used.`, "warning");
+		}
+		if (missingTaskModelsConfigWarningSessionId !== sessionId && loadTaskModelsConfig().source === "missing") {
+			missingTaskModelsConfigWarningSessionId = sessionId;
+			ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");
+		}
 		sessionGeneration += 1;
 		sessionCtx = ctx;
 		notifyFn = (message, type) => ctx.ui.notify(message, type);
@@ -525,13 +541,14 @@ export async function registerBtwExtension(
 			if (route.kind === "config") {
 				try {
 					if (route.args === "reset") {
-						const config = await configStore.reset();
+						const config = { ...DEFAULT_CONFIG };
+						await configStore.save(config);
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");
 						return;
 					}
 					const trimmedArgs = route.args.trim();
 					const result = !trimmedArgs || trimmedArgs === "show"
-						? applyConfigCommand(await configStore.load(), route.args)
+						? applyConfigCommand(configStore.loadSync().value, route.args)
 						: {
 							action: "save" as const,
 							config: await configStore.update((latest) => applyConfigCommand(latest, route.args).config),
@@ -602,7 +619,7 @@ export async function registerBtwExtension(
 
 			let payloadPath: string | undefined;
 			try {
-				const config: BtwConfig = await configStore.load();
+				const config: BtwConfig = configStore.loadSync().value;
 				await store.removeStale();
 				const createdAt = new Date().toISOString();
 				const sessionId = ctx.sessionManager.getSessionId();
