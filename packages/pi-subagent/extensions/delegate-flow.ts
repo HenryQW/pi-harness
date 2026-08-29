@@ -34,6 +34,7 @@ const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model pr
 
 const UnitSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
+	name: Type.String({ minLength: 1, maxLength: 29, description: "Short descriptive task name, about five words and fewer than 30 characters" }),
 	task: Type.String({ minLength: 1 }),
 	validation: Type.Array(ValidationSchema, { minItems: 1 }),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -126,7 +127,7 @@ export interface DelegateFlowRuntime {
 		role: string,
 		model: string,
 		thinkingLevel: string | undefined,
-		task: string,
+		name: string,
 		ctx: ExtensionContext,
 	) => void;
 	updateWidgetTokens: (id: string, tokens: number) => void;
@@ -155,6 +156,7 @@ export function parseDelegateFlow(value: unknown): FlowRequest {
 			ids.add(id);
 			return {
 				id,
+				name: text(unit.name, `units[${unitIndex}].name`),
 				task: text(unit.task, `units[${unitIndex}].task`),
 				validation: unit.validation.map((validation, validationIndex) => ({
 					command: text(validation.command, `units[${unitIndex}].validation[${validationIndex}].command`),
@@ -342,7 +344,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		role: Role,
 		modelClass: FlowModelClass,
 		task: string,
-		widgetTask: string,
+		widgetName: string,
 		cwd: string,
 		widgetId: string,
 		signal: AbortSignal | undefined,
@@ -362,7 +364,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					if (launch.missingSkills.length) {
 						ctx.ui.notify(`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`, "warning");
 					}
-					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, widgetTask, ctx);
+					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, widgetName, ctx);
 					started = true;
 					return { launch, task, cwd };
 				},
@@ -683,7 +685,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 						reviewer,
 						unit.modelClass,
 						reviewerTask(unit.request, reviewCriterion, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
-						unit.request.task,
+						unit.request.name,
 						unit.worktree.cwd,
 						`${toolCallId}:flow:${flow.index}:review`,
 						signal,
@@ -760,7 +762,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Run a deterministic parallel-implementation, serial-verification Flow",
 		promptGuidelines: [
 			"Use delegate_flow only for cohesive units expected to commute: split independent outcomes into units, sequence dependent work outside delegate_flow, and never divide one invariant across multiple units. Combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
-			"Each delegate_flow unit must own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.",
+			"Each delegate_flow unit must include a short descriptive name of about five words and fewer than 30 characters, then own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.",
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
@@ -834,7 +836,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow.implementer,
 					unit.modelClass,
 					implementerTask(unit.request),
-					unit.request.task,
+					unit.request.name,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
 					operationSignal,
@@ -896,7 +898,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow.implementer,
 					unit.modelClass,
 					repairTask(unit.request, blocked, guidance),
-					unit.request.task,
+					unit.request.name,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,
 					operationSignal,

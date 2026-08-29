@@ -290,7 +290,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const updates: any[] = [];
 		const result = await app.tool.execute(
 			"call-1",
-			{ role: "reviewer", task: "inspect auth", modelClass: "frontier" },
+			{ role: "reviewer", name: "Test delegated task", task: "inspect auth", modelClass: "frontier" },
 			undefined,
 			(update: any) => updates.push(update),
 			app.ctx,
@@ -332,7 +332,7 @@ test("worktree isolation preserves the delegated repository subdirectory", async
 		process.argv[1] = runner;
 
 		const app = harness({ cwd: join(repo, "packages", "worker") });
-		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
 		const name = childName("call-1:single:0");
 		const worktreeRoot = join(await realpath(repo), ".worktrees", name);
 		assert.equal(JSON.parse(singleOutput(result)).cwd, join(worktreeRoot, "packages", "worker"));
@@ -358,7 +358,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		process.argv[1] = runner;
 
 		const app = harness({ cwd: repo, ui: true });
-		const error = await app.tool.execute("inspection", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
+		const error = await app.tool.execute("inspection", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected finalization rejection"),
 			(reason) => reason,
 		);
@@ -397,7 +397,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 `);
 		process.argv[1] = runner;
 		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
 		const args = JSON.parse(singleOutput(result));
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
@@ -425,7 +425,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 `);
 		process.argv[1] = runner;
 		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "thinker", task: "plan" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "thinker", name: "Test delegated task", task: "plan" }, undefined, undefined, app.ctx);
 		const args = JSON.parse(singleOutput(result));
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
@@ -469,17 +469,17 @@ Return concise findings.
 		const app = harness({ availableModels });
 		assert.equal(app.commands.has("subagent"), false);
 
-		const explicit = await app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const explicit = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx);
 		const explicitArgs = JSON.parse(singleOutput(explicit));
 		assert.equal(explicitArgs[explicitArgs.indexOf("--model") + 1], "provider/frontier-model");
 		assert.equal(explicitArgs[explicitArgs.indexOf("--thinking") + 1], "max");
 
-		const favorite = await app.tool.execute("call-fav", { role: "worker", task: "inspect code", modelClass: "fav" }, undefined, undefined, app.ctx);
+		const favorite = await app.tool.execute("call-fav", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "fav" }, undefined, undefined, app.ctx);
 		const favoriteArgs = JSON.parse(singleOutput(favorite));
 		assert.equal(favoriteArgs[favoriteArgs.indexOf("--model") + 1], "provider/fav-model");
 		assert.equal(favoriteArgs[favoriteArgs.indexOf("--thinking") + 1], "high");
 
-		const omitted = await app.tool.execute("call-2", { role: "worker", task: "inspect code" }, undefined, undefined, app.ctx);
+		const omitted = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code" }, undefined, undefined, app.ctx);
 		const omittedArgs = JSON.parse(singleOutput(omitted));
 		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/fast-model");
 		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "off");
@@ -508,13 +508,13 @@ Return concise findings.
 		process.argv[1] = runner;
 		const app = harness({ availableModels });
 
-		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect code", model: "provider/beta" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/beta" }, undefined, undefined, app.ctx);
 		const args = JSON.parse(singleOutput(result)) as string[];
 		assert.equal(args[args.indexOf("--model") + 1], "provider/beta");
 		assert.equal(args[args.indexOf("--thinking") + 1], "off");
 
 		await assert.rejects(
-			app.tool.execute("call-2", { role: "worker", task: "inspect code", model: "provider/gamma" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/gamma" }, undefined, undefined, app.ctx),
 			/Available models: provider\/alpha, provider\/beta/,
 		);
 	});
@@ -541,7 +541,7 @@ Return concise findings.
 		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
 		process.argv[1] = runner;
 		const app = harness({ availableModels: [canonical, alias], currentModel: alias });
-		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect", modelClass: "frontier" }, undefined, undefined, app.ctx);
 		const args = JSON.parse(singleOutput(result)) as string[];
 		assert.equal(args[args.indexOf("--model") + 1], "openai-codex-2/gpt-test");
 		const extensions = args.flatMap((value, index) => value === "--extension" ? [args[index + 1]] : []);
@@ -569,37 +569,37 @@ test("thinking override participates in route resolution across all paths", asyn
 		const app = harness({ availableModels });
 
 		// Omitted thinking keeps the primary route.
-		const primary = await app.tool.execute("call-1", { role: "worker", task: "inspect code" }, undefined, undefined, app.ctx);
+		const primary = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code" }, undefined, undefined, app.ctx);
 		const primaryArgs = JSON.parse(singleOutput(primary)) as string[];
 		assert.equal(primaryArgs[primaryArgs.indexOf("--model") + 1], "provider/a-model");
 		assert.equal(primaryArgs[primaryArgs.indexOf("--thinking") + 1], "off");
 
 		// Explicit override skips the incompatible primary and uses the fallback.
-		const override = await app.tool.execute("call-2", { role: "worker", task: "inspect code", thinking: "high" }, undefined, undefined, app.ctx);
+		const override = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code", thinking: "high" }, undefined, undefined, app.ctx);
 		const overrideArgs = JSON.parse(singleOutput(override)) as string[];
 		assert.equal(overrideArgs[overrideArgs.indexOf("--model") + 1], "provider/b-model");
 		assert.equal(overrideArgs[overrideArgs.indexOf("--thinking") + 1], "high");
 
 		// No route supports the requested level.
 		await assert.rejects(
-			app.tool.execute("call-3", { role: "worker", task: "inspect code", thinking: "max" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", thinking: "max" }, undefined, undefined, app.ctx),
 			/supporting thinking max/,
 		);
 
 		// Explicit class path honors the override too.
-		const byClass = await app.tool.execute("call-5", { role: "worker", task: "work", modelClass: "balanced", thinking: "high" }, undefined, undefined, app.ctx);
+		const byClass = await app.tool.execute("call-5", { role: "worker", name: "Test delegated task", task: "work", modelClass: "balanced", thinking: "high" }, undefined, undefined, app.ctx);
 		const byClassArgs = JSON.parse(singleOutput(byClass)) as string[];
 		assert.equal(byClassArgs[byClassArgs.indexOf("--model") + 1], "provider/b-model");
 		assert.equal(byClassArgs[byClassArgs.indexOf("--thinking") + 1], "high");
 
 		// Designated model path honors the override.
-		const designated = await app.tool.execute("call-6", { role: "worker", task: "work", model: "provider/b-model", thinking: "high" }, undefined, undefined, app.ctx);
+		const designated = await app.tool.execute("call-6", { role: "worker", name: "Test delegated task", task: "work", model: "provider/b-model", thinking: "high" }, undefined, undefined, app.ctx);
 		const designatedArgs = JSON.parse(singleOutput(designated)) as string[];
 		assert.equal(designatedArgs[designatedArgs.indexOf("--thinking") + 1], "high");
 
 		// Background delegation propagates the override to the child args.
 		const background = await app.tool.execute(
-			"call-4", { role: "worker", task: "work", thinking: "high", background: true }, undefined, undefined, app.ctx,
+			"call-4", { role: "worker", name: "Test delegated task", task: "work", thinking: "high", background: true }, undefined, undefined, app.ctx,
 		);
 		assert.match(background.content[0]!.text, /accepted/);
 		await waitFor(() => app.sentMessages.length === 1);
@@ -620,12 +620,12 @@ test("designated model with unusable scoped thinking pin rejects before launch",
 
 		// The scoped pin allows no supported level; launching without --thinking must not bypass it.
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "inspect code", model: "p/pinned" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", model: "p/pinned" }, undefined, undefined, app.ctx),
 			/no usable thinking level/,
 		);
 
 		await assert.rejects(
-			app.tool.execute("call-2", { role: "worker", task: "inspect code", model: "p/pinned", thinking: "low" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code", model: "p/pinned", thinking: "low" }, undefined, undefined, app.ctx),
 			/not usable for p\/pinned in this session/,
 		);
 	});
@@ -641,13 +641,13 @@ test("validates every Role and route before isolated worktree creation", async (
 		process.argv[1] = runner;
 		const app = harness({ cwd: repo });
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx),
 			/Run \/task-models/,
 		);
 		await assert.rejects(
 			app.tool.execute("call-2", { tasks: [
-				{ role: "worker", task: "must not start" },
-				{ role: "missing", task: "invalid" },
+				{ role: "worker", name: "Test delegated task", task: "must not start" },
+				{ role: "missing", name: "Test delegated task", task: "invalid" },
 			] }, undefined, undefined, app.ctx),
 			/Unknown Subagent role: missing/,
 		);
@@ -683,7 +683,7 @@ Return concise findings.
 		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
 		process.argv[1] = runner;
 		const app = harness({ availableModels: [primary, fallback] });
-		const result = await app.tool.execute("call-1", { role: "worker", task: "inspect" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect" }, undefined, undefined, app.ctx);
 		const args = JSON.parse(singleOutput(result));
 		assert.equal(args[args.indexOf("--model") + 1], "provider/fallback");
 		assert.equal(args[args.indexOf("--thinking") + 1], "low");
@@ -719,7 +719,7 @@ Return concise findings.
 		process.argv[1] = runner;
 		const app = harness({ availableModels: [primary, fallback] });
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "inspect" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect" }, undefined, undefined, app.ctx),
 			(error: unknown) => error instanceof WorkflowFailureError && /Subagent exited with code 2/.test(error.message),
 		);
 		assert.equal(await readFile(marker, "utf8"), "1");
@@ -748,18 +748,18 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 `);
 		process.argv[1] = runner;
 		const app = harness({ ui: true });
-		const completed = app.tool.execute("call-1", { role: "scout", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
+		const completed = app.tool.execute("call-1", { role: "scout", name: "Normalize worktree paths", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
 		await waitFor(() => app.widget?.render(160).join("\n").includes("1.1k tok") ?? false);
 		const wide = app.widget!.render(160);
 		assert.equal(wide.length, 1);
 		assert.ok(wide.every((line) => visibleWidth(line) <= 160));
-		assert.match(wide[0]!, /scout · Normalize Windows registered-worktree paths · thinking… · text-model · low · 1\.1k tok ·/);
-		assert.doesNotMatch(wide[0]!, / · working ·/);
+		assert.match(wide[0]!, /\[S\] Normalize worktree paths · thinking… · text-model·low · 1\.1k tok ·/);
+		assert.doesNotMatch(wide[0]!, /working|registered-worktree/);
 		assert.doesNotMatch(wide.join("\n"), /test\//);
 		const narrow = app.widget!.render(24);
 		assert.equal(narrow.length, 1);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-		assert.match(narrow[0]!, /scout · Normalize/);
+		assert.match(narrow[0]!, /\[S\] Normalize/);
 		const tiny = app.widget!.render(1);
 		assert.equal(tiny.length, 1);
 		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
@@ -767,21 +767,21 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
 		const terminal = app.widget!.render(160);
 		assert.equal(terminal.length, 1);
-		assert.match(terminal[0]!, /scout · Normalize Windows registered-worktree paths · Done · 1 turn/);
-		assert.doesNotMatch(terminal[0]!, / · complete ·/);
+		assert.match(terminal[0]!, /\[S\] Normalize worktree paths · Done · 1 turn/);
+		assert.doesNotMatch(terminal[0]!, /complete|registered-worktree/);
 
 		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
-		const running = app.tool.execute("call-2", { role: "worker", task: "keep working" }, undefined, undefined, app.ctx);
-		await waitFor(() => app.widget?.render(100).join("\n").includes("worker · keep working") ?? false);
+		const running = app.tool.execute("call-2", { role: "worker", name: "Keep worker active", task: "keep working" }, undefined, undefined, app.ctx);
+		await waitFor(() => app.widget?.render(100).join("\n").includes("[W] Keep worker active") ?? false);
 		const activeFirst = app.widget!.render(160);
-		assert.match(activeFirst[0]!, /worker · keep working/);
-		assert.match(activeFirst[1]!, /scout · Normalize Windows registered-worktree paths · Done/);
+		assert.match(activeFirst[0]!, /\[W\] Keep worker active/);
+		assert.match(activeFirst[1]!, /\[S\] Normalize worktree paths · Done/);
 		await app.handlers.get("input")?.({ source: "extension", text: "injected" }, app.ctx);
-		assert.match(app.widget!.render(100).join("\n"), /scout · Normalize Windows registered-worktree paths · Done/);
+		assert.match(app.widget!.render(100).join("\n"), /\[S\] Normalize worktree paths · Done/);
 		await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
 		const afterInput = app.widget!.render(100).join("\n");
-		assert.doesNotMatch(afterInput, /scout · Normalize Windows registered-worktree paths · Done/);
-		assert.match(afterInput, /worker · keep working/);
+		assert.doesNotMatch(afterInput, /\[S\] Normalize worktree paths · Done/);
+		assert.match(afterInput, /\[W\] Keep worker active/);
 		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
@@ -831,11 +831,12 @@ waitFor("read", () => {
 			}
 			return app.widget!.render(100).join("\n");
 		};
-		const running = app.tool.execute("activity", { role: "worker", task: "trace deterministic widget activity" }, undefined, undefined, app.ctx);
+		const running = app.tool.execute("activity", { role: "worker", name: "Test delegated task", task: "trace deterministic widget activity" }, undefined, undefined, app.ctx);
 		try {
 			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
 			let widget = renderRows();
-			assert.match(widget, /worker · trace deterministic widget activity/);
+			assert.match(widget, /\[W\] Test delegated task/);
+			assert.doesNotMatch(widget, /trace deterministic widget activity/);
 			assert.match(widget, /thinking…/);
 			assert.doesNotMatch(widget, /\b(?:turn|tool)s?\b/);
 
@@ -915,7 +916,7 @@ next();
 		const app = harness({ ui: true });
 		const release = async (stage: string) => { await writeFile(join(stages, stage), ""); };
 		const rendered = () => app.widget!.render(100).join("\n");
-		const running = app.tool.execute("activity-cap", { role: "worker", task: "bound retained widget activity" }, undefined, undefined, app.ctx);
+		const running = app.tool.execute("activity-cap", { role: "worker", name: "Test delegated task", task: "bound retained widget activity" }, undefined, undefined, app.ctx);
 		try {
 			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
 			await release("oversized");
@@ -964,18 +965,18 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 		const app = harness({ ui: true });
 		for (let index = 1; index <= 8; index++) {
 			const task = `completed ${index}`;
-			const completed = app.tool.execute(`call-${index}`, { role: "worker", task }, undefined, undefined, app.ctx);
+			const completed = app.tool.execute(`call-${index}`, { role: "worker", name: task, task }, undefined, undefined, app.ctx);
 			await waitFor(() => runner.started().includes(task));
 			runner.release(task);
 			await completed;
 		}
 
-		const active = app.tool.execute("call-9", { role: "worker", task: "active ninth" }, undefined, undefined, app.ctx);
+		const active = app.tool.execute("call-9", { role: "worker", name: "Active ninth", task: "active ninth" }, undefined, undefined, app.ctx);
 		await waitFor(() => runner.started().includes("active ninth"));
 		try {
 			const widget = app.widget!.render(160);
 			assert.equal(widget.length, 6);
-			assert.match(widget[0]!, /worker · active ninth/);
+			assert.match(widget[0]!, /\[W\] Active ninth/);
 			assert.doesNotMatch(widget.join("\n"), /completed 1/);
 			for (let index = 2; index <= 5; index++) assert.match(widget[index - 1]!, new RegExp(`completed ${index}`));
 			assert.equal(widget[5], "… 3 more · 3 complete");
@@ -998,7 +999,7 @@ test("widget summarizes overflow while evicting terminal rows for new active wor
 			const fake = await blockedPiRunner(agentDir, tasks);
 			releaseAll = () => Promise.all([...tasks, tenth].map((task) => fake.release(task)));
 			const app = harness({ ui: true });
-			calls.push(...tasks.map((task, index) => app.tool.execute(`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx)));
+			calls.push(...tasks.map((task, index) => app.tool.execute(`call-${index + 1}`, { role: "worker", name: task, task }, undefined, undefined, app.ctx)));
 			await waitFor(() => fake.started().length === 9);
 			for (const width of [160, 24, 1]) {
 				const rows = app.widget!.render(width);
@@ -1015,7 +1016,7 @@ test("widget summarizes overflow while evicting terminal rows for new active wor
 			widget = app.widget!.render(160);
 			assert.equal(widget.length, 6);
 			assert.equal(widget[5], "… 4 more · 2 working · 2 complete");
-			const tenthCall = app.tool.execute("call-10", { role: "worker", task: tenth }, undefined, undefined, app.ctx);
+			const tenthCall = app.tool.execute("call-10", { role: "worker", name: tenth, task: tenth }, undefined, undefined, app.ctx);
 			calls.push(tenthCall);
 			await waitFor(() => fake.started().includes(tenth));
 
@@ -1061,7 +1062,7 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		process.argv[1] = runner;
 		const app = harness();
 		const updates: any[] = [];
-		const running = app.tool.execute("call-1", { role: "scout", task: "find auth" }, undefined, (update: any) => updates.push(update), app.ctx);
+		const running = app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task: "find auth" }, undefined, (update: any) => updates.push(update), app.ctx);
 		await waitFor(() => updates.some((update) => update.content[0].text.includes("partial 🙂")));
 		assert.ok(updates.every((update) => Buffer.byteLength(update.content[0].text, "utf8") <= 50 * 1024));
 		const result = await running;
@@ -1090,7 +1091,7 @@ setTimeout(() => process.stdout.write(line.subarray(split)), 20);
 `);
 		process.argv[1] = runner;
 		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "scout", task: "find auth" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task: "find auth" }, undefined, undefined, app.ctx);
 		assert.equal(singleOutput(result), "ok 🙂");
 	});
 });
@@ -1115,7 +1116,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const app = harness();
 		const updates: any[] = [];
 		const task = "🙂".repeat(10_000);
-		const result = await app.tool.execute("call-1", { role: "scout", task }, undefined, (update: any) => updates.push(update), app.ctx);
+		const result = await app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task }, undefined, (update: any) => updates.push(update), app.ctx);
 		const original = "a".repeat(60 * 1024);
 		assertTruncated(singleOutput(result), capOutput(original));
 		assert.equal(result.details.entries[0].summary.length, 160);
@@ -1145,7 +1146,7 @@ event({ type: "agent_end", messages: [{ role: "toolResult", content: "x".repeat(
 `);
 		process.argv[1] = runner;
 		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "scout", task: "find auth" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task: "find auth" }, undefined, undefined, app.ctx);
 		assert.equal(singleOutput(result), "done");
 	});
 });
@@ -1176,11 +1177,11 @@ Do work.
 		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes("populate model and thinking only for an explicit user override") && guideline.includes("fast normally") && guideline.includes("not runtime enforcement")));
 		assert.match(app.tool.description, /configuration error/);
 		await assert.rejects(
-			app.tool.execute("invalid", { role: "broken", task: "work", tasks: [] }, undefined, undefined, app.ctx),
+			app.tool.execute("invalid", { role: "broken", name: "Test delegated task", task: "work", tasks: [] }, undefined, undefined, app.ctx),
 			/exactly one mode/,
 		);
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "broken", task: "work" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "broken", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
 			/tools/,
 		);
 	});
@@ -1195,9 +1196,9 @@ test("tool argument preparation normalizes valid modes and bounds parse failures
 		process.argv[1] = runner;
 		const app = harness();
 		const valid = [
-			{ role: " worker ", task: " work " },
-			{ tasks: [{ role: " worker ", task: " parallel " }], background: true },
-			{ chain: [{ role: " worker ", task: " chain " }] },
+			{ role: " worker ", name: "Test delegated task", task: " work " },
+			{ tasks: [{ role: " worker ", name: "Test delegated task", task: " parallel " }], background: true },
+			{ chain: [{ role: " worker ", name: "Test delegated task", task: " chain " }] },
 		];
 		for (const params of valid) {
 			const normalized = app.tool.prepareArguments!(params);
@@ -1207,8 +1208,8 @@ test("tool argument preparation normalizes valid modes and bounds parse failures
 
 		const huge = "x".repeat(60 * 1024);
 		for (const run of [
-			() => app.tool.prepareArguments!({ role: "worker", task: "work", [huge]: true }),
-			() => app.tool.execute("role", { role: huge, task: "work" }, undefined, undefined, app.ctx),
+			() => app.tool.prepareArguments!({ role: "worker", name: "Test delegated task", task: "work", [huge]: true }),
+			() => app.tool.execute("role", { role: huge, name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
 		]) {
 			const error = await Promise.resolve().then(run).then(
 				() => assert.fail("expected preflight rejection"),
@@ -1234,7 +1235,7 @@ test("pre-aborted foreground and background calls use fixed typed errors before 
 			const reason = new Error("x".repeat(60 * 1024));
 			controller.abort(reason);
 			await assert.rejects(
-				app.tool.execute(`pre-${background}`, { role: "worker", task: "work", background }, controller.signal, undefined, app.ctx),
+				app.tool.execute(`pre-${background}`, { role: "worker", name: "Test delegated task", task: "work", background }, controller.signal, undefined, app.ctx),
 				(error) => {
 					assert.ok(error instanceof EphemeralSubagentError);
 					assert.equal(error.code, "aborted");
@@ -1305,8 +1306,8 @@ const timer = setInterval(() => {
 		});
 		const updates: any[] = [];
 		const running = app.tool.execute("workflow-1", { tasks: [
-			{ role: "scout", task: "alpha", model: "provider/fast", thinking: "off" },
-			{ role: "reviewer", task: "beta", modelClass: "frontier", thinking: "high" },
+			{ role: "scout", name: "Test delegated task", task: "alpha", model: "provider/fast", thinking: "off" },
+			{ role: "reviewer", name: "Test delegated task", task: "beta", modelClass: "frontier", thinking: "high" },
 		] }, undefined, (update: any) => updates.push(update), app.ctx);
 		await waitFor(() => readdirSync(started).length === 2);
 		await writeFile(join(release, "beta"), "");
@@ -1379,8 +1380,8 @@ const timer = setInterval(() => {
 		const app = harness();
 		const updates: any[] = [];
 		const acknowledgement = await app.tool.execute("background-parallel", { tasks: [
-			{ role: "scout", task: "alpha" },
-			{ role: "reviewer", task: "beta" },
+			{ role: "scout", name: "Test delegated task", task: "alpha" },
+			{ role: "reviewer", name: "Test delegated task", task: "beta" },
 		], background: true }, undefined, (update: any) => updates.push(update), app.ctx);
 
 		assert.equal(readdirSync(started).length, 0);
@@ -1447,10 +1448,10 @@ if (task === "first") {
 		process.argv[1] = runner;
 		const app = harness({ cwd: repo });
 		const error = await app.tool.execute("chain-call", { chain: [
-			{ role: "worker", task: "first" },
-			{ role: "worker", task: "second sees [{previous}]" },
-			{ role: "worker", task: "third sees [{previous}]" },
-			{ role: "worker", task: "never" },
+			{ role: "worker", name: "Test delegated task", task: "first" },
+			{ role: "worker", name: "Test delegated task", task: "second sees [{previous}]" },
+			{ role: "worker", name: "Test delegated task", task: "third sees [{previous}]" },
+			{ role: "worker", name: "Test delegated task", task: "never" },
 		] }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected workflow failure"),
 			(reason) => reason,
@@ -1505,9 +1506,9 @@ if (task === "first") {
 		process.argv[1] = runner;
 		const app = harness();
 		const acknowledgement = await app.tool.execute("background-chain", { chain: [
-			{ role: "worker", task: "first" },
-			{ role: "worker", task: "second sees [{previous}]" },
-			{ role: "worker", task: "must not start" },
+			{ role: "worker", name: "Test delegated task", task: "first" },
+			{ role: "worker", name: "Test delegated task", task: "second sees [{previous}]" },
+			{ role: "worker", name: "Test delegated task", task: "must not start" },
 		], background: true }, undefined, undefined, app.ctx);
 		assert.equal(acknowledgement.details.mode, "chain");
 		assert.deepEqual(acknowledgement.details.entries.map(({ id }: any) => id), [
@@ -1543,8 +1544,8 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		process.argv[1] = runner;
 		const app = harness({ cwd: repo });
 		const error = await app.tool.execute("partial", { tasks: [
-			{ role: "worker", task: "good" },
-			{ role: "worker", task: "bad" },
+			{ role: "worker", name: "Test delegated task", task: "good" },
+			{ role: "worker", name: "Test delegated task", task: "bad" },
 		] }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected workflow failure"),
 			(reason) => reason,
@@ -1572,7 +1573,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 `);
 		process.argv[1] = runner;
 		const app = harness();
-		const error = await app.tool.execute("patched", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
+		const error = await app.tool.execute("patched", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected workflow failure"),
 			(reason) => reason,
 		);
@@ -1581,7 +1582,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			type: "tool_result",
 			toolName: "delegate_task",
 			toolCallId: "patched",
-			input: { role: "worker", task: "work" },
+			input: { role: "worker", name: "Test delegated task", task: "work" },
 			content: [{ type: "text", text: error.message }],
 			details: undefined,
 			isError: true,
@@ -1595,7 +1596,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		});
 		assert.equal(await handler(event, app.ctx), undefined);
 
-		await assert.rejects(app.tool.execute("leftover", { role: "worker", task: "work" }, undefined, undefined, app.ctx));
+		await assert.rejects(app.tool.execute("leftover", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx));
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 		assert.equal(await handler({ ...event, toolCallId: "leftover" }, app.ctx), undefined);
 	});
@@ -1645,8 +1646,8 @@ const timer = setInterval(() => {
 		process.argv[1] = runner;
 		const app = harness({ cwd: repo, ui: true });
 		const acknowledgement = await app.tool.execute("identity", { tasks: [
-			{ role: "scout", task: "alpha" },
-			{ role: "reviewer", task: "beta" },
+			{ role: "scout", name: "Inspect auth files", task: "alpha" },
+			{ role: "reviewer", name: "Review auth findings", task: "beta" },
 		], background: true }, undefined, undefined, app.ctx);
 		await waitFor(() => readdirSync(started).length === 2);
 
@@ -1662,8 +1663,8 @@ const timer = setInterval(() => {
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["grep"]));
 		const widget = workingWidgetHeaders(app.widget!.render(120));
 		assert.equal(widget.length, 2);
-		assert.match(widget.join("\n"), /scout/);
-		assert.match(widget.join("\n"), /reviewer/);
+		assert.match(widget.join("\n"), /\[S\] Inspect auth files/);
+		assert.match(widget.join("\n"), /\[R\] Review auth findings/);
 		await Promise.all([writeFile(join(release, "alpha"), ""), writeFile(join(release, "beta"), "")]);
 		await waitFor(() => app.sentMessages.length === 1);
 
@@ -1690,7 +1691,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 `);
 		process.argv[1] = runner;
 		const app = harness();
-		const tasks = Array.from({ length: 8 }, (_, index) => ({ role: "worker", task: `task-${index}` }));
+		const tasks = Array.from({ length: 8 }, (_, index) => ({ role: "worker", name: "Test delegated task", task: `task-${index}` }));
 		const updates: any[] = [];
 		const result = await app.tool.execute("large", { tasks }, undefined, (update: any) => updates.push(update), app.ctx);
 		assert.equal(result.details.entries.length, 8);
@@ -1735,7 +1736,7 @@ setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { 
 		const app = harness({ cwd: repo, timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
 		const controller = new AbortController();
 		const running = app.tool.execute("abort-flow", { tasks: [
-			{ role: "worker", task: "one" }, { role: "worker", task: "two" },
+			{ role: "worker", name: "Test delegated task", task: "one" }, { role: "worker", name: "Test delegated task", task: "two" },
 		] }, controller.signal, undefined, app.ctx);
 		const paths = [0, 1].map((index) => join(repo, ".worktrees", childName(`abort-flow:parallel:${index}`)));
 		await waitFor(() => readdirSync(started).length === 2 && paths.every(existsSync));
@@ -1782,7 +1783,7 @@ async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
 		const app = harness({ ui: true });
 		const calls = tasks.map((task, index) => app.tool.execute(
 			`call-${index + 1}`,
-			{ role: "worker", task },
+			{ role: "worker", name: "Test delegated task", task },
 			undefined,
 			undefined,
 			app.ctx,
@@ -1826,9 +1827,9 @@ const timer = setInterval(() => {
 			process.argv[1] = runner;
 			const lateModel = { ...model, provider: "provider", id: "late-model" };
 			const app = harness({ availableModels: [model, lateModel] });
-			const first = app.tool.execute("call-1", { role: "worker", task: "task-1" }, undefined, undefined, app.ctx);
+			const first = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "task-1" }, undefined, undefined, app.ctx);
 			await waitFor(() => existsSync(join(started, "task-1")));
-			const second = app.tool.execute("call-2", { role: "worker", task: "task-2" }, undefined, undefined, app.ctx);
+			const second = app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "task-2" }, undefined, undefined, app.ctx);
 			await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
 				profiles: { balanced: { primary: { model: "provider/late-model", thinkingLevel: "low" } } },
 				tasks: { "pi-subagent/delegateTask": "balanced" },
@@ -1854,7 +1855,7 @@ test("PI_SUBAGENT_MAX_SUBAGENTS overrides the default child cap", async () => {
 			const runner = await blockedPiRunner(agentDir);
 			const app = harness({ ui: true });
 			const calls = tasks.map((task, index) => app.tool.execute(
-				`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx,
+				`call-${index + 1}`, { role: "worker", name: "Test delegated task", task }, undefined, undefined, app.ctx,
 			));
 			try {
 				await waitFor(() => runner.started().length === 1);
@@ -1889,9 +1890,9 @@ test("session shutdown aborts queued background subagents without unhandled reje
 				process.argv[1] = runner;
 
 				const app = harness();
-				const first = await app.tool.execute("call-1", { role: "worker", task: "task-1", background: true }, undefined, undefined, app.ctx);
+				const first = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "task-1", background: true }, undefined, undefined, app.ctx);
 				assert.match(first.content[0]!.text, /accepted/);
-				const second = await app.tool.execute("call-2", { role: "worker", task: "task-2", background: true }, undefined, undefined, app.ctx);
+				const second = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "task-2", background: true }, undefined, undefined, app.ctx);
 				assert.match(second.content[0]!.text, /accepted/);
 				// Second task is queued; shutdown must abort it without an unhandled
 				// rejection from the discarded IIFE promise.
@@ -1915,7 +1916,7 @@ test("background outcomes are not delivered after session shutdown", async () =>
 		process.argv[1] = runner;
 
 		const app = harness();
-		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx);
 		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.equal(app.sentMessages.length, 0);
@@ -1948,7 +1949,7 @@ test("config file maxSubagents applies and malformed config warns without failin
 		const runner = await blockedPiRunner(agentDir);
 		const app = harness({ ui: true });
 		const calls = tasks.map((task, index) => app.tool.execute(
-			`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx,
+			`call-${index + 1}`, { role: "worker", name: "Test delegated task", task }, undefined, undefined, app.ctx,
 		));
 		try {
 			await waitFor(() => runner.started().length === 1);
@@ -1979,7 +1980,7 @@ test("drops an aborted queued delegation and transfers its permit", async () => 
 		const app = harness({ ui: true });
 		const active = tasks.slice(0, 4).map((task, index) => app.tool.execute(
 			`call-${index + 1}`,
-			{ role: "worker", task },
+			{ role: "worker", name: "Test delegated task", task },
 			undefined,
 			undefined,
 			app.ctx,
@@ -1989,9 +1990,9 @@ test("drops an aborted queued delegation and transfers its permit", async () => 
 			await waitFor(() => runner.started().length === 4);
 			assert.deepEqual(runner.started(), tasks.slice(0, 4));
 			const abort = new AbortController();
-			const fifth = app.tool.execute("call-5", { role: "worker", task: tasks[4]! }, abort.signal, undefined, app.ctx);
+			const fifth = app.tool.execute("call-5", { role: "worker", name: "Test delegated task", task: tasks[4]! }, abort.signal, undefined, app.ctx);
 			const fifthAborted = assert.rejects(fifth, (error: unknown) => error instanceof Error && error.name === "AbortError");
-			const sixth = app.tool.execute("call-6", { role: "worker", task: tasks[5]! }, undefined, undefined, app.ctx);
+			const sixth = app.tool.execute("call-6", { role: "worker", name: "Test delegated task", task: tasks[5]! }, undefined, undefined, app.ctx);
 			calls.push(fifth, sixth);
 			abort.abort();
 			await fifthAborted;
@@ -2031,10 +2032,10 @@ const timer = setInterval(() => {
 `);
 			process.argv[1] = runner;
 			const app = harness({ cwd: repo });
-			const first = app.tool.execute("call-1", { role: "worker", task: "first" }, undefined, undefined, app.ctx);
+			const first = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "first" }, undefined, undefined, app.ctx);
 			await waitFor(() => existsSync(started));
 			const controller = new AbortController();
-			const queued = app.tool.execute("call-2", { role: "worker", task: "queued" }, controller.signal, undefined, app.ctx);
+			const queued = app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "queued" }, controller.signal, undefined, app.ctx);
 			controller.abort();
 			await assert.rejects(queued, (error: unknown) => error instanceof Error && error.name === "AbortError");
 			assert.equal(existsSync(join(repo, ".worktrees", childName("call-2"))), false);
@@ -2057,7 +2058,7 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 		const app = harness({ timeoutPolicy });
 		const active = tasks.slice(0, 4).map((task, index) => app.tool.execute(
 			`call-${index + 1}`,
-			{ role: "worker", task },
+			{ role: "worker", name: "Test delegated task", task },
 			undefined,
 			undefined,
 			app.ctx,
@@ -2067,7 +2068,7 @@ test("queued delegation does not consume its inactive-child timeout", async () =
 			await waitFor(() => runner.started().length === 4);
 			assert.deepEqual(runner.started(), tasks.slice(0, 4));
 			const queuedAt = Date.now();
-			const fifth = app.tool.execute("call-5", { role: "worker", task: tasks[4]! }, undefined, undefined, app.ctx);
+			const fifth = app.tool.execute("call-5", { role: "worker", name: "Test delegated task", task: tasks[4]! }, undefined, undefined, app.ctx);
 			calls.push(fifth);
 			let fifthSettled = false;
 			void fifth.then(() => { fifthSettled = true; }, () => { fifthSettled = true; });
@@ -2113,7 +2114,7 @@ setInterval(() => {
 		const app = harness({ timeoutPolicy: { idleMs: 120, maxMs: 270 } });
 		const startedAt = Date.now();
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
 			/Subagent timed out.*without a recognized Pi event/,
 		);
 		assert.ok(Date.now() - startedAt < 600, "idle timeout escalation exceeded the maximum runtime");
@@ -2136,7 +2137,7 @@ setInterval(() => {}, 1_000);
 		const app = harness();
 		assert.equal(app.notifications.length, 0);
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
 			/Subagent timed out.*without a recognized Pi event/,
 		);
 	});
@@ -2167,7 +2168,7 @@ setTimeout(() => {
 		const timeoutPolicy = { idleMs: 800, maxMs: 1_500 };
 		const app = harness({ timeoutPolicy });
 		const startedAt = Date.now();
-		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
 		assert.equal(singleOutput(result), "done");
 		assert.ok(Date.now() - startedAt > timeoutPolicy.idleMs, "completion did not outlast the original idle deadline");
 	});
@@ -2184,7 +2185,7 @@ test("workflow transport retains executor rejection Usage when no child result e
 		await writeFile(runner, `console.log(JSON.stringify({ type: "message_update", usage: ${JSON.stringify(observedUsage)} })); setInterval(() => {}, 1_000);`);
 		process.argv[1] = runner;
 		const app = harness({ timeoutPolicy: { idleMs: 500, maxMs: 800 } });
-		const error = await app.tool.execute("usage-rejection", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
+		const error = await app.tool.execute("usage-rejection", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected workflow failure"),
 			(reason) => reason,
 		);
@@ -2207,7 +2208,7 @@ setInterval(() => {}, 1_000);
 `);
 		process.argv[1] = runner;
 		const app = harness();
-		const error = await app.tool.execute("turn-limit", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
+		const error = await app.tool.execute("turn-limit", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected workflow failure"),
 			(reason) => reason,
 		);
@@ -2226,7 +2227,7 @@ setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { 
 		process.argv[1] = runner;
 		const app = harness({ timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
 			/Subagent reached its maximum runtime/,
 		);
 	});
@@ -2256,7 +2257,7 @@ setInterval(() => {}, 1_000);
 		process.argv[1] = runner;
 		const app = harness({ ui: true, timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
 		const abort = new AbortController();
-		const running = app.tool.execute("call-1", { role: "worker", task: "work" }, abort.signal, undefined, app.ctx);
+		const running = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, abort.signal, undefined, app.ctx);
 		await waitFor(() => existsSync(cleanupStarted));
 		abort.abort();
 		await assert.rejects(running, (error: unknown) => error instanceof Error && error.name === "AbortError");
@@ -2288,7 +2289,7 @@ setInterval(() => {}, 1_000);
 		process.argv[1] = runner;
 		const app = harness({ ui: true });
 		const abort = new AbortController();
-		const running = app.tool.execute("call-1", { role: "worker", task: "work" }, abort.signal, undefined, app.ctx);
+		const running = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, abort.signal, undefined, app.ctx);
 		await waitFor(() => existsSync(started));
 		abort.abort();
 		await assert.rejects(
@@ -2320,7 +2321,7 @@ const ready = setInterval(() => {
 `);
 		process.argv[1] = runner;
 		const app = harness({ timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
-		const result = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
 		assert.equal(singleOutput(result), "done");
 		await new Promise((resolve) => setTimeout(resolve, 400));
 		await assert.rejects(readFile(marker), /ENOENT/);
@@ -2344,7 +2345,7 @@ Do bounded work.
 		process.argv[1] = runner;
 		const app = harness();
 		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
 			/Subagent JSON event exceeds/,
 		);
 	});
@@ -2366,7 +2367,7 @@ Do bounded work.
 		await writeFile(runner, `process.stderr.write("e".repeat(60 * 1024)); process.exit(2);\n`);
 		process.argv[1] = runner;
 		const app = harness({ ui: true });
-		const error = await app.tool.execute("call-1", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
+		const error = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
 			() => assert.fail("expected workflow failure"),
 			(reason) => reason,
 		);
@@ -2387,7 +2388,7 @@ test("background delegation returns one bounded workflow acknowledgement and res
 
 		const app = harness();
 		const result = await app.tool.execute(
-			"call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx,
+			"call-1", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx,
 		);
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
 		assert.match(result.content[0].text, /Background workflow bg-\d+-[a-z0-9]+ accepted/);
@@ -2412,7 +2413,7 @@ test("active background delivery failure issues one bounded UI error", async () 
 		const app = harness({ ui: true, sendMessageError: new Error("delivery ".repeat(10_000)) });
 		app.handlers.get("session_start")?.({}, app.ctx);
 		const acknowledgement = await app.tool.execute(
-			"delivery-failure", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx,
+			"delivery-failure", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx,
 		);
 		await waitFor(() => app.notifications.some(({ type }) => type === "error"));
 		const errors = app.notifications.filter(({ type }) => type === "error");
@@ -2433,7 +2434,7 @@ test("background worktree report survives capped child output", async (t) => {
 		process.argv[1] = runner;
 
 		const app = harness({ cwd: repo });
-		await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx);
 		await waitFor(() => app.sentMessages.length === 1);
 		const message = app.sentMessages[0]!.message;
 		assert.match(message.content, /\[Output truncated: \d+ bytes omitted\]$/);
@@ -2461,7 +2462,7 @@ test("session shutdown promptly reports preserved isolated setup failures", asyn
 		process.argv[1] = runner;
 
 		const app = harness({ cwd: repo });
-		const started = await app.tool.execute("call-1", { role: "worker", task: "work", background: true }, undefined, undefined, app.ctx);
+		const started = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx);
 		const name = childName("call-1:single:0");
 		const path = join(await realpath(repo), ".worktrees", name);
 		const branch = `pi-subagent/${name}`;
@@ -2501,7 +2502,7 @@ setInterval(() => {}, 1_000);
 		const app = harness({ cwd: repo, timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
 		const tasks = ["one", "two", "three"];
 		const started = await app.tool.execute("shutdown", {
-			tasks: tasks.map((task) => ({ role: "worker", task })),
+			tasks: tasks.map((task) => ({ role: "worker", name: "Test delegated task", task })),
 			background: true,
 		}, undefined, undefined, app.ctx);
 		const root = await realpath(repo);
@@ -2543,7 +2544,7 @@ setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 
 
 		const app = harness({ timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
 		const result = await app.tool.execute(
-			"call-1", { role: "worker", task: "long work", background: true }, undefined, undefined, app.ctx,
+			"call-1", { role: "worker", name: "Test delegated task", task: "long work", background: true }, undefined, undefined, app.ctx,
 		);
 		assert.match(result.content[0]!.text, /accepted/);
 		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
@@ -2563,11 +2564,11 @@ test("background tasks deliver again after a new session starts", async () => {
 
 		const app = harness();
 		// First session: launch, shut down (task aborts, epoch advances).
-		await app.tool.execute("call-1", { role: "worker", task: "old", background: true }, undefined, undefined, app.ctx);
+		await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "old", background: true }, undefined, undefined, app.ctx);
 		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 		app.handlers.get("session_start")?.({}, app.ctx);
 		// Second session: a fresh task must deliver normally.
-		const result = await app.tool.execute("call-2", { role: "worker", task: "new", background: true }, undefined, undefined, app.ctx);
+		const result = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "new", background: true }, undefined, undefined, app.ctx);
 		assert.match(result.content[0]!.text, /accepted/);
 		await waitFor(() => app.sentMessages.length === 1);
 		assert.match(app.sentMessages[0]!.message.content, /succeeded/);

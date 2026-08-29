@@ -23,6 +23,7 @@ A call selects exactly one of these shapes. Unknown properties and nested modes 
 ```json
 {
   "role": "user-configured-role",
+  "name": "Inspect authentication flow",
   "task": "One bounded task packet",
   "modelClass": "balanced",
   "thinking": "high",
@@ -37,8 +38,8 @@ Single mode puts one delegation's fields at the top level.
 ```json
 {
   "tasks": [
-    { "role": "user-role-a", "task": "Inspect subsystem A", "modelClass": "fast" },
-    { "role": "user-role-b", "task": "Inspect subsystem B", "model": "provider/model-id" }
+    { "role": "user-role-a", "name": "Inspect subsystem A", "task": "Inspect subsystem A", "modelClass": "fast" },
+    { "role": "user-role-b", "name": "Inspect subsystem B", "task": "Inspect subsystem B", "model": "provider/model-id" }
   ],
   "background": false
 }
@@ -51,9 +52,9 @@ Single mode puts one delegation's fields at the top level.
 ```json
 {
   "chain": [
-    { "role": "user-role-a", "task": "Collect evidence" },
-    { "role": "user-role-b", "task": "Review this evidence:\n{previous}" },
-    { "role": "user-role-c", "task": "Summarize this review:\n{previous}" }
+    { "role": "user-role-a", "name": "Collect evidence", "task": "Collect evidence" },
+    { "role": "user-role-b", "name": "Review collected evidence", "task": "Review this evidence:\n{previous}" },
+    { "role": "user-role-c", "name": "Summarize evidence review", "task": "Summarize this review:\n{previous}" }
   ],
   "background": false
 }
@@ -66,12 +67,13 @@ Single mode puts one delegation's fields at the top level.
 | Field | Required | Contract |
 | --- | --- | --- |
 | `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory or a package-shipped built-in (`implementer`, `reviewer`); a same-named user file overrides the built-in. |
+| `name` | yes | Main-supplied short task name: about five words and fewer than 30 characters. |
 | `task` | yes | Non-empty bounded task packet. |
 | `model` | no | Designated `provider/modelId`; takes precedence over `modelClass`, and Main supplies it only for an explicit user override. |
 | `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; Main normally chooses `fast`, may choose `balanced` upfront for obvious complexity, and omission uses pi-subagent's local Model Task declaration. |
 | `thinking` | no | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; Main supplies it only for an explicit user override. Route selection skips models that cannot honor it. |
 
-Those five fields are the complete delegation object. The direct-model/thinking rule is Main-facing policy only: the runtime adds no provenance tracking or enforcement. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
+Those six fields are the complete delegation object. The direct-model/thinking rule is Main-facing policy only: the runtime adds no provenance tracking or enforcement. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
 
 ### Background, failures, and transport
 
@@ -83,7 +85,7 @@ All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transp
 
 ## `delegate_flow`
 
-`delegate_flow({ units })` accepts 1–8 units with unique non-empty `id` and `task`, one or more direct `{command, args}` validation commands, optional `modelClass`, and optional non-empty `review` text. `delegate_flow_continue({ guidance, modelClass? })` is available only for the one blocked unit of the active Flow.
+`delegate_flow({ units })` accepts 1–8 units with unique non-empty `id`, a required Main-supplied short `name` (about five words and fewer than 30 characters), a non-empty `task`, one or more direct `{command, args}` validation commands, optional `modelClass`, and optional non-empty `review` text. `delegate_flow_continue({ guidance, modelClass? })` is available only for the one blocked unit of the active Flow.
 
 A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. Omitted unit classes use pi-subagent's local `pi-subagent/delegateTask` declaration (default `fast`); a selected class resolves through its existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
 

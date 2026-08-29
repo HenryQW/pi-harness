@@ -6,6 +6,7 @@ import { Check } from "typebox/value";
 export const MAX_WORKFLOW_ENTRIES = 8;
 
 const RoleSchema = Type.String({ minLength: 1, description: "Configured Subagent role name" });
+const NameSchema = Type.String({ minLength: 1, maxLength: 29, description: "Short descriptive task name, about five words and fewer than 30 characters" });
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
 const ModelSchema = Type.String({ minLength: 1, description: "Designated model as provider/modelId; overrides modelClass" });
 const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
@@ -13,6 +14,7 @@ const ThinkingSchema = StringEnum(THINKING_LEVELS, { description: "Task thinking
 
 export const DelegationSchema = Type.Object({
 	role: RoleSchema,
+	name: NameSchema,
 	task: TaskSchema,
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -21,6 +23,7 @@ export const DelegationSchema = Type.Object({
 
 export const WorkflowSchema = Type.Object({
 	role: Type.Optional(RoleSchema),
+	name: Type.Optional(NameSchema),
 	task: Type.Optional(TaskSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -38,7 +41,7 @@ export const WorkflowSchema = Type.Object({
 	background: Type.Optional(Type.Boolean({ description: "Run the selected workflow without blocking" })),
 }, {
 	additionalProperties: false,
-	description: "Exactly one mode: role and task, tasks, or chain",
+	description: "Exactly one mode: role, name, and task; tasks; or chain",
 });
 
 export type Delegation = Static<typeof DelegationSchema>;
@@ -50,7 +53,7 @@ export type ParsedWorkflow =
 
 type WorkflowInput = Static<typeof WorkflowSchema>;
 
-const DELEGATION_KEYS = ["role", "task", "model", "modelClass", "thinking"] as const;
+const DELEGATION_KEYS = ["role", "name", "task", "model", "modelClass", "thinking"] as const;
 
 function text(value: string, path: string): string {
 	const normalized = value.trim();
@@ -61,6 +64,7 @@ function text(value: string, path: string): string {
 function normalizeDelegation(value: Delegation, path: string): Delegation {
 	return {
 		role: text(value.role, `${path}.role`),
+		name: text(value.name, `${path}.name`),
 		task: text(value.task, `${path}.task`),
 		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
@@ -69,7 +73,7 @@ function normalizeDelegation(value: Delegation, path: string): Delegation {
 }
 
 function hasDelegation(value: WorkflowInput): value is WorkflowInput & Delegation {
-	return Object.hasOwn(value, "role") && Object.hasOwn(value, "task");
+	return Object.hasOwn(value, "role") && Object.hasOwn(value, "name") && Object.hasOwn(value, "task");
 }
 
 function workflowMode(value: unknown): WorkflowMode | undefined {
@@ -78,7 +82,7 @@ function workflowMode(value: unknown): WorkflowMode | undefined {
 	const parallel = Object.hasOwn(value, "tasks");
 	const chain = Object.hasOwn(value, "chain");
 	if (Number(single) + Number(parallel) + Number(chain) !== 1) {
-		throw new Error("workflow must select exactly one mode: role and task, tasks, or chain.");
+		throw new Error("workflow must select exactly one mode: role, name, and task; tasks; or chain.");
 	}
 	return single ? "single" : parallel ? "parallel" : "chain";
 }
@@ -86,11 +90,11 @@ function workflowMode(value: unknown): WorkflowMode | undefined {
 export function parseWorkflow(value: unknown): ParsedWorkflow {
 	const mode = workflowMode(value);
 	if (!Check(WorkflowSchema, value)) throw new Error("workflow must match the declared tool schema.");
-	if (!mode) throw new Error("workflow must select exactly one mode: role and task, tasks, or chain.");
+	if (!mode) throw new Error("workflow must select exactly one mode: role, name, and task; tasks; or chain.");
 	const input = value;
 	const background = input.background ?? false;
 	if (mode === "single") {
-		if (!hasDelegation(input)) throw new Error("workflow requires both role and task.");
+		if (!hasDelegation(input)) throw new Error("workflow requires role, name, and task.");
 		return { mode, background, delegations: [normalizeDelegation(input, "workflow")] };
 	}
 	if (mode === "parallel") return {

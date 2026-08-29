@@ -11,7 +11,7 @@ import {
 	type DelegationExecution,
 } from "../extensions/workflow.ts";
 
-const delegation = (task = "work") => ({ role: "worker", task });
+const delegation = (task = "work") => ({ role: "worker", name: "Test work", task });
 const succeeded = <T>(assistantOutput: string, result: T): DelegationExecution<T> => ({ ok: true, assistantOutput, result });
 const failed = <T>(result: T): DelegationExecution<T> => ({ ok: false, result });
 
@@ -29,7 +29,8 @@ test("schemas expose strict delegation fields and top-level workflow modes", () 
 	const delegationSchema = DelegationSchema as any;
 	const workflowSchema = WorkflowSchema as any;
 	assert.equal(delegationSchema.additionalProperties, false);
-	assert.deepEqual(Object.keys(delegationSchema.properties), ["role", "task", "model", "modelClass", "thinking"]);
+	assert.deepEqual(Object.keys(delegationSchema.properties), ["role", "name", "task", "model", "modelClass", "thinking"]);
+	assert.equal(delegationSchema.properties.name.maxLength, 29);
 	assert.equal(workflowSchema.additionalProperties, false);
 	assert.ok("background" in workflowSchema.properties);
 	assert.equal("background" in delegationSchema.properties, false);
@@ -42,6 +43,7 @@ test("schemas expose strict delegation fields and top-level workflow modes", () 
 test("parses and normalizes each explicit workflow mode", () => {
 	assert.deepEqual(parseWorkflow({
 		role: " worker ",
+		name: " Inspect auth flow ",
 		task: " inspect ",
 		model: " provider/model ",
 		modelClass: "fast",
@@ -52,6 +54,7 @@ test("parses and normalizes each explicit workflow mode", () => {
 		background: true,
 		delegations: [{
 			role: "worker",
+			name: "Inspect auth flow",
 			task: "inspect",
 			model: "provider/model",
 			modelClass: "fast",
@@ -101,6 +104,7 @@ test("rejects every workflow shape boundary at runtime", () => {
 		{ chain: [{ ...delegation(), tasks: [delegation()] }] },
 		{ tasks: [{ ...delegation(), chain: [delegation()] }] },
 		{ tasks: [{ role: "worker" }] },
+		{ tasks: [{ role: "worker", task: "work" }] },
 	];
 	for (const value of schemaInvalid) assert.throws(() => parseWorkflow(value), /declared tool schema/);
 
@@ -114,19 +118,23 @@ test("rejects every workflow shape boundary at runtime", () => {
 	]) {
 		assert.throws(() => parseWorkflow(value), /exactly one mode/);
 	}
-	for (const value of [{ role: "worker" }, { task: "work" }, { model: "provider/model" }]) {
-		assert.throws(() => parseWorkflow(value), /requires both role and task/);
+	for (const value of [{ role: "worker" }, { name: "Test work" }, { task: "work" }, { model: "provider/model" }, { role: "worker", task: "work" }]) {
+		assert.throws(() => parseWorkflow(value), /requires role, name, and task/);
 	}
 });
 
 test("rejects empty, NUL, and unknown delegation values in single and array modes", () => {
 	const invalidDelegations: Array<[string, Record<string, unknown>]> = [
-		["empty role", { role: "", task: "work" }],
-		["blank role", { role: " \n ", task: "work" }],
-		["NUL role", { role: "work\0er", task: "work" }],
-		["empty task", { role: "worker", task: "" }],
-		["blank task", { role: "worker", task: "\t" }],
-		["NUL task", { role: "worker", task: "wo\0rk" }],
+		["empty role", { ...delegation(), role: "" }],
+		["blank role", { ...delegation(), role: " \n " }],
+		["NUL role", { ...delegation(), role: "work\0er" }],
+		["empty name", { ...delegation(), name: "" }],
+		["blank name", { ...delegation(), name: "\t" }],
+		["NUL name", { ...delegation(), name: "wo\0rk" }],
+		["30-character name", { ...delegation(), name: "x".repeat(30) }],
+		["empty task", { ...delegation(), task: "" }],
+		["blank task", { ...delegation(), task: "\t" }],
+		["NUL task", { ...delegation(), task: "wo\0rk" }],
 		["empty model", { ...delegation(), model: "" }],
 		["NUL model", { ...delegation(), model: "p\0m" }],
 		["unknown model class", { ...delegation(), modelClass: "slow" }],

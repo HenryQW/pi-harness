@@ -38,22 +38,22 @@ Select exactly one shape:
 
 ```text
 // Single
-{ role, task, model?, modelClass?, thinking?, background? }
+{ role, name, task, model?, modelClass?, thinking?, background? }
 
 // Parallel: 1–8 independent delegations
-{ tasks: [{ role, task, model?, modelClass?, thinking? }], background? }
+{ tasks: [{ role, name, task, model?, modelClass?, thinking? }], background? }
 
 // Chain: 1–8 dependent delegations
-{ chain: [{ role, task, model?, modelClass?, thinking? }], background? }
+{ chain: [{ role, name, task, model?, modelClass?, thinking? }], background? }
 ```
 
-`model` is `provider/modelId` and overrides `modelClass`. Main populates `model` and `thinking` only for an explicit user override; otherwise it chooses only `modelClass`—`fast` normally, or `balanced` upfront for obviously complex work. This is Main policy only: the runtime records no provenance and does not enforce it. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`; omission uses pi-subagent's local `pi-subagent/delegateTask` Model Task declaration (default `fast`), which shared config can explicitly override. `background` applies to the entire selected mode and is never a per-delegation field.
+Main supplies every delegation's required `name`: a short description of about five words and fewer than 30 characters. `model` is `provider/modelId` and overrides `modelClass`. Main populates `model` and `thinking` only for an explicit user override; otherwise it chooses only `modelClass`—`fast` normally, or `balanced` upfront for obviously complex work. This is Main policy only: the runtime records no provenance and does not enforce it. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`; omission uses pi-subagent's local `pi-subagent/delegateTask` Model Task declaration (default `fast`), which shared config can explicitly override. `background` applies to the entire selected mode and is never a per-delegation field.
 
 Parallel mode starts entries concurrently, waits for every entry, and reports them in input order. Chain mode is sequential and fail-fast; every literal `{previous}` receives only the immediately preceding successful assistant output. Foreground failures throw after retaining bounded sibling and recovery evidence. One tool call has one aggregate 50 KiB Main-visible transport cap, not 50 KiB per child.
 
 Background workflows are session-scoped. Session shutdown or reload aborts them and may deliver only recoverable-work evidence or no follow-up message.
 
-The transient status widget renders one line per child with: status glyph, role, task summary, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, model, thinking level, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: when total items are six or fewer, all child rows render; above six, five child rows plus one status-aware overflow line render (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. It is separate from Pi's built-in tool-execution block.
+The transient status widget renders one line per child with: status glyph, bracketed uppercase role initial (`[I]` for `implementer`, `[R]` for `reviewer`, and likewise for custom Roles), Main-supplied short name, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, compact `model·thinking` pair, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: when total items are six or fewer, all child rows render; above six, five child rows plus one status-aware overflow line render (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. It is separate from Pi's built-in tool-execution block.
 
 Each delegation resolves its own Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
 
@@ -61,10 +61,10 @@ See [Orchestration, isolation, and the public API](./docs/orchestration.md) for 
 
 ### `delegate_flow`
 
-Use Flow only for independent, commuting Git changes. It accepts 1–8 uniquely identified units, each with a bounded task, optional `modelClass`, direct command/argument validation gate, and optional non-empty `review` judgment criterion:
+Use Flow only for independent, commuting Git changes. It accepts 1–8 uniquely identified units, each with a required Main-supplied short `name`, bounded task, optional `modelClass`, direct command/argument validation gate, and optional non-empty `review` judgment criterion:
 
 ```text
-delegate_flow({ units: [{ id, task, modelClass?, validation: [{ command, args }], review? }] })
+delegate_flow({ units: [{ id, name, task, modelClass?, validation: [{ command, args }], review? }] })
 delegate_flow_continue({ guidance, modelClass? })
 ```
 
@@ -81,7 +81,7 @@ A rebase that drops all unit commits is a no-op: Flow validates it, skips Review
 | Aspect | Behavior |
 | --- | --- |
 | Tool-execution block | Pi's built-in renderer: live updates and expandable call/result content |
-| Widget rows | One line per child: glyph, role, task, activity, metrics |
+| Widget rows | One line per child: glyph, `[role initial]`, short name, activity, metrics |
 | Ordering | Active-first stable (working first, then insertion order) |
 | Line cap | 6 physical lines max (≤6 items: all child rows; >6 items: 5 rows + 1 status-aware overflow) |
 | Terminal retention | Active rows persist; terminal rows clear on next user input |

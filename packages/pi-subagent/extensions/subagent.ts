@@ -84,7 +84,7 @@ type WidgetItem = {
 	role: string;
 	model: string;
 	thinkingLevel: string;
-	task: string;
+	name: string;
 	tokens: number;
 	startedAt: number;
 	status: WidgetStatus;
@@ -96,8 +96,9 @@ type WidgetItem = {
 	activityOrder: number;
 };
 
-function taskSummary(task: string): string {
-	return Array.from(task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ")).slice(0, 160).join("");
+function roleBadge(role: string): string {
+	const initial = Array.from(role)[0]!.toUpperCase();
+	return `[${Array.from(initial)[0]!}]`;
 }
 
 function formatTokens(tokens: number): string {
@@ -146,8 +147,7 @@ function activityMetrics(item: WidgetItem, now: number): string {
 		...(item.startedToolCount === 0
 			? []
 			: [`${item.startedToolCount} tool${item.startedToolCount === 1 ? "" : "s"}`]),
-		item.model,
-		item.thinkingLevel,
+		`${item.model}·${item.thinkingLevel}`,
 		`${formatTokens(item.tokens)} tok`,
 		formatDuration((item.finishedAt ?? now) - item.startedAt),
 	].join(" · ");
@@ -165,7 +165,7 @@ function renderWidgetRows(
 	if (!visible.length) return [];
 	const hidden = ordered.slice(visible.length);
 	const lines = visible.map((item) => truncateToWidth(
-		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${theme.fg("text", item.task)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
+		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", item.name)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
 		width,
 	));
 	if (hidden.length) {
@@ -307,7 +307,7 @@ export default function subagentExtension(
 		role: string,
 		model: string,
 		thinkingLevel: string | undefined,
-		task: string,
+		name: string,
 		ctx: ExtensionContext,
 	) => {
 		if (!ctx.hasUI) return;
@@ -320,10 +320,10 @@ export default function subagentExtension(
 			}
 		}
 		widgetItems.set(id, {
-			role,
+			role: roleBadge(role),
 			model,
 			thinkingLevel: thinkingLevel ?? "default",
-			task: taskSummary(task),
+			name,
 			tokens: 0,
 			startedAt: Date.now(),
 			status: "working",
@@ -528,8 +528,8 @@ export default function subagentExtension(
 		description: `Delegate one selected single, parallel, or chain workflow of bounded tasks to isolated Pi Subagents. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
 		promptGuidelines: [
-			"Call delegate_task with exactly one mode: role+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent, commuting outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
-			"Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.",
+			"Call delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent, commuting outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
+			"Every delegate_task entry must include a short descriptive name of about five words and fewer than 30 characters, then own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.",
 			"For each delegate_task entry, populate model and thinking only for an explicit user override; otherwise choose only modelClass: fast normally, or balanced upfront for obviously complex work. This is Main policy, not runtime enforcement.",
 			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
@@ -655,7 +655,7 @@ export default function subagentExtension(
 								if (role.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
-								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.task, ctx);
+								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.name, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
 								return {

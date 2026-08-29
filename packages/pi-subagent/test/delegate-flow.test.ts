@@ -188,7 +188,7 @@ function continueTool(app: ReturnType<typeof harness>): Tool {
 }
 
 const validation = (code = "process.exit(0)") => [{ command: process.execPath, args: ["-e", code] }];
-const unit = (id: string, task = `Implement ${id}`, gate = validation()) => ({ id, task, validation: gate });
+const unit = (id: string, task = `Implement ${id}`, gate = validation()) => ({ id, name: `Implement ${id}`.slice(0, 29), task, validation: gate });
 const reviewedUnit = (id: string, task = `Implement ${id}`, gate = validation()) => ({
 	...unit(id, task, gate),
 	review: "Confirm the change meets the stated requirements.",
@@ -246,19 +246,21 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	assert.equal((DelegateFlowSchema as any).properties.units.maxItems, 8);
 	assert.equal((DelegateFlowContinueSchema as any).additionalProperties, false);
 	assert.deepEqual(parseDelegateFlow({ units: [{
-		id: " one ", task: " work ", validation: [{ command: " node ", args: ["", "x"] }], modelClass: "fast", review: " use judgment ",
+		id: " one ", name: " Implement auth flow ", task: " work ", validation: [{ command: " node ", args: ["", "x"] }], modelClass: "fast", review: " use judgment ",
 	}] }), {
-		units: [{ id: "one", task: "work", validation: [{ command: "node", args: ["", "x"] }], modelClass: "fast", review: "use judgment" }],
+		units: [{ id: "one", name: "Implement auth flow", task: "work", validation: [{ command: "node", args: ["", "x"] }], modelClass: "fast", review: "use judgment" }],
 	});
 	assert.deepEqual(parseDelegateFlowContinue({ guidance: " fix it ", modelClass: "balanced" }), { guidance: "fix it", modelClass: "balanced" });
 	for (const value of [
 		{},
 		{ units: [] },
 		{ units: Array.from({ length: 9 }, (_, index) => unit(String(index))) },
-		{ units: [{ id: "x", task: "work", validation: [] }] },
+		{ units: [{ id: "x", name: "Test work", task: "work", validation: [] }] },
+		{ units: [{ id: "x", task: "work", validation: validation() }] },
+		{ units: [{ ...unit("x"), name: "x".repeat(30) }] },
 		{ units: [{ ...unit("x"), extra: true }] },
-		{ units: [{ id: "x", task: "work", validation: [{ command: "node", args: [], extra: true }] }] },
-		{ units: [{ id: "x", task: "work", validation: [{ command: "node", args: ["bad\0arg"] }] }] },
+		{ units: [{ id: "x", name: "Test work", task: "work", validation: [{ command: "node", args: [], extra: true }] }] },
+		{ units: [{ id: "x", name: "Test work", task: "work", validation: [{ command: "node", args: ["bad\0arg"] }] }] },
 		{ units: [{ ...unit("x"), modelClass: "slow" }] },
 		{ units: [{ ...unit("x"), review: " \n " }] },
 		{ units: [{ ...unit("x"), review: "bad\0review" }] },
@@ -709,8 +711,9 @@ test("one continuation replaces the blocked Unit class in the same worktree and 
 	);
 });
 
-test("Flow widgets use the original unit task for implementer, reviewer, and repair", async (t) => {
+test("Flow widgets use the Main-supplied unit name for implementer, reviewer, and repair", async (t) => {
 	const repo = await repository(t);
+	const name = "Fix Flow widget labels";
 	const task = "Show the original unit task in the Flow widget";
 	let implementationRuns = 0;
 	const app = harness(repo, async (prepared) => {
@@ -727,18 +730,18 @@ test("Flow widgets use the original unit task for implementer, reviewer, and rep
 		return success();
 	});
 
-	const blocked = await flowTool(app).execute("widget-label", { units: [reviewedUnit("widget", task)] }, undefined, undefined, app.ctx);
+	const blocked = await flowTool(app).execute("widget-label", { units: [{ ...reviewedUnit("widget", task), name }] }, undefined, undefined, app.ctx);
 	assert.equal(blocked.details.outcome, "blocked");
 	const completed = await continueTool(app).execute("widget-label-continue", { guidance: "Commit the fix" }, undefined, undefined, app.ctx);
 	assert.equal(completed.details.outcome, "completed");
 
 	const starts = app.widgets.filter(({ action }) => action === "start");
-	assert.deepEqual(starts.map(({ role, task: widgetTask }) => [role, widgetTask]), [
-		["implementer", task],
-		["implementer", task],
-		["reviewer", task],
+	assert.deepEqual(starts.map(({ role, task: widgetName }) => [role, widgetName]), [
+		["implementer", name],
+		["implementer", name],
+		["reviewer", name],
 	]);
-	for (const { task: widgetTask } of starts) assert.doesNotMatch(widgetTask!, /^(?:Flow Unit|Review Flow Unit|Repair Flow Unit)/);
+	for (const { task: widgetName } of starts) assert.doesNotMatch(widgetName!, /^(?:Flow Unit|Review Flow Unit|Repair Flow Unit)/);
 });
 
 test("Flow wires activity to each child widget without changing prompts", async (t) => {
