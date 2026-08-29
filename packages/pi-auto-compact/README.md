@@ -40,7 +40,7 @@ Restart Pi after install or settings changes. Trusted project settings in `.pi/s
 | --- | --- | --- |
 | `/auto-compact` | command | Set the compaction threshold. |
 
-Refuses to activate unless effective `compaction.enabled` is `false`. Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`. `pi-auto-compact/autoCompact` defaults to the `fast` profile. Tries the assigned profile primary, then fallback; if neither route works, the current session model still compacts. After mid-task compaction, a follow-up message continues the current task.
+Refuses to activate unless effective `compaction.enabled` is `false`. Checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`. Its consumer-owned `pi-auto-compact/autoCompact` task defaults to `fast`. Tries the effective profile primary, then fallback; if neither route works, the current session model still compacts. After mid-task compaction, a follow-up message continues the current task.
 
 ## Config
 
@@ -58,4 +58,4 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact.json`
 
 Unknown fields are ignored (legacy model fields are obsolete). `/auto-compact` writes this file. A missing file uses the default; a malformed or invalid file fails visibly at session start, falls back to 50%, and stays unchanged.
 
-Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. Task `pi-auto-compact/autoCompact` defaults to profile `fast`. Malformed shared task-model config is reported and left unchanged; compaction then uses the current session model.
+Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`; a task entry is an explicit user override. Malformed shared task-model config is reported and left unchanged; compaction then uses the current session model.

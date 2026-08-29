@@ -31,3 +31,5 @@ pi install npm:@henryqw/pi-ask-question
 ```
 
 Supply one to three options in preference order. UI marks the first `(Recommended)` and adds `Something else.`, which opens a text input for a custom answer. Empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions return an error. Aborting the tool closes the pending question.
+
+Extensions can reuse the same validated interaction with the `askQuestion(params, ctx, signal)` package export; it returns the tool's answer details without registering another UI flow.

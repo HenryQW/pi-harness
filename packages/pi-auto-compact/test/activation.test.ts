@@ -19,6 +19,7 @@ function loadExtension(
 ): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
 	autoCompact({
+		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: Handler) {
 			handlers.set(event, handler);
 		},

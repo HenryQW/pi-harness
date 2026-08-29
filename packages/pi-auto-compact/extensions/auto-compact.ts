@@ -11,7 +11,9 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+	registerModelTask,
 	resolveConfiguredTaskRoutes,
+	type ModelTask,
 	type ResolvedTaskRoute,
 	type TaskRouteError,
 } from "@henryqw/pi-task-models";
@@ -30,7 +32,12 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
  */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
-const AUTO_COMPACT_TASK = "pi-auto-compact/autoCompact";
+export const AUTO_COMPACT_TASK = {
+	id: "pi-auto-compact/autoCompact",
+	label: "Auto compaction",
+	purpose: "Compact session context before it is exhausted.",
+	defaultProfile: "fast",
+} as const satisfies ModelTask;
 const configPath = () => join(getAgentDir(), "config", "pi-auto-compact.json");
 
 function isValidThreshold(value: unknown): value is number {
@@ -147,6 +154,7 @@ function hasToolCall(message: AgentMessage): boolean {
 }
 
 export default function (pi: ExtensionAPI) {
+	registerModelTask(pi, AUTO_COMPACT_TASK);
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	// Prevent lifecycle hooks from starting duplicate summaries.

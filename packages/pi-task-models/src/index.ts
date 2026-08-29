@@ -9,12 +9,13 @@ export type ProfileName = (typeof PROFILE_NAMES)[number];
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
-export const DEFAULT_TASK_ASSIGNMENTS = {
-	"pi-herdr-btw/btw": "fast",
-	"pi-herdr-rename/rename": "fast",
-	"pi-auto-compact/autoCompact": "fast",
-	"pi-subagent/delegateTask": "fast",
-} as const satisfies Readonly<Record<string, ProfileName>>;
+/** A consumer-owned independently executed model operation. */
+export type ModelTask = Readonly<{
+	id: string;
+	label: string;
+	purpose: string;
+	defaultProfile: ProfileName;
+}>;
 
 export type TaskModelRoute = {
 	model: string;
@@ -28,6 +29,7 @@ export type TaskModelProfile = {
 
 export type TaskModelsConfig = {
 	profiles: Partial<Record<ProfileName, TaskModelProfile>>;
+	/** Explicit user overrides only; consumer defaults are declared at runtime. */
 	tasks: Record<string, ProfileName>;
 };
 
@@ -38,13 +40,12 @@ export type ResolvedTaskRoute = {
 	thinkingLevel: ThinkingLevel;
 };
 
-export type ActiveTaskPackage = {
-	packageName: string;
-	task: string;
-};
-
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const CONFIG_FILE = "pi-task-models.json";
+const MODEL_TASK_REQUEST_EVENT = "@henryqw/pi-task-models:model-task-request";
+const MODEL_TASK_RESPONSE_EVENT = "@henryqw/pi-task-models:model-task-response";
+const registeredModelTasks = new WeakMap<object, Map<string, ModelTask>>();
+let modelTaskRequestNumber = 0;
 
 export const configPath = (agentDir = getAgentDir()): string => join(agentDir, "config", CONFIG_FILE);
 
@@ -64,6 +65,10 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
 	return Object.keys(value).every((key) => keys.includes(key));
 }
 
+function hasRequiredKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+	return hasOnlyKeys(value, keys) && keys.every((key) => Object.hasOwn(value, key));
+}
+
 function isModelReference(value: unknown): value is string {
 	return typeof value === "string"
 		&& value === value.trim()
@@ -73,6 +78,42 @@ function isModelReference(value: unknown): value is string {
 
 function isTaskId(value: string): boolean {
 	return /^[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9-]*$/.test(value);
+}
+
+function isNonEmptyText(value: unknown): value is string {
+	return typeof value === "string"
+		&& value === value.trim()
+		&& value.length > 0
+		&& !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+}
+
+function parseModelTask(value: unknown): ModelTask | undefined {
+	try {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return;
+		const task = value as Record<string, unknown>;
+		if (
+			!hasRequiredKeys(task, ["id", "label", "purpose", "defaultProfile"])
+			|| !isNonEmptyText(task.id)
+			|| !isTaskId(task.id)
+			|| !isNonEmptyText(task.label)
+			|| !isNonEmptyText(task.purpose)
+			|| !isProfileName(task.defaultProfile)
+		) return;
+		return {
+			id: task.id,
+			label: task.label,
+			purpose: task.purpose,
+			defaultProfile: task.defaultProfile,
+		};
+	} catch {
+		return;
+	}
+}
+
+function validatedModelTask(value: unknown): ModelTask {
+	const task = parseModelTask(value);
+	if (!task) throw new Error("Model Task declaration is invalid.");
+	return task;
 }
 
 function isTaskRoute(value: unknown): value is TaskModelRoute {
@@ -110,7 +151,7 @@ function parseConfig(value: unknown): TaskModelsConfig {
 	const record = value as Record<string, unknown>;
 	if (!hasOnlyKeys(record, ["profiles", "tasks"])) throw new Error("Config contains unknown settings.");
 	const profiles: TaskModelsConfig["profiles"] = {};
-	const tasks: Record<string, ProfileName> = { ...DEFAULT_TASK_ASSIGNMENTS };
+	const tasks: Record<string, ProfileName> = {};
 
 	if (record.profiles !== undefined) {
 		if (!record.profiles || typeof record.profiles !== "object" || Array.isArray(record.profiles)) {
@@ -147,7 +188,7 @@ export function readTaskModelsConfig(agentDir = getAgentDir()): TaskModelsConfig
 		return parseConfig(value);
 	} catch (error) {
 		if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-			return { profiles: {}, tasks: { ...DEFAULT_TASK_ASSIGNMENTS } };
+			return { profiles: {}, tasks: {} };
 		}
 		throw error;
 	}
@@ -255,20 +296,20 @@ export function resolveTaskModelRoute(
 
 export function resolveConfiguredTaskRoutes(
 	ctx: ExtensionContext,
-	task: string,
+	task: ModelTask,
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute[] {
+	const declaration = validatedModelTask(task);
 	let config: TaskModelsConfig;
 	try {
 		config = readTaskModelsConfig(agentDir);
 	} catch {
 		throw taskRouteError("config-read", "Couldn't read task model config. Run /task-models.");
 	}
-	const profileName = config.tasks[task];
-	if (!profileName) throw taskRouteError("task-unassigned", `Task ${task} is not assigned to a profile. Run /task-models.`);
+	const profileName = config.tasks[declaration.id] ?? declaration.defaultProfile;
 	const profile = config.profiles[profileName];
-	if (!profile) throw taskRouteError("profile-missing", `Task ${task} profile ${profileName} is not configured. Run /task-models.`, profileName);
+	if (!profile) throw taskRouteError("profile-missing", `Task ${declaration.id} profile ${profileName} is not configured. Run /task-models.`, profileName);
 	const routes: ResolvedTaskRoute[] = [];
 	for (const route of orderedProfileRoutes(profile)) {
 		const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
@@ -277,7 +318,7 @@ export function resolveConfiguredTaskRoutes(
 	if (!routes.length) {
 		throw taskRouteError(
 			"no-route",
-			`Task ${task} profile ${profileName} has no available route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`,
+			`Task ${declaration.id} profile ${profileName} has no available route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`,
 			profileName,
 		);
 	}
@@ -285,7 +326,7 @@ export function resolveConfiguredTaskRoutes(
 }
 
 // Machine-readable cause so consumers can render their own user-facing wording.
-export type TaskRouteErrorCode = "config-read" | "task-unassigned" | "profile-missing" | "no-route";
+export type TaskRouteErrorCode = "config-read" | "profile-missing" | "no-route";
 export type TaskRouteError = Error & { taskRouteCode: TaskRouteErrorCode; profileName?: ProfileName };
 
 function taskRouteError(taskRouteCode: TaskRouteErrorCode, message: string, profileName?: ProfileName): TaskRouteError {
@@ -294,7 +335,7 @@ function taskRouteError(taskRouteCode: TaskRouteErrorCode, message: string, prof
 
 export function resolveConfiguredTaskRoute(
 	ctx: ExtensionContext,
-	task: string,
+	task: ModelTask,
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute {
@@ -305,30 +346,81 @@ export function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[
 	return profile.fallback ? [profile.primary, profile.fallback] : [profile.primary];
 }
 
-export function activeTaskPackages(
-	pi: Pick<ExtensionAPI, "getCommands" | "getAllTools">,
-	tasks: Readonly<Record<string, ProfileName>> = DEFAULT_TASK_ASSIGNMENTS,
-): ActiveTaskPackage[] {
-	const sources = [
-		...pi.getCommands().map((command) => command.sourceInfo),
-		...pi.getAllTools().map((tool) => tool.sourceInfo),
-	];
-	return Object.keys(tasks).flatMap((task) => {
-		if (!isTaskId(task)) return [];
-		const packageName = `@henryqw/${task.slice(0, task.indexOf("/"))}`;
-		return sources.some((source) => sourceMatchesPackage(source, packageName))
-			? [{ packageName, task }]
-			: [];
+function sameModelTask(left: ModelTask, right: ModelTask): boolean {
+	return left.id === right.id
+		&& left.label === right.label
+		&& left.purpose === right.purpose
+		&& left.defaultProfile === right.defaultProfile;
+}
+
+type ModelTaskDiscoveryRequest = { requestId: string };
+type ModelTaskDiscoveryResponse = ModelTaskDiscoveryRequest & { task: ModelTask };
+
+function parseModelTaskDiscoveryRequest(value: unknown): ModelTaskDiscoveryRequest | undefined {
+	try {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return;
+		const request = value as Record<string, unknown>;
+		return hasRequiredKeys(request, ["requestId"]) && isNonEmptyText(request.requestId)
+			? { requestId: request.requestId }
+			: undefined;
+	} catch {
+		return;
+	}
+}
+
+function parseModelTaskDiscoveryResponse(value: unknown): ModelTaskDiscoveryResponse | undefined {
+	try {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return;
+		const response = value as Record<string, unknown>;
+		if (!hasRequiredKeys(response, ["requestId", "task"]) || !isNonEmptyText(response.requestId)) return;
+		const task = parseModelTask(response.task);
+		return task ? { requestId: response.requestId, task } : undefined;
+	} catch {
+		return;
+	}
+}
+
+/** Register one consumer-owned declaration for on-demand control-plane discovery. */
+export function registerModelTask(pi: Pick<ExtensionAPI, "events">, declaration: ModelTask): void {
+	const task = validatedModelTask(declaration);
+	let tasks = registeredModelTasks.get(pi);
+	if (!tasks) {
+		tasks = new Map();
+		registeredModelTasks.set(pi, tasks);
+	}
+	const existing = tasks.get(task.id);
+	if (existing) {
+		if (!sameModelTask(existing, task)) throw new Error(`Conflicting Model Task declaration: ${task.id}.`);
+		return;
+	}
+	tasks.set(task.id, task);
+	pi.events.on(MODEL_TASK_REQUEST_EVENT, (payload) => {
+		// Event payloads cross extension boundaries and are not trusted.
+		const request = parseModelTaskDiscoveryRequest(payload);
+		if (!request) return;
+		pi.events.emit(MODEL_TASK_RESPONSE_EVENT, { requestId: request.requestId, task });
 	});
 }
 
-function sourceMatchesPackage(sourceInfo: { source: string; path: string }, packageName: string): boolean {
-	const npmSource = `npm:${packageName}`;
-	if (sourceInfo.source === packageName || sourceInfo.source === npmSource || sourceInfo.source.startsWith(`${npmSource}@`)) return true;
-	const path = sourceInfo.path.replaceAll("\\", "/");
-	const shortName = packageName.split("/").pop();
-	return path.includes(`/node_modules/${packageName}/`)
-		|| Boolean(shortName && path.includes(`/packages/${shortName}/`));
+function discoverModelTasks(pi: Pick<ExtensionAPI, "events">): ModelTask[] {
+	const requestId = `model-task-${++modelTaskRequestNumber}`;
+	const tasks = new Map<string, ModelTask>();
+	const conflicts = new Set<string>();
+	const off = pi.events.on(MODEL_TASK_RESPONSE_EVENT, (payload) => {
+		// Event payloads cross extension boundaries and are not trusted.
+		const response = parseModelTaskDiscoveryResponse(payload);
+		if (!response || response.requestId !== requestId) return;
+		const existing = tasks.get(response.task.id);
+		if (existing && !sameModelTask(existing, response.task)) conflicts.add(response.task.id);
+		else tasks.set(response.task.id, response.task);
+	});
+	try {
+		pi.events.emit(MODEL_TASK_REQUEST_EVENT, { requestId });
+	} finally {
+		off();
+	}
+	if (conflicts.size) throw new Error(`Conflicting Model Task declarations: ${[...conflicts].join(", ")}.`);
+	return [...tasks.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function createTaskModelsExtension(
@@ -365,23 +457,24 @@ export function createTaskModelsExtension(
 					return false;
 				}
 			};
-			const taskOptions = activeTaskPackages(pi, config.tasks).map((entry) => ({
-				entry,
-				label: `${entry.task} · ${config.tasks[entry.task]}`,
-			}));
+			const taskOptions = discoverModelTasks(pi).map((task) => {
+				const profile = config.tasks[task.id] ?? task.defaultProfile;
+				return { task, label: `${task.label} · ${task.id} · ${profile}` };
+			});
 			const selected = await ctx.ui.select("Task models", [
 				...profileOptions.map(({ label }) => label),
 				...taskOptions.map(({ label }) => label),
 			]);
 			if (!selected) return;
 
-			const task = taskOptions.find(({ label }) => label === selected)?.entry;
+			const task = taskOptions.find(({ label }) => label === selected)?.task;
 			if (task) {
-				const profile = await ctx.ui.select(`${task.task} profile`, [...PROFILE_NAMES]);
+				const profile = await ctx.ui.select(`${task.label}: ${task.purpose}`, [...PROFILE_NAMES]);
 				if (!isProfileName(profile)) return;
-				config.tasks[task.task] = profile;
+				if (profile === task.defaultProfile) delete config.tasks[task.id];
+				else config.tasks[task.id] = profile;
 				if (!save()) return;
-				ctx.ui.notify(`${task.task} assigned to ${profile}.`, "info");
+				ctx.ui.notify(`${task.id} assigned to ${profile}.`, "info");
 				return;
 			}
 

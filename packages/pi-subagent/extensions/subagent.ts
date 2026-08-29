@@ -6,6 +6,7 @@ import {
 	availableTaskModels,
 	type ThinkingLevel,
 	modelReference,
+	registerModelTask,
 	resolveAvailableModel,
 	resolveConfiguredTaskRoute,
 	type ResolvedTaskRoute,
@@ -15,6 +16,7 @@ import {
 	capEphemeralSubagentOutput as capOutput,
 	createChildWorktree,
 	createEphemeralSubagentExecutor,
+	DELEGATE_TASK,
 	createRoleLaunch,
 	EphemeralSubagentError,
 	finalizeChildWorktree,
@@ -54,7 +56,6 @@ import {
 	type WorkflowEntry,
 } from "./workflow.ts";
 
-const SUBAGENT_TASK = "pi-subagent/delegateTask";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
@@ -304,6 +305,7 @@ export default function subagentExtension(
 	pi: ExtensionAPI,
 	overrideTimeoutPolicy?: TimeoutPolicy,
 ): void {
+	registerModelTask(pi, DELEGATE_TASK);
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
 	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/pi-subagent.json
@@ -584,7 +586,7 @@ export default function subagentExtension(
 			return createRoleLaunch(pi, launchCtx, {
 				role,
 				route: modelClass === undefined
-					? resolveConfiguredTaskRoute(launchCtx, SUBAGENT_TASK)
+					? resolveConfiguredTaskRoute(launchCtx, DELEGATE_TASK)
 					: resolveTaskRoute(launchCtx, modelClass),
 			});
 		},
@@ -661,7 +663,7 @@ export default function subagentExtension(
 				route: delegation.model !== undefined
 					? resolveDesignatedRoute(launchCtx(), delegation.model, delegation.thinking)
 					: delegation.modelClass === undefined
-						? resolveConfiguredTaskRoute(launchCtx(), SUBAGENT_TASK, undefined, delegation.thinking)
+						? resolveConfiguredTaskRoute(launchCtx(), DELEGATE_TASK, undefined, delegation.thinking)
 						: resolveTaskRoute(launchCtx(), delegation.modelClass, undefined, delegation.thinking),
 			});
 			const notifyMissingSkills = (role: Role, launch: ReturnType<typeof resolveLaunch>) => {

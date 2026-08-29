@@ -11,6 +11,7 @@ import {
 	resolveConfiguredTaskRoute,
 	resolveTaskModelRoute,
 	type AvailableModel,
+	type ModelTask,
 	type ProfileName,
 	type ResolvedTaskRoute,
 	type ThinkingLevel,
@@ -57,6 +58,13 @@ export const CHILD_EXCLUDED_TOOL_NAMES = ["delegate_task", "delegate_flow", "del
 export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");
 const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";
 
+export const DELEGATE_TASK = {
+	id: "pi-subagent/delegateTask",
+	label: "Subagent delegation",
+	purpose: "Launch an isolated Pi subagent.",
+	defaultProfile: "fast",
+} as const satisfies ModelTask;
+
 export interface Role {
 	name: string;
 	description: string;
@@ -87,7 +95,7 @@ export interface CreateRoleLaunchInput {
 }
 
 export interface ResolveRoleLaunchInput extends Omit<CreateRoleLaunchInput, "route"> {
-	taskId: string;
+	task: ModelTask;
 	agentDir?: string;
 }
 
@@ -285,10 +293,9 @@ export function resolveRoleLaunch(
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput,
 ): ResolvedRoleLaunch {
-	const taskId = cleanText(input.taskId, "task ID", "Role launch");
 	return createRoleLaunch(pi, ctx, {
 		...input,
-		route: resolveConfiguredTaskRoute(ctx, taskId, input.agentDir),
+		route: resolveConfiguredTaskRoute(ctx, input.task, input.agentDir),
 	});
 }
 

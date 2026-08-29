@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import askQuestionExtension from "../extensions/ask-question.ts";
+import { askQuestion } from "../src/index.ts";
 
 type Details = { answer: string | null; selectedIndex?: number };
 type RegisteredTool = {
@@ -40,4 +41,30 @@ test("returns the selected source option when display labels would otherwise col
 
 	assert.equal(result.details?.answer, "A (Recommended)");
 	assert.equal(result.details?.selectedIndex, 2);
+});
+
+test("reusable helper has the registered tool's validated interactive behavior", async () => {
+	const params = {
+		question: "Choose one",
+		options: [{ label: "First" }, { label: "Second", description: "Alternative" }],
+	};
+	const context = () => ({
+		mode: "tui",
+		ui: {
+			select: async (_title: string, choices: string[]) => choices[2],
+			input: async () => "  custom answer  ",
+		},
+	}) as unknown as ExtensionContext;
+	const signal = new AbortController().signal;
+
+	const direct = await askQuestion(params, context(), signal);
+	const result = await loadTool().execute("call-2", params, signal, undefined, context());
+
+	assert.deepEqual(result.details, direct);
+	const content = result.content[0];
+	assert.ok(content && content.type === "text");
+	assert.equal(content.text, "User wrote: custom answer");
+
+	const nonInteractive = await askQuestion(params, { mode: "print", ui: {} } as ExtensionContext, signal);
+	assert.equal(nonInteractive.error, "UI not available (running in non-interactive mode)");
 });

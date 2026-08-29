@@ -219,7 +219,12 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 
 	const launch = resolveRoleLaunch(pi, ctx, {
 		role,
-		taskId: "pi-example/review",
+		task: {
+			id: "pi-example/review",
+			label: "Example review",
+			purpose: "Review one requested change.",
+			defaultProfile: "fast",
+		},
 		agentDir,
 		extensions: ["/caller/adapter.ts", "/roles/reviewer.ts"],
 		tools: ["submit", "read"],

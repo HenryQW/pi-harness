@@ -21,5 +21,5 @@ One-way handoff of Side-Thread Transcript plus follow-up prompt to Main. Main ow
 _Avoid_: Merge acknowledgement
 
 **BTW Task Profile**:
-Shared `pi-task-models` route assignment used to choose Side Thread model and thinking level. Defaults to `fast`; launch may use configured fallback before Side Thread starts.
+Consumer-owned Model Task `pi-herdr-btw/btw` defaults to `fast`; shared `pi-task-models` config can explicitly override its route profile. Launch may use configured fallback before Side Thread starts.
 _Avoid_: Package-owned model picker
