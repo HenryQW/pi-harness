@@ -2366,6 +2366,28 @@ test("workflow transport retains executor rejection Usage when no child result e
 	});
 });
 
+test("ordinary delegation turn-limit failure includes retained assistant output", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "pi-subagent.json"), JSON.stringify({ maxTurns: 1 }));
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "turn_start", turnIndex: 0 });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "retained failure evidence" }], stopReason: "toolUse" } });
+event({ type: "turn_start", turnIndex: 1 });
+setInterval(() => {}, 1_000);
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const error = await app.tool.execute("turn-limit", { role: "worker", task: "work" }, undefined, undefined, app.ctx).then(
+			() => assert.fail("expected workflow failure"),
+			(reason) => reason,
+		);
+		assert.ok(error instanceof WorkflowFailureError);
+		assert.match(error.message, /Subagent reached its maximum turn limit of 1\.[\s\S]*retained failure evidence/);
+	});
+});
+
 test("maximum runtime stops a child that keeps emitting Pi events", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);

@@ -92,15 +92,16 @@ A rebase that drops all unit commits is a no-op: Flow validates it, skips Review
 
 pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-subagent/`, which holds two kinds of user-owned configuration: one Markdown file per Role (see [Roles](#roles)) and its own optional JSON file below. Model routing is *not* configured here; children resolve routes through the shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
 
-`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts. All fields are optional; a missing file uses defaults.
+`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and execution budgets. All fields are optional; a missing file uses defaults.
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
 | `maxSubagents` | No | Safe integer ≥ 1 | `5` |
+| `maxTurns` | No | Safe integer ≥ 1 | `50` |
 | `timeout.idleMinutes` | No | Positive number of minutes where minutes × 60 000 ms ≤ 2,147,483,647 | `10` |
 | `timeout.maxMinutes` | No | Positive number within the same ms cap that must be greater than `timeout.idleMinutes`, otherwise the whole `timeout` object falls back to defaults | `30` |
 
-Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session (positive integer; an invalid value prevents the extension from loading, leaving `delegate_task` unavailable).
+Excess children wait FIFO without consuming child timeout. A terminal response on turn 50 succeeds; an attempted continuation starts no model work and rejects with `turn_limit`. Before a continuing turn, the child receives the execution-budget warning once when completed turns reach 80% and once when elapsed time reaches 80% of the maximum runtime; thresholds first reached together produce one combined warning. `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session (positive integer; an invalid value prevents the extension from loading, leaving `delegate_task` unavailable).
 
 This JSON is read leniently: malformed JSON, a non-object root, unknown keys, or invalid values are collected into one warning and the affected settings fall back to defaults; the file is never rewritten.
 
@@ -153,6 +154,6 @@ A Role explicitly owns base tools, extensions, named Skills, instructions, and o
 
 ## Library API
 
-The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers. The ephemeral executor is for code already running inside active Pi; it does not provide standalone Node.js Pi discovery or launch support. After Pi itself exits, it drains inherited stdout/stderr normally but destroys streams still held by escaped descendants after a short inactivity deadline or one-second hard deadline, so they cannot retain a pool permit.
+The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers. The ephemeral executor is for code already running inside active Pi; it does not provide standalone Node.js Pi discovery or launch support. It defaults to a 50-turn hard cap and rejects attempted continuation with `turn_limit` while preserving accumulated usage and bounded output. After Pi itself exits, it drains inherited stdout/stderr normally but destroys streams still held by escaped descendants after a short inactivity deadline or one-second hard deadline, so they cannot retain a pool permit.
 
 Use [`docs/orchestration.md`](./docs/orchestration.md#public-role-and-executor-api) for exact API behavior and a post-permit `prepare` example using `resolveRoleLaunch` with a caller-owned Model Task declaration against the latest Pi context.

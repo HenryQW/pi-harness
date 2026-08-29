@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readSubagentConfig, configPath } from "../extensions/config.ts";
+import { DEFAULT_MAX_TURNS } from "../src/index.ts";
 
 async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-config-"));
@@ -18,21 +19,24 @@ test("missing config file yields empty config", async () => {
 	await withAgentDir(async (agentDir) => {
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
+		assert.equal(loaded.config.maxTurns ?? DEFAULT_MAX_TURNS, 50);
 		assert.equal(loaded.error, undefined);
 	});
 });
 
-test("valid maxSubagents and timeout are accepted", async () => {
+test("valid maxSubagents, maxTurns, and timeout are accepted", async () => {
 	await withAgentDir(async (agentDir) => {
 		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({
 			maxSubagents: 3,
+			maxTurns: 75,
 			timeout: { idleMinutes: 15, maxMinutes: 60 },
 		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {
 			maxSubagents: 3,
+			maxTurns: 75,
 			timeout: { idleMinutes: 15, maxMinutes: 60 },
 		});
 		assert.equal(loaded.error, undefined);
@@ -53,14 +57,15 @@ test("malformed JSON reports an error and preserves defaults", async () => {
 	});
 });
 
-test("invalid maxSubagents value reports an error and preserves defaults", async () => {
+test("invalid concurrency and turn limits report errors and preserve defaults", async () => {
 	await withAgentDir(async (agentDir) => {
 		const dir = join(agentDir, "config", "pi-subagent");
 		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 0 }));
+		await writeFile(join(dir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 0, maxTurns: 1.5 }));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /maxSubagents must be a safe integer >= 1, got 0/);
+		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1, got 1.5/);
 	});
 });
 
