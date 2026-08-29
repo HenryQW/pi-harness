@@ -246,13 +246,13 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const checkoutLink = openUri && getCapabilities().hyperlinks
 						? hyperlink(theme.fg("accent", checkout), openUri)
 						: theme.fg("dim", checkout);
-					const firstLine = prStatus ? `${identity}${checkoutLink} · ${prStatus}` : `${identity}${checkoutLink}`;
+					const identityLine = prStatus ? `${identity}${checkoutLink} · ${prStatus}` : `${identity}${checkoutLink}`;
+					const firstLine = henryStatuses.length ? align(identityLine, henryStatuses.join(" "), width, ellipsis) : identityLine;
 					const lines = [
 						firstLine,
 						align(usage, model, width, ellipsis),
-						alignRightReserved(henryStatuses.join(" "), runtime, width, ellipsis),
+						alignRightReserved(externalStatuses.join(" "), runtime, width, ellipsis),
 					];
-					if (externalStatuses.length) lines.push(externalStatuses.join(" "));
 					return lines.map((line) => truncateToWidth(line, width, ellipsis));
 				},
 			};

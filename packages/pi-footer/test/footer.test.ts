@@ -60,7 +60,7 @@ function setupFooter(
 	};
 }
 
-test("renders checkout, usage, family statuses, and external statuses on separate lines", async (t) => {
+test("renders family status on the first line and external statuses beside runtime", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const previousCapabilities = getCapabilities();
@@ -119,19 +119,18 @@ test("renders checkout, usage, family statuses, and external statuses on separat
 	assert.ok(colors.some(([color, text]) => color === "accent" && text === "clear-field-f8d2"));
 	const usageText = "↑ 2.9k · ↓ 450 · ↺ 50.0% · ⚡ — · $ 0.350 · ◔ 42.3%";
 	const modelText = "gpt-5.6-luna • high";
-	assert.equal(stripTerminalSequences(rendered[0]!), "repo · clear-field-f8d2 · PR #123 · approved");
+	assert.match(stripTerminalSequences(rendered[0]!), /^repo · clear-field-f8d2 · PR #123 · approved +Codex #1 · 50% · 7d 1d 1h 22m$/);
 	assert.match(stripTerminalSequences(rendered[1]!), new RegExp(`^${usageText.replace("$", "\\$")} +${modelText}$`));
-	assert.match(stripTerminalSequences(rendered[2]!), /^Codex #1 · 50% · 7d 1d 1h 22m +◷ 0s$/);
-	assert.equal(stripTerminalSequences(rendered[3]!), "↩ rewind ●  🐴\tponytail: ⚡ FULL ready");
+	assert.match(stripTerminalSequences(rendered[2]!), /^↩ rewind ●  🐴\tponytail: ⚡ FULL ready +◷ 0s$/);
 	assert.match(rendered[0]!, /\x1b\[32mPR #123 · approved\x1b\[39m/);
-	assert.doesNotMatch(rendered[2]!, /PR #123|ponytail|rewind/);
+	assert.doesNotMatch(rendered[2]!, /PR #123|Codex/);
 
-	// Narrow width: family status truncates first so the runtime stays visible.
+	// Narrow width: external status truncates first so the runtime stays visible.
 	const narrow = stripTerminalSequences(footer.render(30)[2]!);
 	assert.match(narrow, /◷ 0s$/);
 
 	extensionStatuses = new Map([["pi-rewind", "↩ rewind"]]);
-	assert.deepEqual(footer.render(100).slice(2).map((line) => stripTerminalSequences(line).trim()), ["◷ 0s", "↩ rewind"]);
+	assert.match(stripTerminalSequences(footer.render(100)[2]!).trim(), /^↩ rewind +◷ 0s$/);
 
 	await mkdir(join(agentDir, "config"));
 	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"codex"}');

@@ -1,5 +1,11 @@
-import { basename, isAbsolute, relative, sep } from "node:path";
-import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
+import {
+	Text,
+	truncateToWidth,
+	visibleWidth,
+	type AutocompleteProvider,
+	type AutocompleteSuggestions,
+} from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -83,6 +89,67 @@ function contextSummary(dirCtx: DirContext): string {
 	if (dirCtx.claudeMd !== null) found.push("CLAUDE.md");
 	if (dirCtx.skills.size > 0) found.push(`${dirCtx.skills.size} skill(s)`);
 	return found.length > 0 ? ` Found: ${found.join(", ")}.` : " No context files found.";
+}
+
+function extractAtToken(textBeforeCursor: string): string | undefined {
+	return textBeforeCursor.match(/(?:^|[ \t])(@(?:"[^"]*|[^\s"]*))$/)?.[1];
+}
+
+export function createExternalAutocompleteProvider(
+	current: AutocompleteProvider,
+	getAddedDirs: () => AddedDir[],
+): AutocompleteProvider {
+	return {
+		async getSuggestions(lines, cursorLine, cursorCol, options): Promise<AutocompleteSuggestions | null> {
+			const line = lines[cursorLine] ?? "";
+			const token = extractAtToken(line.slice(0, cursorCol));
+			if (!token) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+
+			const quoted = token.startsWith('@"');
+			const query = token.slice(quoted ? 2 : 1);
+			if (isAbsolute(query) || query.startsWith("~/") || query.startsWith("./") || query.startsWith("../")) {
+				return current.getSuggestions(lines, cursorLine, cursorCol, options);
+			}
+
+			const tokenStart = cursorCol - token.length;
+			const sources = await Promise.all([
+				current.getSuggestions(lines, cursorLine, cursorCol, options),
+				...getAddedDirs().map(async (dir) => {
+					const externalPath = join(dir.absolutePath, query);
+					const externalToken = `${quoted || externalPath.includes(" ") ? '@"' : "@"}${externalPath}`;
+					const externalLines = [...lines];
+					externalLines[cursorLine] = `${line.slice(0, tokenStart)}${externalToken}${line.slice(cursorCol)}`;
+					const suggestions = await current.getSuggestions(
+						externalLines,
+						cursorLine,
+						tokenStart + externalToken.length,
+						options,
+					);
+					return suggestions
+						? {
+							...suggestions,
+							items: suggestions.items.map((item) => ({
+								...item,
+								description: `${dir.label}: ${item.description ?? item.value}`,
+							})),
+						}
+						: null;
+				}),
+			]);
+
+			const itemCount = Math.max(...sources.map((source) => source?.items.length ?? 0));
+			const items = Array.from({ length: itemCount }, (_, index) =>
+				sources.flatMap((source) => (source?.items[index] ? [source.items[index]] : [])),
+			).flat();
+			return items.length > 0 ? { prefix: token, items } : null;
+		},
+		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+			return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+		},
+		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+			return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+		},
+	};
 }
 
 export default function addDirExtension(pi: ExtensionAPI): void {
@@ -212,6 +279,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		reconstructState(ctx);
+		ctx.ui.addAutocompleteProvider((current) => createExternalAutocompleteProvider(current, () => addedDirs));
 	});
 	pi.on("session_tree", async (_event, ctx) => {
 		if (reconstructState(ctx)) pi.sendUserMessage("/dir-reload", { expandPromptTemplates: true });
