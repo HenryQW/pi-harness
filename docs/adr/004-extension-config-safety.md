@@ -1,6 +1,6 @@
 # 004. Extension Config Safety
 
-- **Status:** accepted (guidance)
+- **Status:** accepted (guidance); path layout superseded by ADR 018
 - **Date:** 2026-08-09
 
 ## Context
@@ -13,7 +13,7 @@ Extension JSON under `getAgentDir()/config` is user-owned, hand-editable, and un
 - Preserve malformed files; never rewrite config during startup.
 - Write only after explicit user action.
 - Use explicit defaults only for optional settings; fail fast when invalid config would make execution unsafe.
-- Store a package's sole config at `config/<extension>.json`; if it owns multiple files, store all under `config/<extension>/`.
+- Path layout now follows [ADR 018](018-extension-config-homes.md).
 
 ## Consequences
 
