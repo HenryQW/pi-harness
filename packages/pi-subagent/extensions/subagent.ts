@@ -18,6 +18,7 @@ import {
 	createEphemeralSubagentExecutor,
 	DELEGATE_TASK,
 	createRoleLaunch,
+	DEFAULT_MAX_TURNS,
 	EphemeralSubagentError,
 	finalizeChildWorktree,
 	formatDuration,
@@ -331,7 +332,11 @@ export default function subagentExtension(
 	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
 	// config file over defaults.
 	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
-	const executor = createEphemeralSubagentExecutor({ maxConcurrency: maxActiveSubagents, timeout: timeoutPolicy });
+	const executor = createEphemeralSubagentExecutor({
+		maxConcurrency: maxActiveSubagents,
+		maxTurns: loadedConfig.config.maxTurns ?? DEFAULT_MAX_TURNS,
+		timeout: timeoutPolicy,
+	});
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, { controller: AbortController; settled: Promise<void> }>();

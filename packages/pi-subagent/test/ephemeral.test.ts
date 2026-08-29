@@ -7,6 +7,7 @@ import test from "node:test";
 import {
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
+	EXECUTION_BUDGET_ENV,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentExecutor,
 	type PiLaunch,
@@ -136,8 +137,8 @@ test("malformed run signal rejects before prepare without leaking a permit", asy
 	assert.equal((await executorInstance.run({ prepare: async () => prepared(cwd, "valid") })).output, "done");
 });
 
-test("executor merges env and launches active Pi with cwd and argv without a shell", async (t) => {
-	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), inherited: process.env.EPHEMERAL_INHERITED, override: process.env.EPHEMERAL_OVERRIDE }) }], stopReason: "stop" } }));\n`);
+test("executor merges env, owns its child budget, and launches active Pi without a shell", async (t) => {
+	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), inherited: process.env.EPHEMERAL_INHERITED, override: process.env.EPHEMERAL_OVERRIDE, budget: process.env.${EXECUTION_BUDGET_ENV} }) }], stopReason: "stop" } }));\n`);
 	const previousInherited = process.env.EPHEMERAL_INHERITED;
 	const previousOverride = process.env.EPHEMERAL_OVERRIDE;
 	process.env.EPHEMERAL_INHERITED = "parent";
@@ -150,7 +151,7 @@ test("executor merges env and launches active Pi with cwd and argv without a she
 	});
 
 	const result = await executor().run({ prepare: async () => prepared(cwd, "quoted task; echo unsafe", {
-		env: { EPHEMERAL_OVERRIDE: "child" },
+		env: { EPHEMERAL_OVERRIDE: "child", [EXECUTION_BUDGET_ENV]: "caller cannot override" },
 		args: ["--model", "test/model"],
 	}) });
 	assert.equal(result.outcome, "success");
@@ -159,6 +160,7 @@ test("executor merges env and launches active Pi with cwd and argv without a she
 		cwd: await realpath(cwd),
 		inherited: "parent",
 		override: "child",
+		budget: JSON.stringify({ maxTurns: 50, maxMs: 2_000 }),
 	});
 });
 
@@ -486,6 +488,41 @@ test("async token callback rejection is a typed executor failure", async (t) => 
 	});
 });
 
+test("executor rejects attempted turn 51 with bounded turn-50 output and Usage", async (t) => {
+	const observedUsage = usage(1);
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+for (let turn = 1; turn <= 50; turn++) {
+	event({ type: "turn_start", turnIndex: turn - 1, timestamp: Date.now() });
+	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: turn === 50 ? "x".repeat(60 * 1024) : String(turn) }], ...(turn === 50 ? { usage: ${JSON.stringify(observedUsage)} } : {}), stopReason: "toolUse" } });
+	event({ type: "turn_end", turnIndex: turn - 1, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+}
+event({ type: "turn_start", turnIndex: 50, timestamp: Date.now() });
+setInterval(() => {}, 1_000);
+`);
+	await assert.rejects(executor().run({ prepare: async () => prepared(cwd) }), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "turn_limit");
+		assert.deepEqual(error.usage, observedUsage);
+		assert.ok(error.output);
+		assert.ok(Buffer.byteLength(error.output, "utf8") <= 50 * 1024);
+		assert.match(error.output, /\[Output truncated: \d+ bytes omitted\]$/);
+		return true;
+	});
+});
+
+test("a terminal response on default turn 50 succeeds", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+for (let turn = 1; turn <= 50; turn++) {
+	event({ type: "turn_start", turnIndex: turn - 1, timestamp: Date.now() });
+	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: turn === 50 ? "done" : String(turn) }], stopReason: turn === 50 ? "stop" : "toolUse" } });
+	event({ type: "turn_end", turnIndex: turn - 1, message: { role: "assistant", content: turn === 50 ? [] : [{ type: "toolCall" }] }, toolResults: [] });
+}
+`);
+	const result = await executor().run({ prepare: async () => prepared(cwd) });
+	assert.equal(result.outcome, "success");
+	assert.equal(result.output, "done");
+});
+
 test("executor returns complete aggregated Usage", async (t) => {
 	const first = usage(1);
 	const second = usage(2);
@@ -749,9 +786,12 @@ test("executor uses stable prepare and spawn error codes with causes", async (t)
 	});
 });
 
-test("executor validates concurrency and timeout at construction", () => {
+test("executor validates concurrency, turn limit, and timeout at construction", () => {
 	for (const maxConcurrency of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency, timeout }));
+	}
+	for (const maxTurns of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns, timeout }));
 	}
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 0, maxMs: 2 } }));
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 2, maxMs: 2 } }));

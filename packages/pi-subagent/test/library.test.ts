@@ -9,6 +9,7 @@ import {
 	CHILD_EXCLUDED_TOOL_NAMES,
 	CHILD_EXCLUDED_TOOLS,
 	createRoleLaunch,
+	EXECUTION_BUDGET_ENV,
 	listManagedSubagents,
 	managedSubagentName,
 	managedSubagentWorkspaceId,
@@ -136,6 +137,70 @@ test("child role policy rejects a malformed tool flag", () => {
 	childToolPolicy(pi);
 	assert.ok(sessionStart);
 	assert.throws(sessionStart, /pi-subagent-role-tools must be JSON tool names/);
+});
+
+test("child budget warnings apply each threshold once and combine simultaneous thresholds", () => {
+	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
+	const originalNow = Date.now;
+	let now = 0;
+	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 50, maxMs: 30 * 60_000 });
+	Date.now = () => now;
+	try {
+		const policy = () => {
+			let turnEnd: ((event: any) => void) | undefined;
+			const sent: Array<{ message: any; options: any }> = [];
+			childToolPolicy({
+				registerFlag() {},
+				on(event: string, handler: (event: any) => void) {
+					if (event === "turn_end") turnEnd = handler;
+				},
+				sendMessage(message: any, options: any) { sent.push({ message, options }); },
+			} as unknown as ExtensionAPI);
+			assert.ok(turnEnd);
+			return { sent, turnEnd };
+		};
+		const continuing = {
+			type: "turn_end",
+			message: { role: "assistant", content: [{ type: "toolCall" }] },
+			toolResults: [],
+		};
+
+		const separate = policy();
+		for (let turn = 1; turn < 40; turn++) separate.turnEnd(continuing);
+		assert.equal(separate.sent.length, 0);
+		separate.turnEnd(continuing);
+		assert.match(separate.sent[0]!.message.content, /^\*\*Execution budget warning:\*\* 10 of 50 turns and approximately 30 of 30 minutes/);
+		now = 24 * 60_000;
+		separate.turnEnd(continuing);
+		assert.match(separate.sent[1]!.message.content, /^\*\*Execution budget warning:\*\* 9 of 50 turns and approximately 6 of 30 minutes/);
+		separate.turnEnd(continuing);
+		assert.equal(separate.sent.length, 2);
+
+		now = 0;
+		const combined = policy();
+		for (let turn = 1; turn < 40; turn++) combined.turnEnd(continuing);
+		now = 24 * 60_000;
+		combined.turnEnd(continuing);
+		assert.deepEqual(combined.sent, [{
+			message: {
+				customType: "pi-subagent-execution-budget",
+				content: "**Execution budget warning:** 10 of 50 turns and approximately 6 of 30 minutes remain before forced termination.\nConverge now: stop expanding scope, complete the highest-priority required work, perform only essential validation, and return a concise final result. If completion is impossible, follow your role’s recovery requirements and report the blocker and exact remaining work. This warning does not change your role, scope, or permissions.",
+				display: true,
+			},
+			options: { deliverAs: "steer", triggerTurn: false },
+		}]);
+		combined.turnEnd(continuing);
+		assert.equal(combined.sent.length, 1);
+
+		const terminal = policy();
+		for (let turn = 1; turn < 40; turn++) terminal.turnEnd(continuing);
+		terminal.turnEnd({ ...continuing, message: { role: "assistant", content: [] } });
+		assert.deepEqual(terminal.sent, []);
+	} finally {
+		Date.now = originalNow;
+		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
+		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
+	}
 });
 
 test("empty Role tools activate only trusted extension tools and caller additions", () => {
