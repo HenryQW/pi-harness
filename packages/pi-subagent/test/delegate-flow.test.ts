@@ -35,6 +35,11 @@ type Tool = {
 	execute: (...args: any[]) => Promise<any>;
 };
 
+type FlowUpdate = {
+	content: Array<{ type: "text"; text: string }>;
+	details: unknown;
+};
+
 type PreparedChild = Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>;
 type ChildHandler = (prepared: PreparedChild, input: EphemeralSubagentRunInput) => Promise<EphemeralSubagentResult> | EphemeralSubagentResult;
 
@@ -210,6 +215,24 @@ function reviewPacket(task: string): { base: string; tip: string; patchPath: str
 	return JSON.parse(match[1]!);
 }
 
+function progressText(updates: readonly FlowUpdate[]): string[] {
+	return updates.map((update) => update.content[0]!.text);
+}
+
+function assertProgressRender(tool: Tool, updates: readonly FlowUpdate[], prohibited: RegExp): void {
+	const theme = { fg: (_color: string, value: string) => value };
+	for (const update of updates) {
+		assert.doesNotMatch(JSON.stringify(update), prohibited);
+		for (const width of [100, 24, 1]) {
+			const collapsed = tool.renderResult!(update, { expanded: false, isPartial: true }, theme, {}).render(width);
+			const expanded = tool.renderResult!(update, { expanded: true, isPartial: true }, theme, {}).render(width);
+			assert.deepEqual(expanded, collapsed);
+			assert.equal(collapsed.length, 1);
+			assert.ok(collapsed.every((line) => visibleWidth(line) <= width));
+		}
+	}
+}
+
 async function commit(cwd: string, path: string, content: string, message = `change ${path}`): Promise<void> {
 	const target = join(cwd, path);
 	await mkdir(join(target, ".."), { recursive: true });
@@ -280,12 +303,12 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 				{ id: "one", task: hiddenTask, validation: [{ command: "hidden-validation", args: [hiddenValidation] }] },
 				{ id: "two", task: hiddenTask, validation: [{ command: "hidden-validation", args: [hiddenValidation] }] },
 			] },
-			label: "delegate_flow · working: 2 units",
+			label: "delegate_flow · parallel→serial · 2 units",
 		},
 		{
 			tool: continueTool(app),
 			args: { guidance: hiddenGuidance },
-			label: "delegate_flow_continue · working: repair continuation",
+			label: "delegate_flow_continue · repair continuation",
 		},
 	] as const;
 	const results = [
@@ -312,6 +335,7 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 		const call = tool.renderCall!(args, theme, {}).render(100);
 		assert.equal(call.length, 1);
 		assert.match(call[0]!, new RegExp(label));
+		assert.doesNotMatch(call.join("\n"), /\bworking\b/);
 		assert.doesNotMatch(call.join("\n"), prohibited);
 		for (const width of [100, 24, 1]) {
 			const lines = tool.renderCall!(args, theme, {}).render(width);
@@ -330,11 +354,11 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 			assert.match(collapsed.join("\n"), /… \d+ more/, `${label} ${name}`);
 			if (diagnostic) assert.match(collapsed.join("\n"), new RegExp(`Diagnostic: ${diagnostic}`), `${label} ${name}`);
 			for (const width of [100, 24, 1]) {
-				const working = tool.renderCall!(args, theme, {}).render(width);
+				const callLines = tool.renderCall!(args, theme, {}).render(width);
 				for (const expanded of [false, true]) {
 					const lines = tool.renderResult!(result, { expanded, isPartial: false }, theme, {}).render(width);
 					assert.ok(lines.length <= 3, `${label} ${name} expanded=${expanded} width=${width}`);
-					assert.ok(working.length + lines.length <= 4, `${label} ${name} expanded=${expanded} width=${width}`);
+					assert.ok(callLines.length + lines.length <= 4, `${label} ${name} expanded=${expanded} width=${width}`);
 					assert.ok(lines.every((line) => visibleWidth(line) <= width), `${label} ${name} expanded=${expanded} width=${width}`);
 				}
 			}
@@ -360,6 +384,107 @@ test("Flow tool blocks are concise and bounded", async (t) => {
 			}
 		}
 	}
+});
+
+test("successful Flow reports bounded aggregate progress in the default box", async (t) => {
+	const repo = await repository(t);
+	const secretTask = "CONFIDENTIAL FLOW TASK";
+	const secretValidation = "CONFIDENTIAL FLOW VALIDATION";
+	const prohibited = /CONFIDENTIAL FLOW TASK|CONFIDENTIAL FLOW VALIDATION/;
+	const request = { units: [
+		unit("one", secretTask, validation(`process.exit(0); // ${secretValidation}`)),
+		unit("two", secretTask, validation(`process.exit(0); // ${secretValidation}`)),
+	] };
+	const app = harness(repo, async (prepared) => {
+		await commit(prepared.cwd, `${unitId(prepared.task)}.txt`, "done\n");
+		return success();
+	});
+	const updates: FlowUpdate[] = [];
+	const result = await flowTool(app).execute("progress", request, undefined, (update: FlowUpdate) => { updates.push(update); }, app.ctx);
+
+	assert.deepEqual(progressText(updates), [
+		"setup · 2 units",
+		"implement · 1/2 complete",
+		"implement · 2/2 complete",
+		"verify/integrate · unit 1/2",
+		"verify/integrate · unit 2/2",
+	]);
+	assertProgressRender(flowTool(app), updates, prohibited);
+	assert.equal(result.details.outcome, "completed");
+	assert.match(result.content[0].text, /Flow completed/);
+	assert.doesNotMatch(result.content[0].text, prohibited);
+
+	initTheme("dark");
+	const component = new ToolExecutionComponent(
+		flowTool(app).name,
+		"progress-box",
+		request,
+		undefined,
+		flowTool(app) as never,
+		{ requestRender() {} } as unknown as TUI,
+		process.cwd(),
+	);
+	component.markExecutionStarted();
+	component.setArgsComplete();
+	component.updateResult({ ...updates[0]!, isError: false }, true);
+	assert.match(component.render(100).join("\n"), /setup · 2 units/);
+});
+
+test("reviewed Flow reports review after declared-order verification", async (t) => {
+	const repo = await repository(t);
+	const secretTask = "CONFIDENTIAL REVIEW TASK";
+	const secretValidation = "CONFIDENTIAL REVIEW VALIDATION";
+	const secretReview = "CONFIDENTIAL REVIEW CRITERION";
+	const prohibited = /CONFIDENTIAL REVIEW TASK|CONFIDENTIAL REVIEW VALIDATION|CONFIDENTIAL REVIEW CRITERION/;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		await commit(prepared.cwd, "reviewed.txt", "done\n");
+		return success();
+	});
+	const updates: FlowUpdate[] = [];
+	const result = await flowTool(app).execute("review-progress", { units: [{
+		...unit("reviewed", secretTask, validation(`process.exit(0); // ${secretValidation}`)),
+		review: secretReview,
+	}] }, undefined, (update: FlowUpdate) => { updates.push(update); }, app.ctx);
+
+	assert.deepEqual(progressText(updates), [
+		"setup · 1 unit",
+		"implement · 1/1 complete",
+		"verify/integrate · unit 1/1",
+		"review · unit 1/1",
+	]);
+	assertProgressRender(flowTool(app), updates, prohibited);
+	assert.equal(result.details.outcome, "completed");
+	assert.match(result.content[0].text, /Flow completed/);
+});
+
+test("repair continuation reports bounded progress without guidance", async (t) => {
+	const repo = await repository(t);
+	const secretTask = "CONFIDENTIAL REPAIR TASK";
+	const secretValidation = "CONFIDENTIAL REPAIR VALIDATION";
+	const secretGuidance = "CONFIDENTIAL REPAIR GUIDANCE";
+	const prohibited = /CONFIDENTIAL REPAIR TASK|CONFIDENTIAL REPAIR VALIDATION|CONFIDENTIAL REPAIR GUIDANCE/;
+	const app = harness(repo, async (prepared) => {
+		if (prepared.task.startsWith("Flow Unit")) return failure("needs repair");
+		assert.match(prepared.task, /^Repair Flow Unit /);
+		await commit(prepared.cwd, "repaired.txt", "done\n");
+		return success();
+	});
+	const initialUpdates: FlowUpdate[] = [];
+	const blocked = await flowTool(app).execute("repair-progress", {
+		units: [unit("repairable", secretTask, validation(`process.exit(0); // ${secretValidation}`))],
+	}, undefined, (update: FlowUpdate) => { initialUpdates.push(update); }, app.ctx);
+	const continuationUpdates: FlowUpdate[] = [];
+	const completed = await continueTool(app).execute("repair-progress-continue", { guidance: secretGuidance }, undefined, (update: FlowUpdate) => { continuationUpdates.push(update); }, app.ctx);
+
+	assert.deepEqual(progressText(initialUpdates), ["setup · 1 unit", "implement · 1/1 complete"]);
+	assert.deepEqual(progressText(continuationUpdates), ["repair · unit 1/1", "verify/integrate · unit 1/1"]);
+	assertProgressRender(flowTool(app), initialUpdates, prohibited);
+	assertProgressRender(continueTool(app), continuationUpdates, prohibited);
+	assert.equal(blocked.details.outcome, "blocked");
+	assert.match(blocked.content[0].text, /Flow blocked/);
+	assert.equal(completed.details.outcome, "completed");
+	assert.match(completed.content[0].text, /Flow completed/);
 });
 
 test("Flow result renderers retain a recovery path beside long diagnostics", async (t) => {
