@@ -1128,7 +1128,6 @@ test("delegate_task renders one-line working status and bounded terminal summari
 		component.setArgsComplete();
 		assert.ok(component.render(100).length >= 2, "default shell renders call phase");
 		component.updateResult({ ...eightResult, isError: false });
-		component.updateResult({ ...eightResult, isError: false });
 		for (const expanded of [false, true]) {
 			component.setExpanded(expanded);
 			const lines = component.render(100);
