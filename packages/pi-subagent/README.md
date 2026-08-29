@@ -53,7 +53,7 @@ Parallel mode starts entries concurrently, waits for every entry, and reports th
 
 Background workflows are session-scoped. Session shutdown or reload aborts them and may deliver only recoverable-work evidence or no follow-up message.
 
-The transient status widget renders one line per child with: status glyph, role, status label, task summary, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, model, thinking level, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: up to five child rows plus a status-aware overflow line when more than six items exist (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. The final `delegate_task` block is deliberately minimal: bounded final summaries with role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
+The transient status widget renders one line per child with: status glyph, role, status label, task summary, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, model, thinking level, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: when total items are six or fewer, all child rows render; above six, five child rows plus one status-aware overflow line render (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. The final `delegate_task` block is deliberately minimal: bounded final summaries with role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
 
 Each delegation resolves its own Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
 
@@ -84,7 +84,7 @@ A rebase that drops all unit commits is a no-op: Flow validates it, skips Review
 | Partial progress | `delegate_task`: aggregate counts (running/pending/complete/failed/skipped); `delegate_flow`: phase transitions (setup → implement → verify/integrate → review → repair) |
 | Widget rows | One line per child: glyph, role, status, task, activity, metrics |
 | Ordering | Active-first stable (working first, then insertion order) |
-| Line cap | 6 physical lines max (5 rows + 1 status-aware overflow) |
+| Line cap | 6 physical lines max (≤6 items: all child rows; >6 items: 5 rows + 1 status-aware overflow) |
 | Terminal retention | Active rows persist; terminal rows clear on next user input |
 | Final result | Bounded summaries with recovery paths; no expanded view |
 
