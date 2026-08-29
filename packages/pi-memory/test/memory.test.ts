@@ -22,6 +22,11 @@ type CapturedCommand = {
 	handler(args: string, ctx: any): Promise<void>;
 };
 
+type CapturedMessage = {
+	message: { customType: string; content: string; display: boolean };
+	options: { triggerTurn: boolean };
+};
+
 type CapturedTool = {
 	description: string;
 	execute(
@@ -187,11 +192,11 @@ test("/remember validates input and sends live state", async () => {
 
 		const handlers = new Map<string, Handler>();
 		const commands = new Map<string, CapturedCommand>();
-		const messages: string[] = [];
+		const messages: CapturedMessage[] = [];
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
 			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
-			sendUserMessage(message: string) { messages.push(message); },
+			sendMessage(message: CapturedMessage["message"], options: CapturedMessage["options"]) { messages.push({ message, options }); },
 			registerTool() {},
 		} as unknown as ExtensionAPI);
 		const notify: string[] = [];
@@ -233,10 +238,16 @@ test("/remember validates input and sends live state", async () => {
 		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
 		await remember.handler("  prefers \"tea\"\n  ", context(true));
 		assert.equal(messages.length, 1);
-		assert.match(messages[0]!, /Use the existing memory tool for any save/);
-		assert.match(messages[0]!, /independently routes add review and may ask the user before writing/);
-		assert.ok(messages[0]!.includes(JSON.stringify("prefers \"tea\"")));
-		assert.ok(messages[0]!.includes(JSON.stringify({ memory: ["prefers tea", "new live entry"], user: ["likes concise replies"] })));
+		assert.deepEqual({ customType: messages[0]!.message.customType, display: messages[0]!.message.display, options: messages[0]!.options }, {
+			customType: "pi-memory-remember",
+			display: false,
+			options: { triggerTurn: true },
+		});
+		assert.equal(notify[5], "Remembering…");
+		assert.match(messages[0]!.message.content, /Use the existing memory tool for any save/);
+		assert.match(messages[0]!.message.content, /independently routes add review and may ask the user before writing/);
+		assert.ok(messages[0]!.message.content.includes(JSON.stringify("prefers \"tea\"")));
+		assert.ok(messages[0]!.message.content.includes(JSON.stringify({ memory: ["prefers tea", "new live entry"], user: ["likes concise replies"] })));
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -259,11 +270,11 @@ test("/remember queues busy requests in FIFO order, retains unavailable work, an
 
 		const handlers = new Map<string, Handler>();
 		const commands = new Map<string, CapturedCommand>();
-		const messages: string[] = [];
+		const messages: CapturedMessage[] = [];
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
 			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
-			sendUserMessage(message: string) { messages.push(message); },
+			sendMessage(message: CapturedMessage["message"], options: CapturedMessage["options"]) { messages.push({ message, options }); },
 			registerTool() {},
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
@@ -301,14 +312,16 @@ test("/remember queues busy requests in FIFO order, retains unavailable work, an
 		await writeFile(join(memoryDir, "USER.md"), "fresh first user");
 		await settled({ type: "agent_settled" }, context(true));
 		assert.equal(messages.length, 1);
-		assert.ok(messages[0]!.includes(`Candidate:\n${JSON.stringify("first candidate")}`));
-		assert.ok(messages[0]!.includes(JSON.stringify({ memory: ["fresh first memory"], user: ["fresh first user"] })));
+		assert.equal(messages[0]!.message.display, false);
+		assert.equal(notifications.at(-1)!.message, "Remembering…");
+		assert.ok(messages[0]!.message.content.includes(`Candidate:\n${JSON.stringify("first candidate")}`));
+		assert.ok(messages[0]!.message.content.includes(JSON.stringify({ memory: ["fresh first memory"], user: ["fresh first user"] })));
 
 		await writeFile(join(memoryDir, "MEMORY.md"), "fresh second memory");
 		await settled({ type: "agent_settled" }, context(true));
 		assert.equal(messages.length, 2);
-		assert.ok(messages[1]!.includes(`Candidate:\n${JSON.stringify("second candidate")}`));
-		assert.ok(messages[1]!.includes(JSON.stringify({ memory: ["fresh second memory"], user: ["fresh first user"] })));
+		assert.ok(messages[1]!.message.content.includes(`Candidate:\n${JSON.stringify("second candidate")}`));
+		assert.ok(messages[1]!.message.content.includes(JSON.stringify({ memory: ["fresh second memory"], user: ["fresh first user"] })));
 
 		await remember.handler("auth first", context(false));
 		await remember.handler("auth second", context(false));
@@ -332,10 +345,10 @@ test("/remember queues busy requests in FIFO order, retains unavailable work, an
 		await writeFile(join(memoryDir, "MEMORY.md"), "fresh auth memory");
 		await settled({ type: "agent_settled" }, context(true));
 		assert.equal(messages.length, 3);
-		assert.ok(messages[2]!.includes(`Candidate:\n${JSON.stringify("auth first")}`));
+		assert.ok(messages[2]!.message.content.includes(`Candidate:\n${JSON.stringify("auth first")}`));
 		await settled({ type: "agent_settled" }, context(true));
 		assert.equal(messages.length, 4);
-		assert.ok(messages[3]!.includes(`Candidate:\n${JSON.stringify("auth second")}`));
+		assert.ok(messages[3]!.message.content.includes(`Candidate:\n${JSON.stringify("auth second")}`));
 
 		await remember.handler("discarded candidate", context(false));
 		await writeFile(join(memoryDir, "MEMORY.md"), "x".repeat(MAX_FILE_BYTES + 1));

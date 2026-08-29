@@ -522,8 +522,13 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	const sendRemember = (candidate: string, entries: Record<Target, string[]>) => {
-		pi.sendUserMessage(`Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory and choose the correct memory target. Use the existing memory tool for any save; it independently routes add review and may ask the user before writing. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`);
+	const sendRemember = (candidate: string, entries: Record<Target, string[]>, ctx: Pick<ExtensionContext, "ui">) => {
+		ctx.ui.notify("Remembering…", "info");
+		pi.sendMessage({
+			customType: "pi-memory-remember",
+			content: `Process this /remember instruction; do not blindly copy it. Normalize the candidate into compact durable memory and choose the correct memory target. Use the existing memory tool for any save; it independently routes add review and may ask the user before writing. Refuse project/repository-specific, temporary, trivial, or otherwise unsuitable content.\n\nCandidate:\n${JSON.stringify(candidate)}\n\nLive entries by target:\n${JSON.stringify(entries)}`,
+			display: false,
+		}, { triggerTurn: true });
 	};
 
 	pi.registerCommand("remember", {
@@ -541,7 +546,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 			const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => ctx.ui.notify(message, "warning"));
 			if (!entries) return;
-			sendRemember(candidate, entries);
+			sendRemember(candidate, entries, ctx);
 		},
 	});
 
@@ -634,7 +639,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			if (isCurrent()) state.rememberQueue.shift();
 		});
 		if (!entries || !isCurrent()) return;
-		sendRemember(candidate, entries);
+		sendRemember(candidate, entries, ctx);
 		state.rememberQueue.shift();
 	});
 
