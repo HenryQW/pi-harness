@@ -787,7 +787,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
-		renderShell: "self",
 		renderCall(args, theme, _context) {
 			return renderToolLines([theme.fg("toolTitle", flowCallLabel(args))], theme);
 		},
@@ -892,7 +891,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Repair and continue the blocked deterministic Flow",
 		promptGuidelines: ["Call delegate_flow_continue only after delegate_flow reports a repairable block, with explicit guidance addressing that block."],
 		parameters: DelegateFlowContinueSchema,
-		renderShell: "self",
 		renderCall(_args, theme, _context) {
 			return renderToolLines([theme.fg("toolTitle", "delegate_flow_continue · working: repair continuation")], theme);
 		},
