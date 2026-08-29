@@ -5,7 +5,7 @@
 
 ## Context
 
-Delegation needs portable user-owned capabilities, shared model policy, bounded context transfer, and distinct lifecycles for disposable tasks, package-owned Git Flow, and durable caller-managed workers.
+Delegation needs portable user-owned capabilities, shared model policy, bounded context transfer, and distinct lifecycles for disposable tasks and package-owned Git Flow.
 
 ## Decision
 
@@ -16,9 +16,8 @@ Delegation needs portable user-owned capabilities, shared model policy, bounded 
 - `delegate_flow` is a separate fixed package-owned workflow. A unit has direct validation, optional `modelClass`, and optional non-empty `review` judgment text. One memory-only Flow creates one Unit Worktree per independent unit, runs effective-role Implementers in parallel, then in declared order rebases in place when needed, inspects committed state, and validates. Validation is authoritative for objective verification: a unit without `review` fast-forwards its exact validated tip through the guarded path; a unit with `review` sends exact `{base, tip, patchPath}` evidence to the effective Reviewer in that same worktree and fast-forwards only exact-`PASS` full reviewed OID. It supports one same-worktree repair through `delegate_flow_continue({ guidance, modelClass? })`; omission retains the current unit class and presence replaces it for that repair. Units whose rebase drops all commits still validate but skip review and merge as no-ops, rebase conflicts are terminal, and non-forced cleanup refusal is a completion warning.
 - Main-visible streaming updates, results, and errors are capped at 50 KiB. Unused JSON event payloads are discarded before buffering.
 - The bundled delegated-development Skill is Main-side policy only. Flow owns its fixed Git mechanics; the Skill does not change generic delegation behavior.
-- Generic managed Herdr hosting is a separate library surface for workers that must survive orchestrator pauses or restarts. Callers retain domain prompts, state, and lifecycle decisions.
 - The TUI widget projects active ephemeral children and briefly shows terminal status; it owns no lifecycle state.
 
 ## Consequences
 
-Pi remains the resource authority, task-model configuration remains the routing authority, and one package supplies generic ephemeral delegation, fixed Flow orchestration, and durable managed hosting without making the executor a general workflow engine.
+Pi remains the resource authority, task-model configuration remains the routing authority, and one package supplies generic ephemeral delegation and fixed Flow orchestration without making the executor a general workflow engine.
