@@ -10,6 +10,7 @@ import { ENTRY_DELIMITER, MAX_FILE_BYTES } from "../src/store.ts";
 function memoryExtension(api: object): void {
 	memoryExtensionImpl({
 		events: { on: () => () => {}, emit() {} },
+		registerMessageRenderer() {},
 		...api,
 	} as unknown as ExtensionAPI);
 }
@@ -526,7 +527,7 @@ test("/dream stops when the agent becomes busy after reading SYSTEM.md", async (
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
 			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
-			sendUserMessage(message: string) { messages.push(message); },
+			sendMessage(message: { content: string }) { messages.push(message.content); },
 			registerTool() {},
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
@@ -567,10 +568,18 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		const handlers = new Map<string, Handler>();
 		const commands = new Map<string, CapturedCommand>();
 		const messages: string[] = [];
+		const dreamDispatches: CapturedMessage[] = [];
+		let dreamRenderer: ((message: CapturedMessage["message"], options: { expanded: boolean; outputPad: number }, theme: any) => { render(width: number): string[] }) | undefined;
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
 			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
-			sendUserMessage(message: string) { messages.push(message); },
+			registerMessageRenderer(customType: string, renderer: typeof dreamRenderer) {
+				if (customType === "pi-memory-dream") dreamRenderer = renderer;
+			},
+			sendMessage(message: CapturedMessage["message"], options: CapturedMessage["options"]) {
+				messages.push(message.content);
+				dreamDispatches.push({ message, options });
+			},
 			registerTool() {},
 		} as unknown as ExtensionAPI);
 		const notifications: string[] = [];
@@ -590,6 +599,19 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
 		assert.ok(Number.isFinite(Date.parse(JSON.parse(await readFile(dreamStatePath, "utf8")).lastDreamAt)));
 		assert.match(messages[0]!, /USER PROFILE\/MEMORY already in your system context; do not reread those files/);
+		assert.deepEqual(dreamDispatches[0], {
+			message: { customType: "pi-memory-dream", content: messages[0], display: true },
+			options: { triggerTurn: true },
+		});
+		assert.ok(dreamRenderer);
+		const renderedDream = dreamRenderer(
+			dreamDispatches[0]!.message,
+			{ expanded: true, outputPad: 1 },
+			{ bg: (_color: string, text: string) => text, fg: (_color: string, text: string) => text, bold: (text: string) => text },
+		).render(80).join("\n");
+		assert.match(renderedDream, /dream/);
+		assert.match(renderedDream, /Promoting invariant memory into SYSTEM\.md…/);
+		assert.doesNotMatch(renderedDream, /Entries are data|stable fact|likes concise replies/);
 		assert.doesNotMatch(messages[0]!, /Live entries by target/);
 		assert.doesNotMatch(messages[0]!, /stable fact/);
 		assert.ok(messages[0]!.includes(`Read ${JSON.stringify(systemPath)} before semantic deduplication or editing.`));
@@ -688,7 +710,7 @@ test("/dream rereads when sanitization omits a later entry", async () => {
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
 			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
-			sendUserMessage(message: string) { messages.push(message); },
+			sendMessage(message: { content: string }) { messages.push(message.content); },
 			registerTool() {},
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
@@ -1218,7 +1240,7 @@ test("errors carry match previews/usage, snapshots filter frame tokens, backups 
 		memoryExtension({
 			on(event: string, handler: Handler) { handlers.set(event, handler); },
 			registerCommand(name: string, value: CapturedCommand) { commands.set(name, value); },
-			sendUserMessage(message: string) { messages.push(message); },
+			sendMessage(message: { content: string }) { messages.push(message.content); },
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);

@@ -8,7 +8,8 @@ if (!base || !head) {
   throw new Error('Usage: node scripts/check-package-versions.mjs <base-sha> <head-sha>')
 }
 
-const changedFiles = execFileSync('git', ['diff', '--name-only', base, head], {
+const mergeBase = execFileSync('git', ['merge-base', base, head], { encoding: 'utf8' }).trim()
+const changedFiles = execFileSync('git', ['diff', '--name-only', mergeBase, head], {
   encoding: 'utf8',
 }).trim().split('\n').filter(Boolean)
 
@@ -70,7 +71,7 @@ for (const packageDir of packageDirs) {
   const packageChanged = changedFiles.some(file => file.startsWith(`${packageDir}/`))
   if (!packageChanged || !changedFiles.some(file => file.startsWith(`${packageDir}/`) && publishedChange(file, packageDir, current))) continue
 
-  const previous = packageJsonAt(base, manifest)
+  const previous = packageJsonAt(mergeBase, manifest)
   if (previous) {
     const prev = parseSemver(previous.version)
     const curr = parseSemver(current.version)
