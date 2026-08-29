@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-multi-codex",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "description": "Use multiple ChatGPT Codex OAuth accounts in Pi.",
   "keywords": [
     "pi-package",
@@ -44,6 +44,7 @@
     ]
   },
   "dependencies": {
+    "@henryqw/pi-config-store": "^0.1.0",
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {

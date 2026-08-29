@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-btw",
-  "version": "1.1.11",
+  "version": "2.0.0",
   "description": "Open and merge tool-enabled Pi side threads in Herdr panes.",
   "keywords": [
     "pi-package",
@@ -46,11 +46,8 @@
     ]
   },
   "dependencies": {
+    "@henryqw/pi-config-store": "^0.1.0",
     "@henryqw/pi-herdr": "^0.4.0",
-    "@henryqw/pi-task-models": "^3.0.0",
-    "proper-lockfile": "^4.1.2"
-  },
-  "devDependencies": {
-    "@types/proper-lockfile": "^4.1.4"
+    "@henryqw/pi-task-models": "^4.0.0"
   }
 }
