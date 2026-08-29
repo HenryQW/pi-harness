@@ -3,7 +3,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { hyperlink } from "@earendil-works/pi-tui";
+import { getCapabilities, hyperlink } from "@earendil-works/pi-tui";
 
 const POLL_INTERVAL_MS = 30_000;
 const REVIEW_POLL_WINDOW_MS = 20 * 60_000;
@@ -142,7 +142,8 @@ function statusFor(pullRequest: PullRequest, ci: CiStatus): Status {
 }
 
 export function formatPullRequest(pullRequest: PullRequest, theme: ExtensionContext["ui"]["theme"], unresolved = 0): string {
-	const link = hyperlink(theme.fg("text", `PR #${pullRequest.number}`), pullRequest.url.href);
+	const prText = theme.fg("text", `PR #${pullRequest.number}`);
+	const link = getCapabilities().hyperlinks ? hyperlink(prText, pullRequest.url.href) : prText;
 	const status = unresolved > 0
 		? { text: `${unresolved} unresolved`, color: "warning" as const }
 		: statusFor(pullRequest, ciStatus(pullRequest.statusCheckRollup));

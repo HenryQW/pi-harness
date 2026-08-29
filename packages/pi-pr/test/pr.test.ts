@@ -5,6 +5,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { getCapabilities, setCapabilities, resetCapabilitiesCache } from "@earendil-works/pi-tui";
 import pullRequestExtension, { formatPullRequest, parsePullRequest } from "../extensions/pr.ts";
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -35,38 +36,88 @@ function render(value: Record<string, unknown>, unresolved = 0): string {
 	} as ExtensionContext["ui"]["theme"], unresolved);
 }
 
-test("renders one plain-language PR state, prioritizing action", () => {
-	const conflict = render({
-		mergeable: "CONFLICTING",
-		reviewDecision: "CHANGES_REQUESTED",
-		statusCheckRollup: [{ conclusion: "FAILURE" }],
-	});
-	assert.equal(plain(conflict), "PR #42 · merge conflict");
-	assert.match(conflict, /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
-	assert.match(conflict, /<text>PR #42<\/text>/);
+function withCapabilities(hyperlinks: boolean, fn: () => void): void {
+	const prev = getCapabilities();
+	try {
+		setCapabilities({ ...prev, hyperlinks });
+		fn();
+	} finally {
+		setCapabilities(prev);
+	}
+}
 
-	assert.equal(plain(render({
-		reviewDecision: "CHANGES_REQUESTED",
-		statusCheckRollup: [{ conclusion: "FAILURE" }],
-	})), "PR #42 · changes requested");
-	assert.equal(plain(render({
-		reviewDecision: "APPROVED",
-		statusCheckRollup: [{ conclusion: "FAILURE" }],
-	})), "PR #42 · CI failed");
-	assert.equal(plain(render({
-		reviewDecision: "APPROVED",
-		statusCheckRollup: [{ status: "IN_PROGRESS" }],
-	})), "PR #42 · CI running");
-	assert.equal(plain(render({ isDraft: true })), "PR #42 · draft");
-	assert.equal(plain(render({
-		reviewDecision: "APPROVED",
-		statusCheckRollup: [{ conclusion: "SUCCESS" }],
-	})), "PR #42 · approved");
-	assert.equal(plain(render({})), "PR #42 · open");
-	assert.equal(plain(render({}, 5)), "PR #42 · 5 unresolved");
-	assert.equal(plain(render({ state: "MERGED", statusCheckRollup: [{ conclusion: "FAILURE" }] })), "PR #42 · merged");
-	assert.equal(plain(render({ state: "CLOSED" })), "PR #42 · closed");
-	assert.equal(parsePullRequest(pullRequest({ url: "javascript:alert(1)" })), undefined);
+test("formatPullRequest emits OSC 8 hyperlink when hyperlinks capability enabled", () => {
+	withCapabilities(true, () => {
+		const out = render({});
+		assert.match(out, /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
+		assert.match(out, /<text>PR #42<\/text>/);
+		assert.equal(plain(out), "PR #42 · open");
+	});
+});
+
+test("formatPullRequest renders plain themed text when hyperlinks capability disabled", () => {
+	withCapabilities(false, () => {
+		const out = render({});
+		assert.equal(out, "<text>PR #42</text> · <accent>open</accent>");
+		assert.equal(plain(out), "PR #42 · open");
+		assert.doesNotMatch(out, /\x1b\]8;;/);
+	});
+});
+
+test("renders one plain-language PR state, prioritizing action", () => {
+	withCapabilities(true, () => {
+		const conflict = render({
+			mergeable: "CONFLICTING",
+			reviewDecision: "CHANGES_REQUESTED",
+			statusCheckRollup: [{ conclusion: "FAILURE" }],
+		});
+		assert.equal(plain(conflict), "PR #42 · merge conflict");
+		assert.match(conflict, /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
+		assert.match(conflict, /<text>PR #42<\/text>/);
+
+		assert.equal(plain(render({
+			reviewDecision: "CHANGES_REQUESTED",
+			statusCheckRollup: [{ conclusion: "FAILURE" }],
+		})), "PR #42 · changes requested");
+		assert.equal(plain(render({
+			reviewDecision: "APPROVED",
+			statusCheckRollup: [{ conclusion: "FAILURE" }],
+		})), "PR #42 · CI failed");
+		assert.equal(plain(render({
+			reviewDecision: "APPROVED",
+			statusCheckRollup: [{ status: "IN_PROGRESS" }],
+		})), "PR #42 · CI running");
+		assert.equal(plain(render({ isDraft: true })), "PR #42 · draft");
+		assert.equal(plain(render({
+			reviewDecision: "APPROVED",
+			statusCheckRollup: [{ conclusion: "SUCCESS" }],
+		})), "PR #42 · approved");
+		assert.equal(plain(render({})), "PR #42 · open");
+		assert.equal(plain(render({}, 5)), "PR #42 · 5 unresolved");
+		assert.equal(plain(render({ state: "MERGED", statusCheckRollup: [{ conclusion: "FAILURE" }] })), "PR #42 · merged");
+		assert.equal(plain(render({ state: "CLOSED" })), "PR #42 · closed");
+		assert.equal(parsePullRequest(pullRequest({ url: "javascript:alert(1)" })), undefined);
+	});
+});
+
+test("status formatting preserved when hyperlinks disabled", () => {
+	withCapabilities(false, () => {
+		const merged = render({ state: "MERGED", statusCheckRollup: [{ conclusion: "FAILURE" }] });
+		assert.equal(merged, "<text>PR #42</text> · <success>merged</success>");
+		assert.doesNotMatch(merged, /\x1b\]8;;/);
+
+		const conflict = render({
+			mergeable: "CONFLICTING",
+			reviewDecision: "CHANGES_REQUESTED",
+			statusCheckRollup: [{ conclusion: "FAILURE" }],
+		});
+		assert.equal(conflict, "<text>PR #42</text> · <error>merge conflict</error>");
+		assert.doesNotMatch(conflict, /\x1b\]8;;/);
+
+		const draft = render({ isDraft: true });
+		assert.equal(draft, "<text>PR #42</text> · <warning>draft</warning>");
+		assert.doesNotMatch(draft, /\x1b\]8;;/);
+	});
 });
 
 test("polls UI sessions, starts PR workflow when absent, and cleans up", async (t) => {
@@ -292,4 +343,18 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await flush();
 	assert.equal(calls.length, callsAfterShutdown);
 	releaseAbort(result(good()));
+});
+
+test("capability state restored after tests", () => {
+	const baseline = getCapabilities();
+	withCapabilities(true, () => {
+		assert.equal(getCapabilities().hyperlinks, true);
+	});
+	assert.deepEqual(getCapabilities(), baseline);
+	withCapabilities(false, () => {
+		assert.equal(getCapabilities().hyperlinks, false);
+	});
+	assert.deepEqual(getCapabilities(), baseline);
+	resetCapabilitiesCache();
+	assert.deepEqual(getCapabilities(), baseline);
 });
