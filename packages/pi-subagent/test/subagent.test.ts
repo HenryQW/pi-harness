@@ -64,8 +64,8 @@ async function environment(run: (agentDir: string) => Promise<void>): Promise<vo
 	process.env.PI_CODING_AGENT = "true";
 	process.title = "pi";
 	try {
-		await mkdir(join(agentDir, "config"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
 				fast: { primary: { model: "test/text-model", thinkingLevel: "low" } },
 				balanced: { primary: { model: "test/text-model", thinkingLevel: "low" } },
@@ -271,7 +271,7 @@ skills:
 ---
 Review only requested change.
 `);
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: { frontier: { primary: { model: "test/text-model", thinkingLevel: "high" } } },
 		}));
 		const runner = join(agentDir, "fake-pi.mjs");
@@ -447,14 +447,14 @@ skills: []
 Return concise findings.
 `);
 		const legacyConfig = JSON.stringify({ models: { frontier: { model: "legacy/model", thinkingLevel: "high" } } });
-		await writeFile(join(agentDir, "config", "pi-subagent", "pi-subagent.json"), legacyConfig);
+		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), legacyConfig);
 		const availableModels = [
 			{ provider: "provider", id: "fast-model", input: ["text"], reasoning: false },
 			{ provider: "provider", id: "balanced-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
 			{ provider: "provider", id: "frontier-model", input: ["text"], reasoning: true, thinkingLevelMap: { max: "max" } },
 			{ provider: "provider", id: "fav-model", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } },
 		];
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
 				fast: { primary: { model: "provider/fast-model", thinkingLevel: "off" } },
 				balanced: { primary: { model: "provider/balanced-model", thinkingLevel: "medium" } },
@@ -483,7 +483,7 @@ Return concise findings.
 		const omittedArgs = JSON.parse(singleOutput(omitted));
 		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/fast-model");
 		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "off");
-		assert.equal(await readFile(join(agentDir, "config", "pi-subagent", "pi-subagent.json"), "utf8"), legacyConfig);
+		assert.equal(await readFile(join(agentDir, "config", "pi-subagent", "config.json"), "utf8"), legacyConfig);
 	});
 });
 
@@ -532,7 +532,7 @@ skills: []
 ---
 Return concise findings.
 `);
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: { frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } } },
 		}));
 		const canonical = { ...model, provider: "openai-codex", id: "gpt-test" };
@@ -552,7 +552,7 @@ Return concise findings.
 test("thinking override participates in route resolution across all paths", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: { balanced: {
 				primary: { model: "provider/a-model", thinkingLevel: "off" },
 				fallback: { model: "provider/b-model", thinkingLevel: "high" },
@@ -668,7 +668,7 @@ skills: []
 ---
 Return concise findings.
 `);
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
 				balanced: {
 					primary: { model: "provider/primary", thinkingLevel: "high" },
@@ -703,7 +703,7 @@ skills: []
 Return concise findings.
 `);
 		const marker = join(agentDir, "child-launches");
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
 				balanced: {
 					primary: { model: "provider/primary", thinkingLevel: "off" },
@@ -1274,7 +1274,7 @@ skills: [skill-b]
 ---
 Review code.
 `),
-			writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 				profiles: { frontier: { primary: { model: "provider/deep", thinkingLevel: "high" } } },
 			})),
 		]);
@@ -1830,7 +1830,7 @@ const timer = setInterval(() => {
 			const first = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "task-1" }, undefined, undefined, app.ctx);
 			await waitFor(() => existsSync(join(started, "task-1")));
 			const second = app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "task-2" }, undefined, undefined, app.ctx);
-			await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+			await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 				profiles: { balanced: { primary: { model: "provider/late-model", thinkingLevel: "low" } } },
 				tasks: { "pi-subagent/delegateTask": "balanced" },
 			}));
@@ -1939,7 +1939,7 @@ test("config file maxSubagents applies and malformed config warns without failin
 		await writeWorkerRole(agentDir);
 		const configDir = join(agentDir, "config", "pi-subagent");
 		await mkdir(configDir, { recursive: true });
-		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({ maxSubagents: 1 }));
+		await writeFile(join(configDir, "config.json"), JSON.stringify({ maxSubagents: 1 }));
 
 		const configured = harness({ ui: true });
 		configured.handlers.get("session_start")?.({}, configured.ctx);
@@ -1962,11 +1962,28 @@ test("config file maxSubagents applies and malformed config warns without failin
 		}
 
 		// Malformed file: session still loads; warning surfaces at session_start.
-		await writeFile(join(configDir, "pi-subagent.json"), "{ broken");
+		await writeFile(join(configDir, "config.json"), "{ broken");
 		const warned = harness({ ui: true });
 		warned.handlers.get("session_start")?.({}, warned.ctx);
 		assert.equal(warned.notifications.length, 1);
 		assert.match(warned.notifications[0]!.message, /not valid JSON/);
+	});
+});
+
+test("missing local and shared config each warn once at session start without writing", async () => {
+	await environment(async (agentDir) => {
+		const localConfig = join(agentDir, "config", "pi-subagent", "config.json");
+		const sharedConfig = join(agentDir, "config", "pi-task-models", "config.json");
+		await rm(sharedConfig);
+
+		const app = harness({ ui: true });
+		app.handlers.get("session_start")?.({}, app.ctx);
+		assert.deepEqual(app.notifications, [
+			{ message: `Subagent config is missing at ${localConfig}; defaults are being used.`, type: "warning" },
+			{ message: "Task model config is missing; run /task-models to configure it.", type: "warning" },
+		]);
+		assert.equal(existsSync(localConfig), false);
+		assert.equal(existsSync(sharedConfig), false);
 	});
 });
 
@@ -2125,7 +2142,7 @@ test("config file timeout applies when no explicit policy is passed", async () =
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const configDir = join(agentDir, "config", "pi-subagent");
-		await writeFile(join(configDir, "pi-subagent.json"), JSON.stringify({
+		await writeFile(join(configDir, "config.json"), JSON.stringify({
 			timeout: { idleMinutes: 0.002, maxMinutes: 0.004 },
 		}));
 		const runner = join(agentDir, "fake-pi.mjs");
@@ -2198,7 +2215,7 @@ test("workflow transport retains executor rejection Usage when no child result e
 test("ordinary delegation turn-limit failure includes retained assistant output", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		await writeFile(join(agentDir, "config", "pi-subagent", "pi-subagent.json"), JSON.stringify({ maxTurns: 1 }));
+		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxTurns: 1 }));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
 event({ type: "turn_start", turnIndex: 0 });

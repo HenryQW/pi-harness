@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { createConfigStore, extensionConfigPath } from "@henryqw/pi-config-store";
 
 export interface SubagentTimeoutConfig {
 	/** Minutes a child may stay idle before it is asked to stop. */
@@ -16,11 +15,15 @@ export interface SubagentConfig {
 }
 
 export interface LoadedSubagentConfig {
+	source: "file" | "missing";
 	config: SubagentConfig;
 	/** Human-readable problems when the file exists but is partly unusable; the file is never rewritten. */
 	error?: string;
 }
 
+type ParsedSubagentConfig = Omit<LoadedSubagentConfig, "source">;
+
+const EXTENSION_ID = "pi-subagent";
 const positive = (value: unknown): value is number =>
 	typeof value === "number" && Number.isFinite(value) && value > 0;
 
@@ -30,36 +33,11 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 export const DEFAULT_TIMEOUT_CONFIG = { idleMinutes: 10, maxMinutes: 30 } as const;
 const TIMEOUT_FIELDS = ["idleMinutes", "maxMinutes"] as const;
 
-/**
- * All pi-subagent config lives in its existing extension-named directory;
- * agentDir is injectable so tests can point at a temp directory.
- */
+/** Return the canonical default JSON path for pi-subagent's config home. */
 export const configPath = (agentDir = getAgentDir()): string =>
-	join(agentDir, "config", "pi-subagent", "pi-subagent.json");
+	extensionConfigPath(EXTENSION_ID, agentDir);
 
-/**
- * Read the optional user config at `<agentDir>/config/pi-subagent/pi-subagent.json`.
- * Treated as untrusted user data: malformed files are preserved untouched and
- * reported instead of crashing the session; callers fall back to defaults.
- */
-export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConfig {
-	const path = configPath(agentDir);
-	let raw: string;
-	try {
-		raw = readFileSync(path, "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { config: {} };
-		throw error;
-	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch (error) {
-		return {
-			config: {},
-			error: `${path} is not valid JSON (${error instanceof Error ? error.message : String(error)}); using defaults.`,
-		};
-	}
+function parseSubagentConfig(parsed: unknown, path: string): ParsedSubagentConfig {
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 		return { config: {}, error: `${path} must contain a JSON object; using defaults.` };
 	}
@@ -121,4 +99,43 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 	}
 
 	return { config, error: problems.length ? `${path}: ${problems.join("; ")}; using defaults.` : undefined };
+}
+
+/**
+ * Read the optional user config at `<agentDir>/config/pi-subagent/config.json`.
+ * Treated as untrusted user data: malformed files are preserved untouched and
+ * reported instead of crashing the session; callers fall back to defaults.
+ */
+export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConfig {
+	const path = configPath(agentDir);
+	let validationError: string | undefined;
+	const store = createConfigStore<SubagentConfig>({
+		extensionId: EXTENSION_ID,
+		agentDir,
+		defaults: () => ({}),
+		parse(value) {
+			const parsed = parseSubagentConfig(value, path);
+			validationError = parsed.error;
+			return parsed.config;
+		},
+	});
+	try {
+		const loaded = store.loadSync();
+		return {
+			source: loaded.source,
+			config: loaded.value,
+			...(validationError === undefined ? {} : { error: validationError }),
+		};
+	} catch (error) {
+		const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+		if (code !== undefined && code !== "ERR_ENCODING_INVALID_ENCODED_DATA") throw error;
+		const reason = error instanceof Error ? error.message : String(error);
+		return {
+			source: "file",
+			config: {},
+			error: error instanceof SyntaxError
+				? `${path} is not valid JSON (${reason}); using defaults.`
+				: `${path} couldn't be read (${reason}); using defaults.`,
+		};
+	}
 }

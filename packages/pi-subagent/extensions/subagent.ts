@@ -4,6 +4,7 @@ import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-
 import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
+	loadTaskModelsConfig,
 	type ThinkingLevel,
 	modelReference,
 	registerModelTask,
@@ -32,7 +33,7 @@ import {
 	type WorktreeInfo,
 	type WorktreePayload,
 } from "@henryqw/pi-subagent";
-import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import { configPath, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
 import { runDelegation } from "./delegation.ts";
 import {
@@ -231,11 +232,15 @@ export default function subagentExtension(
 	registerModelTask(pi, DELEGATE_TASK);
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
-	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/pi-subagent.json
+	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
 	// maxSubagents > default 5. Invalid config falls back to the default and is
-	// reported once the UI exists; an invalid env value fails fast.
+	// reported at session start; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
-	const startupWarnings = [loadedConfig.error].filter((message): message is string => message !== undefined);
+	const startupWarnings = [
+		loadedConfig.source === "missing"
+			? `Subagent config is missing at ${configPath()}; defaults are being used.`
+			: loadedConfig.error,
+	].filter((message): message is string => message !== undefined);
 	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
 	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 	if (maxSubagentsRaw !== undefined) {
@@ -402,7 +407,14 @@ export default function subagentExtension(
 		invalidateDelegateFlow();
 		latestCtx = ctx;
 		ensureWidget(ctx);
-		for (const warning of startupWarnings.splice(0)) ctx.ui.notify(warning, "warning");
+		for (const warning of startupWarnings) ctx.ui.notify(warning, "warning");
+		try {
+			if (loadTaskModelsConfig().source === "missing") {
+				ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");
+			}
+		} catch {
+			// Route resolution retains the existing malformed shared-config error.
+		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		failedToolPatches.clear();
