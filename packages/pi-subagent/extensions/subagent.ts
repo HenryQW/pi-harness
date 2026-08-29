@@ -244,7 +244,7 @@ function renderWidgetRows(
 	if (!visible.length) return [];
 	const hidden = ordered.slice(visible.length);
 	const lines = visible.map((item) => truncateToWidth(
-		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("text", item.task)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
+		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${theme.fg("text", item.task)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
 		width,
 	));
 	if (hidden.length) {

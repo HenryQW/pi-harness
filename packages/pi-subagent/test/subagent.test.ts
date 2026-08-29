@@ -171,7 +171,7 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 }
 
 function workingWidgetHeaders(lines: string[]): string[] {
-	return lines.filter((line) => / · working ·/.test(line));
+	return lines.filter((line) => /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /.test(line));
 }
 
 async function writeWorkerRole(agentDir: string, isolation = false): Promise<void> {
@@ -753,12 +753,13 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		const wide = app.widget!.render(160);
 		assert.equal(wide.length, 1);
 		assert.ok(wide.every((line) => visibleWidth(line) <= 160));
-		assert.match(wide[0]!, /scout · working · Normalize Windows registered-worktree paths · thinking… · text-model · low · 1\.1k tok ·/);
+		assert.match(wide[0]!, /scout · Normalize Windows registered-worktree paths · thinking… · text-model · low · 1\.1k tok ·/);
+		assert.doesNotMatch(wide[0]!, / · working ·/);
 		assert.doesNotMatch(wide.join("\n"), /test\//);
 		const narrow = app.widget!.render(24);
 		assert.equal(narrow.length, 1);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-		assert.match(narrow[0]!, /scout · working/);
+		assert.match(narrow[0]!, /scout · Normalize/);
 		const tiny = app.widget!.render(1);
 		assert.equal(tiny.length, 1);
 		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
@@ -766,20 +767,21 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
 		const terminal = app.widget!.render(160);
 		assert.equal(terminal.length, 1);
-		assert.match(terminal[0]!, /scout · complete .* Done · 1 turn/);
+		assert.match(terminal[0]!, /scout · Normalize Windows registered-worktree paths · Done · 1 turn/);
+		assert.doesNotMatch(terminal[0]!, / · complete ·/);
 
 		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
 		const running = app.tool.execute("call-2", { role: "worker", task: "keep working" }, undefined, undefined, app.ctx);
-		await waitFor(() => app.widget?.render(100).join("\n").includes("worker · working") ?? false);
+		await waitFor(() => app.widget?.render(100).join("\n").includes("worker · keep working") ?? false);
 		const activeFirst = app.widget!.render(160);
-		assert.match(activeFirst[0]!, /worker · working/);
-		assert.match(activeFirst[1]!, /scout · complete/);
+		assert.match(activeFirst[0]!, /worker · keep working/);
+		assert.match(activeFirst[1]!, /scout · Normalize Windows registered-worktree paths · Done/);
 		await app.handlers.get("input")?.({ source: "extension", text: "injected" }, app.ctx);
-		assert.match(app.widget!.render(100).join("\n"), /scout · complete/);
+		assert.match(app.widget!.render(100).join("\n"), /scout · Normalize Windows registered-worktree paths · Done/);
 		await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
 		const afterInput = app.widget!.render(100).join("\n");
-		assert.doesNotMatch(afterInput, /scout · complete/);
-		assert.match(afterInput, /worker · working/);
+		assert.doesNotMatch(afterInput, /scout · Normalize Windows registered-worktree paths · Done/);
+		assert.match(afterInput, /worker · keep working/);
 		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
@@ -833,7 +835,7 @@ waitFor("read", () => {
 		try {
 			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
 			let widget = renderRows();
-			assert.match(widget, /worker · working · trace deterministic widget activity/);
+			assert.match(widget, /worker · trace deterministic widget activity/);
 			assert.match(widget, /thinking…/);
 			assert.doesNotMatch(widget, /\b(?:turn|tool)s?\b/);
 
@@ -973,7 +975,7 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 		try {
 			const widget = app.widget!.render(160);
 			assert.equal(widget.length, 6);
-			assert.match(widget[0]!, /worker · working · active ninth/);
+			assert.match(widget[0]!, /worker · active ninth/);
 			assert.doesNotMatch(widget.join("\n"), /completed 1/);
 			for (let index = 2; index <= 5; index++) assert.match(widget[index - 1]!, new RegExp(`completed ${index}`));
 			assert.equal(widget[5], "… 3 more · 3 complete");
