@@ -4,6 +4,12 @@ Use this workflow when auditing a published `@earendil-works/pi-*` release and u
 
 ## Inputs
 
+Set the exact target once before step 1 and record that value in `.context/progress.md`:
+
+```bash
+TARGET=0.85.0
+```
+
 Record in `.context/progress.md`:
 
 - exact target version, such as `0.85.0`;
@@ -16,20 +22,30 @@ A release note is a lead, not proof that an extension needs source changes. Veri
 ## 1. Establish the baseline and authority
 
 1. Before editing manifests or versions, bring the branch up to date with `origin/main` using the `update-from-main` workflow. Record the merged main SHA.
-2. Verify the target package is published:
+2. Resolve the active Pi APIs with `pi-extension-workbench`, then map every referenced API to the exact published package that owns it. Treat that package's artifact as authority: `@earendil-works/pi-ai` for `pi-ai` APIs, `@earendil-works/pi-agent-core` for core APIs, `@earendil-works/pi-tui` for TUI APIs, and `@earendil-works/pi-coding-agent` only for APIs it publishes. Do not use `pi-coding-agent` as authority for APIs owned by another package.
+3. Verify each relevant target package is published. Keep the package list in both commands below in sync, adding any other owning `@earendil-works/pi-*` package found in the inventory:
 
    ```bash
-   npm view "@earendil-works/pi-coding-agent@$TARGET" version
+   set -e
+   for package in pi-coding-agent pi-agent-core pi-ai pi-tui; do
+     npm view "@earendil-works/$package@$TARGET" version
+   done
    ```
 
-3. Resolve the active Pi authority with `pi-extension-workbench`. If active Pi is not the target, inspect a temporary copy of the published target artifact instead of GitHub, a source checkout, or remembered APIs:
+4. Inspect each relevant exact published artifact, not GitHub, a source checkout, or remembered APIs. Add every relevant owning package to this loop:
 
    ```bash
+   set -e
    tmp="$(mktemp -d)"
-   npm pack "@earendil-works/pi-coding-agent@$TARGET" --pack-destination "$tmp"
-   tar -xzf "$tmp"/*.tgz -C "$tmp"
-   TARGET_PI_ROOT="$tmp/package"
+   for package in pi-coding-agent pi-agent-core pi-ai pi-tui; do
+     artifact="$tmp/$package"
+     mkdir "$artifact"
+     npm pack "@earendil-works/$package@$TARGET" --pack-destination "$artifact"
+     tar -xzf "$artifact"/*.tgz -C "$artifact"
+   done
    ```
+
+   Use `$tmp/<package>/package` only for APIs owned by that package; inspect its docs, examples, and types for the audit.
 
 Stop if the target is unpublished or the published artifact does not contain the claimed API.
 
@@ -45,29 +61,33 @@ For each changelog item, record one decision:
 | `regression` | A Pi core fix affects the extension; raise the floor and prove current code works before rewriting it. |
 | `no action` | The extension does not own the affected behavior, or Pi instruments/provides it centrally. |
 
-Search extension entry points, direct imports, relevant tests, and the target artifact for exact API names. Do not add no-op handlers, copied model/provider catalogs, speculative features, or compatibility fallbacks.
+Search extension entry points, direct imports, relevant tests, and the published artifact of each owning package for exact API names; audit each API against its own artifact, not a different Pi package. Do not add no-op handlers, copied model/provider catalogs, speculative features, or compatibility fallbacks.
 
 ## 3. Upgrade the dependency baseline
 
 For every extension package:
 
-- set every existing `@earendil-works/pi-*` peer range to exactly `^<target-version>` (for example, `^0.85.0`);
+- set every existing `@earendil-works/pi-*` peer range to exactly `^<target-version>` (for example, `^0.85.0`); the caret is the published peer floor, not an exact pin;
 - use the same range style across all Pi peers;
 - do not add a Pi peer unless the package directly imports it;
 - preserve unrelated peers such as `typebox`;
 - update existing explicit README minimum-version text, without adding repetitive version prose everywhere.
 
-Do not bump workspace package versions yet. Run `npm install` once to update `package-lock.json`, then verify the installed family resolves to the target:
+Do not bump workspace package versions yet. Run `npm install --ignore-scripts` once to update `package-lock.json`. Before auditing, testing, or typechecking, install the target family exactly without persisting manifest or lockfile changes:
 
 ```bash
-npm ls \
-  @earendil-works/pi-agent-core \
-  @earendil-works/pi-ai \
-  @earendil-works/pi-coding-agent \
-  @earendil-works/pi-tui
+set -e
+npm install --ignore-scripts --no-save --package-lock=false \
+  "@earendil-works/pi-agent-core@$TARGET" \
+  "@earendil-works/pi-ai@$TARGET" \
+  "@earendil-works/pi-coding-agent@$TARGET" \
+  "@earendil-works/pi-tui@$TARGET"
+for package in pi-agent-core pi-ai pi-coding-agent pi-tui; do
+  test "$(node -p "require('./node_modules/@earendil-works/$package/package.json').version")" = "$TARGET"
+done
 ```
 
-Use the installed target docs/types for implementation. If tests pass but new APIs fail typechecking, verify the actual installed version before changing source; stale `node_modules` is not a compatibility requirement.
+The `test` equality assertion is the gate; `npm ls` output alone is not verification. Run this exact install and assertion again after final dependency/version edits, before final validation. Use the installed target docs/types for implementation. If tests pass but new APIs fail typechecking, verify the actual installed version before changing source; stale `node_modules` is not a compatibility requirement.
 
 ## 4. Implement only justified migrations
 
@@ -87,17 +107,19 @@ For core fixes classified as `regression`, do not rewrite working source unless 
 
 Before package version bumps, fetch and merge current `origin/main` again with `update-from-main`. This prevents choosing versions relative to a stale main branch. Resolve source conflicts first and regenerate `package-lock.json` rather than hand-merging generated lockfile sections.
 
-Using the final merged main SHA as the base, identify public packages with published-file changes. Bump each affected package exactly once and only now:
+Using the final merged main SHA as the base, identify public packages with published-file changes and choose each required bump. If any internal `@henryqw/*` workspace gets a major bump, update every direct consumer's dependency range to the new major and include every such consumer in the release set, even when only its manifest changes.
+
+Bump each package in the final release set exactly once and only now:
 
 ```bash
 npm version patch --workspace packages/<package> --no-git-tag-version
 ```
 
-Choose minor or major only when the actual package change requires it. The npm command must update both the manifest and lockfile.
+Choose minor or major only when the actual package change requires it. The npm command must update both the manifest and lockfile. After all workspace versions and direct consumer ranges are updated, run `npm install --ignore-scripts` to regenerate `package-lock.json`, before the final install or any release validation.
 
 ## 6. Validate the release set
 
-Commit the migration and version changes, then run once after the final code, dependency, and version state is stable:
+Commit the migration and version changes, then, after the final code, dependency, and version state is stable, repeat the exact target-family install and equality assertion from step 3. The assertion must pass before these checks run once:
 
 ```bash
 npm ls \
