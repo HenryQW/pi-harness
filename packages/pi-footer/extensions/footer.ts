@@ -1,7 +1,7 @@
 import { basename, dirname } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
 
 const THINKING_COLORS = {
@@ -63,6 +63,7 @@ function rainbow(text: string): string {
 export default function footerExtension(pi: ExtensionAPI): void {
 	let activeMilliseconds = 0;
 	let activeStartedAt: number | undefined;
+	let promptPaused = false;
 	let runtimeTimer: ReturnType<typeof setInterval> | undefined;
 	let requestRuntimeRender: (() => void) | undefined;
 	const stopRuntimeTimer = () => {
@@ -72,15 +73,31 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	};
 
 	const startActive = () => {
-		if (activeStartedAt !== undefined) return;
+		if (activeStartedAt !== undefined || promptPaused) return;
+		activeStartedAt = performance.now();
+		if (requestRuntimeRender) runtimeTimer = setInterval(requestRuntimeRender, 1_000);
+		requestRuntimeRender?.();
+	};
+	const pauseActive = () => {
+		if (activeStartedAt === undefined) return;
+		activeMilliseconds += performance.now() - activeStartedAt;
+		activeStartedAt = undefined;
+		promptPaused = true;
+		stopRuntimeTimer();
+		requestRuntimeRender?.();
+	};
+	const resumeActive = () => {
+		if (!promptPaused) return;
+		promptPaused = false;
 		activeStartedAt = performance.now();
 		if (requestRuntimeRender) runtimeTimer = setInterval(requestRuntimeRender, 1_000);
 		requestRuntimeRender?.();
 	};
 	const finalizeActive = (): boolean => {
-		if (activeStartedAt === undefined) return false;
-		activeMilliseconds += performance.now() - activeStartedAt;
+		if (activeStartedAt === undefined && !promptPaused) return false;
+		if (activeStartedAt !== undefined) activeMilliseconds += performance.now() - activeStartedAt;
 		activeStartedAt = undefined;
+		promptPaused = false;
 		stopRuntimeTimer();
 		requestRuntimeRender?.();
 		return true;
@@ -89,14 +106,25 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", (_event) => {
 		startActive();
 	});
+	pi.on("ui_prompt_start", () => {
+		pauseActive();
+	});
+	pi.on("ui_prompt_end", () => {
+		resumeActive();
+	});
 	pi.on("agent_settled", (_event, ctx) => {
 		if (ctx.isIdle() && finalizeActive()) pi.appendEntry(AGENT_TIME_ENTRY, activeMilliseconds);
 	});
-	pi.on("session_shutdown", () => stopRuntimeTimer());
+	pi.on("session_shutdown", () => {
+		stopRuntimeTimer();
+		activeStartedAt = undefined;
+		promptPaused = false;
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		stopRuntimeTimer();
 		activeStartedAt = undefined;
+		promptPaused = false;
 		requestRuntimeRender = undefined;
 		// Latest valid entry wins; stored data is untrusted.
 		activeMilliseconds = 0;
@@ -215,7 +243,9 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const runtime = theme.fg("dim", `◷ ${formatDuration(elapsed)}`);
 					const identity = branch ? theme.fg("dim", `${repo} · `) : "";
 					const checkout = branch ?? repo;
-					const checkoutLink = openUri ? hyperlink(theme.fg("accent", checkout), openUri) : theme.fg("dim", checkout);
+					const checkoutLink = openUri && getCapabilities().hyperlinks
+						? hyperlink(theme.fg("accent", checkout), openUri)
+						: theme.fg("dim", checkout);
 					const firstLine = prStatus ? `${identity}${checkoutLink} · ${prStatus}` : `${identity}${checkoutLink}`;
 					const lines = [
 						firstLine,
