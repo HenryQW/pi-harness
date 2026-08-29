@@ -11,15 +11,19 @@ Position through which Pi authenticates one Codex account. Base slot is native C
 _Avoid_: Account, pool member
 
 **Remaining quota**:
-Unused percentage of seven-day Codex allowance and sole account-selection score.
+Unused percentage of seven-day Codex allowance and account-selection score among eligible slots.
 _Avoid_: Balance, normalized capacity
 
 **Quota window**:
-Seven-day Codex usage period ending at reset time.
-_Avoid_: Rate limit, five-hour window
+Codex usage period ending at reset time. The seven-day window supplies remaining quota; the five-hour window can temporarily block a slot.
+_Avoid_: Balance period
+
+**Five-hour quota block**:
+Period after a slot reaches 100% usage in its five-hour window, during which automatic routing excludes it until reset.
+_Avoid_: Exhausted account, disabled slot
 
 **Usage snapshot**:
-Remaining quota, subscription tier, and reset times observed for account slot at specific time.
+Remaining quota, subscription tier, quota blocks, and reset times observed for account slot at specific time.
 _Avoid_: Account state, credential state
 
 **Fresh usage snapshot**:

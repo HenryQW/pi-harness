@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import multiCodex from "../extensions/multi-codex.ts";
+import multiCodex, { parseCodexUsage } from "../extensions/multi-codex.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Command = (args: string, ctx: any) => Promise<void>;
@@ -53,10 +53,27 @@ async function writeFreshCache(agentDir: string, remaining: Record<number, numbe
 			fetchedAt: now,
 			remaining: value,
 			reset: Date.now() + 3_600_000,
+			limitedUntil: null,
 		})),
 		locks: [],
 	}));
 }
+
+test("parses a reached five-hour limit without changing seven-day quota", () => {
+	const now = Date.parse("2026-03-13T12:00:00Z");
+	assert.deepEqual(parseCodexUsage({
+		plan_type: "plus",
+		rate_limit: {
+			primary_window: { used_percent: 100, limit_window_seconds: 5 * 60 * 60, reset_after_seconds: 600 },
+			secondary_window: { used_percent: 20, limit_window_seconds: 7 * 24 * 60 * 60, reset_after_seconds: 3600 },
+		},
+	}, now), {
+		remaining: 80,
+		reset: now + 3_600_000,
+		limitedUntil: now + 600_000,
+		tier: "plus",
+	});
+});
 
 async function withApp(
 	remaining: Record<number, number>,
@@ -131,6 +148,22 @@ test("routes once at first agent boundary from fresh seven-day cache", async () 
 	});
 });
 
+test("does not route from or rewrite a legacy snapshot lacking five-hour observation", async () => {
+	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+		const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
+		const state = JSON.parse(await readFile(cache, "utf8"));
+		for (const snapshot of state.slots) delete snapshot.limitedUntil;
+		const original = JSON.stringify(state);
+		await writeFile(cache, original);
+
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(setModels.length, 0);
+		assert.equal(await readFile(cache, "utf8"), original);
+	});
+});
+
 test("revalidates cached candidate at agent boundary", async () => {
 	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
@@ -141,6 +174,21 @@ test("revalidates cached candidate at agent boundary", async () => {
 		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
 		assert.equal(setModels.length, 0);
 	});
+});
+
+test("does not select a five-hour-limited slot until reset", async () => {
+	for (const [resetOffset, expectedProviders] of [[60_000, ["openai-codex-2"]], [-1, []]] as const) {
+		await withApp({ 1: 90, 2: 70 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+			const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
+			const state = JSON.parse(await readFile(cache, "utf8"));
+			state.slots.find((snapshot: { slot: number }) => snapshot.slot === 1).limitedUntil = Date.now() + resetOffset;
+			await writeFile(cache, JSON.stringify(state));
+
+			handlers.get("session_start")?.({ type: "session_start" }, ctx);
+			await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+			assert.deepEqual(setModels.map((selected) => selected.provider), expectedProviders);
+		});
+	}
 });
 
 test("keeps current slot when scope excludes fresher aliases", async () => {

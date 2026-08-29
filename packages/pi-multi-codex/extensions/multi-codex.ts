@@ -53,6 +53,7 @@ type UsageSnapshot = {
 	fetchedAt?: number;
 	remaining?: number;
 	reset?: number;
+	limitedUntil?: number | null;
 };
 
 type UsageLock = {
@@ -65,9 +66,10 @@ type UsageLock = {
 type UsageState = {
 	slots: Map<number, UsageSnapshot>;
 	locks: Map<number, UsageLock>;
+	untrusted?: true;
 };
 
-type ParsedUsage = { remaining: number; reset: number; tier?: string };
+type ParsedUsage = { remaining: number; reset: number; limitedUntil?: number; tier?: string };
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const CODEX_ALIAS_PATTERN = /^openai-codex-([2-9]|[1-9]\d+)$/;
@@ -171,9 +173,14 @@ function validTier(value: unknown): value is string {
 function readSnapshot(value: unknown): UsageSnapshot | undefined {
 	if (!isRecord(value) || !validSlot(value.slot) || !validHash(value.accountHash) || !validTime(value.checkedAt)) return undefined;
 	const successful = value.fetchedAt !== undefined || value.remaining !== undefined || value.reset !== undefined;
-	if (successful && (!validTime(value.fetchedAt) || typeof value.remaining !== "number" || !Number.isFinite(value.remaining) || !validTime(value.reset))) {
-		return undefined;
-	}
+	if (successful && (
+		!validTime(value.fetchedAt) ||
+		typeof value.remaining !== "number" ||
+		!Number.isFinite(value.remaining) ||
+		!validTime(value.reset) ||
+		(value.limitedUntil !== null && !validTime(value.limitedUntil))
+	)) return undefined;
+	if (!successful && value.limitedUntil !== undefined) return undefined;
 	return {
 		slot: value.slot,
 		accountHash: value.accountHash,
@@ -184,6 +191,7 @@ function readSnapshot(value: unknown): UsageSnapshot | undefined {
 				fetchedAt: value.fetchedAt as number,
 				remaining: Math.max(0, Math.min(100, value.remaining as number)),
 				reset: value.reset as number,
+				limitedUntil: value.limitedUntil as number | null,
 			}
 			: {}),
 	};
@@ -196,43 +204,50 @@ function readLock(value: unknown): UsageLock | undefined {
 	return { slot: value.slot, owner: value.owner, accountHash: value.accountHash, heartbeatAt: value.heartbeatAt };
 }
 
-function parseState(value: unknown): UsageState {
-	const state: UsageState = { slots: new Map(), locks: new Map() };
-	if (!isRecord(value)) return state;
-	for (const snapshot of Array.isArray(value.slots) ? value.slots : []) {
+function parseState(value: unknown): UsageState | undefined {
+	if (!isRecord(value) || !Array.isArray(value.slots) || !Array.isArray(value.locks)) return undefined;
+	const state = emptyState();
+	for (const snapshot of value.slots) {
 		const parsed = readSnapshot(snapshot);
-		if (parsed) state.slots.set(parsed.slot, parsed);
+		if (!parsed || state.slots.has(parsed.slot)) return undefined;
+		state.slots.set(parsed.slot, parsed);
 	}
-	for (const lock of Array.isArray(value.locks) ? value.locks : []) {
+	for (const lock of value.locks) {
 		const parsed = readLock(lock);
-		if (parsed) state.locks.set(parsed.slot, parsed);
+		if (!parsed || state.locks.has(parsed.slot)) return undefined;
+		state.locks.set(parsed.slot, parsed);
 	}
 	return state;
 }
 
-function emptyState(): UsageState {
-	return { slots: new Map(), locks: new Map() };
+function emptyState(untrusted = false): UsageState {
+	return { slots: new Map(), locks: new Map(), ...(untrusted ? { untrusted: true } : {}) };
+}
+
+function isMissingCacheFile(error: unknown): boolean {
+	return Boolean(error && typeof error === "object" && "code" in error && String(error.code) === "ENOENT");
 }
 
 function loadStateSync(): UsageState {
 	try {
-		return parseState(JSON.parse(readFileSync(cachePath(), "utf8")));
-	} catch {
-		return emptyState();
+		return parseState(JSON.parse(readFileSync(cachePath(), "utf8"))) ?? emptyState(true);
+	} catch (error) {
+		return emptyState(!isMissingCacheFile(error));
 	}
 }
 
 async function loadState(signal?: AbortSignal): Promise<UsageState> {
 	try {
-		return parseState(JSON.parse(await readFile(cachePath(), { encoding: "utf8", signal })));
+		return parseState(JSON.parse(await readFile(cachePath(), { encoding: "utf8", signal }))) ?? emptyState(true);
 	} catch (error) {
 		signal?.throwIfAborted();
-		return emptyState();
+		return emptyState(!isMissingCacheFile(error));
 	}
 }
 
 async function saveState(state: UsageState, signal?: AbortSignal): Promise<void> {
 	signal?.throwIfAborted();
+	if (state.untrusted) return;
 	const file = cachePath();
 	const directory = join(getAgentDir(), "config", "pi-multi-codex");
 	await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -295,6 +310,10 @@ function isFresh(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, no
 	);
 }
 
+function isFiveHourLimited(snapshot: UsageSnapshot, now: number): boolean {
+	return validTime(snapshot.limitedUntil) && snapshot.limitedUntil > now;
+}
+
 function checkedRecently(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, now: number): boolean {
 	return Boolean(
 		snapshot &&
@@ -324,20 +343,28 @@ function resetTime(window: JsonRecord, now: number): number | undefined {
 	return resetAfter === undefined || resetAfter < 0 ? undefined : now + resetAfter * 1000;
 }
 
-/** Extract seven-day window, or only usable window when service reports one. */
+/** Extract seven-day quota and any active five-hour block. */
 export function parseCodexUsage(value: unknown, now = Date.now()): ParsedUsage | undefined {
 	if (!isRecord(value)) return undefined;
 	const rateLimit = isRecord(value.rate_limit) ? value.rate_limit : value;
-	const windows = Object.entries(rateLimit)
-		.flatMap(([name, entry]) => (isRecord(entry) && numberValue(entry.used_percent) !== undefined && resetTime(entry, now) !== undefined ? [{ name, value: entry }] : []));
+	const windows = Object.values(rateLimit).flatMap((entry) => {
+		if (!isRecord(entry)) return [];
+		const used = numberValue(entry.used_percent);
+		const reset = resetTime(entry, now);
+		return used === undefined || reset === undefined ? [] : [{ value: entry, used, reset }];
+	});
 	const sevenDay = windows.find((window) => numberValue(window.value.limit_window_seconds) === 7 * 24 * 60 * 60)
 		?? (windows.length === 1 && numberValue(windows[0].value.limit_window_seconds) === undefined ? windows[0] : undefined);
-	if (!sevenDay) return undefined;
-	const used = numberValue(sevenDay.value.used_percent);
-	const reset = resetTime(sevenDay.value, now);
-	if (used === undefined || reset === undefined || reset <= now) return undefined;
+	if (!sevenDay || sevenDay.reset <= now) return undefined;
+	const fiveHour = windows.find((window) => numberValue(window.value.limit_window_seconds) === 5 * 60 * 60);
+	const limitedUntil = fiveHour && fiveHour.used >= 100 && fiveHour.reset > now ? fiveHour.reset : undefined;
 	const tier = validTier(value.plan_type) ? value.plan_type : validTier(value.tier) ? value.tier : undefined;
-	return { remaining: Math.max(0, Math.min(100, 100 - used)), reset, ...(tier ? { tier } : {}) };
+	return {
+		remaining: Math.max(0, Math.min(100, 100 - sevenDay.used)),
+		reset: sevenDay.reset,
+		...(limitedUntil ? { limitedUntil } : {}),
+		...(tier ? { tier } : {}),
+	};
 }
 
 function raceWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -392,11 +419,12 @@ class CodexQuotaStatus {
 		return loadState();
 	}
 
-	private change<T>(change: (state: UsageState) => { value: T; write: boolean }, signal?: AbortSignal): Promise<T> {
+	private change<T>(change: (state: UsageState) => { value: T; write: boolean }, signal?: AbortSignal): Promise<T | undefined> {
 		const operation = this.writes.then(() => withCacheMutex(async (operationSignal) => {
 			operationSignal.throwIfAborted();
 			const state = await loadState(operationSignal);
 			operationSignal.throwIfAborted();
+			if (state.untrusted) return undefined;
 			const result = change(state);
 			if (result.write) {
 				operationSignal.throwIfAborted();
@@ -441,6 +469,7 @@ class CodexQuotaStatus {
 
 		const now = Date.now();
 		const state = loadStateSync();
+		if (state.untrusted) return;
 		let dueAt: number | undefined;
 		for (const [slot, credential] of readCodexCredentials()) {
 			if (this.active.has(slot)) continue;
@@ -571,6 +600,7 @@ class CodexQuotaStatus {
 					fetchedAt: checkedAt,
 					remaining: outcome.remaining,
 					reset: outcome.reset,
+					limitedUntil: outcome.limitedUntil && outcome.limitedUntil > checkedAt ? outcome.limitedUntil : null,
 				});
 			} else {
 				state.slots.set(slot, previous?.accountHash === identity.accountHash && (!validTime(previous.reset) || previous.reset > checkedAt)
@@ -581,7 +611,7 @@ class CodexQuotaStatus {
 			return { value: true, write: true };
 		}, refresh.session.signal);
 		if (finished) this.onChange();
-		return finished;
+		return finished ?? false;
 	}
 
 	private async release(slot: number, owner: string, signal: AbortSignal): Promise<void> {
@@ -649,6 +679,9 @@ class CodexQuotaStatus {
 				}
 				const tier = snapshot.tier ? ` (${snapshot.tier})` : "";
 				const status = isFresh(snapshot, identity, now) ? "measured" : "stale";
+				if (isFiveHourLimited(snapshot, now)) {
+					return `Codex slot ${slot}${tier}: five-hour limit reached, resets in ${formatDuration(snapshot.limitedUntil! - now)} (${status})`;
+				}
 				return `Codex slot ${slot}${tier}: ${formatPercent(snapshot.remaining)}% remaining, resets in ${formatDuration(snapshot.reset - now)} (${status})`;
 			});
 	}
@@ -814,7 +847,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 				if ((slot !== 1 && !registered.has(slot)) || !allowsModel(ctx, model, slot)) return [];
 				const identity = identityFor(credential);
 				const snapshot = state.slots.get(slot);
-				if (!identity || !isFresh(snapshot, identity, now) || typeof snapshot?.remaining !== "number") return [];
+				if (!identity || !isFresh(snapshot, identity, now) || typeof snapshot?.remaining !== "number" || isFiveHourLimited(snapshot, now)) return [];
 				return [{ slot, remaining: snapshot.remaining }];
 			});
 	};
@@ -839,8 +872,13 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		if (!identity || !snapshot || snapshot.accountHash !== identity.accountHash || !validTime(snapshot.fetchedAt) || typeof snapshot.remaining !== "number" || !validTime(snapshot.reset)) {
 			return `${prefix} · unavailable`;
 		}
-		if (!isFresh(snapshot, identity, Date.now())) return `${prefix} · stale`;
-		const text = `${prefix} · ${formatPercent(snapshot.remaining)}% · 7d ${formatDuration(snapshot.reset - Date.now())}`;
+		const now = Date.now();
+		if (isFiveHourLimited(snapshot, now)) {
+			const text = `${prefix} · 5h limit · ${formatDuration(snapshot.limitedUntil! - now)}`;
+			return ctx.ui.theme?.fg ? ctx.ui.theme.fg("error", text) : text;
+		}
+		if (!isFresh(snapshot, identity, now)) return `${prefix} · stale`;
+		const text = `${prefix} · ${formatPercent(snapshot.remaining)}% · 7d ${formatDuration(snapshot.reset - now)}`;
 		const color = snapshot.remaining >= 50 ? "success" : snapshot.remaining >= 25 ? "warning" : "error";
 		return ctx.ui.theme?.fg ? ctx.ui.theme.fg(color, text) : text;
 	};
@@ -923,7 +961,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("codex-status", {
-		description: "show shared Codex seven-day quota status",
+		description: "show shared Codex quota status",
 		handler: async (_args, ctx: ExtensionContext) => {
 			const lines = await quota.statusLines();
 			ctx.ui.notify(lines.length ? lines.join("\n") : NO_ACCOUNTS_MESSAGE, "info");
