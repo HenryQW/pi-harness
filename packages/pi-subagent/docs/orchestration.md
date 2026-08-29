@@ -187,7 +187,7 @@ const MODEL_TASK = {
   defaultProfile: "fast",
 };
 
-export default function yourExtension(pi) {
+export function createRunRole(pi) {
   // Register the Model Task at extension load so /task-models discovery works.
   registerModelTask(pi, MODEL_TASK);
 
@@ -239,6 +239,8 @@ export default function yourExtension(pi) {
       },
     });
   }
+
+  return { runRole };
 }
 ```
 
@@ -262,7 +264,17 @@ Generic managed Herdr exports (`managedSubagentWorkspaceId`, reconciliation help
 
 ## JavaScript composition
 
-The examples below use caller-selected `Role` objects and the `runRole` helper above. Variable names such as `reviewRole` are local bindings, not reserved Role names. The executor's `maxConcurrency` bounds launches; callers must also bound collections and loops.
+The examples below use caller-selected `Role` objects and the `runRole` function returned by the package's initializer. A consuming Pi extension calls the initializer once at startup:
+
+```js
+import { createRunRole } from "your-package";
+
+export default function yourExtension(pi) {
+  const { runRole } = createRunRole(pi);
+}
+```
+
+Variable names such as `reviewRole` are local bindings, not reserved Role names. The executor's `maxConcurrency` bounds launches; callers must also bound collections and loops.
 
 A small caller-owned failure policy keeps the examples readable:
 
