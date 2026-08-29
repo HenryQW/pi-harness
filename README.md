@@ -29,7 +29,7 @@ This repository contains the Pi extensions I use daily for my work. They are hig
 
 ## Internal package relationships
 
-This graph documents internal `@henryqw` package relationships. **Legend:** solid arrows (`-->`) are npm runtime dependencies declared in `packages/*/package.json`; dashed arrows (`-.->`) are optional runtime integrations evidenced by package behavior and documentation. All arrows point from consumer to provider.
+This graph documents internal `@henryqw` package relationships. All 18 `packages/*` workspaces appear exactly once as Mermaid nodes below. **Legend:** solid arrows (`-->`) are internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`; dashed arrows (`-.->`) are direct runtime protocols or couplings without an internal npm dependency, evidenced by package behavior or documentation. All arrows point from consumer/recognizer to provider/producer.
 
 ```mermaid
 flowchart LR
@@ -50,9 +50,16 @@ flowchart LR
   footer -.->|PR status| pr["pi-pr"]
   footer -.->|Codex status| multiCodex
   taskModels -.->|numbered provider aliases| multiCodex
-```
+  memory -.->|BTW child payload/process mode| herdrBtw
+  subagent -.->|ask_question child-tool exclusion| askQuestion
 
-Packages omitted from the graph have neither an internal `@henryqw` npm runtime dependency nor an evidenced optional runtime integration.
+  subgraph standalone["Standalone packages (no internal coupling)"]
+    addDir["pi-add-dir"]
+    deps["pi-deps"]
+    notes["pi-notes"]
+    sessionRecall["pi-session-recall"]
+  end
+```
 
 ## Deprecated
 
