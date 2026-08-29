@@ -6,14 +6,14 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { type ExtensionAPI, type ExtensionContext, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	capEphemeralSubagentOutput as capOutput,
 	EphemeralSubagentError,
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
-import { formatWorkflowResult, formatWorkflowUpdate, WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
+import { WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
 import subagentExtension, { MAX_WIDGET_ACTIVE_TOOLS } from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
@@ -1032,183 +1032,12 @@ test("widget summarizes overflow while evicting terminal rows for new active wor
 	});
 });
 
-test("delegate_task renders immutable call labels, partial aggregates, and bounded terminal summaries", async () => {
+test("delegate_task leaves rendering to Pi", async () => {
 	await environment(async () => {
 		const app = harness();
-		const theme = { fg: (_color: string, value: string) => value };
-		const hiddenTask = "FULL TASK TEXT validation --secret";
-		for (const [args, label] of [
-			[{ role: "worker", task: hiddenTask }, "delegate_task · single · 1 task"],
-			[{ tasks: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "delegate_task · parallel · 2 tasks"],
-			[{ chain: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "delegate_task · chain · 2 tasks"],
-		] as const) {
-			const call = app.tool.renderCall!(args, theme, {}).render(100);
-			assert.deepEqual(call, [label]);
-			assert.doesNotMatch(call.join("\n"), /FULL TASK TEXT|--secret|working/);
-			for (const width of [100, 24, 1]) {
-				const narrow = app.tool.renderCall!(args, theme, {}).render(width);
-				assert.equal(narrow.length, 1);
-				assert.ok(narrow.every((line) => visibleWidth(line) <= width));
-			}
-		}
-
-		const partialAggregate = formatWorkflowUpdate("parallel", [
-			{ id: "opaque-complete", index: 0, role: "implementer", status: "succeeded", assistantOutput: "COMPLETE OUTPUT" },
-			{ id: "opaque-running", index: 1, role: "reviewer", status: "running", assistantOutput: "RUNNING OUTPUT" },
-			{ id: "opaque-pending", index: 2, role: "worker", status: "pending" },
-			{ id: "opaque-failed", index: 3, role: "worker", status: "failed", failure: "FAILED OUTPUT" },
-			{ id: "opaque-rejected", index: 4, role: "worker", status: "rejected", failure: "REJECTED OUTPUT" },
-			{ id: "opaque-skipped", index: 5, role: "worker", status: "skipped" },
-		]);
-		for (const width of [100, 24, 1]) {
-			const rows = app.tool.renderResult!({ content: [{ type: "text", text: partialAggregate.text }], details: partialAggregate.details }, { isPartial: true }, theme, {}).render(width);
-			assert.equal(rows.length, 1);
-			assert.ok(rows.every((line) => visibleWidth(line) <= width));
-			if (width === 100) {
-				assert.deepEqual(rows, ["1 running · 1 pending · 1 complete · 2 failed · 1 skipped"]);
-				assert.doesNotMatch(rows.join("\n"), /OUTPUT|opaque-|implementer|reviewer|worker/);
-			}
-		}
-
-		const partial = formatWorkflowUpdate("parallel", [
-			{ id: "opaque-running", index: 1, role: "reviewer", status: "running", assistantOutput: "partial" },
-			{ id: "opaque-pending", index: 0, role: "implementer", status: "pending" },
-		]);
-		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, {}, theme, {}).render(100), []);
-
-		const single = formatWorkflowResult("single", [{ id: "opaque-single", index: 0, role: "worker", status: "succeeded", assistantOutput: "Implemented the fix.\nignored" }]);
-		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: single.text }], details: single.details }, {}, theme, {}).render(100), ["Implemented the fix."]);
-
-		const terminal = formatWorkflowResult("parallel", [
-			{ id: "opaque-first", index: 0, role: "implementer", status: "succeeded", assistantOutput: "Implemented the fix.\nignored", model: "provider/model", thinkingLevel: "high", worktreePayload: { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false } },
-			{ id: "opaque-second", index: 1, role: "reviewer", status: "failed", failure: "Validation failed.", model: "provider/reviewer", thinkingLevel: "low" },
-			{ id: "opaque-skipped", index: 2, role: "worker", status: "skipped" },
-		]);
-		const result = { content: [{ type: "text" as const, text: terminal.text }], details: terminal.details };
-		const collapsed = app.tool.renderResult!(result, { expanded: false }, theme, {}).render(100);
-		const expanded = app.tool.renderResult!(result, { expanded: true }, theme, {}).render(100);
-		assert.deepEqual(expanded, collapsed);
-		assert.deepEqual(collapsed, ["reviewer: Validation failed.", "Recovery: /repo/.worktrees/retained · implementer: Implemented the fix."]);
-		assert.doesNotMatch(collapsed.join("\n"), /status|✓|✗|task|model|thinking|tok|\d+m|opaque-|branch|ignored/);
-		const narrow = app.tool.renderResult!(result, {}, theme, {}).render(20);
-		assert.ok(narrow.length <= 3);
-		assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
-
-		const retained = formatWorkflowResult("parallel", [
-			{ id: "opaque-failed", index: 0, role: "reviewer", status: "failed", failure: "Validation failed." },
-			{ id: "opaque-ordinary", index: 1, role: "worker-2", status: "succeeded", assistantOutput: "ordinary result" },
-			{ id: "opaque-retained", index: 2, role: "worker-3", status: "succeeded", assistantOutput: "x".repeat(160), worktreePayload: { path: "/repo/.worktrees/late", branch: "pi-subagent/late", commits: 1, dirty: false, pruned: false } },
-			{ id: "opaque-last", index: 3, role: "worker-4", status: "succeeded", assistantOutput: "last result" },
-		]);
-		const retainedResult = { content: [{ type: "text" as const, text: retained.text }], details: retained.details };
-		const retainedCollapsed = app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(100);
-		const retainedExpanded = app.tool.renderResult!(retainedResult, { expanded: true }, theme, {}).render(100);
-		assert.deepEqual(retainedExpanded, retainedCollapsed);
-		assert.equal(retainedCollapsed.length, 3);
-		assert.match(retainedCollapsed[0]!, /^reviewer: Validation failed\./);
-		assert.match(retainedCollapsed[1]!, /^Recovery: \/repo\/\.worktrees\/late/);
-		assert.match(retainedCollapsed[2]!, /^… 2 more$/);
-		for (const width of [24, 1]) {
-			const lines = app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(width);
-			assert.equal(lines.length, 3, `width=${width}`);
-			assert.ok(lines.every((line) => visibleWidth(line) <= width), `width=${width}`);
-		}
-		assert.match(app.tool.renderResult!(retainedResult, { expanded: false }, theme, {}).render(24)[1]!, /\/repo/);
-
-		const eight = formatWorkflowResult("parallel", Array.from({ length: 8 }, (_, index) => ({
-			id: `opaque-${index}`,
-			index,
-			role: `worker-${index + 1}`,
-			status: "succeeded" as const,
-			assistantOutput: `result ${index + 1}`,
-			...(index === 0 ? { worktreePayload: { path: "/repo/.worktrees/recover", branch: "pi-subagent/recover", commits: 1, dirty: false, pruned: false } } : {}),
-		})));
-		const eightResult = { content: [{ type: "text" as const, text: eight.text }], details: eight.details };
-		const eightCall = app.tool.renderCall!({ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) }, theme, {}).render(100);
-		const eightCollapsed = app.tool.renderResult!(eightResult, { expanded: false }, theme, {}).render(100);
-		const eightExpanded = app.tool.renderResult!(eightResult, { expanded: true }, theme, {}).render(100);
-		assert.deepEqual(eightExpanded, eightCollapsed);
-		assert.deepEqual(eightCollapsed, [
-			"Recovery: /repo/.worktrees/recover · worker-1: result 1",
-			"worker-2: result 2",
-			"… 6 more",
-		]);
-		assert.equal(eightCall.length + eightCollapsed.length, 4);
-		for (const width of [100, 24, 1]) {
-			const call = app.tool.renderCall!({ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) }, theme, {}).render(width);
-			for (const expanded of [false, true]) {
-				const lines = app.tool.renderResult!(eightResult, { expanded }, theme, {}).render(width);
-				assert.ok(lines.length <= 3);
-				assert.ok(call.length + lines.length <= 4);
-				assert.ok(lines.every((line) => visibleWidth(line) <= width));
-			}
-		}
-
 		assert.equal(app.tool.renderShell, undefined);
-		initTheme("dark");
-		const component = new ToolExecutionComponent(
-			app.tool.name,
-			"bounded-delegate-task",
-			{ tasks: Array.from({ length: 8 }, () => ({ role: "worker", task: hiddenTask })) },
-			undefined,
-			app.tool as never,
-			{ requestRender() {} } as unknown as TUI,
-			process.cwd(),
-		);
-		component.markExecutionStarted();
-		component.setArgsComplete();
-		assert.ok(component.render(100).length >= 2, "default shell renders call phase");
-		component.updateResult({ ...eightResult, isError: false });
-		for (const expanded of [false, true]) {
-			component.setExpanded(expanded);
-			const lines = component.render(100);
-			assert.ok(lines.length <= 8);
-			assert.doesNotMatch(lines.join("\n"), /FULL TASK TEXT|--secret/);
-		}
-
-		const empty = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, worktree: undefined, summary: "" }] } }, {}, theme, {}).render(100);
-		assert.deepEqual(empty, ["implementer: (no output)"]);
-		const background = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { background: true } }, {}, theme, {}).render(100);
-		assert.deepEqual(background, ["Background workflow accepted."]);
-		for (const [name, entry] of [
-			["id", { ...terminal.details.entries[0]!, id: 1 }],
-			["negative index", { ...terminal.details.entries[0]!, index: -1 }],
-			["fractional index", { ...terminal.details.entries[0]!, index: 0.5 }],
-			["non-finite index", { ...terminal.details.entries[0]!, index: Infinity }],
-			["role", { ...terminal.details.entries[0]!, role: 1 }],
-			["status", { ...terminal.details.entries[0]!, status: "done" }],
-			["summary", { ...terminal.details.entries[0]!, summary: 1 }],
-			["model", { ...terminal.details.entries[0]!, model: 1 }],
-			["thinking level", { ...terminal.details.entries[0]!, thinkingLevel: 1 }],
-			["worktree path", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, path: 1 } }],
-			["worktree branch", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, branch: 1 } }],
-			["worktree commits", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, commits: Infinity } }],
-			["worktree dirty", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, dirty: 1 } }],
-			["worktree pruned", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, pruned: 1 } }],
-			["worktree inspection_failed", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, inspection_failed: 1 } }],
-			["worktree note", { ...terminal.details.entries[0]!, worktree: { ...terminal.details.entries[0]!.worktree!, note: 1 } }],
-		] as const) {
-			const raw = `Malformed ${name}.`;
-			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details: { mode: "parallel", entries: [entry] } }, {}, theme, {}).render(100), [raw], name);
-		}
-		for (const [name, details] of [
-			["multiline summary", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, summary: "first\nsecond" }] }],
-			["oversized summary", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, summary: "x".repeat(161) }] }],
-			["duplicate indexes", { mode: "parallel", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "duplicate" }] }],
-			["out-of-order indexes", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, index: 1 }, { ...terminal.details.entries[0]!, id: "out-of-order", index: 0 }] }],
-			["multiple single-mode entries", { mode: "single", entries: [terminal.details.entries[0]!, { ...terminal.details.entries[0]!, id: "second", index: 1 }] }],
-			["empty parallel entries", { mode: "parallel", entries: [] }],
-			["nine parallel entries", { mode: "parallel", entries: Array.from({ length: 9 }, (_, index) => ({ ...terminal.details.entries[0]!, id: `overflow-${index}`, index })) }],
-			["missing running summary", { mode: "parallel", entries: [{ ...partial.details.entries[1]!, summary: undefined }] }],
-			["missing succeeded summary", { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, summary: undefined }] }],
-			["missing failed summary", { mode: "parallel", entries: [{ ...terminal.details.entries[1]!, summary: undefined }] }],
-			["missing rejected summary", { mode: "parallel", entries: [{ ...terminal.details.entries[1]!, status: "rejected", summary: undefined }] }],
-			["pending summary", { mode: "parallel", entries: [{ ...partial.details.entries[0]!, summary: "" }] }],
-			["skipped summary", { mode: "parallel", entries: [{ ...terminal.details.entries[2]!, summary: "" }] }],
-		] as const) {
-			const raw = `Malformed ${name}.`;
-			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: raw }], details }, {}, theme, {}).render(100), [raw], name);
-		}
+		assert.equal(app.tool.renderCall, undefined);
+		assert.equal(app.tool.renderResult, undefined);
 	});
 });
 
@@ -1238,9 +1067,6 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		const result = await running;
 		assert.equal(singleOutput(result), "partial 🙂 done");
 		assert.ok(updates.length > 0);
-		for (const update of updates) {
-			assert.deepEqual(app.tool.renderResult!(update, { isPartial: true }, { fg: (_color: string, value: string) => value }, {}).render(100), ["1 running"]);
-		}
 	});
 });
 
