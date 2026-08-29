@@ -155,17 +155,22 @@ pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-sub
 
 One Markdown file belongs to each Role (see [Roles](#roles)). The other is its own optional JSON file below.
 
-`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts. All fields are optional. A missing file uses defaults.
+`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the child pool and execution limits. All fields are optional. A missing file uses defaults.
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
 | `maxSubagents` | No | Safe integer ≥ 1 | `5` |
+| `maxTurns` | No | Safe integer ≥ 1 | `50` |
 | `timeout.idleMinutes` | No | Positive number of minutes where minutes × 60 000 ms ≤ 2,147,483,647 | `10` |
 | `timeout.maxMinutes` | No | Positive number within the same ms cap that must be greater than `timeout.idleMinutes`, otherwise the whole `timeout` object falls back to defaults | `30` |
 
-Excess children wait FIFO without consuming child timeout. `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session.
-
-It must be a positive integer. An invalid value prevents the extension from loading, leaving `delegate_task` unavailable.
+- Excess children wait FIFO without consuming child timeout.
+- A terminal response on turn 50 succeeds.
+- An attempted continuation starts no model work and rejects with `turn_limit`.
+- Before a continuing turn, the child gets one warning when completed turns reach 80%.
+- It gets another warning when elapsed time reaches 80% of the maximum runtime.
+- If both thresholds are first reached together, the child gets one combined warning.
+- `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session. It must be a positive integer. An invalid value prevents the extension from loading and leaves `delegate_task` unavailable.
 
 This JSON is read leniently. Malformed JSON, a non-object root, unknown keys, or invalid values are collected into one warning.
 
@@ -245,7 +250,11 @@ Scope a child by selecting fewer trusted extensions. Finer-grained selection req
 
 ## Library API
 
-The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers. The ephemeral executor is for code already running inside active Pi. It does not provide standalone Node.js Pi discovery or launch support.
+The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers.
+
+The executor is for code already running inside active Pi. It does not provide standalone Node.js Pi discovery or launch support.
+
+It defaults to a hard limit of 50 turns. An attempted continuation rejects with `turn_limit` while preserving accumulated usage and bounded output.
 
 After Pi exits, the executor drains inherited stdout and stderr normally. It destroys streams held by escaped descendants after a short inactivity deadline or one-second hard deadline, so they cannot retain a pool permit.
 

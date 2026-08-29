@@ -11,6 +11,7 @@ export interface SubagentTimeoutConfig {
 
 export interface SubagentConfig {
 	maxSubagents?: number;
+	maxTurns?: number;
 	timeout?: SubagentTimeoutConfig;
 }
 
@@ -66,16 +67,18 @@ export function readSubagentConfig(agentDir = getAgentDir()): LoadedSubagentConf
 	const problems: string[] = [];
 	const config: SubagentConfig = {};
 	for (const key of Object.keys(record)) {
-		if (key !== "maxSubagents" && key !== "timeout") {
-			problems.push(`unknown config key ${JSON.stringify(key)}; expected maxSubagents, timeout`);
+		if (key !== "maxSubagents" && key !== "maxTurns" && key !== "timeout") {
+			problems.push(`unknown config key ${JSON.stringify(key)}; expected maxSubagents, maxTurns, timeout`);
 		}
 	}
 
-	if (record.maxSubagents !== undefined) {
-		if (typeof record.maxSubagents === "number" && Number.isSafeInteger(record.maxSubagents) && record.maxSubagents >= 1) {
-			config.maxSubagents = record.maxSubagents;
+	for (const key of ["maxSubagents", "maxTurns"] as const) {
+		const value = record[key];
+		if (value === undefined) continue;
+		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1) {
+			config[key] = value;
 		} else {
-			problems.push(`maxSubagents must be a safe integer >= 1, got ${JSON.stringify(record.maxSubagents)}`);
+			problems.push(`${key} must be a safe integer >= 1, got ${JSON.stringify(value)}`);
 		}
 	}
 

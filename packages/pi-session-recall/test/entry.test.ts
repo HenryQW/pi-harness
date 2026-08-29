@@ -7,6 +7,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { MAX_SESSION_FILE_BYTES } from "../extensions/transcript.ts";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -30,6 +32,12 @@ interface CapturedTool {
 	description: string;
 	promptSnippet?: string;
 	execute: (...args: unknown[]) => Promise<{ content: { type: string; text: string }[]; details: unknown }>;
+	renderResult: (
+		result: { content: { type: string; text: string }[]; details: unknown },
+		options: { expanded: boolean },
+		theme: { fg(color: string, text: string): string },
+		context: unknown,
+	) => { render(width: number): string[] };
 }
 
 function makePi(): { on: () => void; registerTool: (t: CapturedTool) => void } & Record<string, unknown> {
@@ -65,6 +73,26 @@ function msg(parentId: string | null, role: string, text: string): object {
 let msgCount = 0;
 
 describe("session_search entry point", () => {
+	it("previews the last five visual result lines and expands to the full response", async () => {
+		const pi = makePi();
+		const { default: register } = await import("../extensions/session-recall.ts");
+		register(pi as never);
+
+		const tool = (pi as any).tool as CapturedTool;
+		const result = { content: [{ type: "text", text: JSON.stringify({ messages: Array.from({ length: 10 }, (_, index) => `${index}:${"x".repeat(30)}`) }) }], details: {} };
+		const width = 40;
+		const allLines = new Text(result.content[0]!.text, 0, 0).render(width);
+		assert.ok(allLines.length > 5);
+		const theme = { fg: (_color: string, text: string) => text };
+		initTheme("dark");
+
+		const collapsed = tool.renderResult(result, { expanded: false }, theme, {}).render(width);
+		assert.deepEqual(collapsed.slice(-5), allLines.slice(-5));
+		assert.match(collapsed[1]!, /earlier lines/);
+		assert.match(collapsed[1]!, /to expand/);
+		assert.deepEqual(tool.renderResult(result, { expanded: true }, theme, {}).render(width), new Text(`\n${result.content[0]!.text}`, 0, 0).render(width));
+	});
+
 	it("registers the tool and dispatches browse/discovery", async () => {
 		const pi = makePi();
 		const { default: register } = await import("../extensions/session-recall.ts");

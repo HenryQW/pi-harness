@@ -1,9 +1,10 @@
 /**
  * pi-session-recall entry point: tool registration and mode dispatch.
  */
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, keyHint, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import { join, sep } from "node:path";
@@ -119,6 +120,21 @@ export default function (pi: ExtensionAPI): void {
 			limit: Type.Optional(Type.Number({ description: "Max results, [1,10], default 3." })),
 			detail: Type.Optional(StringEnum(["adaptive", "full"] as const)),
 		}),
+		renderResult(result, { expanded }, theme) {
+			const output = result.content.find((part) => part.type === "text")?.text ?? "";
+			const styledOutput = theme.fg("toolOutput", output);
+			if (expanded) return new Text(`\n${styledOutput}`, 0, 0);
+			return {
+				render(width: number) {
+					const preview = truncateToVisualLines(styledOutput, 5, width);
+					if (preview.skippedCount === 0) return ["", ...preview.visualLines];
+					const hint = theme.fg("muted", `... (${preview.skippedCount} earlier lines,`) +
+						` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+					return ["", truncateToWidth(hint, width, "..."), ...preview.visualLines];
+				},
+				invalidate() {},
+			};
+		},
 		async execute(_toolCallId, rawParams: ToolParams, _signal, _onUpdate, ctx) {
 			try {
 				// LLMs sometimes send numeric ids/queries despite the string schema.

@@ -1,8 +1,8 @@
 # `@henryqw/pi-session-recall`
 
-Search past Pi sessions with one `session_search` tool. Its arguments select one of four modes.
+Search past Pi sessions with local FTS5. The `session_search` tool has four modes and makes no model calls.
 
-It uses local FTS5 and makes zero LLM calls. It returns raw messages only.
+The package also includes `pi-session-pattern-miner`. This skill finds repeated work that may be worth automating.
 
 ## Why
 
@@ -17,14 +17,25 @@ pi install npm:@henryqw/pi-session-recall
 
 ## Use
 
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `session_search` | tool | Search past sessions or inspect one. |
+| `pi-session-pattern-miner` | skill | Find repeated work and choose the smallest useful automation. |
+
 BM25 is a text-ranking method. Hydrated results include messages read from saved session files.
 
 | Mode | Call | Result |
 | --- | --- | --- |
 | Discovery | `query` | BM25-ranked top sessions. The top hit is hydrated with a ±5 message window and first/last-3 bookends. Lower hits include the matched anchor message and metadata. `detail:"full"` hydrates all. |
-| Scroll | `sessionId` + `aroundMessageId` | ±`window` messages ([1,20]) around the anchor on its branch. Re-anchor on the last or first message id of the returned window to scroll forward or backward. Across forks, pass the previous response's `branchTip`; `aroundMessageId` only centers the window and must lie on that branch. |
+| Scroll | `sessionId` + `aroundMessageId` | ±`window` messages ([1,20]) around the anchor on its branch. Re-anchor on the last or first message ID to scroll. Across forks, pass the previous response's `branchTip`; `aroundMessageId` only centers the window and must lie on that branch. |
 | Read | `sessionId` | The whole session. Large sessions return head 20 + tail 10. Oversized content is bounded to 50k characters and marked with `contentTruncated`. |
 | Browse | no args | Recent sessions with path, name, cwd, started date, and preview. |
+
+In the interactive TUI, the collapsed tool block shows the last five visual lines and the earlier-line count. Press `Ctrl+O` to expand the full bounded response. The model always receives the complete tool result.
+
+### Find work worth automating
+
+Run `/skill:pi-session-pattern-miner` to find repeated workflows in past sessions. It requires evidence from two independent sessions and checks for existing automation. It prefers a fixed script when model judgment is not needed.
 
 ### Query syntax and indexed text
 

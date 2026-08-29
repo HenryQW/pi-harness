@@ -87,6 +87,10 @@ Issues live in GitHub Issues for `HenryQW/pi-packages`. See `docs/agents/issue-t
 
 Triage uses default canonical labels. See `docs/agents/triage-labels.md`.
 
+### Pi version upgrades
+
+Audit and migrate all extension packages to a published Pi release with `docs/agents/pi-version-upgrade.md`.
+
 ### Domain docs
 
 Multi-context layout uses root `CONTEXT-MAP.md` and per-package `CONTEXT.md` files. See `docs/agents/domain.md`.
