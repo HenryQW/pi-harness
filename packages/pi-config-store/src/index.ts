@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -22,16 +22,14 @@ function readBounded(path: string): Buffer {
 	let file: number | undefined;
 	try {
 		file = openSync(path, "r");
-		const size = fstatSync(file).size;
-		if (size > MAX_CONFIG_BYTES) throw new Error(`Config exceeds ${MAX_CONFIG_BYTES} bytes: ${path}`);
-
-		const bytes = Buffer.allocUnsafe(size);
+		const bytes = Buffer.allocUnsafe(MAX_CONFIG_BYTES + 1);
 		let offset = 0;
 		while (offset < bytes.length) {
 			const bytesRead = readSync(file, bytes, offset, bytes.length - offset, null);
 			if (bytesRead === 0) break;
 			offset += bytesRead;
 		}
+		if (offset > MAX_CONFIG_BYTES) throw new Error(`Config exceeds ${MAX_CONFIG_BYTES} bytes: ${path}`);
 		return bytes.subarray(0, offset);
 	} finally {
 		if (file !== undefined) closeSync(file);
