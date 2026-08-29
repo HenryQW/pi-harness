@@ -148,16 +148,19 @@ test("routes once at first agent boundary from fresh seven-day cache", async () 
 	});
 });
 
-test("does not route from a fresh snapshot lacking five-hour observation", async () => {
+test("does not route from or rewrite a legacy snapshot lacking five-hour observation", async () => {
 	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
 		const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
 		const state = JSON.parse(await readFile(cache, "utf8"));
 		for (const snapshot of state.slots) delete snapshot.limitedUntil;
-		await writeFile(cache, JSON.stringify(state));
+		const original = JSON.stringify(state);
+		await writeFile(cache, original);
 
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
 		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.equal(setModels.length, 0);
+		assert.equal(await readFile(cache, "utf8"), original);
 	});
 });
 

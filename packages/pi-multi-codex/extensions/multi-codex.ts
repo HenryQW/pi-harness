@@ -66,6 +66,7 @@ type UsageLock = {
 type UsageState = {
 	slots: Map<number, UsageSnapshot>;
 	locks: Map<number, UsageLock>;
+	untrusted?: true;
 };
 
 type ParsedUsage = { remaining: number; reset: number; limitedUntil?: number; tier?: string };
@@ -203,43 +204,50 @@ function readLock(value: unknown): UsageLock | undefined {
 	return { slot: value.slot, owner: value.owner, accountHash: value.accountHash, heartbeatAt: value.heartbeatAt };
 }
 
-function parseState(value: unknown): UsageState {
-	const state: UsageState = { slots: new Map(), locks: new Map() };
-	if (!isRecord(value)) return state;
-	for (const snapshot of Array.isArray(value.slots) ? value.slots : []) {
+function parseState(value: unknown): UsageState | undefined {
+	if (!isRecord(value) || !Array.isArray(value.slots) || !Array.isArray(value.locks)) return undefined;
+	const state = emptyState();
+	for (const snapshot of value.slots) {
 		const parsed = readSnapshot(snapshot);
-		if (parsed) state.slots.set(parsed.slot, parsed);
+		if (!parsed || state.slots.has(parsed.slot)) return undefined;
+		state.slots.set(parsed.slot, parsed);
 	}
-	for (const lock of Array.isArray(value.locks) ? value.locks : []) {
+	for (const lock of value.locks) {
 		const parsed = readLock(lock);
-		if (parsed) state.locks.set(parsed.slot, parsed);
+		if (!parsed || state.locks.has(parsed.slot)) return undefined;
+		state.locks.set(parsed.slot, parsed);
 	}
 	return state;
 }
 
-function emptyState(): UsageState {
-	return { slots: new Map(), locks: new Map() };
+function emptyState(untrusted = false): UsageState {
+	return { slots: new Map(), locks: new Map(), ...(untrusted ? { untrusted: true } : {}) };
+}
+
+function isMissingCacheFile(error: unknown): boolean {
+	return Boolean(error && typeof error === "object" && "code" in error && String(error.code) === "ENOENT");
 }
 
 function loadStateSync(): UsageState {
 	try {
-		return parseState(JSON.parse(readFileSync(cachePath(), "utf8")));
-	} catch {
-		return emptyState();
+		return parseState(JSON.parse(readFileSync(cachePath(), "utf8"))) ?? emptyState(true);
+	} catch (error) {
+		return emptyState(!isMissingCacheFile(error));
 	}
 }
 
 async function loadState(signal?: AbortSignal): Promise<UsageState> {
 	try {
-		return parseState(JSON.parse(await readFile(cachePath(), { encoding: "utf8", signal })));
+		return parseState(JSON.parse(await readFile(cachePath(), { encoding: "utf8", signal }))) ?? emptyState(true);
 	} catch (error) {
 		signal?.throwIfAborted();
-		return emptyState();
+		return emptyState(!isMissingCacheFile(error));
 	}
 }
 
 async function saveState(state: UsageState, signal?: AbortSignal): Promise<void> {
 	signal?.throwIfAborted();
+	if (state.untrusted) return;
 	const file = cachePath();
 	const directory = join(getAgentDir(), "config", "pi-multi-codex");
 	await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -411,11 +419,12 @@ class CodexQuotaStatus {
 		return loadState();
 	}
 
-	private change<T>(change: (state: UsageState) => { value: T; write: boolean }, signal?: AbortSignal): Promise<T> {
+	private change<T>(change: (state: UsageState) => { value: T; write: boolean }, signal?: AbortSignal): Promise<T | undefined> {
 		const operation = this.writes.then(() => withCacheMutex(async (operationSignal) => {
 			operationSignal.throwIfAborted();
 			const state = await loadState(operationSignal);
 			operationSignal.throwIfAborted();
+			if (state.untrusted) return undefined;
 			const result = change(state);
 			if (result.write) {
 				operationSignal.throwIfAborted();
@@ -460,6 +469,7 @@ class CodexQuotaStatus {
 
 		const now = Date.now();
 		const state = loadStateSync();
+		if (state.untrusted) return;
 		let dueAt: number | undefined;
 		for (const [slot, credential] of readCodexCredentials()) {
 			if (this.active.has(slot)) continue;
@@ -601,7 +611,7 @@ class CodexQuotaStatus {
 			return { value: true, write: true };
 		}, refresh.session.signal);
 		if (finished) this.onChange();
-		return finished;
+		return finished ?? false;
 	}
 
 	private async release(slot: number, owner: string, signal: AbortSignal): Promise<void> {
