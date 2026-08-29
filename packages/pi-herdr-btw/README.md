@@ -11,6 +11,7 @@ Open a focused Pi side thread in a Herdr pane. Then merge its transcript and fol
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-btw
 ```
 

@@ -10,6 +10,7 @@ Give each conversation one short human title across Pi and Herdr. Use meaningful
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-rename
 ```
 

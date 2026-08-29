@@ -11,6 +11,8 @@ Keep two auto-managed Markdown memory stores for Pi. Each session uses a frozen 
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-ask-question
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-memory
 ```
 

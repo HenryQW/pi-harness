@@ -10,6 +10,8 @@ Main is the parent Pi session. It can delegate bounded single, parallel, and cha
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
+pi install npm:@henryqw/pi-multi-codex
 pi install npm:@henryqw/pi-subagent
 ```
 

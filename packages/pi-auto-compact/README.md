@@ -10,6 +10,7 @@ Compact context before it reaches the configured threshold. Then resume the curr
 ## Install
 
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
