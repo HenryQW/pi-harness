@@ -27,6 +27,29 @@ This repository contains the Pi extensions I use daily for my work. They are hig
 | [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate one task to an isolated role with explicit extensions and skills. |
 | [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
+## Internal package dependencies
+
+This graph shows cross-package runtime dependencies from the `dependencies` fields in `packages/*/package.json`. Arrows point from a dependent package to the package it depends on.
+
+```mermaid
+flowchart LR
+  autoCompact["pi-auto-compact"] --> taskModels["pi-task-models"]
+  footer["pi-footer"] --> openIn["pi-open-in"]
+  herdrBtw["pi-herdr-btw"] --> herdr["pi-herdr"]
+  herdrBtw --> taskModels
+  herdrClone["pi-herdr-clone"] --> herdr
+  herdrDone["pi-herdr-done"] --> herdr
+  herdrRename["pi-herdr-rename"] --> herdr
+  herdrRename --> taskModels
+  memory["pi-memory"] --> askQuestion["pi-ask-question"]
+  memory --> taskModels
+  subagent["pi-subagent"] --> herdr
+  subagent --> multiCodex["pi-multi-codex"]
+  subagent --> taskModels
+```
+
+Packages omitted from the graph have no internal `@henryqw` package dependency.
+
 ## Deprecated
 
 Retired extensions and their replacements are recorded under [`deprecated/`](./deprecated).
