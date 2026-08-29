@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { buildContextInjection, collectSkillPaths, findFiles, scanDirContext } from "../extensions/add-dir-helpers.ts";
-import addDirExtension from "../extensions/add-dir.ts";
+import addDirExtension, { createExternalAutocompleteProvider } from "../extensions/add-dir.ts";
 
 interface RegisteredTool {
 	name: string;
@@ -49,7 +50,7 @@ function extensionContext(cwd: string, getBranch: () => unknown[], reload = asyn
 		cwd,
 		hasUI: false,
 		sessionManager: { getBranch },
-		ui: { setWidget() {} },
+		ui: { addAutocompleteProvider() {}, setWidget() {} },
 		reload,
 	} as unknown as ExtensionContext;
 }
@@ -71,6 +72,58 @@ test("registers external skills without duplicating Pi's skill prompt", async ()
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
+});
+
+test("includes added directories in @ file autocomplete", async () => {
+	const external = join(tmpdir(), "external project");
+	const externalPrefix = `@"${join(external, "query")}`;
+	const seenPrefixes: string[] = [];
+	const current: AutocompleteProvider = {
+		async getSuggestions(lines, cursorLine, cursorCol) {
+			const prefix = (lines[cursorLine] ?? "").slice(0, cursorCol).match(/@.*$/)?.[0] ?? "";
+			seenPrefixes.push(prefix);
+			if (prefix === "@query") {
+				return {
+					prefix,
+					items: [
+						{ value: "@local.ts", label: "local.ts" },
+						{ value: "@local-test.ts", label: "local-test.ts" },
+					],
+				};
+			}
+			if (prefix === externalPrefix) {
+				return {
+					prefix,
+					items: [{ value: `@"${join(external, "result.ts")}"`, label: "result.ts" }],
+				};
+			}
+			return null;
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			return { lines, cursorLine, cursorCol };
+		},
+	};
+	const provider = createExternalAutocompleteProvider(current, () => [
+		{ absolutePath: external, label: "external" },
+	]);
+
+	const suggestions = await provider.getSuggestions(["attach @query"], 0, 13, {
+		signal: new AbortController().signal,
+	});
+
+	assert.deepEqual(seenPrefixes, ["@query", externalPrefix]);
+	assert.deepEqual(suggestions, {
+		prefix: "@query",
+		items: [
+			{ value: "@local.ts", label: "local.ts" },
+			{
+				value: `@"${join(external, "result.ts")}"`,
+				label: "result.ts",
+				description: `external: @"${join(external, "result.ts")}"`,
+			},
+			{ value: "@local-test.ts", label: "local-test.ts" },
+		],
+	});
 });
 
 test("finds files recursively while skipping dependency and Git trees", async () => {
