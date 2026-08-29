@@ -26,9 +26,11 @@ function setupFooter(
 	{
 		appendEntry = () => {},
 		exec = async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+		notify = () => {},
 	}: {
 		appendEntry?: (customType: string, data: unknown) => void;
 		exec?: () => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
+		notify?: (message: string, type: string) => void;
 	} = {},
 ) {
 	const handlers = new Map<string, Handler>();
@@ -49,6 +51,7 @@ function setupFooter(
 					setFooter(factory: FooterFactory) {
 						footerFactory = factory;
 					},
+					notify,
 				},
 			}) as unknown as ExtensionContext;
 			const sessionStart = handlers.get("session_start");
@@ -82,8 +85,10 @@ test("renders family status on the first line and external statuses beside runti
 		{ type: "compaction", usage: usage(1_500, 100, 0, 0.03) },
 		{ type: "message", message: { role: "assistant", usage: usage(500, 100, 500, 0.2) } },
 	];
+	const notifications: Array<[string, string]> = [];
 	const { start } = setupFooter({
 		exec: async () => ({ stdout: gitOutput, stderr: "", code: 0, killed: false }),
+		notify: (message, type) => notifications.push([message, type]),
 	});
 
 	const ctx = {
@@ -96,6 +101,9 @@ test("renders family status on the first line and external statuses beside runti
 	};
 
 	const footerFactory = await start(ctx);
+	assert.deepEqual(notifications, [["Open-in config is missing; defaults are used.", "warning"]]);
+	await start(ctx);
+	assert.deepEqual(notifications, [["Open-in config is missing; defaults are used.", "warning"]]);
 	const colors: [string, string][] = [];
 	let extensionStatuses = new Map([
 		["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],
@@ -132,11 +140,16 @@ test("renders family status on the first line and external statuses beside runti
 	extensionStatuses = new Map([["pi-rewind", "↩ rewind"]]);
 	assert.match(stripTerminalSequences(footer.render(100)[2]!).trim(), /^↩ rewind +◷ 0s$/);
 
-	await mkdir(join(agentDir, "config"));
-	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"codex"}');
+	const openInConfig = join(agentDir, "config", "pi-open-in", "config.json");
+	await mkdir(join(agentDir, "config", "pi-open-in"), { recursive: true });
+	await writeFile(openInConfig, '{"command":"codex"}');
 	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
-	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"code"}');
+	await writeFile(openInConfig, '{"command":"code"}');
 	assert.match(footer.render(100)[0]!, /vscode:\/\//);
+	await writeFile(openInConfig, "{not json");
+	assert.doesNotThrow(() => footer.render(100));
+	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
+	await writeFile(openInConfig, '{"command":"code"}');
 	setCapabilities({ ...previousCapabilities, hyperlinks: false });
 	assert.doesNotMatch(footer.render(100)[0]!, /\x1b\]8;;/);
 

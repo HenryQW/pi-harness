@@ -2,7 +2,7 @@ import { basename, dirname } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
+import { configuredOpenUri, loadOpenInConfig } from "@henryqw/pi-open-in/open-uri";
 
 const THINKING_COLORS = {
 	minimal: 46,
@@ -66,6 +66,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	let promptPaused = false;
 	let runtimeTimer: ReturnType<typeof setInterval> | undefined;
 	let requestRuntimeRender: (() => void) | undefined;
+	let openInWarningShown = false;
 	const stopRuntimeTimer = () => {
 		if (runtimeTimer === undefined) return;
 		clearInterval(runtimeTimer);
@@ -119,6 +120,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		stopRuntimeTimer();
 		activeStartedAt = undefined;
 		promptPaused = false;
+		openInWarningShown = false;
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -131,6 +133,16 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		for (const entry of ctx.sessionManager.getEntries()) {
 			if (entry.type === "custom" && entry.customType === AGENT_TIME_ENTRY && isValidMilliseconds(entry.data)) {
 				activeMilliseconds = entry.data;
+			}
+		}
+		if (!openInWarningShown) {
+			openInWarningShown = true;
+			try {
+				if (loadOpenInConfig().source === "missing") {
+					ctx.ui.notify("Open-in config is missing; defaults are used.", "warning");
+				}
+			} catch {
+				// Invalid owner config must not prevent footer setup; rendering omits its URI.
 			}
 		}
 		if (ctx.mode !== "tui") return;
