@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { writeTaskModelsConfig } from "@henryqw/pi-task-models";
-import { createBtwConfigStore, DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
+import { DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
 import type { BtwPayload } from "../internal/core.ts";
 import {
 	MERGE_CUSTOM_TYPE,
@@ -267,9 +266,15 @@ async function createHarness(
 	return { commands, handlers, execCalls, sentUserMessages, sentMessages, configStore, emit, cleanup, timers };
 }
 
+async function writeTaskModelsConfig(config: object, agentDir: string): Promise<void> {
+	const directory = join(agentDir, "config", "pi-task-models");
+	await mkdir(directory, { recursive: true });
+	await writeFile(join(directory, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+}
+
 async function withParentEnvironment(run: (agentDir: string) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-btw-task-models-"));
-	writeTaskModelsConfig({
+	await writeTaskModelsConfig({
 		profiles: {
 			fast: { primary: { model: "test-provider/test-model", thinkingLevel: "high" } },
 		},
@@ -434,7 +439,8 @@ test("config subcommand updates and resets launch defaults, including malformed-
 test("warns once per session when local or shared config is missing", async () => {
 	await withParentEnvironment(async (agentDir) => {
 		await rm(join(agentDir, "config", "pi-task-models"), { recursive: true, force: true });
-		const configStore = createBtwConfigStore(agentDir);
+		const configStore = new FakeConfigStore();
+		configStore.source = "missing";
 		const harness = await createHarness(
 			new FakeStore(),
 			async () => ({ code: 0, stdout: "", stderr: "" }),
@@ -527,7 +533,7 @@ test("parent stops pane-busy retries when its session shuts down during backoff"
 
 test("parent uses authenticated task-profile fallback when primary authentication fails", async () => {
 	await withParentEnvironment(async (agentDir) => {
-		writeTaskModelsConfig({
+		await writeTaskModelsConfig({
 			profiles: {
 				frontier: {
 					primary: { model: "test-provider/test-model", thinkingLevel: "high" },
@@ -562,7 +568,7 @@ test("parent uses authenticated task-profile fallback when primary authenticatio
 
 test("parent rejects unavailable or unauthenticated task-profile routes before splitting", async () => {
 	await withParentEnvironment(async (agentDir) => {
-		writeTaskModelsConfig({
+		await writeTaskModelsConfig({
 			profiles: { frontier: { primary: { model: "missing/model", thinkingLevel: "high" } } },
 			tasks: { "pi-herdr-btw/btw": "frontier" },
 		}, agentDir);
@@ -575,7 +581,7 @@ test("parent rejects unavailable or unauthenticated task-profile routes before s
 		assert.equal(unavailableStore.created.length, 0);
 		assert.match(unavailableCtx.notifications.at(-1)?.message ?? "", /no available route/);
 
-		writeTaskModelsConfig({
+		await writeTaskModelsConfig({
 			profiles: { fast: { primary: { model: "test-provider/test-model", thinkingLevel: "high" } } },
 			tasks: {},
 		}, agentDir);
