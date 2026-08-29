@@ -48,7 +48,7 @@ Fallback choices exclude the selected primary. BTW selects the first authenticat
 
 ## Config
 
-The single shared JSON file is at the exact package-owned path `~/.pi/agent/config/pi-task-models.json`. Consumers read it but never write it. Only explicit `/task-models` actions save it.
+The shared JSON file is at `~/.pi/agent/config/pi-task-models/config.json`. Consumers use `loadTaskModelsConfig()` for validated values. They never read or write this file. Only explicit `/task-models` actions save it.
 
 ```json
 {
@@ -88,12 +88,16 @@ Task defaults live only in consumer declarations. Existing explicit assignments,
 
 Model references use canonical `provider/model`. Numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
 
-Reads are strict. A missing file yields `{ "profiles": {}, "tasks": {} }`.
+Reads are strict. `loadTaskModelsConfig()` returns `{ source: "missing", value: { "profiles": {}, "tasks": {} } }` for a missing file. It does not create a file.
 
-Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance. The file is never rewritten.
+At session start, task-models warns that `~/.pi/agent/config/pi-task-models/config.json` is missing and defaults are being used.
+
+Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance. The malformed file is preserved.
 
 ## For extension authors
 
 A `ModelTask` is a consumer-owned independently executed model operation. Consumers define a `ModelTask` and call `registerModelTask(pi, task)` at extension load.
+
+Use `loadTaskModelsConfig()` to get validated config without reading a file. Its `source` is `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
 Use `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)` to resolve routes. Profile thinking is authoritative for task routes. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
