@@ -2,7 +2,7 @@
 
 ## Domain
 
-Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the corpus of Pi session JSONL trees under `~/.pi/agent/sessions/`, exposed as one LLM tool with four arg-inferred modes (discovery / scroll / read / browse). Zero LLM calls inside the tool; responses are raw messages hydrated from disk.
+Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the corpus of Pi session JSONL trees under `~/.pi/agent/sessions/`, exposed as one LLM tool with four arg-inferred modes (discovery / scroll / read / browse). Zero LLM calls inside the tool; responses are raw messages hydrated from disk. The bundled `pi-session-pattern-miner` skill uses that tool to find independently repeated work and prefer deterministic scripts over model-authored procedures.
 
 ## Boundary
 
@@ -24,5 +24,7 @@ Complementary to pi-memory: memory keeps high-signal distillations in-context at
 - **One-hop lineage suppression** (fork/clone only): pi `/new` creates files with no lineage link, so Hermes-style chain resolution would be dead code here.
 - **Query sanitize ladder**: quote-terms default → operator pass-through → quoted retry → OR-expand → LIKE, because raw LLM queries crash FTS5 parsers.
 - **Bounded trust boundary and output**: JSONL metadata is capped while parsing, indexed text contains only source text, and the complete serialized tool result is limited to 50,000 characters.
+- **Evidence-gated pattern mining**: the bundled skill requires two independent sessions, verifies current automation before proposing changes, and separates deterministic scripts from judgment-heavy skills. It reports sampling limits because browse is capped and discovery is query-driven.
+- **Display-only tail preview**: the interactive renderer mirrors Pi's built-in tool output behavior—five trailing visual lines when collapsed and the full bounded result when expanded. Model-visible content is unchanged.
 
 Known ceiling: whole-file `readFileSync` per hydration call (fine for local corpora); frecency boosting deferred until starvation evidence.

@@ -1,6 +1,6 @@
 # `@henryqw/pi-session-recall`
 
-FTS5 search over past Pi sessions: single `session_search` tool with four arg-inferred modes, zero LLM calls, raw messages only.
+FTS5 search over past Pi sessions: a zero-LLM `session_search` tool plus a bundled skill for finding repeated work worth automating.
 
 ## Why
 
@@ -18,6 +18,11 @@ pi install npm:@henryqw/pi-session-recall
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `session_search` | tool | Search past sessions or inspect one: discovery (`query`), scroll (`sessionId` + `aroundMessageId`), read (`sessionId`), browse (no args) |
+| `pi-session-pattern-miner` | skill | Find recurring work across sessions and define the smallest deterministic script, skill, or product change that should own it |
+
+### Find work worth automating
+
+Run `/skill:pi-session-pattern-miner` to find recurring workflows in past sessions. It requires evidence from two independent sessions, checks for existing automation, and prefers deterministic scripts when model judgment is unnecessary.
 
 **Discovery** — BM25-ranked top sessions; top hit hydrated with a ±5 message window and first/last-3 bookends; lower hits carry the matched anchor message plus metadata (`detail:"full"` hydrates all).
 
@@ -26,6 +31,8 @@ pi install npm:@henryqw/pi-session-recall
 **Read** — whole session; head 20 + tail 10 when large, with oversized content bounded to 50k characters and flagged by `contentTruncated`.
 
 **Browse** — recent sessions: path, name, cwd, started date, preview.
+
+In the interactive TUI, tool results use Pi's built-in tail-preview behavior: the collapsed block shows the last five visual lines and the earlier-line count; `Ctrl+O` expands the full bounded response. This changes display only—the model still receives the complete tool result.
 
 Query syntax: Prefer distinctive identifiers, package names, issue numbers, or uncommon terms; use quoted phrases only when exact wording is known. FTS5 over a trigram index — multi-word = AND by default, `OR` for breadth, quoted phrases for exact match, `NOT` to exclude. Wildcards only help stems ≥3 chars. Only user/assistant text is indexed; thinking blocks and tool output are not searchable. For message text over the 20,000-character indexing budget, only first/last regions are indexed and the middle is omitted; phrases and `NEAR` cannot cross those regions, but ordinary AND terms can. `sessionId` must be a `.jsonl` file under the Pi sessions directory.
 
