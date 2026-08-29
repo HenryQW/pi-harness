@@ -262,8 +262,6 @@ Activity text is limited to 4 KiB per field. An invalid `toolCallId` or `toolNam
 
 The low-level executor does not interpret `Role.isolation`, discover resources, compose modes, create shared state, or promote child failure outcomes to tool errors. A direct caller that wants worktrees must call `createChildWorktree` after the permit, choose the returned `cwd`, call `finalizeChildWorktree` on every exit path, and preserve its recovery payload.
 
-Generic managed Herdr exports (`managedSubagentWorkspaceId`, reconciliation helpers, `startManagedSubagent`, prompting/listing, and retirement) consume the same launch policy for durable workers. They intentionally contain no workflow prompts, semantic state, or retry policy.
-
 ## JavaScript composition
 
 The examples below use caller-selected `Role` objects and the `runRole` function returned by the package's initializer. A consuming Pi extension calls the initializer once at startup:

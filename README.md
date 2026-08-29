@@ -47,8 +47,7 @@ flowchart LR
   herdrRename --> taskModels
   memory["pi-memory"] --> askQuestion["pi-ask-question"]
   memory --> taskModels
-  subagent["pi-subagent"] --> herdr
-  subagent --> multiCodex["pi-multi-codex"]
+  subagent["pi-subagent"] --> multiCodex["pi-multi-codex"]
   subagent --> taskModels
 
   footer -.->|PR status| pr["pi-pr"]

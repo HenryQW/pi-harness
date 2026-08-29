@@ -252,7 +252,7 @@ Scope a child by selecting fewer trusted extensions. Finer-grained selection req
 
 ## Library API
 
-The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, worktree helpers, and generic managed Herdr lifecycle helpers.
+The package root exports Role loading and launch resolution, `createEphemeralSubagentExecutor`, and worktree helpers.
 
 The executor is for code already running inside active Pi. It does not provide standalone Node.js Pi discovery or launch support.
 
