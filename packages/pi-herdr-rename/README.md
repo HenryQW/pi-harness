@@ -41,7 +41,7 @@ A semantic branch is a Git-safe branch name made from a task type and the displa
 
 ### Model choice and resume
 
-The shared [`pi-task-models` config](../pi-task-models#config) is at `~/.pi/agent/config/pi-task-models.json`. It can explicitly override the local `pi-herdr-rename/rename` declaration, which defaults to `fast`.
+The shared [`pi-task-models` config](../pi-task-models#config) is at `~/.pi/agent/config/pi-task-models/config.json`. It can explicitly override the local `pi-herdr-rename/rename` declaration, which defaults to `fast`.
 
 The extension tries the assigned profile primary, then fallback, while honoring the configured thinking level. It never substitutes the current session model. No viable route leaves titles unchanged.
 

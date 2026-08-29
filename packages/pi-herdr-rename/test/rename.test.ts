@@ -123,9 +123,9 @@ async function withAgentDir(run: (dir: string) => Promise<void>): Promise<void> 
 	process.env.PI_CODING_AGENT_DIR = dir;
 	delete process.env.HERDR_PANE_ID;
 	try {
-		await mkdir(join(dir, "config"), { recursive: true });
+		await mkdir(join(dir, "config", "pi-task-models"), { recursive: true });
 		await writeFile(
-			join(dir, "config", "pi-task-models.json"),
+			join(dir, "config", "pi-task-models", "config.json"),
 			JSON.stringify({
 				profiles: {
 					fast: { primary: { model: `${defaultModel.provider}/${defaultModel.id}`, thinkingLevel: "off" } },
@@ -528,7 +528,7 @@ test("rename defaults to fast and uses its fallback after an invalid title", asy
 			thinkingLevelMap: { low: "low" },
 		};
 		const currentModel: Model = { provider: "main", id: "reliable", input: ["text"] };
-		await writeFile(join(dir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(dir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
 				fast: {
 					primary: { model: "primary/fast", thinkingLevel: "low" },
@@ -617,9 +617,22 @@ test("display title limits apply to subject without counting semantic type", asy
 	});
 });
 
+test("rename warns once when the shared task-model config is missing", async () => {
+	await withAgentDir(async (dir) => {
+		await rm(join(dir, "config", "pi-task-models", "config.json"));
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.deepEqual(app.notifications, ["Task model config is missing; defaults are being used."]);
+		assert.deepEqual(app.notificationTypes, ["warning"]);
+	});
+});
+
 test("rename reports an unconfigured fast profile without changing the title", async () => {
 	await withAgentDir(async (dir) => {
-		await writeFile(join(dir, "config", "pi-task-models.json"), JSON.stringify({ profiles: {} }));
+		await writeFile(join(dir, "config", "pi-task-models", "config.json"), JSON.stringify({ profiles: {} }));
 		const app = harness({
 			sessionName: "saved",
 			branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
@@ -635,7 +648,7 @@ test("rename reports an unconfigured fast profile without changing the title", a
 
 test("rename reports malformed shared config without rewriting it", async () => {
 	await withAgentDir(async (dir) => {
-		const taskModelsFile = join(dir, "config", "pi-task-models.json");
+		const taskModelsFile = join(dir, "config", "pi-task-models", "config.json");
 		const malformed = "{ not json\\n";
 		await writeFile(taskModelsFile, malformed);
 
