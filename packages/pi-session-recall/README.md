@@ -45,4 +45,4 @@ Session directories whose encoded path starts with `--tmp-` or `--private-tmp-` 
 
 ## Storage & privacy
 
-The SQLite index lives at `~/.pi/agent/config/pi-session-recall/index.db`. It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.
+It is derived state: delete it and it rebuilds from your session files. Everything stays local — transcripts are read in place and nothing leaves the machine beyond what tool results already show the model.

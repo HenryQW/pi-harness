@@ -14,9 +14,12 @@ Current durable architecture for the pi-packages monorepo. Package-specific ADRs
 
 ## Package architecture
 
-- [007 — pi-auto-dag Execution Engine](007-pi-auto-dag-execution-engine.md)
 - [013 — pi-auto-compact Architecture](013-pi-auto-compact-architecture.md)
 - [016 — pi-subagent Architecture](016-pi-subagent-architecture.md)
+
+## Retired package architecture
+
+- [007 — pi-auto-dag Execution Engine](007-pi-auto-dag-execution-engine.md)
 
 ## Process
 

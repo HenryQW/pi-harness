@@ -11,16 +11,16 @@ Open a focused Pi side thread in a Herdr pane, then merge its transcript and fol
 ## Install
 
 ```bash
-pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-btw
 ```
 
-Requires Pi Coding Agent 0.84.4+, Herdr 0.7.4+, and a Herdr-managed pane.
+Requires Herdr 0.7.4+ and a Herdr-managed pane.
 
 ## With
 
 | Package | Why |
 | --- | --- |
+| `@henryqw/pi-memory` | Improves. Marks side-thread children for pi-memory, suppressing parent-only memory injection and dream advice. |
 | `@henryqw/pi-task-models` | Required. Shared model profiles for side-thread routes. |
 
 ## Use
@@ -39,6 +39,8 @@ Requires Pi Coding Agent 0.84.4+, Herdr 0.7.4+, and a Herdr-managed pane.
 ```
 
 `ask`, `config`, `merge`, and `help` route only when exact first words. Other input is a question. A provided question is an editable draft by default. `/btw` snapshots Main's compaction-aware context, inherits its working directory, and uses its consumer-owned `pi-herdr-btw/btw` task, which defaults to `fast`. It selects the first authenticated viable effective profile route before pane launch.
+
+Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. The local `pi-herdr-btw/btw` declaration defaults to `fast`; a task entry is an explicit user override. Side-thread routes resolve before pane launch.
 
 In side pane, `/btw merge <prompt>` sends user/assistant text transcript to Main, refocuses Main, and closes side pane. Main appends transcript without starting a turn, then submits prompt. Bare `/btw merge` opens prompt editor. Pending delivery waits for Main to settle and current model authentication; it survives side-pane shutdown until consumed or 24-hour stale cleanup.
 
@@ -63,5 +65,3 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw.json`
 | `split` | No | `right`, `down` — side-pane placement | `right` |
 
 All fields are optional; unknown keys and non-object files are rejected. `/btw config show` prints effective values; `/btw config reset` removes the file. Missing config uses defaults; malformed config fails visibly and remains unchanged.
-
-Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. The local `pi-herdr-btw/btw` declaration defaults to `fast`; a task entry is an explicit user override. Side-thread routes resolve before pane launch.

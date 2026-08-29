@@ -17,14 +17,15 @@ pi install npm:@henryqw/pi-footer
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-multi-codex` | Adds active Codex subscription quota and reset status. |
-| `@henryqw/pi-open-in` | Adds `/open` and `/set-open-in` commands for editor configuration. |
+| `@henryqw/pi-multi-codex` | Improves. Adds active Codex subscription quota and reset status. |
+| `@henryqw/pi-open-in` | Improves. Adds `/open` and `/set-open-in` commands for editor configuration. |
+| `@henryqw/pi-pr` | Improves. Adds current-branch pull-request status. |
 
 ## Use
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| Footer | UI | Show checkout, usage, model, thinking, and extension statuses. |
+| Footer | ui | Show checkout, usage, model, thinking, and extension statuses. |
 
 ```text
 pi-packages · clear-field-f8d2 · PR #123 · approved    Codex #1 · 50% · 7d 1d 1h 22m

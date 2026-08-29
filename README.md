@@ -12,6 +12,7 @@ This repository contains the Pi extensions I use daily for my work. They are hig
 | [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | Compact context at the set threshold and resume current task. |
 | [`@henryqw/pi-deps`](./packages/pi-deps) | Prepare locked Node and uv dependencies for opted-in Git worktrees. |
+| [`@henryqw/pi-footer`](./packages/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
 | [`@henryqw/pi-herdr`](./packages/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
 | [`@henryqw/pi-herdr-btw`](./packages/pi-herdr-btw) | Open and merge Pi side threads in Herdr panes. |
 | [`@henryqw/pi-herdr-clone`](./packages/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |
@@ -21,10 +22,9 @@ This repository contains the Pi extensions I use daily for my work. They are hig
 | [`@henryqw/pi-multi-codex`](./packages/pi-multi-codex) | Use multiple ChatGPT Codex OAuth accounts in Pi. |
 | [`@henryqw/pi-notes`](./packages/pi-notes) | Keep persistent per-worktree notes visible in a Pi widget. |
 | [`@henryqw/pi-open-in`](./packages/pi-open-in) | Open current working directory with configurable command. |
-| [`@henryqw/pi-footer`](./packages/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
 | [`@henryqw/pi-pr`](./packages/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
 | [`@henryqw/pi-session-recall`](./packages/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
-| [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate one task to an isolated role with explicit extensions and skills. |
+| [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate bounded single, parallel, chained, and package-owned Git Flow work to isolated roles. |
 | [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
 ## Internal package relationships

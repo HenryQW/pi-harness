@@ -15,11 +15,17 @@ pi install npm:@henryqw/pi-pr
 
 Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repository checkout.
 
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-footer` | Improves. Shows current-branch pull-request status in the footer. |
+
 ## Use
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| Footer | UI | Show the current branch pull request. |
+| Footer | ui | Show the current branch pull request. |
 | `/pr` | command | Open current branch PR, or start PR workflow when absent. |
 
 Each entry is one linked `PR #number` plus one plain-language state: `<count> unresolved`, `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `merge conflict`, `merged`, or `closed`. Known unresolved review threads take priority, followed by merge conflict, changes requested, CI failure, then CI progress. Colors support text; they do not carry meaning alone.

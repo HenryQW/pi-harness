@@ -10,17 +10,8 @@ Compact context before it hits the configured threshold, then resume the current
 ## Install
 
 ```bash
-pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
-
-Requires Pi Coding Agent 0.84.4+.
-
-## With
-
-| Package | Why |
-| --- | --- |
-| `@henryqw/pi-task-models` | Required. Shared model profiles for compaction routes. |
 
 Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 
@@ -33,6 +24,14 @@ Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 ```
 
 Restart Pi after install or settings changes. Trusted project settings in `.pi/settings.json` must not set `compaction.enabled` back to `true`.
+
+## With
+
+| Package | Why |
+| --- | --- |
+| `@henryqw/pi-task-models` | Required. Shared model profiles for compaction routes. |
+
+Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`; a task entry is an explicit user override. Malformed shared task-model config is reported and left unchanged; compaction then uses the current session model.
 
 ## Use
 
@@ -57,5 +56,3 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact.json`
 | `autoCompactThreshold` | No | Number, at least 25, below 100 | `50` |
 
 Unknown fields are ignored (legacy model fields are obsolete). `/auto-compact` writes this file. A missing file uses the default; a malformed or invalid file fails visibly at session start, falls back to 50%, and stays unchanged.
-
-Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`; a task entry is an explicit user override. Malformed shared task-model config is reported and left unchanged; compaction then uses the current session model.

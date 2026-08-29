@@ -18,14 +18,14 @@
 pi install npm:@henryqw/<package>
 ```
 
-<Runtime requirement or setup step, if needed.>
+<Runtime prerequisite or setup step, if needed. Do not repeat generic Pi version requirements already enforced by peerDependencies.>
 
-<!-- Optional: separately installed companion Pi packages only. -->
+<!-- Optional: separately installed companion Pi packages only. Alphabetize rows by package. Reasons begin Required., Improves., or Consumer. -->
 ## With
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/<companion>` | Required or improves. <Why.> |
+| `@henryqw/<companion>` | Required. <Why.> |
 
 ## Use
 
@@ -36,7 +36,7 @@ pi install npm:@henryqw/<package>
 
 <Behavior, limits, integrations, and safety caveats.>
 
-<!-- Optional: include Config only when the package owns a user-editable config file; otherwise omit it. Do not present generated state or companion-package config as this package's config. -->
+<!-- Optional: include Config only when the package owns a user-editable config file; otherwise omit it. Put companion/shared config guidance in With or Use, not here. Do not present generated state as this package's config. -->
 ## Config
 
 `~/.pi/agent/config/<package>.json`

@@ -1,6 +1,6 @@
 # `@henryqw/pi-herdr-done`
 
-Pi extension that closes and removes the current Herdr-managed linked worktree. Requires Pi Coding Agent 0.84.4+ running inside Herdr.
+Close and remove the current Herdr-managed linked worktree safely.
 
 ## Why
 
@@ -12,6 +12,8 @@ Pi extension that closes and removes the current Herdr-managed linked worktree. 
 ```bash
 pi install npm:@henryqw/pi-herdr-done
 ```
+
+Requires a Pi session running inside Herdr.
 
 ## Use
 

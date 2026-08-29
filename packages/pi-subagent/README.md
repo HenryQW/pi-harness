@@ -10,8 +10,6 @@ Delegate bounded work to isolated Pi child processes. Main plans and orchestrate
 ## Install
 
 ```bash
-pi install npm:@henryqw/pi-task-models
-pi install npm:@henryqw/pi-multi-codex
 pi install npm:@henryqw/pi-subagent
 ```
 
@@ -19,8 +17,10 @@ pi install npm:@henryqw/pi-subagent
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-task-models` | Required shared `fast` / `balanced` / `frontier` / `fav` routes. |
-| `@henryqw/pi-multi-codex` | Required so children can use Main's active Codex slot. |
+| `@henryqw/pi-multi-codex` | Required. Children can use Main's active Codex slot. |
+| `@henryqw/pi-task-models` | Required. Shared `fast` / `balanced` / `frontier` / `fav` routes. |
+
+Model routing is *not* configured here; children resolve routes through the shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
 
 ## Use
 
@@ -90,7 +90,7 @@ A rebase that drops all unit commits is a no-op: Flow validates it, skips Review
 
 ## Config
 
-pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-subagent/`, which holds two kinds of user-owned configuration: one Markdown file per Role (see [Roles](#roles)) and its own optional JSON file below. Model routing is *not* configured here; children resolve routes through the shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
+pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-subagent/`, which holds two kinds of user-owned configuration: one Markdown file per Role (see [Roles](#roles)) and its own optional JSON file below.
 
 `~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the ephemeral child pool and timeouts. All fields are optional; a missing file uses defaults.
 
@@ -149,7 +149,7 @@ The package never installs or writes Role configuration. Sample names are not bu
 
 The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side planner/orchestrator policy only. `delegate_flow` owns its fixed Git mechanics and validation authority; the Skill adds no runtime code, configuration, or Role installation. Generic orchestration remains outside the executor under [ADR 001](./docs/adr/001-composable-ephemeral-execution.md).
 
-A Role explicitly owns base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Every launch installs its Role tool policy: `tools: []` activates no base built-ins, while trusted selected extension tools and explicit caller tool additions still activate. `skills: []` selects no separately named Role Skills, while trusted selected extension Skills still load; `extensions: []` selects no Role extension bundle. Ambient extension and Skill discovery is disabled in children. Selecting an extension explicitly is selecting a trusted atomic capability bundle, not just a provider path: every tool it registers and every Skill supplied through its Pi package metadata or dynamic `resources_discover` loads alongside separately named Role Skills. This is intentional because an extension may depend on its own tools, Skills, lifecycle, and prompt behavior; loading it permits that executable behavior and is not sandboxing. To scope a child, select fewer trusted extensions. Finer-grained selection requires separate extension entry points/configuration or an upstream split—pi-subagent does not infer or externally narrow undocumented dependencies. Parent-only recursive orchestration tools stay excluded. Explicit Role or caller tool names are verified against the child’s final filtered active registry after provider extensions finish `session_start`; all unavailable names fail before the first model turn with provider-extension guidance, while unavailable named Skills warn and skip.
+A Role explicitly owns base tools, extensions, named Skills, instructions, and optional `isolation: worktree`. Every launch installs its Role tool policy: `tools: []` activates no base built-ins, while trusted selected extension tools and explicit caller tool additions still activate. `skills: []` selects no separately named Role Skills, while trusted selected extension Skills still load; `extensions: []` selects no Role extension bundle. Ambient extension and Skill discovery is disabled in children. Selecting an extension explicitly is selecting a trusted atomic capability bundle, not just a provider path: every tool it registers and every Skill supplied through its Pi package metadata or dynamic `resources_discover` loads alongside separately named Role Skills. This is intentional because an extension may depend on its own tools, Skills, lifecycle, and prompt behavior; loading it permits that executable behavior and is not sandboxing. To scope a child, select fewer trusted extensions. Finer-grained selection requires separate extension entry points/configuration or an upstream split—pi-subagent does not infer or externally narrow undocumented dependencies. Parent-only recursive orchestration tools and interactive `ask_question` are excluded from children. Explicit Role or caller tool names are verified against the child’s final filtered active registry after provider extensions finish `session_start`; all unavailable names fail before the first model turn with provider-extension guidance, while unavailable named Skills warn and skip.
 
 ## Library API
 

@@ -10,11 +10,8 @@ Give each conversation one short human title across Pi and Herdr while keeping s
 ## Install
 
 ```bash
-pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-rename
 ```
-
-Requires Pi Coding Agent 0.84.4+.
 
 ## With
 

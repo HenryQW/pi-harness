@@ -17,8 +17,9 @@ pi install npm:@henryqw/pi-multi-codex
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-task-models` | Improves. Numbered slots share one profile route. |
+| `@henryqw/pi-footer` | Improves. Shows the active slot's quota or five-hour block in the footer. |
 | `@henryqw/pi-subagent` | Improves. Isolated children keep Main's active Codex slot. |
+| `@henryqw/pi-task-models` | Improves. Numbered slots share one profile route. |
 
 ## Use
 

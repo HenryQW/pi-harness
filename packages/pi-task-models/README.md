@@ -20,8 +20,9 @@ pi install npm:@henryqw/pi-task-models
 | `@henryqw/pi-auto-compact` | Consumer. Its local compaction task defaults to `fast`. |
 | `@henryqw/pi-herdr-btw` | Consumer. Its local side-thread task defaults to `fast`. |
 | `@henryqw/pi-herdr-rename` | Consumer. Its local rename task defaults to `fast`. |
-| `@henryqw/pi-subagent` | Consumer. Its local delegation task defaults to `fast`; callers can declare their own task. |
+| `@henryqw/pi-memory` | Consumer. Its local candidate-review task defaults to `balanced`. |
 | `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots dedupe to one route. |
+| `@henryqw/pi-subagent` | Consumer. Its local delegation task defaults to `fast`; callers can declare their own task. |
 
 ## Use
 
