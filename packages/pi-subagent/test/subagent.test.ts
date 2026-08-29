@@ -726,7 +726,7 @@ Return concise findings.
 	});
 });
 
-test("widget renders two truncated lines, retains terminal entries, and clears them on user input", async () => {
+test("widget renders one truncated line, retains terminal entries, and clears them on user input", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		for (const [name, description] of [["scout", "Finds code"], ["worker", "Does work"]]) {
@@ -749,31 +749,31 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		process.argv[1] = runner;
 		const app = harness({ ui: true });
 		const completed = app.tool.execute("call-1", { role: "scout", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
-		await waitFor(() => app.widget?.render(100).join("\n").includes("1.1k tok") ?? false);
-		const wide = app.widget!.render(100);
-		assert.equal(wide.length, 2);
-		assert.ok(wide.every((line) => visibleWidth(line) <= 100));
-		assert.match(wide[0]!, /scout · working · Normalize Windows registered-worktree paths/);
-		assert.match(wide[1]!, /^  thinking… · text-model · low · 1\.1k tok ·/);
+		await waitFor(() => app.widget?.render(160).join("\n").includes("1.1k tok") ?? false);
+		const wide = app.widget!.render(160);
+		assert.equal(wide.length, 1);
+		assert.ok(wide.every((line) => visibleWidth(line) <= 160));
+		assert.match(wide[0]!, /scout · working · Normalize Windows registered-worktree paths · thinking… · text-model · low · 1\.1k tok ·/);
 		assert.doesNotMatch(wide.join("\n"), /test\//);
 		const narrow = app.widget!.render(24);
-		assert.equal(narrow.length, 2);
+		assert.equal(narrow.length, 1);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
 		assert.match(narrow[0]!, /scout · working/);
-		assert.match(narrow[1]!, /^  thinking…/);
 		const tiny = app.widget!.render(1);
-		assert.equal(tiny.length, 2);
+		assert.equal(tiny.length, 1);
 		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
 		await completed;
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
-		const terminal = app.widget!.render(100);
-		assert.equal(terminal.length, 2);
-		assert.match(terminal[0]!, /scout · complete/);
-		assert.match(terminal[1]!, /Done · 1 turn/);
+		const terminal = app.widget!.render(160);
+		assert.equal(terminal.length, 1);
+		assert.match(terminal[0]!, /scout · complete .* Done · 1 turn/);
 
 		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
 		const running = app.tool.execute("call-2", { role: "worker", task: "keep working" }, undefined, undefined, app.ctx);
 		await waitFor(() => app.widget?.render(100).join("\n").includes("worker · working") ?? false);
+		const activeFirst = app.widget!.render(160);
+		assert.match(activeFirst[0]!, /worker · working/);
+		assert.match(activeFirst[1]!, /scout · complete/);
 		await app.handlers.get("input")?.({ source: "extension", text: "injected" }, app.ctx);
 		assert.match(app.widget!.render(100).join("\n"), /scout · complete/);
 		await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
@@ -824,7 +824,7 @@ waitFor("read", () => {
 		const renderRows = () => {
 			for (const width of [100, 24, 1]) {
 				const lines = app.widget!.render(width);
-				assert.equal(lines.length, 2);
+				assert.equal(lines.length, 1);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			}
 			return app.widget!.render(100).join("\n");
@@ -971,11 +971,12 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 		const active = app.tool.execute("call-9", { role: "worker", task: "active ninth" }, undefined, undefined, app.ctx);
 		await waitFor(() => runner.started().includes("active ninth"));
 		try {
-			const widget = app.widget!.render(100).join("\n");
-			assert.match(widget, /worker · working/);
-			assert.match(widget, /active ninth/);
-			assert.doesNotMatch(widget, /completed 1/);
-			for (let index = 2; index <= 8; index++) assert.match(widget, new RegExp(`completed ${index}`));
+			const widget = app.widget!.render(160);
+			assert.equal(widget.length, 6);
+			assert.match(widget[0]!, /worker · working · active ninth/);
+			assert.doesNotMatch(widget.join("\n"), /completed 1/);
+			for (let index = 2; index <= 5; index++) assert.match(widget[index - 1]!, new RegExp(`completed ${index}`));
+			assert.equal(widget[5], "… 3 more · 3 complete");
 		} finally {
 			runner.release("active ninth");
 			await active;
@@ -983,7 +984,7 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 	});
 });
 
-test("widget evicts enough terminal rows to recover capacity without hiding working rows", async () => {
+test("widget summarizes overflow while evicting terminal rows for new active work", async () => {
 	await environment(async (agentDir) => {
 		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "9";
 		const tasks = Array.from({ length: 9 }, (_, index) => `blocked-${String(index + 1).padStart(2, "0")}`);
@@ -997,18 +998,30 @@ test("widget evicts enough terminal rows to recover capacity without hiding work
 			const app = harness({ ui: true });
 			calls.push(...tasks.map((task, index) => app.tool.execute(`call-${index + 1}`, { role: "worker", task }, undefined, undefined, app.ctx)));
 			await waitFor(() => fake.started().length === 9);
-			assert.equal(workingWidgetHeaders(app.widget!.render(100)).length, 8);
+			for (const width of [160, 24, 1]) {
+				const rows = app.widget!.render(width);
+				assert.equal(rows.length, 6);
+				assert.ok(rows.every((line) => visibleWidth(line) <= width));
+			}
+			let widget = app.widget!.render(160);
+			assert.equal(widget.length, 6);
+			assert.equal(workingWidgetHeaders(widget).length, 5);
+			assert.equal(widget[5], "… 4 more · 4 working");
 
 			for (const task of tasks.slice(0, 2)) fake.release(task);
 			await Promise.all(calls.slice(0, 2));
+			widget = app.widget!.render(160);
+			assert.equal(widget.length, 6);
+			assert.equal(widget[5], "… 4 more · 2 working · 2 complete");
 			const tenthCall = app.tool.execute("call-10", { role: "worker", task: tenth }, undefined, undefined, app.ctx);
 			calls.push(tenthCall);
 			await waitFor(() => fake.started().includes(tenth));
 
-			const widget = app.widget!.render(100).join("\n");
-			assert.doesNotMatch(widget, /blocked-01|blocked-02/);
-			for (const task of [...tasks.slice(2), tenth]) assert.match(widget, new RegExp(task));
-			assert.equal(workingWidgetHeaders(app.widget!.render(100)).length, 8);
+			widget = app.widget!.render(160);
+			assert.doesNotMatch(widget.join("\n"), /blocked-01|blocked-02/);
+			for (const task of tasks.slice(2, 7)) assert.match(widget.join("\n"), new RegExp(task));
+			assert.equal(workingWidgetHeaders(widget).length, 5);
+			assert.equal(widget[5], "… 3 more · 3 working");
 		} finally {
 			await releaseAll();
 			await Promise.allSettled(calls);
@@ -1017,20 +1030,19 @@ test("widget evicts enough terminal rows to recover capacity without hiding work
 	});
 });
 
-test("delegate_task renders one-line working status and bounded terminal summaries", async () => {
+test("delegate_task renders immutable call labels, partial aggregates, and bounded terminal summaries", async () => {
 	await environment(async () => {
 		const app = harness();
 		const theme = { fg: (_color: string, value: string) => value };
 		const hiddenTask = "FULL TASK TEXT validation --secret";
 		for (const [args, label] of [
-			[{ role: "worker", task: hiddenTask }, "single · 1 task"],
-			[{ tasks: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "parallel · 2 tasks"],
-			[{ chain: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "chain · 2 tasks"],
+			[{ role: "worker", task: hiddenTask }, "delegate_task · single · 1 task"],
+			[{ tasks: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "delegate_task · parallel · 2 tasks"],
+			[{ chain: [{ role: "worker", task: hiddenTask }, { role: "worker", task: hiddenTask }] }, "delegate_task · chain · 2 tasks"],
 		] as const) {
 			const call = app.tool.renderCall!(args, theme, {}).render(100);
-			assert.equal(call.length, 1);
-			assert.match(call[0]!, new RegExp(label));
-			assert.doesNotMatch(call.join("\n"), /FULL TASK TEXT|--secret/);
+			assert.deepEqual(call, [label]);
+			assert.doesNotMatch(call.join("\n"), /FULL TASK TEXT|--secret|working/);
 			for (const width of [100, 24, 1]) {
 				const narrow = app.tool.renderCall!(args, theme, {}).render(width);
 				assert.equal(narrow.length, 1);
@@ -1038,13 +1050,29 @@ test("delegate_task renders one-line working status and bounded terminal summari
 			}
 		}
 
+		const partialAggregate = formatWorkflowUpdate("parallel", [
+			{ id: "opaque-complete", index: 0, role: "implementer", status: "succeeded", assistantOutput: "COMPLETE OUTPUT" },
+			{ id: "opaque-running", index: 1, role: "reviewer", status: "running", assistantOutput: "RUNNING OUTPUT" },
+			{ id: "opaque-pending", index: 2, role: "worker", status: "pending" },
+			{ id: "opaque-failed", index: 3, role: "worker", status: "failed", failure: "FAILED OUTPUT" },
+			{ id: "opaque-rejected", index: 4, role: "worker", status: "rejected", failure: "REJECTED OUTPUT" },
+			{ id: "opaque-skipped", index: 5, role: "worker", status: "skipped" },
+		]);
+		for (const width of [100, 24, 1]) {
+			const rows = app.tool.renderResult!({ content: [{ type: "text", text: partialAggregate.text }], details: partialAggregate.details }, { isPartial: true }, theme, {}).render(width);
+			assert.equal(rows.length, 1);
+			assert.ok(rows.every((line) => visibleWidth(line) <= width));
+			if (width === 100) {
+				assert.deepEqual(rows, ["1 running · 1 pending · 1 complete · 2 failed · 1 skipped"]);
+				assert.doesNotMatch(rows.join("\n"), /OUTPUT|opaque-|implementer|reviewer|worker/);
+			}
+		}
+
 		const partial = formatWorkflowUpdate("parallel", [
 			{ id: "opaque-running", index: 1, role: "reviewer", status: "running", assistantOutput: "partial" },
 			{ id: "opaque-pending", index: 0, role: "implementer", status: "pending" },
 		]);
-		for (const options of [{ isPartial: true }, {}]) {
-			assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, options, theme, {}).render(100), []);
-		}
+		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: partial.text }], details: partial.details }, {}, theme, {}).render(100), []);
 
 		const single = formatWorkflowResult("single", [{ id: "opaque-single", index: 0, role: "worker", status: "succeeded", assistantOutput: "Implemented the fix.\nignored" }]);
 		assert.deepEqual(app.tool.renderResult!({ content: [{ type: "text", text: single.text }], details: single.details }, {}, theme, {}).render(100), ["Implemented the fix."]);
@@ -1114,7 +1142,7 @@ test("delegate_task renders one-line working status and bounded terminal summari
 			}
 		}
 
-		assert.equal(app.tool.renderShell, "self");
+		assert.equal(app.tool.renderShell, undefined);
 		initTheme("dark");
 		const component = new ToolExecutionComponent(
 			app.tool.name,
@@ -1127,16 +1155,13 @@ test("delegate_task renders one-line working status and bounded terminal summari
 		);
 		component.markExecutionStarted();
 		component.setArgsComplete();
-		assert.equal(component.render(100).length, 2);
+		assert.ok(component.render(100).length >= 2, "default shell renders call phase");
 		component.updateResult({ ...eightResult, isError: false });
-		for (const width of [100, 24, 1]) {
-			for (const expanded of [false, true]) {
-				component.setExpanded(expanded);
-				const lines = component.render(width);
-				assert.ok(lines.length <= 5);
-				assert.ok(lines.every((line) => visibleWidth(line) <= width));
-				assert.doesNotMatch(lines.join("\n"), /FULL TASK TEXT|--secret/);
-			}
+		for (const expanded of [false, true]) {
+			component.setExpanded(expanded);
+			const lines = component.render(100);
+			assert.ok(lines.length <= 8);
+			assert.doesNotMatch(lines.join("\n"), /FULL TASK TEXT|--secret/);
 		}
 
 		const empty = app.tool.renderResult!({ content: [{ type: "text", text: "ignored" }], details: { mode: "parallel", entries: [{ ...terminal.details.entries[0]!, worktree: undefined, summary: "" }] } }, {}, theme, {}).render(100);
@@ -1212,7 +1237,7 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		assert.equal(singleOutput(result), "partial 🙂 done");
 		assert.ok(updates.length > 0);
 		for (const update of updates) {
-			assert.deepEqual(app.tool.renderResult!(update, {}, { fg: (_color: string, value: string) => value }, {}).render(100), []);
+			assert.deepEqual(app.tool.renderResult!(update, { isPartial: true }, { fg: (_color: string, value: string) => value }, {}).render(100), ["1 running"]);
 		}
 	});
 });

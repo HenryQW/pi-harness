@@ -30,7 +30,7 @@ pi install npm:@henryqw/pi-subagent
 | `delegate_flow` | tool | Package-owned parallel implementation and declared-order Git integration for 1–8 independent units. |
 | `delegate_flow_continue` | tool | Repair the blocked Flow unit once in its existing worktree. |
 
-All three delegation tool blocks use a compact self-rendered shell and never exceed five physical lines, including Pi's leading spacer: one call line plus at most three result lines in either collapsed or expanded view.
+All three delegation tool blocks use Pi's default boxed shell and background. Their compact custom content is an immutable call label, foreground aggregate partial-result status, and bounded final summaries—no expanded view.
 
 ### `delegate_task`
 
@@ -53,7 +53,7 @@ Parallel mode starts entries concurrently, waits for every entry, and reports th
 
 Background workflows are session-scoped. Session shutdown or reload aborts them and may deliver only recoverable-work evidence or no follow-up message.
 
-The transient two-line status widget owns deterministic live progress: status and task summary above thinking or the active tool (with elapsed time and path basename), completed turns, started tools, model, thinking level, tokens, and total duration; terminal activity is Done, Failed, or Stopped. At capacity, it evicts the oldest terminal row so new active work remains visible, and terminal rows otherwise clear on the next real user input. The final `delegate_task` block is deliberately minimal: bounded final summaries, role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
+The transient status widget renders one line per child with: status glyph, role, status label, task summary, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, model, thinking level, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: when total items are six or fewer, all child rows render; above six, five child rows plus one status-aware overflow line render (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. The final `delegate_task` block is deliberately minimal: bounded final summaries with role attribution for parallel/chain, and only retained-worktree recovery paths. It has no expanded view.
 
 Each delegation resolves its own Role, resources, route, and optional worktree request. When available, `isolation: worktree` gives each entry a deterministic separate worktree; non-Git or unborn-`HEAD` contexts may use Main's cwd. Siblings and chain steps never implicitly share one created worktree.
 
@@ -75,6 +75,18 @@ One memory-only Flow may be active. At start it resolves/freezes the effective `
 A rebase that drops all unit commits is a no-op: Flow validates it, skips Reviewer and merge, then cleans up ordinarily. Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. Omitted continuation `modelClass` retains the blocked unit's current class; a supplied class replaces it for that one repair. Rebase and infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Git left Main clean at the exact integrated tip; otherwise it is terminal and retains the affected worktree. Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge gate.
 
 `delegate_task` remains generic with its ordinary isolation behavior. Flow uses the package-shipped Implementer by default and the package-shipped Reviewer only when a unit requests review; same-named user Roles remain supported overrides.
+
+### Delegate UI summary
+
+| Aspect | Behavior |
+| --- | --- |
+| Call label | `delegate_task · single/parallel/chain · N task(s)`; `delegate_flow · parallel→serial · N unit(s)`; `delegate_flow_continue · repair continuation` |
+| Partial progress | `delegate_task`: aggregate counts (running/pending/complete/failed/skipped); `delegate_flow`: phase transitions (setup → implement → verify/integrate → review → repair) |
+| Widget rows | One line per child: glyph, role, status, task, activity, metrics |
+| Ordering | Active-first stable (working first, then insertion order) |
+| Line cap | 6 physical lines max (≤6 items: all child rows; >6 items: 5 rows + 1 status-aware overflow) |
+| Terminal retention | Active rows persist; terminal rows clear on next user input |
+| Final result | Bounded summaries with recovery paths; no expanded view |
 
 ## Config
 

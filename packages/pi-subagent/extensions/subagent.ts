@@ -58,7 +58,8 @@ import {
 
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
-const MAX_WIDGET_ROWS = 8;
+const MAX_WIDGET_ITEMS = 8;
+const MAX_WIDGET_LINES = 6;
 export const MAX_WIDGET_ACTIVE_TOOLS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
@@ -179,9 +180,30 @@ function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportD
 }
 
 function workflowCallLabel(args: { tasks?: unknown; chain?: unknown }): string {
-	if (Array.isArray(args.chain)) return `delegate_task · working: chain · ${args.chain.length} task${args.chain.length === 1 ? "" : "s"}`;
-	if (Array.isArray(args.tasks)) return `delegate_task · working: parallel · ${args.tasks.length} task${args.tasks.length === 1 ? "" : "s"}`;
-	return "delegate_task · working: single · 1 task";
+	if (Array.isArray(args.chain)) return `delegate_task · chain · ${args.chain.length} task${args.chain.length === 1 ? "" : "s"}`;
+	if (Array.isArray(args.tasks)) return `delegate_task · parallel · ${args.tasks.length} task${args.tasks.length === 1 ? "" : "s"}`;
+	return "delegate_task · single · 1 task";
+}
+
+function workflowProgressLine(details: WorkflowTransportDetails): string {
+	let running = 0;
+	let pending = 0;
+	let complete = 0;
+	let failed = 0;
+	let skipped = 0;
+	for (const { status } of details.entries) {
+		switch (status) {
+			case "running": running += 1; break;
+			case "pending": pending += 1; break;
+			case "succeeded": complete += 1; break;
+			case "failed":
+			case "rejected": failed += 1; break;
+			case "skipped": skipped += 1; break;
+		}
+	}
+	return [[running, "running"], [pending, "pending"], [complete, "complete"], [failed, "failed"], [skipped, "skipped"]]
+		.flatMap(([count, label]) => count ? [`${count} ${label}`] : [])
+		.join(" · ");
 }
 
 function workflowResultLines(details: WorkflowTransportDetails, theme: Theme): string[] {
@@ -216,18 +238,23 @@ function renderWidgetRows(
 	spinnerIndex: number,
 	theme: Theme,
 ): string[] {
-	const visible = items.slice(0, MAX_WIDGET_ROWS);
+	const ordered = [...items.filter(({ status }) => status === "working"), ...items.filter(({ status }) => status !== "working")];
+	const visible = ordered.slice(0, ordered.length > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES);
 	if (!visible.length) return [];
-	const indent = " ".repeat(Math.min(2, Math.max(0, width - 1)));
-	const contentWidth = Math.max(0, width - indent.length);
-	const lines = visible.flatMap((item) => [
-		truncateToWidth(
-			`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("text", item.task)}`,
-			width,
-		),
-		`${indent}${truncateToWidth(`${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`, contentWidth)}`,
-	]);
-	if (items.length > visible.length) lines.push(truncateToWidth(theme.fg("muted", `… ${items.length - visible.length} more`), width));
+	const hidden = ordered.slice(visible.length);
+	const lines = visible.map((item) => truncateToWidth(
+		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("text", item.task)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
+		width,
+	));
+	if (hidden.length) {
+		const counts: Record<WidgetStatus, number> = { working: 0, success: 0, failure: 0, aborted: 0 };
+		for (const { status } of hidden) counts[status] += 1;
+		lines.push(truncateToWidth(theme.fg("muted", [
+			`… ${hidden.length} more`,
+			...(["working", "success", "failure", "aborted"] as const).flatMap((status) =>
+				counts[status] ? [`${counts[status]} ${statusLabel(status)}`] : []),
+		].join(" · ")), width));
+	}
 	return lines;
 }
 
@@ -359,11 +386,11 @@ export default function subagentExtension(
 	) => {
 		if (!ctx.hasUI) return;
 		ensureWidget(ctx);
-		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ROWS) {
+		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ITEMS) {
 			for (const [oldestId, item] of widgetItems) {
 				if (item.status === "working") continue;
 				widgetItems.delete(oldestId);
-				if (widgetItems.size < MAX_WIDGET_ROWS) break;
+				if (widgetItems.size < MAX_WIDGET_ITEMS) break;
 			}
 		}
 		widgetItems.set(id, {
@@ -582,13 +609,14 @@ export default function subagentExtension(
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
 		parameters: WorkflowSchema,
-		renderShell: "self",
 		renderCall(args, theme, _context) {
 			return renderToolLines([theme.fg("toolTitle", workflowCallLabel(args))], theme);
 		},
 		renderResult(result, { isPartial }, theme, _context) {
-			if (isPartial) return renderToolLines([], theme);
 			const details = result.details;
+			if (isPartial) return renderToolLines(isWorkflowTransportDetails(details)
+				? [theme.fg("muted", workflowProgressLine(details))]
+				: [], theme);
 			if (isWorkflowTransportDetails(details)) return renderToolLines(workflowResultLines(details, theme), theme);
 			if (typeof details === "object" && details !== null && (details as { background?: unknown }).background === true) {
 				return renderToolLines([theme.fg("muted", "Background workflow accepted.")], theme);
