@@ -798,14 +798,13 @@ test("injects the memory check without claiming the current agent performs revie
 	}
 });
 
-test("bundles ask_question but not the task-model control plane", async () => {
+test("requires separately installed ask-question and task-models", async () => {
 	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
 	assert.equal(manifest.dependencies["@henryqw/pi-ask-question"], "^0.2.0");
 	assert.equal(manifest.dependencies["@henryqw/pi-task-models"], "^3.0.0");
-	assert.deepEqual(manifest.bundledDependencies, ["@henryqw/pi-ask-question"]);
-	assert.equal(manifest.scripts.prepack, "npm run build --prefix ../pi-ask-question && node scripts/bundle-ask-question.mjs");
-	assert.ok(manifest.pi.extensions.includes("./node_modules/@henryqw/pi-ask-question/extensions/ask-question.ts"));
-	assert.ok(!manifest.pi.extensions.some((extension: string) => extension.includes("pi-task-models")));
+	assert.equal(manifest.bundledDependencies, undefined);
+	assert.equal(manifest.scripts.prepack, undefined);
+	assert.deepEqual(manifest.pi.extensions, ["./extensions/memory.ts"]);
 });
 
 test("registers memory transactions as sequential Pi tool calls", () => {
