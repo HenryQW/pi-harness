@@ -1,6 +1,6 @@
 # `@henryqw/pi-subagent`
 
-Delegate bounded work to isolated Pi child processes. Main plans and orchestrates; generic `delegate_task` selects one flat single, parallel, or chain mode. Package-owned `delegate_flow` runs a fixed Git implementation-and-verification Flow. Package authors can reuse the same Role launch policy and active-Pi executor from JavaScript.
+Delegate bounded generic single, parallel, and chained tasks, plus package-owned Git Flow work, to isolated Pi child roles.
 
 ## Why
 
