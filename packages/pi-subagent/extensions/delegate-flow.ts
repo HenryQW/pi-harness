@@ -795,8 +795,8 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		description: "Run 1–8 independent Implementers in isolated Unit Worktrees, validate and serially fast-forward each tip, with exact review only for units that declare a judgment criterion.",
 		promptSnippet: "Run a deterministic parallel-implementation, serial-verification Flow",
 		promptGuidelines: [
-			"Use delegate_flow only for cohesive units expected to commute; combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
-			"Each unit must include explicit bounded requirements and its authoritative direct command/argument validation gate. Add review only for an explicit judgment that validation cannot establish.",
+			"Use delegate_flow only for cohesive units expected to commute: split independent outcomes into units, sequence dependent work outside delegate_flow, and never divide one invariant across multiple units. Combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
+			"Each delegate_flow unit must own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.",
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,

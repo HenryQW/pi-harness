@@ -607,8 +607,8 @@ export default function subagentExtension(
 		description: `Delegate one selected single, parallel, or chain workflow of bounded tasks to isolated Pi Subagents. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
 		promptGuidelines: [
-			"Call delegate_task with exactly one mode: role+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output.",
-			"Every delegate_task entry must state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; never pass the parent request unchanged.",
+			"Call delegate_task with exactly one mode: role+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
+			"Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.",
 			"For each delegate_task entry, populate model and thinking only for an explicit user override; otherwise choose only modelClass: fast normally, or balanced upfront for obviously complex work. This is Main policy, not runtime enforcement.",
 			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
