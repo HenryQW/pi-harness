@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Show the current branch pull request status in the Pi footer.",
   "keywords": [
     "pi-package",
@@ -26,8 +26,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2"
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-tui": "^0.84.4"
   },
   "repository": {
     "type": "git",
