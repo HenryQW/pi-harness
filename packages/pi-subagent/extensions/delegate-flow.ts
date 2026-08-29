@@ -19,8 +19,8 @@ import {
 } from "@henryqw/pi-subagent";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
+import { TASK_NAME_CONTRACT, TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 import { runDelegation } from "./delegation.ts";
-import { renderToolLines } from "./tool-render.ts";
 
 const MAX_UNITS = 8;
 const GIT_TIMEOUT_MS = 30_000;
@@ -35,6 +35,7 @@ const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model pr
 
 const UnitSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
+	name: TaskNameSchema,
 	task: Type.String({ minLength: 1 }),
 	validation: Type.Array(ValidationSchema, { minItems: 1 }),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -108,7 +109,6 @@ type FlowState = {
 };
 
 type UsageMeter = { usage?: Usage };
-type FlowProgress = { line: string };
 
 type CommandResult = {
 	stdout: string;
@@ -128,7 +128,7 @@ export interface DelegateFlowRuntime {
 		role: string,
 		model: string,
 		thinkingLevel: string | undefined,
-		task: string,
+		name: string,
 		ctx: ExtensionContext,
 	) => void;
 	updateWidgetTokens: (id: string, tokens: number) => void;
@@ -157,6 +157,7 @@ export function parseDelegateFlow(value: unknown): FlowRequest {
 			ids.add(id);
 			return {
 				id,
+				name: normalizeTaskName(unit.name, `units[${unitIndex}].name`),
 				task: text(unit.task, `units[${unitIndex}].task`),
 				validation: unit.validation.map((validation, validationIndex) => ({
 					command: text(validation.command, `units[${unitIndex}].validation[${validationIndex}].command`),
@@ -179,40 +180,6 @@ export function parseDelegateFlowContinue(value: unknown): Static<typeof Delegat
 
 function unitCount(count: number): string {
 	return `${count} unit${count === 1 ? "" : "s"}`;
-}
-
-function flowCallLabel(args: { units?: unknown }): string {
-	const count = Array.isArray(args.units) ? args.units.length : 0;
-	return `delegate_flow · parallel→serial · ${unitCount(count)}`;
-}
-
-function isFlowProgress(value: unknown): value is FlowProgress {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		&& typeof (value as { line?: unknown }).line === "string";
-}
-
-function flowResultLines(text: string): string[] {
-	const lines = text.split(/\r?\n/).filter((line) => line.trim());
-	const diagnosticHeader = lines.findIndex((line) => line.trim() === "Diagnostic:");
-	const diagnostic = diagnosticHeader === -1 ? undefined : lines[diagnosticHeader + 1];
-	const recoveryHeader = lines.findIndex((line) => line.trim() === "Retained Flow state:" || line.trim() === "Attempted allocations preserved without cleanup:");
-	const recovery = recoveryHeader === -1 || !lines[recoveryHeader + 1]?.trim().startsWith("- unit=")
-		? undefined
-		: lines[recoveryHeader + 1];
-	if (diagnostic === undefined) {
-		if (recovery === undefined) return lines;
-		const recoveryIndex = lines.indexOf(recovery);
-		return [lines[0]!, recovery, ...lines.filter((_, index) => index !== 0 && index !== recoveryIndex)];
-	}
-	const leading = lines.slice(0, Math.min(1, diagnosticHeader));
-	if (recovery !== undefined) return [...leading, `Diagnostic: ${diagnostic}`, recovery];
-	// Promote the first diagnostic ahead of the result cap.
-	return [
-		...leading,
-		`Diagnostic: ${diagnostic}`,
-		...lines.slice(leading.length, diagnosticHeader),
-		...lines.slice(diagnosticHeader + 2),
-	];
 }
 
 function errorText(error: unknown): string {
@@ -378,7 +345,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		role: Role,
 		modelClass: FlowModelClass,
 		task: string,
-		widgetTask: string,
+		widgetName: string,
 		cwd: string,
 		widgetId: string,
 		signal: AbortSignal | undefined,
@@ -398,7 +365,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					if (launch.missingSkills.length) {
 						ctx.ui.notify(`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`, "warning");
 					}
-					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, widgetTask, ctx);
+					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, widgetName, ctx);
 					started = true;
 					return { launch, task, cwd };
 				},
@@ -719,7 +686,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 						reviewer,
 						unit.modelClass,
 						reviewerTask(unit.request, reviewCriterion, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
-						unit.request.task,
+						unit.request.name,
 						unit.worktree.cwd,
 						`${toolCallId}:flow:${flow.index}:review`,
 						signal,
@@ -796,18 +763,10 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Run a deterministic parallel-implementation, serial-verification Flow",
 		promptGuidelines: [
 			"Use delegate_flow only for cohesive units expected to commute: split independent outcomes into units, sequence dependent work outside delegate_flow, and never divide one invariant across multiple units. Combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
-			"Each delegate_flow unit must own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.",
+			`${TASK_NAME_CONTRACT.promptGuidance} Each delegate_flow unit must own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.`,
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
-		renderCall(args, theme, _context) {
-			return renderToolLines([theme.fg("toolTitle", flowCallLabel(args))], theme);
-		},
-		renderResult(result, { isPartial }, theme, _context) {
-			if (isPartial) return renderToolLines(isFlowProgress(result.details) ? [theme.fg("muted", result.details.line)] : [], theme);
-			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
-			return renderToolLines(flowResultLines(text), theme);
-		},
 		prepareArguments: parseDelegateFlow,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const request = parseDelegateFlow(params);
@@ -819,8 +778,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			if (!implementer) throw new Error("delegate_flow requires an implementer Role.");
 			if (needsReviewer && !reviewer) throw new Error("delegate_flow requires a reviewer Role when a unit declares review.");
 			const emitProgress = (line: string) => {
-				const progress: FlowProgress = { line };
-				onUpdate?.({ content: [{ type: "text", text: progress.line }], details: progress });
+				onUpdate?.({ content: [{ type: "text", text: line }], details: { line } });
 			};
 			const flow: FlowState = {
 				phase: "running",
@@ -879,7 +837,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow.implementer,
 					unit.modelClass,
 					implementerTask(unit.request),
-					unit.request.task,
+					unit.request.name,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
 					operationSignal,
@@ -915,14 +873,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Repair and continue the blocked deterministic Flow",
 		promptGuidelines: ["Call delegate_flow_continue only after delegate_flow reports a repairable block, with explicit guidance addressing that block."],
 		parameters: DelegateFlowContinueSchema,
-		renderCall(_args, theme, _context) {
-			return renderToolLines([theme.fg("toolTitle", "delegate_flow_continue · repair continuation")], theme);
-		},
-		renderResult(result, { isPartial }, theme, _context) {
-			if (isPartial) return renderToolLines(isFlowProgress(result.details) ? [theme.fg("muted", result.details.line)] : [], theme);
-			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
-			return renderToolLines(flowResultLines(text), theme);
-		},
 		prepareArguments: parseDelegateFlowContinue,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const { guidance, modelClass } = parseDelegateFlowContinue(params);
@@ -940,8 +890,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const operationSignal = bindSignal(flow, signal);
 			const meter: UsageMeter = {};
 			const emitProgress = (line: string) => {
-				const progress: FlowProgress = { line };
-				onUpdate?.({ content: [{ type: "text", text: progress.line }], details: progress });
+				onUpdate?.({ content: [{ type: "text", text: line }], details: { line } });
 			};
 			try {
 				emitProgress(`repair · unit ${flow.index + 1}/${flow.units.length}`);
@@ -950,7 +899,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow.implementer,
 					unit.modelClass,
 					repairTask(unit.request, blocked, guidance),
-					unit.request.task,
+					unit.request.name,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,
 					operationSignal,

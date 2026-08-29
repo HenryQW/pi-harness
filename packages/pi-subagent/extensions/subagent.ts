@@ -34,7 +34,6 @@ import {
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
-import { renderToolLines } from "./tool-render.ts";
 import { runDelegation } from "./delegation.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -42,13 +41,10 @@ import {
 	formatWorkflowUpdate,
 	WorkflowAbortedError,
 	WorkflowFailureError,
-	displaySummary,
 	type WorkflowTransportEntry,
-	type WorkflowTransportDetails,
 } from "./result-transport.ts";
 import {
 	identifyWorkflowEntries,
-	MAX_WORKFLOW_ENTRIES,
 	parseWorkflow,
 	runForegroundWorkflow,
 	WorkflowSchema,
@@ -56,6 +52,7 @@ import {
 	type ParsedWorkflow,
 	type WorkflowEntry,
 } from "./workflow.ts";
+import { TASK_NAME_CONTRACT } from "./task-name.ts";
 
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
@@ -88,7 +85,7 @@ type WidgetItem = {
 	role: string;
 	model: string;
 	thinkingLevel: string;
-	task: string;
+	name: string;
 	tokens: number;
 	startedAt: number;
 	status: WidgetStatus;
@@ -100,8 +97,9 @@ type WidgetItem = {
 	activityOrder: number;
 };
 
-function taskSummary(task: string): string {
-	return Array.from(task.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().split(/\s+/).slice(0, 4).join(" ")).slice(0, 160).join("");
+function roleBadge(role: string): string {
+	const initial = Array.from(role)[0]!.toUpperCase();
+	return `[${Array.from(initial)[0]!}]`;
 }
 
 function formatTokens(tokens: number): string {
@@ -150,86 +148,10 @@ function activityMetrics(item: WidgetItem, now: number): string {
 		...(item.startedToolCount === 0
 			? []
 			: [`${item.startedToolCount} tool${item.startedToolCount === 1 ? "" : "s"}`]),
-		item.model,
-		item.thinkingLevel,
+		`${item.model}·${item.thinkingLevel}`,
 		`${formatTokens(item.tokens)} tok`,
 		formatDuration((item.finishedAt ?? now) - item.startedAt),
 	].join(" · ");
-}
-
-function isWorkflowTransportDetails(value: unknown): value is WorkflowTransportDetails {
-	const isRecord = (candidate: unknown): candidate is Record<string, unknown> => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
-	const isOptionalString = (candidate: unknown) => candidate === undefined || typeof candidate === "string";
-	if (!isRecord(value) || !(value.mode === "single" || value.mode === "parallel" || value.mode === "chain") || !Array.isArray(value.entries)) return false;
-	const entries = value.entries;
-	return entries.length >= 1 && entries.length <= MAX_WORKFLOW_ENTRIES
-		&& (value.mode !== "single" || entries.length === 1)
-		&& entries.every((entry) => isRecord(entry)
-			&& typeof entry.id === "string" && typeof entry.index === "number" && Number.isFinite(entry.index) && Number.isInteger(entry.index) && entry.index >= 0
-			&& typeof entry.role === "string" && ["pending", "running", "succeeded", "failed", "rejected", "skipped"].includes(entry.status as string)
-			&& (["running", "succeeded", "failed", "rejected"].includes(entry.status as string)
-				? typeof entry.summary === "string" && entry.summary === displaySummary(entry.summary)
-				: entry.summary === undefined)
-			&& isOptionalString(entry.model) && isOptionalString(entry.thinkingLevel)
-			&& (entry.worktree === undefined || isRecord(entry.worktree)
-				&& typeof entry.worktree.path === "string" && typeof entry.worktree.branch === "string"
-				&& typeof entry.worktree.commits === "number" && Number.isFinite(entry.worktree.commits) && Number.isInteger(entry.worktree.commits) && entry.worktree.commits >= 0
-				&& typeof entry.worktree.dirty === "boolean" && typeof entry.worktree.pruned === "boolean"
-				&& (entry.worktree.inspection_failed === undefined || typeof entry.worktree.inspection_failed === "boolean")
-				&& (entry.worktree.note === undefined || typeof entry.worktree.note === "string")))
-		&& entries.every((entry, index) => index === 0 || (entry as { index: number }).index > (entries[index - 1] as { index: number }).index);
-}
-
-function workflowCallLabel(args: { tasks?: unknown; chain?: unknown }): string {
-	if (Array.isArray(args.chain)) return `delegate_task · chain · ${args.chain.length} task${args.chain.length === 1 ? "" : "s"}`;
-	if (Array.isArray(args.tasks)) return `delegate_task · parallel · ${args.tasks.length} task${args.tasks.length === 1 ? "" : "s"}`;
-	return "delegate_task · single · 1 task";
-}
-
-function workflowProgressLine(details: WorkflowTransportDetails): string {
-	let running = 0;
-	let pending = 0;
-	let complete = 0;
-	let failed = 0;
-	let skipped = 0;
-	for (const { status } of details.entries) {
-		switch (status) {
-			case "running": running += 1; break;
-			case "pending": pending += 1; break;
-			case "succeeded": complete += 1; break;
-			case "failed":
-			case "rejected": failed += 1; break;
-			case "skipped": skipped += 1; break;
-		}
-	}
-	return [[running, "running"], [pending, "pending"], [complete, "complete"], [failed, "failed"], [skipped, "skipped"]]
-		.flatMap(([count, label]) => count ? [`${count} ${label}`] : [])
-		.join(" · ");
-}
-
-function workflowResultLines(details: WorkflowTransportDetails, theme: Theme): string[] {
-	if (details.entries.some(({ status }) => status === "pending" || status === "running")) return [];
-	const entries = details.entries.filter(({ status }) => status !== "skipped");
-	const withRecovery = (entry: typeof entries[0]) => entry.worktree && !entry.worktree.pruned;
-	const isTerminalFailure = (entry: typeof entries[0]) => entry.status === "failed" || entry.status === "rejected";
-	const sorted = [...entries].sort((a, b) => {
-		const aFailure = isTerminalFailure(a);
-		const bFailure = isTerminalFailure(b);
-		if (aFailure !== bFailure) return aFailure ? -1 : 1;
-		const aRecovery = !aFailure && withRecovery(a);
-		const bRecovery = !bFailure && withRecovery(b);
-		if (aRecovery !== bRecovery) return aRecovery ? -1 : 1;
-		return 0;
-	});
-	return sorted.map((entry) => {
-		const summary = entry.summary || "(no output)";
-		const text = details.mode === "single" ? summary : `${entry.role}: ${summary}`;
-		const style = entry.status === "failed" || entry.status === "rejected" ? "error" : "text";
-		const recovery = withRecovery(entry) ? `Recovery: ${entry.worktree!.path}` : undefined;
-		return recovery === undefined
-			? theme.fg(style, text)
-			: `${theme.fg("warning", recovery)} · ${theme.fg(style, text)}`;
-	});
 }
 
 function renderWidgetRows(
@@ -244,7 +166,7 @@ function renderWidgetRows(
 	if (!visible.length) return [];
 	const hidden = ordered.slice(visible.length);
 	const lines = visible.map((item) => truncateToWidth(
-		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} · ${statusLabel(item.status)} · ${theme.fg("text", item.task)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
+		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", item.name)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
 		width,
 	));
 	if (hidden.length) {
@@ -386,7 +308,7 @@ export default function subagentExtension(
 		role: string,
 		model: string,
 		thinkingLevel: string | undefined,
-		task: string,
+		name: string,
 		ctx: ExtensionContext,
 	) => {
 		if (!ctx.hasUI) return;
@@ -399,10 +321,10 @@ export default function subagentExtension(
 			}
 		}
 		widgetItems.set(id, {
-			role,
+			role: roleBadge(role),
 			model,
 			thinkingLevel: thinkingLevel ?? "default",
-			task: taskSummary(task),
+			name,
 			tokens: 0,
 			startedAt: Date.now(),
 			status: "working",
@@ -607,28 +529,13 @@ export default function subagentExtension(
 		description: `Delegate one selected single, parallel, or chain workflow of bounded tasks to isolated Pi Subagents. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
 		promptGuidelines: [
-			"Call delegate_task with exactly one mode: role+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent, commuting outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
-			"Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.",
+			"Call delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent, commuting outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
+			`${TASK_NAME_CONTRACT.promptGuidance} Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.`,
 			"For each delegate_task entry, populate model and thinking only for an explicit user override; otherwise choose only modelClass: fast normally, or balanced upfront for obviously complex work. This is Main policy, not runtime enforcement.",
 			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
 		parameters: WorkflowSchema,
-		renderCall(args, theme, _context) {
-			return renderToolLines([theme.fg("toolTitle", workflowCallLabel(args))], theme);
-		},
-		renderResult(result, { isPartial }, theme, _context) {
-			const details = result.details;
-			if (isPartial) return renderToolLines(isWorkflowTransportDetails(details)
-				? [theme.fg("muted", workflowProgressLine(details))]
-				: [], theme);
-			if (isWorkflowTransportDetails(details)) return renderToolLines(workflowResultLines(details, theme), theme);
-			if (typeof details === "object" && details !== null && (details as { background?: unknown }).background === true) {
-				return renderToolLines([theme.fg("muted", "Background workflow accepted.")], theme);
-			}
-			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
-			return renderToolLines([theme.fg("muted", text)], theme);
-		},
 		prepareArguments(args) {
 			try {
 				const workflow = parseWorkflow(args);
@@ -749,7 +656,7 @@ export default function subagentExtension(
 								if (role.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
-								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.task, ctx);
+								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.name, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
 								return {
