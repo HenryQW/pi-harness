@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-task-models",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "description": "Shared task model profiles and routing for HenryQW Pi extensions.",
   "keywords": [
     "pi-package",
@@ -14,11 +14,11 @@
   },
   "license": "MIT",
   "files": [
+    "LICENSE",
     "dist",
     "extensions",
     "README.md",
-    "CONTEXT.md",
-    "LICENSE"
+    "CONTEXT.md"
   ],
   "types": "./dist/index.d.ts",
   "exports": {

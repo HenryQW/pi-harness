@@ -1,6 +1,6 @@
 {
 	"name": "@henryqw/pi-memory",
-	"version": "3.0.0",
+	"version": "3.0.1",
 	"description": "Auto-managed markdown memory for Pi: capped MEMORY.md/USER.md entry stores with frozen session snapshots.",
 	"keywords": [
 		"pi-package",
@@ -13,10 +13,10 @@
 	},
 	"license": "MIT",
 	"files": [
+		"LICENSE",
 		"extensions",
 		"src",
-		"README.md",
-		"LICENSE"
+		"README.md"
 	],
 	"scripts": {
 		"test": "node --test test/*.test.ts",

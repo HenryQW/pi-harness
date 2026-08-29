@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-footer",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Show concise repository, branch, and usage details in the Pi footer.",
   "keywords": [
     "pi-package",
@@ -14,9 +14,9 @@
   },
   "license": "MIT",
   "files": [
+    "LICENSE",
     "extensions",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",

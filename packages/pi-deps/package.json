@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-deps",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Prepare Node and uv dependencies when opted-in Git worktrees are created.",
   "keywords": [
     "pi-package",
@@ -15,10 +15,10 @@
   },
   "license": "MIT",
   "files": [
+    "LICENSE",
     "extensions",
     "hooks",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
