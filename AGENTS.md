@@ -4,19 +4,13 @@
 
 These extensions are highly opinionated tools built for the maintainer's daily work. No support, migrations, or backward compatibility are offered. Breaking changes may be introduced at any time.
 
-## Extension config paths
+## Extension Config Home
 
-- An extension with one config file and no extension-named config directory must use:
-
-  ```ts
-  const configPath = () => join(getAgentDir(), "config", "extension-name.json");
-  ```
-
-- If an extension-named config directory exists, every config file owned by that extension must live in it. Multiple configs therefore require an extension-named directory, for example:
-
-  ```ts
-  join(getAgentDir(), "config", "pi-multi-codex", "usage.json");
-  ```
+- Every extension owns one config home at `getAgentDir()/config/<extension-id>/`. The extension ID must be one validated lowercase path component.
+- Use `extensionConfigDir(extensionId, agentDir?)` and `extensionConfigPath(extensionId, agentDir?)` from `@henryqw/pi-config-store`; do not construct config paths directly.
+- The default user-editable JSON file is `config/<extension-id>/config.json`, provided by `extensionConfigPath`.
+- All other extension-owned files, including generated state and custom formats, must stay inside the home and use `extensionConfigDir`.
+- Only the owning extension writes its home. Consumers use an owner API or namespaced Pi events instead of reading another extension's files.
 
 ## Extension config safety
 

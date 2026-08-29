@@ -2,6 +2,8 @@
 
 Agent runbook for introducing `@henryqw/pi-config-store` and moving every current extension to the Extension Config Home layout from [ADR 018](../adr/018-extension-config-homes.md).
 
+**Status: complete.** The config-store package, all runtime owner and consumer migrations, the one-time local-file moves, and the repository policy update are complete. Keep the Delivery DAG and old-to-new data table below as reusable guidance for future migrations.
+
 This is the single migration source of truth. Do not add a second `MIGRATION.md` inside the package.
 
 ## Invariants
@@ -59,7 +61,7 @@ Update AGENTS.md, README template, stale paths, versions, lockfile
 
 Owner packages must land before their consumers. Package runtime units may run in parallel only when they own disjoint files. Keep manifests, workspace versions, and `package-lock.json` in one central unit.
 
-## Stage 1: Build `pi-config-store`
+## Stage 1: Build `pi-config-store` (complete)
 
 Freeze this public contract before parallel work:
 
@@ -109,7 +111,7 @@ git diff --check
 
 Only new `@henryqw/pi-config-store@0.1.0` releases in this stage.
 
-## Stage 2: Prepare extension migrations
+## Stage 2: Prepare extension migrations (complete)
 
 After the config-store package is available, use one central metadata unit to:
 
@@ -120,7 +122,7 @@ After the config-store package is available, use one central metadata unit to:
 
 Runtime units must not edit package manifests, versions, or the lockfile.
 
-## Stage 3: Migrate owners and consumers
+## Stage 3: Migrate owners and consumers (complete)
 
 Every package section below is one bounded runtime unit unless an owner API and its direct consumer must change together. Each unit owns only its package source, tests, and README.
 
@@ -211,9 +213,9 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Keep SQLite lifecycle and rebuild behavior package-owned.
 - Do not warn when the disposable index is absent.
 
-## Stage 4: Move local files once
+## Stage 4: Move local files once (complete)
 
-Main performs this step outside delegated worktrees after all code is integrated and before restarting Pi.
+Main completed this step outside delegated worktrees after all code was integrated and before restarting Pi. The procedure used was:
 
 For each changed path:
 
@@ -237,15 +239,15 @@ Move these files:
 
 Do not move `pi-memory`, `pi-multi-codex`, `pi-notes`, or `pi-session-recall` state already inside its owner home.
 
-## Stage 5: Finish repository policy
+## Stage 5: Finish repository policy (complete)
 
-After every runtime migration and local file move:
+The repository policy is complete:
 
-1. replace the transitional path rules in `AGENTS.md` with ADR 018's Extension Config Home rule;
-2. change `packages/README-template.md` to `~/.pi/agent/config/<package>/config.json`;
-3. search current source, tests, READMEs, context files, root docs, and deprecated docs for old paths;
-4. remove obsolete local JSON I/O and lock helpers;
-5. validate each changed package once;
-6. run repository tests, typechecks, pack checks, version checks, and `git diff --check`.
+1. `AGENTS.md` now requires ADR 018's Extension Config Home rule;
+2. `packages/README-template.md` now uses `~/.pi/agent/config/<package>/config.json`;
+3. current source, tests, READMEs, context files, root docs, and deprecated docs were searched for old paths;
+4. obsolete local JSON I/O and lock helpers were removed;
+5. affected packages were validated once;
+6. repository tests, typechecks, pack checks, version checks, and `git diff --check` were run.
 
 Do not publish, push, or move user files from an isolated subagent worktree.

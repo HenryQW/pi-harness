@@ -1,6 +1,6 @@
 # 018. Extension Config Homes
 
-- **Status:** accepted; migration pending
+- **Status:** accepted
 - **Date:** 2026-08-30
 
 ## Context
@@ -19,7 +19,7 @@ The repository needs one ownership boundary that works for user-edited JSON, gen
 
 **Ownership.** Only an extension writes its home. Consumers obtain validated effective values through an owner package API or a namespaced Pi event protocol. They do not read or write the owner's files directly.
 
-**Migration.** Existing files move once through the repository agent runbook. Runtime code reads only the new path: no legacy readers, aliases, dual schemas, adapters, or fallback paths are permitted. Until that migration finishes, the existing path rules in `AGENTS.md` remain the operative repository check.
+**Migration.** The one-time migration is complete. Existing files were moved through the repository agent runbook, runtime code reads only the new path, and `AGENTS.md` now requires this layout. No legacy readers, aliases, dual schemas, adapters, or fallback paths are permitted.
 
 ## Consequences
 
