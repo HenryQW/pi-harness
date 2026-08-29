@@ -53,6 +53,7 @@ type UsageSnapshot = {
 	fetchedAt?: number;
 	remaining?: number;
 	reset?: number;
+	limitedUntil?: number;
 };
 
 type UsageLock = {
@@ -67,7 +68,7 @@ type UsageState = {
 	locks: Map<number, UsageLock>;
 };
 
-type ParsedUsage = { remaining: number; reset: number; tier?: string };
+type ParsedUsage = { remaining: number; reset: number; limitedUntil?: number; tier?: string };
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const CODEX_ALIAS_PATTERN = /^openai-codex-([2-9]|[1-9]\d+)$/;
@@ -174,11 +175,13 @@ function readSnapshot(value: unknown): UsageSnapshot | undefined {
 	if (successful && (!validTime(value.fetchedAt) || typeof value.remaining !== "number" || !Number.isFinite(value.remaining) || !validTime(value.reset))) {
 		return undefined;
 	}
+	if (value.limitedUntil !== undefined && (!successful || !validTime(value.limitedUntil))) return undefined;
 	return {
 		slot: value.slot,
 		accountHash: value.accountHash,
 		...(validTier(value.tier) ? { tier: value.tier } : {}),
 		checkedAt: value.checkedAt,
+		...(validTime(value.limitedUntil) ? { limitedUntil: value.limitedUntil } : {}),
 		...(successful
 			? {
 				fetchedAt: value.fetchedAt as number,
@@ -295,6 +298,10 @@ function isFresh(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, no
 	);
 }
 
+function isFiveHourLimited(snapshot: UsageSnapshot, now: number): boolean {
+	return validTime(snapshot.limitedUntil) && snapshot.limitedUntil > now;
+}
+
 function checkedRecently(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, now: number): boolean {
 	return Boolean(
 		snapshot &&
@@ -324,20 +331,28 @@ function resetTime(window: JsonRecord, now: number): number | undefined {
 	return resetAfter === undefined || resetAfter < 0 ? undefined : now + resetAfter * 1000;
 }
 
-/** Extract seven-day window, or only usable window when service reports one. */
+/** Extract seven-day quota and any active five-hour block. */
 export function parseCodexUsage(value: unknown, now = Date.now()): ParsedUsage | undefined {
 	if (!isRecord(value)) return undefined;
 	const rateLimit = isRecord(value.rate_limit) ? value.rate_limit : value;
-	const windows = Object.entries(rateLimit)
-		.flatMap(([name, entry]) => (isRecord(entry) && numberValue(entry.used_percent) !== undefined && resetTime(entry, now) !== undefined ? [{ name, value: entry }] : []));
+	const windows = Object.values(rateLimit).flatMap((entry) => {
+		if (!isRecord(entry)) return [];
+		const used = numberValue(entry.used_percent);
+		const reset = resetTime(entry, now);
+		return used === undefined || reset === undefined ? [] : [{ value: entry, used, reset }];
+	});
 	const sevenDay = windows.find((window) => numberValue(window.value.limit_window_seconds) === 7 * 24 * 60 * 60)
 		?? (windows.length === 1 && numberValue(windows[0].value.limit_window_seconds) === undefined ? windows[0] : undefined);
-	if (!sevenDay) return undefined;
-	const used = numberValue(sevenDay.value.used_percent);
-	const reset = resetTime(sevenDay.value, now);
-	if (used === undefined || reset === undefined || reset <= now) return undefined;
+	if (!sevenDay || sevenDay.reset <= now) return undefined;
+	const fiveHour = windows.find((window) => numberValue(window.value.limit_window_seconds) === 5 * 60 * 60);
+	const limitedUntil = fiveHour && fiveHour.used >= 100 && fiveHour.reset > now ? fiveHour.reset : undefined;
 	const tier = validTier(value.plan_type) ? value.plan_type : validTier(value.tier) ? value.tier : undefined;
-	return { remaining: Math.max(0, Math.min(100, 100 - used)), reset, ...(tier ? { tier } : {}) };
+	return {
+		remaining: Math.max(0, Math.min(100, 100 - sevenDay.used)),
+		reset: sevenDay.reset,
+		...(limitedUntil ? { limitedUntil } : {}),
+		...(tier ? { tier } : {}),
+	};
 }
 
 function raceWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -571,6 +586,7 @@ class CodexQuotaStatus {
 					fetchedAt: checkedAt,
 					remaining: outcome.remaining,
 					reset: outcome.reset,
+					...(outcome.limitedUntil && outcome.limitedUntil > checkedAt ? { limitedUntil: outcome.limitedUntil } : {}),
 				});
 			} else {
 				state.slots.set(slot, previous?.accountHash === identity.accountHash && (!validTime(previous.reset) || previous.reset > checkedAt)
@@ -649,6 +665,9 @@ class CodexQuotaStatus {
 				}
 				const tier = snapshot.tier ? ` (${snapshot.tier})` : "";
 				const status = isFresh(snapshot, identity, now) ? "measured" : "stale";
+				if (isFiveHourLimited(snapshot, now)) {
+					return `Codex slot ${slot}${tier}: five-hour limit reached, resets in ${formatDuration(snapshot.limitedUntil! - now)} (${status})`;
+				}
 				return `Codex slot ${slot}${tier}: ${formatPercent(snapshot.remaining)}% remaining, resets in ${formatDuration(snapshot.reset - now)} (${status})`;
 			});
 	}
@@ -814,7 +833,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 				if ((slot !== 1 && !registered.has(slot)) || !allowsModel(ctx, model, slot)) return [];
 				const identity = identityFor(credential);
 				const snapshot = state.slots.get(slot);
-				if (!identity || !isFresh(snapshot, identity, now) || typeof snapshot?.remaining !== "number") return [];
+				if (!identity || !isFresh(snapshot, identity, now) || typeof snapshot?.remaining !== "number" || isFiveHourLimited(snapshot, now)) return [];
 				return [{ slot, remaining: snapshot.remaining }];
 			});
 	};
@@ -839,8 +858,13 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		if (!identity || !snapshot || snapshot.accountHash !== identity.accountHash || !validTime(snapshot.fetchedAt) || typeof snapshot.remaining !== "number" || !validTime(snapshot.reset)) {
 			return `${prefix} · unavailable`;
 		}
-		if (!isFresh(snapshot, identity, Date.now())) return `${prefix} · stale`;
-		const text = `${prefix} · ${formatPercent(snapshot.remaining)}% · 7d ${formatDuration(snapshot.reset - Date.now())}`;
+		const now = Date.now();
+		if (isFiveHourLimited(snapshot, now)) {
+			const text = `${prefix} · 5h limit · ${formatDuration(snapshot.limitedUntil! - now)}`;
+			return ctx.ui.theme?.fg ? ctx.ui.theme.fg("error", text) : text;
+		}
+		if (!isFresh(snapshot, identity, now)) return `${prefix} · stale`;
+		const text = `${prefix} · ${formatPercent(snapshot.remaining)}% · 7d ${formatDuration(snapshot.reset - now)}`;
 		const color = snapshot.remaining >= 50 ? "success" : snapshot.remaining >= 25 ? "warning" : "error";
 		return ctx.ui.theme?.fg ? ctx.ui.theme.fg(color, text) : text;
 	};
@@ -923,7 +947,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("codex-status", {
-		description: "show shared Codex seven-day quota status",
+		description: "show shared Codex quota status",
 		handler: async (_args, ctx: ExtensionContext) => {
 			const lines = await quota.statusLines();
 			ctx.ui.notify(lines.length ? lines.join("\n") : NO_ACCOUNTS_MESSAGE, "info");
