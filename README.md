@@ -27,9 +27,9 @@ This repository contains the Pi extensions I use daily for my work. They are hig
 | [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate one task to an isolated role with explicit extensions and skills. |
 | [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
-## Internal package dependencies
+## Internal package relationships
 
-This graph shows cross-package runtime dependencies from the `dependencies` fields in `packages/*/package.json`. Arrows point from a dependent package to the package it depends on.
+This graph documents internal `@henryqw` package relationships. **Legend:** solid arrows (`-->`) are npm runtime dependencies declared in `packages/*/package.json`; dashed arrows (`-.->`) are optional runtime integrations evidenced by package behavior and documentation. All arrows point from consumer to provider.
 
 ```mermaid
 flowchart LR
@@ -46,9 +46,13 @@ flowchart LR
   subagent["pi-subagent"] --> herdr
   subagent --> multiCodex["pi-multi-codex"]
   subagent --> taskModels
+
+  footer -.->|PR status| pr["pi-pr"]
+  footer -.->|Codex status| multiCodex
+  taskModels -.->|numbered provider aliases| multiCodex
 ```
 
-Packages omitted from the graph have no internal `@henryqw` package dependency.
+Packages omitted from the graph have neither an internal `@henryqw` npm runtime dependency nor an evidenced optional runtime integration.
 
 ## Deprecated
 
