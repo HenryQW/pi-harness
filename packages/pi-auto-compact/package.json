@@ -15,8 +15,7 @@
   "license": "MIT",
   "files": [
     "extensions",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",

@@ -20,8 +20,7 @@
     "examples",
     "skills",
     "README.md",
-    "CONTEXT.md",
-    "LICENSE"
+    "CONTEXT.md"
   ],
   "types": "./dist/index.d.ts",
   "exports": {

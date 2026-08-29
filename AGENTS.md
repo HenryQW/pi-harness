@@ -55,6 +55,7 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 
 For README/template-only changes:
 
+- Write every `README.md` in plain, simple language; avoid jargon, and define unavoidable domain terms on first use.
 - Keep cohesive work in one bounded implementer/reviewer unit, including any required workspace version bumps and lockfile update.
 - Preserve or relocate unique guidance when deleting standard sections.
 - Validate structure, version/lockfile consistency, and `git diff --check`.

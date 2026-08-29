@@ -17,8 +17,7 @@
   "files": [
     "extensions",
     "skills",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",

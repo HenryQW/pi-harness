@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-notes",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Persistent notes in a Pi widget, managed with /note commands.",
   "keywords": [
     "pi-package",
@@ -15,8 +15,7 @@
   "license": "MIT",
   "files": [
     "extensions",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
