@@ -108,6 +108,7 @@ type FlowState = {
 };
 
 type UsageMeter = { usage?: Usage };
+type FlowProgress = { line: string };
 
 type CommandResult = {
 	stdout: string;
@@ -176,9 +177,18 @@ export function parseDelegateFlowContinue(value: unknown): Static<typeof Delegat
 	};
 }
 
+function unitCount(count: number): string {
+	return `${count} unit${count === 1 ? "" : "s"}`;
+}
+
 function flowCallLabel(args: { units?: unknown }): string {
 	const count = Array.isArray(args.units) ? args.units.length : 0;
-	return `delegate_flow · working: ${count} unit${count === 1 ? "" : "s"}`;
+	return `delegate_flow · parallel→serial · ${unitCount(count)}`;
+}
+
+function isFlowProgress(value: unknown): value is FlowProgress {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		&& typeof (value as { line?: unknown }).line === "string";
 }
 
 function flowResultLines(text: string): string[] {
@@ -609,6 +619,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		signal: AbortSignal | undefined,
 		ctx: ExtensionContext,
 		meter: UsageMeter,
+		emitProgress: (line: string) => void,
 	) => {
 		assertCurrent(flow);
 		const main = flow.main!;
@@ -624,6 +635,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 
 			const implementationFailure = settlementFailure(unit.implementation!);
 			if (implementationFailure) return block(flow, unit, "implementer", implementationFailure, meter);
+			emitProgress(`verify/integrate · unit ${flow.index + 1}/${flow.units.length}`);
 
 			let inspected = await inspectUnit(unit, false, signal);
 			assertCurrent(flow);
@@ -690,6 +702,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			if (reviewCriterion !== undefined) {
 				const reviewer = flow.reviewer;
 				if (!reviewer) return terminal(flow, "infrastructure", "Flow Reviewer was not resolved for a unit that requires review.", meter);
+				emitProgress(`review · unit ${flow.index + 1}/${flow.units.length}`);
 				let evidence;
 				try {
 					evidence = await prepareExactReviewEvidence({ base: main.expectedHead, tip, worktree: unit.worktree.path }, signal);
@@ -787,16 +800,16 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
-		renderShell: "self",
 		renderCall(args, theme, _context) {
 			return renderToolLines([theme.fg("toolTitle", flowCallLabel(args))], theme);
 		},
-		renderResult(result, _options, theme, _context) {
+		renderResult(result, { isPartial }, theme, _context) {
+			if (isPartial) return renderToolLines(isFlowProgress(result.details) ? [theme.fg("muted", result.details.line)] : [], theme);
 			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
 			return renderToolLines(flowResultLines(text), theme);
 		},
 		prepareArguments: parseDelegateFlow,
-		async execute(toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const request = parseDelegateFlow(params);
 			if (active) throw new Error("delegate_flow rejected because another Flow is active.");
 			const roles = runtime.loadRoles();
@@ -805,6 +818,10 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const reviewer = needsReviewer ? roles.find(({ name }) => name === "reviewer") : undefined;
 			if (!implementer) throw new Error("delegate_flow requires an implementer Role.");
 			if (needsReviewer && !reviewer) throw new Error("delegate_flow requires a reviewer Role when a unit declares review.");
+			const emitProgress = (line: string) => {
+				const progress: FlowProgress = { line };
+				onUpdate?.({ content: [{ type: "text", text: progress.line }], details: progress });
+			};
 			const flow: FlowState = {
 				phase: "running",
 				generation: runtime.getSessionGeneration(),
@@ -818,6 +835,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				warnings: [],
 			};
 			active = flow;
+			emitProgress(`setup · ${unitCount(request.units.length)}`);
 			const operationSignal = bindSignal(flow, signal);
 			const meter: UsageMeter = {};
 			let setupComplete = false;
@@ -855,6 +873,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				await checkMain(flow.main, operationSignal);
 				assertCurrent(flow);
 				setupComplete = true;
+				let completedImplementers = 0;
 				const settlements = await Promise.all(flow.units.map((unit, index) => runChild(
 					flow,
 					flow.implementer,
@@ -866,11 +885,15 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					operationSignal,
 					ctx,
 					meter,
-				)));
+				).then((settlement) => {
+					completedImplementers += 1;
+					emitProgress(`implement · ${completedImplementers}/${flow.units.length} complete`);
+					return settlement;
+				})));
 				for (const [index, settlement] of settlements.entries()) flow.units[index]!.implementation = settlement;
 				assertCurrent(flow);
 				if (operationSignal.aborted) operationSignal.throwIfAborted();
-				return await processFlow(flow, toolCallId, operationSignal, ctx, meter);
+				return await processFlow(flow, toolCallId, operationSignal, ctx, meter, emitProgress);
 			} catch (error) {
 				if (!setupComplete) {
 					for (const unit of [...flow.units].reverse()) {
@@ -892,16 +915,16 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Repair and continue the blocked deterministic Flow",
 		promptGuidelines: ["Call delegate_flow_continue only after delegate_flow reports a repairable block, with explicit guidance addressing that block."],
 		parameters: DelegateFlowContinueSchema,
-		renderShell: "self",
 		renderCall(_args, theme, _context) {
-			return renderToolLines([theme.fg("toolTitle", "delegate_flow_continue · working: repair continuation")], theme);
+			return renderToolLines([theme.fg("toolTitle", "delegate_flow_continue · repair continuation")], theme);
 		},
-		renderResult(result, _options, theme, _context) {
+		renderResult(result, { isPartial }, theme, _context) {
+			if (isPartial) return renderToolLines(isFlowProgress(result.details) ? [theme.fg("muted", result.details.line)] : [], theme);
 			const text = result.content.find((part) => part.type === "text")?.text ?? "(no output)";
 			return renderToolLines(flowResultLines(text), theme);
 		},
 		prepareArguments: parseDelegateFlowContinue,
-		async execute(toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const { guidance, modelClass } = parseDelegateFlowContinue(params);
 			const flow = active;
 			if (!flow) throw new Error("delegate_flow_continue requires an active blocked Flow.");
@@ -916,7 +939,12 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			if (modelClass !== undefined) unit.modelClass = modelClass;
 			const operationSignal = bindSignal(flow, signal);
 			const meter: UsageMeter = {};
+			const emitProgress = (line: string) => {
+				const progress: FlowProgress = { line };
+				onUpdate?.({ content: [{ type: "text", text: progress.line }], details: progress });
+			};
 			try {
+				emitProgress(`repair · unit ${flow.index + 1}/${flow.units.length}`);
 				unit.implementation = await runChild(
 					flow,
 					flow.implementer,
@@ -931,7 +959,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				);
 				assertCurrent(flow);
 				if (operationSignal.aborted) operationSignal.throwIfAborted();
-				return await processFlow(flow, toolCallId, operationSignal, ctx, meter);
+				return await processFlow(flow, toolCallId, operationSignal, ctx, meter, emitProgress);
 			} catch (error) {
 				return terminal(flow, "infrastructure", errorText(error), meter);
 			}
