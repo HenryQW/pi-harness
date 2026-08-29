@@ -139,11 +139,22 @@ test("child role policy rejects a malformed tool flag", () => {
 	assert.throws(sessionStart, /pi-subagent-role-tools must be JSON tool names/);
 });
 
-test("child budget warnings apply each threshold once and combine simultaneous thresholds", () => {
+test("child budget payload requires the executor runtime origin", () => {
+	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
+	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 50, maxMs: 30 * 60_000 });
+	try {
+		assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+	} finally {
+		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
+		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
+	}
+});
+
+test("child budget warnings use executor time and apply each threshold once", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	const originalNow = Date.now;
 	let now = 0;
-	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 50, maxMs: 30 * 60_000 });
+	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 50, maxMs: 30 * 60_000, startedAt: 0 });
 	Date.now = () => now;
 	try {
 		const policy = () => {
@@ -165,6 +176,13 @@ test("child budget warnings apply each threshold once and combine simultaneous t
 			toolResults: [],
 		};
 
+		now = 10 * 60_000;
+		const executorTimed = policy();
+		now = 24 * 60_000;
+		executorTimed.turnEnd(continuing);
+		assert.match(executorTimed.sent[0]!.message.content, /^\*\*Execution budget warning:\*\* 49 of 50 turns and approximately 6 of 30 minutes/);
+
+		now = 0;
 		const separate = policy();
 		for (let turn = 1; turn < 40; turn++) separate.turnEnd(continuing);
 		assert.equal(separate.sent.length, 0);
@@ -192,6 +210,7 @@ test("child budget warnings apply each threshold once and combine simultaneous t
 		combined.turnEnd(continuing);
 		assert.equal(combined.sent.length, 1);
 
+		now = 0;
 		const terminal = policy();
 		for (let turn = 1; turn < 40; turn++) terminal.turnEnd(continuing);
 		terminal.turnEnd({ ...continuing, message: { role: "assistant", content: [] } });

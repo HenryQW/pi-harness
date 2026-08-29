@@ -150,18 +150,23 @@ test("executor merges env, owns its child budget, and launches active Pi without
 		else process.env.EPHEMERAL_OVERRIDE = previousOverride;
 	});
 
+	const before = Date.now();
 	const result = await executor().run({ prepare: async () => prepared(cwd, "quoted task; echo unsafe", {
 		env: { EPHEMERAL_OVERRIDE: "child", [EXECUTION_BUDGET_ENV]: "caller cannot override" },
 		args: ["--model", "test/model"],
 	}) });
+	const after = Date.now();
 	assert.equal(result.outcome, "success");
-	assert.deepEqual(JSON.parse(result.output), {
+	const observed = JSON.parse(result.output);
+	const budget = JSON.parse(observed.budget);
+	assert.deepEqual({ ...observed, budget }, {
 		argv: ["--mode", "json", "-p", "--model", "test/model", "Task: quoted task; echo unsafe"],
 		cwd: await realpath(cwd),
 		inherited: "parent",
 		override: "child",
-		budget: JSON.stringify({ maxTurns: 50, maxMs: 2_000 }),
+		budget: { maxTurns: 50, maxMs: 2_000, startedAt: budget.startedAt },
 	});
+	assert.ok(budget.startedAt >= before && budget.startedAt <= after);
 });
 
 test("executor captures its active Pi invocation before later argv mutation", async (t) => {
@@ -506,6 +511,45 @@ setInterval(() => {}, 1_000);
 		assert.ok(error.output);
 		assert.ok(Buffer.byteLength(error.output, "utf8") <= 50 * 1024);
 		assert.match(error.output, /\[Output truncated: \d+ bytes omitted\]$/);
+		return true;
+	});
+});
+
+test("attempted turn after child exit still rejects with retained output", async (t) => {
+	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
+const event = (value) => console.log(JSON.stringify(value));
+event({ type: "turn_start", turnIndex: 0 });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "before exit" }], stopReason: "toolUse" } });
+const line = JSON.stringify({ type: "turn_start", turnIndex: 1 }) + "\\n";
+const writer = spawn(process.execPath, ["-e", \`setTimeout(() => process.stdout.write(\${JSON.stringify(line)}), 50)\`], { detached: true, stdio: ["ignore", "inherit", "ignore"] });
+writer.unref();
+`);
+	const limited = createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 1, timeout });
+	await assert.rejects(limited.run({ prepare: async () => prepared(cwd) }), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "turn_limit");
+		assert.equal(error.output, "before exit");
+		return true;
+	});
+});
+
+test("turn limit ignores trailing records in the same stdout chunk", async (t) => {
+	const retainedUsage = usage(1);
+	const trailingUsage = usage(2);
+	const cwd = await useRunner(t, `const records = [
+	{ type: "turn_start", turnIndex: 0 },
+	{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "retained" }], usage: ${JSON.stringify(retainedUsage)}, stopReason: "toolUse" } },
+	{ type: "turn_start", turnIndex: 1 },
+	{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "must not overwrite" }], usage: ${JSON.stringify(trailingUsage)}, stopReason: "stop" } },
+];
+process.stdout.write(records.map(JSON.stringify).join("\\n") + "\\n");
+`);
+	const limited = createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 1, timeout });
+	await assert.rejects(limited.run({ prepare: async () => prepared(cwd) }), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "turn_limit");
+		assert.equal(error.output, "retained");
+		assert.deepEqual(error.usage, retainedUsage);
 		return true;
 	});
 });

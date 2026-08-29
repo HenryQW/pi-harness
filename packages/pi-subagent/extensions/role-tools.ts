@@ -19,7 +19,7 @@ function configuredTools(value: unknown): string[] {
 	return [...new Set(parsed.map((name) => name.trim()))];
 }
 
-function executionBudget(value: string | undefined): { maxTurns: number; maxMs: number } | undefined {
+function executionBudget(value: string | undefined): { maxTurns: number; maxMs: number; startedAt: number } | undefined {
 	if (value === undefined) return;
 	let parsed: unknown;
 	try {
@@ -31,12 +31,13 @@ function executionBudget(value: string | undefined): { maxTurns: number; maxMs: 
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
 	}
 	const budget = parsed as Record<string, unknown>;
-	if (Object.keys(budget).length !== 2 || !("maxTurns" in budget) || !("maxMs" in budget)
+	if (Object.keys(budget).length !== 3 || !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
 		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < 1
-		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0) {
+		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0
+		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0) {
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
 	}
-	return { maxTurns: budget.maxTurns as number, maxMs: budget.maxMs };
+	return { maxTurns: budget.maxTurns as number, maxMs: budget.maxMs, startedAt: budget.startedAt as number };
 }
 
 function expectsAnotherTurn(message: unknown): boolean {
@@ -69,7 +70,6 @@ export default function roleTools(pi: ExtensionAPI): void {
 
 	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
 	if (!budget) return;
-	const startedAt = Date.now();
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
 	let completedTurns = 0;
 	let turnWarningSent = false;
@@ -77,7 +77,7 @@ export default function roleTools(pi: ExtensionAPI): void {
 	pi.on("turn_end", (event) => {
 		completedTurns += 1;
 		if (!expectsAnotherTurn(event.message)) return;
-		const elapsedMs = Date.now() - startedAt;
+		const elapsedMs = Math.max(0, Date.now() - budget.startedAt);
 		const turnWarningDue = !turnWarningSent && completedTurns >= warningTurn;
 		const runtimeWarningDue = !runtimeWarningSent && elapsedMs >= budget.maxMs * WARNING_RATIO;
 		if (!turnWarningDue && !runtimeWarningDue) return;

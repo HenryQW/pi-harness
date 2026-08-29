@@ -431,6 +431,8 @@ async function runPi(
 	const timeoutPolicy = budget.timeout;
 	return await new Promise<EphemeralSubagentResult>((resolve, reject) => {
 		const args = [...invocation.args, "--mode", "json", "-p", ...prepared.launch.args, `Task: ${prepared.task}`];
+		const startedAt = Date.now();
+		const maxDeadline = startedAt + timeoutPolicy.maxMs;
 		let child: ReturnType<typeof spawn>;
 		try {
 			child = spawn(invocation.command, args, {
@@ -438,7 +440,7 @@ async function runPi(
 				env: {
 					...process.env,
 					...prepared.launch.env,
-					[EXECUTION_BUDGET_ENV]: JSON.stringify({ maxTurns: budget.maxTurns, maxMs: timeoutPolicy.maxMs }),
+					[EXECUTION_BUDGET_ENV]: JSON.stringify({ maxTurns: budget.maxTurns, maxMs: timeoutPolicy.maxMs, startedAt }),
 				},
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
@@ -466,8 +468,6 @@ async function runPi(
 		let aborted = false;
 		let turnLimited = false;
 		let startedTurns = 0;
-		const startedAt = Date.now();
-		const maxDeadline = startedAt + timeoutPolicy.maxMs;
 		let lastEventAt = startedAt;
 		let deadline = Math.min(startedAt + timeoutPolicy.idleMs, maxDeadline);
 		let timedOutAfterMs: number | undefined;
@@ -536,7 +536,8 @@ async function runPi(
 					: `Subagent timed out after ${formatDuration(timeoutPolicy.idleMs)} without a recognized Pi event.`;
 				reject(new EphemeralSubagentError("timeout", message, new Error(message), accumulatedUsage()));
 			} else if (turnLimited) {
-				const message = `Subagent reached its maximum turn limit of ${budget.maxTurns}.`;
+				const summary = `Subagent reached its maximum turn limit of ${budget.maxTurns}.`;
+				const message = output ? capEphemeralSubagentOutput(`${summary}\n\nLast assistant output:\n${output}`) : summary;
 				reject(new EphemeralSubagentError("turn_limit", message, new Error(message), accumulatedUsage(), output));
 			} else if (protocolError) {
 				reject(new EphemeralSubagentError("protocol", protocolError.message, protocolError, accumulatedUsage()));
@@ -613,7 +614,7 @@ async function runPi(
 		};
 
 		const processLine = (line: string) => {
-			if (!line.trim()) return;
+			if (turnLimited || !line.trim()) return;
 			let event: unknown;
 			try {
 				event = JSON.parse(line);
@@ -625,7 +626,7 @@ async function runPi(
 			if (typeof record.type !== "string" || !Object.hasOwn(PI_JSON_EVENTS, record.type)) return;
 			observeEvent();
 			if (record.type === "turn_start" && ++startedTurns > budget.maxTurns) {
-				if (!callbackFailure && !aborted && timedOutAfterMs === undefined && !childExited) turnLimited = true;
+				if (!callbackFailure && !aborted && timedOutAfterMs === undefined) turnLimited = true;
 				stop(true);
 				return;
 			}
@@ -742,7 +743,7 @@ async function runPi(
 
 		onStdoutData = (data: string) => {
 			armPostExitIdleDeadline();
-			if (callbackFailure || protocolError) return;
+			if (callbackFailure || protocolError || turnLimited) return;
 			let offset = 0;
 			while (offset < data.length) {
 				const newline = data.indexOf("\n", offset);
@@ -775,7 +776,7 @@ async function runPi(
 						invokeCallback("onActivity", input.onActivity, activity);
 					}
 				}
-				if (callbackFailure) return;
+				if (callbackFailure || turnLimited) return;
 				lineParts = [];
 				lineBytes = 0;
 				linePrefix = "";
