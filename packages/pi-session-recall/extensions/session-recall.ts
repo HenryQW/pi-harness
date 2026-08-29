@@ -4,6 +4,7 @@
 import { getAgentDir, keyHint, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
@@ -12,7 +13,7 @@ import { MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./se
 import { getWindow, readSession } from "./hydrate.ts";
 import type { WindowMessage } from "./types.ts";
 
-const dbPath = () => join(getAgentDir(), "config", "pi-session-recall", "index.db");
+const dbPath = () => join(extensionConfigDir("pi-session-recall"), "index.db");
 const sessionsDir = () => join(getAgentDir(), "sessions");
 
 const OUTPUT_CHAR_BUDGET = 50_000;
