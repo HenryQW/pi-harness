@@ -782,7 +782,7 @@ test("bundles ask_question but not the task-model control plane", async () => {
 	assert.equal(manifest.dependencies["@henryqw/pi-ask-question"], "^0.2.0");
 	assert.equal(manifest.dependencies["@henryqw/pi-task-models"], "^3.0.0");
 	assert.deepEqual(manifest.bundledDependencies, ["@henryqw/pi-ask-question"]);
-	assert.match(manifest.scripts.prepack, /build --prefix \.\.\/pi-ask-question.*--workspaces=false.*--no-save.*--package-lock=false.*--offline.*--legacy-peer-deps.*--install-links.*--dry-run=false.*\.\.\/pi-ask-question.*\.\.\/pi-task-models/);
+	assert.equal(manifest.scripts.prepack, "npm run build --prefix ../pi-ask-question && node scripts/bundle-ask-question.mjs");
 	assert.ok(manifest.pi.extensions.includes("./node_modules/@henryqw/pi-ask-question/extensions/ask-question.ts"));
 	assert.ok(!manifest.pi.extensions.some((extension: string) => extension.includes("pi-task-models")));
 });

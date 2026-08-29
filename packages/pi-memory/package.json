@@ -21,7 +21,7 @@
 	"scripts": {
 		"test": "node --test test/*.test.ts",
 		"typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts src/*.ts test/*.test.ts",
-		"prepack": "npm run build --prefix ../pi-ask-question && npm install --prefix . --workspaces=false --no-save --package-lock=false --ignore-scripts --offline --legacy-peer-deps --install-links --dry-run=false ../pi-ask-question ../pi-task-models",
+		"prepack": "npm run build --prefix ../pi-ask-question && node scripts/bundle-ask-question.mjs",
 		"pack:check": "npm pack --dry-run"
 	},
 	"dependencies": {
