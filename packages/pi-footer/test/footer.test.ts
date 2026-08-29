@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities, stripTerminalSequences } from "@earendil-works/pi-tui";
 import footerExtension from "../extensions/footer.ts";
 
 const usage = (input: number, output: number, cacheRead: number, cost: number) => ({
@@ -63,8 +63,11 @@ function setupFooter(
 test("renders checkout, usage, family statuses, and external statuses on separate lines", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const previousCapabilities = getCapabilities();
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	setCapabilities({ ...previousCapabilities, hyperlinks: true });
 	t.after(async () => {
+		setCapabilities(previousCapabilities);
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(agentDir, { recursive: true, force: true });
@@ -135,6 +138,8 @@ test("renders checkout, usage, family statuses, and external statuses on separat
 	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
 	await writeFile(join(agentDir, "config", "pi-open-in.json"), '{"command":"code"}');
 	assert.match(footer.render(100)[0]!, /vscode:\/\//);
+	setCapabilities({ ...previousCapabilities, hyperlinks: false });
+	assert.doesNotMatch(footer.render(100)[0]!, /\x1b\]8;;/);
 
 	thinkingLevel = "off";
 	footer.render(100);
@@ -246,6 +251,57 @@ test("counts one agent run across duplicate starts and stale settled", async () 
 		assert.equal(runtime(), "◷ 2s");
 	} finally {
 		// Clear the active interval before restoring globals so assertion failures cannot hang.
+		await handlers.get("session_shutdown")?.(undefined);
+		globalThis.performance = realPerformance;
+	}
+});
+
+test("excludes prompt waits and persists a paused run", async () => {
+	const appended: Array<[string, unknown]> = [];
+	const { handlers, start } = setupFooter({
+		appendEntry(customType, data) {
+			appended.push([customType, data]);
+		},
+	});
+	const footerFactory = await start({
+		mode: "tui",
+		cwd: "/repo",
+		sessionManager: { getEntries: () => [] },
+		getContextUsage: () => undefined,
+	});
+	const footer = footerFactory({ requestRender() {} }, { fg: (_c: string, text: string) => text }, { getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} });
+	const runtime = () => footer.render(100)[2]!.trim();
+
+	let now = 0;
+	const idleCtx = { isIdle: () => true } as unknown as ExtensionContext;
+	const realPerformance = globalThis.performance;
+	globalThis.performance = { now: () => now } as unknown as typeof performance;
+	try {
+		// Prompt events outside a run are no-ops.
+		await handlers.get("ui_prompt_start")!(undefined);
+		await handlers.get("ui_prompt_end")!(undefined);
+
+		await handlers.get("agent_start")!(undefined);
+		now = 1_000;
+		await handlers.get("ui_prompt_start")!(undefined);
+		now = 5_000;
+		await handlers.get("agent_start")!(undefined); // Duplicate start while paused is ignored.
+		now = 8_000;
+		assert.equal(runtime(), "◷ 1s");
+
+		await handlers.get("ui_prompt_end")!(undefined);
+		now = 10_000;
+		assert.equal(runtime(), "◷ 3s");
+
+		await handlers.get("ui_prompt_start")!(undefined);
+		now = 15_000;
+		await handlers.get("agent_settled")!(undefined, idleCtx);
+		assert.equal(runtime(), "◷ 3s");
+		assert.deepEqual(appended, [["pi-footer:agent-work", 3_000]]);
+		await handlers.get("ui_prompt_end")!(undefined);
+		now = 20_000;
+		assert.equal(runtime(), "◷ 3s");
+	} finally {
 		await handlers.get("session_shutdown")?.(undefined);
 		globalThis.performance = realPerformance;
 	}

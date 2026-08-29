@@ -14,7 +14,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-Requires Pi Coding Agent 0.84.3+.
+Requires Pi Coding Agent 0.84.4+.
 
 ## With
 
