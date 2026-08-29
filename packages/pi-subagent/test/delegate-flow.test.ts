@@ -22,6 +22,7 @@ import {
 	parseDelegateFlowContinue,
 	registerDelegateFlow,
 } from "../extensions/delegate-flow.ts";
+import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
 import { CHILD_EXCLUDED_TOOLS, loadBuiltinRole } from "../src/index.ts";
 
 type Tool = {
@@ -244,6 +245,8 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	assert.equal((DelegateFlowSchema as any).additionalProperties, false);
 	assert.equal((DelegateFlowSchema as any).properties.units.minItems, 1);
 	assert.equal((DelegateFlowSchema as any).properties.units.maxItems, 8);
+	assert.equal((DelegateFlowSchema as any).properties.units.items.properties.name.maxLength, TASK_NAME_CONTRACT.maxLength);
+	assert.equal((DelegateFlowSchema as any).properties.units.items.properties.name.description, TASK_NAME_CONTRACT.description);
 	assert.equal((DelegateFlowContinueSchema as any).additionalProperties, false);
 	assert.deepEqual(parseDelegateFlow({ units: [{
 		id: " one ", name: " Implement auth flow ", task: " work ", validation: [{ command: " node ", args: ["", "x"] }], modelClass: "fast", review: " use judgment ",
@@ -258,6 +261,8 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 		{ units: [{ id: "x", name: "Test work", task: "work", validation: [] }] },
 		{ units: [{ id: "x", task: "work", validation: validation() }] },
 		{ units: [{ ...unit("x"), name: "x".repeat(30) }] },
+		{ units: [{ ...unit("x"), name: "line\nbreak" }] },
+		{ units: [{ ...unit("x"), name: "line\u001b[31m" }] },
 		{ units: [{ ...unit("x"), extra: true }] },
 		{ units: [{ id: "x", name: "Test work", task: "work", validation: [{ command: "node", args: [], extra: true }] }] },
 		{ units: [{ id: "x", name: "Test work", task: "work", validation: [{ command: "node", args: ["bad\0arg"] }] }] },

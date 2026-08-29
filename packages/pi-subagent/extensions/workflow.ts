@@ -2,11 +2,11 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { PROFILE_NAMES, THINKING_LEVELS } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
+import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
 export const MAX_WORKFLOW_ENTRIES = 8;
 
 const RoleSchema = Type.String({ minLength: 1, description: "Configured Subagent role name" });
-const NameSchema = Type.String({ minLength: 1, maxLength: 29, description: "Short descriptive task name, about five words and fewer than 30 characters" });
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
 const ModelSchema = Type.String({ minLength: 1, description: "Designated model as provider/modelId; overrides modelClass" });
 const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
@@ -14,7 +14,7 @@ const ThinkingSchema = StringEnum(THINKING_LEVELS, { description: "Task thinking
 
 export const DelegationSchema = Type.Object({
 	role: RoleSchema,
-	name: NameSchema,
+	name: TaskNameSchema,
 	task: TaskSchema,
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -23,7 +23,7 @@ export const DelegationSchema = Type.Object({
 
 export const WorkflowSchema = Type.Object({
 	role: Type.Optional(RoleSchema),
-	name: Type.Optional(NameSchema),
+	name: Type.Optional(TaskNameSchema),
 	task: Type.Optional(TaskSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -64,7 +64,7 @@ function text(value: string, path: string): string {
 function normalizeDelegation(value: Delegation, path: string): Delegation {
 	return {
 		role: text(value.role, `${path}.role`),
-		name: text(value.name, `${path}.name`),
+		name: normalizeTaskName(value.name, `${path}.name`),
 		task: text(value.task, `${path}.task`),
 		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),

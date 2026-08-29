@@ -10,6 +10,7 @@ import {
 	WorkflowSchema,
 	type DelegationExecution,
 } from "../extensions/workflow.ts";
+import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
 
 const delegation = (task = "work") => ({ role: "worker", name: "Test work", task });
 const succeeded = <T>(assistantOutput: string, result: T): DelegationExecution<T> => ({ ok: true, assistantOutput, result });
@@ -30,7 +31,8 @@ test("schemas expose strict delegation fields and top-level workflow modes", () 
 	const workflowSchema = WorkflowSchema as any;
 	assert.equal(delegationSchema.additionalProperties, false);
 	assert.deepEqual(Object.keys(delegationSchema.properties), ["role", "name", "task", "model", "modelClass", "thinking"]);
-	assert.equal(delegationSchema.properties.name.maxLength, 29);
+	assert.equal(delegationSchema.properties.name.maxLength, TASK_NAME_CONTRACT.maxLength);
+	assert.equal(delegationSchema.properties.name.description, TASK_NAME_CONTRACT.description);
 	assert.equal(workflowSchema.additionalProperties, false);
 	assert.ok("background" in workflowSchema.properties);
 	assert.equal("background" in delegationSchema.properties, false);
@@ -131,6 +133,8 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 		["empty name", { ...delegation(), name: "" }],
 		["blank name", { ...delegation(), name: "\t" }],
 		["NUL name", { ...delegation(), name: "wo\0rk" }],
+		["newline name", { ...delegation(), name: "line\nbreak" }],
+		["terminal escape name", { ...delegation(), name: "line\u001b[31m" }],
 		["30-character name", { ...delegation(), name: "x".repeat(30) }],
 		["empty task", { ...delegation(), task: "" }],
 		["blank task", { ...delegation(), task: "\t" }],

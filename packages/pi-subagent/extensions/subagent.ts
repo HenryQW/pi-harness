@@ -52,6 +52,7 @@ import {
 	type ParsedWorkflow,
 	type WorkflowEntry,
 } from "./workflow.ts";
+import { TASK_NAME_CONTRACT } from "./task-name.ts";
 
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
@@ -529,7 +530,7 @@ export default function subagentExtension(
 		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
 		promptGuidelines: [
 			"Call delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent, commuting outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
-			"Every delegate_task entry must include a short descriptive name of about five words and fewer than 30 characters, then own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.",
+			`${TASK_NAME_CONTRACT.promptGuidance} Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.`,
 			"For each delegate_task entry, populate model and thinking only for an explicit user override; otherwise choose only modelClass: fast normally, or balanced upfront for obviously complex work. This is Main policy, not runtime enforcement.",
 			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",

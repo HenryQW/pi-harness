@@ -49,7 +49,7 @@ Select exactly one shape:
 { chain: [{ role, name, task, model?, modelClass?, thinking? }], background? }
 ```
 
-Main supplies every delegation's required `name`: a short description of about five words and fewer than 30 characters.
+Main supplies every delegation's required `name`: a short description of about five words and fewer than 30 characters. Names must not contain C0/C1 control characters, including newlines and terminal escape characters.
 
 #### Model precedence
 
@@ -81,7 +81,7 @@ See [Orchestration, isolation, and the public API](./docs/orchestration.md) for 
 
 Use Flow only for independent, commuting Git changes. Commuting changes can integrate in any order.
 
-Flow accepts 1–8 uniquely identified units. Each unit has a required Main-supplied short `name`, bounded task, optional `modelClass`, direct command/argument validation gate, and optional non-empty `review` judgment criterion:
+Flow accepts 1–8 uniquely identified units. Each unit has a required Main-supplied short `name`, bounded task, optional `modelClass`, direct command/argument validation gate, and optional non-empty `review` judgment criterion. Names must not contain C0/C1 control characters, including newlines and terminal escape characters.
 
 ```text
 delegate_flow({ units: [{ id, name, task, modelClass?, validation: [{ command, args }], review? }] })

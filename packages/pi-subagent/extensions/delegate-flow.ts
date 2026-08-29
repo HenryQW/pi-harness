@@ -19,6 +19,7 @@ import {
 } from "@henryqw/pi-subagent";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
+import { TASK_NAME_CONTRACT, TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 import { runDelegation } from "./delegation.ts";
 
 const MAX_UNITS = 8;
@@ -34,7 +35,7 @@ const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model pr
 
 const UnitSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
-	name: Type.String({ minLength: 1, maxLength: 29, description: "Short descriptive task name, about five words and fewer than 30 characters" }),
+	name: TaskNameSchema,
 	task: Type.String({ minLength: 1 }),
 	validation: Type.Array(ValidationSchema, { minItems: 1 }),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -156,7 +157,7 @@ export function parseDelegateFlow(value: unknown): FlowRequest {
 			ids.add(id);
 			return {
 				id,
-				name: text(unit.name, `units[${unitIndex}].name`),
+				name: normalizeTaskName(unit.name, `units[${unitIndex}].name`),
 				task: text(unit.task, `units[${unitIndex}].task`),
 				validation: unit.validation.map((validation, validationIndex) => ({
 					command: text(validation.command, `units[${unitIndex}].validation[${validationIndex}].command`),
@@ -762,7 +763,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptSnippet: "Run a deterministic parallel-implementation, serial-verification Flow",
 		promptGuidelines: [
 			"Use delegate_flow only for cohesive units expected to commute: split independent outcomes into units, sequence dependent work outside delegate_flow, and never divide one invariant across multiple units. Combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
-			"Each delegate_flow unit must include a short descriptive name of about five words and fewer than 30 characters, then own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.",
+			`${TASK_NAME_CONTRACT.promptGuidance} Each delegate_flow unit must own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.`,
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
