@@ -79,7 +79,7 @@ By default, helpers use Pi's `getAgentDir()`.
 An extension ID must be one lowercase path component.
 The helpers and store reject IDs with path separators or multiple components.
 
-JSON reads have a 64 KiB limit.
+JSON reads and writes have a 64 KiB limit.
 UTF-8 decoding is strict.
 The `parse` function validates parsed `unknown` data.
 Values are validated before mutations are written.
@@ -88,9 +88,9 @@ A valid file returns `{ source: 'file', value }` from `loadSync()`.
 A missing file returns `{ source: 'missing', value: defaults() }`.
 A missing read does not create or write a file.
 
-A present malformed file is not missing.
+A present malformed or schema-invalid file is not missing.
 Invalid UTF-8, oversized JSON, invalid JSON, and parser failures throw errors.
-The original file remains unchanged.
+Malformed and schema-invalid files remain unchanged.
 
 `save`, `update`, and `remove` are asynchronous.
 Every mutation uses a lock.
