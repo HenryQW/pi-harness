@@ -1,8 +1,6 @@
 # Henry Pi Harness
 
-These are the Pi extensions I use daily. They are highly opinionated. I publish them as-is.
-
-I offer no support or backward compatibility. Breaking changes may be introduced at any time. Published extensions use the `@henryqw` npm scope.
+Highly opinionated Pi extensions. Browse them at <https://pi.henry.wang>.
 
 ![Pi extensions in use](./example.png)
 
