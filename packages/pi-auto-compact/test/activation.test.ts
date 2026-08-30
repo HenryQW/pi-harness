@@ -194,17 +194,14 @@ test("uses only config homes and preserves invalid local config", async () => {
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
-		assert.deepEqual(notices, [
-			[`Auto-compact config is missing: ${configFile}; default threshold 50% is used.`, "warning"],
-			["Task model config is missing; defaults are being used.", "warning"],
-		]);
+		assert.deepEqual(notices, []);
 		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
 		await assert.rejects(() => readFile(sharedConfigFile, "utf8"), { code: "ENOENT" });
 		assert.equal(await readFile(legacyConfigFile, "utf8"), legacy);
 
 		await commands.get("auto-compact")?.("", ctx);
 		assert.equal(prompt, "Auto-compact threshold (%) · current: 50");
-		assert.equal(notices.length, 2);
+		assert.equal(notices.length, 0);
 		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
 
 		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
@@ -216,10 +213,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 				{ type: "session_start", reason: "startup" } as never,
 				ctx,
 			);
-			assert.deepEqual(notices, [
-				["Couldn't read pi-auto-compact config; using 50%.", "error"],
-				["Task model config is missing; defaults are being used.", "warning"],
-			]);
+			assert.deepEqual(notices, [["Couldn't read pi-auto-compact config; using 50%.", "error"]]);
 			assert.equal(await readFile(configFile, "utf8"), invalid);
 		}
 	} finally {

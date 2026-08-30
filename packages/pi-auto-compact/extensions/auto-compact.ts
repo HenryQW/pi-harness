@@ -10,7 +10,6 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
@@ -282,30 +281,12 @@ export default function (pi: ExtensionAPI) {
 	// Pi's built-in automatic compaction competes with this extension. Refuse
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
-		let configMissing = false;
 		try {
 			const config = configStore.loadSync();
 			autoCompactThreshold = config.value.autoCompactThreshold;
-			configMissing = config.source === "missing";
 		} catch {
 			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
-		}
-		if (configMissing) {
-			ctx.ui.notify(
-				`Auto-compact config is missing: ${configStore.path}; default threshold ${DEFAULT_COMPACT_THRESHOLD_PERCENT}% is used.`,
-				"warning",
-			);
-		}
-
-		let taskModelsConfigMissing = false;
-		try {
-			taskModelsConfigMissing = loadTaskModelsConfig().source === "missing";
-		} catch {
-			// Preserve route-time task-model config errors and fallback behavior.
-		}
-		if (taskModelsConfigMissing) {
-			ctx.ui.notify("Task model config is missing; defaults are being used.", "warning");
 		}
 
 		active = !SettingsManager.create(ctx.cwd, getAgentDir(), {

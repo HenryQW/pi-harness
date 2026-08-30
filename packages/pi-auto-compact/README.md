@@ -32,7 +32,7 @@ This package requires `@henryqw/pi-task-models` for shared compaction routes.
 
 `~/.pi/agent/config/pi-task-models/config.json` is shared and owned by `@henryqw/pi-task-models`. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`. A task entry is an explicit user override.
 
-A missing shared config warns once at session start. Malformed shared config is reported and left unchanged. Compaction then uses the current session model.
+Malformed shared config is reported and left unchanged. Compaction then uses the current session model.
 
 ## Use
 
@@ -58,6 +58,6 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact/config.json`
 
 Unknown fields are ignored. Legacy model fields are obsolete. `/auto-compact` writes this file.
 
-A missing file warns once at session start and uses 50%. Reads do not create it. A malformed or invalid file fails visibly at session start, falls back to 50%, and stays unchanged.
+A missing file uses 50%. Reads do not create it. A malformed or invalid file fails visibly at session start, falls back to 50%, and stays unchanged.
 
 Only `/auto-compact` writes this file. Its write is atomic.
