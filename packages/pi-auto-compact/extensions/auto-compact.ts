@@ -29,7 +29,7 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
  * Pi's ctx.compact() aborts active low-level run internally. Mid-task
  * compaction sends a follow-up user message to resume work after summary.
  */
-const DEFAULT_COMPACT_THRESHOLD_PERCENT = 50;
+const DEFAULT_COMPACT_THRESHOLD_PERCENT = 70;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
 export const AUTO_COMPACT_TASK = {
 	id: "pi-auto-compact/autoCompact",
@@ -287,7 +287,7 @@ export default function (pi: ExtensionAPI) {
 			autoCompactThreshold = config.value.autoCompactThreshold;
 		} catch {
 			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-			ctx.ui.notify("Couldn't read pi-auto-compact config; using 50%.", "error");
+			ctx.ui.notify(`Couldn't read pi-auto-compact config; using ${DEFAULT_COMPACT_THRESHOLD_PERCENT}%.`, "error");
 		}
 
 		active = !SettingsManager.create(ctx.cwd, getAgentDir(), {

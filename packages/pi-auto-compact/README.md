@@ -50,14 +50,14 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact/config.json`
 
 ```json
 {
-  "autoCompactThreshold": 50
+  "autoCompactThreshold": 70
 }
 ```
 
-`autoCompactThreshold` is optional. It must be a number that is at least 25 and below 100. The default is `50`.
+`autoCompactThreshold` is optional. It must be a number that is at least 25 and below 100. The default is `70`.
 
 Unknown fields are ignored. Legacy model fields are obsolete. `/auto-compact` writes this file.
 
-A missing file uses 50%. Reads do not create it. A malformed or invalid file fails visibly at session start, falls back to 50%, and stays unchanged.
+A missing file uses 70%. Reads do not create it. A malformed or invalid file fails visibly at session start, falls back to 70%, and stays unchanged.
 
 Only `/auto-compact` writes this file. Its write is atomic.

@@ -200,7 +200,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 		assert.equal(await readFile(legacyConfigFile, "utf8"), legacy);
 
 		await commands.get("auto-compact")?.("", ctx);
-		assert.equal(prompt, "Auto-compact threshold (%) · current: 50");
+		assert.equal(prompt, "Auto-compact threshold (%) · current: 70");
 		assert.equal(notices.length, 0);
 		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
 
@@ -213,7 +213,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 				{ type: "session_start", reason: "startup" } as never,
 				ctx,
 			);
-			assert.deepEqual(notices, [["Couldn't read pi-auto-compact config; using 50%.", "error"]]);
+			assert.deepEqual(notices, [["Couldn't read pi-auto-compact config; using 70%.", "error"]]);
 			assert.equal(await readFile(configFile, "utf8"), invalid);
 		}
 	} finally {
