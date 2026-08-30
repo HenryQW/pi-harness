@@ -2,7 +2,7 @@
 
 Add external directories to the current Pi session. Pi can use their context files and skills, and search their files.
 
-![Pi using added external directories by name](https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-add-dir/example.png)
+![Pi using added external directories by name](./example.png)
 
 ## Why
 

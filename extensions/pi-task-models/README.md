@@ -2,7 +2,7 @@
 
 Choose shared `fast`, `balanced`, `frontier`, and `fav` model profiles for consumer-owned Model Tasks.
 
-![Pi showing task model profiles and task routes](https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-task-models/example.png)
+![Pi showing task model profiles and task routes](./example.png)
 
 ## Why
 
