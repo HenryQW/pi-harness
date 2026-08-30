@@ -44,37 +44,91 @@ async function isolatedAgentDir(t: import("node:test").TestContext): Promise<str
 	return agentDir;
 }
 
-test("missing config directory still returns validated built-in implementer and reviewer roles", async (t) => {
+test("missing config directory still returns validated built-in implementer, reviewer, and scout roles", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
-	const [implementer, reviewer] = loadRoles(agentDir);
+	const roles = loadRoles(agentDir);
+	const [implementer, reviewer, scout] = roles;
 
-	assert.equal(implementer!.name, "implementer");
-	assert.equal(implementer!.isolation, "worktree");
-	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
+	assert.deepEqual(roles.map(({ name, description, tools, isolation, extensions, skills }) => ({
+		name, description, tools, isolation, extensions, skills,
+	})), [
+		{
+			name: "implementer",
+			description: "Implements and validates one bounded change, requesting worktree isolation",
+			tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+			isolation: "worktree",
+			extensions: [],
+			skills: [],
+		},
+		{
+			name: "reviewer",
+			description: "Reviews one bounded change for correctness without changing files",
+			tools: ["read", "grep", "find", "ls"],
+			isolation: undefined,
+			extensions: [],
+			skills: [],
+		},
+		{
+			name: "scout",
+			description: "Maps relevant code and evidence for one bounded task without changing files",
+			tools: ["read", "grep", "find", "ls"],
+			isolation: undefined,
+			extensions: [],
+			skills: [],
+		},
+	]);
+
+	assert.match(implementer!.systemPrompt, /bounded outcome, not a preassigned file list/i);
 	assert.match(implementer!.systemPrompt, /assigned cwd/i);
-	assert.match(implementer!.systemPrompt, /ordinary delegation.*focused validation.*needed to establish that the change is correct/i);
-	assert.match(implementer!.systemPrompt, /Flow packet declares an authoritative validation gate/i);
-	assert.match(implementer!.systemPrompt, /narrow development checks/i);
-	assert.match(implementer!.systemPrompt, /do not duplicate the declared gate/i);
-	assert.match(implementer!.systemPrompt, /Do not remove the retained worktree or task branch/i);
-	assert.match(implementer!.systemPrompt, /[Nn]ever push or open pull requests without explicit authorization/i);
-	assert.match(implementer!.systemPrompt, /[Nn]ever invoke external LLM APIs/i);
+	assert.match(implementer!.systemPrompt, /repository instructions and domain context/i);
+	assert.match(implementer!.systemPrompt, /relevant flow, callers, and tests/i);
+	assert.match(implementer!.systemPrompt, /preserve unrelated work/i);
+	assert.match(implementer!.systemPrompt, /root cause with the smallest complete diff/i);
+	assert.match(implementer!.systemPrompt, /speculative work/i);
+	assert.match(implementer!.systemPrompt, /Stop when the outcome is complete or blocked/i);
+	assert.match(implementer!.systemPrompt, /ordinary delegation, run focused validation.*establish correctness/i);
+	assert.match(implementer!.systemPrompt, /Flow, the declared validation gate is authoritative/i);
+	assert.match(implementer!.systemPrompt, /narrow development checks.*do not duplicate that final gate/i);
+	assert.match(implementer!.systemPrompt, /credentials.*network.*generate artifacts.*broaden scope/i);
+	assert.match(implementer!.systemPrompt, /external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i);
+	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
+	assert.match(implementer!.systemPrompt, /assigned worktree and branch intact/i);
+	assert.match(implementer!.systemPrompt, /Never push or open a pull request without explicit authorization/i);
+	assert.match(implementer!.systemPrompt, /outcome, commit, checks run, and remaining risks/i);
+	assert.match(implementer!.systemPrompt, /Do not repeat Flow's Git-derived evidence/i);
 
-	assert.equal(reviewer!.name, "reviewer");
-	assert.deepEqual(reviewer!.tools, ["read", "grep", "find", "ls"]);
-	assert.match(reviewer!.systemPrompt, /ordinary delegation.*supplied plan.*explicitly named files.*Do not prepare Git/i);
-	assert.match(reviewer!.systemPrompt, /Flow exact review.*explicit judgment criterion.*Review Packet `\{base, tip, patchPath\}`.*same assigned Unit Worktree context/i);
+	assert.match(reviewer!.systemPrompt, /exactly two modes/i);
+	assert.match(reviewer!.systemPrompt, /ordinary delegation: use supplied requirements and named files\/evidence only/i);
+	assert.match(reviewer!.systemPrompt, /Do not prepare Git.*require a commit\/Review Packet.*broaden discovery/i);
+	assert.match(reviewer!.systemPrompt, /If evidence is insufficient, say so and stop/i);
+	assert.match(reviewer!.systemPrompt, /Flow exact review: only with an explicit judgment criterion.*same assigned Unit Worktree.*exact Review Packet `\{base, tip, patchPath\}`/i);
+	assert.match(reviewer!.systemPrompt, /exact patch at `patchPath` as authoritative.*read only referenced files\/context/i);
 	assert.match(reviewer!.systemPrompt, /Declared validation is authoritative for objective verification/i);
-	assert.match(reviewer!.systemPrompt, /exact patch as authoritative/i);
-	assert.match(reviewer!.systemPrompt, /use only.*read.*grep.*find.*ls/i);
+	assert.match(reviewer!.systemPrompt, /Judge only the explicit criterion/i);
+	assert.match(reviewer!.systemPrompt, /actionable correctness risks introduced by the change/i);
+	assert.match(reviewer!.systemPrompt, /style preferences.*speculative hypotheticals.*unrelated pre-existing issues/i);
+	assert.match(reviewer!.systemPrompt, /Use only `read`, `grep`, `find`, and `ls`/i);
 	assert.doesNotMatch(reviewer!.systemPrompt, /\bbash\b/i);
-	assert.match(reviewer!.systemPrompt, /Never manage Main, Git, or tests; never edit or write files, commit, push/i);
-	assert.match(reviewer!.systemPrompt, /Emit exactly `PASS` when there are zero findings/i);
-	assert.match(reviewer!.systemPrompt, /Do not emit `PASS` alongside findings/i);
-	assert.doesNotMatch(reviewer!.systemPrompt, /bytes|SHA-256|child_branch/i);
+	assert.match(reviewer!.systemPrompt, /run no commands\/tests and never edit, write, commit, push, or manage Git\/worktrees/i);
+	assert.match(reviewer!.systemPrompt, /Never invoke external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i);
+	assert.match(reviewer!.systemPrompt, /Output exactly `PASS` when there are no findings/i);
+	assert.match(reviewer!.systemPrompt, /Otherwise output findings only, ordered by severity, with file:line evidence, impact, and smallest valid fix/i);
+	assert.match(reviewer!.systemPrompt, /Any finding blocks approval.*never combine `PASS` with findings/i);
+	assert.match(reviewer!.systemPrompt, /Stop when supplied evidence is covered.*in Flow, stop after its criterion/i);
+
+	assert.match(scout!.systemPrompt, /Answer only the bounded discovery questions/i);
+	assert.match(scout!.systemPrompt, /Read applicable repository instructions and domain context first/i);
+	assert.match(scout!.systemPrompt, /Trace the relevant execution\/data flow, callers, tests, and constraints only far enough to answer/i);
+	assert.match(scout!.systemPrompt, /Separate observed facts, supported inferences, and unknowns/i);
+	assert.match(scout!.systemPrompt, /Stop when answered; if blocked, state what is missing/i);
+	assert.match(scout!.systemPrompt, /Do not design, recommend, implement, edit, or run shell commands/i);
+	assert.match(scout!.systemPrompt, /Return concisely:/i);
+	assert.match(scout!.systemPrompt, /map of relevant files and symbols and how they connect/i);
+	assert.match(scout!.systemPrompt, /path:line evidence/i);
+	assert.match(scout!.systemPrompt, /uncertainties or missing context/i);
 });
 
-test("a same-named user role overrides a built-in while other roles are added", async (t) => {
+test("same-named user roles override built-ins", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
@@ -87,7 +141,15 @@ skills: []
 ---
 Custom body.
 `);
-	await copyFile(join(samplesDir, "scout.md"), join(rolesDir, "scout.md"));
+	await writeFile(join(rolesDir, "scout.md"), `---
+name: scout
+description: Custom discovery policy
+tools: [read]
+extensions: []
+skills: []
+---
+Custom scout body.
+`);
 
 	const roles = loadRoles(agentDir);
 	assert.deepEqual(roles.map(({ name }) => name), ["implementer", "reviewer", "scout"]);
@@ -99,6 +161,15 @@ Custom body.
 		extensions: [],
 		skills: [],
 		systemPrompt: "Custom body.",
+	});
+	assert.deepEqual(roles.find(({ name }) => name === "scout"), {
+		name: "scout",
+		description: "Custom discovery policy",
+		tools: ["read"],
+		isolation: undefined,
+		extensions: [],
+		skills: [],
+		systemPrompt: "Custom scout body.",
 	});
 });
 
@@ -135,14 +206,11 @@ test("duplicate names among user role files remain an error", async (t) => {
 	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
 });
 
-test("copyable Role samples load from an isolated agent directory", async (t) => {
+test("the optional synthesizer sample loads alongside built-in roles", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
-	await Promise.all([
-		copyFile(join(samplesDir, "scout.md"), join(rolesDir, "scout.md")),
-		copyFile(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md")),
-	]);
+	await copyFile(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md"));
 
 	assert.deepEqual(loadRoles(agentDir).map(({ name, tools, isolation, extensions, skills }) => ({
 		name, tools, isolation, extensions, skills,

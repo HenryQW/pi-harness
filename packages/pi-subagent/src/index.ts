@@ -134,9 +134,8 @@ function extensionList(value: unknown, source: string): string[] {
 	return stringList(value, "extensions", source).map((extension) => validateExtension(extension, source));
 }
 
-// Built-in Roles required by the bundled pi-subagent-delegated-development Skill;
-// resolved from the package-shipped Markdown relative to this module.
-const BUILTIN_ROLE_NAMES = ["implementer", "reviewer"] as const;
+// Built-in Roles resolved from the package-shipped Markdown relative to this module.
+const BUILTIN_ROLE_NAMES = ["implementer", "reviewer", "scout"] as const;
 export type BuiltinRoleName = (typeof BUILTIN_ROLE_NAMES)[number];
 
 /** Single-file Role parser shared by built-in and user roles. */
@@ -179,10 +178,9 @@ function builtinRoles(): Role[] {
 }
 
 /**
- * Validated built-in implementer/reviewer Roles plus valid user roles from
- * `config/pi-subagent`. A user role with a built-in name overrides the default;
- * duplicate names among user files are an error. Missing user directory returns
- * the built-ins.
+ * Validated package-shipped Roles plus valid user roles from `config/pi-subagent`.
+ * A user role with a built-in name overrides the default; duplicate names among
+ * user files are an error. Missing user directory returns the built-ins.
  */
 export function loadRoles(agentDir = getAgentDir()): Role[] {
 	const byName = new Map(builtinRoles().map((role) => [role.name, role]));
