@@ -5,7 +5,6 @@ import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tu
 import {
 	availableTaskModels,
 	loadTaskModelsConfig,
-	type ThinkingLevel,
 	modelReference,
 	registerModelTask,
 	resolveAvailableModel,
@@ -183,23 +182,17 @@ function renderWidgetRows(
 	return lines;
 }
 
-function resolveDesignatedRoute(ctx: ExtensionContext, reference: string, thinking?: ThinkingLevel): ResolvedTaskRoute {
+function replaceRouteModel(ctx: ExtensionContext, reference: string, route: ResolvedTaskRoute): ResolvedTaskRoute {
 	const models = availableTaskModels(ctx);
 	const model = resolveAvailableModel(models, reference, ctx.model?.provider);
 	if (!model) {
 		throw new Error(`Unknown delegate_task model: ${reference}. Available models: ${models.map((candidate) => modelReference(candidate)).join(", ") || "none"}.`);
 	}
 	const levels = taskThinkingLevels(ctx, model);
-	if (thinking !== undefined) {
-		if (!levels.includes(thinking)) {
-			throw new Error(`delegate_task thinking ${thinking} is not usable for ${modelReference(model)} in this session. Usable levels here: ${levels.join(", ") || "none"}.`);
-		}
-		return { model, thinkingLevel: thinking };
+	if (!levels.includes(route.thinkingLevel)) {
+		throw new Error(`delegate_task model ${modelReference(model)} cannot use route thinking ${route.thinkingLevel} in this session. Usable levels here: ${levels.join(", ") || "none"}.`);
 	}
-	if (!levels.length) {
-		throw new Error(`${modelReference(model)} has no usable thinking level in this session; pick another model or adjust the scoped thinking pin.`);
-	}
-	return { model, thinkingLevel: levels.includes("medium") ? "medium" : levels.at(-1)! };
+	return { model, thinkingLevel: route.thinkingLevel };
 }
 
 const BACKGROUND_RESULT_TYPE = "subagent-background-result";
@@ -539,7 +532,7 @@ export default function subagentExtension(
 		promptGuidelines: [
 			"Call delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent, commuting outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
 			`${TASK_NAME_CONTRACT.promptGuidance} Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.`,
-			`For each delegate_task entry, populate model and thinking only for an explicit user override. Otherwise, ${MODEL_CLASS_GUIDANCE} This is Main policy, not runtime enforcement.`,
+			`For each delegate_task entry, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
 			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],
@@ -578,14 +571,16 @@ export default function subagentExtension(
 
 			// Resolve against the latest known session context after each FIFO permit.
 			const launchCtx = () => latestCtx ?? ctx;
-			const resolveLaunch = (role: Role, delegation: Delegation) => createRoleLaunch(pi, launchCtx(), {
-				role,
-				route: delegation.model !== undefined
-					? resolveDesignatedRoute(launchCtx(), delegation.model, delegation.thinking)
-					: delegation.modelClass === undefined
-						? resolveConfiguredTaskRoute(launchCtx(), DELEGATE_TASK, undefined, delegation.thinking)
-						: resolveTaskRoute(launchCtx(), delegation.modelClass, undefined, delegation.thinking),
-			});
+			const resolveLaunch = (role: Role, delegation: Delegation) => {
+				const context = launchCtx();
+				const route = delegation.modelClass === undefined
+					? resolveConfiguredTaskRoute(context, DELEGATE_TASK)
+					: resolveTaskRoute(context, delegation.modelClass);
+				return createRoleLaunch(pi, context, {
+					role,
+					route: delegation.model === undefined ? route : replaceRouteModel(context, delegation.model, route),
+				});
+			};
 			const notifyMissingSkills = (role: Role, launch: ReturnType<typeof resolveLaunch>) => {
 				if (launch.missingSkills.length) {
 					ctx.ui.notify(
