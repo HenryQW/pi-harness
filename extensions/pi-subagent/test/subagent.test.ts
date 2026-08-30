@@ -436,7 +436,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	});
 });
 
-test("shared profiles route explicit and omitted model classes without a subagent command", async () => {
+test("routes supply thinking for omitted, class, direct-model, and background delegation", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -455,6 +455,7 @@ Return concise findings.
 			{ provider: "provider", id: "balanced-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
 			{ provider: "provider", id: "frontier-model", input: ["text"], reasoning: true, thinkingLevelMap: { max: "max" } },
 			{ provider: "provider", id: "fav-model", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } },
+			{ provider: "provider", id: "direct-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium", max: "max" } },
 		];
 		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
@@ -485,11 +486,23 @@ Return concise findings.
 		const omittedArgs = JSON.parse(singleOutput(omitted));
 		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/fast-model");
 		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "off");
+
+		const direct = await app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/direct-model", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const directArgs = JSON.parse(singleOutput(direct));
+		assert.equal(directArgs[directArgs.indexOf("--model") + 1], "provider/direct-model");
+		assert.equal(directArgs[directArgs.indexOf("--thinking") + 1], "max");
+
+		const background = await app.tool.execute("call-4", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "fav", background: true }, undefined, undefined, app.ctx);
+		assert.match(background.content[0]!.text, /accepted/);
+		await waitFor(() => app.sentMessages.length === 1);
+		const backgroundArgs = JSON.parse(singleEvidence(app.sentMessages[0]!.message.content, app.sentMessages[0]!.message.details, "assistant"));
+		assert.equal(backgroundArgs[backgroundArgs.indexOf("--model") + 1], "provider/fav-model");
+		assert.equal(backgroundArgs[backgroundArgs.indexOf("--thinking") + 1], "high");
 		assert.equal(await readFile(join(agentDir, "config", "pi-subagent", "config.json"), "utf8"), legacyConfig);
 	});
 });
 
-test("designated model overrides class routing and unknown reference lists available models", async () => {
+test("unknown designated model lists available models", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -501,22 +514,17 @@ skills: []
 ---
 Return concise findings.
 `);
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
+			profiles: { fast: { primary: { model: "provider/alpha", thinkingLevel: "medium" } } },
+		}));
 		const availableModels = [
 			{ provider: "provider", id: "alpha", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
 			{ provider: "provider", id: "beta", input: ["text"], reasoning: false },
 		];
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
-		process.argv[1] = runner;
 		const app = harness({ availableModels });
 
-		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/beta" }, undefined, undefined, app.ctx);
-		const args = JSON.parse(singleOutput(result)) as string[];
-		assert.equal(args[args.indexOf("--model") + 1], "provider/beta");
-		assert.equal(args[args.indexOf("--thinking") + 1], "off");
-
 		await assert.rejects(
-			app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/gamma" }, undefined, undefined, app.ctx),
+			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/gamma" }, undefined, undefined, app.ctx),
 			/Available models: provider\/alpha, provider\/beta/,
 		);
 	});
@@ -551,85 +559,28 @@ Return concise findings.
 	});
 });
 
-test("thinking override participates in route resolution across all paths", async () => {
+test("direct models honor scoped route thinking before launch", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: { balanced: {
-				primary: { model: "provider/a-model", thinkingLevel: "off" },
-				fallback: { model: "provider/b-model", thinkingLevel: "high" },
-			} },
-			tasks: { "pi-subagent/delegateTask": "balanced" },
+			profiles: { fast: { primary: { model: "p/route", thinkingLevel: "high" } } },
 		}));
-		const availableModels = [
-			{ provider: "provider", id: "a-model", input: ["text"], reasoning: false },
-			{ provider: "provider", id: "b-model", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } },
-		];
+		const marker = join(agentDir, "child-started");
 		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
+		await writeFile(runner, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "started");`);
 		process.argv[1] = runner;
-		const app = harness({ availableModels });
+		const route = { ...model, provider: "p", id: "route", reasoning: true, thinkingLevelMap: { high: "high" } };
+		const pinned = { ...model, provider: "p", id: "pinned", reasoning: true, thinkingLevelMap: { low: "low", high: "high" } };
+		const app = harness({ scopedModels: [
+			{ model: route, thinkingLevel: "high" },
+			{ model: pinned, thinkingLevel: "low" },
+		] });
 
-		// Omitted thinking keeps the primary route.
-		const primary = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code" }, undefined, undefined, app.ctx);
-		const primaryArgs = JSON.parse(singleOutput(primary)) as string[];
-		assert.equal(primaryArgs[primaryArgs.indexOf("--model") + 1], "provider/a-model");
-		assert.equal(primaryArgs[primaryArgs.indexOf("--thinking") + 1], "off");
-
-		// Explicit override skips the incompatible primary and uses the fallback.
-		const override = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code", thinking: "high" }, undefined, undefined, app.ctx);
-		const overrideArgs = JSON.parse(singleOutput(override)) as string[];
-		assert.equal(overrideArgs[overrideArgs.indexOf("--model") + 1], "provider/b-model");
-		assert.equal(overrideArgs[overrideArgs.indexOf("--thinking") + 1], "high");
-
-		// No route supports the requested level.
-		await assert.rejects(
-			app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", thinking: "max" }, undefined, undefined, app.ctx),
-			/supporting thinking max/,
-		);
-
-		// Explicit class path honors the override too.
-		const byClass = await app.tool.execute("call-5", { role: "worker", name: "Test delegated task", task: "work", modelClass: "balanced", thinking: "high" }, undefined, undefined, app.ctx);
-		const byClassArgs = JSON.parse(singleOutput(byClass)) as string[];
-		assert.equal(byClassArgs[byClassArgs.indexOf("--model") + 1], "provider/b-model");
-		assert.equal(byClassArgs[byClassArgs.indexOf("--thinking") + 1], "high");
-
-		// Designated model path honors the override.
-		const designated = await app.tool.execute("call-6", { role: "worker", name: "Test delegated task", task: "work", model: "provider/b-model", thinking: "high" }, undefined, undefined, app.ctx);
-		const designatedArgs = JSON.parse(singleOutput(designated)) as string[];
-		assert.equal(designatedArgs[designatedArgs.indexOf("--thinking") + 1], "high");
-
-		// Background delegation propagates the override to the child args.
-		const background = await app.tool.execute(
-			"call-4", { role: "worker", name: "Test delegated task", task: "work", thinking: "high", background: true }, undefined, undefined, app.ctx,
-		);
-		assert.match(background.content[0]!.text, /accepted/);
-		await waitFor(() => app.sentMessages.length === 1);
-		const message = app.sentMessages[0]!.message;
-		const backgroundArgs = JSON.parse(singleEvidence(message.content, message.details, "assistant")) as string[];
-		assert.equal(backgroundArgs[backgroundArgs.indexOf("--thinking") + 1], "high");
-	});
-});
-
-test("designated model with unusable scoped thinking pin rejects before launch", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
-		process.argv[1] = runner;
-		const pinned = { ...model, provider: "p", id: "pinned", reasoning: true, thinkingLevelMap: { high: "high" } };
-		const app = harness({ availableModels: [pinned], scopedModels: [{ model: pinned, thinkingLevel: "xhigh" }] });
-
-		// The scoped pin allows no supported level; launching without --thinking must not bypass it.
 		await assert.rejects(
 			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", model: "p/pinned" }, undefined, undefined, app.ctx),
-			/no usable thinking level/,
+			/cannot use route thinking high/,
 		);
-
-		await assert.rejects(
-			app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code", model: "p/pinned", thinking: "low" }, undefined, undefined, app.ctx),
-			/not usable for p\/pinned in this session/,
-		);
+		assert.equal(existsSync(marker), false);
 	});
 });
 
@@ -1176,7 +1127,9 @@ Do work.
 		assert.equal(app.tool.parameters, WorkflowSchema);
 		assert.match(app.tool.description, /single, parallel, or chain/);
 		assert.ok(app.tool.promptGuidelines?.every((guideline) => guideline.includes("delegate_task")));
-		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes("populate model and thinking only for an explicit user override") && guideline.includes(MODEL_CLASS_GUIDANCE) && guideline.includes("not runtime enforcement")));
+		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)
+			&& guideline.includes("direct model replaces only the selected route's model")
+			&& guideline.includes("thinking level stays unchanged")));
 		assert.match(app.tool.description, /configuration error/);
 		await assert.rejects(
 			app.tool.execute("invalid", { role: "broken", name: "Test delegated task", task: "work", tasks: [] }, undefined, undefined, app.ctx),
@@ -1277,7 +1230,10 @@ skills: [skill-b]
 Review code.
 `),
 			writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-				profiles: { frontier: { primary: { model: "provider/deep", thinkingLevel: "high" } } },
+				profiles: {
+					fast: { primary: { model: "provider/fast", thinkingLevel: "off" } },
+					frontier: { primary: { model: "provider/deep", thinkingLevel: "high" } },
+				},
 			})),
 		]);
 		const started = join(agentDir, "parallel-started");
@@ -1308,8 +1264,8 @@ const timer = setInterval(() => {
 		});
 		const updates: any[] = [];
 		const running = app.tool.execute("workflow-1", { tasks: [
-			{ role: "scout", name: "Test delegated task", task: "alpha", model: "provider/fast", thinking: "off" },
-			{ role: "reviewer", name: "Test delegated task", task: "beta", modelClass: "frontier", thinking: "high" },
+			{ role: "scout", name: "Test delegated task", task: "alpha", model: "provider/fast" },
+			{ role: "reviewer", name: "Test delegated task", task: "beta", modelClass: "frontier" },
 		] }, undefined, (update: any) => updates.push(update), app.ctx);
 		await waitFor(() => readdirSync(started).length === 2);
 		await writeFile(join(release, "beta"), "");

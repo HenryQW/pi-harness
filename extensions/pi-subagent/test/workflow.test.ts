@@ -30,12 +30,14 @@ test("schemas expose strict delegation fields and top-level workflow modes", () 
 	const delegationSchema = DelegationSchema as any;
 	const workflowSchema = WorkflowSchema as any;
 	assert.equal(delegationSchema.additionalProperties, false);
-	assert.deepEqual(Object.keys(delegationSchema.properties), ["role", "name", "task", "model", "modelClass", "thinking"]);
+	assert.deepEqual(Object.keys(delegationSchema.properties), ["role", "name", "task", "model", "modelClass"]);
 	assert.equal(delegationSchema.properties.name.maxLength, TASK_NAME_CONTRACT.maxLength);
 	assert.equal(delegationSchema.properties.name.description, TASK_NAME_CONTRACT.description);
 	assert.equal(workflowSchema.additionalProperties, false);
 	assert.ok("background" in workflowSchema.properties);
 	assert.equal("background" in delegationSchema.properties, false);
+	assert.equal("thinking" in delegationSchema.properties, false);
+	assert.equal("thinking" in workflowSchema.properties, false);
 	assert.equal(workflowSchema.properties.tasks.minItems, 1);
 	assert.equal(workflowSchema.properties.tasks.maxItems, MAX_WORKFLOW_ENTRIES);
 	assert.equal(workflowSchema.properties.chain.minItems, 1);
@@ -49,7 +51,6 @@ test("parses and normalizes each explicit workflow mode", () => {
 		task: " inspect ",
 		model: " provider/model ",
 		modelClass: "fast",
-		thinking: "high",
 		background: true,
 	}), {
 		mode: "single",
@@ -60,7 +61,6 @@ test("parses and normalizes each explicit workflow mode", () => {
 			task: "inspect",
 			model: "provider/model",
 			modelClass: "fast",
-			thinking: "high",
 		}],
 	});
 	assert.deepEqual(parseWorkflow({ tasks: [delegation("one"), delegation("two")] }), {
@@ -77,11 +77,18 @@ test("parses and normalizes each explicit workflow mode", () => {
 	for (const modelClass of ["fast", "balanced", "frontier", "fav"]) {
 		assert.equal(parseWorkflow({ ...delegation(), modelClass }).delegations[0]!.modelClass, modelClass);
 	}
-	for (const thinking of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
-		assert.equal(parseWorkflow({ ...delegation(), thinking }).delegations[0]!.thinking, thinking);
-	}
 	assert.equal(parseWorkflow({ tasks: Array.from({ length: MAX_WORKFLOW_ENTRIES }, () => delegation()) }).delegations.length, 8);
 	assert.equal(parseWorkflow({ chain: Array.from({ length: MAX_WORKFLOW_ENTRIES }, () => delegation()) }).delegations.length, 8);
+});
+
+test("rejects caller thinking in every workflow mode", () => {
+	for (const value of [
+		{ ...delegation(), thinking: "high" },
+		{ tasks: [{ ...delegation(), thinking: "high" }] },
+		{ chain: [{ ...delegation(), thinking: "high" }] },
+	]) {
+		assert.throws(() => parseWorkflow(value), /declared tool schema/);
+	}
 });
 
 test("rejects every workflow shape boundary at runtime", () => {
@@ -143,8 +150,6 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 		["NUL model", { ...delegation(), model: "p\0m" }],
 		["unknown model class", { ...delegation(), modelClass: "slow" }],
 		["blank model class", { ...delegation(), modelClass: " " }],
-		["unknown thinking", { ...delegation(), thinking: "extreme" }],
-		["NUL thinking", { ...delegation(), thinking: "high\0" }],
 	];
 	for (const [name, value] of invalidDelegations) {
 		assert.throws(() => parseWorkflow(value), `${name} in single mode`);

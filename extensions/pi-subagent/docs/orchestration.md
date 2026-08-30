@@ -26,7 +26,6 @@ A call selects exactly one of these shapes. Unknown properties and nested modes 
   "name": "Inspect authentication flow",
   "task": "One bounded task packet",
   "modelClass": "balanced",
-  "thinking": "high",
   "background": false
 }
 ```
@@ -69,11 +68,10 @@ Single mode puts one delegation's fields at the top level.
 | `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory or a package-shipped built-in (`implementer`, `reviewer`, `scout`); a same-named user file overrides the built-in. |
 | `name` | yes | Main-supplied short task name: about five words and fewer than 30 characters; C0/C1 control characters are rejected. |
 | `task` | yes | Non-empty bounded task packet. |
-| `model` | no | Designated `provider/modelId`; takes precedence over `modelClass`, and Main supplies it only for an explicit user override. |
-| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; Main prioritizes `fast` for straightforward work and `balanced` for complex work, reserves `frontier` for exceptionally complex or tricky work, and omission uses pi-subagent's local Model Task declaration. |
-| `thinking` | no | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; Main supplies it only for an explicit user override. Route selection skips models that cannot honor it. |
+| `model` | no | Designated `provider/modelId`; replaces only the selected route model and must support that route's thinking level. |
+| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; selects the route. Main prioritizes `fast` for straightforward work and `balanced` for complex work. It reserves `frontier` for exceptionally complex or tricky work. Omission uses pi-subagent's local Model Task declaration. |
 
-Those six fields are the complete delegation object. The direct-model/thinking rule is Main-facing policy only: the runtime adds no provenance tracking or enforcement. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
+Those five fields are the complete delegation object. Routes set exact thinking levels. A direct model never changes that level and fails before launch if it cannot support it. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
 
 ### Background, failures, and transport
 

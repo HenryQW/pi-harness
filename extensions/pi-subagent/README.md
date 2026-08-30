@@ -44,27 +44,25 @@ Select exactly one shape:
 
 ```text
 // Single
-{ role, name, task, model?, modelClass?, thinking?, background? }
+{ role, name, task, model?, modelClass?, background? }
 
 // Parallel: 1–8 independent delegations
-{ tasks: [{ role, name, task, model?, modelClass?, thinking? }], background? }
+{ tasks: [{ role, name, task, model?, modelClass? }], background? }
 
 // Chain: 1–8 dependent delegations
-{ chain: [{ role, name, task, model?, modelClass?, thinking? }], background? }
+{ chain: [{ role, name, task, model?, modelClass? }], background? }
 ```
 
 Main supplies every delegation's required `name`: a short description of about five words and fewer than 30 characters. Names must not contain C0/C1 control characters, including newlines and terminal escape characters.
 
-#### Model precedence
+#### Model routing
 
-1. An explicit `model` is `provider/modelId` and overrides `modelClass`.
-2. Main sets direct `model` and `thinking` only for an explicit user override.
-3. Otherwise, Main selects `modelClass` according to the [delegation policy](./docs/orchestration.md#delegation-fields).
-4. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`.
-   When omitted, it uses pi-subagent's local `pi-subagent/delegateTask` Model Task declaration.
-   That declaration defaults to `fast` and shared config can explicitly override it.
+1. `modelClass` selects a route. It is `fast`, `balanced`, `frontier`, or `fav`.
+2. An omitted class uses pi-subagent's `pi-subagent/delegateTask` declaration. Its default is `fast`.
+3. The route supplies the model and exact thinking level.
+4. An explicit `model` is `provider/modelId`. It replaces only the route model and must support its thinking level.
 
-This is Main policy only. The runtime records no provenance and does not enforce it. `background` applies to the whole selected mode and is never a per-delegation field.
+`background` applies to the whole selected mode. It is never a per-delegation field.
 
 The transient status widget renders one line per child with: status glyph, bracketed uppercase role initial (`[I]` for `implementer`, `[R]` for `reviewer`, and likewise for custom Roles), Main-supplied short name, activity (thinking… or active tool with elapsed time and path basename), and metrics (completed turns, started tools, compact `model·thinking` pair, tokens, total duration). Rows are ordered active-first (working items first, stable insertion order for the rest). A hard six-physical-line maximum applies: when total items are six or fewer, all child rows render; above six, five child rows plus one status-aware overflow line render (`… N more · X working · Y complete · Z failed · W stopped`). Terminal rows clear on the next real user input; active rows persist until the child settles. It is separate from Pi's built-in tool-execution block.
 

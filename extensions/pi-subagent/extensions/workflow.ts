@@ -1,5 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { PROFILE_NAMES, THINKING_LEVELS } from "@henryqw/pi-task-models";
+import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
@@ -8,9 +8,8 @@ export const MAX_WORKFLOW_ENTRIES = 8;
 
 const RoleSchema = Type.String({ minLength: 1, description: "Configured Subagent role name" });
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
-const ModelSchema = Type.String({ minLength: 1, description: "Designated model as provider/modelId; overrides modelClass" });
+const ModelSchema = Type.String({ minLength: 1, description: "Designated model as provider/modelId; replaces the selected route model" });
 const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
-const ThinkingSchema = StringEnum(THINKING_LEVELS, { description: "Task thinking-level override" });
 
 export const DelegationSchema = Type.Object({
 	role: RoleSchema,
@@ -18,7 +17,6 @@ export const DelegationSchema = Type.Object({
 	task: TaskSchema,
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
-	thinking: Type.Optional(ThinkingSchema),
 }, { additionalProperties: false });
 
 export const WorkflowSchema = Type.Object({
@@ -27,7 +25,6 @@ export const WorkflowSchema = Type.Object({
 	task: Type.Optional(TaskSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
-	thinking: Type.Optional(ThinkingSchema),
 	tasks: Type.Optional(Type.Array(DelegationSchema, {
 		minItems: 1,
 		maxItems: MAX_WORKFLOW_ENTRIES,
@@ -53,7 +50,7 @@ export type ParsedWorkflow =
 
 type WorkflowInput = Static<typeof WorkflowSchema>;
 
-const DELEGATION_KEYS = ["role", "name", "task", "model", "modelClass", "thinking"] as const;
+const DELEGATION_KEYS = ["role", "name", "task", "model", "modelClass"] as const;
 
 function text(value: string, path: string): string {
 	const normalized = value.trim();
@@ -68,7 +65,6 @@ function normalizeDelegation(value: Delegation, path: string): Delegation {
 		task: text(value.task, `${path}.task`),
 		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
-		...(value.thinking === undefined ? {} : { thinking: value.thinking }),
 	};
 }
 
