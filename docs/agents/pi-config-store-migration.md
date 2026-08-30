@@ -223,7 +223,7 @@ For each changed path:
 2. resolve the effective agent directory;
 3. if only the old path exists, create the target home and move the file without parsing or rewriting it;
 4. if only the new path exists, do nothing;
-5. if neither exists, do nothing and expect the extension warning;
+5. if neither exists, do nothing; optional config defaults stay silent;
 6. if both exist, overwrite neither and ask the user which file is authoritative;
 7. verify bytes and permissions after each move.
 
