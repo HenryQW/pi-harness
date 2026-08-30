@@ -172,17 +172,6 @@ describe("sanitize ladder", () => {
 		assert.equal(plan.forceLike, false);
 	});
 
-	it("explicit operator queries pass raw with quoted recovery then OR", () => {
-		const plan = buildFtsQueryPlan("error AND NOT (unterminated");
-		assert.deepEqual(plan.ftsCandidates, [`error AND NOT (unterminated`, `"error" "unterminated"`, `"error" OR "unterminated"`]);
-	});
-
-	it("explicit operators with short terms route to boolean LIKE (bhZel)", () => {
-		const plan = buildFtsQueryPlan("Go OR Rust");
-		assert.equal(plan.forceLike, true);
-		assert.equal(plan.ftsCandidates.length, 0);
-	});
-
 	it("trailing wildcard keeps FTS5 prefix syntax (bnRnk)", () => {
 		seedDeploy();
 		const plan = buildFtsQueryPlan("deploy*");

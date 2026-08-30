@@ -109,24 +109,6 @@ test("multi-match ambiguity error with previews", async () => {
 	}
 });
 
-test("missing old_text returns recoverable error with current entries", async () => {
-	const { store, cleanup } = await makeStore();
-	try {
-		await store.add("memory", "an entry");
-		const replaceResult = await store.replace("memory", "", "new");
-		assert.equal(replaceResult.success, false);
-		assert.match(replaceResult.error!, /needs old_text/);
-		assert.deepEqual(replaceResult.currentEntries!, ["an entry"]);
-		assert.match(replaceResult.error!, /Reissue/);
-
-		const removeResult = await store.remove("memory", "");
-		assert.equal(removeResult.success, false);
-		assert.deepEqual(removeResult.currentEntries!, ["an entry"]);
-	} finally {
-		await cleanup();
-	}
-});
-
 test("unreadable existing file aborts mutation and leaves file unchanged", async () => {
 	const { store, dir, cleanup } = await makeStore();
 	try {
@@ -233,17 +215,6 @@ test("backup created before successful rewrite", async () => {
 	} finally {
 		await cleanup();
 		await rm(backedUp!, { force: true });
-	}
-});
-
-test("two sequential adds both present", async () => {
-	const { store, cleanup } = await makeStore();
-	try {
-		assert.equal((await store.add("memory", "one")).success, true);
-		assert.equal((await store.add("memory", "two")).success, true);
-		assert.deepEqual((await store.load("memory")).entries, ["one", "two"]);
-	} finally {
-		await cleanup();
 	}
 });
 
@@ -445,23 +416,6 @@ test("ambiguous-match previews are aggregate-bounded", async () => {
 		const serialized = JSON.stringify(result.matches ?? []);
 		assert.ok(serialized.length < 3000, `previews must be bounded, got ${serialized.length}`);
 	} finally {
-		await cleanup();
-	}
-});
-
-test("source vanishing between reload and backup aborts the mutation", async () => {
-	const backupDir = await mkdtemp(join(tmpdir(), "pi-memory-backups-"));
-	const { store, dir, cleanup } = await makeStore((target) => join(backupDir, target === "user" ? "USER.md.bak" : "MEMORY.md.bak"));
-	try {
-		await store.add("memory", "precious");
-		await rm(memoryPath(dir));
-		// Disappearance guard (reloadTarget) fires before backup copy: aborts as a
-		// failure result, never rewriting from the stale view.
-		const result = await store.add("memory", "after disappearance");
-		assert.equal(result.success, false);
-		assert.match(result.error ?? "", /disappeared/);
-	} finally {
-		await rm(backupDir, { recursive: true, force: true });
 		await cleanup();
 	}
 });

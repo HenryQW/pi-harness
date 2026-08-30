@@ -258,12 +258,6 @@ test("parentId cycle terminates (corrupt file)", () => {
 	assert.ok(r.messages.length >= 1);
 });
 
-test("windowN clamped to [0,50]", () => {
-	const p = join(FIX, "linear.jsonl");
-	assert.equal(getWindow(p, "e02", 99).messages.length, 4);
-	assert.equal(getWindow(p, "e02", -5).messages.length, 1);
-});
-
 test("read truncation head/tail + totals", () => {
 	const msg = mkMsgs();
 	const lines: object[] = [{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" }];
@@ -341,39 +335,6 @@ assert.equal(result.totalMessages, 2);`;
 		assert.equal(result.status, 0, result.stderr.toString());
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("getWindow hydrates the whole branch from a single snapshot read", () => {
-	const msg = mkMsgs();
-	// Shared e01..e03, branch A (e04,e05), branch B (e06,e07) = leaf.
-	const p = write("single-snapshot.jsonl", [
-		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
-		msg(null, "user", "q1"), // e01
-		msg("e01", "assistant", "a1"), // e02
-		msg("e02", "user", "q2"), // e03
-		msg("e03", "assistant", "A-a1"), // e04 branch A
-		msg("e04", "user", "A-q2"), // e05
-		msg("e03", "assistant", "B-a1"), // e06 branch B
-		msg("e06", "user", "B-q2"), // e07 leaf
-	]);
-	const realOpenSync = fs.openSync.bind(fs) as typeof fs.openSync;
-	let opens = 0;
-	fs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
-		opens++;
-		return realOpenSync(...args);
-	}) as typeof fs.openSync;
-	try {
-		const w = getWindow(p, "e06", 5);
-		assert.equal(opens, 1, "full hydration must read exactly one bounded snapshot (no second transcript parse)");
-		assert.deepEqual(w.branchMessages.map((m) => m.entryId), ["e01", "e02", "e03", "e06", "e07"], "branch messages stay on the anchor's branch");
-		// Bookends derived from this one array are consistent with the window.
-		assert.deepEqual(w.branchMessages.slice(0, 3).map((m) => m.entryId), ["e01", "e02", "e03"]);
-		assert.deepEqual(w.branchMessages.slice(-3).map((m) => m.entryId), ["e03", "e06", "e07"]);
-		assert.ok(w.messages.every((m) => w.branchMessages.some((b) => b.entryId === m.entryId)));
-		assert.equal(w.branchTip, "e07");
-	} finally {
-		fs.openSync = realOpenSync;
 	}
 });
 

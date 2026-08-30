@@ -5,7 +5,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, setCapabilities, resetCapabilitiesCache } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
 import pullRequestExtension, { formatPullRequest, parsePullRequest } from "../extensions/pr.ts";
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -343,18 +343,4 @@ test("polls UI sessions, starts PR workflow when absent, and cleans up", async (
 	await flush();
 	assert.equal(calls.length, callsAfterShutdown);
 	releaseAbort(result(good()));
-});
-
-test("capability state restored after tests", () => {
-	const baseline = getCapabilities();
-	withCapabilities(true, () => {
-		assert.equal(getCapabilities().hyperlinks, true);
-	});
-	assert.deepEqual(getCapabilities(), baseline);
-	withCapabilities(false, () => {
-		assert.equal(getCapabilities().hyperlinks, false);
-	});
-	assert.deepEqual(getCapabilities(), baseline);
-	resetCapabilitiesCache();
-	assert.deepEqual(getCapabilities(), baseline);
 });

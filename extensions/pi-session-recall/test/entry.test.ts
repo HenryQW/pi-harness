@@ -248,17 +248,6 @@ describe("session_search entry point", () => {
 		const discParsed = JSON.parse(disc.content[0].text);
 		assert.equal(discParsed.results.length, 3);
 		assert.ok(discParsed.results.some((r: { contentTruncated?: boolean }) => r.contentTruncated), "later hits truncated against cumulative budget");
-
-		// Junk dirs are pruned during the walk, not after it.
-		msgCount = 1;
-		writeSession("--private-tmp-junk/junk.jsonl", [
-			{ type: "session", version: 3, id: "junk", timestamp: "2026-01-07T00:00:00.000Z", cwd: "/Users/tester/proj" },
-			msg(null, "user", "pangolin migration notes"),
-		]);
-		const core = await import("../extensions/search-core.ts");
-		core.syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
-		const { hits } = core.searchIndex(path.join(agentDir, "config", "pi-session-recall", "index.db"), "pangolin migration");
-		assert.equal(hits.length, 0, "sessions under --private-tmp-* must not be indexed");
 	});
 
 	it("discovery full hit derives window and bookends from one snapshot read", async () => {

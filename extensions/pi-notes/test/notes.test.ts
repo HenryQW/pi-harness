@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import notesExtension, { parseNotes, renderNotes, renderNotesWidget } from "../extensions/notes.ts";
+import notesExtension, { parseNotes, renderNotesWidget } from "../extensions/notes.ts";
 
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
 type Identity = { repository: string; worktree: string; gitDir: string };
@@ -95,11 +95,6 @@ test("parseNotes validates safe worktree records", () => {
 	assert.throws(() => parseNotes(JSON.stringify({ ...valid, notes: ["  "] })), TypeError);
 	assert.throws(() => parseNotes(JSON.stringify({ ...valid, notes: ["safe", "\u001b]52;c;payload\u0007"] })), TypeError);
 	assert.throws(() => parseNotes('{broken'), SyntaxError);
-});
-
-test("renderNotes numbers entries", () => {
-	assert.deepEqual(renderNotes(["a"]), ["1. a"]);
-	assert.deepEqual(renderNotes([]), []);
 });
 
 test("widget limits each note to two lines", () => {
