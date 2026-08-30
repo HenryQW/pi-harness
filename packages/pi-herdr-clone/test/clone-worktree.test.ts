@@ -295,21 +295,42 @@ test("worktree creation failures happen before cloning and retain nothing of the
 		}
 	});
 
-	await t.test("a killed worktree create is ambiguous and creates no clone", async () => {
+	await t.test("a killed worktree create with complete JSON is ambiguous and stops before continuation", async () => {
 		const data = await fixture();
 		try {
 			await withPane("pane-current", async () => {
 				const app = harness(data.manager, data.cwd, (args) => {
 					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
-					if (args[0] === "worktree") return { stdout: "", stderr: "killed mid-create", code: 9, killed: true };
+					if (args[0] === "worktree") {
+						return {
+							stdout: JSON.stringify({
+								result: {
+									workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
+									tab: { tab_id: "tab-new" },
+									root_pane: { pane_id: "pane-root" },
+								},
+							}),
+							stderr: "killed mid-create",
+							code: 9,
+							killed: true,
+						};
+					}
 					return undefined;
 				});
 				await assert.rejects(app.command("", app.ctx), (error: Error) => {
 					assert.match(error.message, /could not be confirmed/);
-					assert.match(error.message, /partial worktree workspace/);
+					assert.match(error.message, /workspace workspace-new/);
+					assert.match(error.message, /tab tab-new/);
+					assert.match(error.message, /root pane pane-root/);
+					assert.match(error.message, /checkout \/repos\/wt-x/);
+					assert.match(error.message, /killed before completion/);
 					return true;
 				});
-				assert.equal(app.calls.some((call) => call.args[0] === "agent"), false);
+				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
+					["pane", "get"],
+					["workspace", "get"],
+					["worktree", "create"],
+				]);
 				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
 			});
 		} finally {
