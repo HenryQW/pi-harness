@@ -67,6 +67,7 @@ function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
 		return resolveConfiguredTaskRoutes(ctx, AUTO_COMPACT_TASK);
 	} catch (error) {
 		const { taskRouteCode, profileName } = error as TaskRouteError;
+		if (taskRouteCode === "config-missing") return [];
 		const cause = taskRouteCode === "profile-missing"
 			? `Task model profile ${profileName} is not configured`
 			: taskRouteCode === "no-route"

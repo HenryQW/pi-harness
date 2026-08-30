@@ -157,7 +157,16 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
-			/Task pi-example\/review profile fast is not configured\. Run \/task-models\./,
+			{
+				taskRouteCode: "config-missing",
+				message: /Task model config is missing\. Run \/task-models to configure task routes\./,
+			},
+		);
+
+		writeFileSync(file, "{}");
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
+			{ taskRouteCode: "profile-missing" },
 		);
 
 		writeFileSync(file, JSON.stringify({
@@ -194,7 +203,10 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 		writeFileSync(file, "{ not json\n");
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
-			/Couldn't read task model config\. Run \/task-models\./,
+			{
+				taskRouteCode: "config-read",
+				message: /Couldn't read task model config\. Run \/task-models\./,
+			},
 		);
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, { id: "bad task", label: "Bad", purpose: "Bad", defaultProfile: "fast" } as ModelTask, dir),

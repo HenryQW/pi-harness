@@ -101,3 +101,14 @@ A `ModelTask` is a consumer-owned independently executed model operation. Consum
 Use `loadTaskModelsConfig()` to get validated config without reading a file. Its `source` is `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
 Use `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)` to resolve routes. Profile thinking is authoritative for task routes. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+
+Resolution errors are `TaskRouteError` values. Check `taskRouteCode`:
+
+| Code | Meaning |
+| --- | --- |
+| `config-missing` | The optional shared config file is absent. |
+| `config-read` | A present shared config file cannot be read or validated. |
+| `profile-missing` | The selected profile is not configured. |
+| `no-route` | The selected profile has no available route. |
+
+Every error directs users to `/task-models`. A consumer may silence only `config-missing` when it has a safe current-session fallback.

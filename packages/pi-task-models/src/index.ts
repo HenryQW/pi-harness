@@ -281,12 +281,16 @@ export function resolveConfiguredTaskRoutes(
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute[] {
 	const declaration = validatedModelTask(task);
-	let config: TaskModelsConfig;
+	let loadedConfig: ReturnType<typeof loadTaskModelsConfig>;
 	try {
-		config = loadTaskModelsConfig(agentDir).value;
+		loadedConfig = loadTaskModelsConfig(agentDir);
 	} catch {
 		throw taskRouteError("config-read", "Couldn't read task model config. Run /task-models.");
 	}
+	if (loadedConfig.source === "missing") {
+		throw taskRouteError("config-missing", "Task model config is missing. Run /task-models to configure task routes.");
+	}
+	const config = loadedConfig.value;
 	const profileName = config.tasks[declaration.id] ?? declaration.defaultProfile;
 	const profile = config.profiles[profileName];
 	if (!profile) throw taskRouteError("profile-missing", `Task ${declaration.id} profile ${profileName} is not configured. Run /task-models.`, profileName);
@@ -306,7 +310,7 @@ export function resolveConfiguredTaskRoutes(
 }
 
 // Machine-readable cause so consumers can render their own user-facing wording.
-export type TaskRouteErrorCode = "config-read" | "profile-missing" | "no-route";
+export type TaskRouteErrorCode = "config-missing" | "config-read" | "profile-missing" | "no-route";
 export type TaskRouteError = Error & { taskRouteCode: TaskRouteErrorCode; profileName?: ProfileName };
 
 function taskRouteError(taskRouteCode: TaskRouteErrorCode, message: string, profileName?: ProfileName): TaskRouteError {

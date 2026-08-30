@@ -223,7 +223,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 	}
 });
 
-test("reports malformed shared task-model config without rewriting it", async () => {
+test("silences missing shared task-model config but reports present config errors", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-task-model-config-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
@@ -231,15 +231,13 @@ test("reports malformed shared task-model config without rewriting it", async ()
 
 	try {
 		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
 		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
 		const taskModelsFile = taskModelsConfigFile(tempRoot);
-		await writeFile(taskModelsFile, malformed);
 
 		const handlers = loadExtension();
 		let compactionInstructions: string | undefined;
-		const notices: string[] = [];
+		const notices: Array<[string, string]> = [];
 		const ctx = {
 			cwd: tempRoot,
 			isProjectTrusted: () => true,
@@ -247,7 +245,8 @@ test("reports malformed shared task-model config without rewriting it", async ()
 			compact: (options: { customInstructions?: string }) => {
 				compactionInstructions = options.customInstructions;
 			},
-			ui: { notify: (message: string) => notices.push(message) },
+			modelRegistry: { getAvailable: () => [] },
+			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
 		} as unknown as ExtensionContext;
 
 		handlers.get("session_start")?.(
@@ -255,7 +254,7 @@ test("reports malformed shared task-model config without rewriting it", async ()
 			ctx,
 		);
 		handlers.get("turn_start")?.({} as never, ctx);
-		await handlers.get("session_before_compact")?.({
+		const beforeCompact = () => handlers.get("session_before_compact")?.({
 			type: "session_before_compact",
 			customInstructions: compactionInstructions,
 			signal: new AbortController().signal,
@@ -263,19 +262,26 @@ test("reports malformed shared task-model config without rewriting it", async ()
 			branchEntries: [],
 		} as never, ctx);
 
-		assert.deepEqual(notices, ["Couldn't read task model config; using current session model."]);
+		assert.equal(await beforeCompact(), undefined);
+		assert.deepEqual(notices, []);
+
+		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
+		await writeFile(taskModelsFile, malformed);
+		await beforeCompact();
+		assert.deepEqual(notices, [["Couldn't read task model config; using current session model.", "error"]]);
 		assert.equal(await readFile(taskModelsFile, "utf8"), malformed);
 
 		await writeFile(taskModelsFile, "{}\n");
 		notices.length = 0;
-		await handlers.get("session_before_compact")?.({
-			type: "session_before_compact",
-			customInstructions: compactionInstructions,
-			signal: new AbortController().signal,
-			preparation: { fileOps: { read: new Set(), written: new Set(), edited: new Set() } },
-			branchEntries: [],
-		} as never, ctx);
-		assert.deepEqual(notices, ["Task model profile fast is not configured; using current session model."]);
+		await beforeCompact();
+		assert.deepEqual(notices, [["Task model profile fast is not configured; using current session model.", "error"]]);
+
+		await writeFile(taskModelsFile, JSON.stringify({
+			profiles: { fast: { primary: { model: "unavailable/model", thinkingLevel: "off" } } },
+		}));
+		notices.length = 0;
+		await beforeCompact();
+		assert.deepEqual(notices, [["No usable fast task model route; using current session model.", "error"]]);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
