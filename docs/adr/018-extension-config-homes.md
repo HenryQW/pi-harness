@@ -13,7 +13,7 @@ The repository needs one ownership boundary that works for user-edited JSON, gen
 
 **Extension Config Home.** Every extension owns one directory at `getAgentDir()/config/<extension-id>/`. The canonical extension ID is one validated lowercase path component.
 
-**Default config.** User-edited JSON defaults to `<home>/config.json`. An extension may own other files and formats anywhere inside its home. A missing generated state file is normal; a missing user config produces one warning per extension session before explicit defaults are used.
+**Default config.** User-edited JSON defaults to `<home>/config.json`. An extension may own other files and formats anywhere inside its home. Missing generated state and missing optional config with usable defaults are normal. A missing config warns only when the user must act before the extension can work.
 
 **Shared mechanics.** `@henryqw/pi-config-store` owns the canonical directory and default-config path helpers plus safe JSON load, save, locked update, and removal. Extensions continue to own schemas, validation, defaults, and user-facing errors. Custom formats use the directory helper and their native library.
 
@@ -26,7 +26,7 @@ The repository needs one ownership boundary that works for user-edited JSON, gen
 - Every extension has one stable filesystem boundary.
 - Single-file extensions move from `config/<extension>.json` to `config/<extension>/config.json`.
 - Existing extension-named homes retain custom state in place; some nonstandard config filenames move to `config.json`.
-- Missing config becomes visible without destructive startup writes.
+- Missing required config becomes visible without destructive startup writes; optional defaults stay quiet.
 - Shared storage mechanics can improve once without centralizing domain policy.
 - The one-time migration must coordinate owners, consumers, tests, documentation, versions, and local user files.
 

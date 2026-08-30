@@ -14,7 +14,7 @@ This is the single migration source of truth. Do not add a second `MIGRATION.md`
 - Only the owner writes its home.
 - Consumers use an owner API or namespaced Pi events.
 - Preserve malformed files and write only after explicit user action.
-- Missing user config warns once per extension session before defaults are used.
+- Warn only when user action is required. Missing optional config with usable defaults does not warn.
 - Missing generated state is normal and does not warn.
 - Move existing files once outside runtime code. Add no legacy readers, aliases, adapters, dual schemas, or fallback paths.
 
@@ -141,7 +141,7 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Move `config/pi-open-in.json` to `config/pi-open-in/config.json`.
 - Keep command validation and the `code` default package-owned.
 - Expose validated effective config plus missing source to consumers.
-- Warn once when its extension loads without config.
+- Keep missing config silent because `code` is a usable default.
 - Update `pi-footer` to consume the owner API; it must not know the path.
 
 ### `pi-auto-compact`
@@ -149,8 +149,8 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Move `config/pi-auto-compact.json` to `config/pi-auto-compact/config.json`.
 - Replace `readConfig` and `writeConfig` filesystem mechanics with the store.
 - Keep threshold parsing and defaults local.
-- Warn once for missing local config.
-- Consume task-model data through the owner API and warn once if that shared config is missing.
+- Keep missing local and shared config silent because threshold and current-model fallbacks are usable.
+- Consume task-model data through the owner API.
 - Update local and shared-config fixtures.
 
 ### `pi-herdr-btw`
@@ -159,7 +159,7 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Delete the package-local generic `ConfigStore` mechanics after adopting the shared store.
 - Retain `parseConfig`, command application, formatting, and defaults.
 - Preserve concurrent no-lost-update behavior through the shared locked update.
-- Warn once for missing local config and once for missing required shared task-model config.
+- Keep missing optional local config silent. Warn once for missing required shared task-model config.
 
 ### `pi-herdr-rename`
 
@@ -174,7 +174,7 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Use the shared store while retaining strict memory-specific validation.
 - Use the directory helper for `memory/`, `backups/`, and `dream.json`.
 - Do not move those files.
-- Warn once for missing local config and once for missing shared task-model config.
+- Keep missing optional local config silent. Warn once for missing required shared task-model config.
 - Keep memory mutation locking; remove no dependency still used by memory storage.
 
 ### `pi-subagent`
@@ -182,14 +182,14 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Move `config/pi-subagent/pi-subagent.json` to `config/pi-subagent/config.json`.
 - Keep role Markdown files in `config/pi-subagent/` unchanged.
 - Use the shared store for JSON and the directory helper for role files.
-- Preserve optional-config diagnostics and defaults without rewriting malformed files.
-- Warn once for missing local config and once for missing shared task-model config.
+- Preserve invalid-config diagnostics and defaults without rewriting malformed files.
+- Keep missing optional local config silent. Warn once for missing required shared task-model config.
 
 ### `pi-footer`
 
 - It owns no local config.
 - Consume validated open-in values through the owner API.
-- Warn once when open-in config is missing.
+- Keep missing optional open-in config silent because `code` is a usable default.
 - Update footer fixtures from the flat path to the owner home.
 
 ### `pi-multi-codex`

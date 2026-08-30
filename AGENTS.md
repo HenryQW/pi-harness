@@ -17,6 +17,7 @@ These extensions are highly opinionated tools built for the maintainer's daily w
 - Treat extension config JSON as untrusted user data.
 - Validate reads; preserve malformed files; never rewrite config during startup.
 - Write only after explicit user action. Fail fast for correctness-critical config; use explicit defaults only for optional config.
+- Warn only when user action is required. Missing optional config with usable defaults is normal and stays silent.
 
 ## Pi registry as authority
 
