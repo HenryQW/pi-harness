@@ -4,11 +4,7 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - 'website/**'
   pull_request:
-    paths-ignore:
-      - 'website/**'
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
@@ -28,6 +24,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Validate website
+        run: pnpm --filter @henryqw/pi-docs run validate
       - name: Run tests
         shell: bash
         run: |
