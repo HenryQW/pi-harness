@@ -1,7 +1,11 @@
 ---
 name: scout
 description: Maps relevant code and evidence for one bounded task without changing files
-tools: [read, grep, find, ls]
+tools:
+  - read
+  - grep
+  - find
+  - ls
 extensions: []
 skills: []
 ---
