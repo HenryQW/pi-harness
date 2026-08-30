@@ -103,7 +103,7 @@ Use the memory tool immediately only when something qualifies. Save inferred hab
 
 ## Config
 
-Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional. A missing file uses defaults and warns once at session start. Startup never creates or rewrites the file.
+Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional. A missing file uses defaults. Startup never creates or rewrites the file.
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |

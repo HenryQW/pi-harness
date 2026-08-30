@@ -716,11 +716,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.dreamSucceeded = false;
 		state.observedReviewSystem = false;
 		try {
-			const loadedConfig = loadMemoryConfig();
-			const config = loadedConfig.value;
-			if (loadedConfig.source === "missing") {
-				ctx.ui.notify(`Memory config is missing: ${configPath()}; defaults are used.`, "warning");
-			}
+			const config = loadMemoryConfig().value;
 			try {
 				if (loadTaskModelsConfig().source === "missing") {
 					ctx.ui.notify("Shared task model config is missing; defaults are being used. Configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");

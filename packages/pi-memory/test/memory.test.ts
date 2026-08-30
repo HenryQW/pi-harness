@@ -396,7 +396,7 @@ test("/remember queues busy requests in FIFO order, retains unavailable work, an
 	}
 });
 
-test("session start warns once when memory and task-model configs are missing", async () => {
+test("session start only warns for missing task-model config", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-missing-config-"));
 	const agentDir = join(root, "agent");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -413,14 +413,13 @@ test("session start warns once when memory and task-model configs are missing", 
 
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.deepEqual(notifications, [
-			[`Memory config is missing: ${join(agentDir, "config", "pi-memory", "config.json")}; defaults are used.`, "warning"],
 			["Shared task model config is missing; defaults are being used. Configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning"],
 		]);
 		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "config.json"), "utf8"), { code: "ENOENT" });
 
 		await handlers.get("before_agent_start")!({ systemPrompt: "base" });
 		await handlers.get("before_agent_start")!({ systemPrompt: "base" });
-		assert.equal(notifications.length, 2);
+		assert.equal(notifications.length, 1);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
