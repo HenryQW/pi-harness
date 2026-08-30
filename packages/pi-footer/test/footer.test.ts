@@ -84,6 +84,11 @@ test("renders family status on the first line and external statuses beside runti
 		{ type: "message", message: { role: "toolResult", usage: usage(100, 50, 0, 0.02) } },
 		{ type: "compaction", usage: usage(1_500, 100, 0, 0.03) },
 		{ type: "message", message: { role: "assistant", usage: usage(500, 100, 500, 0.2) } },
+		{
+			type: "custom_message",
+			customType: "subagent-background-result",
+			details: { usage: usage(300, 50, 0, 0.04) },
+		},
 	];
 	const notifications: Array<[string, string]> = [];
 	const { start } = setupFooter({
@@ -125,7 +130,7 @@ test("renders family status on the first line and external statuses beside runti
 	const rendered = footer.render(100);
 	assert.match(rendered[0]!, /\x1b\]8;;vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\x1b\\/);
 	assert.ok(colors.some(([color, text]) => color === "accent" && text === "clear-field-f8d2"));
-	const usageText = "↑ 2.9k · ↓ 450 · ↺ 50.0% · ⚡ — · $ 0.350 · ◔ 42.3%";
+	const usageText = "↑ 3.2k · ↓ 500 · ↺ 50.0% · ⚡ — · $ 0.390 · ◔ 42.3%";
 	const modelText = "gpt-5.6-luna • high";
 	assert.match(stripTerminalSequences(rendered[0]!), /^repo · clear-field-f8d2 · PR #123 · approved +Codex #1 · 50% · 7d 1d 1h 22m$/);
 	assert.match(stripTerminalSequences(rendered[1]!), new RegExp(`^${usageText.replace("$", "\\$")} +${modelText}$`));

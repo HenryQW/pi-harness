@@ -32,7 +32,7 @@ pi-packages · clear-field-f8d2 · PR #123 · approved    Codex #1 · 50% · 7d 
 ```
 
 - The first line shows the repository, branch, and `pi-pr` pull request status after the clickable checkout link. Linked-worktree branches drop the generated `worktree/` prefix.
-- The second line shows cumulative input tokens, output tokens, latest cache-hit rate, and tokens per second for the most recent assistant response. It also shows estimated cost and context usage. The active model and thinking level are right-aligned.
+- The second line shows cumulative input tokens, output tokens, latest cache-hit rate, and tokens per second for the most recent assistant response. It also shows estimated cost and context usage. Totals include reported tool usage and finished `pi-subagent` background workflows. The active model and thinking level are right-aligned.
 - The third line shows other extension statuses on the left and cumulative agent-work time on the right, beneath the active model.
 
 Unavailable values render as `—` without a misleading percent sign.

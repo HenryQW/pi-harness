@@ -1,5 +1,4 @@
 import { basename, dirname } from "node:path";
-import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
@@ -14,9 +13,24 @@ const THINKING_COLORS = {
 } as const;
 const HENRY_STATUS_KEY = "pi-multi-codex";
 const AGENT_TIME_ENTRY = "pi-footer:agent-work";
+const SUBAGENT_BACKGROUND_RESULT = "subagent-background-result";
 
-function isValidMilliseconds(value: unknown): value is number {
+type CountedUsage = { input: number; output: number; cost: { total: number } };
+
+function isNonNegativeNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function subagentBackgroundUsage(details: unknown): CountedUsage | undefined {
+	if (!details || typeof details !== "object" || Array.isArray(details)) return;
+	const usage = (details as Record<string, unknown>).usage;
+	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
+	const record = usage as Record<string, unknown>;
+	const cost = record.cost;
+	if (!cost || typeof cost !== "object" || Array.isArray(cost)) return;
+	const total = (cost as Record<string, unknown>).total;
+	if (!isNonNegativeNumber(record.input) || !isNonNegativeNumber(record.output) || !isNonNegativeNumber(total)) return;
+	return { input: record.input, output: record.output, cost: { total } };
 }
 
 function formatTokens(count: number): string {
@@ -129,7 +143,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		// Latest valid entry wins; stored data is untrusted.
 		activeMilliseconds = 0;
 		for (const entry of ctx.sessionManager.getEntries()) {
-			if (entry.type === "custom" && entry.customType === AGENT_TIME_ENTRY && isValidMilliseconds(entry.data)) {
+			if (entry.type === "custom" && entry.customType === AGENT_TIME_ENTRY && isNonNegativeNumber(entry.data)) {
 				activeMilliseconds = entry.data;
 			}
 		}
@@ -169,7 +183,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 			output = 0;
 			cost = 0;
 			cacheRate = undefined;
-			const add = (usage: Usage | undefined) => {
+			const add = (usage: CountedUsage | undefined) => {
 				if (!usage) return;
 				input += usage.input;
 				output += usage.output;
@@ -184,6 +198,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					add(usage);
 				} else if (entry.type === "message" && entry.message.role === "toolResult") {
 					add(entry.message.usage);
+				} else if (entry.type === "custom_message" && entry.customType === SUBAGENT_BACKGROUND_RESULT) {
+					add(subagentBackgroundUsage(entry.details));
 				} else if (entry.type === "branch_summary" || entry.type === "compaction") {
 					add(entry.usage);
 				}
