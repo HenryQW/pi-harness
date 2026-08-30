@@ -15,9 +15,10 @@ type RegisteredTool = {
 	): Promise<AgentToolResult<Details>>;
 };
 
-function loadTool(): RegisteredTool {
+function loadTool(events: Pick<ExtensionAPI["events"], "emit"> = { emit() {} }): RegisteredTool {
 	let tool: RegisteredTool | undefined;
 	askQuestionExtension({
+		events,
 		registerTool(definition) {
 			tool = definition as unknown as RegisteredTool;
 		},
@@ -67,4 +68,60 @@ test("reusable helper has the registered tool's validated interactive behavior",
 
 	const nonInteractive = await askQuestion(params, { mode: "print", ui: {} } as ExtensionContext, signal);
 	assert.equal(nonInteractive.error, "UI not available (running in non-interactive mode)");
+});
+
+test("publishes input status around interactive prompts, including errors", async () => {
+	const active = { channel: "herdr:blocked", payload: { active: true, label: "Input required" } };
+	const inactive = { channel: "herdr:blocked", payload: { active: false } };
+	const published: Array<{ channel: string; payload: unknown }> = [];
+	const publisher = {
+		emit(channel: string, payload: unknown) {
+			published.push({ channel, payload });
+		},
+	};
+	let releaseSelection!: (selection: string | undefined) => void;
+	const selection = new Promise<string | undefined>((resolve) => { releaseSelection = resolve; });
+	let firstChoice: string | undefined;
+	const pending = loadTool(publisher).execute("call-3", {
+		question: "Choose one",
+		options: [{ label: "First" }],
+	}, new AbortController().signal, undefined, {
+		mode: "tui",
+		ui: {
+			select(_title: string, choices: string[]) {
+				firstChoice = choices[0];
+				assert.deepEqual(published, [active]);
+				return selection;
+			},
+			input: async () => undefined,
+		},
+	} as unknown as ExtensionContext);
+	assert.deepEqual(published, [active]);
+	assert.ok(firstChoice);
+	releaseSelection(firstChoice);
+	await pending;
+	assert.deepEqual(published, [active, inactive]);
+
+	const failed: Array<{ channel: string; payload: unknown }> = [];
+	await assert.rejects(
+		() => loadTool({
+			emit(channel: string, payload: unknown) {
+				failed.push({ channel, payload });
+			},
+		}).execute("call-4", {
+			question: "Choose one",
+			options: [{ label: "First" }],
+		}, new AbortController().signal, undefined, {
+			mode: "tui",
+			ui: {
+				select: async () => {
+					assert.deepEqual(failed, [active]);
+					throw new Error("prompt failed");
+				},
+				input: async () => undefined,
+			},
+		} as unknown as ExtensionContext),
+		/prompt failed/,
+	);
+	assert.deepEqual(failed, [active, inactive]);
 });
