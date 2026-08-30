@@ -22,6 +22,7 @@ import {
 	parseDelegateFlowContinue,
 	registerDelegateFlow,
 } from "../extensions/delegate-flow.ts";
+import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
 import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
 import { CHILD_EXCLUDED_TOOLS, loadBuiltinRole } from "../src/index.ts";
 
@@ -284,7 +285,7 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 
 test("Flow tools leave rendering to Pi", async (t) => {
 	const app = harness(await repository(t), () => success());
-	assert.ok(flowTool(app).promptGuidelines?.some((guideline) => guideline.includes("prioritize modelClass fast") && guideline.includes("balanced") && guideline.includes("Reserve frontier")));
+	assert.ok(flowTool(app).promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)));
 	for (const tool of [flowTool(app), continueTool(app)]) {
 		assert.equal(tool.renderShell, undefined);
 		assert.equal(tool.renderCall, undefined);

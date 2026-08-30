@@ -36,6 +36,7 @@ import {
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
 import { runDelegation } from "./delegation.ts";
+import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import {
 	formatBackgroundWorkflowResult,
 	formatWorkflowResult,
@@ -538,7 +539,7 @@ export default function subagentExtension(
 		promptGuidelines: [
 			"Call delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; split independent, commuting outcomes into parallel entries, sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
 			`${TASK_NAME_CONTRACT.promptGuidance} Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged.`,
-			"For each delegate_task entry, populate model and thinking only for an explicit user override; otherwise prioritize modelClass fast for straightforward work and balanced for complex work. Reserve frontier for exceptionally complex or tricky work. This is Main policy, not runtime enforcement.",
+			`For each delegate_task entry, populate model and thinking only for an explicit user override. Otherwise, ${MODEL_CLASS_GUIDANCE} This is Main policy, not runtime enforcement.`,
 			"Parallel delegate_task entries must own non-overlapping files. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.",
 			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
 		],

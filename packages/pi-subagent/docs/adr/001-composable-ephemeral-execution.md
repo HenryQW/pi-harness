@@ -14,7 +14,7 @@ Resource Policy is split at launch preparation:
 
 Built-in `implementer`, `reviewer`, and `scout` Roles ship as Markdown in `examples/roles/` and use the same parser as user Roles. For generic delegation, a same-named user Role explicitly overrides a built-in. The package does not install, copy, or write user configuration.
 
-Main populates direct `model` and `thinking` only for explicit user overrides; otherwise it chooses only `modelClass`. It prioritizes `fast` for straightforward work and `balanced` for complex work, and reserves `frontier` for exceptionally complex or tricky work. This is tool policy, not executor provenance tracking or runtime enforcement.
+Main populates direct `model` and `thinking` only for explicit user overrides; otherwise it chooses only `modelClass` according to delegation tool policy. This is not executor provenance tracking or runtime enforcement.
 
 ## Scope boundary
 
