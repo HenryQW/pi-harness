@@ -33,7 +33,7 @@ import {
 	type WorktreeInfo,
 	type WorktreePayload,
 } from "@henryqw/pi-subagent";
-import { configPath, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
 import { runDelegation } from "./delegation.ts";
 import {
@@ -233,14 +233,9 @@ export default function subagentExtension(
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
 	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
-	// maxSubagents > default 5. Invalid config falls back to the default and is
-	// reported at session start; an invalid env value fails fast.
+	// maxSubagents > default 5. Invalid present config falls back to the default
+	// and is reported at session start; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
-	const startupWarnings = [
-		loadedConfig.source === "missing"
-			? `Subagent config is missing at ${configPath()}; defaults are being used.`
-			: loadedConfig.error,
-	].filter((message): message is string => message !== undefined);
 	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
 	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 	if (maxSubagentsRaw !== undefined) {
@@ -407,7 +402,7 @@ export default function subagentExtension(
 		invalidateDelegateFlow();
 		latestCtx = ctx;
 		ensureWidget(ctx);
-		for (const warning of startupWarnings) ctx.ui.notify(warning, "warning");
+		if (loadedConfig.error !== undefined) ctx.ui.notify(loadedConfig.error, "warning");
 		try {
 			if (loadTaskModelsConfig().source === "missing") {
 				ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");

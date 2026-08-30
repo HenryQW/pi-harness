@@ -1970,7 +1970,7 @@ test("config file maxSubagents applies and malformed config warns without failin
 	});
 });
 
-test("missing local and shared config each warn once at session start without writing", async () => {
+test("missing local config uses defaults quietly while missing shared config warns once", async () => {
 	await environment(async (agentDir) => {
 		const localConfig = join(agentDir, "config", "pi-subagent", "config.json");
 		const sharedConfig = join(agentDir, "config", "pi-task-models", "config.json");
@@ -1979,7 +1979,6 @@ test("missing local and shared config each warn once at session start without wr
 		const app = harness({ ui: true });
 		app.handlers.get("session_start")?.({}, app.ctx);
 		assert.deepEqual(app.notifications, [
-			{ message: `Subagent config is missing at ${localConfig}; defaults are being used.`, type: "warning" },
 			{ message: "Task model config is missing; run /task-models to configure it.", type: "warning" },
 		]);
 		assert.equal(existsSync(localConfig), false);
