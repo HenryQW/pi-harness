@@ -31,4 +31,4 @@ Make the guidance specific to the reported implementation, validation, or review
 
 ## Ordinary delegation
 
-Use `delegate_task` for a single bounded task, independent parallel tasks, or dependent chain work that is not a Flow. Give each entry its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and focused validation. Populate direct `model` and `thinking` only when the user explicitly asks for those overrides; otherwise choose `modelClass` according to the delegation tool's guidance. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.
+Use `delegate_task` for a single bounded task, independent parallel tasks, or dependent chain work that is not a Flow. Give each entry its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and focused validation. Choose `modelClass` according to the delegation tool's guidance. A direct `model` replaces only the selected route's model. The route keeps its thinking level. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.
