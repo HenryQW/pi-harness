@@ -2,6 +2,8 @@
 
 Henry's opinionated Pi footer style shows checkout identity, usage, and extension status.
 
+![Pi footer showing repository, pull request, quota, usage, model, and extension status](./example.png)
+
 ## Why
 
 - **Created for**: Show concise checkout identity, usage, and extension status in the Pi footer.
