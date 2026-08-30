@@ -59,7 +59,7 @@ Main moves local user files once; stop on conflicts
 Update AGENTS.md, README template, stale paths, versions, lockfile
 ```
 
-Owner packages must land before their consumers. Package runtime units may run in parallel only when they own disjoint files. Keep manifests, workspace versions, and `package-lock.json` in one central unit.
+Owner packages must land before their consumers. Package runtime units may run in parallel only when they own disjoint files. Keep manifests, workspace versions, and `pnpm-lock.yaml` in one central unit.
 
 ## Stage 1: Build `pi-config-store` (complete)
 
@@ -103,9 +103,9 @@ Do not add UI, schemas, migration helpers, custom-format storage, or compatibili
 Validate the integrated package:
 
 ```bash
-npm test --workspace @henryqw/pi-config-store
-npm run typecheck --workspace @henryqw/pi-config-store
-npm run pack:check --workspace @henryqw/pi-config-store
+pnpm --filter @henryqw/pi-config-store run test
+pnpm --filter @henryqw/pi-config-store run typecheck
+pnpm --filter @henryqw/pi-config-store run pack:check
 git diff --check
 ```
 
@@ -117,10 +117,10 @@ After the config-store package is available, use one central metadata unit to:
 
 1. add `@henryqw/pi-config-store` to every owner using its store or path helper;
 2. remove direct `proper-lockfile` dependencies only where no other feature needs them;
-3. bump every affected public package once with `npm version`;
-4. regenerate `package-lock.json` once.
+3. bump every affected public package once with `pnpm version`;
+4. regenerate `pnpm-lock.yaml` once.
 
-Runtime units must not edit package manifests, versions, or the lockfile.
+Runtime units must not edit package manifests, versions, or `pnpm-lock.yaml`.
 
 ## Stage 3: Migrate owners and consumers (complete)
 

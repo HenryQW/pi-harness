@@ -94,19 +94,19 @@ rm -rf ~/.pi/agent/config/pi-session-recall/
 
 ## Development
 
-Requires Node.js `>=22.19.0`.
+Requires Node.js `>=22.19.0` and pnpm `11.24.0`.
 
 ```bash
-npm ci
-npm test
-npm run typecheck
-npm run pack:check
+pnpm install --frozen-lockfile
+pnpm test
+pnpm run typecheck
+pnpm run pack:check
 ```
 
 Run live Pi integration tests only when authenticated model access is available:
 
 ```bash
-npm run test:live
+pnpm run test:live
 ```
 
 Live tests use real model requests. They can incur provider cost. They set a temporary small context window so compaction completes quickly.
@@ -114,14 +114,14 @@ Live tests use real model requests. They can incur provider cost. They set a tem
 Manual Pi TUI check for `@henryqw/pi-ask-question`:
 
 ```bash
-npm run test:manual --workspace @henryqw/pi-ask-question
+pnpm --filter @henryqw/pi-ask-question run test:manual
 ```
 
 `@henryqw/pi-auto-compact` live test needs real Pi and authenticated model access:
 
 ```bash
-npm run test:live --workspace @henryqw/pi-auto-compact
-PI_AUTO_COMPACT_AUTH_FILE=/path/to/auth.json npm run test:live --workspace @henryqw/pi-auto-compact
+pnpm --filter @henryqw/pi-auto-compact run test:live
+PI_AUTO_COMPACT_AUTH_FILE=/path/to/auth.json pnpm --filter @henryqw/pi-auto-compact run test:live
 ```
 
 Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`.
@@ -131,9 +131,9 @@ Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`
 The landing page uses workspace manifests. The overview and extension pages use their READMEs directly. The site publishes at <https://pi.henry.wang>.
 
 ```bash
-npm run docs:dev
-npm run docs:build
-npm run docs:validate
+pnpm run docs:dev
+pnpm run docs:build
+pnpm run docs:validate
 ```
 
 `docs:dev` starts local development. `docs:build` writes static files to `website/dist/`.

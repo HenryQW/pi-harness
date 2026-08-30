@@ -10,10 +10,7 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "workspaces": [
-    "extensions/*",
-    "website"
-  ],
+  "packageManager": "pnpm@11.24.0",
   "pi": {
     "extensions": [
       "./extensions/pi-ask-question/extensions/ask-question.ts",
@@ -36,15 +33,15 @@
     ]
   },
   "scripts": {
-    "build": "npm run build --workspace @henryqw/pi-config-store --workspace @henryqw/pi-herdr --workspace @henryqw/pi-task-models --workspace @henryqw/pi-subagent --workspace @henryqw/pi-ask-question",
-    "postinstall": "npm run build",
+    "build": "pnpm --filter @henryqw/pi-config-store --filter @henryqw/pi-herdr --filter @henryqw/pi-task-models --filter @henryqw/pi-subagent --filter @henryqw/pi-ask-question run build",
+    "postinstall": "pnpm run build",
     "test": "node scripts/test-workspaces.mjs",
-    "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "pack:check": "npm run pack:check --workspaces --if-present",
-    "docs:dev": "npm run dev --workspace @henryqw/pi-docs",
-    "docs:build": "npm run build --workspace @henryqw/pi-docs",
-    "docs:validate": "npm run validate --workspace @henryqw/pi-docs"
+    "test:live": "pnpm --filter @henryqw/pi-auto-compact run test:live",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "pack:check": "pnpm --recursive --if-present run pack:check",
+    "docs:dev": "pnpm --filter @henryqw/pi-docs run dev",
+    "docs:build": "pnpm --filter @henryqw/pi-docs run build",
+    "docs:validate": "pnpm --filter @henryqw/pi-docs run validate"
   },
   "dependencies": {
     "@types/node": "^26.3.0",

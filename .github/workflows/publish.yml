@@ -20,15 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm run typecheck
-      - run: npm run pack:check
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm run typecheck
+      - run: pnpm run pack:check
       - name: Publish new package versions
         shell: bash
         run: |
@@ -57,7 +58,7 @@ jobs:
             fi
 
             echo "Publishing $name@$local_version"
-            npm publish --workspace "$name"
+            (cd "${manifest%/package.json}" && npm publish)
             published=1
           done
 

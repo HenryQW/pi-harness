@@ -73,7 +73,7 @@ For every extension package:
 - preserve unrelated peers such as `typebox`;
 - update existing explicit README minimum-version text, without adding repetitive version prose everywhere.
 
-Do not bump workspace package versions yet. Run `npm install --ignore-scripts` once to update `package-lock.json`. Before auditing, testing, or typechecking, install the target family exactly without persisting manifest or lockfile changes:
+Do not bump workspace package versions yet. Run `pnpm install --lockfile-only --ignore-scripts` once to update `pnpm-lock.yaml`. pnpm has no unsaved-install equivalent, so use npm only for this temporary target-family probe without creating a package lock:
 
 ```bash
 set -e
@@ -99,23 +99,23 @@ Apply the smallest source changes from the assessment. For each changed package:
 4. update README and `CONTEXT.md` only when behavior or domain language changed;
 5. run that package's test and typecheck/build.
 
-Independent runtime packages may be delegated in parallel after the dependency baseline is committed. Keep manifests, workspace versions, and `package-lock.json` in one central unit; runtime units must not edit them.
+Independent runtime packages may be delegated in parallel after the dependency baseline is committed. Keep manifests, workspace versions, and `pnpm-lock.yaml` in one central unit; runtime units must not edit them.
 
 For core fixes classified as `regression`, do not rewrite working source unless the regression fails against the target.
 
 ## 5. Re-sync, then version
 
-Before package version bumps, fetch and merge current `origin/main` again with `update-from-main`. This prevents choosing versions relative to a stale main branch. Resolve source conflicts first and regenerate `package-lock.json` rather than hand-merging generated lockfile sections.
+Before package version bumps, fetch and merge current `origin/main` again with `update-from-main`. This prevents choosing versions relative to a stale main branch. Resolve source conflicts first and regenerate `pnpm-lock.yaml` rather than hand-merging generated lockfile sections.
 
 Using the final merged main SHA as the base, identify public packages with published-file changes and choose each required bump. If any internal `@henryqw/*` workspace gets a major bump, update every direct consumer's dependency range to the new major and include every such consumer in the release set, even when only its manifest changes.
 
 Bump each package in the final release set exactly once and only now:
 
 ```bash
-npm version patch --workspace extensions/<package> --no-git-tag-version
+pnpm --filter ./extensions/<package> version patch --no-git-tag-version
 ```
 
-Choose minor or major only when the actual package change requires it. The npm command must update both the manifest and lockfile. After all workspace versions and direct consumer ranges are updated, run `npm install --ignore-scripts` to regenerate `package-lock.json`, before the final install or any release validation.
+Choose minor or major only when the actual package change requires it. After all workspace versions and direct consumer ranges are updated, run `pnpm install --lockfile-only --ignore-scripts` to regenerate `pnpm-lock.yaml`, before the final install or any release validation.
 
 ## 6. Validate the release set
 
@@ -128,9 +128,9 @@ npm ls \
   @earendil-works/pi-coding-agent \
   @earendil-works/pi-tui
 node scripts/check-package-versions.mjs "$FINAL_MAIN_SHA" HEAD
-npm test
-npm run typecheck
-npm run pack:check
+pnpm test
+pnpm run typecheck
+pnpm run pack:check
 git diff --check "$FINAL_MAIN_SHA" HEAD
 ```
 
