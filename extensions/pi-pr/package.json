@@ -1,0 +1,51 @@
+{
+  "name": "@henryqw/pi-pr",
+  "version": "0.3.6",
+  "description": "Show the current branch pull request status in the Pi footer.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "github",
+    "pull-request",
+    "footer"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "LICENSE",
+    "extensions",
+    "skills",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-tui": "^0.84.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-harness.git",
+    "directory": "extensions/pi-pr"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-harness/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pr.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}

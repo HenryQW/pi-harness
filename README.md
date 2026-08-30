@@ -1,54 +1,64 @@
-# HenryQW Pi packages
+# Henry Pi Harness
 
 These are the Pi extensions I use daily. They are highly opinionated. I publish them as-is.
 
-I offer no support or backward compatibility. Breaking changes may be introduced at any time. Packages use the `@henryqw` scope.
+I offer no support or backward compatibility. Breaking changes may be introduced at any time. Published extensions use the `@henryqw` npm scope.
 
-![Pi packages in use](./example.png)
+![Pi extensions in use](./example.png)
 
-## Packages
+## Extensions
 
-| Package | Purpose |
+| Extension | Purpose |
 | --- | --- |
-| [`@henryqw/pi-add-dir`](./packages/pi-add-dir) | Add external directories with context, skills, and file search. |
-| [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
-| [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | Compact context at the set threshold and resume current task. |
-| [`@henryqw/pi-deps`](./packages/pi-deps) | Prepare locked Node and uv dependencies for opted-in Git worktrees. |
-| [`@henryqw/pi-footer`](./packages/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
-| [`@henryqw/pi-herdr`](./packages/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
-| [`@henryqw/pi-herdr-btw`](./packages/pi-herdr-btw) | Open and merge Pi side threads in Herdr panes. |
-| [`@henryqw/pi-herdr-clone`](./packages/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |
-| [`@henryqw/pi-herdr-done`](./packages/pi-herdr-done) | Close and remove current Herdr worktree. |
-| [`@henryqw/pi-herdr-rename`](./packages/pi-herdr-rename) | Generate short chat titles and rename current Herdr location. |
-| [`@henryqw/pi-memory`](./packages/pi-memory) | Maintain size-capped agent memory and user-profile stores across sessions. |
-| [`@henryqw/pi-multi-codex`](./packages/pi-multi-codex) | Use multiple ChatGPT Codex OAuth accounts in Pi. |
-| [`@henryqw/pi-notes`](./packages/pi-notes) | Keep persistent per-worktree notes visible in a Pi widget. |
-| [`@henryqw/pi-open-in`](./packages/pi-open-in) | Open current working directory with configurable command. |
-| [`@henryqw/pi-pr`](./packages/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
-| [`@henryqw/pi-session-recall`](./packages/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
-| [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate bounded single, parallel, chained, and package-owned Git Flow work to isolated roles. |
-| [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
+| [`@henryqw/pi-add-dir`](./extensions/pi-add-dir) | Add external directories with context, skills, and file search. |
+| [`@henryqw/pi-ask-question`](./extensions/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
+| [`@henryqw/pi-auto-compact`](./extensions/pi-auto-compact) | Compact context at the set threshold and resume current task. |
+| [`@henryqw/pi-config-store`](./extensions/pi-config-store) | Create validated extension JSON stores with shared config homes. |
+| [`@henryqw/pi-deps`](./extensions/pi-deps) | Prepare locked Node and uv dependencies for opted-in Git worktrees. |
+| [`@henryqw/pi-footer`](./extensions/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
+| [`@henryqw/pi-herdr`](./extensions/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
+| [`@henryqw/pi-herdr-btw`](./extensions/pi-herdr-btw) | Open and merge Pi side threads in Herdr panes. |
+| [`@henryqw/pi-herdr-clone`](./extensions/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |
+| [`@henryqw/pi-herdr-done`](./extensions/pi-herdr-done) | Close and remove current Herdr worktree. |
+| [`@henryqw/pi-herdr-rename`](./extensions/pi-herdr-rename) | Generate short chat titles and rename current Herdr location. |
+| [`@henryqw/pi-memory`](./extensions/pi-memory) | Maintain size-capped agent memory and user-profile stores across sessions. |
+| [`@henryqw/pi-multi-codex`](./extensions/pi-multi-codex) | Use multiple ChatGPT Codex OAuth accounts in Pi. |
+| [`@henryqw/pi-notes`](./extensions/pi-notes) | Keep persistent per-worktree notes visible in a Pi widget. |
+| [`@henryqw/pi-open-in`](./extensions/pi-open-in) | Open current working directory with configurable command. |
+| [`@henryqw/pi-pr`](./extensions/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
+| [`@henryqw/pi-session-recall`](./extensions/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
+| [`@henryqw/pi-subagent`](./extensions/pi-subagent) | Delegate bounded single, parallel, chained, and extension-owned Git Flow work to isolated roles. |
+| [`@henryqw/pi-task-models`](./extensions/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
-## Internal package relationships
+## Internal extension relationships
 
-Each of the 18 `packages/*` workspaces appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`.
+Each of the 19 extensions under `extensions/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `extensions/*/package.json`.
 
 Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
 
 ```mermaid
 flowchart LR
-  autoCompact["pi-auto-compact"] --> taskModels["pi-task-models"]
+  autoCompact["pi-auto-compact"] --> configStore["pi-config-store"]
+  autoCompact --> taskModels["pi-task-models"]
   footer["pi-footer"] --> openIn["pi-open-in"]
-  herdrBtw["pi-herdr-btw"] --> herdr["pi-herdr"]
+  herdrBtw["pi-herdr-btw"] --> configStore
+  herdrBtw --> herdr["pi-herdr"]
   herdrBtw --> taskModels
   herdrClone["pi-herdr-clone"] --> herdr
   herdrDone["pi-herdr-done"] --> herdr
   herdrRename["pi-herdr-rename"] --> herdr
   herdrRename --> taskModels
   memory["pi-memory"] --> askQuestion["pi-ask-question"]
+  memory --> configStore
   memory --> taskModels
-  subagent["pi-subagent"] --> multiCodex["pi-multi-codex"]
+  multiCodex["pi-multi-codex"] --> configStore
+  notes["pi-notes"] --> configStore
+  openIn --> configStore
+  sessionRecall["pi-session-recall"] --> configStore
+  subagent["pi-subagent"] --> configStore
+  subagent --> multiCodex
   subagent --> taskModels
+  taskModels --> configStore
 
   footer -.->|PR status| pr["pi-pr"]
   footer -.->|Codex status| multiCodex
@@ -56,11 +66,9 @@ flowchart LR
   memory -.->|BTW child payload/process mode| herdrBtw
   subagent -.->|ask_question child-tool exclusion| askQuestion
 
-  subgraph standalone["Standalone packages (no internal coupling)"]
+  subgraph standalone["Standalone extensions (no internal coupling)"]
     addDir["pi-add-dir"]
     deps["pi-deps"]
-    notes["pi-notes"]
-    sessionRecall["pi-session-recall"]
   end
 ```
 
@@ -71,10 +79,10 @@ Retired extensions and their replacements are recorded under [`deprecated/`](./d
 ## Remove
 
 ```bash
-pi remove npm:@henryqw/<package>
+pi remove npm:@henryqw/<extension>
 ```
 
-Replace `<package>` with the package's unscoped name, for example `pi-subagent`.
+Replace `<extension>` with the extension's unscoped name, for example `pi-subagent`.
 
 Before removing `@henryqw/pi-deps`, disable each opted-in repository with `/deps`. Its copied hook is self-contained.
 
@@ -118,6 +126,18 @@ PI_AUTO_COMPACT_AUTH_FILE=/path/to/auth.json npm run test:live --workspace @henr
 
 Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`.
 
+## Documentation site
+
+The landing page uses workspace manifests. The overview and extension pages use their READMEs directly. The site publishes at <https://pi.henry.wang>.
+
+```bash
+npm run docs:dev
+npm run docs:build
+npm run docs:validate
+```
+
+`docs:dev` starts local development. `docs:build` writes static files to `website/dist/`.
+
 ## Release
 
-See [`docs/releasing.md`](./docs/releasing.md). Each package publishes independently. Package names use the `@henryqw` scope.
+See [`docs/releasing.md`](./docs/releasing.md). Each extension publishes independently as an npm package under the `@henryqw` scope.

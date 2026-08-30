@@ -27,7 +27,7 @@ These extensions are highly opinionated tools built for the maintainer's daily w
 
 ## Package release policy
 
-This repository is npm workspace monorepo. Each public package under `packages/*` releases independently.
+This repository is npm workspace monorepo. Each public package under `extensions/*` releases independently.
 
 - Bump package version when change affects published files, runtime behavior, public API, package metadata, or runtime dependencies.
 - Bump every affected package when one change touches multiple packages.
@@ -37,12 +37,12 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 - Bump with npm; do not edit versions by hand:
 
   ```bash
-  npm version patch --workspace packages/<package> --no-git-tag-version
+  npm version patch --workspace extensions/<package> --no-git-tag-version
   ```
 
 - Commit version and `package-lock.json` changes with feature or fix. Do not create release tags.
 - Push `main`; `.github/workflows/publish.yml` publishes each public workspace whose version is newer than npm.
-- Root package `@henryqw/pi-packages` is private and never releases.
+- Root package `@henryqw/pi-harness` is private and never releases.
 - PR CI enforces version bumps for published package changes; test-only package changes are excluded.
 - Before finishing, state which packages release and why. If no package version changed, state that CI will not publish.
 
@@ -76,7 +76,7 @@ For README/template-only changes:
 
 ### Issue tracker
 
-Issues live in GitHub Issues for `HenryQW/pi-packages`. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues for `HenryQW/pi-harness`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -1,0 +1,14 @@
+{
+  "name": "@henryqw/pi-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "blume dev",
+    "build": "blume build",
+    "validate": "blume validate --strict"
+  },
+  "devDependencies": {
+    "blume": "1.5.3"
+  }
+}

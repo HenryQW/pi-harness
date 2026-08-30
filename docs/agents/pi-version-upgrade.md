@@ -51,7 +51,7 @@ Stop if the target is unpublished or the published artifact does not contain the
 
 ## 2. Inventory and assess
 
-Enumerate `packages/*/package.json`. A package is an extension when `pi.extensions` is non-empty. Do not hardcode the package count. Shared libraries without extension entry points are outside the blanket upgrade unless the release requires a direct change.
+Enumerate `extensions/*/package.json`. A package is an extension when `pi.extensions` is non-empty. Do not hardcode the package count. Shared libraries without extension entry points are outside the blanket upgrade unless the release requires a direct change.
 
 For each changelog item, record one decision:
 
@@ -112,7 +112,7 @@ Using the final merged main SHA as the base, identify public packages with publi
 Bump each package in the final release set exactly once and only now:
 
 ```bash
-npm version patch --workspace packages/<package> --no-git-tag-version
+npm version patch --workspace extensions/<package> --no-git-tag-version
 ```
 
 Choose minor or major only when the actual package change requires it. The npm command must update both the manifest and lockfile. After all workspace versions and direct consumer ranges are updated, run `npm install --ignore-scripts` to regenerate `package-lock.json`, before the final install or any release validation.

@@ -37,11 +37,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/HenryQW/pi-packages.git",
+    "url": "git+https://github.com/HenryQW/pi-harness.git",
     "directory": "deprecated/pi-auto-dag"
   },
   "bugs": {
-    "url": "https://github.com/HenryQW/pi-packages/issues"
+    "url": "https://github.com/HenryQW/pi-harness/issues"
   },
   "publishConfig": {
     "access": "public"

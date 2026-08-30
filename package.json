@@ -1,8 +1,8 @@
 {
-  "name": "@henryqw/pi-packages",
+  "name": "@henryqw/pi-harness",
   "version": "0.0.0",
   "private": true,
-  "description": "Public Pi packages by Henry Wang.",
+  "description": "Public Pi extensions by Henry Wang.",
   "keywords": [
     "pi-package"
   ],
@@ -11,27 +11,28 @@
     "node": ">=22.19.0"
   },
   "workspaces": [
-    "packages/*"
+    "extensions/*",
+    "website"
   ],
   "pi": {
     "extensions": [
-      "./packages/pi-ask-question/extensions/ask-question.ts",
-      "./packages/pi-add-dir/extensions/add-dir.ts",
-      "./packages/pi-auto-compact/extensions",
-      "./packages/pi-session-recall/extensions/session-recall.ts",
-      "./packages/pi-deps/extensions/deps.ts",
-      "./packages/pi-footer/extensions/footer.ts",
-      "./packages/pi-notes/extensions/notes.ts",
-      "./packages/pi-pr/extensions/pr.ts",
-      "./packages/pi-task-models/extensions/task-models.ts",
-      "./packages/pi-open-in/extensions",
-      "./packages/pi-herdr-rename/extensions",
-      "./packages/pi-herdr-btw/extensions/btw.ts",
-      "./packages/pi-herdr-clone/extensions",
-      "./packages/pi-herdr-done/extensions",
-      "./packages/pi-multi-codex/extensions",
-      "./packages/pi-subagent/extensions/subagent.ts",
-      "./packages/pi-memory/extensions/memory.ts"
+      "./extensions/pi-ask-question/extensions/ask-question.ts",
+      "./extensions/pi-add-dir/extensions/add-dir.ts",
+      "./extensions/pi-auto-compact/extensions",
+      "./extensions/pi-session-recall/extensions/session-recall.ts",
+      "./extensions/pi-deps/extensions/deps.ts",
+      "./extensions/pi-footer/extensions/footer.ts",
+      "./extensions/pi-notes/extensions/notes.ts",
+      "./extensions/pi-pr/extensions/pr.ts",
+      "./extensions/pi-task-models/extensions/task-models.ts",
+      "./extensions/pi-open-in/extensions",
+      "./extensions/pi-herdr-rename/extensions",
+      "./extensions/pi-herdr-btw/extensions/btw.ts",
+      "./extensions/pi-herdr-clone/extensions",
+      "./extensions/pi-herdr-done/extensions",
+      "./extensions/pi-multi-codex/extensions",
+      "./extensions/pi-subagent/extensions/subagent.ts",
+      "./extensions/pi-memory/extensions/memory.ts"
     ]
   },
   "scripts": {
@@ -40,7 +41,10 @@
     "test": "node scripts/test-workspaces.mjs",
     "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "pack:check": "npm run pack:check --workspaces --if-present"
+    "pack:check": "npm run pack:check --workspaces --if-present",
+    "docs:dev": "npm run dev --workspace @henryqw/pi-docs",
+    "docs:build": "npm run build --workspace @henryqw/pi-docs",
+    "docs:validate": "npm run validate --workspace @henryqw/pi-docs"
   },
   "dependencies": {
     "@types/node": "^26.3.0",

@@ -13,13 +13,13 @@ const changedFiles = execFileSync('git', ['diff', '--name-only', mergeBase, head
   encoding: 'utf8',
 }).trim().split('\n').filter(Boolean)
 
-const packageDirs = readdirSync('packages', { withFileTypes: true })
+const packageDirs = readdirSync('extensions', { withFileTypes: true })
   .filter(entry => entry.isDirectory())
-  .map(entry => path.posix.join('packages', entry.name))
+  .map(entry => path.posix.join('extensions', entry.name))
 
 const alwaysPublished = /^(?:README(?:\..*)?|LICENSE|LICENCE)(?:\..*)?$/i
 const testPath = /^(?:test|tests|__tests__)\//
-// dist/** is generated at prepack (untracked); src/** compiles into dist for build-packages.
+// dist/** is generated at prepack (untracked); src/** compiles into dist for build extensions.
 const generated = /^dist\//
 const source = /^src\//
 
