@@ -90,28 +90,7 @@ delegate_flow({ units: [{ id, name, task, modelClass?, validation: [{ command, a
 delegate_flow_continue({ guidance, modelClass? })
 ```
 
-```mermaid
-flowchart LR
-  setup["Setup: resolve roles and create Unit Worktrees"] --> implement["Implementers in parallel"]
-  implement -->|Implementer block| repair["One repair: delegate_flow_continue"]
-  implement --> rebase["Rebase, inspect committed state, and validate"]
-  rebase -->|Post-rebase no-op| cleanup["Cleanup"]
-  rebase --> review{"Review requested?"}
-  review -->|No| integrate["Integrate in declared order"]
-  review -->|Yes| packet["Exact {base, tip, patchPath}; require PASS"]
-  packet -->|PASS| integrate
-  rebase -->|Validation block| repair
-  packet -->|Review block| repair
-  repair --> revalidate["Revalidate repaired work"]
-  revalidate -->|No review requested| integrate
-  revalidate -->|Review required| rereview["Re-review exact {base, tip, patchPath}; require PASS"]
-  rereview -->|PASS| integrate
-  revalidate -->|Second block| terminal["Terminal failure: retain worktree"]
-  rereview -->|Second block| terminal
-  rebase -->|Rebase or infrastructure failure| terminal
-  repair -->|Infrastructure failure| terminal
-  integrate --> cleanup
-```
+![Delegate Flow lifecycle](./docs/delegate-flow.svg)
 
 Objective verification is authoritative. Flow always inspects committed Git state and runs declared validation.
 

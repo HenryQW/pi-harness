@@ -1,8 +1,6 @@
 # Henry Pi Harness
 
-These are the Pi extensions I use daily. They are highly opinionated. I publish them as-is.
-
-I offer no support or backward compatibility. Breaking changes may be introduced at any time. Published extensions use the `@henryqw` npm scope.
+Highly opinionated Pi extensions. Browse them at <https://pi.henry.wang>.
 
 ![Pi extensions in use](./example.png)
 
@@ -30,47 +28,13 @@ I offer no support or backward compatibility. Breaking changes may be introduced
 | [`@henryqw/pi-subagent`](./extensions/pi-subagent) | Delegate bounded single, parallel, chained, and extension-owned Git Flow work to isolated roles. |
 | [`@henryqw/pi-task-models`](./extensions/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
-## Internal extension relationships
+## Extension dependency graph
 
 Each of the 19 extensions under `extensions/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `extensions/*/package.json`.
 
 Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
 
-```mermaid
-flowchart LR
-  autoCompact["pi-auto-compact"] --> configStore["pi-config-store"]
-  autoCompact --> taskModels["pi-task-models"]
-  footer["pi-footer"] --> openIn["pi-open-in"]
-  herdrBtw["pi-herdr-btw"] --> configStore
-  herdrBtw --> herdr["pi-herdr"]
-  herdrBtw --> taskModels
-  herdrClone["pi-herdr-clone"] --> herdr
-  herdrDone["pi-herdr-done"] --> herdr
-  herdrRename["pi-herdr-rename"] --> herdr
-  herdrRename --> taskModels
-  memory["pi-memory"] --> askQuestion["pi-ask-question"]
-  memory --> configStore
-  memory --> taskModels
-  multiCodex["pi-multi-codex"] --> configStore
-  notes["pi-notes"] --> configStore
-  openIn --> configStore
-  sessionRecall["pi-session-recall"] --> configStore
-  subagent["pi-subagent"] --> configStore
-  subagent --> multiCodex
-  subagent --> taskModels
-  taskModels --> configStore
-
-  footer -.->|PR status| pr["pi-pr"]
-  footer -.->|Codex status| multiCodex
-  taskModels -.->|numbered provider aliases| multiCodex
-  memory -.->|BTW child payload/process mode| herdrBtw
-  subagent -.->|ask_question child-tool exclusion| askQuestion
-
-  subgraph standalone["Standalone extensions (no internal coupling)"]
-    addDir["pi-add-dir"]
-    deps["pi-deps"]
-  end
-```
+![Extension dependency graph](./docs/extension-dependency-graph.svg)
 
 ## Deprecated
 

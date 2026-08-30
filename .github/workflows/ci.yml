@@ -24,6 +24,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Validate website
+        run: pnpm --filter @henryqw/pi-docs run validate
       - name: Run tests
         shell: bash
         run: |

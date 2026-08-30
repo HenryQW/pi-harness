@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1280 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="extension-dependency-title extension-dependency-desc">
+      <title id="extension-dependency-title">Extension dependency graph</title>
+      <desc id="extension-dependency-desc">Dependency graph showing npm dependencies and direct runtime couplings among all nineteen Henry Pi Harness extensions, including two standalone extensions.</desc>
+      <defs>
+        <style>
+          @import url(&quot;https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap&quot;);
+          .zone { fill: rgba(16,24,40,.025); stroke: rgba(16,24,40,.141); stroke-width: 1; }
+          .zone-label { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .18em; }
+          .node { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .node-hub { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+          .node-leaf { fill: rgba(16,24,40,.03); stroke: rgba(16,24,40,.32); stroke-width: 1; }
+          .name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .sub { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.1; marker-end: url(#arrow); }
+          .coupling { fill: none; stroke: #6a7282; stroke-width: 1; stroke-dasharray: 5 4; marker-end: url(#arrow); }
+          .label-mask { fill: #f0eee9; }
+          .label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+          .legend { fill: #4c5665; font: 400 8px 'Geist', sans-serif; }
+        </style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+      </defs>
+
+      <rect width="1280" height="900" fill="#f0eee9"/>
+
+      <!-- Zones -->
+      <rect class="zone" x="24" y="32" width="1232" height="224" rx="8"/>
+      <text class="zone-label" x="40" y="56">ENTRY EXTENSIONS</text>
+      <rect class="zone" x="24" y="288" width="1232" height="304" rx="8"/>
+      <text class="zone-label" x="40" y="312">SHARED EXTENSIONS + PROVIDERS</text>
+      <rect class="zone" x="24" y="624" width="1232" height="184" rx="8"/>
+      <text class="zone-label" x="40" y="648">FOUNDATION + STANDALONE</text>
+
+      <!-- npm dependency edges -->
+      <path class="edge" d="M112 120 V264 Q112 272 120 272 H632 Q640 272 640 280 V348"/>
+      <path class="edge" d="M48 92 H16 Q8 92 8 100 V704 Q8 712 16 712 H592"/>
+      <path class="edge" d="M376 120 V348"/>
+      <path class="edge" d="M608 120 V280 Q608 288 600 288 H176 Q168 288 168 296 V508"/>
+      <path class="edge" d="M856 120 V296 Q856 304 848 304 H144 Q136 304 136 312 V508"/>
+      <path class="edge" d="M1104 120 V312 Q1104 320 1096 320 H112 Q104 320 104 328 V508"/>
+      <path class="edge" d="M1136 120 V264 Q1136 272 1128 272 H704 Q696 272 696 280 V348"/>
+      <path class="edge" d="M128 216 V272 Q128 280 136 280 H608 Q616 280 616 288 V348"/>
+      <path class="edge" d="M160 216 V264 Q160 256 168 256 H928 Q936 256 936 264 V508"/>
+      <path class="edge" d="M64 188 H32 Q24 188 24 196 V696 Q24 704 32 704 H592"/>
+      <path class="edge" d="M376 216 V608 Q376 616 384 616 H608 Q616 616 616 624 V688"/>
+      <path class="edge" d="M624 216 V688"/>
+      <path class="edge" d="M824 216 V328 Q824 336 816 336 H736 Q728 336 728 348"/>
+      <path class="edge" d="M856 216 V456 Q856 464 848 464 H768 Q760 464 760 472 V536 Q760 544 752 544"/>
+      <path class="edge" d="M888 216 V640 Q888 648 880 648 H736 Q728 648 728 656 V688"/>
+      <path class="edge" d="M176 404 V508"/>
+      <path class="edge" d="M208 376 H592"/>
+      <path class="edge" d="M192 404 V600 Q192 608 200 608 H640 Q648 608 648 616 V688"/>
+      <path class="edge" d="M376 404 V616 Q376 624 384 624 H656 Q664 624 664 632 V688"/>
+      <path class="edge" d="M704 404 H776 Q784 404 784 412 V656 Q784 664 776 664 H704 V688"/>
+      <path class="edge" d="M672 564 V688"/>
+
+      <!-- direct runtime couplings -->
+      <path class="coupling" d="M408 92 H1008 Q1016 92 1016 100 V348"/>
+      <path class="coupling" d="M360 120 V264 Q360 272 368 272 H560 Q568 272 568 280 V480 Q568 488 576 488 H624 V508"/>
+      <path class="coupling" d="M656 404 V508"/>
+      <path class="coupling" d="M144 216 V348"/>
+      <path class="coupling" d="M920 216 V320 Q920 328 928 328 H952 Q960 328 960 336 V508"/>
+
+      <!-- coupling labels -->
+      <rect class="label-mask" x="720" y="72" width="72" height="12" rx="2"/>
+      <text class="label" x="756" y="81">PR STATUS</text>
+      <rect class="label-mask" x="424" y="252" width="96" height="12" rx="2"/>
+      <text class="label" x="472" y="261">CODEX STATUS</text>
+      <rect class="label-mask" x="664" y="448" width="128" height="12" rx="2"/>
+      <text class="label" x="728" y="457">PROVIDER ALIASES</text>
+      <rect class="label-mask" x="64" y="268" width="128" height="12" rx="2"/>
+      <text class="label" x="128" y="277">BTW CHILD PROCESS</text>
+      <rect class="label-mask" x="896" y="284" width="112" height="12" rx="2"/>
+      <text class="label" x="952" y="293">TOOL EXCLUSION</text>
+
+      <!-- Entry nodes -->
+      <rect class="node" x="48" y="72" width="160" height="48" rx="6"/>
+      <text class="name" x="128" y="100">pi-auto-compact</text>
+      <text class="sub" x="128" y="112">2 DEPENDENCIES</text>
+
+      <rect class="node" x="296" y="72" width="160" height="48" rx="6"/>
+      <text class="name" x="376" y="100">pi-footer</text>
+      <text class="sub" x="376" y="112">STATUS CONSUMER</text>
+
+      <rect class="node" x="544" y="72" width="160" height="48" rx="6"/>
+      <text class="name" x="624" y="100">pi-herdr-clone</text>
+      <text class="sub" x="624" y="112">HERDR COMMAND</text>
+
+      <rect class="node" x="792" y="72" width="160" height="48" rx="6"/>
+      <text class="name" x="872" y="100">pi-herdr-done</text>
+      <text class="sub" x="872" y="112">HERDR COMMAND</text>
+
+      <rect class="node" x="1040" y="72" width="160" height="48" rx="6"/>
+      <text class="name" x="1120" y="100">pi-herdr-rename</text>
+      <text class="sub" x="1120" y="112">2 DEPENDENCIES</text>
+
+      <rect class="node" x="48" y="168" width="160" height="48" rx="6"/>
+      <text class="name" x="128" y="196">pi-memory</text>
+      <text class="sub" x="128" y="208">4 RELATIONSHIPS</text>
+
+      <rect class="node" x="296" y="168" width="160" height="48" rx="6"/>
+      <text class="name" x="376" y="196">pi-notes</text>
+      <text class="sub" x="376" y="208">CONFIG CONSUMER</text>
+
+      <rect class="node" x="544" y="168" width="160" height="48" rx="6"/>
+      <text class="name" x="624" y="196">pi-session-recall</text>
+      <text class="sub" x="624" y="208">CONFIG CONSUMER</text>
+
+      <rect class="node" x="792" y="168" width="160" height="48" rx="6"/>
+      <text class="name" x="872" y="196">pi-subagent</text>
+      <text class="sub" x="872" y="208">4 RELATIONSHIPS</text>
+
+      <!-- Shared/provider nodes -->
+      <rect class="node" x="48" y="348" width="160" height="56" rx="6"/>
+      <text class="name" x="128" y="376">pi-herdr-btw</text>
+      <text class="sub" x="128" y="392">3 DEPENDENCIES</text>
+
+      <rect class="node" x="296" y="348" width="160" height="56" rx="6"/>
+      <text class="name" x="376" y="376">pi-open-in</text>
+      <text class="sub" x="376" y="392">CONFIG CONSUMER</text>
+
+      <rect class="node" x="592" y="348" width="160" height="56" rx="6"/>
+      <text class="name" x="672" y="376">pi-task-models</text>
+      <text class="sub" x="672" y="392">5 CONSUMERS</text>
+
+      <rect class="node-leaf" x="1000" y="348" width="160" height="56" rx="6"/>
+      <text class="name" x="1080" y="376">pi-pr</text>
+      <text class="sub" x="1080" y="392">PR STATUS PROVIDER</text>
+
+      <rect class="node-leaf" x="48" y="508" width="160" height="56" rx="6"/>
+      <text class="name" x="128" y="536">pi-herdr</text>
+      <text class="sub" x="128" y="552">4 CONSUMERS</text>
+
+      <rect class="node" x="592" y="508" width="160" height="56" rx="6"/>
+      <text class="name" x="672" y="536">pi-multi-codex</text>
+      <text class="sub" x="672" y="552">3 CONSUMERS</text>
+
+      <rect class="node-leaf" x="840" y="508" width="160" height="56" rx="6"/>
+      <text class="name" x="920" y="536">pi-ask-question</text>
+      <text class="sub" x="920" y="552">2 CONSUMERS</text>
+
+      <!-- Foundation + standalone -->
+      <rect class="node-hub" x="592" y="688" width="160" height="56" rx="6"/>
+      <text class="name" x="672" y="716">pi-config-store</text>
+      <text class="sub" x="672" y="732">9 CONSUMERS</text>
+
+      <rect class="node-leaf" x="920" y="688" width="128" height="56" rx="6"/>
+      <text class="name" x="984" y="716">pi-add-dir</text>
+      <text class="sub" x="984" y="732">STANDALONE</text>
+
+      <rect class="node-leaf" x="1072" y="688" width="128" height="56" rx="6"/>
+      <text class="name" x="1136" y="716">pi-deps</text>
+      <text class="sub" x="1136" y="732">STANDALONE</text>
+
+      <!-- Legend -->
+      <line x1="24" y1="840" x2="1256" y2="840" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <text class="zone-label" x="24" y="860">LEGEND</text>
+      <line x1="120" y1="856" x2="156" y2="856" stroke="#4c5665" stroke-width="1.1" marker-end="url(#arrow)"/>
+      <text class="legend" x="168" y="860">npm dependency</text>
+      <line x1="304" y1="856" x2="340" y2="856" stroke="#6a7282" stroke-width="1" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+      <text class="legend" x="352" y="860">Direct runtime coupling</text>
+      <rect class="node-hub" x="536" y="848" width="24" height="12" rx="2"/>
+      <text class="legend" x="568" y="860">Highest fan-in</text>
+      <rect class="node-leaf" x="688" y="848" width="24" height="12" rx="2"/>
+      <text class="legend" x="720" y="860">Provider / standalone</text>
+      <text class="sub" x="1120" y="860">19 EXTENSIONS · 26 RELATIONSHIPS</text>
+    </svg>
