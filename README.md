@@ -13,6 +13,7 @@ I offer no support or backward compatibility. Breaking changes may be introduced
 | [`@henryqw/pi-add-dir`](./packages/pi-add-dir) | Add external directories with context, skills, and file search. |
 | [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
 | [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | Compact context at the set threshold and resume current task. |
+| [`@henryqw/pi-config-store`](./packages/pi-config-store) | Create validated extension JSON stores with shared config homes. |
 | [`@henryqw/pi-deps`](./packages/pi-deps) | Prepare locked Node and uv dependencies for opted-in Git worktrees. |
 | [`@henryqw/pi-footer`](./packages/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
 | [`@henryqw/pi-herdr`](./packages/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
@@ -31,24 +32,33 @@ I offer no support or backward compatibility. Breaking changes may be introduced
 
 ## Internal package relationships
 
-Each of the 18 `packages/*` workspaces appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`.
+Each of the 19 public `packages/*` workspaces appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`.
 
 Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
 
 ```mermaid
 flowchart LR
-  autoCompact["pi-auto-compact"] --> taskModels["pi-task-models"]
+  autoCompact["pi-auto-compact"] --> configStore["pi-config-store"]
+  autoCompact --> taskModels["pi-task-models"]
   footer["pi-footer"] --> openIn["pi-open-in"]
-  herdrBtw["pi-herdr-btw"] --> herdr["pi-herdr"]
+  herdrBtw["pi-herdr-btw"] --> configStore
+  herdrBtw --> herdr["pi-herdr"]
   herdrBtw --> taskModels
   herdrClone["pi-herdr-clone"] --> herdr
   herdrDone["pi-herdr-done"] --> herdr
   herdrRename["pi-herdr-rename"] --> herdr
   herdrRename --> taskModels
   memory["pi-memory"] --> askQuestion["pi-ask-question"]
+  memory --> configStore
   memory --> taskModels
-  subagent["pi-subagent"] --> multiCodex["pi-multi-codex"]
+  multiCodex["pi-multi-codex"] --> configStore
+  notes["pi-notes"] --> configStore
+  openIn --> configStore
+  sessionRecall["pi-session-recall"] --> configStore
+  subagent["pi-subagent"] --> configStore
+  subagent --> multiCodex
   subagent --> taskModels
+  taskModels --> configStore
 
   footer -.->|PR status| pr["pi-pr"]
   footer -.->|Codex status| multiCodex
@@ -59,8 +69,6 @@ flowchart LR
   subgraph standalone["Standalone packages (no internal coupling)"]
     addDir["pi-add-dir"]
     deps["pi-deps"]
-    notes["pi-notes"]
-    sessionRecall["pi-session-recall"]
   end
 ```
 
@@ -117,6 +125,18 @@ PI_AUTO_COMPACT_AUTH_FILE=/path/to/auth.json npm run test:live --workspace @henr
 ```
 
 Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`.
+
+## Documentation site
+
+The site uses the root and package READMEs directly. It publishes at <https://pi.henry.wang>.
+
+```bash
+npm run docs:dev
+npm run docs:build
+npm run docs:validate
+```
+
+`docs:dev` starts local development. `docs:build` writes static files to `website/dist/`.
 
 ## Release
 

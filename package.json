@@ -11,7 +11,8 @@
     "node": ">=22.19.0"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "website"
   ],
   "pi": {
     "extensions": [
@@ -40,7 +41,10 @@
     "test": "node scripts/test-workspaces.mjs",
     "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "pack:check": "npm run pack:check --workspaces --if-present"
+    "pack:check": "npm run pack:check --workspaces --if-present",
+    "docs:dev": "npm run dev --workspace @henryqw/pi-docs",
+    "docs:build": "npm run build --workspace @henryqw/pi-docs",
+    "docs:validate": "npm run validate --workspace @henryqw/pi-docs"
   },
   "dependencies": {
     "@types/node": "^26.3.0",
