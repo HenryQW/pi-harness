@@ -15,5 +15,5 @@ Pi session path passed to configured command by `/open`.
 _Avoid_: process directory, repository root
 
 **Open URI**:
-Safe editor URI derived only when open command is exactly `code`; maps current working directory to `vscode://file/...`. Arbitrary configured commands cannot become OSC 8 links.
+Safe editor URI derived only when the open command executable is `code`, with or without flags; maps current working directory to `vscode://file/...`. The `-n` and `--new-window` flags map to the VS Code protocol's `windowId=_blank` query. Arbitrary configured commands cannot become OSC 8 links.
 _Avoid_: command link, shell URI

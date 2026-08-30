@@ -51,7 +51,7 @@ Statuses from all other extensions, including Ponytail and `pi-rewind`, share th
 
 ## Clickable checkout
 
-When `~/.pi/agent/config/pi-open-in/config.json` sets `command` to exactly `code` and Pi reports hyperlink support, the accent-colored checkout name is an OSC 8 `vscode://` link to the current path. A missing file silently uses `code` and gets the same link. Other configured commands and terminals with hyperlinks disabled render plain text.
+When the configured executable is `code` and Pi reports hyperlink support, the accent-colored checkout name links to the current path. The link opens a new window for `code -n` or `code --new-window`. A missing config silently uses `code`. Other executables and terminals with hyperlinks disabled render plain text.
 
 Use Pi fullscreen TUI so Pi handles the custom URI:
 

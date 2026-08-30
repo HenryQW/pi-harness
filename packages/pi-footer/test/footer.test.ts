@@ -149,8 +149,8 @@ test("renders family status on the first line and external statuses beside runti
 	await mkdir(join(agentDir, "config", "pi-open-in"), { recursive: true });
 	await writeFile(openInConfig, '{"command":"codex"}');
 	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
-	await writeFile(openInConfig, '{"command":"code"}');
-	assert.match(footer.render(100)[0]!, /vscode:\/\//);
+	await writeFile(openInConfig, '{"command":"code -n"}');
+	assert.match(footer.render(100)[0]!, /vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\?windowId=_blank/);
 	await writeFile(openInConfig, "{not json");
 	assert.doesNotThrow(() => footer.render(100));
 	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);

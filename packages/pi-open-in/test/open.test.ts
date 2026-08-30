@@ -60,8 +60,14 @@ test("missing owner config uses code silently without read-time writes", async (
 	await open("", ctx);
 	assert.deepEqual(execCalls.at(-1), ["cursor", "--reuse-window", ctx.cwd]);
 
-	writeFileSync(configFile, '{"command":"code"}');
-	assert.match(configuredOpenUri("/some/path") ?? "", /^vscode:\/\/file\/some\/path$/);
+	for (const [command, uri] of [
+		["code", "vscode://file/some/path"],
+		["code -n", "vscode://file/some/path?windowId=_blank"],
+		["code --new-window", "vscode://file/some/path?windowId=_blank"],
+	]) {
+		writeFileSync(configFile, JSON.stringify({ command }));
+		assert.equal(configuredOpenUri("/some/path"), uri);
+	}
 
 	for (const invalid of ["{not json", '{"command":"code","extra":1}', '{"command":""}']) {
 		writeFileSync(configFile, invalid);
