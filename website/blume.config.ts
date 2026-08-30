@@ -102,10 +102,6 @@ export default defineConfig({
     ],
   },
   redirects: [
-    ...extensions.map(({ directory }) => ({
-      from: `/packages/${directory}`,
-      to: `/extensions/${directory}`,
-    })),
     {
       from: "/deprecated",
       to: "https://github.com/HenryQW/pi-harness/tree/main/deprecated",
