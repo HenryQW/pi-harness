@@ -236,7 +236,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		controller: AbortController,
 	): Promise<void> => {
 		const paneId = process.env.HERDR_PANE_ID;
-		if (!paneId) return;
+		if (process.env.HERDR_ENV !== "1" || !paneId) return;
 
 		if (!isCurrent(request, controller)) return;
 		await herdr.run(["pane", "rename", paneId, displayTitle], { signal: controller.signal });

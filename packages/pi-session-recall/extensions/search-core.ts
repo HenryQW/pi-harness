@@ -157,6 +157,14 @@ function openDb(dbPath: string): DatabaseSync {
 		// both sides case-fold through the same foldCase helper.
 		db.function("ulower", (s: SQLOutputValue): string => typeof s === "string" ? foldCase(s) : "");
 		db.function("unear", nearLike);
+		// Creating a missing external-content FTS table after messages and their
+		// watermarks persist leaves it blank: unchanged files never replay inserts.
+		// The disposable index must be deleted and rebuilt instead of repaired here.
+		const hasFts = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_fts'").get() !== undefined;
+		const hasPersistedSchema = db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get() !== undefined;
+		if (!hasFts && hasPersistedSchema) {
+			throw new Error("index schema incompatible: session_fts missing — delete the index to rebuild");
+		}
 		db.exec(SCHEMA_SQL);
 		// CREATE TABLE IF NOT EXISTS cannot repair a predecessor index whose
 		// tables exist but lack current watermark columns (e.g. no ctime_ms): its

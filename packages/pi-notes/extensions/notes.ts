@@ -151,7 +151,7 @@ async function persist(identity: WorktreeIdentity, notes: string[]): Promise<voi
 
 function issueMessage(issue: LoadedNotes["issue"]): string | undefined {
 	if (issue === "malformed") return "Worktree notes file is malformed; fix it or run /note-clear to reset.";
-	if (issue === "stale") return "Worktree notes belong to an old worktree; run /note-prune or /note-clear.";
+	if (issue === "stale") return "Worktree notes belong to an old worktree; run /note-clear to reset.";
 	return undefined;
 }
 
