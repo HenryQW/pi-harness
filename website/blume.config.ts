@@ -6,14 +6,11 @@ import type { ContentSource } from "blume/sources/types.ts";
 
 import { extensions, repoRoot } from "./extension-catalog.ts";
 import { npmBadgeUrl } from "./npm-badge.ts";
-import { linkRelativeMarkdownToGitHub } from "./repository-markdown.ts";
-
-const renderMermaid = (markdown: string) =>
-  markdown.replace(
-    /^```mermaid[^\S\r\n]*\r?\n([\s\S]*?)^```[^\S\r\n]*$/gm,
-    (_, source: string) =>
-      `<blume-mermaid class="not-prose my-6 flex overflow-x-auto [&>div]:w-full [&>div>svg]:mx-auto [&>div>svg]:block" data-source="${source.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll("\n", "&#10;")}"></blume-mermaid>`
-  );
+import {
+  inlineRelativeSvgImages,
+  linkRelativeImagesToGitHub,
+  linkRelativeMarkdownToGitHub,
+} from "./repository-markdown.ts";
 
 const docs = [
   {
@@ -40,7 +37,14 @@ const docs = [
 ];
 const docsByRef = new Map(docs.map((doc) => [doc.ref, doc]));
 const readDoc = async ({ editPath, npm, path }: (typeof docs)[number]) => {
-  const text = (await readFile(path, "utf8")).replace(/^# .+\n+/, "");
+  const text = linkRelativeImagesToGitHub(
+    await inlineRelativeSvgImages(
+      (await readFile(path, "utf8")).replace(/^# .+\n+/, ""),
+      editPath,
+      repoRoot
+    ),
+    editPath
+  );
   if (editPath === "README.md") {
     return text.replace(/\]\(\.\/([^)]+)\)/g, (_, target: string) => {
       const route = target.replace(/\.md$/, "");
@@ -51,10 +55,9 @@ const readDoc = async ({ editPath, npm, path }: (typeof docs)[number]) => {
   if (!npm) return text;
   const npmUrl = `https://www.npmjs.com/package/${npm.name}`;
   const badgeUrl = npmBadgeUrl(npm.name).replaceAll("&", "&amp;");
-  const imageUrl = `https://raw.githubusercontent.com/HenryQW/pi-harness/main/${editPath.replace(/README\.md$/, "example.png")}`;
   const stats = `<div class="not-prose my-6 flex flex-wrap items-center gap-3"><span class="text-sm text-muted-foreground">v${npm.version}</span><a href="${npmUrl}" aria-label="View ${npm.name} on npm"><img alt="Monthly npm downloads" height="20" src="${badgeUrl}" width="144"></a></div>`;
   const linkedText = linkRelativeMarkdownToGitHub(text, editPath);
-  return `${stats}\n\n${linkedText.replaceAll("](./example.png)", `](${imageUrl})`)}`;
+  return `${stats}\n\n${linkedText}`;
 };
 const extensionDocs: ContentSource = {
   name: "extensions",
@@ -63,8 +66,7 @@ const extensionDocs: ContentSource = {
     diagnostics: [],
     entries: await Promise.all(
       docs.map(async ({ data, editPath, ref, slug, ...doc }) => {
-        const markdown = await readDoc({ data, editPath, ref, slug, ...doc });
-        const text = renderMermaid(markdown);
+        const text = await readDoc({ data, editPath, ref, slug, ...doc });
         const raw = `---\ntitle: ${JSON.stringify(data.title)}\nseo:\n  description: ${JSON.stringify(data.seo.description)}\n---\n\n${text}`;
         return {
           body: { format: "md" as const, text },

@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="delegate-flow-title delegate-flow-desc">
+      <title id="delegate-flow-title">Delegate Flow lifecycle</title>
+      <desc id="delegate-flow-desc">Flowchart showing setup, implementation, validation, optional exact review, one repair attempt, integration, cleanup, and retained-worktree failure outcomes.</desc>
+      <defs>
+        <style>
+          @import url(&quot;https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap&quot;);
+          .zone { fill: #e6e4de; stroke: rgba(16,24,40,.141); stroke-width: 1; }
+          .zone-label { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .18em; }
+          .node { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .node-soft { fill: rgba(16,24,40,.03); stroke: rgba(16,24,40,.32); stroke-width: 1; }
+          .node-focal { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+          .node-failure { fill: rgba(16,24,40,.02); stroke: rgba(16,24,40,.42); stroke-width: 1; stroke-dasharray: 4 4; }
+          .name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .sub { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+          .edge-failure { fill: none; stroke: #6a7282; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#arrow); }
+          .edge-success { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#arrow-accent); }
+          .label-mask { fill: #f0eee9; }
+          .label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+          .label-success { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+          .legend { fill: #4c5665; font: 400 8px 'Geist', sans-serif; }
+        </style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <!-- Zones -->
+      <rect class="zone" x="40" y="40" width="760" height="280" rx="8"/>
+      <text class="zone-label" x="56" y="64">INITIAL RUN</text>
+      <rect class="zone" x="40" y="340" width="760" height="260" rx="8"/>
+      <text class="zone-label" x="56" y="364">ONE REPAIR MAXIMUM</text>
+      <rect class="zone" x="840" y="40" width="400" height="560" rx="8"/>
+      <text class="zone-label" x="856" y="64">OUTCOMES</text>
+
+      <!-- Initial-run edges -->
+      <path class="edge" d="M248 128 H288"/>
+      <path class="edge" d="M464 128 H504"/>
+      <path class="edge" d="M600 128 H624"/>
+      <path class="edge" d="M784 128 H872"/>
+      <path class="edge" d="M704 176 V216"/>
+      <path class="edge-success" d="M784 248 H812 Q820 248 820 240 V152 Q820 144 828 144 H856 Q864 144 864 136 V128 H872"/>
+
+      <!-- Blocked initial-run paths to repair -->
+      <path class="edge" d="M376 160 V304 Q376 312 368 312 H160 Q152 312 152 320 V412"/>
+      <path class="edge" d="M552 160 V288 Q552 296 544 296 H136 Q128 296 128 304 V412"/>
+      <path class="edge" d="M664 280 V320 Q664 328 656 328 H184 Q176 328 176 336 V412"/>
+
+      <!-- Repair path -->
+      <path class="edge" d="M272 444 H320"/>
+      <path class="edge" d="M520 444 H592"/>
+      <path class="edge-success" d="M384 412 V384 Q384 376 392 376 H808 Q816 376 816 368 V120 Q816 112 824 112 H856 Q864 112 864 120 V128 H872"/>
+      <path class="edge-success" d="M768 444 H824 Q832 444 832 436 V168 Q832 160 840 160 H856 Q864 160 864 152 V128 H872"/>
+
+      <!-- Success outcome -->
+      <path class="edge-success" d="M880 128 H912"/>
+      <path class="edge-success" d="M1012 160 V216"/>
+      <path class="edge" d="M552 96 V80 Q552 72 560 72 H1144 Q1152 72 1152 80 V240 Q1152 248 1144 248 H1112"/>
+
+      <!-- Failure paths, fanned into one merge -->
+      <path class="edge-failure" d="M584 160 V304 Q584 312 592 312 H808 Q816 312 816 320 V488 Q816 496 824 496 H872"/>
+      <path class="edge-failure" d="M232 476 V568 Q232 576 240 576 H856 Q864 576 864 568 V512 Q864 504 872 504"/>
+      <path class="edge-failure" d="M472 476 V536 Q472 544 480 544 H840 Q848 544 848 536 V520 Q848 512 856 512 H872"/>
+      <path class="edge-failure" d="M768 460 H808 Q816 460 816 468 V512 Q816 520 824 520 H856 Q864 520 864 512 V504 H872"/>
+      <path class="edge-failure" d="M880 504 H912"/>
+
+      <!-- Completion-warning and integration-failure outcomes -->
+      <path class="edge-failure" d="M1012 280 V336"/>
+      <path class="edge-failure" d="M1112 136 H1184 Q1192 136 1192 144 V356 Q1192 364 1184 364 H1152"/>
+      <path class="edge-failure" d="M1112 112 H1208 Q1216 112 1216 120 V496 Q1216 504 1208 504 H1152"/>
+
+      <!-- Edge labels -->
+      <rect class="label-mask" x="272" y="252" width="128" height="12" rx="2"/>
+      <text class="label" x="336" y="261">IMPLEMENTER BLOCK</text>
+      <rect class="label-mask" x="416" y="276" width="120" height="12" rx="2"/>
+      <text class="label" x="476" y="285">VALIDATION BLOCK</text>
+      <rect class="label-mask" x="504" y="316" width="96" height="12" rx="2"/>
+      <text class="label" x="552" y="325">REVIEW BLOCK</text>
+      <rect class="label-mask" x="800" y="100" width="32" height="12" rx="2"/>
+      <text class="label" x="816" y="109">NO</text>
+      <rect class="label-mask" x="688" y="188" width="32" height="12" rx="2"/>
+      <text class="label" x="704" y="197">YES</text>
+      <rect class="label-mask" x="828" y="224" width="40" height="12" rx="2"/>
+      <text class="label-success" x="848" y="233">PASS</text>
+      <rect class="label-mask" x="520" y="364" width="144" height="12" rx="2"/>
+      <text class="label-success" x="592" y="373">NO REVIEW REQUESTED</text>
+      <rect class="label-mask" x="528" y="424" width="56" height="12" rx="2"/>
+      <text class="label" x="556" y="433">REVIEW</text>
+      <rect class="label-mask" x="800" y="404" width="40" height="12" rx="2"/>
+      <text class="label-success" x="820" y="413">PASS</text>
+      <rect class="label-mask" x="816" y="292" width="160" height="12" rx="2"/>
+      <text class="label" x="896" y="301">REBASE / INFRA FAILURE</text>
+      <rect class="label-mask" x="336" y="556" width="136" height="12" rx="2"/>
+      <text class="label" x="404" y="565">INFRASTRUCTURE FAILURE</text>
+      <rect class="label-mask" x="560" y="524" width="96" height="12" rx="2"/>
+      <text class="label" x="608" y="533">SECOND BLOCK</text>
+      <rect class="label-mask" x="748" y="476" width="96" height="12" rx="2"/>
+      <text class="label" x="796" y="485">SECOND BLOCK</text>
+      <rect class="label-mask" x="920" y="60" width="128" height="12" rx="2"/>
+      <text class="label" x="984" y="69">POST-REBASE NO-OP</text>
+      <rect class="label-mask" x="1024" y="296" width="120" height="12" rx="2"/>
+      <text class="label" x="1084" y="305">CLEANUP REFUSAL</text>
+      <rect class="label-mask" x="1024" y="312" width="152" height="12" rx="2"/>
+      <text class="label" x="1100" y="321">FF DIAGNOSTIC / CLEAN TIP</text>
+      <rect class="label-mask" x="1064" y="432" width="136" height="12" rx="2"/>
+      <text class="label" x="1132" y="441">OTHER FF FAILURE</text>
+
+      <!-- Nodes -->
+      <rect class="node-soft" x="72" y="96" width="176" height="64" rx="32"/>
+      <text class="name" x="160" y="124">Resolve roles</text>
+      <text class="sub" x="160" y="140">CREATE UNIT WORKTREES</text>
+
+      <rect class="node" x="288" y="96" width="176" height="64" rx="6"/>
+      <text class="name" x="376" y="124">Implement in parallel</text>
+      <text class="sub" x="376" y="140">EACH UNIT ISOLATED</text>
+
+      <rect class="node" x="504" y="96" width="96" height="64" rx="6"/>
+      <text class="name" x="552" y="120">Rebase</text>
+      <text class="sub" x="552" y="136">INSPECT</text>
+      <text class="sub" x="552" y="148">VALIDATE</text>
+
+      <polygon class="node" points="704,80 784,128 704,176 624,128"/>
+      <text class="name" x="704" y="124">Review</text>
+      <text class="sub" x="704" y="140">REQUESTED?</text>
+
+      <rect class="node" x="624" y="216" width="160" height="64" rx="6"/>
+      <text class="name" x="704" y="240">Exact review packet</text>
+      <text class="sub" x="704" y="256">BASE · TIP · PATCH</text>
+      <text class="sub" x="704" y="268">REQUIRE PASS</text>
+
+      <rect class="node-focal" x="912" y="96" width="200" height="64" rx="6"/>
+      <text class="name" x="1012" y="124">Integrate in order</text>
+      <text class="sub" x="1012" y="140">FAST-FORWARD EXACT TIP</text>
+
+      <rect class="node-soft" x="912" y="216" width="200" height="64" rx="32"/>
+      <text class="name" x="1012" y="244">Cleanup</text>
+      <text class="sub" x="1012" y="260">REMOVE WORKTREE + BRANCH</text>
+
+      <rect class="node-soft" x="912" y="336" width="240" height="72" rx="32"/>
+      <text class="name" x="1032" y="364">Completion warning</text>
+      <text class="sub" x="1032" y="380">CLEAN TIP · OR CLEANUP REFUSAL</text>
+      <text class="sub" x="1032" y="392">RETAIN REPORTED RESOURCES</text>
+
+      <rect class="node" x="72" y="412" width="200" height="64" rx="6"/>
+      <text class="name" x="172" y="440">One repair</text>
+      <text class="sub" x="172" y="456">DELEGATE_FLOW_CONTINUE</text>
+
+      <rect class="node" x="320" y="412" width="200" height="64" rx="6"/>
+      <text class="name" x="420" y="440">Revalidate repair</text>
+      <text class="sub" x="420" y="456">SAME UNIT WORKTREE</text>
+
+      <rect class="node" x="592" y="412" width="176" height="64" rx="6"/>
+      <text class="name" x="680" y="440">Re-review packet</text>
+      <text class="sub" x="680" y="456">REQUIRE PASS AGAIN</text>
+
+      <rect class="node-failure" x="912" y="472" width="240" height="64" rx="32"/>
+      <text class="name" x="1032" y="500">Terminal failure</text>
+      <text class="sub" x="1032" y="516">RETAIN UNIT WORKTREE</text>
+
+      <!-- Merge points -->
+      <circle cx="876" cy="128" r="4" fill="#1d4ed8"/>
+      <circle cx="876" cy="504" r="4" fill="#6a7282"/>
+
+      <!-- Legend -->
+      <line x1="40" y1="636" x2="1240" y2="636" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <text class="zone-label" x="40" y="656">LEGEND</text>
+      <rect class="node" x="120" y="648" width="24" height="12" rx="2"/>
+      <text class="legend" x="152" y="658">Step</text>
+      <polygon class="node" points="236,654 248,648 260,654 248,660"/>
+      <text class="legend" x="272" y="658">Decision</text>
+      <circle cx="380" cy="654" r="4" fill="#4c5665"/>
+      <text class="legend" x="392" y="658">Branch merge</text>
+      <line x1="512" y1="654" x2="548" y2="654" stroke="#1d4ed8" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <text class="legend" x="560" y="658">Validated path</text>
+      <line x1="696" y1="654" x2="732" y2="654" stroke="#6a7282" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+      <text class="legend" x="744" y="658">Terminal path</text>
+      <text class="sub" x="1120" y="658">ONE REPAIR · NO AUTOMATIC RETRY</text>
+    </svg>
