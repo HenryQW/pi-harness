@@ -1,14 +1,14 @@
-# HenryQW Pi packages
+# Henry Pi Harness
 
 These are the Pi extensions I use daily. They are highly opinionated. I publish them as-is.
 
-I offer no support or backward compatibility. Breaking changes may be introduced at any time. Packages use the `@henryqw` scope.
+I offer no support or backward compatibility. Breaking changes may be introduced at any time. Published extensions use the `@henryqw` npm scope.
 
-![Pi packages in use](./example.png)
+![Pi extensions in use](./example.png)
 
-## Packages
+## Extensions
 
-| Package | Purpose |
+| Extension | Purpose |
 | --- | --- |
 | [`@henryqw/pi-add-dir`](./packages/pi-add-dir) | Add external directories with context, skills, and file search. |
 | [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
@@ -27,12 +27,12 @@ I offer no support or backward compatibility. Breaking changes may be introduced
 | [`@henryqw/pi-open-in`](./packages/pi-open-in) | Open current working directory with configurable command. |
 | [`@henryqw/pi-pr`](./packages/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
 | [`@henryqw/pi-session-recall`](./packages/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
-| [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate bounded single, parallel, chained, and package-owned Git Flow work to isolated roles. |
+| [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate bounded single, parallel, chained, and extension-owned Git Flow work to isolated roles. |
 | [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
-## Internal package relationships
+## Internal extension relationships
 
-Each of the 19 public `packages/*` workspaces appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`.
+Each of the 19 extensions under `packages/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`.
 
 Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
 
@@ -66,7 +66,7 @@ flowchart LR
   memory -.->|BTW child payload/process mode| herdrBtw
   subagent -.->|ask_question child-tool exclusion| askQuestion
 
-  subgraph standalone["Standalone packages (no internal coupling)"]
+  subgraph standalone["Standalone extensions (no internal coupling)"]
     addDir["pi-add-dir"]
     deps["pi-deps"]
   end
@@ -79,10 +79,10 @@ Retired extensions and their replacements are recorded under [`deprecated/`](./d
 ## Remove
 
 ```bash
-pi remove npm:@henryqw/<package>
+pi remove npm:@henryqw/<extension>
 ```
 
-Replace `<package>` with the package's unscoped name, for example `pi-subagent`.
+Replace `<extension>` with the extension's unscoped name, for example `pi-subagent`.
 
 Before removing `@henryqw/pi-deps`, disable each opted-in repository with `/deps`. Its copied hook is self-contained.
 
@@ -128,7 +128,7 @@ Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`
 
 ## Documentation site
 
-The landing page uses package manifests. The overview and package pages use their READMEs directly. The site publishes at <https://pi.henry.wang>.
+The landing page uses workspace manifests. The overview and extension pages use their READMEs directly. The site publishes at <https://pi.henry.wang>.
 
 ```bash
 npm run docs:dev
@@ -140,4 +140,4 @@ npm run docs:validate
 
 ## Release
 
-See [`docs/releasing.md`](./docs/releasing.md). Each package publishes independently. Package names use the `@henryqw` scope.
+See [`docs/releasing.md`](./docs/releasing.md). Each extension publishes independently as an npm package under the `@henryqw` scope.

@@ -4,39 +4,57 @@ import { join } from "node:path";
 import { defineConfig } from "blume";
 import type { ContentSource } from "blume/sources/types.ts";
 
-import { packages, repoRoot } from "./package-catalog.ts";
+import { extensions, repoRoot } from "./extension-catalog.ts";
+import { npmBadgeUrl } from "./npm-badge.ts";
+
 const docs = [
   {
     data: {
       seo: {
-        description: "Repository notes, package relationships, and development commands.",
+        description: "Repository notes, extension relationships, and development commands.",
       },
       title: "Repository overview",
     },
+    ai: {
+      llmsTxt: {
+        enabled: true,
+        openapi: false,
+      },
+      openInChat: ["claude", "chatgpt", "cursor"],
+    },
     editPath: "README.md",
+    npm: null,
     path: join(repoRoot, "README.md"),
     ref: "index.md",
     slug: "overview",
   },
-  ...packages.map(({ description, directory, name }) => ({
+  ...extensions.map(({ description, directory, name, version }) => ({
     data: { seo: { description }, title: name },
     editPath: `packages/${directory}/README.md`,
+    npm: { name, version },
     path: join(repoRoot, "packages", directory, "README.md"),
-    ref: `packages/${directory}/index.md`,
-    slug: `packages/${directory}`,
+    ref: `extensions/${directory}/index.md`,
+    slug: `extensions/${directory}`,
   })),
 ];
 const docsByRef = new Map(docs.map((doc) => [doc.ref, doc]));
-const readDoc = async ({ editPath, path }: (typeof docs)[number]) => {
+const readDoc = async ({ editPath, npm, path }: (typeof docs)[number]) => {
   const text = (await readFile(path, "utf8")).replace(/^# .+\n+/, "");
-  return editPath === "README.md"
-    ? text.replace(/\]\(\.\/([^)]+)\)/g, (_, target: string) =>
-        `](/${target.replace(/\.md$/, "")})`
-      )
-    : text;
+  if (editPath === "README.md") {
+    return text.replace(/\]\(\.\/([^)]+)\)/g, (_, target: string) => {
+      const route = target.replace(/^packages\//, "extensions/").replace(/\.md$/, "");
+      return `](/${route})`;
+    });
+  }
+
+  if (!npm) return text;
+  const npmUrl = `https://www.npmjs.com/package/${npm.name}`;
+  const badgeUrl = npmBadgeUrl(npm.name).replaceAll("&", "&amp;");
+  const stats = `<div class="not-prose my-6 flex flex-wrap items-center gap-3"><span class="text-sm text-muted-foreground">v${npm.version}</span><a href="${npmUrl}" aria-label="View ${npm.name} on npm"><img alt="Monthly npm downloads" height="20" src="${badgeUrl}" width="144"></a></div>`;
+  return `${stats}\n\n${text}`;
 };
-const packageDocs: ContentSource = {
-  name: "packages",
+const extensionDocs: ContentSource = {
+  name: "extensions",
   staged: true,
   load: async () => ({
     diagnostics: [],
@@ -47,7 +65,7 @@ const packageDocs: ContentSource = {
         return {
           body: { format: "md" as const, text },
           data,
-          editUrl: `https://github.com/HenryQW/pi-packages/edit/main/${editPath}`,
+          editUrl: `https://github.com/HenryQW/pi-harness/edit/main/${editPath}`,
           raw,
           ref,
           slug,
@@ -68,7 +86,7 @@ export default defineConfig({
   logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
     root: ".",
-    sources: [{ type: "custom", source: packageDocs }],
+    sources: [{ type: "custom", source: extensionDocs }],
   },
   deployment: {
     output: "static",
@@ -76,47 +94,71 @@ export default defineConfig({
   },
   github: {
     owner: "HenryQW",
-    repo: "pi-packages",
+    repo: "pi-harness",
     dir: "website",
   },
   navigation: {
     sidebar: [
       "/overview",
       {
-        label: "Packages",
+        label: "Extensions",
         collapsed: false,
-        items: packages.map(({ directory }) => `/packages/${directory}`),
+        items: extensions.map(({ directory }) => `/extensions/${directory}`),
       },
     ],
   },
   redirects: [
+    ...extensions.map(({ directory }) => ({
+      from: `/packages/${directory}`,
+      to: `/extensions/${directory}`,
+    })),
     {
       from: "/deprecated",
-      to: "https://github.com/HenryQW/pi-packages/tree/main/deprecated",
+      to: "https://github.com/HenryQW/pi-harness/tree/main/deprecated",
     },
     {
       from: "/docs/releasing",
-      to: "https://github.com/HenryQW/pi-packages/blob/main/docs/releasing.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/docs/releasing.md",
     },
     {
       from: "/packages/pi-subagent/docs/orchestration",
-      to: "https://github.com/HenryQW/pi-packages/blob/main/packages/pi-subagent/docs/orchestration.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/orchestration.md",
+    },
+    {
+      from: "/extensions/pi-subagent/docs/orchestration",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/orchestration.md",
     },
     {
       from: "/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution",
-      to: "https://github.com/HenryQW/pi-packages/blob/main/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
+    },
+    {
+      from: "/extensions/pi-subagent/docs/adr/001-composable-ephemeral-execution",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
     },
     {
       from: "/packages/pi-subagent/examples/roles/scout",
-      to: "https://github.com/HenryQW/pi-packages/blob/main/packages/pi-subagent/examples/roles/scout.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/scout.md",
+    },
+    {
+      from: "/extensions/pi-subagent/examples/roles/scout",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/scout.md",
     },
     {
       from: "/packages/pi-subagent/examples/roles/synthesizer",
-      to: "https://github.com/HenryQW/pi-packages/blob/main/packages/pi-subagent/examples/roles/synthesizer.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/synthesizer.md",
+    },
+    {
+      from: "/extensions/pi-subagent/examples/roles/synthesizer",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/synthesizer.md",
     },
     {
       from: "/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL",
-      to: "https://github.com/HenryQW/pi-packages/blob/main/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
+    },
+    {
+      from: "/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
     },
   ],
   search: { provider: "orama" },

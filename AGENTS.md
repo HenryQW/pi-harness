@@ -76,7 +76,7 @@ For README/template-only changes:
 
 ### Issue tracker
 
-Issues live in GitHub Issues for `HenryQW/pi-packages`. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues for `HenryQW/pi-harness`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
