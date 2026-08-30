@@ -6,6 +6,14 @@ import type { ContentSource } from "blume/sources/types.ts";
 
 import { extensions, repoRoot } from "./extension-catalog.ts";
 import { npmBadgeUrl } from "./npm-badge.ts";
+import { linkRelativeMarkdownToGitHub } from "./repository-markdown.ts";
+
+const renderMermaid = (markdown: string) =>
+  markdown.replace(
+    /^```mermaid[^\S\r\n]*\r?\n([\s\S]*?)^```[^\S\r\n]*$/gm,
+    (_, source: string) =>
+      `<blume-mermaid class="not-prose my-6 flex overflow-x-auto [&>div]:w-full [&>div>svg]:mx-auto [&>div>svg]:block" data-source="${source.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll("\n", "&#10;")}"></blume-mermaid>`
+  );
 
 const docs = [
   {
@@ -45,7 +53,8 @@ const readDoc = async ({ editPath, npm, path }: (typeof docs)[number]) => {
   const badgeUrl = npmBadgeUrl(npm.name).replaceAll("&", "&amp;");
   const imageUrl = `https://raw.githubusercontent.com/HenryQW/pi-harness/main/${editPath.replace(/README\.md$/, "example.png")}`;
   const stats = `<div class="not-prose my-6 flex flex-wrap items-center gap-3"><span class="text-sm text-muted-foreground">v${npm.version}</span><a href="${npmUrl}" aria-label="View ${npm.name} on npm"><img alt="Monthly npm downloads" height="20" src="${badgeUrl}" width="144"></a></div>`;
-  return `${stats}\n\n${text.replaceAll("](./example.png)", `](${imageUrl})`)}`;
+  const linkedText = linkRelativeMarkdownToGitHub(text, editPath);
+  return `${stats}\n\n${linkedText.replaceAll("](./example.png)", `](${imageUrl})`)}`;
 };
 const extensionDocs: ContentSource = {
   name: "extensions",
@@ -54,7 +63,8 @@ const extensionDocs: ContentSource = {
     diagnostics: [],
     entries: await Promise.all(
       docs.map(async ({ data, editPath, ref, slug, ...doc }) => {
-        const text = await readDoc({ data, editPath, ref, slug, ...doc });
+        const markdown = await readDoc({ data, editPath, ref, slug, ...doc });
+        const text = renderMermaid(markdown);
         const raw = `---\ntitle: ${JSON.stringify(data.title)}\nseo:\n  description: ${JSON.stringify(data.seo.description)}\n---\n\n${text}`;
         return {
           body: { format: "md" as const, text },
@@ -109,46 +119,6 @@ export default defineConfig({
     {
       from: "/docs/releasing",
       to: "https://github.com/HenryQW/pi-harness/blob/main/docs/releasing.md",
-    },
-    {
-      from: "/packages/pi-subagent/docs/orchestration",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/orchestration.md",
-    },
-    {
-      from: "/extensions/pi-subagent/docs/orchestration",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/orchestration.md",
-    },
-    {
-      from: "/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
-    },
-    {
-      from: "/extensions/pi-subagent/docs/adr/001-composable-ephemeral-execution",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
-    },
-    {
-      from: "/packages/pi-subagent/examples/roles/scout",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/scout.md",
-    },
-    {
-      from: "/extensions/pi-subagent/examples/roles/scout",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/scout.md",
-    },
-    {
-      from: "/packages/pi-subagent/examples/roles/synthesizer",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/synthesizer.md",
-    },
-    {
-      from: "/extensions/pi-subagent/examples/roles/synthesizer",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/synthesizer.md",
-    },
-    {
-      from: "/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
-    },
-    {
-      from: "/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
     },
   ],
   search: { provider: "orama" },
