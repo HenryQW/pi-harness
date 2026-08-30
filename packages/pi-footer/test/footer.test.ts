@@ -101,9 +101,9 @@ test("renders family status on the first line and external statuses beside runti
 	};
 
 	const footerFactory = await start(ctx);
-	assert.deepEqual(notifications, [["Open-in config is missing; defaults are used.", "warning"]]);
+	assert.deepEqual(notifications, []);
 	await start(ctx);
-	assert.deepEqual(notifications, [["Open-in config is missing; defaults are used.", "warning"]]);
+	assert.deepEqual(notifications, []);
 	const colors: [string, string][] = [];
 	let extensionStatuses = new Map([
 		["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],

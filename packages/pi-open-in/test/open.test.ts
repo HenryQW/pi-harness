@@ -8,9 +8,7 @@ import openInExtension, { configuredOpenUri, loadOpenInConfig } from "../extensi
 
 type Context = { cwd: string; ui: { notify(message: string, type: string): void } };
 type Command = (args: string, ctx: Context) => Promise<void>;
-type SessionStart = (event: unknown, ctx: Context) => unknown;
-
-test("owner config uses its new home without read-time writes", async (t) => {
+test("missing owner config uses code silently without read-time writes", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-open-in-test-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	t.after(() => {
@@ -32,14 +30,7 @@ test("owner config uses its new home without read-time writes", async (t) => {
 
 	const commands = new Map<string, Command>();
 	const execCalls: string[][] = [];
-	let sessionStart: SessionStart | undefined;
-	let sessionStartRegistrations = 0;
 	const api = {
-		on(name: string, handler: SessionStart) {
-			assert.equal(name, "session_start");
-			sessionStartRegistrations++;
-			sessionStart = handler;
-		},
 		registerCommand(name: string, command: { handler: Command }) {
 			commands.set(name, command.handler);
 		},
@@ -49,16 +40,11 @@ test("owner config uses its new home without read-time writes", async (t) => {
 		},
 	} as unknown as ExtensionAPI;
 	openInExtension(api);
-	assert.equal(sessionStartRegistrations, 1);
 
-	const notifications: Array<[string, string]> = [];
 	const ctx: Context = {
 		cwd: "/some/cwd",
-		ui: { notify: (message, type) => notifications.push([message, type]) },
+		ui: { notify: () => {} },
 	};
-	assert.ok(sessionStart);
-	await sessionStart({}, ctx);
-	assert.deepEqual(notifications, [[`Open-in config is missing: ${configFile}; defaults are used.`, "warning"]]);
 	assert.equal(existsSync(configDir), false);
 
 	const open = commands.get("open")!;

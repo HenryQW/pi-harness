@@ -48,11 +48,6 @@ export function configuredOpenUri(path: string): string | undefined {
 
 export default function openInExtension(pi: ExtensionAPI): void {
 	const configStore = createOpenInConfigStore();
-	pi.on("session_start", (_event, ctx) => {
-		if (configStore.loadSync().source === "missing") {
-			ctx.ui.notify(`Open-in config is missing: ${configStore.path}; defaults are used.`, "warning");
-		}
-	});
 
 	// ponytail: static description so it never goes stale after /set-open-in
 	// (handler re-reads config per invocation); per-token whitespace splitting,

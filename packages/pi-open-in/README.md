@@ -30,7 +30,7 @@ pi install npm:@henryqw/pi-open-in
 }
 ```
 
-- A missing file sends one session-start warning and uses the default command, `"code"`.
+- A missing file silently uses the default command, `"code"`.
 - Reads do not create or write the config home.
 - When the file exists, `command` is required. It must be a non-empty string.
 - The command splits on whitespace into an executable and arguments. Tokens cannot contain spaces, and quoting is unsupported. Use a wrapper script for executables in spaced paths.
