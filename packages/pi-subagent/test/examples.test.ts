@@ -44,10 +44,12 @@ async function isolatedAgentDir(t: import("node:test").TestContext): Promise<str
 	return agentDir;
 }
 
-test("missing config directory still returns validated built-in implementer and reviewer roles", async (t) => {
+test("missing config directory still returns validated built-in implementer, reviewer, and scout roles", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
-	const [implementer, reviewer] = loadRoles(agentDir);
+	const roles = loadRoles(agentDir);
+	const [implementer, reviewer, scout] = roles;
 
+	assert.deepEqual(roles.map(({ name }) => name), ["implementer", "reviewer", "scout"]);
 	assert.equal(implementer!.name, "implementer");
 	assert.equal(implementer!.isolation, "worktree");
 	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
@@ -72,9 +74,20 @@ test("missing config directory still returns validated built-in implementer and 
 	assert.match(reviewer!.systemPrompt, /Emit exactly `PASS` when there are zero findings/i);
 	assert.match(reviewer!.systemPrompt, /Do not emit `PASS` alongside findings/i);
 	assert.doesNotMatch(reviewer!.systemPrompt, /bytes|SHA-256|child_branch/i);
+
+	assert.equal(scout!.name, "scout");
+	assert.equal(scout!.description, "Maps relevant code and evidence for one bounded task without changing files");
+	assert.deepEqual(scout!.tools, ["read", "grep", "find", "ls"]);
+	assert.equal(scout!.isolation, undefined);
+	assert.deepEqual(scout!.extensions, []);
+	assert.deepEqual(scout!.skills, []);
+	assert.match(scout!.systemPrompt, /Perform read-only discovery for one bounded task/i);
+	assert.match(scout!.systemPrompt, /Do not design or implement changes/i);
+	assert.match(scout!.systemPrompt, /Do not edit files or run shell commands/i);
+	assert.match(scout!.systemPrompt, /Return:/i);
 });
 
-test("a same-named user role overrides a built-in while other roles are added", async (t) => {
+test("same-named user roles override built-ins", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
@@ -87,7 +100,15 @@ skills: []
 ---
 Custom body.
 `);
-	await copyFile(join(samplesDir, "scout.md"), join(rolesDir, "scout.md"));
+	await writeFile(join(rolesDir, "scout.md"), `---
+name: scout
+description: Custom discovery policy
+tools: [read]
+extensions: []
+skills: []
+---
+Custom scout body.
+`);
 
 	const roles = loadRoles(agentDir);
 	assert.deepEqual(roles.map(({ name }) => name), ["implementer", "reviewer", "scout"]);
@@ -99,6 +120,15 @@ Custom body.
 		extensions: [],
 		skills: [],
 		systemPrompt: "Custom body.",
+	});
+	assert.deepEqual(roles.find(({ name }) => name === "scout"), {
+		name: "scout",
+		description: "Custom discovery policy",
+		tools: ["read"],
+		isolation: undefined,
+		extensions: [],
+		skills: [],
+		systemPrompt: "Custom scout body.",
 	});
 });
 
@@ -135,14 +165,11 @@ test("duplicate names among user role files remain an error", async (t) => {
 	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
 });
 
-test("copyable Role samples load from an isolated agent directory", async (t) => {
+test("the optional synthesizer sample loads alongside built-in roles", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
-	await Promise.all([
-		copyFile(join(samplesDir, "scout.md"), join(rolesDir, "scout.md")),
-		copyFile(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md")),
-	]);
+	await copyFile(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md"));
 
 	assert.deepEqual(loadRoles(agentDir).map(({ name, tools, isolation, extensions, skills }) => ({
 		name, tools, isolation, extensions, skills,
