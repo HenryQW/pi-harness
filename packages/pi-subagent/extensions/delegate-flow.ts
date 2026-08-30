@@ -764,6 +764,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		promptGuidelines: [
 			"Use delegate_flow only for cohesive units expected to commute: split independent outcomes into units, sequence dependent work outside delegate_flow, and never divide one invariant across multiple units. Combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
 			`${TASK_NAME_CONTRACT.promptGuidance} Each delegate_flow unit must own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.`,
+			"For each delegate_flow unit, prioritize modelClass fast for straightforward work and balanced for complex work. Reserve frontier for exceptionally complex or tricky work.",
 			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
 		],
 		parameters: DelegateFlowSchema,

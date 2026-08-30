@@ -57,8 +57,9 @@ Main supplies every delegation's required `name`: a short description of about f
 
 1. An explicit `model` is `provider/modelId` and overrides `modelClass`.
 2. Main sets direct `model` and `thinking` only for an explicit user override.
-3. Otherwise, Main selects `modelClass`: `fast` normally or `balanced` upfront for obviously complex work.
-4. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`.
+3. Otherwise, Main prioritizes `fast` for straightforward work and `balanced` for complex work.
+4. Main reserves `frontier` for exceptionally complex or tricky work.
+5. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`.
    When omitted, it uses pi-subagent's local `pi-subagent/delegateTask` Model Task declaration.
    That declaration defaults to `fast` and shared config can explicitly override it.
 
@@ -121,7 +122,7 @@ Add `review` only for judgment that automation cannot establish. That unit keeps
 
 Only one memory-only Flow may be active. At start, it resolves and freezes the effective `implementer` Role, including a same-named user override. It resolves and freezes the effective `reviewer` only when at least one unit requests `review`.
 
-An omitted `modelClass` uses the local `pi-subagent/delegateTask` declaration, which defaults to `fast`. A selected class resolves through its shared profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer.
+An omitted `modelClass` uses the local `pi-subagent/delegateTask` declaration, which defaults to `fast`. Main prioritizes `fast` for straightforward work and `balanced` for complex work, and reserves `frontier` for exceptionally complex or tricky work. A selected class resolves through its shared profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer.
 
 Flow creates one Unit Worktree per unit before it launches Implementers. It runs Implementers in parallel, then processes settled results in declared order.
 

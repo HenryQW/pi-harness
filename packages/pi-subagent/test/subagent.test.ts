@@ -1175,7 +1175,7 @@ Do work.
 		assert.equal(app.tool.parameters, WorkflowSchema);
 		assert.match(app.tool.description, /single, parallel, or chain/);
 		assert.ok(app.tool.promptGuidelines?.every((guideline) => guideline.includes("delegate_task")));
-		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes("populate model and thinking only for an explicit user override") && guideline.includes("fast normally") && guideline.includes("not runtime enforcement")));
+		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes("populate model and thinking only for an explicit user override") && guideline.includes("prioritize modelClass fast") && guideline.includes("balanced") && guideline.includes("Reserve frontier") && guideline.includes("not runtime enforcement")));
 		assert.match(app.tool.description, /configuration error/);
 		await assert.rejects(
 			app.tool.execute("invalid", { role: "broken", name: "Test delegated task", task: "work", tasks: [] }, undefined, undefined, app.ctx),

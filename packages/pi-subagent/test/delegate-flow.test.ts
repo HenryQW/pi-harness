@@ -28,6 +28,7 @@ import { CHILD_EXCLUDED_TOOLS, loadBuiltinRole } from "../src/index.ts";
 type Tool = {
 	name: string;
 	parameters: unknown;
+	promptGuidelines?: string[];
 	prepareArguments?: (value: unknown) => unknown;
 	renderShell?: "default" | "self";
 	renderCall?: (...args: any[]) => { render: (width: number) => string[] };
@@ -283,6 +284,7 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 
 test("Flow tools leave rendering to Pi", async (t) => {
 	const app = harness(await repository(t), () => success());
+	assert.ok(flowTool(app).promptGuidelines?.some((guideline) => guideline.includes("prioritize modelClass fast") && guideline.includes("balanced") && guideline.includes("Reserve frontier")));
 	for (const tool of [flowTool(app), continueTool(app)]) {
 		assert.equal(tool.renderShell, undefined);
 		assert.equal(tool.renderCall, undefined);
