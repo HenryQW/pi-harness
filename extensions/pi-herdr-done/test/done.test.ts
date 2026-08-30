@@ -3,11 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { lock } from "proper-lockfile";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { withWorktreeLock } from "@henryqw/pi-herdr";
 import herdrDoneExtension from "../extensions/done.ts";
 
 type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -206,16 +206,11 @@ test("/done removes the checkout, pulls the parent, and closes its tab when anot
 });
 
 test("/done does not check or remove while clone creation holds the checkout lock", async () => {
-	await withHerdrEnvironment("1", "w1:t1", async () => {
-		const release = await lock(checkout);
-		try {
-			const app = harness(snapshotExecutor());
-			await assert.rejects(app.command("", context()), /already being held/);
-			assert.deepEqual(app.calls.map((call) => call.args[0]), ["rev-parse", "worktree"]);
-		} finally {
-			await release();
-		}
-	});
+	await withHerdrEnvironment("1", "w1:t1", () => withWorktreeLock(checkout, async () => {
+		const app = harness(snapshotExecutor());
+		await assert.rejects(app.command("", context()), /already being held/);
+		assert.deepEqual(app.calls.map((call) => call.args[0]), ["rev-parse", "worktree"]);
+	}));
 });
 
 test("declined confirmation leaves the worktree untouched", async () => {
