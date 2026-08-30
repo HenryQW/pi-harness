@@ -42,7 +42,7 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 
 - Commit version and `package-lock.json` changes with feature or fix. Do not create release tags.
 - Push `main`; `.github/workflows/publish.yml` publishes each public workspace whose version is newer than npm.
-- Root package `@henryqw/pi-packages` is private and never releases.
+- Root package `@henryqw/pi-harness` is private and never releases.
 - PR CI enforces version bumps for published package changes; test-only package changes are excluded.
 - Before finishing, state which packages release and why. If no package version changed, state that CI will not publish.
 
