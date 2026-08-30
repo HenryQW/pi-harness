@@ -1,11 +1,11 @@
 # `@henryqw/pi-memory`
 
-Keep two auto-managed Markdown memory stores for Pi. Each session uses a frozen system-prompt snapshot.
+Keep compact global and project Markdown memory stores for Pi. Each session uses a frozen system-prompt snapshot.
 
 ## Why
 
-- **Created for**: Give Pi compact global notes and user facts that survive across sessions.
-- **Advantage**: Size-capped, auto-managed Markdown stores give predictable prompt cost without a hand-maintained knowledge tree.
+- **Created for**: Give Pi compact global notes, user facts, and project context that survive across sessions.
+- **Advantage**: Size-capped, auto-managed Markdown stores keep prompt cost predictable.
 - **Inspired by**: [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its bounded `MEMORY.md`/`USER.md` cross-session memory pattern.
 
 ## Install
@@ -36,8 +36,9 @@ pi install npm:@henryqw/pi-memory
 
 | Store | Scope | Default cap |
 | --- | --- | --- |
-| `MEMORY.md` | Global agent notes shared across all projects. Do not store project-specific facts here; they belong in the repository. | 8800 characters |
-| `USER.md` | User profile. | 5500 characters |
+| Global `MEMORY.md` | Agent notes shared across projects. | 8800 characters |
+| Global `USER.md` | User profile shared across projects. | 5500 characters |
+| Project `MEMORY.md` | Facts for the current trusted project. Uses the Git root, or the current directory outside Git. | 8800 characters |
 
 Each file holds entries delimited by `§` and is size-capped. When a write would exceed its cap, the tool rejects it and reports current usage.
 
@@ -45,9 +46,11 @@ Consolidate with one batch that removes or shortens stale entries and adds the n
 
 An external edit or sync can push an on-disk file over its cap. The session snapshot then omits the overflow and warns instead of injecting it.
 
-At session start, both stores are captured. Later edits do not alter injected memory.
+At session start, all active stores are captured. Later edits do not alter injected memory.
 
-Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect live state.
+Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect global state. Read `MEMORY.md` at the project root to inspect project state.
+
+Project memory is available only when Pi trusts the project. The extension never loads or writes project memory before trust is granted. Use `target=project` for project facts. `USER.md` always stays global.
 
 ### Candidate review
 
@@ -65,13 +68,13 @@ flowchart TD
   question -->|Merge, replacement, cancellation, custom answer, or non-interactive| unwritten["Leave original add unwritten"]
 ```
 
-The tool snapshots live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. A missing `SYSTEM.md` is empty. Unreadable, oversized, or over-cap sources fail closed.
+The tool snapshots live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. It also snapshots trusted project `MEMORY.md`. A missing `SYSTEM.md` is empty. Unreadable, oversized, or over-cap sources fail closed.
 
 It resolves the configured Pi registry primary route, then fallback, through `/task-models`. It never substitutes the current session model. It accepts only verified bounded JSON evidence.
 
 A missing shared task-model config warns once at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before adding memory.
 
-An overlap or contradiction pauses through `ask_question`. MEMORY/USER conflicts recommend merge or replacement. SYSTEM conflicts recommend keeping SYSTEM because pi-memory never edits it.
+An overlap or contradiction pauses through `ask_question`. Memory conflicts recommend merge or replacement. SYSTEM conflicts recommend keeping SYSTEM because pi-memory never edits it.
 
 Exact duplicate single adds remain idempotent without a model call. Merge, replacement, cancellation, custom answers, and non-interactive UI leave the add unwritten. Only explicit `Add separately` or `Add anyway` writes the original add after a conflict.
 
@@ -79,7 +82,7 @@ Exact duplicate single adds remain idempotent without a model call. Merge, repla
 
 `/remember <instruction>` shows `Remembering…` while its processing instruction stays hidden. It normalizes a candidate, then uses the same tool review.
 
-If Pi is busy, it queues the trimmed instruction. It processes one queued instruction after each settled response with freshly read live entries. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
+If Pi is busy, it queues the trimmed instruction. It processes one queued instruction after each settled response with freshly read live entries. Project facts use `target=project`. Temporary, trivial, already-documented, or otherwise unsuitable content is refused.
 
 ### `/dream`
 
@@ -97,9 +100,9 @@ That global file must already exist and be readable. Establish it deliberately a
 
 `/dream` and final memory qualification remain current-session-agent workflows, not Model Tasks.
 
-Each turn's memory check asks the current agent to save qualifying durable user identity, preferences, style, or corrections immediately to `target=user`. It saves stable cross-project environment facts, conventions, workflow lessons, or tool quirks useful later to `target=memory`.
+Each turn's memory check sends user facts to `target=user`. It sends cross-project notes to `target=memory`. It sends durable current-project facts to `target=project`.
 
-Use the memory tool immediately only when something qualifies. Save inferred habits only after two independent signals from the conversation and/or existing profile. Skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.
+Use the memory tool only when something qualifies. Save inferred habits only after two independent signals. Skip task state, temporary facts, and facts already represented in project documentation.
 
 ## Config
 
@@ -115,9 +118,11 @@ Any other invalid configuration fails fast. Malformed JSON, invalid UTF-8, files
 
 ## Storage & sync
 
-Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault only carries files. pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
+Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. This setting affects only global memory. pi-memory owns the file format and does not merge remote changes.
 
-Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi-memory/backups/`.
+Project memory stays in the project root. Commit or ignore it according to the project's policy.
+
+Backups and the lock file live under `~/.pi/agent/config/pi-memory/backups/`. Project backups use a project-specific filename.
 
 ## Threat model
 

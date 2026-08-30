@@ -16,7 +16,7 @@ function memoryExtension(api: object): void {
 }
 
 const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
-const SESSION_CONTEXT = { ui: { notify() {} } };
+const SESSION_CONTEXT = { cwd: tmpdir(), isProjectTrusted: () => false, ui: { notify() {} } };
 
 type Handler = (event: any, ctx?: any) => unknown | Promise<unknown>;
 type CapturedCommand = {
@@ -62,6 +62,7 @@ type ReviewReply = string | ((call: ReviewCall) => string | Promise<string>);
 type ReviewFixture = {
 	agentDir: string;
 	memoryDir: string;
+	projectDir: string;
 	tool: CapturedTool;
 	ctx: ExtensionContext;
 	calls: ReviewCall[];
@@ -103,6 +104,8 @@ async function withReviewFixture(
 	options: {
 		memory?: string;
 		user?: string;
+		project?: string;
+		trustedProject?: boolean;
 		system?: string;
 		responses?: ReviewReply[];
 		select?: (choices: string[]) => string | undefined;
@@ -115,12 +118,14 @@ async function withReviewFixture(
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-review-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
+	const projectDir = join(root, "project");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
 		await mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true });
 		await mkdir(memoryDir, { recursive: true });
+		await mkdir(projectDir, { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
 		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
@@ -132,6 +137,7 @@ async function withReviewFixture(
 		}));
 		if (options.memory !== undefined) await writeFile(join(memoryDir, "MEMORY.md"), options.memory);
 		if (options.user !== undefined) await writeFile(join(memoryDir, "USER.md"), options.user);
+		if (options.project !== undefined) await writeFile(join(projectDir, "MEMORY.md"), options.project);
 		if (options.system !== undefined) await writeFile(join(agentDir, "SYSTEM.md"), options.system);
 
 		const handlers = new Map<string, Handler>();
@@ -141,7 +147,11 @@ async function withReviewFixture(
 			registerCommand() {},
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
+		await handlers.get("session_start")!({ type: "session_start" }, {
+			...SESSION_CONTEXT,
+			cwd: projectDir,
+			isProjectTrusted: () => options.trustedProject === true,
+		});
 		assert.ok(tool);
 
 		const calls: ReviewCall[] = [];
@@ -180,7 +190,7 @@ async function withReviewFixture(
 				input: async () => undefined,
 			},
 		} as unknown as ExtensionContext;
-		await run({ agentDir, memoryDir, tool, ctx, calls, questions, selections });
+		await run({ agentDir, memoryDir, projectDir, tool, ctx, calls, questions, selections });
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -729,11 +739,15 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-extension-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
+	const projectDir = join(root, "project");
+	const projectSubdir = join(projectDir, "package");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
 		await mkdir(memoryDir, { recursive: true });
+		await mkdir(join(projectDir, ".git"), { recursive: true });
+		await mkdir(projectSubdir, { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({
 			directory: memoryDir,
 			memoryCharLimit: 1000,
@@ -741,6 +755,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		}));
 		await writeFile(join(memoryDir, "MEMORY.md"), "stable fact");
 		await writeFile(join(memoryDir, "USER.md"), "likes concise replies");
+		await writeFile(join(projectDir, "MEMORY.md"), "project convention");
 		await writeFile(join(memoryDir, "MEMORY (conflicted copy).md"), "conflict");
 		await configureReview(agentDir);
 
@@ -755,16 +770,21 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		const before = handlers.get("before_agent_start")!;
 		// Uninitialized: silent no-op, never throws.
 		assert.equal(await before({ systemPrompt: "base" }), undefined);
-		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
+		await handlers.get("session_start")!({ type: "session_start" }, {
+			...SESSION_CONTEXT,
+			cwd: projectSubdir,
+			isProjectTrusted: () => true,
+		});
 		assert.ok(tool);
 		const memoryTool = tool;
-		assert.match(memoryTool.description, /read MEMORY\.md in the configured memory directory/);
+		assert.match(memoryTool.description, /MEMORY\.md in the trusted current project directory/);
 		assert.match(memoryTool.description, /independently reviews the complete mutation/);
 		assert.match(memoryTool.description, /may ask the user to resolve an overlap or contradiction/);
 
 		const injected = await before({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.match(injected.systemPrompt, /MEMORY \(your personal notes\).*stable fact/s);
 		assert.match(injected.systemPrompt, /USER PROFILE.*likes concise replies/s);
+		assert.match(injected.systemPrompt, /PROJECT MEMORY \(current project\).*project convention/s);
 		assert.match(injected.systemPrompt, /1 unexpected file in the memory directory \("MEMORY \(conflicted copy\)\.md"\)/);
 
 		const saved = await reviewedExecute(memoryTool, "add", { action: "add", content: "new live fact" });
@@ -784,6 +804,11 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		assert.deepEqual(rendered.render(200).map((line) => line.trimEnd()), ["✓ Entry added.", "  new live fact"]);
 		assert.match(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), /new live fact/);
 		assert.doesNotMatch((await before({ systemPrompt: "base" }) as { systemPrompt: string }).systemPrompt, /new live fact/);
+
+		await reviewedExecute(memoryTool, "project-add", { target: "project", action: "add", content: "project build rule" });
+		assert.match(await readFile(join(projectDir, "MEMORY.md"), "utf8"), /project build rule/);
+		assert.doesNotMatch(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), /project build rule/);
+		assert.doesNotMatch((await before({ systemPrompt: "base" }) as { systemPrompt: string }).systemPrompt, /project build rule/);
 
 		const batch = await reviewedExecute(memoryTool, "batch", {
 			operations: [
@@ -1189,6 +1214,37 @@ test("a source change after review aborts before writing", async () => {
 			/review sources changed while waiting/,
 		);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing fact");
+	});
+});
+
+test("trusted project memory is reviewed and writable; untrusted project memory is unavailable", async () => {
+	await withReviewFixture({
+		project: "existing project fact",
+		trustedProject: true,
+		responses: [JSON.stringify({
+			verdict: "overlap",
+			source: "project",
+			evidence: "existing project fact",
+			explanation: "The project already has related context.",
+		})],
+		select: (choices) => choices.find((choice) => choice.includes("Add separately")),
+	}, async ({ memoryDir, projectDir, tool, ctx, calls }) => {
+		await tool.execute("project-add", { target: "project", action: "add", content: "new project fact" }, undefined, undefined, ctx);
+		assert.deepEqual(JSON.parse(calls[0]!.context.messages[0]!.content), {
+			mutation: { target: "project", action: "add", content: "new project fact" },
+			sources: { system: "", memory: [], user: [], project: ["existing project fact"] },
+		});
+		assert.match(await readFile(join(projectDir, "MEMORY.md"), "utf8"), /new project fact/);
+		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+	});
+
+	await withReviewFixture({ project: "do not load", trustedProject: false }, async ({ projectDir, tool, ctx, calls }) => {
+		await assert.rejects(
+			() => tool.execute("project-untrusted", { target: "project", action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/Project memory is unavailable because the current project is not trusted/,
+		);
+		assert.equal(calls.length, 0);
+		assert.equal(await readFile(join(projectDir, "MEMORY.md"), "utf8"), "do not load");
 	});
 });
 

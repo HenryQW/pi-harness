@@ -1,7 +1,7 @@
 {
 	"name": "@henryqw/pi-memory",
-	"version": "4.0.1",
-	"description": "Auto-managed markdown memory for Pi: capped MEMORY.md/USER.md entry stores with frozen session snapshots.",
+	"version": "4.1.0",
+	"description": "Auto-managed global and project Markdown memory for Pi with capped, frozen session snapshots.",
 	"keywords": [
 		"pi-package",
 		"pi",
