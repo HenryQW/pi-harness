@@ -2,6 +2,8 @@
 
 Keep persistent post-it reminders in a Pi widget. Manage them with slash commands.
 
+![Pi showing two persistent notes above the editor](./example.png)
+
 ## Why
 
 - **Created for**: Keep a few brief post-it-style reminders visible per worktree without leaving the Pi session.
