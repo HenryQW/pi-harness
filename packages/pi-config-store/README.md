@@ -7,11 +7,9 @@ Create validated extension JSON stores with a shared config home and atomic asyn
 - **Created for**: Extension authors who need one owned home for user-editable JSON configuration.
 - **Advantage**: Shared paths, validation, locking, and atomic writes keep config behavior consistent.
 
-## Install
+## Installation
 
-```bash
-pi install npm:@henryqw/pi-config-store
-```
+Extension packages declare this library as a runtime dependency. End users do not install it directly with Pi.
 
 ## Use
 
