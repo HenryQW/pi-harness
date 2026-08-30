@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { lock } from "proper-lockfile";
 import { SessionManager, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { withWorktreeLock } from "@henryqw/pi-herdr";
 import {
 	fixture,
 	success,
@@ -128,20 +128,15 @@ test("trust-boundary failures prevent agent launch and failed tab creation remov
 		});
 
 		await t.test("checkout removal lock prevents clone creation", async () => {
-			await withPane("pane-current", async () => {
-				const release = await lock(data.cwd);
-				try {
-					const app = harness(data.manager, data.cwd);
-					await assert.rejects(app.command("", app.ctx), /already being held/);
-					assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
-						["pane", "get"],
-						["workspace", "get"],
-					]);
-					assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
-				} finally {
-					await release();
-				}
-			});
+			await withPane("pane-current", () => withWorktreeLock(data.cwd, async () => {
+				const app = harness(data.manager, data.cwd);
+				await assert.rejects(app.command("", app.ctx), /already being held/);
+				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
+					["pane", "get"],
+					["workspace", "get"],
+				]);
+				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
+			}));
 		});
 
 		await t.test("a failed tab create removes its clone", async () => {
