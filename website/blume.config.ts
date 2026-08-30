@@ -15,13 +15,6 @@ const docs = [
       },
       title: "Repository overview",
     },
-    ai: {
-      llmsTxt: {
-        enabled: true,
-        openapi: false,
-      },
-      openInChat: ["claude", "chatgpt", "cursor"],
-    },
     editPath: "README.md",
     npm: null,
     path: join(repoRoot, "README.md"),
@@ -163,6 +156,7 @@ export default defineConfig({
   ],
   search: { provider: "orama" },
   seo: {
+    agentReadability: true,
     og: {
       description: "Built on Pi. Tuned by Henry.",
       logo: "/og-logo.svg",
@@ -175,7 +169,13 @@ export default defineConfig({
       },
     },
   },
-  ai: { llmsTxt: true },
+  ai: {
+    llmsTxt: {
+      enabled: true,
+      openapi: false,
+    },
+    openInChat: ["claude", "chatgpt", "cursor"],
+  },
   theme: {
     accent: "#1d4ed8",
     background: { dark: "#101828", light: "#f0eee9" },
