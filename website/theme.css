@@ -1,0 +1,17 @@
+:root {
+  --blume-foreground: oklch(0.21 0.034 263.4);
+  --blume-muted: oklch(0.919 0.008 91.5);
+  --blume-muted-foreground: oklch(0.45 0.028 259.8);
+  --blume-border: oklch(0.21 0.034 263.4 / 0.141);
+  --blume-accent-foreground: oklch(0.949 0.007 88.6);
+  --blume-code-background: oklch(0.919 0.008 91.5);
+}
+
+:root[data-theme="dark"] {
+  --blume-foreground: oklch(0.949 0.007 88.6);
+  --blume-muted: oklch(0.26 0.045 263.4);
+  --blume-muted-foreground: oklch(0.86 0.012 264.5);
+  --blume-border: oklch(0.949 0.007 88.6 / 0.18);
+  --blume-accent-foreground: oklch(0.21 0.034 263.4);
+  --blume-code-background: oklch(0.26 0.045 263.4);
+}
