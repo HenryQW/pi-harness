@@ -117,7 +117,7 @@ test("warns once at session start when config is missing", () => {
 			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
 		});
 		assert.deepEqual(notices, [[
-			`Task model config is missing at ${configFile(dir)}; defaults are being used.`,
+			`Task model config is missing at ${configFile(dir)}; run /task-models to configure task routes.`,
 			"warning",
 		]]);
 		assert.throws(() => readFileSync(configFile(dir), "utf8"), { code: "ENOENT" });

@@ -625,7 +625,7 @@ test("rename warns once when the shared task-model config is missing", async () 
 			branch: [{ type: "message", message: { role: "user", content: "prompt" } }],
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
-		assert.deepEqual(app.notifications, ["Task model config is missing; defaults are being used."]);
+		assert.deepEqual(app.notifications, ["Task model config is missing; run /task-models to configure rename routing."]);
 		assert.deepEqual(app.notificationTypes, ["warning"]);
 	});
 });

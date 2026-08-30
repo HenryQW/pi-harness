@@ -411,7 +411,7 @@ export function createTaskModelsExtension(
 	const configStore = taskModelsConfigStore(agentDir);
 	pi.on("session_start", (_event, ctx) => {
 		if (configStore.loadSync().source === "missing") {
-			ctx.ui.notify(`Task model config is missing at ${configStore.path}; defaults are being used.`, "warning");
+			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");
 		}
 	});
 	pi.registerCommand("task-models", {

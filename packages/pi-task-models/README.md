@@ -90,7 +90,7 @@ Model references use canonical `provider/model`. Numbered Codex account aliases 
 
 Reads are strict. `loadTaskModelsConfig()` returns `{ source: "missing", value: { "profiles": {}, "tasks": {} } }` for a missing file. It does not create a file.
 
-At session start, task-models warns that `~/.pi/agent/config/pi-task-models/config.json` is missing and defaults are being used.
+At session start, task-models warns when `~/.pi/agent/config/pi-task-models/config.json` is missing; run `/task-models` to configure task routes.
 
 Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance. The malformed file is preserved.
 

@@ -719,7 +719,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const config = loadMemoryConfig().value;
 			try {
 				if (loadTaskModelsConfig().source === "missing") {
-					ctx.ui.notify("Shared task model config is missing; defaults are being used. Configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");
+					ctx.ui.notify("Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");
 				}
 			} catch {
 				// A broken review route must not disable otherwise usable memory snapshots.

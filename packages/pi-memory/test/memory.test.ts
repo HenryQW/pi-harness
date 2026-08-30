@@ -413,7 +413,7 @@ test("session start only warns for missing task-model config", async () => {
 
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.deepEqual(notifications, [
-			["Shared task model config is missing; defaults are being used. Configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning"],
+			["Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning"],
 		]);
 		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "config.json"), "utf8"), { code: "ENOENT" });
 

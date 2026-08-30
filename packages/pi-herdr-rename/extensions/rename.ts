@@ -351,7 +351,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		try {
 			const taskModels = loadTaskModelsConfig();
 			if (taskModels.source === "missing") {
-				ctx.ui.notify("Task model config is missing; defaults are being used.", "warning");
+				ctx.ui.notify("Task model config is missing; run /task-models to configure rename routing.", "warning");
 			} else {
 				const profileName = taskModels.value.tasks[RENAME_TASK.id] ?? RENAME_TASK.defaultProfile;
 				if (!taskModels.value.profiles[profileName]) {
