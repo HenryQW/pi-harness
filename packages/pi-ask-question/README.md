@@ -2,6 +2,8 @@
 
 Ask the user one interactive question with up to three choices, or a custom answer.
 
+![Pi asking the user to choose a database](https://raw.githubusercontent.com/HenryQW/pi-harness/main/packages/pi-ask-question/example.png)
+
 ## Why
 
 - **Created for**: Ask the user one interactive question with up to three choices during a Pi session.

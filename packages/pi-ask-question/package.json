@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-ask-question",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Ask Pi users one interactive question with choices or a custom answer.",
   "keywords": [
     "pi-package",
@@ -52,6 +52,7 @@
   "pi": {
     "extensions": [
       "./extensions/ask-question.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/packages/pi-ask-question/example.png"
   }
 }
