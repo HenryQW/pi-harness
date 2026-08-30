@@ -70,7 +70,8 @@ type ReviewFixture = {
 };
 
 async function configureReview(agentDir: string): Promise<void> {
-	await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+	await mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true });
+	await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 		profiles: { balanced: { primary: { model: "memory-review/balanced", thinkingLevel: "off" } } },
 	}));
 }
@@ -118,9 +119,10 @@ async function withReviewFixture(
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
+		await mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true });
 		await mkdir(memoryDir, { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
-		await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
 				balanced: {
 					primary: { model: "review-primary/primary", thinkingLevel: "off" },
@@ -394,6 +396,37 @@ test("/remember queues busy requests in FIFO order, retains unavailable work, an
 	}
 });
 
+test("session start only warns for missing task-model config", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-missing-config-"));
+	const agentDir = join(root, "agent");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const handlers = new Map<string, Handler>();
+		memoryExtension({
+			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			registerCommand() {},
+			registerTool() {},
+		} as unknown as ExtensionAPI);
+		const notifications: Array<[string, string]> = [];
+		const ctx = { ui: { notify: (message: string, level: string) => notifications.push([message, level]) } };
+
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.deepEqual(notifications, [
+			["Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning"],
+		]);
+		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "config.json"), "utf8"), { code: "ENOENT" });
+
+		await handlers.get("before_agent_start")!({ systemPrompt: "base" });
+		await handlers.get("before_agent_start")!({ systemPrompt: "base" });
+		assert.equal(notifications.length, 1);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("session start recommends /dream only for valid stores within their caps", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-reminder-"));
 	const agentDir = join(root, "agent");
@@ -405,6 +438,7 @@ test("session start recommends /dream only for valid stores within their caps", 
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
 		await mkdir(memoryDir, { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir, memoryCharLimit: 10, userCharLimit: 10 }));
+		await configureReview(agentDir);
 		await writeFile(join(memoryDir, "MEMORY.md"), "123456");
 		await writeFile(join(memoryDir, "USER.md"), "");
 
@@ -823,7 +857,7 @@ test("injects the memory check without claiming the current agent performs revie
 test("requires separately installed ask-question and task-models", async () => {
 	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
 	assert.equal(manifest.dependencies["@henryqw/pi-ask-question"], "^0.2.0");
-	assert.equal(manifest.dependencies["@henryqw/pi-task-models"], "^3.0.0");
+	assert.equal(manifest.dependencies["@henryqw/pi-task-models"], "^4.0.0");
 	assert.equal(manifest.bundledDependencies, undefined);
 	assert.equal(manifest.scripts.prepack, undefined);
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/memory.ts"]);
@@ -875,7 +909,7 @@ test("declares a balanced review task and invokes the configured primary route",
 	});
 
 	await withReviewFixture({}, async ({ agentDir, tool, ctx, calls }) => {
-		await rm(join(agentDir, "config", "pi-task-models.json"));
+		await rm(join(agentDir, "config", "pi-task-models", "config.json"));
 		await assert.rejects(
 			() => tool.execute("unconfigured", { action: "add", content: "candidate" }, undefined, undefined, ctx),
 			/Run \/task-models/,

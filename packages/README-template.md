@@ -41,7 +41,7 @@ pi install npm:@henryqw/<package>
 <!-- Optional: include Config only when the package owns a user-editable config file. Put companion/shared config guidance in With or Use, not here. Do not present generated state as this package's config. Use a table for multiple comparable settings. Use a sentence or list for one setting unless a fixed field layout is clearer. -->
 ## Config
 
-`~/.pi/agent/config/<package>.json`
+`~/.pi/agent/config/<package>/config.json`
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |

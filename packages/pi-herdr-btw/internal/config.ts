@@ -1,7 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { lock } from "proper-lockfile";
+import { createConfigStore } from "@henryqw/pi-config-store";
 
 export const TOOL_MODES = ["inherit", "all", "read-only", "none"] as const;
 export type BtwToolMode = (typeof TOOL_MODES)[number];
@@ -12,11 +9,6 @@ export type BtwConfig = {
 	tools: BtwToolMode;
 	split: BtwSplit;
 };
-
-const CONFIG_LOCK_STALE_MS = 30_000;
-const CONFIG_LOCK_WAIT_MS = 10_000;
-const CONFIG_LOCK_RETRY_MS = 25;
-const CONFIG_LOCK_UPDATE_MS = 5_000;
 
 export const DEFAULT_CONFIG: Readonly<BtwConfig> = Object.freeze({
 	autoSubmit: false,
@@ -102,78 +94,11 @@ export function applyConfigCommand(current: BtwConfig, input: string): ConfigCom
 	return { action: "save", config };
 }
 
-const configPath = () => join(getAgentDir(), "config", "pi-herdr-btw.json");
-
-export class ConfigStore {
-	readonly path: string;
-
-	constructor(path = configPath()) {
-		this.path = path;
-	}
-
-	async load(): Promise<BtwConfig> {
-		try {
-			return parseConfig(JSON.parse(await readFile(this.path, "utf8")));
-		} catch (error) {
-			if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") {
-				return { ...DEFAULT_CONFIG };
-			}
-			throw error;
-		}
-	}
-
-	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
-		return this.withLock(async () => {
-			const next = parseConfig(mutator(await this.load()));
-			await this.saveUnlocked(next);
-			return next;
-		});
-	}
-
-	async reset(): Promise<BtwConfig> {
-		return this.withLock(async () => {
-			await rm(this.path, { force: true });
-			return { ...DEFAULT_CONFIG };
-		});
-	}
-
-	private async saveUnlocked(validated: BtwConfig): Promise<void> {
-		const temporaryPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-		try {
-			await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
-				encoding: "utf8",
-				flag: "wx",
-				mode: 0o600,
-			});
-			await rename(temporaryPath, this.path);
-		} catch (error) {
-			await rm(temporaryPath, { force: true }).catch(() => undefined);
-			throw error;
-		}
-	}
-
-	private async withLock<T>(operation: () => Promise<T>): Promise<T> {
-		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-		const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
-		while (true) {
-			try {
-				const release = await lock(this.path, {
-					lockfilePath: `${this.path}.lock`,
-					realpath: false,
-					stale: CONFIG_LOCK_STALE_MS,
-					update: CONFIG_LOCK_UPDATE_MS,
-				});
-				try {
-					return await operation();
-				} finally {
-					await release();
-				}
-			} catch (error) {
-				const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
-				if (code !== "ELOCKED") throw error;
-				if (Date.now() >= deadline) throw new Error(`Timed out waiting for config lock: ${this.path}`);
-				await new Promise((resolve) => setTimeout(resolve, CONFIG_LOCK_RETRY_MS));
-			}
-		}
-	}
+export function createBtwConfigStore(agentDir?: string) {
+	return createConfigStore<BtwConfig>({
+		extensionId: "pi-herdr-btw",
+		agentDir,
+		defaults: () => ({ ...DEFAULT_CONFIG }),
+		parse: parseConfig,
+	});
 }

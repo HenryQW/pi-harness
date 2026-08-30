@@ -1,7 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createConfigStore } from "@henryqw/pi-config-store";
 
 export const PROFILE_NAMES = ["fast", "balanced", "frontier", "fav"] as const;
 export type ProfileName = (typeof PROFILE_NAMES)[number];
@@ -41,13 +40,10 @@ export type ResolvedTaskRoute = {
 };
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
-const CONFIG_FILE = "pi-task-models.json";
 const MODEL_TASK_REQUEST_EVENT = "@henryqw/pi-task-models:model-task-request";
 const MODEL_TASK_RESPONSE_EVENT = "@henryqw/pi-task-models:model-task-response";
 const registeredModelTasks = new WeakMap<object, Map<string, ModelTask>>();
 let modelTaskRequestNumber = 0;
-
-export const configPath = (agentDir = getAgentDir()): string => join(agentDir, "config", CONFIG_FILE);
 
 function isCodexProvider(provider: string | undefined): boolean {
 	return provider === "openai-codex" || Boolean(provider && CODEX_ALIAS.test(provider));
@@ -136,16 +132,6 @@ function normalizeRoute(route: TaskModelRoute): TaskModelRoute {
 	return { model: canonicalModelReference(route.model), thinkingLevel: route.thinkingLevel };
 }
 
-function normalizeConfig(config: TaskModelsConfig): TaskModelsConfig {
-	return {
-		profiles: Object.fromEntries(Object.entries(config.profiles).map(([name, profile]) => [name, {
-			primary: normalizeRoute(profile.primary),
-			...(profile.fallback ? { fallback: normalizeRoute(profile.fallback) } : {}),
-		}])),
-		tasks: { ...config.tasks },
-	};
-}
-
 function parseConfig(value: unknown): TaskModelsConfig {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Config must be an object.");
 	const record = value as Record<string, unknown>;
@@ -182,23 +168,17 @@ function parseConfig(value: unknown): TaskModelsConfig {
 	return { profiles, tasks };
 }
 
-export function readTaskModelsConfig(agentDir = getAgentDir()): TaskModelsConfig {
-	try {
-		const value: unknown = JSON.parse(readFileSync(configPath(agentDir), "utf8"));
-		return parseConfig(value);
-	} catch (error) {
-		if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-			return { profiles: {}, tasks: {} };
-		}
-		throw error;
-	}
+function taskModelsConfigStore(agentDir = getAgentDir()) {
+	return createConfigStore<TaskModelsConfig>({
+		extensionId: "pi-task-models",
+		agentDir,
+		defaults: () => ({ profiles: {}, tasks: {} }),
+		parse: parseConfig,
+	});
 }
 
-export function writeTaskModelsConfig(config: TaskModelsConfig, agentDir = getAgentDir()): void {
-	if (config.profiles.fav?.fallback) throw new Error("fav profile has no fallback.");
-	const file = configPath(agentDir);
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`);
+export function loadTaskModelsConfig(agentDir = getAgentDir()): { source: "file" | "missing"; value: TaskModelsConfig } {
+	return taskModelsConfigStore(agentDir).loadSync();
 }
 
 export function canonicalModelReference(model: { provider: string; id: string } | string): string {
@@ -301,12 +281,16 @@ export function resolveConfiguredTaskRoutes(
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute[] {
 	const declaration = validatedModelTask(task);
-	let config: TaskModelsConfig;
+	let loadedConfig: ReturnType<typeof loadTaskModelsConfig>;
 	try {
-		config = readTaskModelsConfig(agentDir);
+		loadedConfig = loadTaskModelsConfig(agentDir);
 	} catch {
 		throw taskRouteError("config-read", "Couldn't read task model config. Run /task-models.");
 	}
+	if (loadedConfig.source === "missing") {
+		throw taskRouteError("config-missing", "Task model config is missing. Run /task-models to configure task routes.");
+	}
+	const config = loadedConfig.value;
 	const profileName = config.tasks[declaration.id] ?? declaration.defaultProfile;
 	const profile = config.profiles[profileName];
 	if (!profile) throw taskRouteError("profile-missing", `Task ${declaration.id} profile ${profileName} is not configured. Run /task-models.`, profileName);
@@ -326,7 +310,7 @@ export function resolveConfiguredTaskRoutes(
 }
 
 // Machine-readable cause so consumers can render their own user-facing wording.
-export type TaskRouteErrorCode = "config-read" | "profile-missing" | "no-route";
+export type TaskRouteErrorCode = "config-missing" | "config-read" | "profile-missing" | "no-route";
 export type TaskRouteError = Error & { taskRouteCode: TaskRouteErrorCode; profileName?: ProfileName };
 
 function taskRouteError(taskRouteCode: TaskRouteErrorCode, message: string, profileName?: ProfileName): TaskRouteError {
@@ -428,12 +412,18 @@ export function createTaskModelsExtension(
 	options?: { agentDir?: string },
 ): void {
 	const agentDir = options?.agentDir ?? getAgentDir();
+	const configStore = taskModelsConfigStore(agentDir);
+	pi.on("session_start", (_event, ctx) => {
+		if (configStore.loadSync().source === "missing") {
+			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");
+		}
+	});
 	pi.registerCommand("task-models", {
 		description: "configure shared task model profiles",
 		handler: async (_args, ctx) => {
 			let config: TaskModelsConfig;
 			try {
-				config = readTaskModelsConfig(agentDir);
+				config = configStore.loadSync().value;
 			} catch {
 				ctx.ui.notify("Couldn't read task model config.", "error");
 				return;
@@ -448,9 +438,9 @@ export function createTaskModelsExtension(
 						: `${name} · not configured`,
 				};
 			});
-			const save = (): boolean => {
+			const save = async (): Promise<boolean> => {
 				try {
-					writeTaskModelsConfig(config, agentDir);
+					await configStore.save(config);
 					return true;
 				} catch {
 					ctx.ui.notify("Couldn't save task model config.", "error");
@@ -473,7 +463,7 @@ export function createTaskModelsExtension(
 				if (!isProfileName(profile)) return;
 				if (profile === task.defaultProfile) delete config.tasks[task.id];
 				else config.tasks[task.id] = profile;
-				if (!save()) return;
+				if (!await save()) return;
 				ctx.ui.notify(`${task.id} assigned to ${profile}.`, "info");
 				return;
 			}
@@ -503,7 +493,7 @@ export function createTaskModelsExtension(
 
 				config.profiles[profile] = { primary, ...(fallback ? { fallback } : {}) };
 			}
-			if (!save()) return;
+			if (!await save()) return;
 			ctx.ui.notify(`${profile} profile saved.`, "info");
 		},
 	});

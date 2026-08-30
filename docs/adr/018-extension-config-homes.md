@@ -1,6 +1,6 @@
 # 018. Extension Config Homes
 
-- **Status:** accepted; migration pending
+- **Status:** accepted
 - **Date:** 2026-08-30
 
 ## Context
@@ -13,20 +13,20 @@ The repository needs one ownership boundary that works for user-edited JSON, gen
 
 **Extension Config Home.** Every extension owns one directory at `getAgentDir()/config/<extension-id>/`. The canonical extension ID is one validated lowercase path component.
 
-**Default config.** User-edited JSON defaults to `<home>/config.json`. An extension may own other files and formats anywhere inside its home. A missing generated state file is normal; a missing user config produces one warning per extension session before explicit defaults are used.
+**Default config.** User-edited JSON defaults to `<home>/config.json`. An extension may own other files and formats anywhere inside its home. Missing generated state and missing optional config with usable defaults are normal. A missing config warns only when the user must act before the extension can work.
 
 **Shared mechanics.** `@henryqw/pi-config-store` owns the canonical directory and default-config path helpers plus safe JSON load, save, locked update, and removal. Extensions continue to own schemas, validation, defaults, and user-facing errors. Custom formats use the directory helper and their native library.
 
 **Ownership.** Only an extension writes its home. Consumers obtain validated effective values through an owner package API or a namespaced Pi event protocol. They do not read or write the owner's files directly.
 
-**Migration.** Existing files move once through the repository agent runbook. Runtime code reads only the new path: no legacy readers, aliases, dual schemas, adapters, or fallback paths are permitted. Until that migration finishes, the existing path rules in `AGENTS.md` remain the operative repository check.
+**Migration.** The one-time migration is complete. Existing files were moved through the repository agent runbook, runtime code reads only the new path, and `AGENTS.md` now requires this layout. No legacy readers, aliases, dual schemas, adapters, or fallback paths are permitted.
 
 ## Consequences
 
 - Every extension has one stable filesystem boundary.
 - Single-file extensions move from `config/<extension>.json` to `config/<extension>/config.json`.
 - Existing extension-named homes retain custom state in place; some nonstandard config filenames move to `config.json`.
-- Missing config becomes visible without destructive startup writes.
+- Missing required config becomes visible without destructive startup writes; optional defaults stay quiet.
 - Shared storage mechanics can improve once without centralizing domain policy.
 - The one-time migration must coordinate owners, consumers, tests, documentation, versions, and local user files.
 

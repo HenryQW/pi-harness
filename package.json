@@ -35,7 +35,7 @@
     ]
   },
   "scripts": {
-    "build": "npm run build --workspace @henryqw/pi-herdr --workspace @henryqw/pi-task-models --workspace @henryqw/pi-subagent --workspace @henryqw/pi-ask-question",
+    "build": "npm run build --workspace @henryqw/pi-config-store --workspace @henryqw/pi-herdr --workspace @henryqw/pi-task-models --workspace @henryqw/pi-subagent --workspace @henryqw/pi-ask-question",
     "postinstall": "npm run build",
     "test": "node scripts/test-workspaces.mjs",
     "test:live": "npm run test:live --workspace @henryqw/pi-auto-compact",

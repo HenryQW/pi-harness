@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { lock } from "proper-lockfile";
 import {
 	createAssistantMessageEventStream,
@@ -82,7 +83,7 @@ const HEARTBEAT_MS = 5_000;
 const OPERATION_TIMEOUT_MS = 10_000;
 const CACHE_MUTEX_RETRY_MS = 20;
 const CLEANUP_TIMEOUT_MS = 250;
-const cachePath = () => join(getAgentDir(), "config", "pi-multi-codex", "usage.json");
+const cachePath = () => join(extensionConfigDir("pi-multi-codex"), "usage.json");
 const cacheMutexPath = () => `${cachePath()}.mutex`;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -249,7 +250,7 @@ async function saveState(state: UsageState, signal?: AbortSignal): Promise<void>
 	signal?.throwIfAborted();
 	if (state.untrusted) return;
 	const file = cachePath();
-	const directory = join(getAgentDir(), "config", "pi-multi-codex");
+	const directory = extensionConfigDir("pi-multi-codex");
 	await mkdir(directory, { recursive: true, mode: 0o700 });
 	const data = `${JSON.stringify({
 		slots: [...state.slots.values()].sort((a, b) => a.slot - b.slot),
@@ -269,7 +270,7 @@ async function saveState(state: UsageState, signal?: AbortSignal): Promise<void>
 
 async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 	signal?.throwIfAborted();
-	await mkdir(join(getAgentDir(), "config", "pi-multi-codex"), { recursive: true, mode: 0o700 });
+	await mkdir(extensionConfigDir("pi-multi-codex"), { recursive: true, mode: 0o700 });
 	let release: (() => Promise<void>) | undefined;
 	while (!release) {
 		signal?.throwIfAborted();

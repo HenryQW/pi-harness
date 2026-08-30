@@ -1,84 +1,75 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
-import { ConfigStore } from "../internal/config.ts";
+import { createBtwConfigStore, DEFAULT_CONFIG } from "../internal/config.ts";
 
-async function withStore(run: (store: ConfigStore) => Promise<void>): Promise<void> {
-	const directory = await mkdtemp(join(tmpdir(), "btw-config-"));
+async function withStore(
+	run: (agentDir: string, store: ReturnType<typeof createBtwConfigStore>) => Promise<void>,
+): Promise<void> {
+	const agentDir = await mkdtemp(join(tmpdir(), "btw-config-"));
 	try {
-		await run(new ConfigStore(join(directory, "config.json")));
+		await run(agentDir, createBtwConfigStore(agentDir));
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await rm(agentDir, { recursive: true, force: true });
 	}
 }
 
-test("load returns defaults when config is missing and preserves malformed JSON", async () => {
-	await withStore(async (store) => {
-		assert.deepEqual(await store.load(), { autoSubmit: false, tools: "inherit", split: "right" });
+test("uses the config home without legacy fallback and preserves malformed JSON", async () => {
+	await withStore(async (agentDir, store) => {
+		const legacyPath = join(agentDir, "config", "pi-herdr-btw.json");
+		const legacyContents = JSON.stringify({ autoSubmit: true, tools: "all", split: "down" });
+		await mkdir(dirname(legacyPath), { recursive: true });
+		await writeFile(legacyPath, legacyContents);
+
+		assert.equal(store.path, join(agentDir, "config", "pi-herdr-btw", "config.json"));
+		assert.deepEqual(store.loadSync(), { source: "missing", value: { ...DEFAULT_CONFIG } });
+		await assert.rejects(readFile(store.path, "utf8"), { code: "ENOENT" });
+		assert.equal(await readFile(legacyPath, "utf8"), legacyContents);
+
+		await mkdir(dirname(store.path), { recursive: true });
 		await writeFile(store.path, "{ broken");
-		await assert.rejects(store.load());
+		assert.throws(() => store.loadSync());
+		await assert.rejects(store.update((config) => ({ ...config, split: "down" })));
 		assert.equal(await readFile(store.path, "utf8"), "{ broken");
 	});
 });
 
-test("concurrent updates from two stores do not lose writes", async () => {
-	await withStore(async (store) => {
-		const other = new ConfigStore(store.path);
+test("concurrent shared updates do not lose config changes", async () => {
+	await withStore(async (agentDir, store) => {
+		const other = createBtwConfigStore(agentDir);
 		await Promise.all([
 			store.update((config) => ({ ...config, autoSubmit: true })),
 			other.update((config) => ({ ...config, tools: "read-only" })),
 			store.update((config) => ({ ...config, split: "down" })),
 			other.update((config) => ({ ...config, autoSubmit: true })),
 		]);
-		assert.deepEqual(await store.load(), {
-			autoSubmit: true,
-			tools: "read-only",
-			split: "down",
+		assert.deepEqual(store.loadSync(), {
+			source: "file",
+			value: { autoSubmit: true, tools: "read-only", split: "down" },
 		});
 	});
 });
 
-test("update persists config atomically and reset restores defaults", async () => {
-	await withStore(async (store) => {
-		await store.update(() => ({ autoSubmit: true, tools: "all", split: "down" }));
-		assert.deepEqual(await store.load(), { autoSubmit: true, tools: "all", split: "down" });
-		assert.deepEqual(await store.reset(), { autoSubmit: false, tools: "inherit", split: "right" });
-		assert.deepEqual(await store.load(), { autoSubmit: false, tools: "inherit", split: "right" });
+test("save persists validated defaults after reset", async () => {
+	await withStore(async (_agentDir, store) => {
+		await mkdir(dirname(store.path), { recursive: true });
+		await writeFile(store.path, "{ broken");
+		await store.save({ ...DEFAULT_CONFIG });
+		assert.deepEqual(store.loadSync(), { source: "file", value: { ...DEFAULT_CONFIG } });
 	});
 });
 
 test("update rejects invalid config without writing", async () => {
-	await withStore(async (store) => {
+	await withStore(async (_agentDir, store) => {
+		await store.save({ autoSubmit: true, tools: "all", split: "down" });
+		const before = await readFile(store.path, "utf8");
 		await assert.rejects(
 			// @ts-expect-error invalid value on purpose
 			store.update(() => ({ autoSubmit: "yes", tools: "all", split: "down" })),
 			/autoSubmit must be/,
 		);
-	});
-});
-
-test("stale lock file is reclaimed after the stale window", async () => {
-	await withStore(async (store) => {
-		const { mkdir, utimes } = await import("node:fs/promises");
-		await mkdir(`${store.path}.lock`, { recursive: true });
-		const old = new Date(Date.now() - 60_000);
-		await utimes(`${store.path}.lock`, old, old);
-		await store.update(() => ({ autoSubmit: true, tools: "none", split: "down" }));
-		assert.deepEqual(await store.load(), { autoSubmit: true, tools: "none", split: "down" });
-	});
-});
-
-test("existing file contents are preserved through update round-trip", async () => {
-	await withStore(async (store) => {
-		await writeFile(
-			store.path,
-			JSON.stringify({ autoSubmit: true, tools: "read-only", split: "down" }, null, 2),
-			{ mode: 0o600 },
-		);
-		await store.update((config) => ({ ...config, split: "right" }));
-		const saved = await store.load();
-		assert.deepEqual(saved, { autoSubmit: true, tools: "read-only", split: "right" });
+		assert.equal(await readFile(store.path, "utf8"), before);
 	});
 });

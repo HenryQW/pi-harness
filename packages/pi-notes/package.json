@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-notes",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Persistent notes in a Pi widget, managed with /note commands.",
   "keywords": [
     "pi-package",
@@ -42,5 +42,8 @@
     "extensions": [
       "./extensions/notes.ts"
     ]
+  },
+  "dependencies": {
+    "@henryqw/pi-config-store": "^0.1.0"
   }
 }

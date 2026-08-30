@@ -22,7 +22,9 @@ pi install npm:@henryqw/pi-subagent
 | `@henryqw/pi-multi-codex` | Required. Children can use Main's active Codex slot. |
 | `@henryqw/pi-task-models` | Required. Shared `fast` / `balanced` / `frontier` / `fav` routes. |
 
-Model routing is not configured here. Children resolve routes through shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
+Model routing is not configured here. Children resolve routes through shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models/config.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
+
+The local config is optional and uses defaults quietly when missing. If shared task-model config is missing, pi-subagent warns once at session start because delegation needs a route.
 
 ## Use
 
@@ -159,7 +161,7 @@ pi-subagent owns the extension-named config directory `~/.pi/agent/config/pi-sub
 
 One Markdown file belongs to each Role (see [Roles](#roles)). The other is its own optional JSON file below.
 
-`~/.pi/agent/config/pi-subagent/pi-subagent.json` controls the child pool and execution limits. All fields are optional. A missing file uses defaults.
+`~/.pi/agent/config/pi-subagent/config.json` controls the child pool and execution limits. All fields are optional. A missing file uses defaults without a warning.
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |

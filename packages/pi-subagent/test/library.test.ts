@@ -264,8 +264,8 @@ test("empty Role tools activate only trusted extension tools and caller addition
 test("assigned Role launch merges caller policy and resolves effective Pi resources", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-library-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
-	await mkdir(join(agentDir, "config"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-task-models.json"), JSON.stringify({
+	await mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true });
+	await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 		profiles: { frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } } },
 		tasks: { "pi-example/review": "frontier" },
 	}));

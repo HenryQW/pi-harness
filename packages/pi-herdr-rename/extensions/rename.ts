@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 import {
-	readTaskModelsConfig,
+	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
@@ -349,10 +349,14 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		automaticPending = false;
 		latestUserText = latestSessionUserText(ctx);
 		try {
-			const taskModels = readTaskModelsConfig();
-			const profileName = taskModels.tasks[RENAME_TASK.id] ?? RENAME_TASK.defaultProfile;
-			if (!taskModels.profiles[profileName]) {
-				ctx.ui.notify(`Configure rename task profile ${profileName} with /task-models.`, "warning");
+			const taskModels = loadTaskModelsConfig();
+			if (taskModels.source === "missing") {
+				ctx.ui.notify("Task model config is missing; run /task-models to configure rename routing.", "warning");
+			} else {
+				const profileName = taskModels.value.tasks[RENAME_TASK.id] ?? RENAME_TASK.defaultProfile;
+				if (!taskModels.value.profiles[profileName]) {
+					ctx.ui.notify(`Configure rename task profile ${profileName} with /task-models.`, "warning");
+				}
 			}
 		} catch {
 			ctx.ui.notify("Couldn't read task model config. Run /task-models.", "warning");

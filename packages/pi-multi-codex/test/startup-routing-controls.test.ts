@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import multiCodex, { parseCodexUsage } from "../extensions/multi-codex.ts";
 
@@ -41,11 +42,13 @@ const credential = (accountId: string) => ({
 });
 
 const hash = (accountId: string) => createHash("sha256").update(accountId).digest("hex");
+const usagePath = (agentDir: string) => join(extensionConfigDir("pi-multi-codex", agentDir), "usage.json");
 
 async function writeFreshCache(agentDir: string, remaining: Record<number, number>): Promise<void> {
 	const now = Date.now();
-	await mkdir(join(agentDir, "config", "pi-multi-codex"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-multi-codex", "usage.json"), JSON.stringify({
+	const directory = extensionConfigDir("pi-multi-codex", agentDir);
+	await mkdir(directory, { recursive: true });
+	await writeFile(join(directory, "usage.json"), JSON.stringify({
 		slots: Object.entries(remaining).map(([slot, value]) => ({
 			slot: Number(slot),
 			accountHash: hash(`account-${slot}`),
@@ -150,7 +153,7 @@ test("routes once at first agent boundary from fresh seven-day cache", async () 
 
 test("does not route from or rewrite a legacy snapshot lacking five-hour observation", async () => {
 	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
-		const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
+		const cache = usagePath(agentDir);
 		const state = JSON.parse(await readFile(cache, "utf8"));
 		for (const snapshot of state.slots) delete snapshot.limitedUntil;
 		const original = JSON.stringify(state);
@@ -167,7 +170,7 @@ test("does not route from or rewrite a legacy snapshot lacking five-hour observa
 test("revalidates cached candidate at agent boundary", async () => {
 	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
-		const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
+		const cache = usagePath(agentDir);
 		const state = JSON.parse(await readFile(cache, "utf8"));
 		state.slots.find((snapshot: { slot: number }) => snapshot.slot === 2).reset = Date.now() - 1;
 		await writeFile(cache, JSON.stringify(state));
@@ -179,7 +182,7 @@ test("revalidates cached candidate at agent boundary", async () => {
 test("does not select a five-hour-limited slot until reset", async () => {
 	for (const [resetOffset, expectedProviders] of [[60_000, ["openai-codex-2"]], [-1, []]] as const) {
 		await withApp({ 1: 90, 2: 70 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
-			const cache = join(agentDir, "config", "pi-multi-codex", "usage.json");
+			const cache = usagePath(agentDir);
 			const state = JSON.parse(await readFile(cache, "utf8"));
 			state.slots.find((snapshot: { slot: number }) => snapshot.slot === 1).limitedUntil = Date.now() + resetOffset;
 			await writeFile(cache, JSON.stringify(state));

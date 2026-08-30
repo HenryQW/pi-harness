@@ -1,10 +1,9 @@
-import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { createConfigStore, extensionConfigDir, extensionConfigPath } from "@henryqw/pi-config-store";
 
-// Repository-mandated extension config directory boundary (root AGENTS.md):
-// all pi-memory state lives under config/pi-memory/.
-export const configPath = () => join(getAgentDir(), "config", "pi-memory", "config.json");
+const EXTENSION_ID = "pi-memory";
+
+export const configPath = (agentDir?: string) => extensionConfigPath(EXTENSION_ID, agentDir);
 
 export interface MemoryConfig {
 	directory: string;
@@ -12,8 +11,8 @@ export interface MemoryConfig {
 	userCharLimit: number;
 }
 
-export function DEFAULT_DIRECTORY(): string {
-	return join(getAgentDir(), "config", "pi-memory", "memory");
+export function DEFAULT_DIRECTORY(agentDir?: string): string {
+	return join(extensionConfigDir(EXTENSION_ID, agentDir), "memory");
 }
 
 export const DEFAULT_MEMORY_CHAR_LIMIT = 8800;
@@ -27,80 +26,68 @@ function charLimit(key: "memoryCharLimit" | "userCharLimit", value: unknown, def
 	return value;
 }
 
-export function loadMemoryConfig(explicitPath?: string): MemoryConfig {
-	const path = explicitPath ?? configPath();
-	let raw: string;
-	try {
-		// Bound the read: a config accidentally replaced with (or symlinked to) a
-		// huge file must not exhaust memory before validation. Real configs are
-		// tiny; 64 KiB is generous.
-		const bytes = readFileSync(path);
-		if (bytes.length > 64 * 1024) {
-			throw new Error(`Memory config at ${path} is too large (${bytes.length} bytes); expected < 64 KiB.`);
+function parseMemoryConfig(value: unknown, path: string, defaultDirectory: string): MemoryConfig {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error(`Memory config at ${path} must be a JSON object.`);
+	}
+
+	const config = value as Record<string, unknown>;
+	const knownKeys = ["directory", "memoryCharLimit", "userCharLimit"];
+	for (const key of Object.keys(config)) {
+		if (!knownKeys.includes(key)) {
+			throw new Error(`Unknown key '${key}' in memory config at ${path}. Expected: ${knownKeys.join(", ")}.`);
 		}
-		// Fatal decode: invalid UTF-8 must surface as malformed config, not a
-		// U+FFFD-replaced view that could pass path checks and silently redirect
-		// the memory directory.
-		raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch (error: unknown) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-			return {
-				directory: DEFAULT_DIRECTORY(),
-				memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
-				userCharLimit: DEFAULT_USER_CHAR_LIMIT,
-			};
+	}
+
+	let directory = defaultDirectory;
+	if (config.directory !== undefined) {
+		if (typeof config.directory !== "string" || config.directory.trim() === "") {
+			throw new Error(`Invalid 'directory' in memory config at ${path}: must be a non-empty string, got ${JSON.stringify(config.directory)}`);
+		}
+		if (!isAbsolute(config.directory)) {
+			throw new Error(`Invalid 'directory' in memory config at ${path}: must be an absolute path, got ${JSON.stringify(config.directory)}`);
+		}
+		if (/\p{C}/u.test(config.directory)) {
+			throw new Error(`Invalid 'directory' in memory config at ${path}: must not contain control characters.`);
+		}
+		directory = config.directory;
+	}
+
+	return {
+		directory,
+		memoryCharLimit: charLimit("memoryCharLimit", config.memoryCharLimit, DEFAULT_MEMORY_CHAR_LIMIT, path),
+		userCharLimit: charLimit("userCharLimit", config.userCharLimit, DEFAULT_USER_CHAR_LIMIT, path),
+	};
+}
+
+function memoryConfigStore(agentDir?: string) {
+	const path = configPath(agentDir);
+	return createConfigStore<MemoryConfig>({
+		extensionId: EXTENSION_ID,
+		agentDir,
+		defaults: () => ({
+			directory: DEFAULT_DIRECTORY(agentDir),
+			memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
+			userCharLimit: DEFAULT_USER_CHAR_LIMIT,
+		}),
+		parse: (value) => parseMemoryConfig(value, path, DEFAULT_DIRECTORY(agentDir)),
+	});
+}
+
+export function loadMemoryConfig(agentDir?: string): { source: "file" | "missing"; value: MemoryConfig } {
+	const path = configPath(agentDir);
+	try {
+		return memoryConfigStore(agentDir).loadSync();
+	} catch (error) {
+		if (error instanceof SyntaxError) {
+			throw new Error(`Malformed JSON in memory config at ${path}: ${error.message}`);
 		}
 		if (error instanceof TypeError) {
 			throw new Error(`Malformed memory config at ${path}: invalid UTF-8.`);
 		}
+		if (error instanceof Error && error.message.startsWith("Config exceeds")) {
+			throw new Error(`Memory config at ${path} is too large; expected < 64 KiB.`);
+		}
 		throw error;
 	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch (error: unknown) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Malformed JSON in memory config at ${path}: ${message}`);
-	}
-
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error(`Memory config at ${path} must be a JSON object.`);
-	}
-
-	const obj = parsed as Record<string, unknown>;
-
-	// Fail fast on typos: an unrecognized key would otherwise silently activate
-	// defaults (e.g. "memoryCharLimits": 100), contradicting the fail-fast contract.
-	const KNOWN_KEYS = ["directory", "memoryCharLimit", "userCharLimit"];
-	for (const key of Object.keys(obj)) {
-		if (!KNOWN_KEYS.includes(key)) {
-			throw new Error(`Unknown key '${key}' in memory config at ${path}. Expected: ${KNOWN_KEYS.join(", ")}.`);
-		}
-	}
-
-	let directory = DEFAULT_DIRECTORY();
-	if (obj.directory !== undefined) {
-		if (typeof obj.directory !== "string" || obj.directory.trim() === "") {
-			throw new Error(`Invalid 'directory' in memory config at ${path}: must be a non-empty string, got ${JSON.stringify(obj.directory)}`);
-		}
-		if (!isAbsolute(obj.directory)) {
-			throw new Error(`Invalid 'directory' in memory config at ${path}: must be an absolute path, got ${JSON.stringify(obj.directory)}`);
-		}
-		// Untrusted config value gets embedded verbatim in prompt warnings;
-		// control characters could forge prompt lines.
-		if (/\p{C}/u.test(obj.directory)) {
-			throw new Error(`Invalid 'directory' in memory config at ${path}: must not contain control characters.`);
-		}
-		directory = obj.directory;
-	}
-
-	const memoryCharLimit = charLimit("memoryCharLimit", obj.memoryCharLimit, DEFAULT_MEMORY_CHAR_LIMIT, path);
-	const userCharLimit = charLimit("userCharLimit", obj.userCharLimit, DEFAULT_USER_CHAR_LIMIT, path);
-
-	return {
-		directory,
-		memoryCharLimit,
-		userCharLimit,
-	};
 }

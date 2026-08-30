@@ -2,10 +2,11 @@ import { readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
+	loadTaskModelsConfig,
 	modelReference,
 	orderedProfileRoutes,
-	readTaskModelsConfig,
 	resolveConfiguredTaskRoute,
 	resolveTaskModelRoute,
 	type AvailableModel,
@@ -185,7 +186,7 @@ function builtinRoles(): Role[] {
  */
 export function loadRoles(agentDir = getAgentDir()): Role[] {
 	const byName = new Map(builtinRoles().map((role) => [role.name, role]));
-	const dir = join(agentDir, "config", "pi-subagent");
+	const dir = extensionConfigDir("pi-subagent", agentDir);
 	let entries;
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
@@ -216,7 +217,7 @@ export function resolveTaskRoute(
 ): ResolvedTaskRoute {
 	let config;
 	try {
-		config = readTaskModelsConfig(agentDir);
+		config = loadTaskModelsConfig(agentDir).value;
 	} catch {
 		throw new Error("Couldn't read task model config. Run /task-models.");
 	}
@@ -226,7 +227,7 @@ export function resolveTaskRoute(
 function resolveConfiguredRoute(
 	ctx: ExtensionContext,
 	profileName: ProfileName,
-	profile: ReturnType<typeof readTaskModelsConfig>["profiles"][ProfileName],
+	profile: ReturnType<typeof loadTaskModelsConfig>["value"]["profiles"][ProfileName],
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute {

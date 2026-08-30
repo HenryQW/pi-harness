@@ -22,7 +22,7 @@ pi install npm:@henryqw/pi-open-in
 
 ## Config
 
-`~/.pi/agent/config/pi-open-in.json`
+`~/.pi/agent/config/pi-open-in/config.json`
 
 ```json
 {
@@ -30,10 +30,25 @@ pi install npm:@henryqw/pi-open-in
 }
 ```
 
-- When the file is missing, the default editor command is `"code"`.
+- A missing file silently uses the default command, `"code"`.
+- Reads do not create or write the config home.
 - When the file exists, `command` is required. It must be a non-empty string.
 - The command splits on whitespace into an executable and arguments. Tokens cannot contain spaces, and quoting is unsupported. Use a wrapper script for executables in spaced paths.
 - An existing file must be a JSON object with exactly one non-empty string `command` property. Otherwise `/open` fails with a visible error and offers no open URI.
-- This extension never rewrites the file except through `/set-open-in`.
+- Malformed files remain unchanged.
+- Only `/set-open-in` writes the file. Its write is atomic.
 
-This package uses no shared config.
+## Owner API
+
+Consumers use the owner API instead of reading this file.
+
+```ts
+import { loadOpenInConfig } from "@henryqw/pi-open-in/open-uri";
+
+const { source, value } = loadOpenInConfig();
+```
+
+`source` is `"missing"` or `"file"`. `value.command` is validated.
+Pass an agent directory to `loadOpenInConfig(agentDir)` when needed.
+
+This extension owns command validation. `@henryqw/pi-config-store` owns the config home and storage.

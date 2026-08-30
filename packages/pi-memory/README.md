@@ -69,6 +69,8 @@ The tool snapshots live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. A 
 
 It resolves the configured Pi registry primary route, then fallback, through `/task-models`. It never substitutes the current session model. It accepts only verified bounded JSON evidence.
 
+A missing shared task-model config warns once at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before adding memory.
+
 An overlap or contradiction pauses through `ask_question`. MEMORY/USER conflicts recommend merge or replacement. SYSTEM conflicts recommend keeping SYSTEM because pi-memory never edits it.
 
 Exact duplicate single adds remain idempotent without a model call. Merge, replacement, cancellation, custom answers, and non-interactive UI leave the add unwritten. Only explicit `Add separately` or `Add anyway` writes the original add after a conflict.
@@ -101,7 +103,7 @@ Use the memory tool immediately only when something qualifies. Save inferred hab
 
 ## Config
 
-Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional. A missing file uses defaults.
+Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional. A missing file uses defaults. Startup never creates or rewrites the file.
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |

@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
 	availableTaskModels,
-	readTaskModelsConfig,
+	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoute,
 	resolveConfiguredTaskRoutes,
 	resolveTaskModelRoute,
 	taskThinkingLevels,
-	writeTaskModelsConfig,
 	type ModelTask,
 } from "@henryqw/pi-task-models";
 import registerTaskModelsExtension from "../extensions/task-models.ts";
@@ -27,6 +26,10 @@ const MODEL_TASK_RESPONSE_EVENT = "@henryqw/pi-task-models:model-task-response";
 
 function tempDir(): string {
 	return mkdtempSync(join(tmpdir(), "pi-task-models-"));
+}
+
+function configFile(dir: string): string {
+	return join(dir, "config", "pi-task-models", "config.json");
 }
 
 function eventBus() {
@@ -49,26 +52,37 @@ function eventBus() {
 
 function controlPlane(events: ReturnType<typeof eventBus>, agentDir: string) {
 	let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+	let sessionStart: ((event: unknown, ctx: any) => void) | undefined;
 	const pi = {
 		events,
+		on(name: string, listener: (event: unknown, ctx: any) => void) {
+			assert.equal(name, "session_start");
+			sessionStart = listener;
+		},
 		registerCommand(_name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
 			handler = command.handler;
 		},
 	};
 	registerTaskModelsExtension(pi as never, { agentDir });
 	assert.ok(handler);
-	return { pi, handler: handler! };
+	return { pi, handler: handler!, sessionStart };
 }
 
-test("reads only explicit overrides, preserves malformed files, and writes config explicitly", () => {
+test("loads defaults without writing or legacy fallback and preserves invalid files", () => {
 	const dir = tempDir();
 	try {
-		assert.deepEqual(readTaskModelsConfig(dir), { profiles: {}, tasks: {} });
+		const file = configFile(dir);
+		assert.deepEqual(loadTaskModelsConfig(dir), { source: "missing", value: { profiles: {}, tasks: {} } });
+		assert.throws(() => readFileSync(file, "utf8"), { code: "ENOENT" });
 
-		const file = join(dir, "config", "pi-task-models.json");
 		mkdirSync(join(dir, "config"), { recursive: true });
+		writeFileSync(join(dir, "config", "pi-task-models.json"), JSON.stringify({ tasks: { "pi-new/customTask": "frontier" } }));
+		assert.deepEqual(loadTaskModelsConfig(dir), { source: "missing", value: { profiles: {}, tasks: {} } });
+		assert.throws(() => readFileSync(file, "utf8"), { code: "ENOENT" });
+
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
 		writeFileSync(file, "{ not json\n", { encoding: "utf8" });
-		assert.throws(() => readTaskModelsConfig(dir), /Unexpected token|JSON/);
+		assert.throws(() => loadTaskModelsConfig(dir), /Unexpected token|JSON/);
 		assert.equal(readFileSync(file, "utf8"), "{ not json\n");
 
 		for (const invalid of [
@@ -79,21 +93,34 @@ test("reads only explicit overrides, preserves malformed files, and writes confi
 		]) {
 			const text = `${JSON.stringify(invalid)}\n`;
 			writeFileSync(file, text);
-			assert.throws(() => readTaskModelsConfig(dir));
+			assert.throws(() => loadTaskModelsConfig(dir));
 			assert.equal(readFileSync(file, "utf8"), text);
 		}
 
 		writeFileSync(file, `${JSON.stringify({ tasks: { "pi-new/customTask": "frontier" } })}\n`);
-		assert.deepEqual(readTaskModelsConfig(dir).tasks, { "pi-new/customTask": "frontier" });
+		assert.deepEqual(loadTaskModelsConfig(dir), {
+			source: "file",
+			value: { profiles: {}, tasks: { "pi-new/customTask": "frontier" } },
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
-		writeTaskModelsConfig({
-			profiles: {
-				fast: { primary: { model: "openai-codex-2/gpt-5", thinkingLevel: "low" } },
-			},
-			tasks: { "pi-new/customTask": "frontier" },
-		}, dir);
-		assert.match(readFileSync(file, "utf8"), /"openai-codex\/gpt-5"/);
-		assert.match(readFileSync(file, "utf8"), /"pi-new\/customTask"/);
+test("warns once at session start when config is missing", () => {
+	const dir = tempDir();
+	try {
+		const { sessionStart } = controlPlane(eventBus(), dir);
+		assert.ok(sessionStart);
+		const notices: Array<[string, string]> = [];
+		sessionStart({}, {
+			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
+		});
+		assert.deepEqual(notices, [[
+			`Task model config is missing at ${configFile(dir)}; run /task-models to configure task routes.`,
+			"warning",
+		]]);
+		assert.throws(() => readFileSync(configFile(dir), "utf8"), { code: "ENOENT" });
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -125,12 +152,21 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 			scopedModels: [],
 			modelRegistry: { getAvailable: () => [primary, fallback] },
 		} as any;
-		const file = join(dir, "config", "pi-task-models.json");
-		mkdirSync(join(dir, "config"), { recursive: true });
+		const file = configFile(dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
 
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
-			/Task pi-example\/review profile fast is not configured\. Run \/task-models\./,
+			{
+				taskRouteCode: "config-missing",
+				message: /Task model config is missing\. Run \/task-models to configure task routes\./,
+			},
+		);
+
+		writeFileSync(file, "{}");
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
+			{ taskRouteCode: "profile-missing" },
 		);
 
 		writeFileSync(file, JSON.stringify({
@@ -167,7 +203,10 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 		writeFileSync(file, "{ not json\n");
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
-			/Couldn't read task model config\. Run \/task-models\./,
+			{
+				taskRouteCode: "config-read",
+				message: /Couldn't read task model config\. Run \/task-models\./,
+			},
 		);
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, { id: "bad task", label: "Bad", purpose: "Bad", defaultProfile: "fast" } as ModelTask, dir),
@@ -186,6 +225,7 @@ test("registers model tasks idempotently and discovers them in either load order
 			let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
 			const pi = {
 				events,
+				on() {},
 				registerCommand(_name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
 					handler = command.handler;
 				},
@@ -210,10 +250,11 @@ test("registers model tasks idempotently and discovers them in either load order
 					task: { id: "bad task" },
 				});
 			});
-			writeTaskModelsConfig({
+			mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+			writeFileSync(configFile(dir), JSON.stringify({
 				profiles: {},
 				tasks: { "pi-hidden/disabled": "balanced" },
-			}, dir);
+			}));
 			assert.ok(handler);
 			await handler!("", {
 				ui: {
@@ -230,7 +271,7 @@ test("registers model tasks idempotently and discovers them in either load order
 					notify() {},
 				},
 			});
-			assert.deepEqual(readTaskModelsConfig(dir).tasks, { "pi-hidden/disabled": "balanced" });
+			assert.deepEqual(loadTaskModelsConfig(dir).value.tasks, { "pi-hidden/disabled": "balanced" });
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -260,7 +301,7 @@ test("task-models stores only non-default active task assignments", async () => 
 				notify() {},
 			},
 		});
-		assert.deepEqual(readTaskModelsConfig(dir).tasks, { [EXAMPLE_TASK.id]: "frontier" });
+		assert.deepEqual(loadTaskModelsConfig(dir).value.tasks, { [EXAMPLE_TASK.id]: "frontier" });
 
 		await handler("", {
 			ui: {
@@ -273,26 +314,22 @@ test("task-models stores only non-default active task assignments", async () => 
 				notify() {},
 			},
 		});
-		assert.deepEqual(readTaskModelsConfig(dir).tasks, {});
+		assert.deepEqual(loadTaskModelsConfig(dir).value.tasks, {});
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
-test("readTaskModelsConfig rejects fallback on fav profile", () => {
+test("loadTaskModelsConfig rejects fallback on fav profile", () => {
 	const dir = tempDir();
 	try {
-		mkdirSync(join(dir, "config"), { recursive: true });
-		const file = join(dir, "config", "pi-task-models.json");
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		const file = configFile(dir);
 		writeFileSync(file, JSON.stringify({
 			profiles: { fav: { primary: { model: "p/m", thinkingLevel: "off" }, fallback: { model: "p/f", thinkingLevel: "off" } } },
 		}));
-		assert.throws(() => readTaskModelsConfig(dir), /fav profile has no fallback/);
 		const invalid = readFileSync(file, "utf8");
-		assert.throws(() => writeTaskModelsConfig({
-			profiles: { fav: { primary: { model: "p/m", thinkingLevel: "off" }, fallback: { model: "p/f", thinkingLevel: "off" } } },
-			tasks: {},
-		}, dir), /fav profile has no fallback/);
+		assert.throws(() => loadTaskModelsConfig(dir), /fav profile has no fallback/);
 		assert.equal(readFileSync(file, "utf8"), invalid);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -314,7 +351,12 @@ test("task-models configures primary and fallback atomically in one profile flow
 				select: async (label: string, options: readonly string[]) => {
 					assert.equal(options.includes("other/excluded"), false);
 					if (label === "Profile fast fallback" && selections.length === 2) {
-						assert.throws(() => readFileSync(join(dir, "config", "pi-task-models.json"), "utf8"), { code: "ENOENT" });
+						assert.throws(() => readFileSync(configFile(dir), "utf8"), { code: "ENOENT" });
+					}
+					if (label === "Profile fast fallback" && selections.length === 1) {
+						// Replace the home after loading so the async save fails deterministically.
+						rmSync(join(dir, "config", "pi-task-models"), { recursive: true, force: true });
+						writeFileSync(join(dir, "config", "pi-task-models"), "blocked");
 					}
 					const choice = selections.shift();
 					assert.ok(choice);
@@ -331,20 +373,18 @@ test("task-models configures primary and fallback atomically in one profile flow
 			],
 		};
 		await handler("", ctx);
-		assert.deepEqual(readTaskModelsConfig(dir).profiles.fast, {
+		assert.deepEqual(loadTaskModelsConfig(dir).value.profiles.fast, {
 			primary: { model: "openai-codex/gpt-5", thinkingLevel: "low" },
 			fallback: { model: "other/fallback", thinkingLevel: "off" },
 		});
+		assert.match(readFileSync(configFile(dir), "utf8"), /"openai-codex\/gpt-5"/);
 		assert.deepEqual(selections, []);
 
-		const file = join(dir, "config", "pi-task-models.json");
-		chmodSync(file, 0o444);
 		selections = ["fast · openai-codex/gpt-5 (low) → other/fallback (off)", "openai-codex-2/gpt-5", "low", "None"];
 		const notifications: string[] = [];
 		ctx.ui.notify = (message: string) => { notifications.push(message); };
 		await handler("", ctx);
 		assert.ok(notifications.includes("Couldn't save task model config."));
-		chmodSync(file, 0o644);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

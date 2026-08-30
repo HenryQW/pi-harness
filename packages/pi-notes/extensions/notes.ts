@@ -3,10 +3,10 @@ import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
-	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const MAX_NOTES = 4;
@@ -28,7 +28,7 @@ interface LoadedNotes {
 	issue?: "malformed" | "stale";
 }
 
-const configDir = () => join(getAgentDir(), "config", "pi-notes");
+const configDir = () => extensionConfigDir("pi-notes");
 const notesPath = (worktree: string) => join(configDir(), `${createHash("sha256").update(worktree).digest("hex")}.json`);
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
 

@@ -7,7 +7,7 @@ The `/open` Pi command that launches configured command for current working dire
 _Avoid_: editor command, project opener
 
 **Open command configuration**:
-User config selecting executable launched by `/open`; `/set-open-in <command>` updates it, defaulting to `code` when the file is missing. An existing file must be an object with exactly one non-empty string `command`; anything else makes `/open` fail visibly without touching the file. Command string is split on whitespace; tokens with spaces unsupported.
+User config at `getAgentDir()/config/pi-open-in/config.json` selecting executable launched by `/open`; `/set-open-in <command>` updates it. A missing file silently defaults to `code` without being created. An existing file must be an object with exactly one non-empty string `command`; anything else makes `/open` fail visibly without touching the file. Command string is split on whitespace; tokens with spaces unsupported.
 _Avoid_: project config, editor preference
 
 **Current working directory**:

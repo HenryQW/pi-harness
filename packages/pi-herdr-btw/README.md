@@ -45,7 +45,7 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 - The consumer-owned `pi-herdr-btw/btw` task defaults to `fast`.
 - Before pane launch, it selects the first authenticated viable effective profile route.
 
-`~/.pi/agent/config/pi-task-models.json` is shared and owned by `@henryqw/pi-task-models`. A task entry is an explicit user override. Side-thread routes resolve before pane launch.
+`~/.pi/agent/config/pi-task-models/config.json` is shared and owned by `@henryqw/pi-task-models`. A task entry is an explicit user override, and routes resolve before pane launch. BTW warns once per session if this file is missing.
 
 ### Merge delivery
 
@@ -62,7 +62,7 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 ## Config
 
-Package-owned: `~/.pi/agent/config/pi-herdr-btw.json`
+Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 
 ```json
 {
@@ -81,6 +81,6 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw.json`
 - All fields are optional.
 - Unknown keys and non-object files are rejected.
 - `/btw config show` prints effective values.
-- `/btw config reset` removes the file.
-- Missing config uses defaults.
+- `/btw config reset` saves the defaults.
+- The config file is optional. Missing config uses defaults.
 - Malformed config fails visibly and remains unchanged.

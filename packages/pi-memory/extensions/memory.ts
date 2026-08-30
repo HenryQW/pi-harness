@@ -3,7 +3,9 @@ import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { askQuestion } from "@henryqw/pi-ask-question";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
+	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
@@ -28,8 +30,8 @@ import {
 const SEPARATOR = "═".repeat(46);
 // Backups and the lock file live OUTSIDE config.directory (which may be
 // iCloud-synced) so the memory dir holds exactly MEMORY.md and USER.md (ADR 005).
-const BACKUP_DIR = () => join(getAgentDir(), "config", "pi-memory", "backups");
-const DREAM_STATE_PATH = () => join(getAgentDir(), "config", "pi-memory", "dream.json");
+const BACKUP_DIR = () => join(extensionConfigDir("pi-memory"), "backups");
+const DREAM_STATE_PATH = () => join(extensionConfigDir("pi-memory"), "dream.json");
 const DREAM_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 const DREAM_FULL_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const DREAM_USAGE_PERCENT = 70;
@@ -714,8 +716,16 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.dreamSucceeded = false;
 		state.observedReviewSystem = false;
 		try {
+			const config = loadMemoryConfig().value;
+			try {
+				if (loadTaskModelsConfig().source === "missing") {
+					ctx.ui.notify("Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");
+				}
+			} catch {
+				// A broken review route must not disable otherwise usable memory snapshots.
+				ctx.ui.notify("Couldn't read task model config. Run /task-models.", "warning");
+			}
 			await mkdir(BACKUP_DIR(), { recursive: true });
-			const config = loadMemoryConfig();
 			await mkdir(config.directory, { recursive: true });
 			// The runtime contract keeps backups OUTSIDE the memory directory; reject
 			// overlap (equal, ancestor, descendant) so backup cleanup can never eat

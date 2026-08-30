@@ -85,7 +85,7 @@ The file is optional. A missing file uses all defaults.
 
 Unknown keys are rejected. Malformed or invalid files fail fast and are never rewritten.
 
-Shared: `~/.pi/agent/config/pi-task-models.json`, owned by `@henryqw/pi-task-models`, assigns profiles to tasks `pi-auto-dag/implement` and `pi-auto-dag/review` for worker routes.
+Shared: `~/.pi/agent/config/pi-task-models/config.json`, owned by `@henryqw/pi-task-models`, assigns profiles to tasks `pi-auto-dag/implement` and `pi-auto-dag/review` for worker routes.
 
 Package-owned generated state: `<project>/.context/pi-auto-dag/`. Do not edit it.
 

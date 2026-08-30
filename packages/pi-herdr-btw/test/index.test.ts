@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { writeTaskModelsConfig } from "@henryqw/pi-task-models";
 import { DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
 import type { BtwPayload } from "../internal/core.ts";
 import {
@@ -125,24 +124,29 @@ class FakeStore implements ContextStorePort {
 class FakeConfigStore implements ConfigStorePort {
 	config: BtwConfig = { ...DEFAULT_CONFIG };
 	readonly saved: BtwConfig[] = [];
-	resetRuns = 0;
+	saveRuns = 0;
+	updateRuns = 0;
+	source: "file" | "missing" = "file";
 	loadError: Error | undefined;
 
-	async load(): Promise<BtwConfig> {
+	loadSync(): { source: "file" | "missing"; value: BtwConfig } {
 		if (this.loadError) throw this.loadError;
-		return { ...this.config };
+		return { source: this.source, value: { ...this.config } };
+	}
+
+	async save(config: BtwConfig): Promise<void> {
+		this.config = { ...config };
+		this.loadError = undefined;
+		this.source = "file";
+		this.saved.push({ ...this.config });
+		this.saveRuns += 1;
 	}
 
 	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
 		this.config = mutator({ ...this.config });
+		this.source = "file";
 		this.saved.push({ ...this.config });
-		return { ...this.config };
-	}
-
-	async reset(): Promise<BtwConfig> {
-		this.config = { ...DEFAULT_CONFIG };
-		this.loadError = undefined;
-		this.resetRuns += 1;
+		this.updateRuns += 1;
 		return { ...this.config };
 	}
 }
@@ -261,9 +265,15 @@ async function createHarness(
 	return { commands, handlers, execCalls, sentUserMessages, sentMessages, configStore, emit, cleanup, timers };
 }
 
+async function writeTaskModelsConfig(config: object, agentDir: string): Promise<void> {
+	const directory = join(agentDir, "config", "pi-task-models");
+	await mkdir(directory, { recursive: true });
+	await writeFile(join(directory, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+}
+
 async function withParentEnvironment(run: (agentDir: string) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-herdr-btw-task-models-"));
-	writeTaskModelsConfig({
+	await writeTaskModelsConfig({
 		profiles: {
 			fast: { primary: { model: "test-provider/test-model", thinkingLevel: "high" } },
 		},
@@ -416,12 +426,89 @@ test("config subcommand updates and resets launch defaults, including malformed-
 
 		assert.equal(harness.configStore.config.autoSubmit, true);
 		assert.equal(harness.configStore.config.tools, "read-only");
-		assert.equal(harness.configStore.saved.length, 2);
+		assert.equal(harness.configStore.updateRuns, 2);
 
 		harness.configStore.loadError = new Error("malformed config");
 		await command?.handler("config reset", ctx);
 		assert.deepEqual(harness.configStore.config, DEFAULT_CONFIG);
-		assert.equal(harness.configStore.resetRuns, 1);
+		assert.equal(harness.configStore.saveRuns, 1);
+	});
+});
+
+test("warns once per session when shared task-model config is missing", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		await rm(join(agentDir, "config", "pi-task-models"), { recursive: true, force: true });
+		const configStore = new FakeConfigStore();
+		configStore.source = "missing";
+		const harness = await createHarness(
+			new FakeStore(),
+			async () => ({ code: 0, stdout: "", stderr: "" }),
+			configStore,
+		);
+		const ctx = createCommandContext();
+
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+		await harness.emit("session_start", { reason: "reload" }, ctx);
+		harness.cleanup();
+
+		assert.deepEqual(ctx.notifications, [
+			{
+				message: "Task model config is missing; run /task-models to configure it.",
+				type: "warning",
+			},
+		]);
+	});
+});
+
+test("missing task-model config notification failures are not treated as config read failures", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		await rm(join(agentDir, "config", "pi-task-models"), { recursive: true, force: true });
+		const harness = await createHarness(new FakeStore(), async () => ({ code: 0, stdout: "", stderr: "" }));
+		const ctx = createCommandContext();
+		const notificationAttempts: Array<{ message: string; type: string }> = [];
+		ctx.ui.notify = (message: string, type: string) => {
+			notificationAttempts.push({ message, type });
+			if (message === "Task model config is missing; run /task-models to configure it.") {
+				throw new Error("notification failed");
+			}
+		};
+
+		await assert.rejects(harness.emit("session_start", { reason: "startup" }, ctx), /notification failed/);
+		harness.cleanup();
+		assert.deepEqual(notificationAttempts, [
+			{ message: "Task model config is missing; run /task-models to configure it.", type: "warning" },
+		]);
+	});
+});
+
+test("unreadable task-model config does not block startup merge recovery", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), "{ not json\n");
+		const store = new FakeStore();
+		const payload = store.readValue;
+		store.mergeRequest = {
+			protocolVersion: MERGE_PROTOCOL_VERSION,
+			requestId: "req-unreadable-config",
+			launchId: payload.launchId,
+			parentSessionId: payload.parentSessionId,
+			capability: payload.capability,
+			createdAt: "2026-07-15T00:05:00.000Z",
+			summary: "startup recovery summary",
+			prompt: "recover pending merge",
+		} satisfies MergeRequest;
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		const ctx = createCommandContext();
+
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+		assert.deepEqual(ctx.notifications, [
+			{ message: "Couldn't read task model config. Run /task-models.", type: "warning" },
+		]);
+
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		harness.cleanup();
+		assert.equal(harness.sentMessages.length, 1);
+		assert.deepEqual(harness.sentUserMessages, ["recover pending merge"]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
 	});
 });
 
@@ -493,7 +580,7 @@ test("parent stops pane-busy retries when its session shuts down during backoff"
 
 test("parent uses authenticated task-profile fallback when primary authentication fails", async () => {
 	await withParentEnvironment(async (agentDir) => {
-		writeTaskModelsConfig({
+		await writeTaskModelsConfig({
 			profiles: {
 				frontier: {
 					primary: { model: "test-provider/test-model", thinkingLevel: "high" },
@@ -528,7 +615,7 @@ test("parent uses authenticated task-profile fallback when primary authenticatio
 
 test("parent rejects unavailable or unauthenticated task-profile routes before splitting", async () => {
 	await withParentEnvironment(async (agentDir) => {
-		writeTaskModelsConfig({
+		await writeTaskModelsConfig({
 			profiles: { frontier: { primary: { model: "missing/model", thinkingLevel: "high" } } },
 			tasks: { "pi-herdr-btw/btw": "frontier" },
 		}, agentDir);
@@ -541,7 +628,7 @@ test("parent rejects unavailable or unauthenticated task-profile routes before s
 		assert.equal(unavailableStore.created.length, 0);
 		assert.match(unavailableCtx.notifications.at(-1)?.message ?? "", /no available route/);
 
-		writeTaskModelsConfig({
+		await writeTaskModelsConfig({
 			profiles: { fast: { primary: { model: "test-provider/test-model", thinkingLevel: "high" } } },
 			tasks: {},
 		}, agentDir);

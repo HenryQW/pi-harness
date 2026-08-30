@@ -2,6 +2,8 @@
 
 Agent runbook for introducing `@henryqw/pi-config-store` and moving every current extension to the Extension Config Home layout from [ADR 018](../adr/018-extension-config-homes.md).
 
+**Status: complete.** The config-store package, all runtime owner and consumer migrations, the one-time local-file moves, and the repository policy update are complete. Keep the Delivery DAG and old-to-new data table below as reusable guidance for future migrations.
+
 This is the single migration source of truth. Do not add a second `MIGRATION.md` inside the package.
 
 ## Invariants
@@ -12,7 +14,7 @@ This is the single migration source of truth. Do not add a second `MIGRATION.md`
 - Only the owner writes its home.
 - Consumers use an owner API or namespaced Pi events.
 - Preserve malformed files and write only after explicit user action.
-- Missing user config warns once per extension session before defaults are used.
+- Warn only when user action is required. Missing optional config with usable defaults does not warn.
 - Missing generated state is normal and does not warn.
 - Move existing files once outside runtime code. Add no legacy readers, aliases, adapters, dual schemas, or fallback paths.
 
@@ -59,7 +61,7 @@ Update AGENTS.md, README template, stale paths, versions, lockfile
 
 Owner packages must land before their consumers. Package runtime units may run in parallel only when they own disjoint files. Keep manifests, workspace versions, and `package-lock.json` in one central unit.
 
-## Stage 1: Build `pi-config-store`
+## Stage 1: Build `pi-config-store` (complete)
 
 Freeze this public contract before parallel work:
 
@@ -109,7 +111,7 @@ git diff --check
 
 Only new `@henryqw/pi-config-store@0.1.0` releases in this stage.
 
-## Stage 2: Prepare extension migrations
+## Stage 2: Prepare extension migrations (complete)
 
 After the config-store package is available, use one central metadata unit to:
 
@@ -120,7 +122,7 @@ After the config-store package is available, use one central metadata unit to:
 
 Runtime units must not edit package manifests, versions, or the lockfile.
 
-## Stage 3: Migrate owners and consumers
+## Stage 3: Migrate owners and consumers (complete)
 
 Every package section below is one bounded runtime unit unless an owner API and its direct consumer must change together. Each unit owns only its package source, tests, and README.
 
@@ -139,7 +141,7 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Move `config/pi-open-in.json` to `config/pi-open-in/config.json`.
 - Keep command validation and the `code` default package-owned.
 - Expose validated effective config plus missing source to consumers.
-- Warn once when its extension loads without config.
+- Keep missing config silent because `code` is a usable default.
 - Update `pi-footer` to consume the owner API; it must not know the path.
 
 ### `pi-auto-compact`
@@ -147,8 +149,8 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Move `config/pi-auto-compact.json` to `config/pi-auto-compact/config.json`.
 - Replace `readConfig` and `writeConfig` filesystem mechanics with the store.
 - Keep threshold parsing and defaults local.
-- Warn once for missing local config.
-- Consume task-model data through the owner API and warn once if that shared config is missing.
+- Keep missing local and shared config silent because threshold and current-model fallbacks are usable.
+- Consume task-model data through the owner API.
 - Update local and shared-config fixtures.
 
 ### `pi-herdr-btw`
@@ -157,7 +159,7 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Delete the package-local generic `ConfigStore` mechanics after adopting the shared store.
 - Retain `parseConfig`, command application, formatting, and defaults.
 - Preserve concurrent no-lost-update behavior through the shared locked update.
-- Warn once for missing local config and once for missing required shared task-model config.
+- Keep missing optional local config silent. Warn once for missing required shared task-model config.
 
 ### `pi-herdr-rename`
 
@@ -172,7 +174,7 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Use the shared store while retaining strict memory-specific validation.
 - Use the directory helper for `memory/`, `backups/`, and `dream.json`.
 - Do not move those files.
-- Warn once for missing local config and once for missing shared task-model config.
+- Keep missing optional local config silent. Warn once for missing required shared task-model config.
 - Keep memory mutation locking; remove no dependency still used by memory storage.
 
 ### `pi-subagent`
@@ -180,14 +182,14 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Move `config/pi-subagent/pi-subagent.json` to `config/pi-subagent/config.json`.
 - Keep role Markdown files in `config/pi-subagent/` unchanged.
 - Use the shared store for JSON and the directory helper for role files.
-- Preserve optional-config diagnostics and defaults without rewriting malformed files.
-- Warn once for missing local config and once for missing shared task-model config.
+- Preserve invalid-config diagnostics and defaults without rewriting malformed files.
+- Keep missing optional local config silent. Warn once for missing required shared task-model config.
 
 ### `pi-footer`
 
 - It owns no local config.
 - Consume validated open-in values through the owner API.
-- Warn once when open-in config is missing.
+- Keep missing optional open-in config silent because `code` is a usable default.
 - Update footer fixtures from the flat path to the owner home.
 
 ### `pi-multi-codex`
@@ -211,9 +213,9 @@ Every package section below is one bounded runtime unit unless an owner API and 
 - Keep SQLite lifecycle and rebuild behavior package-owned.
 - Do not warn when the disposable index is absent.
 
-## Stage 4: Move local files once
+## Stage 4: Move local files once (complete)
 
-Main performs this step outside delegated worktrees after all code is integrated and before restarting Pi.
+Main completed this step outside delegated worktrees after all code was integrated and before restarting Pi. The procedure used was:
 
 For each changed path:
 
@@ -221,7 +223,7 @@ For each changed path:
 2. resolve the effective agent directory;
 3. if only the old path exists, create the target home and move the file without parsing or rewriting it;
 4. if only the new path exists, do nothing;
-5. if neither exists, do nothing and expect the extension warning;
+5. if neither exists, do nothing; optional config defaults stay silent;
 6. if both exist, overwrite neither and ask the user which file is authoritative;
 7. verify bytes and permissions after each move.
 
@@ -237,15 +239,15 @@ Move these files:
 
 Do not move `pi-memory`, `pi-multi-codex`, `pi-notes`, or `pi-session-recall` state already inside its owner home.
 
-## Stage 5: Finish repository policy
+## Stage 5: Finish repository policy (complete)
 
-After every runtime migration and local file move:
+The repository policy is complete:
 
-1. replace the transitional path rules in `AGENTS.md` with ADR 018's Extension Config Home rule;
-2. change `packages/README-template.md` to `~/.pi/agent/config/<package>/config.json`;
-3. search current source, tests, READMEs, context files, root docs, and deprecated docs for old paths;
-4. remove obsolete local JSON I/O and lock helpers;
-5. validate each changed package once;
-6. run repository tests, typechecks, pack checks, version checks, and `git diff --check`.
+1. `AGENTS.md` now requires ADR 018's Extension Config Home rule;
+2. `packages/README-template.md` now uses `~/.pi/agent/config/<package>/config.json`;
+3. current source, tests, READMEs, context files, root docs, and deprecated docs were searched for old paths;
+4. obsolete local JSON I/O and lock helpers were removed;
+5. affected packages were validated once;
+6. repository tests, typechecks, pack checks, version checks, and `git diff --check` were run.
 
 Do not publish, push, or move user files from an isolated subagent worktree.
