@@ -128,7 +128,7 @@ Set `PI_AUTO_COMPACT_AUTH_FILE` only when auth is not at `~/.pi/agent/auth.json`
 
 ## Documentation site
 
-The site uses the root and package READMEs directly. It publishes at <https://pi.henry.wang>.
+The landing page uses package manifests. The overview and package pages use their READMEs directly. The site publishes at <https://pi.henry.wang>.
 
 ```bash
 npm run docs:dev

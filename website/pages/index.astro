@@ -1,0 +1,65 @@
+---
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import data from "blume:data";
+
+import { packages } from "../package-catalog.ts";
+
+const { config } = data;
+---
+
+<PageLayout
+  site={{ title: config.title, description: config.description }}
+  logo={config.logo}
+  banner={config.banner}
+  analytics={config.analytics}
+  navigation={data.navigation}
+  favicon={config.favicon}
+  appleIcon={config.appleIcon}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  ogImage="/og.png"
+  ogImageAlt="Henry Pi Harness — Built on Pi. Tuned by Henry."
+  ogImageSize={{ width: 1200, height: 630 }}
+  page={{ title: "Henry Pi Harness", description: config.description }}
+>
+  <div class="mx-auto max-w-360 px-6 py-10 md:px-10 md:py-16 lg:px-16 lg:py-20">
+    <header class="max-w-2xl">
+      <h1 class="text-5xl font-medium leading-none tracking-tight md:text-6xl">Henry Pi Harness</h1>
+      <p class="mt-4 text-lg text-muted-foreground md:text-xl">
+        Built on Pi. Tuned by Henry.
+      </p>
+    </header>
+
+    <figure class="mt-10 overflow-hidden rounded-blume border border-border bg-muted/30 shadow-sm md:mt-14">
+      <img src="/example.png" alt="Pi running with several extensions from this repository" />
+    </figure>
+
+    <section id="packages" class="mt-16 scroll-mt-20 md:mt-20">
+      <div class="flex items-baseline justify-between gap-4 border-border border-b pb-4">
+        <h2 class="text-2xl font-medium tracking-tight">Packages</h2>
+        <span class="text-sm text-muted-foreground">{packages.length} public packages</span>
+      </div>
+      <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {
+          packages.map((item) => (
+            <a
+              class="group rounded-blume border border-border bg-background p-5 transition-colors hover:bg-muted/60"
+              href={`/packages/${item.directory}`}
+            >
+              <div class="flex items-start justify-between gap-3">
+                <h3 class="break-words font-mono text-sm font-medium group-hover:text-accent">
+                  {item.name}
+                </h3>
+                <span class="shrink-0 font-mono text-xs text-muted-foreground">v{item.version}</span>
+              </div>
+              <p class="mt-2 text-sm text-muted-foreground">{item.description}</p>
+            </a>
+          ))
+        }
+      </div>
+    </section>
+  </div>
+</PageLayout>

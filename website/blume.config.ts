@@ -1,30 +1,38 @@
-import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { defineConfig } from "blume";
 import type { ContentSource } from "blume/sources/types.ts";
 
-const repoRoot = join(import.meta.dirname, "..");
-const packageNames = readdirSync(join(repoRoot, "packages"), {
-  withFileTypes: true,
-})
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => entry.name)
-  .sort();
+import { packages, repoRoot } from "./package-catalog.ts";
 const docs = [
-  { editPath: "README.md", path: join(repoRoot, "README.md"), ref: "index.md" },
-  ...packageNames.map((name) => ({
-    editPath: `packages/${name}/README.md`,
-    path: join(repoRoot, "packages", name, "README.md"),
-    ref: `packages/${name}/index.md`,
+  {
+    data: {
+      seo: {
+        description: "Repository notes, package relationships, and development commands.",
+      },
+      title: "Repository overview",
+    },
+    editPath: "README.md",
+    path: join(repoRoot, "README.md"),
+    ref: "index.md",
+    slug: "overview",
+  },
+  ...packages.map(({ description, directory, name }) => ({
+    data: { seo: { description }, title: name },
+    editPath: `packages/${directory}/README.md`,
+    path: join(repoRoot, "packages", directory, "README.md"),
+    ref: `packages/${directory}/index.md`,
+    slug: `packages/${directory}`,
   })),
 ];
 const docsByRef = new Map(docs.map((doc) => [doc.ref, doc]));
-const readDoc = async ({ path, ref }: (typeof docs)[number]) => {
-  const text = await readFile(path, "utf8");
-  return ref === "index.md"
-    ? text.replace("](./example.png)", "](/example.png)")
+const readDoc = async ({ editPath, path }: (typeof docs)[number]) => {
+  const text = (await readFile(path, "utf8")).replace(/^# .+\n+/, "");
+  return editPath === "README.md"
+    ? text.replace(/\]\(\.\/([^)]+)\)/g, (_, target: string) =>
+        `](/${target.replace(/\.md$/, "")})`
+      )
     : text;
 };
 const packageDocs: ContentSource = {
@@ -33,24 +41,31 @@ const packageDocs: ContentSource = {
   load: async () => ({
     diagnostics: [],
     entries: await Promise.all(
-      docs.map(async ({ editPath, ref, ...doc }) => {
-        const text = await readDoc({ editPath, ref, ...doc });
+      docs.map(async ({ data, editPath, ref, slug, ...doc }) => {
+        const text = await readDoc({ data, editPath, ref, slug, ...doc });
+        const raw = `---\ntitle: ${JSON.stringify(data.title)}\nseo:\n  description: ${JSON.stringify(data.seo.description)}\n---\n\n${text}`;
         return {
           body: { format: "md" as const, text },
-          data: {},
+          data,
           editUrl: `https://github.com/HenryQW/pi-packages/edit/main/${editPath}`,
-          raw: text,
+          raw,
           ref,
+          slug,
         };
       })
     ),
   }),
-  read: (ref) => readDoc(docsByRef.get(ref)!),
+  read: (ref) => {
+    const doc = docsByRef.get(ref);
+    if (!doc) throw new Error(`Unknown documentation ref: ${ref}`);
+    return readDoc(doc);
+  },
 };
 
 export default defineConfig({
-  title: "Pi packages",
-  description: "Opinionated Pi extensions by Henry Wang.",
+  title: "Henry Pi Harness",
+  description: "Documentation for Henry Wang's Pi extensions.",
+  logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
     root: ".",
     sources: [{ type: "custom", source: packageDocs }],
@@ -66,11 +81,11 @@ export default defineConfig({
   },
   navigation: {
     sidebar: [
-      "/",
+      "/overview",
       {
         label: "Packages",
         collapsed: false,
-        items: packageNames.map((name) => `/packages/${name}`),
+        items: packages.map(({ directory }) => `/packages/${directory}`),
       },
     ],
   },
@@ -105,6 +120,24 @@ export default defineConfig({
     },
   ],
   search: { provider: "orama" },
+  seo: {
+    og: {
+      description: "Built on Pi. Tuned by Henry.",
+      logo: "/og-logo.svg",
+      palette: {
+        accent: "#1d4ed8",
+        background: "#101828",
+        border: "#394152",
+        foreground: "#f0eee9",
+        muted: "#cdd1d9",
+      },
+    },
+  },
   ai: { llmsTxt: true },
-  theme: { accent: "blue", radius: "sm" },
+  theme: {
+    accent: "#1d4ed8",
+    background: { dark: "#101828", light: "#f0eee9" },
+    fonts: { body: "geist", display: "geist", mono: "geist-mono" },
+    radius: "sm",
+  },
 });
