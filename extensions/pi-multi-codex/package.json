@@ -41,7 +41,8 @@
   "pi": {
     "extensions": [
       "./extensions"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-multi-codex/example.png"
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^0.1.0",

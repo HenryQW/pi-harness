@@ -2,6 +2,8 @@
 
 Use multiple ChatGPT Codex OAuth accounts in Pi.
 
+![Pi showing Codex account quotas and the active footer slot](./example.png)
+
 ## Why
 
 - **Created for**: Use multiple ChatGPT Codex OAuth accounts from one Pi installation.
