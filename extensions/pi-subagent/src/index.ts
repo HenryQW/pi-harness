@@ -211,7 +211,6 @@ export function resolveTaskRoute(
 	ctx: ExtensionContext,
 	profileName: ProfileName,
 	agentDir = getAgentDir(),
-	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute {
 	let config;
 	try {
@@ -219,7 +218,7 @@ export function resolveTaskRoute(
 	} catch {
 		throw new Error("Couldn't read task model config. Run /task-models.");
 	}
-	return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName], agentDir, thinking);
+	return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName], agentDir);
 }
 
 function resolveConfiguredRoute(
@@ -227,14 +226,13 @@ function resolveConfiguredRoute(
 	profileName: ProfileName,
 	profile: ReturnType<typeof loadTaskModelsConfig>["value"]["profiles"][ProfileName],
 	agentDir = getAgentDir(),
-	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute {
 	if (!profile) throw new Error(`No ${profileName} task model profile is configured. Run /task-models.`);
 	for (const route of orderedProfileRoutes(profile)) {
-		const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
+		const resolved = resolveTaskModelRoute(ctx, route, agentDir);
 		if (resolved) return resolved;
 	}
-	throw new Error(`No usable ${profileName} task model route${thinking ? ` supporting thinking ${thinking}` : ""}. Run /task-models.`);
+	throw new Error(`No usable ${profileName} task model route. Run /task-models.`);
 }
 
 export function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: Role): ResolvedRoleSkills {
