@@ -3,7 +3,7 @@ updates:
   - package-ecosystem: npm
     directories:
       - /
-      - /packages/*
+      - /extensions/*
     schedule:
       interval: weekly
     open-pull-requests-limit: 10

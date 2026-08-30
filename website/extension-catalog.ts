@@ -2,14 +2,14 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const repoRoot = join(process.cwd(), "..");
-export const extensions = readdirSync(join(repoRoot, "packages"), {
+export const extensions = readdirSync(join(repoRoot, "extensions"), {
   withFileTypes: true,
 })
   .filter((entry) => entry.isDirectory())
   .map((entry) => {
     const directory = entry.name;
     const manifest = JSON.parse(
-      readFileSync(join(repoRoot, "packages", directory, "package.json"), "utf8")
+      readFileSync(join(repoRoot, "extensions", directory, "package.json"), "utf8")
     ) as { description: string; name: string; version: string };
     return {
       directory,

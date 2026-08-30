@@ -1,11 +1,11 @@
-name: Publish packages
+name: Publish extensions
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'packages/**'
+      - 'extensions/**'
 
 permissions:
   contents: read
@@ -38,9 +38,9 @@ jobs:
           declare -A seen=()
 
           # Prerequisites must exist before their consumers release.
-          for manifest in packages/pi-herdr/package.json packages/pi-multi-codex/package.json packages/pi-task-models/package.json packages/pi-subagent/package.json packages/*/package.json; do
+          for manifest in extensions/pi-herdr/package.json extensions/pi-multi-codex/package.json extensions/pi-task-models/package.json extensions/pi-subagent/package.json extensions/*/package.json; do
             case "$manifest" in
-              packages/pi-herdr/package.json|packages/pi-multi-codex/package.json|packages/pi-task-models/package.json|packages/pi-subagent/package.json)
+              extensions/pi-herdr/package.json|extensions/pi-multi-codex/package.json|extensions/pi-task-models/package.json|extensions/pi-subagent/package.json)
                 [ "${seen[$manifest]:-0}" = 1 ] && continue
                 seen[$manifest]=1
                 ;;

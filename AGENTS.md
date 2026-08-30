@@ -27,7 +27,7 @@ These extensions are highly opinionated tools built for the maintainer's daily w
 
 ## Package release policy
 
-This repository is npm workspace monorepo. Each public package under `packages/*` releases independently.
+This repository is npm workspace monorepo. Each public package under `extensions/*` releases independently.
 
 - Bump package version when change affects published files, runtime behavior, public API, package metadata, or runtime dependencies.
 - Bump every affected package when one change touches multiple packages.
@@ -37,7 +37,7 @@ This repository is npm workspace monorepo. Each public package under `packages/*
 - Bump with npm; do not edit versions by hand:
 
   ```bash
-  npm version patch --workspace packages/<package> --no-git-tag-version
+  npm version patch --workspace extensions/<package> --no-git-tag-version
   ```
 
 - Commit version and `package-lock.json` changes with feature or fix. Do not create release tags.

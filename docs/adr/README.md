@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-An Architecture Decision Record (ADR) records one current architecture choice. These ADRs describe the current architecture of the pi-packages monorepo. Package-specific ADR filenames include the package name.
+An Architecture Decision Record (ADR) records one current architecture choice. These ADRs describe the current architecture of the pi-harness monorepo. Package-specific ADR filenames include the package name.
 
 ## Repository-wide
 

@@ -1,0 +1,60 @@
+{
+  "name": "@henryqw/pi-task-models",
+  "version": "4.0.1",
+  "description": "Shared task model profiles and routing for HenryQW Pi extensions.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "model",
+    "settings"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "LICENSE",
+    "dist",
+    "extensions",
+    "README.md",
+    "CONTEXT.md"
+  ],
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "test": "npm run build && node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts extensions/*.ts test/*.ts",
+    "prepack": "npm run build",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-harness.git",
+    "directory": "extensions/pi-task-models"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-harness/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/task-models.ts"
+    ]
+  },
+  "dependencies": {
+    "@henryqw/pi-config-store": "^0.1.0"
+  }
+}

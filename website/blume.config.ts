@@ -23,9 +23,9 @@ const docs = [
   },
   ...extensions.map(({ description, directory, name, version }) => ({
     data: { seo: { description }, title: name },
-    editPath: `packages/${directory}/README.md`,
+    editPath: `extensions/${directory}/README.md`,
     npm: { name, version },
-    path: join(repoRoot, "packages", directory, "README.md"),
+    path: join(repoRoot, "extensions", directory, "README.md"),
     ref: `extensions/${directory}/index.md`,
     slug: `extensions/${directory}`,
   })),
@@ -35,7 +35,7 @@ const readDoc = async ({ editPath, npm, path }: (typeof docs)[number]) => {
   const text = (await readFile(path, "utf8")).replace(/^# .+\n+/, "");
   if (editPath === "README.md") {
     return text.replace(/\]\(\.\/([^)]+)\)/g, (_, target: string) => {
-      const route = target.replace(/^packages\//, "extensions/").replace(/\.md$/, "");
+      const route = target.replace(/\.md$/, "");
       return `](/${route})`;
     });
   }
@@ -115,43 +115,43 @@ export default defineConfig({
     },
     {
       from: "/packages/pi-subagent/docs/orchestration",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/orchestration.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/orchestration.md",
     },
     {
       from: "/extensions/pi-subagent/docs/orchestration",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/orchestration.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/orchestration.md",
     },
     {
       from: "/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
     },
     {
       from: "/extensions/pi-subagent/docs/adr/001-composable-ephemeral-execution",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/adr/001-composable-ephemeral-execution.md",
     },
     {
       from: "/packages/pi-subagent/examples/roles/scout",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/scout.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/scout.md",
     },
     {
       from: "/extensions/pi-subagent/examples/roles/scout",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/scout.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/scout.md",
     },
     {
       from: "/packages/pi-subagent/examples/roles/synthesizer",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/synthesizer.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/synthesizer.md",
     },
     {
       from: "/extensions/pi-subagent/examples/roles/synthesizer",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/examples/roles/synthesizer.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/synthesizer.md",
     },
     {
       from: "/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
     },
     {
       from: "/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL",
-      to: "https://github.com/HenryQW/pi-harness/blob/main/packages/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
+      to: "https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md",
     },
   ],
   search: { provider: "orama" },

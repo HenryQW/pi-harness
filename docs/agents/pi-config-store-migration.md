@@ -244,7 +244,7 @@ Do not move `pi-memory`, `pi-multi-codex`, `pi-notes`, or `pi-session-recall` st
 The repository policy is complete:
 
 1. `AGENTS.md` now requires ADR 018's Extension Config Home rule;
-2. `packages/README-template.md` now uses `~/.pi/agent/config/<package>/config.json`;
+2. `extensions/README-template.md` now uses `~/.pi/agent/config/<package>/config.json`;
 3. current source, tests, READMEs, context files, root docs, and deprecated docs were searched for old paths;
 4. obsolete local JSON I/O and lock helpers were removed;
 5. affected packages were validated once;

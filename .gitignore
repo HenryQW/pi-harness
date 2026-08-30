@@ -17,4 +17,4 @@ npm-debug.log*
 .context/memory-distill-preview.json
 
 # Build output
-packages/*/dist/
+extensions/*/dist/

@@ -10,29 +10,29 @@ I offer no support or backward compatibility. Breaking changes may be introduced
 
 | Extension | Purpose |
 | --- | --- |
-| [`@henryqw/pi-add-dir`](./packages/pi-add-dir) | Add external directories with context, skills, and file search. |
-| [`@henryqw/pi-ask-question`](./packages/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
-| [`@henryqw/pi-auto-compact`](./packages/pi-auto-compact) | Compact context at the set threshold and resume current task. |
-| [`@henryqw/pi-config-store`](./packages/pi-config-store) | Create validated extension JSON stores with shared config homes. |
-| [`@henryqw/pi-deps`](./packages/pi-deps) | Prepare locked Node and uv dependencies for opted-in Git worktrees. |
-| [`@henryqw/pi-footer`](./packages/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
-| [`@henryqw/pi-herdr`](./packages/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
-| [`@henryqw/pi-herdr-btw`](./packages/pi-herdr-btw) | Open and merge Pi side threads in Herdr panes. |
-| [`@henryqw/pi-herdr-clone`](./packages/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |
-| [`@henryqw/pi-herdr-done`](./packages/pi-herdr-done) | Close and remove current Herdr worktree. |
-| [`@henryqw/pi-herdr-rename`](./packages/pi-herdr-rename) | Generate short chat titles and rename current Herdr location. |
-| [`@henryqw/pi-memory`](./packages/pi-memory) | Maintain size-capped agent memory and user-profile stores across sessions. |
-| [`@henryqw/pi-multi-codex`](./packages/pi-multi-codex) | Use multiple ChatGPT Codex OAuth accounts in Pi. |
-| [`@henryqw/pi-notes`](./packages/pi-notes) | Keep persistent per-worktree notes visible in a Pi widget. |
-| [`@henryqw/pi-open-in`](./packages/pi-open-in) | Open current working directory with configurable command. |
-| [`@henryqw/pi-pr`](./packages/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
-| [`@henryqw/pi-session-recall`](./packages/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
-| [`@henryqw/pi-subagent`](./packages/pi-subagent) | Delegate bounded single, parallel, chained, and extension-owned Git Flow work to isolated roles. |
-| [`@henryqw/pi-task-models`](./packages/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
+| [`@henryqw/pi-add-dir`](./extensions/pi-add-dir) | Add external directories with context, skills, and file search. |
+| [`@henryqw/pi-ask-question`](./extensions/pi-ask-question) | Ask user one interactive multiple-choice or free-text question. |
+| [`@henryqw/pi-auto-compact`](./extensions/pi-auto-compact) | Compact context at the set threshold and resume current task. |
+| [`@henryqw/pi-config-store`](./extensions/pi-config-store) | Create validated extension JSON stores with shared config homes. |
+| [`@henryqw/pi-deps`](./extensions/pi-deps) | Prepare locked Node and uv dependencies for opted-in Git worktrees. |
+| [`@henryqw/pi-footer`](./extensions/pi-footer) | Henry's opinionated Pi footer style for concise checkout and usage details. |
+| [`@henryqw/pi-herdr`](./extensions/pi-herdr) | Run Herdr CLI commands through a shared thin client. |
+| [`@henryqw/pi-herdr-btw`](./extensions/pi-herdr-btw) | Open and merge Pi side threads in Herdr panes. |
+| [`@henryqw/pi-herdr-clone`](./extensions/pi-herdr-clone) | Clone the current Pi conversation path into a new Herdr tab. |
+| [`@henryqw/pi-herdr-done`](./extensions/pi-herdr-done) | Close and remove current Herdr worktree. |
+| [`@henryqw/pi-herdr-rename`](./extensions/pi-herdr-rename) | Generate short chat titles and rename current Herdr location. |
+| [`@henryqw/pi-memory`](./extensions/pi-memory) | Maintain size-capped agent memory and user-profile stores across sessions. |
+| [`@henryqw/pi-multi-codex`](./extensions/pi-multi-codex) | Use multiple ChatGPT Codex OAuth accounts in Pi. |
+| [`@henryqw/pi-notes`](./extensions/pi-notes) | Keep persistent per-worktree notes visible in a Pi widget. |
+| [`@henryqw/pi-open-in`](./extensions/pi-open-in) | Open current working directory with configurable command. |
+| [`@henryqw/pi-pr`](./extensions/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
+| [`@henryqw/pi-session-recall`](./extensions/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
+| [`@henryqw/pi-subagent`](./extensions/pi-subagent) | Delegate bounded single, parallel, chained, and extension-owned Git Flow work to isolated roles. |
+| [`@henryqw/pi-task-models`](./extensions/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 
 ## Internal extension relationships
 
-Each of the 19 extensions under `packages/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `packages/*/package.json`.
+Each of the 19 extensions under `extensions/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `extensions/*/package.json`.
 
 Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
 

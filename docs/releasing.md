@@ -3,7 +3,7 @@
 Agents release packages by bumping workspace versions and pushing `main`.
 
 ```bash
-npm version patch --workspace packages/<package> --no-git-tag-version
+npm version patch --workspace extensions/<package> --no-git-tag-version
 git commit -am "chore: release <package>"
 git push origin main
 ```
