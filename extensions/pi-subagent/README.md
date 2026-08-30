@@ -2,6 +2,8 @@
 
 Main is the parent Pi session. It can delegate bounded single, parallel, and chained tasks, plus package-owned Git Flow work, to isolated Pi child roles.
 
+![Pi showing six delegated tasks running in parallel](./example.png)
+
 ## Why
 
 - **Created for**: Delegate bounded work to isolated child Pi processes without losing Main's context.

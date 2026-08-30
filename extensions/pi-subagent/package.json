@@ -61,7 +61,8 @@
     ],
     "skills": [
       "./skills"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-subagent/example.png"
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^0.1.0",
