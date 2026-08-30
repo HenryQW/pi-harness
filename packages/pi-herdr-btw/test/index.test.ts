@@ -122,7 +122,6 @@ class FakeStore implements ContextStorePort {
 }
 
 class FakeConfigStore implements ConfigStorePort {
-	readonly path = "/tmp/pi-herdr-btw-test/config.json";
 	config: BtwConfig = { ...DEFAULT_CONFIG };
 	readonly saved: BtwConfig[] = [];
 	saveRuns = 0;
@@ -436,7 +435,7 @@ test("config subcommand updates and resets launch defaults, including malformed-
 	});
 });
 
-test("warns once per session when local or shared config is missing", async () => {
+test("warns once per session when shared task-model config is missing", async () => {
 	await withParentEnvironment(async (agentDir) => {
 		await rm(join(agentDir, "config", "pi-task-models"), { recursive: true, force: true });
 		const configStore = new FakeConfigStore();
@@ -453,10 +452,6 @@ test("warns once per session when local or shared config is missing", async () =
 		harness.cleanup();
 
 		assert.deepEqual(ctx.notifications, [
-			{
-				message: `BTW config is missing: ${configStore.path}; defaults are used.`,
-				type: "warning",
-			},
 			{
 				message: "Task model config is missing; run /task-models to configure it.",
 				type: "warning",

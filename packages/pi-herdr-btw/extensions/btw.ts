@@ -85,7 +85,7 @@ export type ContextStorePort = Pick<
 >;
 export type ConfigStorePort = Pick<
 	ReturnType<typeof createBtwConfigStore>,
-	"path" | "loadSync" | "save" | "update"
+	"loadSync" | "save" | "update"
 >;
 
 const SIDE_PANE_INSTRUCTIONS = `You are running in a focused /btw side pane spawned from another Pi session.
@@ -423,7 +423,6 @@ export async function registerBtwExtension(
 		| Pick<ExtensionCommandContext, "sessionManager" | "isIdle" | "model" | "modelRegistry">
 		| undefined;
 	let sessionGeneration = 0;
-	let missingConfigWarningSessionId: string | undefined;
 	let missingTaskModelsConfigWarningSessionId: string | undefined;
 	// Notifications need a UI context; route them through the last known ctx.
 	let notifyFn: ((message: string, type: "info" | "warning" | "error") => void) | undefined;
@@ -478,10 +477,6 @@ export async function registerBtwExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
-		if (missingConfigWarningSessionId !== sessionId && configStore.loadSync().source === "missing") {
-			missingConfigWarningSessionId = sessionId;
-			ctx.ui.notify(`BTW config is missing: ${configStore.path}; defaults are used.`, "warning");
-		}
 		if (missingTaskModelsConfigWarningSessionId !== sessionId && loadTaskModelsConfig().source === "missing") {
 			missingTaskModelsConfigWarningSessionId = sessionId;
 			ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");

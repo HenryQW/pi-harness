@@ -82,5 +82,5 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 - Unknown keys and non-object files are rejected.
 - `/btw config show` prints effective values.
 - `/btw config reset` saves the defaults.
-- Missing config warns once at session start and uses defaults.
+- The config file is optional. Missing config uses defaults.
 - Malformed config fails visibly and remains unchanged.
