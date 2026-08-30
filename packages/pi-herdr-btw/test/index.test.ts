@@ -460,6 +460,58 @@ test("warns once per session when shared task-model config is missing", async ()
 	});
 });
 
+test("missing task-model config notification failures are not treated as config read failures", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		await rm(join(agentDir, "config", "pi-task-models"), { recursive: true, force: true });
+		const harness = await createHarness(new FakeStore(), async () => ({ code: 0, stdout: "", stderr: "" }));
+		const ctx = createCommandContext();
+		const notificationAttempts: Array<{ message: string; type: string }> = [];
+		ctx.ui.notify = (message: string, type: string) => {
+			notificationAttempts.push({ message, type });
+			if (message === "Task model config is missing; run /task-models to configure it.") {
+				throw new Error("notification failed");
+			}
+		};
+
+		await assert.rejects(harness.emit("session_start", { reason: "startup" }, ctx), /notification failed/);
+		harness.cleanup();
+		assert.deepEqual(notificationAttempts, [
+			{ message: "Task model config is missing; run /task-models to configure it.", type: "warning" },
+		]);
+	});
+});
+
+test("unreadable task-model config does not block startup merge recovery", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), "{ not json\n");
+		const store = new FakeStore();
+		const payload = store.readValue;
+		store.mergeRequest = {
+			protocolVersion: MERGE_PROTOCOL_VERSION,
+			requestId: "req-unreadable-config",
+			launchId: payload.launchId,
+			parentSessionId: payload.parentSessionId,
+			capability: payload.capability,
+			createdAt: "2026-07-15T00:05:00.000Z",
+			summary: "startup recovery summary",
+			prompt: "recover pending merge",
+		} satisfies MergeRequest;
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		const ctx = createCommandContext();
+
+		await harness.emit("session_start", { reason: "startup" }, ctx);
+		assert.deepEqual(ctx.notifications, [
+			{ message: "Couldn't read task model config. Run /task-models.", type: "warning" },
+		]);
+
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		harness.cleanup();
+		assert.equal(harness.sentMessages.length, 1);
+		assert.deepEqual(harness.sentUserMessages, ["recover pending merge"]);
+		assert.deepEqual(store.removed, [store.payloadPath]);
+	});
+});
+
 test("parent retries agent start on the transient pane-busy error", async () => {
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();

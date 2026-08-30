@@ -477,7 +477,13 @@ export async function registerBtwExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
-		if (missingTaskModelsConfigWarningSessionId !== sessionId && loadTaskModelsConfig().source === "missing") {
+		let taskModelsConfig: ReturnType<typeof loadTaskModelsConfig> | undefined;
+		try {
+			taskModelsConfig = loadTaskModelsConfig();
+		} catch {
+			ctx.ui.notify("Couldn't read task model config. Run /task-models.", "warning");
+		}
+		if (missingTaskModelsConfigWarningSessionId !== sessionId && taskModelsConfig?.source === "missing") {
 			missingTaskModelsConfigWarningSessionId = sessionId;
 			ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");
 		}
