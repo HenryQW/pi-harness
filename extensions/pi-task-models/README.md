@@ -2,6 +2,8 @@
 
 Choose shared `fast`, `balanced`, `frontier`, and `fav` model profiles for consumer-owned Model Tasks.
 
+![Pi showing task model profiles and task routes](https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-task-models/example.png)
+
 ## Why
 
 - **Created for**: Remove duplicated model pickers and catalogs that extensions once owned separately.

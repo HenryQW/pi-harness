@@ -52,7 +52,8 @@
   "pi": {
     "extensions": [
       "./extensions/task-models.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-task-models/example.png"
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^0.1.0"
