@@ -7,7 +7,7 @@ Concise repository and branch label identifying current checkout. A non-empty `p
 _Avoid_: Working-directory path, worktree path
 
 **Usage line**:
-Cumulative session input, output, and estimated cost plus latest cache-hit rate and current context usage, followed by right-aligned active model and thinking level. `off` matches dim model text, active levels follow a distinct green-to-red gradient ending with red `max`, and `ultra` is rainbow when runtime supports it.
+Cumulative session input, output, and estimated cost, including reported tool usage and finished `pi-subagent` background workflows, plus latest cache-hit rate and current context usage. Right-aligned active model and thinking level follow. `off` matches dim model text, active levels follow a distinct green-to-red gradient ending with red `max`, and `ultra` is rainbow when runtime supports it.
 _Avoid_: Token counter, status line
 
 **Agent-work time**:
