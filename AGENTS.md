@@ -10,6 +10,7 @@ These extensions are highly opinionated tools built for the maintainer's daily w
 - Use `extensionConfigDir(extensionId, agentDir?)` and `extensionConfigPath(extensionId, agentDir?)` from `@henryqw/pi-config-store`; do not construct config paths directly.
 - The default user-editable JSON file is `config/<extension-id>/config.json`, provided by `extensionConfigPath`.
 - All other extension-owned files, including generated state and custom formats, must stay inside the home and use `extensionConfigDir`.
+- Documented project content, including project-root `MEMORY.md`, is project-owned output, not extension configuration or generated state, and follows its documented project path.
 - Only the owning extension writes its home. Consumers use an owner API or namespaced Pi events instead of reading another extension's files.
 
 ## Extension config safety

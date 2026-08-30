@@ -3,7 +3,7 @@ import { copyFile, lstat, mkdir, open, rename, stat, writeFile, rm } from "node:
 import { dirname, join } from "node:path";
 
 export const ENTRY_DELIMITER: string = "\n§\n";
-const RESERVED_FRAME_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is)/;
+const RESERVED_FRAME_LINE = /^\s*(?:═{3,}|MEMORY \(your personal notes|USER PROFILE \(who the user is|PROJECT MEMORY \(current project\))/;
 
 export function isReservedFrameLine(line: string): boolean {
 	return RESERVED_FRAME_LINE.test(line);
@@ -386,7 +386,7 @@ export class MemoryStore {
 		// or writes report success while vanishing from snapshots.
 		for (const line of normalized.split("\n")) {
 			if (isReservedFrameLine(line)) {
-				return "Content must not contain lines starting with '═' separators or the reserved headers 'MEMORY (your personal notes' / 'USER PROFILE (who the user is'.";
+				return "Content must not contain lines starting with '═' separators or the reserved headers 'MEMORY (your personal notes', 'USER PROFILE (who the user is', or 'PROJECT MEMORY (current project)'.";
 			}
 		}
 		return undefined;

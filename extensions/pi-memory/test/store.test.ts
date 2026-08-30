@@ -281,6 +281,7 @@ test("reserved framing tokens rejected", async () => {
 			"═════",
 			"MEMORY (your personal notes go here)",
 			"USER PROFILE (who the user is) stuff",
+			"fine line\n\tPROJECT MEMORY (current project) stuff",
 			"fine line\nMEMORY (your personal notes",
 		]) {
 			const result = await store.add("memory", bad);
