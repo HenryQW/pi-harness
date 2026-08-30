@@ -31,20 +31,26 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const details = await askQuestion(params, ctx, signal);
-			return {
-				content: [{
-					type: "text" as const,
-					text: details.error
-						? `Error: ${details.error}`
-						: !details.answer
-							? "User cancelled question"
-							: details.wasCustom
-								? `User wrote: ${details.answer}`
-								: `User selected: ${details.selectedIndex}. ${details.answer}`,
-				}],
-				details,
-			};
+			const interactive = ctx.mode === "tui";
+			try {
+				if (interactive) pi.events.emit("herdr:blocked", { active: true, label: "Input required" });
+				const details = await askQuestion(params, ctx, signal);
+				return {
+					content: [{
+						type: "text" as const,
+						text: details.error
+							? `Error: ${details.error}`
+							: !details.answer
+								? "User cancelled question"
+								: details.wasCustom
+									? `User wrote: ${details.answer}`
+									: `User selected: ${details.selectedIndex}. ${details.answer}`,
+					}],
+					details,
+				};
+			} finally {
+				if (interactive) pi.events.emit("herdr:blocked", { active: false });
+			}
 		},
 	});
 }
