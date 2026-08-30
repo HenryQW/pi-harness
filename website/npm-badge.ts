@@ -1,4 +1,5 @@
 const query = new URLSearchParams({
+  cacheSeconds: "7200",
   color: "1d4ed8",
   label: "downloads",
   labelColor: "101828",
