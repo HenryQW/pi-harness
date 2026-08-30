@@ -3,7 +3,7 @@
 ## Language
 
 **Footer identity**:
-Concise repository and branch label identifying current checkout. A non-empty `pi-pr` status follows its checkout link, while non-empty statuses from `@henryqw` extensions occupy the right side. Generated `worktree/` branch prefix is display noise. When open command is exactly `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI; otherwise it remains plain text.
+Concise repository and branch label identifying current checkout. A non-empty `pi-pr` status follows its checkout link, while non-empty statuses from `@henryqw` extensions occupy the right side. Generated `worktree/` branch prefix is display noise. When the open command executable is `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI. The `-n` and `--new-window` flags make that link open a new window; otherwise unsupported executables render as plain text.
 _Avoid_: Working-directory path, worktree path
 
 **Usage line**:
