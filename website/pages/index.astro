@@ -7,6 +7,24 @@ import { extensions } from "../extension-catalog.ts";
 import { npmBadgeUrl } from "../npm-badge.ts";
 
 const { config } = data;
+const featuredExtensions = [
+  {
+    name: "@henryqw/pi-subagent",
+    outcome: "Delegate focused work to isolated Pi roles.",
+  },
+  {
+    name: "@henryqw/pi-memory",
+    outcome: "Keep useful context across Pi sessions.",
+  },
+  {
+    name: "@henryqw/pi-ask-question",
+    outcome: "Let Pi ask when it needs your decision.",
+  },
+].map(({ name, outcome }) => {
+  const extension = extensions.find((item) => item.name === name);
+  if (!extension) throw new Error(`Missing featured extension: ${name}`);
+  return { ...extension, outcome };
+});
 ---
 
 <PageLayout
@@ -28,10 +46,33 @@ const { config } = data;
   page={{ title: "Henry Pi Harness", description: config.description }}
 >
   <div class="mx-auto max-w-360 px-6 py-10 md:px-10 md:py-16 lg:px-16 lg:py-20">
-    <header class="grid max-w-4xl items-center gap-6 sm:grid-cols-[minmax(0,1fr)_auto]">
-      <div class="max-w-2xl">
-        <h1 class="text-5xl font-medium leading-none tracking-tight md:text-6xl">Henry Pi Harness</h1>
-        <div class="mt-5 flex items-center gap-3">
+    <header class="max-w-4xl">
+      <div class="max-w-3xl">
+        <p class="text-sm font-medium text-accent">Henry Pi Harness</p>
+        <h1 class="mt-3 text-5xl font-medium leading-none tracking-tight md:text-6xl">
+          Make Pi fit your workflow.
+        </h1>
+        <p class="mt-5 text-lg text-muted-foreground md:text-xl">
+          Focused extensions add memory, subagents and delegation, Git workflows, model routing, and
+          better ways to interact with Pi.
+        </p>
+        <div class="mt-7 flex flex-col gap-3 sm:flex-row">
+          <a
+            class="inline-flex min-h-11 items-center justify-center rounded-blume bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:ring-2 focus-visible:ring-accent/40"
+            href="#extensions"
+          >
+            Explore extensions
+          </a>
+          <a
+            class="inline-flex min-h-11 items-center justify-center gap-2 rounded-blume border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-accent/40"
+            href="https://github.com/HenryQW/pi-harness"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            View on GitHub <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span>
+          </a>
+        </div>
+        <div class="mt-6 flex items-center gap-3">
           <img
             class="size-14 rounded-full md:size-16"
             src="/pi-logo.svg"
@@ -54,6 +95,31 @@ const { config } = data;
     <figure class="mt-10 overflow-hidden rounded-blume border border-border bg-muted/30 shadow-sm md:mt-14">
       <img src="/example.png" alt="Pi running with several extensions from this repository" />
     </figure>
+
+    <section aria-labelledby="start-here-heading" class="mt-16 md:mt-20">
+      <div class="border-border border-b pb-4">
+        <h2 id="start-here-heading" class="text-2xl font-medium tracking-tight">Start here</h2>
+        <p class="mt-1 text-sm text-muted-foreground">Three useful extensions for common Pi workflows.</p>
+      </div>
+      <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {
+          featuredExtensions.map((item) => (
+            <a
+              class="group flex h-full flex-col rounded-blume border border-border bg-background p-5 transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-accent/40"
+              href={`/extensions/${item.directory}`}
+            >
+              <h3 class="break-words font-mono text-sm font-medium group-hover:text-accent">
+                {item.name}
+              </h3>
+              <p class="mt-2 flex-1 text-sm text-muted-foreground">{item.outcome}</p>
+              <code class="mt-4 block overflow-x-auto whitespace-nowrap rounded-blume border border-border bg-muted/60 px-3 py-2 font-mono text-xs">
+                pi install npm:{item.name}
+              </code>
+            </a>
+          ))
+        }
+      </div>
+    </section>
 
     <section id="extensions" class="mt-16 scroll-mt-20 md:mt-20">
       <div class="flex items-baseline justify-between gap-4 border-border border-b pb-4">

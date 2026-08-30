@@ -76,7 +76,7 @@ const extensionDocs: ContentSource = {
 
 export default defineConfig({
   title: "Henry Pi Harness",
-  description: "Documentation for Henry Wang's Pi extensions.",
+  description: "Focused Pi extensions for memory, subagents, Git workflows, model routing, and better interaction.",
   logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
     root: ".",
