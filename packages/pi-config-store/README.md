@@ -64,7 +64,7 @@ await store.remove();
 | `extensionConfigPath(extensionId, agentDir?)` | function | Returns the home’s `config.json` path. |
 | `createConfigStore({ extensionId, agentDir?, defaults, parse })` | function | Creates a store. `defaults` is `() => T`; `parse` is `(value: unknown) => T`. |
 | `store.path` | `string` | Gives the store's `config.json` path. |
-| `store.loadSync()` | `{ source: 'file' | 'missing'; value: T }` | Loads and validates the current value. |
+| `store.loadSync()` | `{ source: 'file' \| 'missing'; value: T }` | Loads and validates the current value. |
 | `store.save(value: T)` | `Promise<void>` | Validates and saves a value. |
 | `store.update(mutator: (current: T) => T)` | `Promise<T>` | Locks a read-modify-write operation and returns the updated value. |
 | `store.remove()` | `Promise<void>` | Removes only the store's `config.json` file. |
