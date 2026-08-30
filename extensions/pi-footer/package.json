@@ -46,6 +46,6 @@
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-footer/example.png"
   },
   "dependencies": {
-    "@henryqw/pi-open-in": "^1.0.0"
+    "@henryqw/pi-open-in": "^1.0.1"
   }
 }

@@ -598,6 +598,31 @@ describe("lineage + guards", () => {
 });
 
 describe("incompatible index schema", () => {
+	it("a populated index missing session_fts fails instead of recreating it blank", () => {
+		seedDeploy();
+		assert.equal(searchIndex(dbPath, "deploy pipeline").hits.length, 1);
+
+		// session_files now marks this source unchanged, so recreating only the FTS
+		// table would silently leave the existing transcript absent from search.
+		const db = new DatabaseSync(dbPath);
+		try {
+			db.exec("DROP TABLE session_fts");
+		} finally {
+			db.close();
+		}
+
+		const missingFts = /index schema incompatible: session_fts missing — delete the index to rebuild/;
+		assert.throws(() => syncSessions(sessionsDir, dbPath), missingFts);
+		assert.throws(() => searchIndex(dbPath, "deploy pipeline"), missingFts);
+
+		const check = new DatabaseSync(dbPath, { readOnly: true });
+		try {
+			assert.equal(check.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_fts'").get(), undefined);
+		} finally {
+			check.close();
+		}
+	});
+
 	it("an old-schema index fails visibly without deletion or rebuild; tightening may still occur", { skip: process.platform === "win32" }, () => {
 		const prev = process.umask(0o022);
 		try {
@@ -632,8 +657,8 @@ describe("incompatible index schema", () => {
 
 			// Operations against an incompatible index must throw, not silently
 			// delete/rebuild it (WAL header bytes may change; sentinel data must not).
-			assert.throws(() => syncSessions(sessionsDir, staleDb), /attempts|no such column|no such table/i);
-			assert.throws(() => searchIndex(staleDb, ".g"), /head|tail|entry_id|no such column|no such table/i);
+			assert.throws(() => syncSessions(sessionsDir, staleDb), /session_fts missing.*delete the index to rebuild/i);
+			assert.throws(() => searchIndex(staleDb, ".g"), /session_fts missing.*delete the index to rebuild/i);
 
 			// The file survives with its sentinel schema/data intact; only
 			// owner-only permission tightening may have occurred.

@@ -119,8 +119,10 @@ async function eventually(check: () => boolean): Promise<void> {
 async function withAgentDir(run: (dir: string) => Promise<void>): Promise<void> {
 	const dir = await mkdtemp(join(tmpdir(), "pi-herdr-rename-"));
 	const previousDir = process.env.PI_CODING_AGENT_DIR;
+	const previousHerdrEnv = process.env.HERDR_ENV;
 	const previousPane = process.env.HERDR_PANE_ID;
 	process.env.PI_CODING_AGENT_DIR = dir;
+	delete process.env.HERDR_ENV;
 	delete process.env.HERDR_PANE_ID;
 	try {
 		await mkdir(join(dir, "config", "pi-task-models"), { recursive: true });
@@ -136,11 +138,30 @@ async function withAgentDir(run: (dir: string) => Promise<void>): Promise<void> 
 	} finally {
 		if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDir;
+		if (previousHerdrEnv === undefined) delete process.env.HERDR_ENV;
+		else process.env.HERDR_ENV = previousHerdrEnv;
 		if (previousPane === undefined) delete process.env.HERDR_PANE_ID;
 		else process.env.HERDR_PANE_ID = previousPane;
 		await rm(dir, { recursive: true, force: true });
 	}
 }
+
+test("a pane ID without Herdr mode only persists the Pi title", async () => {
+	await withAgentDir(async () => {
+		process.env.HERDR_ENV = "0";
+		process.env.HERDR_PANE_ID = "pane-1";
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "rename this conversation" } }],
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		await app.commands.get("rename")?.("", app.ctx);
+
+		assert.deepEqual(app.names, ["Generated title"]);
+		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Generated title", branch: "feat/generated-title" } }]);
+		assert.deepEqual(app.execCalls, []);
+	});
+});
 
 test("automatic rename ignores non-user text, starts once without blocking, and caps model input", async () => {
 	await withAgentDir(async () => {
@@ -216,6 +237,7 @@ test("manual rename disarms a pending automatic rename", async () => {
 
 test("saved display titles keep semantic branches, replace generated branches, and preserve custom workspace names", async () => {
 	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
 		const checkoutPath = join(dir, "worktree");
 		await mkdir(checkoutPath);
@@ -276,6 +298,7 @@ test("saved display titles keep semantic branches, replace generated branches, a
 
 test("manual rename updates generated and custom workspace titles", async () => {
 	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
 		const checkoutPath = join(dir, "worktree");
 		await mkdir(checkoutPath);
@@ -315,6 +338,7 @@ test("manual rename updates generated and custom workspace titles", async () => 
 
 test("semantic branch mutation honors the shared worktree lock", async () => {
 	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
 		const checkoutPath = join(dir, "worktree");
 		await mkdir(checkoutPath);
@@ -356,6 +380,7 @@ test("semantic branch mutation honors the shared worktree lock", async () => {
 
 test("existing and manually changed titles remain untouched", async () => {
 	await withAgentDir(async () => {
+		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
 		const existing = harness({ sessionName: "refactor: update task logic" });
 		await existing.handlers.get("session_start")?.({}, existing.ctx);
@@ -380,6 +405,7 @@ test("existing and manually changed titles remain untouched", async () => {
 
 test("automatic and resumed Herdr failures warn", async () => {
 	await withAgentDir(async () => {
+		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
 		const exec = async (args: string[]) =>
 			args[0] === "pane" && args[1] === "get"
@@ -668,6 +694,7 @@ test("rename reports malformed shared config without rewriting it", async () => 
 
 test("later Herdr failure preserves the Pi name and pane rename", async () => {
 	await withAgentDir(async () => {
+		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
 		const app = harness({
 			sessionName: "Saved title",

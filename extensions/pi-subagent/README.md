@@ -59,7 +59,7 @@ Main supplies every delegation's required `name`: a short description of about f
 
 1. An explicit `model` is `provider/modelId` and overrides `modelClass`.
 2. Main sets direct `model` and `thinking` only for an explicit user override.
-3. Otherwise, Main selects `modelClass`: `fast` normally or `balanced` upfront for obviously complex work.
+3. Otherwise, Main selects `modelClass` according to the [delegation policy](./docs/orchestration.md#delegation-fields).
 4. `modelClass` is `fast`, `balanced`, `frontier`, or `fav`.
    When omitted, it uses pi-subagent's local `pi-subagent/delegateTask` Model Task declaration.
    That declaration defaults to `fast` and shared config can explicitly override it.
@@ -137,7 +137,7 @@ Rebase and infrastructure failures are terminal. A reported fast-forward failure
 
 Otherwise it is terminal and retains the affected worktree. Flow has no graph, saved recovery, automatic retry, aggregate review, or post-merge gate.
 
-`delegate_task` keeps its generic isolation behavior. Flow uses the package-shipped Implementer by default and the package-shipped Reviewer only when a unit requests review. Same-named user Roles remain supported overrides.
+`delegate_task` keeps its generic isolation behavior. Flow uses the package-shipped Implementer by default and the package-shipped Reviewer only when a unit requests review; the built-in Scout is not part of Flow. Same-named user Roles remain supported overrides.
 
 ### Delegate UI summary
 
@@ -202,28 +202,28 @@ An unreadable or invalid Role file fails role loading fast. Duplicate role names
 
 ## Roles
 
-The package ships two working built-in Roles. They are always available without configuration.
+The package ships three working built-in Roles. They are always available without configuration.
 
 - `implementer`: focused edits requesting worktree isolation; commits completed scoped changes locally and never pushes or opens PRs without authorization
 - `reviewer`: read-only correctness review of supplied plans or files, or—only when a Flow unit declares `review`—of Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits
+- `scout`: read-only code and evidence mapping for one bounded task; never changes files
 
-A same-named Markdown file in `~/.pi/agent/config/pi-subagent/` explicitly overrides the built-in default.
+A same-named Markdown file in `~/.pi/agent/config/pi-subagent/` explicitly overrides the built-in default. The built-in `scout` is available to generic `delegate_task`; `delegate_flow` remains limited to its fixed Implementer/Reviewer protocol.
 
-The repository also includes optional inert samples:
+The repository also includes one optional inert sample:
 
-- [`scout`](./examples/roles/scout.md): read-only discovery
 - [`synthesizer`](./examples/roles/synthesizer.md): reconcile supplied reports
 
-Copy them manually from your installed `@henryqw/pi-subagent` package if you want a starting point. npm installs ship the `examples/roles/` directory.
+Copy it manually from your installed `@henryqw/pi-subagent` package if you want a starting point. npm installs ship the `examples/roles/` directory.
 
 ```bash
 mkdir -p ~/.pi/agent/config/pi-subagent
-cp <package-install-dir>/examples/roles/scout.md ~/.pi/agent/config/pi-subagent/
+cp <package-install-dir>/examples/roles/synthesizer.md ~/.pi/agent/config/pi-subagent/
 ```
 
 Locate the install directory with `npm root` inside your project, or through Pi's package installation path.
 
-The package never installs or writes Role configuration. Sample names are not built-ins. After copying, edit or replace them as your own Roles.
+The package never installs or writes Role configuration. After copying, edit or replace `synthesizer.md` as your own Role.
 
 ## Skill
 

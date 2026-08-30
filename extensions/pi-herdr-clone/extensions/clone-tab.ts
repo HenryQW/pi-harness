@@ -324,6 +324,9 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				checkoutPath = typeof result?.workspace?.worktree?.checkout_path === "string" && result.workspace.worktree.checkout_path.trim()
 					? result.workspace.worktree.checkout_path
 					: undefined;
+				if (createdWorktree.killed) {
+					throw new Error("Herdr worktree create was killed before completion.");
+				}
 				const missing = [
 					[workspaceId, "workspace_id"],
 					[tabId, "tab_id"],

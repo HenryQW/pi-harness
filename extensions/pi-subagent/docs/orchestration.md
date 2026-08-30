@@ -66,11 +66,11 @@ Single mode puts one delegation's fields at the top level.
 
 | Field | Required | Contract |
 | --- | --- | --- |
-| `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory or a package-shipped built-in (`implementer`, `reviewer`); a same-named user file overrides the built-in. |
+| `role` | yes | Name of a Role in the user's effective `config/pi-subagent` directory or a package-shipped built-in (`implementer`, `reviewer`, `scout`); a same-named user file overrides the built-in. |
 | `name` | yes | Main-supplied short task name: about five words and fewer than 30 characters; C0/C1 control characters are rejected. |
 | `task` | yes | Non-empty bounded task packet. |
 | `model` | no | Designated `provider/modelId`; takes precedence over `modelClass`, and Main supplies it only for an explicit user override. |
-| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; Main normally chooses `fast`, may choose `balanced` upfront for obvious complexity, and omission uses pi-subagent's local Model Task declaration. |
+| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; Main prioritizes `fast` for straightforward work and `balanced` for complex work, reserves `frontier` for exceptionally complex or tricky work, and omission uses pi-subagent's local Model Task declaration. |
 | `thinking` | no | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; Main supplies it only for an explicit user override. Route selection skips models that cannot honor it. |
 
 Those six fields are the complete delegation object. The direct-model/thinking rule is Main-facing policy only: the runtime adds no provenance tracking or enforcement. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
@@ -87,7 +87,7 @@ All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transp
 
 `delegate_flow({ units })` accepts 1–8 units with unique non-empty `id`, a required Main-supplied short `name` (about five words and fewer than 30 characters, without C0/C1 control characters), a non-empty `task`, one or more direct `{command, args}` validation commands, optional `modelClass`, and optional non-empty `review` text. `delegate_flow_continue({ guidance, modelClass? })` is available only for the one blocked unit of the active Flow.
 
-A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. Omitted unit classes use pi-subagent's local `pi-subagent/delegateTask` declaration (default `fast`); a selected class resolves through its existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
+A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. Omitted unit classes use pi-subagent's local `pi-subagent/delegateTask` declaration (default `fast`). A selected class resolves through its existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
 
 ```text
 Implementers (parallel, one Unit Worktree each)
@@ -108,7 +108,7 @@ If rebase drops all unit commits, `base === tip` is a no-op: Flow validates curr
 
 Flow has no dependency graph, saved state, automatic retry, aggregate review, or post-merge validation. Use it only for commuting changes; combine or sequence units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
-`delegate_task` remains generic: its optional worktree isolation, non-Git behavior, and direct plan/file review are unchanged. Flow uses package-shipped Roles as defaults while retaining same-named user Role overrides; the Reviewer is needed only for a requested review criterion.
+`delegate_task` remains generic: its optional worktree isolation, non-Git behavior, and direct plan/file review are unchanged. The built-in `scout` is available only through generic `delegate_task`; Flow uses package-shipped Implementer and conditional Reviewer Roles as defaults while retaining same-named user Role overrides.
 
 ## Per-delegation resources and isolation
 
@@ -391,30 +391,30 @@ The verdict schema, parser, round state, shared workspace, and terminal decision
 
 ## Built-in Roles and samples
 
-The package ships two working built-in Roles, validated by the same parser as user roles and always present even with no `config/pi-subagent` directory:
+The package ships three working built-in Roles, validated by the same parser as user roles and always present even with no `config/pi-subagent` directory:
 
 | Built-in | Behavior |
 | --- | --- |
 | `implementer` | Focused implementation requesting `isolation: worktree`; commits scoped changes locally, never pushes or opens PRs without authorization. Non-Git or unborn-`HEAD` contexts may use Main's cwd. |
 | `reviewer` | Read-only correctness review of supplied plans/files, or—when a Flow unit declares `review`—Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits. |
+| `scout` | Read-only code and evidence mapping for one bounded task; never changes files. |
 
 A same-named Markdown file in `config/pi-subagent/` explicitly overrides the built-in default.
 
-Additional repository samples are inert starting points, not installed configuration:
+The repository includes one optional inert sample, not installed configuration:
 
 | Sample | Intended starting point |
 | --- | --- |
-| [`scout`](../examples/roles/scout.md) | Read-only code/evidence mapping. |
 | [`synthesizer`](../examples/roles/synthesizer.md) | Reconcile supplied reports without broad discovery. |
 
-Copy the package-shipped samples from your installed `@henryqw/pi-subagent` package (npm installs include `examples/roles/`) if you want them:
+Copy the package-shipped sample from your installed `@henryqw/pi-subagent` package (npm installs include `examples/roles/`) if you want it:
 
 ```bash
 mkdir -p ~/.pi/agent/config/pi-subagent
-cp <package-install-dir>/examples/roles/scout.md ~/.pi/agent/config/pi-subagent/
+cp <package-install-dir>/examples/roles/synthesizer.md ~/.pi/agent/config/pi-subagent/
 ```
 
-The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the files and their names are entirely user-owned.
+The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the file and its name are entirely user-owned.
 
 The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side planner/orchestrator policy only. `delegate_flow` owns its fixed Git mechanics and objective validation authority; the Skill defines no runtime code or configuration. `delegate_task` remains the generic flat single/parallel/chain mechanism.
 

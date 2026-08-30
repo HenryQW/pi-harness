@@ -197,6 +197,9 @@ test("startup and mutations prune stale records, preserve malformed files, and c
 	assert.equal(h.handlers["note-prune"], undefined);
 
 	const currentPath = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json") && name !== "malformed.json")!);
+	await writeFile(currentPath, staleRecord);
+	await h.runSessionStart(firstCtx);
+	assert.deepEqual(h.widget(), ["Worktree notes belong to an old worktree; run /note-clear to reset."]);
 	await writeFile(currentPath, "{broken current data");
 	await h.runSessionStart(firstCtx);
 	assert.match(h.widget()![0]!, /malformed/i);

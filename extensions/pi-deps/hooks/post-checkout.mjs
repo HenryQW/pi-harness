@@ -73,6 +73,7 @@ function nodeCommands() {
 			throw new Error(`Unsupported packageManager: ${JSON.stringify(declared)}`);
 		}
 		manager = declared.slice(0, declared.indexOf("@"));
+		if (/^yarn@1(?:\D|$)/.test(declared)) throw new Error("Yarn Classic 1.x is not supported");
 		if (manager !== locks[0]) {
 			throw new Error(`packageManager ${manager} does not match ${locks[0]} lockfile`);
 		}

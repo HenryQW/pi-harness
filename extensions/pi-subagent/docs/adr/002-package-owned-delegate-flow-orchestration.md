@@ -9,7 +9,7 @@ delegate_flow({ units: [{ id, task, modelClass?, validation: [{ command, args }]
 delegate_flow_continue({ guidance, modelClass? });
 ```
 
-A Flow accepts 1–8 independent units with unique IDs. `modelClass` is optional and otherwise uses the shared `pi-subagent/delegateTask` assignment; its class resolves through the existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. `review` is optional non-empty text for the explicit judgment that declared validation cannot establish.
+A Flow accepts 1–8 independent units with unique IDs. `modelClass` is optional and otherwise uses the shared `pi-subagent/delegateTask` assignment. The class resolves through the existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. `review` is optional non-empty text for the explicit judgment that declared validation cannot establish.
 
 Only one memory-only Flow may be active. At start it resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` Role only when at least one requested unit has `review`. It requires a clean committed attached Main branch and creates one Unit Worktree per unit before launching Implementers in parallel. All started Implementers settle; Flow then processes units in declared order.
 

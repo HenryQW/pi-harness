@@ -31,19 +31,23 @@ export function loadOpenInConfig(agentDir?: string): { source: "file" | "missing
 }
 
 export function configuredOpenUri(path: string): string | undefined {
+	let args: string[];
 	try {
-		if (loadOpenInConfig().value.command !== "code") return undefined;
+		const [executable, ...commandArgs] = loadOpenInConfig().value.command.split(/\s+/);
+		if (executable !== "code") return undefined;
+		args = commandArgs;
 	} catch {
 		// Invalid config must not break footer render; just omit the URI.
 		return undefined;
 	}
+	const query = args.includes("-n") || args.includes("--new-window") ? "?windowId=_blank" : "";
 	if (path.startsWith("\\\\")) {
 		const [host, ...parts] = path.slice(2).split("\\");
 		const uri = new URL(`file://${host}`);
 		uri.pathname = `/${parts.join("/")}`;
-		return `vscode://file//${uri.host}${uri.pathname}`;
+		return `vscode://file//${uri.host}${uri.pathname}${query}`;
 	}
-	return `vscode://file${pathToFileURL(path).pathname}`;
+	return `vscode://file${pathToFileURL(path).pathname}${query}`;
 }
 
 export default function openInExtension(pi: ExtensionAPI): void {

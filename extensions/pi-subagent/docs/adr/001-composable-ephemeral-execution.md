@@ -12,9 +12,9 @@ Resource Policy is split at launch preparation:
 - Caller may add explicit tools, extensions, and environment through `createRoleLaunch`.
 - The executor receives the resulting Pi Launch and does not discover resources.
 
-Built-in `implementer` and `reviewer` Roles ship as Markdown in `examples/roles/` and use the same parser as user Roles. For generic delegation, a same-named user Role explicitly overrides a built-in. The package does not install, copy, or write user configuration.
+Built-in `implementer`, `reviewer`, and `scout` Roles ship as Markdown in `examples/roles/` and use the same parser as user Roles. For generic delegation, a same-named user Role explicitly overrides a built-in. The package does not install, copy, or write user configuration.
 
-Main populates direct `model` and `thinking` only for explicit user overrides; otherwise it chooses only `modelClass` (`fast` normally, `balanced` upfront for obvious complexity). This is tool policy, not executor provenance tracking or runtime enforcement.
+Main populates direct `model` and `thinking` only for explicit user overrides; otherwise it chooses only `modelClass` according to delegation tool policy. This is not executor provenance tracking or runtime enforcement.
 
 ## Scope boundary
 

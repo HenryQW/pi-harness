@@ -51,4 +51,8 @@ const { source, value } = loadOpenInConfig();
 `source` is `"missing"` or `"file"`. `value.command` is validated.
 Pass an agent directory to `loadOpenInConfig(agentDir)` when needed.
 
+`configuredOpenUri(path)` returns a VS Code URI when the executable is `code`.
+For `code -n` and `code --new-window`, it adds `windowId=_blank` so the link opens a new window.
+It returns `undefined` for other commands or invalid config.
+
 This extension owns command validation. `@henryqw/pi-config-store` owns the config home and storage.

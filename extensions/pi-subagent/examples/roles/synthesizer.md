@@ -1,7 +1,8 @@
 ---
 name: synthesizer
 description: Reconciles bounded worker reports into one evidence-based result
-tools: [read]
+tools:
+  - read
 extensions: []
 skills: []
 ---
