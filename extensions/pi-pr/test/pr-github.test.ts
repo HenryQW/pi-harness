@@ -27,6 +27,23 @@ type HarnessOptions = {
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
 
+function reviewThreadPage(nodes: unknown[], hasNextPage = false) {
+	return {
+		data: {
+			node: {
+				reviewThreads: {
+					nodes,
+					pageInfo: { hasNextPage, endCursor: hasNextPage ? "next" : null },
+				},
+			},
+		},
+	};
+}
+
+function reviewThreadOutput(...pages: unknown[]): string {
+	return JSON.stringify(pages);
+}
+
 function pullRequest(overrides: Record<string, unknown> = {}) {
 	return {
 		id: "PR_kwDOExample",
@@ -70,7 +87,9 @@ function harness(options: HarnessOptions = {}) {
 			if (command === "gh" && args[0] === "pr" && args[1] === "list") {
 				return options.listResult ?? result(JSON.stringify(candidates));
 			}
-			if (command === "gh" && args[0] === "api" && args[1] === "graphql") return result(options.threads ?? "0\n");
+			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
+				return result(options.threads ?? reviewThreadOutput(reviewThreadPage([])));
+			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return result(options.status ?? "");
 			}
@@ -107,9 +126,15 @@ test("loads the unique open PR for the exact configured push target", async () =
 		mergeable: "CONFLICTING",
 		mergeStateStatus: "DIRTY",
 		reviewDecision: "CHANGES_REQUESTED",
-		statusCheckRollup: [{ conclusion: "SUCCESS" }, { state: "IN_PROGRESS" }],
+		statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }, { state: "IN_PROGRESS" }],
 	});
-	const { pi, context, calls } = harness({ candidates: [foreign, matching], threads: "1\n1\n" });
+	const { pi, context, calls } = harness({
+		candidates: [foreign, matching],
+		threads: reviewThreadOutput(
+			reviewThreadPage([{ isResolved: false }], true),
+			reviewThreadPage([{ isResolved: false }]),
+		),
+	});
 
 	const loaded = await loadCurrentPullRequest(pi, context);
 	assert.ok(loaded);
@@ -158,6 +183,8 @@ test("loads the unique open PR for the exact configured push target", async () =
 	]);
 	const threads = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "graphql");
 	assert.ok(threads?.args.includes("--paginate"));
+	assert.ok(threads?.args.includes("--slurp"));
+	assert.equal(threads?.args.includes("--jq"), false);
 	assert.doesNotMatch(threads?.args.join(" ") ?? "", /comments/);
 	const mergeSettings = calls.find(({ command, args }) => command === "gh" && args[0] === "repo" && args[2] === "github.com/acme/project");
 	assert.ok(mergeSettings);
@@ -166,6 +193,21 @@ test("loads the unique open PR for the exact configured push target", async () =
 		assert.equal(call.options?.timeout, 10_000);
 		assert.equal(call.options?.signal, context.signal);
 	}
+});
+
+test("prefers an open PR over a matching historical PR", async () => {
+	const historical = pullRequest({
+		number: 41,
+		url: "https://github.com/acme/project/pull/41",
+		state: "CLOSED",
+		headRefOid: LOCAL_HEAD,
+	});
+	const { pi, context } = harness({ candidates: [historical, pullRequest()] });
+
+	const loaded = await loadCurrentPullRequest(pi, context);
+	assert.ok(loaded);
+	assert.equal(loaded.number, 42);
+	assert.equal(loaded.lifecycle, "open");
 });
 
 test("selects historical PRs only when their head matches local HEAD", async () => {
@@ -195,6 +237,27 @@ test("selects historical PRs only when their head matches local HEAD", async () 
 	assert.equal(loaded.merge, null);
 	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
 	assert.equal(calls.some(({ command, args }) => command === "gh" && args[2] === "github.com/acme/project"), false);
+});
+
+test("fails for ambiguous historical PRs matching current HEAD", async () => {
+	const first = pullRequest({
+		number: 41,
+		url: "https://github.com/acme/project/pull/41",
+		state: "CLOSED",
+		headRefOid: LOCAL_HEAD,
+	});
+	const second = pullRequest({
+		number: 43,
+		url: "https://github.com/acme/project/pull/43",
+		state: "MERGED",
+		headRefOid: LOCAL_HEAD,
+	});
+	const { pi, context } = harness({ candidates: [first, second] });
+
+	await assert.rejects(
+		loadCurrentPullRequest(pi, context),
+		/multiple historical pull requests match current HEAD/,
+	);
 });
 
 test("returns null only when no current-branch PR matches", async () => {
@@ -227,10 +290,45 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 		/multiple open pull requests match current push target/,
 	);
 
-	const malformed = harness({ candidates: [pullRequest({ statusCheckRollup: [{}] })] });
+	const malformed = harness({
+		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "BROKEN" }] })],
+	});
 	await assert.rejects(
 		loadCurrentPullRequest(malformed.pi, malformed.context),
 		/invalid statusCheckRollup/,
+	);
+
+	const contradictory = harness({
+		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", status: "IN_PROGRESS" }] })],
+	});
+	await assert.rejects(
+		loadCurrentPullRequest(contradictory.pi, contradictory.context),
+		/invalid statusCheckRollup/,
+	);
+
+	const malformedThreads = harness({
+		threads: reviewThreadOutput(reviewThreadPage([{ isResolved: false }, { isResolved: "false" }])),
+	});
+	await assert.rejects(
+		loadCurrentPullRequest(malformedThreads.pi, malformedThreads.context),
+		/Read unresolved review threads failed: invalid GitHub CLI output/,
+	);
+
+	const malformedPage = harness({
+		threads: reviewThreadOutput({
+			data: {
+				node: {
+					reviewThreads: {
+						nodes: [],
+						pageInfo: { hasNextPage: true, endCursor: null },
+					},
+				},
+			},
+		}),
+	});
+	await assert.rejects(
+		loadCurrentPullRequest(malformedPage.pi, malformedPage.context),
+		/Read unresolved review threads failed: invalid GitHub CLI output/,
 	);
 });
 

@@ -314,23 +314,44 @@ function reviewDecision(value: unknown): ListedPullRequest["reviewDecision"] {
 	return value as ListedPullRequest["reviewDecision"];
 }
 
+function optionalCheckState(check: Record<string, unknown>, field: string): string | null {
+	const value = check[field];
+	if (value === undefined || value === null) return null;
+	if (
+		typeof value !== "string" ||
+		(!FAILED_CHECK_STATES.has(value) && !SUCCESSFUL_CHECK_STATES.has(value) &&
+			!PENDING_CHECK_STATES.has(value))
+	) fail("Find pull requests", "invalid statusCheckRollup");
+	return value;
+}
+
+function checkOutcome(state: string): "failure" | "success" | "running" {
+	if (FAILED_CHECK_STATES.has(state)) return "failure";
+	if (SUCCESSFUL_CHECK_STATES.has(state)) return "success";
+	return "running";
+}
+
+function checkState(value: unknown): string {
+	if (!isRecord(value)) fail("Find pull requests", "invalid statusCheckRollup");
+	const conclusion = optionalCheckState(value, "conclusion");
+	const state = optionalCheckState(value, "state");
+	const status = optionalCheckState(value, "status");
+	const states = [conclusion, state, status].filter((value): value is string => value !== null);
+	if (!states.length) fail("Find pull requests", "invalid statusCheckRollup");
+
+	// COMPLETED describes a check run's lifecycle; its conclusion gives the outcome.
+	const outcomes = states.filter((value) => value !== "COMPLETED").map(checkOutcome);
+	if (
+		new Set(outcomes).size > 1 ||
+		(states.includes("COMPLETED") && outcomes.includes("running"))
+	) fail("Find pull requests", "invalid statusCheckRollup");
+	return conclusion ?? state ?? status ?? fail("Find pull requests", "invalid statusCheckRollup");
+}
+
 function checkStates(value: unknown): string[] {
 	if (value === null) return [];
 	if (!Array.isArray(value)) fail("Find pull requests", "invalid statusCheckRollup");
-	return value.map((check) => {
-		if (!isRecord(check)) fail("Find pull requests", "invalid statusCheckRollup");
-		for (const field of ["conclusion", "state", "status"]) {
-			const state = check[field];
-			if (state === undefined || state === null) continue;
-			if (typeof state !== "string") fail("Find pull requests", "invalid statusCheckRollup");
-			if (
-				!FAILED_CHECK_STATES.has(state) && !SUCCESSFUL_CHECK_STATES.has(state) &&
-				!PENDING_CHECK_STATES.has(state)
-			) fail("Find pull requests", "invalid statusCheckRollup");
-			return state;
-		}
-		return fail("Find pull requests", "invalid statusCheckRollup");
-	});
+	return value.map(checkState);
 }
 
 function listedPullRequest(value: unknown): ListedPullRequest | null {
@@ -431,17 +452,33 @@ function conditions(candidate: ListedPullRequest, unresolvedThreads: number): Pu
 }
 
 function parseUnresolvedReviewThreads(output: string): number {
-	const trimmed = output.trim();
-	if (!trimmed) fail("Read unresolved review threads", "invalid GitHub CLI output");
-	const pages = trimmed.split(/\s+/).map((value) => {
-		if (!/^(0|[1-9][0-9]*)$/.test(value)) {
+	const pages = parseJson(output, "Read unresolved review threads");
+	if (!Array.isArray(pages) || !pages.length) {
+		fail("Read unresolved review threads", "invalid GitHub CLI output");
+	}
+	let total = 0;
+	for (const [index, page] of pages.entries()) {
+		if (!isRecord(page) || !isRecord(page.data) || !isRecord(page.data.node)) {
 			fail("Read unresolved review threads", "invalid GitHub CLI output");
 		}
-		const count = Number(value);
-		if (!Number.isSafeInteger(count)) fail("Read unresolved review threads", "invalid GitHub CLI output");
-		return count;
-	});
-	const total = pages.reduce((sum, page) => sum + page, 0);
+		const reviewThreads = page.data.node.reviewThreads;
+		if (!isRecord(reviewThreads) || !Array.isArray(reviewThreads.nodes) || !isRecord(reviewThreads.pageInfo)) {
+			fail("Read unresolved review threads", "invalid GitHub CLI output");
+		}
+		const { hasNextPage, endCursor } = reviewThreads.pageInfo;
+		if (
+			typeof hasNextPage !== "boolean" ||
+			(hasNextPage && typeof endCursor !== "string") ||
+			(!hasNextPage && endCursor !== null && typeof endCursor !== "string") ||
+			hasNextPage !== (index < pages.length - 1)
+		) fail("Read unresolved review threads", "invalid GitHub CLI output");
+		for (const thread of reviewThreads.nodes) {
+			if (!isRecord(thread) || typeof thread.isResolved !== "boolean") {
+				fail("Read unresolved review threads", "invalid GitHub CLI output");
+			}
+			if (!thread.isResolved) total += 1;
+		}
+	}
 	if (!Number.isSafeInteger(total)) fail("Read unresolved review threads", "invalid GitHub CLI output");
 	return total;
 }
@@ -518,12 +555,11 @@ async function readUnresolvedReviewThreads(
 		"--hostname",
 		candidate.url.hostname,
 		"--paginate",
+		"--slurp",
 		"-f",
 		`query=${REVIEW_THREADS_QUERY}`,
 		"-F",
 		`id=${candidate.id}`,
-		"--jq",
-		"[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length",
 	]);
 	return parseUnresolvedReviewThreads(result.stdout);
 }
