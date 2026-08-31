@@ -78,6 +78,7 @@ export type CurrentPullRequest = PullRequest & {
 	approved: boolean;
 	base: PullRequestRef;
 	head: PullRequestRef;
+	headFetchSource?: string;
 	merge: PullRequestMerge | null;
 };
 
@@ -180,6 +181,13 @@ function singleLine(output: string, action: string, field: string): string {
 	if (lines.at(-1) === "") lines.pop();
 	if (lines.length !== 1) fail(action, `invalid ${field}`);
 	return text(lines[0], action, field);
+}
+
+function optionalPushReference(output: string): string | null {
+	const normalized = output.replace(/\r\n/g, "\n");
+	if (normalized === "\n") return null;
+	if (!normalized) fail("Read push target", "invalid push target");
+	return singleLine(normalized, "Read push target", "push target");
 }
 
 function lines(output: string, action: string, field: string): string[] {
@@ -380,14 +388,39 @@ function listedPullRequest(value: unknown): ListedPullRequest | null {
 	};
 }
 
-function parseListedPullRequests(output: string): ListedPullRequest[] {
+function parseCandidateUrls(output: string, host: string): URL[] {
 	const value = parseJson(output, "Find pull requests");
-	if (!Array.isArray(value)) fail("Find pull requests", "invalid GitHub CLI output");
-	if (value.length >= PR_LIST_LIMIT) fail("Find pull requests", "result limit reached");
-	return value.flatMap((candidate) => {
-		const parsed = listedPullRequest(candidate);
-		return parsed === null ? [] : [parsed];
+	if (
+		!isRecord(value) || typeof value.total_count !== "number" ||
+		!Number.isSafeInteger(value.total_count) || value.total_count < 0 ||
+		typeof value.incomplete_results !== "boolean" || !Array.isArray(value.items)
+	) fail("Find pull requests", "invalid GitHub CLI output");
+	if (value.incomplete_results) fail("Find pull requests", "incomplete search results");
+	if (value.total_count >= PR_LIST_LIMIT) fail("Find pull requests", "result limit reached");
+	if (value.items.length !== value.total_count) fail("Find pull requests", "incomplete search results");
+	const urls = value.items.map((candidate) => {
+		if (!isRecord(candidate)) fail("Find pull requests", "invalid GitHub CLI output");
+		const url = parseHttpUrl(candidate.html_url, "Find pull requests", "url");
+		const path = url.pathname.split("/").filter(Boolean);
+		if (
+			url.hostname.toLowerCase() !== host || path.length !== 4 || path[2] !== "pull" ||
+			!/^[1-9][0-9]*$/.test(path[3])
+		) fail("Find pull requests", "invalid url");
+		return url;
 	});
+	if (new Set(urls.map((url) => url.href)).size !== urls.length) {
+		fail("Find pull requests", "duplicate candidate url");
+	}
+	return urls;
+}
+
+function parseLoadedPullRequest(output: string, expectedUrl: URL): ListedPullRequest | null {
+	const value = parseJson(output, "Find pull requests");
+	const candidate = listedPullRequest(value);
+	if (candidate !== null && candidate.url.href !== expectedUrl.href) {
+		fail("Find pull requests", "response does not match candidate url");
+	}
+	return candidate;
 }
 
 function selectPullRequest(
@@ -539,24 +572,37 @@ function parseMergeMethodSettings(output: string): PullRequestMerge {
 async function readPushTarget(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-): Promise<PushTarget> {
-	singleLine((await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])).stdout, "Read current branch", "branch");
+): Promise<PushTarget | null> {
+	const branch = singleLine(
+		(await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])).stdout,
+		"Read current branch",
+		"branch",
+	);
 	const headOid = oid(
 		singleLine((await execute(pi, context, "Read current HEAD", "git", ["rev-parse", "--verify", "HEAD^{commit}"])).stdout, "Read current HEAD", "HEAD"),
 		"Read current HEAD",
 		"HEAD",
 	);
-	const pushReference = singleLine(
-		(await execute(pi, context, "Read push target", "git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"])).stdout,
-		"Read push target",
-		"push target",
+	const pushReference = optionalPushReference(
+		(await execute(pi, context, "Read push target", "git", [
+			"for-each-ref",
+			"--format=%(push:short)",
+			`refs/heads/${branch}`,
+		])).stdout,
 	);
+	if (pushReference === null) return null;
 	const remoteNames = lines(
 		(await execute(pi, context, "Read push remotes", "git", ["remote"])).stdout,
 		"Read push remotes",
 		"remote",
 	);
 	const push = parsePushReference(pushReference, remoteNames);
+	const checkedRef = singleLine(
+		(await execute(pi, context, "Read push target", "git", ["check-ref-format", "--branch", push.ref])).stdout,
+		"Read push target",
+		"push ref",
+	);
+	if (checkedRef !== push.ref) fail("Read push target", "invalid push ref");
 	const pushUrls = lines(
 		(await execute(pi, context, "Read push URL", "git", ["remote", "get-url", "--push", "--all", push.remote])).stdout,
 		"Read push URL",
@@ -689,19 +735,33 @@ export async function loadCurrentPullRequest(
 	context: PullRequestLoadContext,
 ): Promise<CurrentPullRequest | null> {
 	const pushTarget = await readPushTarget(pi, context);
-	const listed = await execute(pi, context, "Find pull requests", "gh", [
-		"pr",
-		"list",
-		"--head",
-		pushTarget.ref,
-		"--state",
-		"all",
-		"--limit",
-		String(PR_LIST_LIMIT),
-		"--json",
-		PR_FIELDS,
+	if (pushTarget === null) return null;
+	const [headOwner] = pushTarget.repository.nameWithOwner.split("/");
+	const search = await execute(pi, context, "Find pull requests", "gh", [
+		"api",
+		"search/issues",
+		"--hostname",
+		pushTarget.repository.host,
+		"-X",
+		"GET",
+		"-f",
+		`q=is:pr head:${headOwner}:${pushTarget.ref}`,
+		"-f",
+		`per_page=${PR_LIST_LIMIT}`,
 	]);
-	const candidate = selectPullRequest(parseListedPullRequests(listed.stdout), pushTarget);
+	const candidates: ListedPullRequest[] = [];
+	for (const url of parseCandidateUrls(search.stdout, pushTarget.repository.host)) {
+		const loaded = await execute(pi, context, "Find pull requests", "gh", [
+			"pr",
+			"view",
+			url.href,
+			"--json",
+			PR_FIELDS,
+		]);
+		const candidate = parseLoadedPullRequest(loaded.stdout, url);
+		if (candidate !== null) candidates.push(candidate);
+	}
+	const candidate = selectPullRequest(candidates, pushTarget);
 	if (candidate === null) return null;
 
 	const unresolvedThreads = candidate.lifecycle === "open"
@@ -723,11 +783,8 @@ export async function loadCurrentPullRequest(
 		conditions: pullRequestConditions,
 		local,
 		base: candidate.base,
-		head: {
-			repository: pushTarget.repository.nameWithOwner,
-			ref: candidate.head.ref,
-			oid: candidate.head.oid,
-		},
+		head: candidate.head,
+		headFetchSource: pushTarget.remote,
 		merge,
 	};
 }

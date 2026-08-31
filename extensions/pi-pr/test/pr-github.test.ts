@@ -16,10 +16,15 @@ type CommandCall = {
 };
 
 type HarnessOptions = {
-	candidates?: unknown[];
+	branchResult?: ReturnType<typeof result>;
+	candidates?: Record<string, unknown>[];
+	candidateUrls?: unknown[];
 	listResult?: ReturnType<typeof result>;
 	localHead?: string;
+	pushResult?: ReturnType<typeof result>;
 	pushReference?: string;
+	refCheckResult?: ReturnType<typeof result>;
+	remote?: string;
 	remoteNames?: string[];
 	threads?: string;
 	policyResult?: ReturnType<typeof result>;
@@ -88,25 +93,40 @@ function harness(options: HarnessOptions = {}) {
 	const candidates = options.candidates ?? [pullRequest()];
 	const localHead = options.localHead ?? LOCAL_HEAD;
 	const ancestry = options.ancestry ?? "behind";
+	const remote = options.remote ?? "fork";
 	const pi = {
 		exec: async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
 			calls.push({ command, args, options: commandOptions });
-			if (command === "git" && args.join(" ") === "branch --show-current") return result("feature/local\n");
+			if (command === "git" && args.join(" ") === "branch --show-current") {
+				return options.branchResult ?? result("feature/local\n");
+			}
 			if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}") return result(`${localHead}\n`);
-			if (command === "git" && args.join(" ") === "rev-parse --abbrev-ref --symbolic-full-name @{push}") {
-				return result(`${options.pushReference ?? "fork/feature/pr"}\n`);
+			if (command === "git" && args.join(" ") === "for-each-ref --format=%(push:short) refs/heads/feature/local") {
+				return options.pushResult ?? result(`${options.pushReference ?? `${remote}/feature/pr`}\n`);
 			}
 			if (command === "git" && args.join(" ") === "remote") {
-				return result(`${(options.remoteNames ?? ["fork", "origin"]).join("\n")}\n`);
+				return result(`${(options.remoteNames ?? [remote, "origin"]).join("\n")}\n`);
 			}
-			if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
+			if (command === "git" && args[0] === "check-ref-format" && args[1] === "--branch") {
+				return options.refCheckResult ?? result(`${args[2]}\n`);
+			}
+			if (command === "git" && args.join(" ") === `remote get-url --push --all ${remote}`) {
 				return result("git@github.com:acme/fork.git\n");
 			}
 			if (command === "gh" && args.join(" ") === "repo view git@github.com:acme/fork.git --json nameWithOwner,url") {
 				return result(JSON.stringify({ nameWithOwner: "acme/fork", url: "https://github.com/acme/fork" }));
 			}
-			if (command === "gh" && args[0] === "pr" && args[1] === "list") {
-				return options.listResult ?? result(JSON.stringify(candidates));
+			if (command === "gh" && args[0] === "api" && args[1] === "search/issues") {
+				const items = options.candidateUrls ?? candidates.map((candidate) => ({ html_url: candidate.url }));
+				return options.listResult ?? result(JSON.stringify({
+					total_count: items.length,
+					incomplete_results: false,
+					items,
+				}));
+			}
+			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+				const candidate = candidates.find((value) => value.url === args[2]);
+				if (candidate) return result(JSON.stringify(candidate));
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
@@ -120,7 +140,7 @@ function harness(options: HarnessOptions = {}) {
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return result(options.status ?? "");
 			}
-			if (command === "git" && args.join(" ") === "fetch --no-tags fork refs/heads/feature/pr") return result();
+			if (command === "git" && args.join(" ") === `fetch --no-tags ${remote} refs/heads/feature/pr`) return result();
 			if (command === "git" && args.join(" ") === "rev-parse --verify FETCH_HEAD^{commit}") {
 				return result(`${options.fetchedHead ?? REMOTE_HEAD}\n`);
 			}
@@ -148,11 +168,11 @@ function harness(options: HarnessOptions = {}) {
 	return { pi, context, calls };
 }
 
-test("loads the unique open PR for the exact configured push target", async () => {
+test("loads an upstream PR for the exact fork push target and retains its fetch source", async () => {
 	const foreign = pullRequest({
 		number: 41,
-		url: "https://github.com/acme/project/pull/41",
-		headRepository: { nameWithOwner: "other/fork" },
+		url: "https://github.com/acme/unrelated/pull/41",
+		headRepository: { nameWithOwner: "acme/unrelated" },
 	});
 	const matching = pullRequest({
 		mergeable: "CONFLICTING",
@@ -162,6 +182,7 @@ test("loads the unique open PR for the exact configured push target", async () =
 	});
 	const { pi, context, calls } = harness({
 		candidates: [foreign, matching],
+		remote: "publish",
 		threads: reviewThreadOutput(
 			reviewThreadPage([{ isResolved: false }], true),
 			reviewThreadPage([{ isResolved: false }]),
@@ -190,24 +211,31 @@ test("loads the unique open PR for the exact configured push target", async () =
 		local: { worktree: "clean", head: "behind" },
 		base: { repository: "acme/project", ref: "main", oid: BASE_HEAD },
 		head: { repository: "acme/fork", ref: "feature/pr", oid: REMOTE_HEAD },
+		headFetchSource: "publish",
 		merge: {
 			allowedMergeMethods: ["merge", "rebase", "squash"],
 			viewerDefaultMergeMethod: "squash",
 		},
 	});
 
-	const list = calls.find(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "list");
-	assert.deepEqual(list?.args, [
-		"pr",
-		"list",
-		"--head",
-		"feature/pr",
-		"--state",
-		"all",
-		"--limit",
-		"100",
-		"--json",
-		"id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup",
+	const search = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues");
+	assert.deepEqual(search?.args, [
+		"api",
+		"search/issues",
+		"--hostname",
+		"github.com",
+		"-X",
+		"GET",
+		"-f",
+		"q=is:pr head:acme:feature/pr",
+		"-f",
+		"per_page=100",
+	]);
+	assert.equal(search?.args.includes("-R"), false);
+	const views = calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view");
+	assert.deepEqual(views.map(({ args }) => args), [
+		["pr", "view", "https://github.com/acme/unrelated/pull/41", "--json", "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"],
+		["pr", "view", "https://github.com/acme/project/pull/42", "--json", "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"],
 	]);
 	const threads = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "graphql");
 	assert.ok(threads?.args.includes("--paginate"));
@@ -217,12 +245,59 @@ test("loads the unique open PR for the exact configured push target", async () =
 	const mergeSettings = calls.find(({ command, args }) => command === "gh" && args[0] === "repo" && args[2] === "github.com/acme/project");
 	assert.ok(mergeSettings?.args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod"));
 	const fetch = calls.find(({ command, args }) => command === "git" && args[0] === "fetch");
-	assert.deepEqual(fetch?.args, ["fetch", "--no-tags", "fork", "refs/heads/feature/pr"]);
+	assert.deepEqual(fetch?.args, ["fetch", "--no-tags", "publish", "refs/heads/feature/pr"]);
 	for (const call of calls) {
 		assert.equal(call.options?.cwd, "/repo");
 		assert.equal(call.options?.timeout, 10_000);
 		assert.equal(call.options?.signal, context.signal);
 	}
+});
+
+test("returns null for an attached branch whose push target is specifically absent", async () => {
+	const { pi, context, calls } = harness({ pushResult: result("\n") });
+
+	assert.equal(await loadCurrentPullRequest(pi, context), null);
+	assert.equal(calls.some(({ command }) => command === "gh"), false);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "remote"), false);
+});
+
+test("keeps detached HEAD, malformed push refs, and push lookup failures distinct from no upstream", async () => {
+	const detached = harness({ branchResult: result("") });
+	await assert.rejects(
+		loadCurrentPullRequest(detached.pi, detached.context),
+		/Read current branch failed: invalid branch/,
+	);
+	assert.equal(detached.calls.some(({ args }) => args[0] === "for-each-ref"), false);
+
+	const malformed = harness({ pushResult: result("fork/feature/pr\norigin/feature/pr\n") });
+	await assert.rejects(
+		loadCurrentPullRequest(malformed.pi, malformed.context),
+		/Read push target failed: invalid push target/,
+	);
+
+	const invalidRef = harness({ pushReference: "fork/feature..pr", refCheckResult: result("", 128) });
+	await assert.rejects(
+		loadCurrentPullRequest(invalidRef.pi, invalidRef.context),
+		/Read push target failed: exit code 128/,
+	);
+
+	const failed = harness({ pushResult: result("", 128) });
+	await assert.rejects(
+		loadCurrentPullRequest(failed.pi, failed.context),
+		/Read push target failed: exit code 128/,
+	);
+});
+
+test("ignores the same head ref in an unrelated repository", async () => {
+	const unrelated = pullRequest({
+		url: "https://github.com/acme/unrelated/pull/42",
+		headRepository: { nameWithOwner: "acme/unrelated" },
+	});
+	const { pi, context, calls } = harness({ candidates: [unrelated] });
+
+	assert.equal(await loadCurrentPullRequest(pi, context), null);
+	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 1);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
 test("rejects push targets with multiple matching remote-name prefixes", async () => {
@@ -278,7 +353,7 @@ test("selects historical PRs only when their head matches local HEAD", async () 
 	assert.equal(loaded.local.head, "equal");
 	assert.equal(loaded.conditions.unresolvedThreads, 0);
 	assert.equal(loaded.merge, null);
-	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
+	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "graphql"), false);
 	assert.equal(calls.some(({ command, args }) => command === "gh" && args[2] === "github.com/acme/project"), false);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 });
@@ -313,7 +388,7 @@ test("returns null only when no current-branch PR matches", async () => {
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
-	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
+	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "graphql"), false);
 });
 
 test("fails rather than treating command errors, malformed data, or ambiguity as no PR", async () => {
