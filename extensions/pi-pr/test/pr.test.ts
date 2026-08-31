@@ -73,6 +73,7 @@ function flush(): Promise<void> {
 function harness(options: {
 	load: Loader;
 	commandHandler?: PrCommandHandler;
+	theme?: (color: string, text: string) => string;
 }) {
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
@@ -80,6 +81,7 @@ function harness(options: {
 	let command: Command | undefined;
 	const statuses: Array<string | undefined> = [];
 	const widgets: Array<string[] | undefined> = [];
+	const notifications: Array<{ message: string; type: string | undefined }> = [];
 
 	pullRequestExtension({
 		on(event: string, handler: unknown) {
@@ -107,14 +109,15 @@ function harness(options: {
 		ui: {
 			setStatus(_key: string, value: string | undefined) { statuses.push(value); },
 			setWidget(_key: string, value: string[] | undefined) { widgets.push(value); },
-			notify() {},
-			theme: { fg(_color: string, text: string) { return text; } },
+			notify(message: string, type?: string) { notifications.push({ message, type }); },
+			theme: { fg(color: string, text: string) { return options.theme?.(color, text) ?? text; } },
 		},
 	} as unknown as ExtensionContext);
 
 	return {
 		statuses,
 		widgets,
+		notifications,
 		context,
 		async start(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionStart, "session_start")({} as never, ctx);
@@ -175,7 +178,78 @@ test("renders the shared projection and refreshes after successful create or pus
 	await app.shutdown(ctx);
 });
 
-test("polls one request at a time, retains transient errors, and stops cleanly", async (t) => {
+test("propagates render failures before mutating UI", async () => {
+	const app = harness({
+		async load() {
+			return currentPullRequest();
+		},
+		theme() {
+			throw new Error("theme failed");
+		},
+	});
+	const ctx = app.context();
+
+	await assert.rejects(app.start(ctx), /theme failed/);
+	assert.deepEqual(app.statuses, []);
+	assert.deepEqual(app.widgets, []);
+	await app.shutdown(ctx);
+});
+
+test("reports detached render failures once and resumes after recovery", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	let failure: string | undefined;
+	const app = harness({
+		async load() {
+			return currentPullRequest();
+		},
+		theme(_color, text) {
+			if (failure) throw new Error(failure);
+			return text;
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	const statusWritesBeforeFailure = app.statuses.length;
+	const widgetWritesBeforeFailure = app.widgets.length;
+	failure = "timer render failed";
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.deepEqual(app.notifications, [{
+		message: "PR status refresh failed: timer render failed",
+		type: "error",
+	}]);
+	assert.equal(app.statuses.length, statusWritesBeforeFailure);
+	assert.equal(app.widgets.length, widgetWritesBeforeFailure);
+
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(app.notifications.length, 1, "persistent poll failures must not spam notifications");
+
+	failure = undefined;
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	failure = "tool render failed";
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	assert.deepEqual(app.notifications.at(-1), {
+		message: "PR status refresh failed: tool render failed",
+		type: "error",
+	});
+
+	failure = undefined;
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	failure = "command refresh failed";
+	await app.command().handler("", ctx as ExtensionCommandContext);
+	await flush();
+	assert.deepEqual(app.notifications.at(-1), {
+		message: "PR status refresh failed: command refresh failed",
+		type: "error",
+	});
+	assert.equal(app.notifications.length, 3);
+
+	await app.shutdown(ctx);
+});
+
+test("polls one request at a time, retains loader errors, and stops cleanly", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const pending = deferred<CurrentPullRequest | null>();
 	const duringShutdown = deferred<CurrentPullRequest | null>();
@@ -208,19 +282,28 @@ test("polls one request at a time, retains transient errors, and stops cleanly",
 	assert.equal(calls, 3, "queued refresh runs after the active request");
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI running");
 	assert.equal(app.widgets.at(-1), undefined);
+	assert.deepEqual(app.notifications, []);
 
 	t.mock.timers.tick(30_000);
 	assert.equal(calls, 4);
 	assert.equal(signals[3]?.aborted, false);
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	assert.equal(calls, 4, "matching tool result queues behind the signal-ignoring request");
 
+	const statusWritesBeforeShutdown = app.statuses.length;
+	const widgetWritesBeforeShutdown = app.widgets.length;
 	await app.shutdown(ctx);
 	assert.equal(signals[3]?.aborted, true);
 	const callsAfterShutdown = calls;
-	t.mock.timers.tick(60_000);
-	assert.equal(calls, callsAfterShutdown);
 
 	duringShutdown.resolve(currentPullRequest());
 	await flush();
+	assert.equal(calls, callsAfterShutdown, "shutdown must not restart queued refreshes");
+	assert.equal(app.statuses.length, statusWritesBeforeShutdown, "shutdown request must not render a status");
+	assert.equal(app.widgets.length, widgetWritesBeforeShutdown, "shutdown request must not render a widget");
+
+	t.mock.timers.tick(60_000);
+	assert.equal(calls, callsAfterShutdown, "shutdown must stop later polling");
 });
 
 test("/pr preserves command errors while scheduling a refresh", async () => {
