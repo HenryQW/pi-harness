@@ -89,6 +89,7 @@ const extensionDocs: ContentSource = {
 export default defineConfig({
   title: "Henry Pi Harness",
   description: "Focused Pi extensions for memory, subagents, Git workflows, model routing, and better interaction.",
+  feedback: false,
   logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
     root: ".",
