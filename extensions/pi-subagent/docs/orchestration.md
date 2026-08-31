@@ -390,7 +390,7 @@ if (!approved) throw new Error(`Review did not pass after ${maxReviewRounds} rou
 
 The verdict schema, parser, round state, shared workspace, and terminal decision all belong to the caller. Add a richer protocol only when the workflow requires one; do not encode it as a recursive package workflow definition.
 
-## Built-in Roles and samples
+## Built-in Roles
 
 The package ships three working built-in Roles, validated by the same parser as user roles and always present even with no `config/pi-subagent` directory. Their files leave `modelClass` unset, so they use the local Model Task route unless a caller overrides it:
 
@@ -401,21 +401,6 @@ The package ships three working built-in Roles, validated by the same parser as 
 | `scout` | Read-only code and evidence mapping for one bounded task; never changes files. |
 
 A same-named Markdown file in `config/pi-subagent/` explicitly overrides the built-in default.
-
-The repository includes one optional inert sample, not installed configuration:
-
-| Sample | Intended starting point |
-| --- | --- |
-| [`synthesizer`](../examples/roles/synthesizer.md) | Reconcile supplied reports without broad discovery. |
-
-Copy the package-shipped sample from your installed `@henryqw/pi-subagent` package (npm installs include `examples/roles/`) if you want it:
-
-```bash
-mkdir -p ~/.pi/agent/config/pi-subagent
-cp <package-install-dir>/examples/roles/synthesizer.md ~/.pi/agent/config/pi-subagent/
-```
-
-The package never creates, copies, updates, or removes files in `~/.pi/agent/config/pi-subagent/`. Once copied, the file and its name are entirely user-owned.
 
 The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side planner/orchestrator policy only. `delegate_flow` owns its fixed Git mechanics and objective validation authority; the Skill defines no runtime code or configuration. `delegate_task` remains the generic flat single/parallel/chain mechanism.
 

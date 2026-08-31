@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadRoles } from "../src/index.ts";
-
-const samplesDir = fileURLToPath(new URL("../examples/roles/", import.meta.url));
 
 const packageDir = fileURLToPath(new URL("../", import.meta.url));
 
@@ -238,20 +236,4 @@ test("duplicate names among user role files remain an error", async (t) => {
 	await writeFile(join(rolesDir, "b.md"), role);
 
 	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
-});
-
-test("the optional synthesizer sample loads alongside built-in roles", async (t) => {
-	const agentDir = await isolatedAgentDir(t);
-	const rolesDir = join(agentDir, "config", "pi-subagent");
-	await mkdir(rolesDir, { recursive: true });
-	await copyFile(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md"));
-
-	assert.deepEqual(loadRoles(agentDir).map(({ name, tools, isolation, extensions, skills }) => ({
-		name, tools, isolation, extensions, skills,
-	})), [
-		{ name: "implementer", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"], isolation: "worktree", extensions: [], skills: [] },
-		{ name: "reviewer", tools: ["read", "grep", "find", "ls"], isolation: undefined, extensions: [], skills: [] },
-		{ name: "scout", tools: ["read", "grep", "find", "ls"], isolation: undefined, extensions: [], skills: [] },
-		{ name: "synthesizer", tools: ["read"], isolation: undefined, extensions: [], skills: [] },
-	]);
 });
