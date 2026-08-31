@@ -50,7 +50,7 @@ test("links relative images to raw GitHub files", () => {
 test("links extension Markdown files to GitHub", () => {
   const markdown = [
     "[orchestration](./docs/orchestration.md#delegation-fields)",
-    "[role](./examples/roles/synthesizer.md)",
+    "[role](./examples/roles/reviewer.md)",
     "[skill](./skills/pi-subagent-delegated-development/SKILL.md)",
   ].join("\n");
 
@@ -58,7 +58,7 @@ test("links extension Markdown files to GitHub", () => {
     linkRelativeMarkdownToGitHub(markdown, "extensions/pi-subagent/README.md"),
     [
       "[orchestration](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/orchestration.md#delegation-fields)",
-      "[role](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/synthesizer.md)",
+      "[role](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/reviewer.md)",
       "[skill](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/skills/pi-subagent-delegated-development/SKILL.md)",
     ].join("\n")
   );
