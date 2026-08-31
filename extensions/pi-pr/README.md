@@ -32,6 +32,8 @@ Footer statuses include `N unresolved`, `draft`, `open`, `approved`, `CI running
 
 Use `/pr` without arguments. It reads the current branch pull request and local state, then runs one route.
 
+![Flowchart showing /pr reading fresh GitHub and local state, choosing the first matching condition, and stopping after one route](docs/pr-routing.svg)
+
 ## Routes
 
 | Current condition | `/pr` route |
