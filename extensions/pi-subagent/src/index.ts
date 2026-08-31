@@ -3,6 +3,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { hasDisplayControlCharacters } from "./display-text.ts";
 import {
 	loadTaskModelsConfig,
 	modelReference,
@@ -16,6 +17,7 @@ import {
 	type ThinkingLevel,
 } from "@henryqw/pi-task-models";
 
+export { DISPLAY_TEXT_CONTRACT, hasDisplayControlCharacters } from "./display-text.ts";
 export {
 	addUsage,
 	capEphemeralSubagentOutput,
@@ -112,6 +114,13 @@ const cleanText = (value: unknown, field: string, source: string): string => {
 	return value.trim();
 };
 
+const cleanDisplayText = (value: unknown, field: string, source: string): string => {
+	if (typeof value === "string" && hasDisplayControlCharacters(value)) {
+		throw new Error(`${source}: ${field} must not contain C0/C1 control characters.`);
+	}
+	return cleanText(value, field, source);
+};
+
 const stringList = (value: unknown, field: string, source: string): string[] => {
 	if (value === undefined) throw new Error(`${source}: ${field} is required.`);
 	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.includes("\0"))) {
@@ -150,8 +159,8 @@ function parseRoleFile(file: string, raw: string): Role {
 	const isolation = frontmatter.isolation === undefined ? undefined : cleanText(frontmatter.isolation, "isolation", file);
 	if (isolation !== undefined && isolation !== "worktree") throw new Error(`${file}: isolation must be "worktree".`);
 	return {
-		name: cleanText(frontmatter.name, "name", file),
-		description: cleanText(frontmatter.description, "description", file),
+		name: cleanDisplayText(frontmatter.name, "name", file),
+		description: cleanDisplayText(frontmatter.description, "description", file),
 		tools: stringList(frontmatter.tools, "tools", file),
 		isolation,
 		extensions: extensionList(frontmatter.extensions, file),

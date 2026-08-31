@@ -55,6 +55,8 @@ Select exactly one shape:
 
 Main supplies every delegation's required `name`: a short description of about five words and fewer than 30 characters. Names must not contain C0/C1 control characters, including newlines and terminal escape characters.
 
+`role` and explicit `model` values must not contain C0/C1 control characters.
+
 #### Model routing
 
 1. `modelClass` selects a route. It is `fast`, `balanced`, `frontier`, or `fav`.
@@ -167,8 +169,8 @@ Each Role `.md` file in the same directory accepts these frontmatter fields:
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
-| `name` | Yes | Non-empty text; unique across roles | — |
-| `description` | Yes | Non-empty text | — |
+| `name` | Yes | Non-empty text without C0/C1 control characters; unique across roles | — |
+| `description` | Yes | Non-empty text without C0/C1 control characters | — |
 | `tools` | Yes | YAML array of non-empty tool names | `[]` activates no base built-ins; trusted extension tools and caller additions still activate |
 | `isolation` | No | `worktree` | None |
 | `extensions` | Yes | YAML array of absolute paths, `~/…`, `file://`, or package sources (`npm:`, `git:`, `github:`, `https?:`, `ssh:`) | `[]` selects no Role extension bundle |

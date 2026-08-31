@@ -1,4 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
+import { DISPLAY_TEXT_CONTRACT } from "@henryqw/pi-subagent";
 import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -6,9 +7,9 @@ import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
 export const MAX_WORKFLOW_ENTRIES = 8;
 
-const RoleSchema = Type.String({ minLength: 1, description: "Configured Subagent role name" });
+const RoleSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Configured Subagent role name" });
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
-const ModelSchema = Type.String({ minLength: 1, description: "Designated model as provider/modelId; replaces the selected route model" });
+const ModelSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Designated model as provider/modelId; replaces the selected route model" });
 const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
 
 export const DelegationSchema = Type.Object({
