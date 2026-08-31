@@ -131,32 +131,99 @@ test("fails when no sole method, squash, or allowed viewer default exists", () =
 	);
 });
 
-test("executes the selected GitHub merge without auto-merge or branch deletion", async () => {
-	const { exec, calls } = mockExec([result()]);
+test("does not issue a merge command when fresh local safety checks fail", async () => {
+	const cases: Array<{ name: string; responses: ExecResult[]; error: RegExp }> = [
+		{
+			name: "dirty",
+			responses: [result(" M file.ts\n"), result(), result(`${expectedHead}\n`), result(`${expectedHead}\n`)],
+			error: /Local merge safety check failed: worktree is dirty/,
+		},
+		{
+			name: "ahead",
+			responses: [result(), result(), result(`${expectedHead}\n`), result("local-ahead\n"), result("", 1), result("", 0)],
+			error: /Local merge safety check failed: worktree is clean, HEAD is ahead/,
+		},
+		{
+			name: "diverged",
+			responses: [result(), result(), result(`${expectedHead}\n`), result("local-diverged\n"), result("", 1), result("", 1)],
+			error: /Local merge safety check failed: worktree is clean, HEAD is diverged/,
+		},
+		{
+			name: "moved head",
+			responses: [result(), result(), result("moved-head\n")],
+			error: /Fetched PR head moved-head does not match expected PR head expected-head/,
+		},
+		{
+			name: "fetch failure",
+			responses: [result(), result("", 1, "remote unavailable")],
+			error: /git fetch --no-tags https:\/\/github\.com\/acme\/project\.git refs\/heads\/feature\/pr failed: remote unavailable/,
+		},
+	];
 
-	await executeGitHubMerge({
-		exec,
-		cwd,
-		prNumber: 42,
-		allowedMergeMethods: ["merge", "squash"],
-		viewerDefaultMergeMethod: "merge",
-	});
+	for (const candidate of cases) {
+		const { exec, calls } = mockExec(candidate.responses);
+		await assert.rejects(
+			executeGitHubMerge({
+				...inspectInput(exec),
+				prNumber: 42,
+				allowedMergeMethods: ["squash"],
+			}),
+			candidate.error,
+		);
+		assert.equal(
+			calls.some(({ command: executable, args }) => executable === "gh" && args[0] === "pr" && args[1] === "merge"),
+			false,
+			candidate.name,
+		);
+	}
+});
 
-	assert.deepEqual(calls, [{
-		command: "gh",
-		args: ["pr", "merge", "42", "--squash", "--disable-auto"],
-		cwd,
-	}]);
-	assert.equal(calls[0]!.args.includes("--auto"), false);
-	assert.equal(calls[0]!.args.includes("--delete-branch"), false);
+test("executes the selected GitHub merge only for equal or behind exact heads", async () => {
+	const cases: Array<{ name: string; localHead: string; ancestry?: number[] }> = [
+		{ name: "equal", localHead: expectedHead },
+		{ name: "behind", localHead: "local-behind", ancestry: [0] },
+	];
+
+	for (const candidate of cases) {
+		const responses: ExecResult[] = [
+			result(),
+			result(),
+			result(`${expectedHead}\n`),
+			result(`${candidate.localHead}\n`),
+		];
+		for (const code of candidate.ancestry ?? []) responses.push(result("", code));
+		responses.push(result());
+		const { exec, calls } = mockExec(responses);
+
+		await executeGitHubMerge({
+			...inspectInput(exec),
+			prNumber: 42,
+			allowedMergeMethods: ["merge", "squash"],
+			viewerDefaultMergeMethod: "merge",
+		});
+
+		assert.deepEqual(calls.at(-1), {
+			command: "gh",
+			args: ["pr", "merge", "42", "--squash", "--disable-auto"],
+			cwd,
+		}, candidate.name);
+		assert.equal(calls.at(-1)!.args.includes("--auto"), false);
+		assert.equal(calls.at(-1)!.args.includes("--delete-branch"), false);
+	}
 });
 
 test("surfaces GitHub merge failures and does not retry", async () => {
-	const { exec, calls } = mockExec([result("", 1, "merge blocked")]);
+	const { exec, calls } = mockExec([
+		result(),
+		result(),
+		result(`${expectedHead}\n`),
+		result(`${expectedHead}\n`),
+		result("", 1, "merge blocked"),
+	]);
 
 	await assert.rejects(
-		executeGitHubMerge({ exec, cwd, prNumber: 42, allowedMergeMethods: ["squash"] }),
+		executeGitHubMerge({ ...inspectInput(exec), prNumber: 42, allowedMergeMethods: ["squash"] }),
 		/gh pr merge 42 --squash --disable-auto failed: merge blocked/,
 	);
-	assert.equal(calls.length, 1);
+	assert.equal(calls.length, 5);
 });

@@ -28,9 +28,7 @@ export type MergeMethodSelectionInput = {
 	viewerDefaultMergeMethod?: MergeMethod | null;
 };
 
-export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & {
-	exec: Exec;
-	cwd: string;
+export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & InspectLocalMergeSafetyInput & {
 	prNumber: number;
 };
 
@@ -159,14 +157,17 @@ export function selectMergeMethod(input: MergeMethodSelectionInput): MergeMethod
 }
 
 function validateExecuteInput(input: ExecuteGitHubMergeInput): void {
-	requiredText(input.cwd, "cwd");
-	if (typeof input.exec !== "function") throw new TypeError("exec must be a function");
+	validateInspectionInput(input);
 	if (!Number.isSafeInteger(input.prNumber) || input.prNumber <= 0) throw new TypeError("prNumber must be a positive safe integer");
 }
 
 export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promise<void> {
 	validateExecuteInput(input);
 	const method = selectMergeMethod(input);
+	const local = await inspectLocalMergeSafety(input);
+	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
+		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
+	}
 	await runCommand(input.exec, input.cwd, "gh", [
 		"pr",
 		"merge",
