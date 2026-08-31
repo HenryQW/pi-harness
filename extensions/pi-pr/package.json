@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "0.3.6",
-  "description": "Show the current branch pull request status in the Pi footer.",
+  "version": "1.0.0",
+  "description": "Show current-branch pull request lifecycle, CI, mergeability, and review state in the Pi footer; route /pr to the highest-priority next workflow.",
   "keywords": [
     "pi-package",
     "pi",
