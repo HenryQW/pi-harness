@@ -1,1 +1,1 @@
-export const MODEL_CLASS_GUIDANCE = "Prioritize modelClass fast for straightforward work and balanced for complex work. Reserve frontier for exceptionally complex or tricky work.";
+export const MODEL_CLASS_GUIDANCE = "If the selected Role declares a modelClass default, omit modelClass unless an explicit override is needed. Otherwise, prioritize modelClass fast for straightforward work and balanced for complex work. Reserve frontier for exceptionally complex or tricky work.";

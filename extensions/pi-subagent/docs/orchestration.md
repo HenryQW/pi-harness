@@ -69,9 +69,9 @@ Single mode puts one delegation's fields at the top level.
 | `name` | yes | Main-supplied short task name: about five words and fewer than 30 characters; C0/C1 control characters are rejected. |
 | `task` | yes | Non-empty bounded task packet. |
 | `model` | no | Designated `provider/modelId`; replaces only the selected route model and must support that route's thinking level. |
-| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; selects the route. Main prioritizes `fast` for straightforward work and `balanced` for complex work. It reserves `frontier` for exceptionally complex or tricky work. Omission uses pi-subagent's local Model Task declaration. |
+| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav`; selects the route. Main prioritizes `fast` for straightforward work and `balanced` for complex work. It reserves `frontier` for exceptionally complex or tricky work. Omission uses the selected Role default, then pi-subagent's local Model Task assignment or declared default. |
 
-Those five fields are the complete delegation object. Routes set exact thinking levels. A direct model never changes that level and fails before launch if it cannot support it. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
+Those five fields are the complete delegation object. An explicit call `modelClass` wins over the selected Role's optional default. If neither is present, the local Model Task assignment or declared default selects the route. Routes set exact thinking levels. A direct model never changes that level and fails before launch if it cannot support it. `tasks`, `chain`, and `background` cannot be nested. Route fallback occurs only before launch; a started child is never retried by this package.
 
 ### Background, failures, and transport
 
@@ -85,7 +85,7 @@ All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transp
 
 `delegate_flow({ units })` accepts 1–8 units with unique non-empty `id`, a required Main-supplied short `name` (about five words and fewer than 30 characters, without C0/C1 control characters), a non-empty `task`, one or more direct `{command, args}` validation commands, optional `modelClass`, and optional non-empty `review` text. `delegate_flow_continue({ guidance, modelClass? })` is available only for the one blocked unit of the active Flow.
 
-A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. Omitted unit classes use pi-subagent's local `pi-subagent/delegateTask` declaration (default `fast`). A selected class resolves through its existing `pi-task-models` profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
+A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. An explicit unit class overrides both frozen Roles. Without one, the Implementer and Reviewer each use their own optional Role default; a Role without one uses pi-subagent's local `pi-subagent/delegateTask` assignment or declared `fast` default. The selected class resolves through its existing `pi-task-models` profile model-and-thinking route. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
 
 ```text
 Implementers (parallel, one Unit Worktree each)
@@ -102,7 +102,7 @@ for each declared unit:
 
 Flow derives identity from Git, not child output. Add `review` only for an explicit judgment criterion that automated validation cannot establish; it is not a second generic verification pass. The Reviewer reads the exact patch as authoritative and may use the same worktree only for referenced context. A full-OID fast-forward is the only integration path. Cleanup is non-forced; after a successful integration, cleanup refusal returns `completed` with a retained path/branch warning.
 
-If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance, modelClass? })` reruns the Flow's frozen Implementer Role in that same worktree once, then repeats derivation, validation, and conditional review with fresh exact evidence. Omitting continuation `modelClass` retains the blocked unit's current class; providing it replaces that class for the one repair. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact integrated tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
+If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance, modelClass? })` reruns the Flow's frozen Implementer Role in that same worktree once, then repeats derivation, validation, and conditional review with fresh exact evidence. An omitted continuation class retains a supplied Unit class; when no Unit class was supplied, each frozen Role uses its own default. A supplied continuation class replaces both Role defaults for that repair and any subsequent Reviewer launch. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact integrated tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
 
 Flow has no dependency graph, saved state, automatic retry, aggregate review, or post-merge validation. Use it only for commuting changes; combine or sequence units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
@@ -132,7 +132,8 @@ A Role file requires:
 - base tools: a YAML array; `tools: []` activates no base built-ins, while trusted selected extension tools still activate;
 - explicit extension paths or package sources: a YAML array; `extensions: []` selects no Role extension bundle;
 - additional effective Pi Skill names: a YAML array; `skills: []` selects no separately named Role Skills, while trusted selected extension Skills still load;
-- system instructions; and
+- system instructions;
+- optional `modelClass` default (`fast`, `balanced`, `frontier`, or `fav`); and
 - optional `isolation: worktree` for the tool layer.
 
 Every launch installs the Role tool policy. At launch, a package caller may add `tools`, `extensions`, and `env`; caller tools are unioned into the Role base list and loaded extension tools activate in every case. Caller `env` adds to or overrides the active Pi process environment for the child.
@@ -149,12 +150,12 @@ The package root exports the following mechanism-level APIs:
 | --- | --- |
 | `loadRoles(agentDir?)` | Validate and load package-shipped built-in and user Role Markdown. |
 | `resolveRoleSkills(pi, role)` | Resolve Role Skill names from Pi's effective registry. |
-| `resolveRoleLaunch(pi, ctx, input)` | Resolve a caller-owned Model Task route and produce `ResolvedRoleLaunch`. |
+| `resolveRoleLaunch(pi, ctx, input)` | Resolve a caller-owned Model Task route, applying call-level then Role `modelClass` precedence, and produce `ResolvedRoleLaunch`. |
 | `createRoleLaunch(pi, ctx, input)` | Produce the same launch from a caller-supplied resolved route. |
 | `createEphemeralSubagentExecutor(options)` | Queue and run one prepared no-session child per `run`. |
 | `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle. |
 
-A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, optional `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, and optional caller `agentDir`, `extensions`, `tools`, and `env`. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
+A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, optional `modelClass` and `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, optional call-level `modelClass`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
 
 `createEphemeralSubagentExecutor` requires:
 
@@ -214,6 +215,7 @@ export function createRunRole(pi) {
     const {
       signal,
       cwd,
+      modelClass,
       extensions = [],
       tools,
       env = {},
@@ -227,6 +229,7 @@ export function createRunRole(pi) {
         const launch = resolveRoleLaunch(pi, ctx, {
           role,
           task: MODEL_TASK,
+          modelClass,
           extensions,
           tools,
           env,
@@ -389,7 +392,7 @@ The verdict schema, parser, round state, shared workspace, and terminal decision
 
 ## Built-in Roles
 
-The package ships three working built-in Roles, validated by the same parser as user roles and always present even with no `config/pi-subagent` directory:
+The package ships three working built-in Roles, validated by the same parser as user roles and always present even with no `config/pi-subagent` directory. Their files leave `modelClass` unset, so they use the local Model Task route unless a caller overrides it:
 
 | Built-in | Behavior |
 | --- | --- |

@@ -151,11 +151,12 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		getSessionGeneration: () => sessionGeneration,
 		loadRoles: () => flowRoles,
 		resolveLaunch(role, modelClass) {
+			const effectiveModelClass = modelClass ?? role.modelClass;
 			roles.push(role);
-			routes.push({ role: role.name, modelClass });
+			routes.push({ role: role.name, modelClass: effectiveModelClass });
 			return {
 				args: [],
-				env: { FLOW_ROLE: role.name, FLOW_MODEL_CLASS: modelClass ?? "assignment" },
+				env: { FLOW_ROLE: role.name, FLOW_MODEL_CLASS: effectiveModelClass ?? "assignment" },
 				model,
 				thinkingLevel: "low",
 				missingSkills: [],
@@ -638,6 +639,63 @@ test("Flow routes each unit class to its Implementer and applicable Reviewer", a
 		{ role: "reviewer", modelClass: "assignment" },
 		{ role: "reviewer", modelClass: "balanced" },
 		{ role: "reviewer", modelClass: "fast" },
+	]);
+});
+
+test("Flow lets frozen Roles use their own defaults until a unit overrides them", async (t) => {
+	const repo = await repository(t);
+	const flowRoles: Role[] = [
+		{ ...loadBuiltinRole("implementer"), modelClass: "balanced" },
+		{ ...loadBuiltinRole("reviewer"), modelClass: "frontier" },
+	];
+	const seen: Array<{ id: string; role: string; modelClass: string }> = [];
+	const app = harness(repo, async (prepared) => {
+		const id = unitId(prepared.task);
+		seen.push({ id, role: childRole(prepared), modelClass: childModelClass(prepared) });
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, `${id}.txt`, `${id}\n`);
+			return success();
+		}
+		return success("PASS");
+	}, undefined, flowRoles);
+
+	const result = await flowTool(app).execute("role-classes", { units: [
+		reviewedUnit("defaults"),
+		{ ...reviewedUnit("override"), modelClass: "fast" },
+	] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.deepEqual(seen.sort((left, right) => `${left.id}:${left.role}`.localeCompare(`${right.id}:${right.role}`)), [
+		{ id: "defaults", role: "implementer", modelClass: "balanced" },
+		{ id: "defaults", role: "reviewer", modelClass: "frontier" },
+		{ id: "override", role: "implementer", modelClass: "fast" },
+		{ id: "override", role: "reviewer", modelClass: "fast" },
+	]);
+});
+
+test("Flow continuation without a Unit class uses each frozen Role default", async (t) => {
+	const repo = await repository(t);
+	const flowRoles: Role[] = [
+		{ ...loadBuiltinRole("implementer"), modelClass: "balanced" },
+		{ ...loadBuiltinRole("reviewer"), modelClass: "frontier" },
+	];
+	const classes: Array<{ role: string; modelClass: string }> = [];
+	const app = harness(repo, async (prepared) => {
+		classes.push({ role: childRole(prepared), modelClass: childModelClass(prepared) });
+		if (childRole(prepared) === "reviewer") return success("PASS");
+		if (prepared.task.startsWith("Flow Unit")) return failure("implementation crashed");
+		await commit(prepared.cwd, "repaired.txt", "fixed\n");
+		return success();
+	}, undefined, flowRoles);
+
+	const blocked = await flowTool(app).execute("role-default-repair", { units: [reviewedUnit("defaults")] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	const completed = await continueTool(app).execute("role-default-repair-continue", { guidance: "Commit the requested file." }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+	assert.deepEqual(classes, [
+		{ role: "implementer", modelClass: "balanced" },
+		{ role: "implementer", modelClass: "balanced" },
+		{ role: "reviewer", modelClass: "frontier" },
 	]);
 });
 

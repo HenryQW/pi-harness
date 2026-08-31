@@ -26,7 +26,7 @@ const model: NonNullable<ExtensionContext["model"]> = {
 	contextWindow: 100_000,
 	maxTokens: 10_000,
 	reasoning: true,
-	thinkingLevelMap: { high: "high" },
+	thinkingLevelMap: { medium: "medium", high: "high" },
 };
 
 test("child role policy keeps selected built-ins and activates loaded extension tools", () => {
@@ -261,17 +261,21 @@ test("empty Role tools activate only trusted extension tools and caller addition
 	assert.deepEqual(activeTools, ["caller_protocol", "role_extension", "caller_extension"]);
 });
 
-test("assigned Role launch merges caller policy and resolves effective Pi resources", async (t) => {
+test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-library-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	await mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true });
 	await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-		profiles: { frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } } },
+		profiles: {
+			balanced: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "medium" } },
+			frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } },
+		},
 		tasks: { "pi-example/review": "frontier" },
 	}));
 	const role: Role = {
 		name: "reviewer",
 		description: "Reviews changes",
+		modelClass: "balanced",
 		tools: ["read"],
 		extensions: ["/roles/reviewer.ts"],
 		skills: ["security", "missing"],
@@ -291,14 +295,16 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 		isProjectTrusted: () => false,
 	} as unknown as ExtensionContext;
 
+	const task = {
+		id: "pi-example/review",
+		label: "Example review",
+		purpose: "Review one requested change.",
+		defaultProfile: "fast",
+	} as const;
 	const launch = resolveRoleLaunch(pi, ctx, {
 		role,
-		task: {
-			id: "pi-example/review",
-			label: "Example review",
-			purpose: "Review one requested change.",
-			defaultProfile: "fast",
-		},
+		task,
+		modelClass: "frontier",
 		agentDir,
 		extensions: ["/caller/adapter.ts", "/roles/reviewer.ts"],
 		tools: ["submit", "read"],
@@ -330,6 +336,15 @@ test("assigned Role launch merges caller policy and resolves effective Pi resour
 	);
 
 	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,delegate_flow,delegate_flow_continue,ask_question");
+
+	const roleDefault = resolveRoleLaunch(pi, ctx, { role, task, agentDir });
+	assert.equal(roleDefault.thinkingLevel, "medium");
+	const taskDefault = resolveRoleLaunch(pi, ctx, {
+		role: { ...role, modelClass: undefined },
+		task,
+		agentDir,
+	});
+	assert.equal(taskDefault.thinkingLevel, "high");
 });
 
 function valueAfter(args: string[], flag: string): string {

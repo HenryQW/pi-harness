@@ -22,7 +22,7 @@ pi install npm:@henryqw/pi-subagent
 | --- | --- |
 | `@henryqw/pi-task-models` | Required. Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
 
-Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. An omitted class uses pi-subagent's `pi-subagent/delegateTask` default, `fast`. Missing shared model config warns once because delegation needs a route.
+Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. An explicit call `modelClass` wins over a Role `modelClass`; without either, pi-subagent uses its configured `pi-subagent/delegateTask` assignment or declared `fast` default. Missing shared model config warns once because delegation needs a route.
 
 ## Use
 
@@ -47,7 +47,7 @@ Pi's built-in tool block shows each call and result. Select exactly one `delegat
 
 Main supplies each `name`. It must be a short description, about five words and fewer than 30 characters, with no C0/C1 control characters such as newlines or terminal escapes. `role` and an explicit `model` also reject those controls.
 
-`modelClass` selects `fast`, `balanced`, `frontier`, or `fav`. The route sets the model and exact thinking level. An explicit `model` (`provider/modelId`) replaces only the route model and must support that thinking level. `background` applies to the whole selected mode, never one entry.
+`modelClass` selects `fast`, `balanced`, `frontier`, or `fav`. An explicit call class wins over a Role class; without either, the configured task assignment or declared default applies. The route sets the model and exact thinking level. An explicit `model` (`provider/modelId`) replaces only the route model and must support that thinking level. `background` applies to the whole selected mode, never one entry.
 
 Parallel tasks start together, settle together, and report in input order. Chains are sequential and fail at the first failure. `{previous}` passes only the immediately preceding successful assistant output. Foreground failures throw after keeping bounded sibling and recovery evidence.
 
@@ -73,7 +73,7 @@ A Flow has 1–8 units with unique non-empty IDs. It is memory-only and allows o
 - Without `review`, Flow fast-forwards the exact validated tip.
 - With `review`, the Reviewer receives the exact `{base, tip, patchPath}` packet and must return exactly `PASS` before the same integration path. Use `review` only for stated judgment that validation cannot decide.
 
-One `delegate_flow_continue` can repair an Implementer, validation, or review block in the same worktree. Omitting its class keeps the unit's class; supplying one changes that repair only. A second block is terminal. Rebase and infrastructure failures are terminal. Flow has no dependency graph, saved recovery, automatic retry, aggregate review, or post-merge validation.
+An explicit unit `modelClass` overrides both frozen Roles. Without one, each Role uses its own `modelClass` or configured `pi-subagent/delegateTask` assignment or declared default. One `delegate_flow_continue` can repair an Implementer, validation, or review block in the same worktree. Omitting its class keeps the unit's explicit class and frozen Role defaults; supplying one replaces both Role defaults for that repair and its later Reviewer launch. A second block is terminal. Rebase and infrastructure failures are terminal. Flow has no dependency graph, saved recovery, automatic retry, aggregate review, or post-merge validation.
 
 Flow never force-deletes recoverable work. Failed or uncertain units, and cleanup refusals after integration, retain their worktree path or branch for recovery. See [Flow mechanics and recovery](./docs/orchestration.md#delegate_flow).
 
@@ -102,15 +102,18 @@ Role Markdown files live beside the config file. They require frontmatter and a 
 | --- | --- |
 | `name` | Required unique, non-empty text without C0/C1 controls. |
 | `description` | Required non-empty text without C0/C1 controls. |
+| `modelClass` | Optional; `fast`, `balanced`, `frontier`, or `fav`. |
 | `tools` | Required YAML array of non-empty tool names. `[]` selects no base built-ins. |
 | `isolation` | Optional; only `worktree`. |
 | `extensions` | Required YAML array. Entries are absolute paths, `~/…`, `file://`, or `npm:`, `git:`, `github:`, `https?:`, or `ssh:` sources. |
 | `skills` | Required YAML array of non-empty Skill names. |
 | body | Required Markdown system prompt after the frontmatter. |
 
+A Role's `modelClass` is a default. A call-level or Flow-unit class wins.
+
 An unreadable or invalid Role fails loading fast. Duplicate Role names are rejected. A same-named user file overrides a built-in Role.
 
-The package always provides these built-in Roles:
+The package always provides these built-in Roles. Their files leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` assignment or declared default unless a call or Flow unit overrides it:
 
 | Role | Purpose | Isolation/use |
 | --- | --- | --- |
@@ -138,4 +141,4 @@ The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated
 
 The package root exports `loadRoles`, `resolveRoleSkills`, `resolveRoleLaunch`, `createRoleLaunch`, `createEphemeralSubagentExecutor`, and worktree helpers. The executor works only inside the active Pi process; it does not discover or start a standalone Node.js Pi installation.
 
-See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example.
+See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default.
