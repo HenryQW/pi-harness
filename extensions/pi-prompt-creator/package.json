@@ -1,0 +1,51 @@
+{
+  "name": "@henryqw/pi-prompt-creator",
+  "version": "0.1.0",
+  "description": "Turn current Pi conversation signals into user-approved prompt templates.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "prompt",
+    "template"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "LICENSE",
+    "extensions",
+    "README.md",
+    "CONTEXT.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-harness.git",
+    "directory": "extensions/pi-prompt-creator"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-harness/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/prompt-creator.ts"
+    ]
+  },
+  "dependencies": {
+    "@henryqw/pi-config-store": "^0.1.0",
+    "@henryqw/pi-subagent": "^11.0.1",
+    "@henryqw/pi-task-models": "^4.0.0"
+  }
+}
