@@ -238,13 +238,9 @@ async function execute(
 }
 
 function parsePushReference(value: string, remoteNames: string[]): { remote: string; ref: string } {
-	const matches = remoteNames
-		.filter((remote) => value.startsWith(`${remote}/`))
-		.sort((left, right) => right.length - left.length);
+	const matches = remoteNames.filter((remote) => value.startsWith(`${remote}/`));
 	if (!matches.length) fail("Read push target", "target does not name a configured remote");
-	if (matches.length > 1 && matches[0].length === matches[1].length) {
-		fail("Read push target", "target names multiple configured remotes");
-	}
+	if (matches.length > 1) fail("Read push target", "target names multiple configured remotes");
 	const remote = matches[0];
 	const ref = value.slice(remote.length + 1);
 	text(ref, "Read push target", "push ref");
@@ -460,7 +456,12 @@ function parseUnresolvedReviewThreads(output: string): number {
 	}
 	let total = 0;
 	for (const [index, page] of pages.entries()) {
-		if (!isRecord(page) || !isRecord(page.data) || !isRecord(page.data.node)) {
+		if (!isRecord(page)) fail("Read unresolved review threads", "invalid GitHub CLI output");
+		if (page.errors !== undefined) {
+			if (!Array.isArray(page.errors)) fail("Read unresolved review threads", "invalid GitHub CLI output");
+			if (page.errors.length) fail("Read unresolved review threads", "GitHub GraphQL returned errors");
+		}
+		if (!isRecord(page.data) || !isRecord(page.data.node)) {
 			fail("Read unresolved review threads", "invalid GitHub CLI output");
 		}
 		const reviewThreads = page.data.node.reviewThreads;

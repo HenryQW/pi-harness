@@ -19,6 +19,8 @@ type HarnessOptions = {
 	candidates?: unknown[];
 	listResult?: ReturnType<typeof result>;
 	localHead?: string;
+	pushReference?: string;
+	remoteNames?: string[];
 	threads?: string;
 	policyResult?: ReturnType<typeof result>;
 	requiresStrictStatusChecks?: boolean;
@@ -92,9 +94,11 @@ function harness(options: HarnessOptions = {}) {
 			if (command === "git" && args.join(" ") === "branch --show-current") return result("feature/local\n");
 			if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}") return result(`${localHead}\n`);
 			if (command === "git" && args.join(" ") === "rev-parse --abbrev-ref --symbolic-full-name @{push}") {
-				return result("fork/feature/pr\n");
+				return result(`${options.pushReference ?? "fork/feature/pr"}\n`);
 			}
-			if (command === "git" && args.join(" ") === "remote") return result("fork\norigin\n");
+			if (command === "git" && args.join(" ") === "remote") {
+				return result(`${(options.remoteNames ?? ["fork", "origin"]).join("\n")}\n`);
+			}
 			if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
 				return result("git@github.com:acme/fork.git\n");
 			}
@@ -219,6 +223,19 @@ test("loads the unique open PR for the exact configured push target", async () =
 		assert.equal(call.options?.timeout, 10_000);
 		assert.equal(call.options?.signal, context.signal);
 	}
+});
+
+test("rejects push targets with multiple matching remote-name prefixes", async () => {
+	const { pi, context, calls } = harness({
+		pushReference: "team/fork/feature/pr",
+		remoteNames: ["origin", "team", "team/fork"],
+	});
+
+	await assert.rejects(
+		loadCurrentPullRequest(pi, context),
+		/Read push target failed: target names multiple configured remotes/,
+	);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "remote" && args.length > 1), false);
 });
 
 test("prefers an open PR over a matching historical PR", async () => {
@@ -356,6 +373,23 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	await assert.rejects(
 		loadCurrentPullRequest(malformedPage.pi, malformedPage.context),
 		/Read unresolved review threads failed: invalid GitHub CLI output/,
+	);
+});
+
+test("rejects partial review-thread data when any paginated GraphQL page has errors", async () => {
+	const { pi, context } = harness({
+		threads: reviewThreadOutput(
+			reviewThreadPage([{ isResolved: false }], true),
+			{
+				...reviewThreadPage([{ isResolved: false }]),
+				errors: [{ message: "Review threads are unavailable" }],
+			},
+		),
+	});
+
+	await assert.rejects(
+		loadCurrentPullRequest(pi, context),
+		/Read unresolved review threads failed: GitHub GraphQL returned errors/,
 	);
 });
 
