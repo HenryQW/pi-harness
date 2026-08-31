@@ -346,8 +346,8 @@ function collectThreadStates(metadata, request = readGraphql) {
   }
 }
 
-function resolveThread(threadId, hostname) {
-  const data = writeGraphql(RESOLVE_THREAD_MUTATION, { threadId }, hostname);
+function resolveThread(threadId, hostname, mutate = writeGraphql) {
+  const data = mutate(RESOLVE_THREAD_MUTATION, { threadId }, hostname);
   const result = data.resolveReviewThread;
   if (!isRecord(result) || !isRecord(result.thread)) throw new FeedbackError(`failed to resolve ${threadId}`);
   if (result.thread.id !== threadId || result.thread.isResolved !== true) {
@@ -628,18 +628,20 @@ function githubRemote(url, hostname) {
 }
 
 function selectPushRemote(repository, hostname, remotes) {
-  const configured = list(remotes, "configured remotes");
-  if (configured.length !== 1) {
-    throw new FeedbackError(`expected exactly one configured remote for ${repository}, found ${configured.length}`);
+  const target = requiredText(repository, "PR head repository").toLowerCase();
+  const expectedHost = requiredText(hostname, "PR hostname").toLowerCase();
+  const matches = [];
+  for (const remote of list(remotes, "configured remotes")) {
+    if (!isRecord(remote)) throw new FeedbackError("configured remote is invalid");
+    const name = requiredText(remote.name, "remote name");
+    const urls = list(remote.urls, `push URLs for ${name}`);
+    for (const url of urls) {
+      if (githubRemote(requiredText(url, `push URL for ${name}`), expectedHost) === target) matches.push({ name, urls });
+    }
   }
-  const remote = configured[0];
-  if (!isRecord(remote)) throw new FeedbackError("configured remote is invalid");
-  const name = requiredText(remote.name, "remote name");
-  const urls = list(remote.urls, `push URLs for ${name}`);
+  if (matches.length !== 1) throw new FeedbackError(`expected exactly one matching push URL for ${repository}, found ${matches.length}`);
+  const [{ name, urls }] = matches;
   if (urls.length !== 1) throw new FeedbackError(`expected exactly one push URL on ${name}, found ${urls.length}`);
-  if (githubRemote(requiredText(urls[0], `push URL for ${name}`), hostname) !== requiredText(repository, "PR head repository").toLowerCase()) {
-    throw new FeedbackError(`push URL for ${name} does not match PR head repository and hostname`);
-  }
   return name;
 }
 
@@ -757,21 +759,28 @@ function selfTest() {
   ]) assert.equal(githubRemote(remoteUrl, enterpriseHost), "owner/repo");
   assert.equal(githubRemote("https://github.com/Owner/Repo.git", enterpriseHost), null);
   assert.equal(githubRemote(`http://${enterpriseHost}/Owner/Repo.git`, enterpriseHost), null);
-  assert.equal(selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`] }]), "origin");
-  assert.throws(
-    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`, `ssh://git@${enterpriseHost}/Owner/Repo.git`] }]),
-    /exactly one push URL/,
-  );
+  assert.equal(selectPushRemote("Owner/Repo", enterpriseHost, [
+    { name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`] },
+    { name: "upstream", urls: [`https://${enterpriseHost}/Other/Repo.git`] },
+  ]), "origin");
   assert.throws(
     () => selectPushRemote("Owner/Repo", enterpriseHost, [
       { name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`] },
-      { name: "fork", urls: [`https://${enterpriseHost}/Owner/Repo.git`] },
+      { name: "fork", urls: [`ssh://git@${enterpriseHost}/Owner/Repo.git`] },
     ]),
-    /exactly one configured remote/,
+    /exactly one matching push URL/,
+  );
+  assert.throws(
+    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`, `ssh://git@${enterpriseHost}/Owner/Repo.git`] }]),
+    /exactly one matching push URL/,
+  );
+  assert.throws(
+    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`, `https://${enterpriseHost}/Owner/Other.git`] }]),
+    /exactly one push URL on origin/,
   );
   assert.throws(
     () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Other.git`] }]),
-    /does not match/,
+    /exactly one matching push URL/,
   );
 
   assert.equal(retryableReadFailure(new FeedbackError("HTTP 503")), true);
@@ -841,6 +850,22 @@ function selfTest() {
     ) } } };
   };
   assert.deepEqual([...collectThreadStates(metadata, stateRequest)], [["thread-1", true], ["thread-2", true]]);
+
+  const mutations = [];
+  resolveThread("thread-1", enterpriseHost, (query, variables, hostname) => {
+    mutations.push([query, variables, hostname]);
+    return { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } };
+  });
+  assert.deepEqual(mutations, [[RESOLVE_THREAD_MUTATION, { threadId: "thread-1" }, enterpriseHost]]);
+  let failedMutations = 0;
+  assert.throws(
+    () => resolveThread("thread-2", enterpriseHost, () => {
+      failedMutations += 1;
+      throw new FeedbackError("mutation failed");
+    }),
+    /mutation failed/,
+  );
+  assert.equal(failedMutations, 1);
 
   const previousFeedback = {
     conversationComments: [{ id: "conversation-1", author: { login: "octocat" }, body: "old conversation" }],
@@ -913,23 +938,37 @@ function selfTest() {
     let index = 0;
     return () => values[Math.min(index++, values.length - 1)];
   };
-  const operations = (readPr, push = () => {}) => ({
+  const operations = (readPr, push = () => {}, remoteFor = () => "origin") => ({
     readPr,
-    remoteFor: () => "origin",
+    remoteFor,
     push,
     pause: () => {},
   });
   assert.equal(publishHead(localHead, "local", operations(sequence(localHead))).status, "already-current");
-  assert.equal(publishHead(oldHead, "local", operations(sequence(oldHead, oldHead, localHead))).status, "pushed");
+  const remoteCalls = [];
+  const pushCalls = [];
+  assert.equal(publishHead(oldHead, "local", operations(
+    sequence(oldHead, oldHead, localHead),
+    (remote, branch) => pushCalls.push([remote, branch]),
+    (repository, hostname) => {
+      remoteCalls.push([repository, hostname]);
+      return "origin";
+    },
+  )).status, "pushed");
+  assert.deepEqual(remoteCalls, [["owner/repo", enterpriseHost]]);
+  assert.deepEqual(pushCalls, [["origin", "feature"]]);
   assert.equal(publishHead(oldHead, "local", operations(sequence(oldHead, localHead), () => {
     throw new FeedbackError("HTTP 503");
   })).status, "recovered-after-error");
+  let failedPushes = 0;
   assert.throws(
     () => publishHead(oldHead, "local", operations(sequence(oldHead), () => {
+      failedPushes += 1;
       throw new FeedbackError("HTTP 503");
     })),
     /HTTP 503/,
   );
+  assert.equal(failedPushes, 1);
 
   const drifts = [
     ["number", { ...oldHead, number: 2, url: `https://${enterpriseHost}/owner/repo/pull/2` }],
