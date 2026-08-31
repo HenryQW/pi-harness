@@ -264,6 +264,7 @@ test("role profile resolves skill names and selects exact extensions, tools, mod
 		await writeFile(join(agentDir, "config", "pi-subagent", "reviewer.md"), `---
 name: reviewer
 description: Reviews focused changes
+modelClass: frontier
 tools: [read, grep]
 extensions:
   - /user/extensions/review.ts
@@ -288,7 +289,8 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			skills: [{ name: "security", path: "/effective/skills/security/SKILL.md" }],
 			trusted: false,
 		});
-		assert.match(app.tool.description, /reviewer: Reviews focused changes/);
+		assert.match(app.tool.description, /reviewer: Reviews focused changes \(modelClass: frontier\)/);
+		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)));
 		const updates: any[] = [];
 		const result = await app.tool.execute(
 			"call-1",
@@ -436,12 +438,13 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	});
 });
 
-test("routes supply thinking for omitted, class, direct-model, and background delegation", async () => {
+test("Role and call model classes preserve selected route thinking", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
 name: worker
 description: Does bounded work
+modelClass: balanced
 tools: [read]
 extensions: []
 skills: []
@@ -484,13 +487,24 @@ Return concise findings.
 
 		const omitted = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code" }, undefined, undefined, app.ctx);
 		const omittedArgs = JSON.parse(singleOutput(omitted));
-		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/fast-model");
-		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "off");
+		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/balanced-model");
+		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "medium");
 
-		const direct = await app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/direct-model", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const direct = await app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/direct-model" }, undefined, undefined, app.ctx);
 		const directArgs = JSON.parse(singleOutput(direct));
 		assert.equal(directArgs[directArgs.indexOf("--model") + 1], "provider/direct-model");
-		assert.equal(directArgs[directArgs.indexOf("--thinking") + 1], "max");
+		assert.equal(directArgs[directArgs.indexOf("--thinking") + 1], "medium");
+
+		const directExplicit = await app.tool.execute("call-3-explicit", {
+			role: "worker",
+			name: "Test delegated task",
+			task: "inspect code",
+			model: "provider/direct-model",
+			modelClass: "frontier",
+		}, undefined, undefined, app.ctx);
+		const directExplicitArgs = JSON.parse(singleOutput(directExplicit));
+		assert.equal(directExplicitArgs[directExplicitArgs.indexOf("--model") + 1], "provider/direct-model");
+		assert.equal(directExplicitArgs[directExplicitArgs.indexOf("--thinking") + 1], "max");
 
 		const background = await app.tool.execute("call-4", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "fav", background: true }, undefined, undefined, app.ctx);
 		assert.match(background.content[0]!.text, /accepted/);

@@ -24,7 +24,9 @@ pi install npm:@henryqw/pi-subagent
 | `@henryqw/pi-multi-codex` | Required. Children can use Main's active Codex slot. |
 | `@henryqw/pi-task-models` | Required. Shared `fast` / `balanced` / `frontier` / `fav` routes. |
 
-Model routing is not configured here. Children resolve routes through shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models/config.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
+Model routing is not configured here. Children resolve routes through shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models/config.json`, which stores only explicit task overrides.
+
+Precedence is explicit call `modelClass` > Role `modelClass` > configured Model Task assignment or declared default. The local `pi-subagent/delegateTask` declaration defaults to `fast`.
 
 The local config is optional and uses defaults quietly when missing. If shared task-model config is missing, pi-subagent warns once at session start because delegation needs a route.
 
@@ -57,10 +59,11 @@ Main supplies every delegation's required `name`: a short description of about f
 
 #### Model routing
 
-1. `modelClass` selects a route. It is `fast`, `balanced`, `frontier`, or `fav`.
-2. An omitted class uses pi-subagent's `pi-subagent/delegateTask` declaration. Its default is `fast`.
-3. The route supplies the model and exact thinking level.
-4. An explicit `model` is `provider/modelId`. It replaces only the route model and must support its thinking level.
+1. An explicit `modelClass` selects a route. It is `fast`, `balanced`, `frontier`, or `fav`.
+2. Without one, a Role `modelClass` selects the route.
+3. Without either, pi-subagent uses its configured `pi-subagent/delegateTask` assignment or declared `fast` default.
+4. The route supplies the model and exact thinking level.
+5. An explicit `model` is `provider/modelId`. It replaces only the route model and must support its thinking level.
 
 `background` applies to the whole selected mode. It is never a per-delegation field.
 
@@ -100,7 +103,7 @@ Add `review` only for judgment that automation cannot establish. That unit keeps
 
 Only one memory-only Flow may be active. At start, it resolves and freezes the effective `implementer` Role, including a same-named user override. It resolves and freezes the effective `reviewer` only when at least one unit requests `review`.
 
-An omitted `modelClass` uses the local `pi-subagent/delegateTask` declaration, which defaults to `fast`. A selected class resolves through its shared profile model-and-thinking route for the unit's Implementer and, when applicable, Reviewer.
+An explicit unit `modelClass` overrides both frozen Roles. Without one, the Implementer and Reviewer each use their own Role default. A Role without a default uses its configured `pi-subagent/delegateTask` assignment or declared `fast` default. The selected class resolves through its shared profile model-and-thinking route.
 
 Flow creates one Unit Worktree per unit before it launches Implementers. It runs Implementers in parallel, then processes settled results in declared order.
 
@@ -108,7 +111,7 @@ After integration, it removes the worktree and branch non-forcibly. A refusal is
 
 A rebase that drops all unit commits is a no-op. Flow validates it, skips Reviewer and merge, then cleans up ordinarily.
 
-Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. An omitted continuation `modelClass` retains the blocked unit's current class. A supplied class replaces it for that one repair.
+Implementer, validation, or review blocks can be repaired once through `delegate_flow_continue` in the same worktree. An omitted continuation keeps the unit's explicit class. If no class was selected, each frozen Role keeps its own default. A supplied class replaces both Role defaults for that repair and its later Reviewer launch.
 
 Rebase and infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Git left Main clean at the exact integrated tip.
 
@@ -169,17 +172,20 @@ Each Role `.md` file in the same directory accepts these frontmatter fields:
 | --- | --- | --- | --- |
 | `name` | Yes | Non-empty text; unique across roles | — |
 | `description` | Yes | Non-empty text | — |
+| `modelClass` | No | `fast`, `balanced`, `frontier`, or `fav` | Configured Model Task assignment or declared default |
 | `tools` | Yes | YAML array of non-empty tool names | `[]` activates no base built-ins; trusted extension tools and caller additions still activate |
 | `isolation` | No | `worktree` | None |
 | `extensions` | Yes | YAML array of absolute paths, `~/…`, `file://`, or package sources (`npm:`, `git:`, `github:`, `https?:`, `ssh:`) | `[]` selects no Role extension bundle |
 | `skills` | Yes | YAML array of non-empty Skill names | `[]` selects no separately named Role Skills; trusted extension Skills still load |
 | body | Yes | System-prompt Markdown after the frontmatter | — |
 
+A Role `modelClass` is a default. A call-level class always wins.
+
 An unreadable or invalid Role file fails role loading fast. Duplicate role names are rejected.
 
 ## Roles
 
-The package ships three working built-in Roles. They are always available without configuration.
+The package ships three working built-in Roles. They are always available without configuration. Their files intentionally leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` route unless a call overrides it.
 
 - `implementer`: focused edits requesting worktree isolation; commits completed scoped changes locally and never pushes or opens PRs without authorization
 - `reviewer`: read-only correctness review of supplied plans or files, or—only when a Flow unit declares `review`—of Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits
@@ -245,4 +251,4 @@ After Pi exits, the executor drains inherited stdout and stderr normally. It des
 
 Use [`docs/orchestration.md`](./docs/orchestration.md#public-role-and-executor-api) for exact API behavior.
 
-It includes a post-permit `prepare` example. The example uses `resolveRoleLaunch` with a caller-owned Model Task declaration against the latest Pi context.
+It includes a post-permit `prepare` example. The example uses `resolveRoleLaunch` with a caller-owned Model Task declaration against the latest Pi context. It can pass `modelClass` to override a Role default.

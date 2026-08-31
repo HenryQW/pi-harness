@@ -78,6 +78,8 @@ test("missing config directory still returns validated built-in implementer, rev
 		},
 	]);
 
+	assert.deepEqual(roles.map(({ modelClass }) => modelClass), [undefined, undefined, undefined]);
+
 	assert.match(implementer!.systemPrompt, /bounded outcome, not a preassigned file list/i);
 	assert.match(implementer!.systemPrompt, /assigned cwd/i);
 	assert.match(implementer!.systemPrompt, /repository instructions and domain context/i);
@@ -193,6 +195,18 @@ test("Role capability lists are required arrays", async (t) => {
 	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 	const role = loadRoles(agentDir).find((candidate) => candidate.name === "role")!;
 	assert.deepEqual([role.tools, role.extensions, role.skills], [[], [], []]);
+});
+
+test("Role modelClass accepts shared profiles and rejects invalid values", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	const rolePath = join(rolesDir, "role.md");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(rolePath, "---\nname: role\ndescription: d\nmodelClass: frontier\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	assert.equal(loadRoles(agentDir).find(({ name }) => name === "role")!.modelClass, "frontier");
+
+	await writeFile(rolePath, "---\nname: role\ndescription: d\nmodelClass: slow\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	assert.throws(() => loadRoles(agentDir), /role\.md: modelClass must be one of fast, balanced, frontier, fav\./);
 });
 
 test("duplicate names among user role files remain an error", async (t) => {
