@@ -140,8 +140,8 @@ importers:
         specifier: ^0.84.4
         version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
       '@henryqw/pi-herdr':
-        specifier: ^0.3.0
-        version: 0.3.1
+        specifier: ^0.4.1
+        version: link:../pi-herdr
       '@henryqw/pi-task-models':
         specifier: ^4.0.0
         version: link:../pi-task-models
