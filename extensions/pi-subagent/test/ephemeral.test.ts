@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	capEphemeralSubagentOutput,
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
 	EXECUTION_BUDGET_ENV,
@@ -70,7 +71,7 @@ function usage(multiplier: number) {
 	};
 }
 
-test("executor acquires FIFO permits before prepare", async (t) => {
+test("executor acquires FIFO permits before prepare without consuming child deadlines", async (t) => {
 	const cwd = await useRunner(t, successfulRunner);
 	const calls: number[] = [];
 	let releaseFirst!: () => void;
@@ -82,9 +83,12 @@ test("executor acquires FIFO permits before prepare", async (t) => {
 			return prepared(cwd, `task-${id}`);
 		},
 	});
-	const executorInstance = executor();
+	const executorInstance = createEphemeralSubagentExecutor({
+		maxConcurrency: 1,
+		timeout: { idleMs: 500, maxMs: 1000 },
+	});
 	const runs = [run(1), run(2), run(3)];
-	await new Promise<void>((resolve) => setImmediate(resolve));
+	await new Promise<void>((resolve) => setTimeout(resolve, 600));
 	assert.deepEqual(calls, [1]);
 	releaseFirst();
 	await Promise.all(runs);
@@ -194,6 +198,64 @@ test("Bun virtual entrypoints reuse the active executable instead of PATH", asyn
 	assert.match(result.stderr, /(?:bad|unknown|illegal) option/i);
 });
 
+test("executor frames split UTF-8 JSON and bounds streamed and final output", async (t) => {
+	const cwd = await useRunner(t, `const update = Buffer.from(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 }, assistantMessageEvent: { type: "text_delta", delta: "partial 🙂" } }) + "\\n");
+const split = update.indexOf(Buffer.from("🙂")) + 2;
+process.stdout.write(update.subarray(0, split));
+setTimeout(() => {
+	process.stdout.write(update.subarray(split));
+	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "🙂".repeat(20_000) }], stopReason: "end" } }));
+}, 20);
+`);
+	const updates: string[] = [];
+	const result = await executor().run({
+		onUpdate: (text) => updates.push(text),
+		prepare: async () => prepared(cwd),
+	});
+	const expected = capEphemeralSubagentOutput("🙂".repeat(20_000));
+	assert.equal(updates[0], "partial 🙂");
+	assert.equal(result.output, expected);
+	assert.equal(result.output.includes("�"), false);
+	assert.ok(Buffer.byteLength(result.output, "utf8") <= 50 * 1024);
+});
+
+test("executor discards oversized known lifecycle events", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
+event({ type: "agent_end", messages: [{ role: "toolResult", content: "x".repeat(2 * 1024 * 1024) }] });
+`);
+	assert.equal((await executor().run({ prepare: async () => prepared(cwd) })).output, "done");
+});
+
+test("only recognized Pi events renew the idle deadline and maximum runtime still wins", async (t) => {
+	const cwd = await useRunner(t, `if (process.argv.at(-1) === "Task: invalid") {
+	process.on("SIGTERM", () => {});
+	setInterval(() => {
+		process.stdout.write('{"type":"message_update"\\n');
+		console.log(JSON.stringify({ type: "heartbeat" }));
+		process.stderr.write("still here\\n");
+	}, 25);
+} else {
+	setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } })), 25);
+}
+`);
+	const deadlineExecutor = createEphemeralSubagentExecutor({
+		maxConcurrency: 1,
+		timeout: { idleMs: 120, maxMs: 280 },
+	});
+	for (const [task, message] of [
+		["invalid", /without a recognized Pi event/],
+		["recognized", /maximum runtime/],
+	] as const) {
+		await assert.rejects(deadlineExecutor.run({ prepare: async () => prepared(cwd, task) }), (error) => {
+			assert.ok(error instanceof EphemeralSubagentError);
+			assert.equal(error.code, "timeout");
+			assert.match(error.message, message);
+			return true;
+		});
+	}
+});
+
 test("post-exit stdio drain releases one queued permit held by an escaped descendant", async (t) => {
 	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -287,6 +349,68 @@ if (task === "Task: first") {
 	const [firstResult, secondResult] = await Promise.all([first, second]);
 	assert.equal(firstResult.output, "first");
 	assert.equal(secondResult.output, "second");
+});
+
+test("abort and normal completion stop child process trees", async (t) => {
+	if (process.platform === "win32") {
+		t.skip("Unix process groups only");
+		return;
+	}
+	const descendantSource = `const { writeFileSync } = require("node:fs");
+process.on("SIGTERM", () => {});
+writeFileSync(process.env.EPHEMERAL_DESCENDANT_STARTED, "started");
+writeFileSync(process.env.EPHEMERAL_DESCENDANT_PID, String(process.pid));
+setTimeout(() => writeFileSync(process.env.EPHEMERAL_DESCENDANT_SURVIVED, "alive"), 300);
+setInterval(() => {}, 1_000);`;
+	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+const mode = process.argv.at(-1);
+const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(descendantSource)}], {
+	stdio: mode === "Task: complete" ? "inherit" : "ignore",
+});
+descendant.unref();
+const ready = setInterval(() => {
+	if (!existsSync(process.env.EPHEMERAL_DESCENDANT_STARTED)) return;
+	clearInterval(ready);
+	if (mode === "Task: abort") {
+		console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "started" } }));
+		setInterval(() => {}, 1_000);
+	} else {
+		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));
+	}
+}, 5);
+`);
+	const paths = (mode: string) => ({
+		started: join(cwd, `${mode}-started`),
+		pid: join(cwd, `${mode}-pid`),
+		survived: join(cwd, `${mode}-survived`),
+	});
+	const modes = [paths("abort"), paths("complete")];
+	t.after(async () => {
+		for (const mode of modes) {
+			try { process.kill(Number(await readFile(mode.pid, "utf8")), "SIGKILL"); } catch {}
+		}
+	});
+	const childLaunch = (mode: ReturnType<typeof paths>): PiLaunch => ({
+		args: [],
+		env: {
+			EPHEMERAL_DESCENDANT_STARTED: mode.started,
+			EPHEMERAL_DESCENDANT_PID: mode.pid,
+			EPHEMERAL_DESCENDANT_SURVIVED: mode.survived,
+		},
+	});
+
+	const controller = new AbortController();
+	await assert.rejects(executor().run({
+		signal: controller.signal,
+		onUpdate: () => controller.abort(),
+		prepare: async () => prepared(cwd, "abort", childLaunch(modes[0]!)),
+	}), (error) => error instanceof EphemeralSubagentError && error.code === "aborted");
+	assert.equal((await executor().run({
+		prepare: async () => prepared(cwd, "complete", childLaunch(modes[1]!)),
+	})).output, "done");
+	await new Promise<void>((resolve) => setTimeout(resolve, 400));
+	for (const mode of modes) await assert.rejects(readFile(mode.survived), { code: "ENOENT" });
 });
 
 test("executor projects validated child activity", async (t) => {

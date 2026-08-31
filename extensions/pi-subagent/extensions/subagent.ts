@@ -33,7 +33,6 @@ import {
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
-import { runDelegation } from "./delegation.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -639,7 +638,7 @@ export default function subagentExtension(
 							: { ...base, status: nextStatus, assistantOutput: nextText });
 					};
 					try {
-						child = await runDelegation(executor, {
+						child = await executor.run({
 							signal: workflowSignal,
 							onUpdate: (output) => {
 								setState("running", output);
