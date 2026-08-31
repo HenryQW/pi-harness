@@ -120,15 +120,6 @@ The package always provides these built-in Roles:
 
 Flow uses the effective Implementer and, only when requested, Reviewer. The Scout is not part of Flow.
 
-[`synthesizer`](./examples/roles/synthesizer.md) is an optional sample for reconciling supplied reports. It does nothing until you copy it:
-
-```bash
-mkdir -p ~/.pi/agent/config/pi-subagent
-cp <package-install-dir>/examples/roles/synthesizer.md ~/.pi/agent/config/pi-subagent/
-```
-
-Use `npm root` in a project to find the package install directory. The package never installs or changes this file; after copying, it is yours.
-
 ## Role resources and trust
 
 A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry; unavailable ones warn and skip.
