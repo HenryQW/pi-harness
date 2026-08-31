@@ -93,6 +93,10 @@ async function mergePullRequest(
 		throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
 	}
 	if (!fresh.merge) throw new Error(`PR #${fresh.number} merge failed: merge capabilities are unavailable`);
+	const freshMethod = selectMergeMethod(fresh.merge);
+	if (freshMethod !== method) {
+		throw new Error(`PR #${fresh.number} merge cancelled: merge method changed from ${method} to ${freshMethod}`);
+	}
 
 	await executeGitHubMerge({
 		exec: (command, args, options) => pi.exec(command, args, {

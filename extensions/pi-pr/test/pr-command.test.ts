@@ -355,10 +355,10 @@ test("merges only after confirmation, using fresh PR data in the atomic mutation
 				host,
 				headRefOid: nextHead,
 				methods: {
-					mergeCommitAllowed: false,
-					rebaseMergeAllowed: true,
+					mergeCommitAllowed: true,
+					rebaseMergeAllowed: false,
 					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "REBASE",
+					viewerDefaultMergeMethod: "MERGE",
 				},
 			},
 		],
@@ -388,8 +388,40 @@ test("merges only after confirmation, using fresh PR data in the atomic mutation
 			"-F",
 			`expectedHeadOid=${nextHead}`,
 			"-F",
-			"mergeMethod=REBASE",
+			"mergeMethod=MERGE",
 		],
 	}]);
 	assert.equal(app.calls.some(({ args }) => args.includes("--web")), false);
+});
+
+test("cancels a confirmed merge when the fresh merge method changes", async () => {
+	const app = harness({
+		states: [
+			{
+				methods: {
+					mergeCommitAllowed: true,
+					rebaseMergeAllowed: false,
+					squashMergeAllowed: false,
+					viewerDefaultMergeMethod: "MERGE",
+				},
+			},
+			{
+				methods: {
+					mergeCommitAllowed: false,
+					rebaseMergeAllowed: true,
+					squashMergeAllowed: false,
+					viewerDefaultMergeMethod: "REBASE",
+				},
+			},
+		],
+		ancestry: "behind",
+	});
+
+	await assert.rejects(app.handler("", app.context), /merge method changed from merge to rebase/);
+	assert.deepEqual(app.confirmations, [{
+		title: "Merge PR #42 with merge?",
+		message: "Merge PR #42 using merge.",
+	}]);
+	assert.deepEqual(app.events, ["load", "confirm", "load"]);
+	assert.equal(mutationCalls(app.calls).length, 0);
 });
