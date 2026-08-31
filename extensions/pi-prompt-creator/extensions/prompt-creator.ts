@@ -137,6 +137,7 @@ function conversationItem(entry: SessionEntry): ConversationItem | undefined {
 		return entry.summary.trim() ? { role: "summary", text: entry.summary } : undefined;
 	}
 	if (entry.type !== "message" || (entry.message.role !== "user" && entry.message.role !== "assistant")) return;
+	if (entry.message.role === "assistant" && entry.message.stopReason !== "stop") return;
 	const text = messageText(entry.message.content);
 	return text.trim() ? { role: entry.message.role, text } : undefined;
 }

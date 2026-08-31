@@ -59,7 +59,7 @@ Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the
 
 Analysis sends the current conversation to the child model configured through `/task-models`.
 
-The payload includes the active compaction or branch summary and user and assistant text. It also includes effective prompt names and descriptions.
+The payload includes the active compaction or branch summary, user text, and successfully completed assistant text. It also includes effective prompt names and descriptions.
 
 Project context files and prompt templates are disabled for the child.
 

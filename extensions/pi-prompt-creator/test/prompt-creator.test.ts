@@ -286,6 +286,31 @@ test("an oversized newest message does not hide smaller older messages", async (
 	});
 });
 
+test("analysis excludes incomplete assistant replies from the child payload", async () => {
+	await withAgentDir(async (agentDir) => {
+		const child = controlledExecutor();
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			selections: ["Analyze now"],
+			branch: [
+				{ type: "message", message: { role: "user", content: "Request before interruption" } },
+				{ type: "message", message: { role: "assistant", content: "Interrupted reply", stopReason: "aborted" } },
+				{ type: "message", message: { role: "user", content: "Request after interruption" } },
+				{ type: "message", message: { role: "assistant", content: "Completed reply", stopReason: "stop" } },
+			],
+		});
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		await app.registeredCommands.get("promptor")!("", app.ctx);
+		await eventually(() => child.runs.length === 1);
+		assert.deepEqual(JSON.parse(child.runs[0]!.prepared.task).currentConversation, [
+			{ role: "user", text: "Request before interruption" },
+			{ role: "user", text: "Request after interruption" },
+			{ role: "assistant", text: "Completed reply" },
+		]);
+	});
+});
+
 test("a candidate stays pending until shown, and invalid later output fails visibly", async () => {
 	assert.equal(parseDraftOutput('{"candidate":null}'), null);
 	assert.throws(
