@@ -16,6 +16,7 @@ const EXEC_TIMEOUT_MS = 10_000;
 const PR_LIST_LIMIT = 100;
 const PR_FIELDS = "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
+const BASE_BRANCH_POLICY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name branchProtectionRule{requiresStrictStatusChecks}}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const FAILED_CHECK_STATES = new Set([
 	"ACTION_REQUIRED",
@@ -64,15 +65,9 @@ export type PullRequestRef = {
 
 export type MergeMethod = "merge" | "rebase" | "squash";
 
-export type MergeMethodSettings = {
-	mergeCommitAllowed: boolean;
-	rebaseMergeAllowed: boolean;
-	squashMergeAllowed: boolean;
-};
-
 export type PullRequestMerge = {
-	method: MergeMethod;
-	methods: MergeMethodSettings;
+	allowedMergeMethods: MergeMethod[];
+	viewerDefaultMergeMethod: MergeMethod;
 };
 
 export type CurrentPullRequest = PullRequest & {
@@ -103,6 +98,7 @@ type PushRepository = {
 
 type PushTarget = {
 	headOid: string;
+	remote: string;
 	repository: PushRepository;
 	ref: string;
 };
@@ -428,7 +424,11 @@ function ciStatus(states: string[]): CiStatus {
 	return running ? "running" : "success";
 }
 
-function conditions(candidate: ListedPullRequest, unresolvedThreads: number): PullRequestConditions {
+function conditions(
+	candidate: ListedPullRequest,
+	unresolvedThreads: number,
+	requiresStrictStatusChecks: boolean,
+): PullRequestConditions {
 	if (
 		(candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "DIRTY") ||
 		(candidate.mergeable === "CONFLICTING" && candidate.mergeStateStatus === "CLEAN")
@@ -436,12 +436,14 @@ function conditions(candidate: ListedPullRequest, unresolvedThreads: number): Pu
 	const review: ReviewReadiness = candidate.reviewDecision === "REVIEW_REQUIRED" || candidate.reviewDecision === "CHANGES_REQUESTED"
 		? "pending"
 		: "ready";
-	const policy: PolicyReadiness = candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "CLEAN"
+	const behind = candidate.mergeStateStatus === "BEHIND";
+	const policy: PolicyReadiness = candidate.mergeable === "MERGEABLE" &&
+		(candidate.mergeStateStatus === "CLEAN" || (behind && !requiresStrictStatusChecks))
 		? "ready"
 		: "pending";
 	return {
 		draft: candidate.isDraft,
-		baseUpdateRequired: candidate.mergeStateStatus === "BEHIND",
+		baseUpdateRequired: behind && requiresStrictStatusChecks,
 		conflict: candidate.mergeable === "CONFLICTING" || candidate.mergeStateStatus === "DIRTY",
 		changesRequested: candidate.reviewDecision === "CHANGES_REQUESTED",
 		unresolvedThreads,
@@ -483,6 +485,30 @@ function parseUnresolvedReviewThreads(output: string): number {
 	return total;
 }
 
+function parseBaseBranchPolicy(output: string, candidate: ListedPullRequest): boolean {
+	const value = parseJson(output, "Read base branch policy");
+	if (!isRecord(value)) fail("Read base branch policy", "invalid GitHub CLI output");
+	if (value.errors !== undefined) {
+		if (!Array.isArray(value.errors)) fail("Read base branch policy", "invalid GitHub CLI output");
+		if (value.errors.length) fail("Read base branch policy", "GitHub GraphQL returned errors");
+	}
+	const repository = isRecord(value.data) ? value.data.repository : undefined;
+	if (!isRecord(repository) || !isRecord(repository.ref)) {
+		fail("Read base branch policy", "invalid GitHub CLI output");
+	}
+	if (
+		normalizeRepository(repositoryName(repository.nameWithOwner, "Read base branch policy", "repository")) !==
+		normalizeRepository(candidate.base.repository) ||
+		text(repository.ref.name, "Read base branch policy", "ref") !== candidate.base.ref
+	) fail("Read base branch policy", "response does not match pull request base");
+	const rule = repository.ref.branchProtectionRule;
+	if (rule === null) return false;
+	if (!isRecord(rule) || typeof rule.requiresStrictStatusChecks !== "boolean") {
+		fail("Read base branch policy", "invalid GitHub CLI output");
+	}
+	return rule.requiresStrictStatusChecks;
+}
+
 function parseMergeMethodSettings(output: string): PullRequestMerge {
 	const value = parseJson(output, "Read merge methods");
 	if (!isRecord(value)) fail("Read merge methods", "invalid GitHub CLI output");
@@ -491,20 +517,22 @@ function parseMergeMethodSettings(output: string): PullRequestMerge {
 		typeof mergeCommitAllowed !== "boolean" || typeof rebaseMergeAllowed !== "boolean" ||
 		typeof squashMergeAllowed !== "boolean"
 	) fail("Read merge methods", "invalid GitHub CLI output");
-	const methods: MergeMethodSettings = {
-		mergeCommitAllowed,
-		rebaseMergeAllowed,
-		squashMergeAllowed,
-	};
-	const allowed: MergeMethod[] = [];
-	if (methods.mergeCommitAllowed) allowed.push("merge");
-	if (methods.rebaseMergeAllowed) allowed.push("rebase");
-	if (methods.squashMergeAllowed) allowed.push("squash");
-	if (!allowed.length) fail("Read merge methods", "repository allows no merge method");
-	if (allowed.length > 1 && !methods.squashMergeAllowed) {
-		fail("Read merge methods", "multiple merge methods are allowed without squash");
+	const allowedMergeMethods: MergeMethod[] = [];
+	if (mergeCommitAllowed) allowedMergeMethods.push("merge");
+	if (rebaseMergeAllowed) allowedMergeMethods.push("rebase");
+	if (squashMergeAllowed) allowedMergeMethods.push("squash");
+	if (!allowedMergeMethods.length) fail("Read merge methods", "repository allows no merge method");
+	const viewerDefaultMergeMethod = value.viewerDefaultMergeMethod === "MERGE"
+		? "merge"
+		: value.viewerDefaultMergeMethod === "REBASE"
+		? "rebase"
+		: value.viewerDefaultMergeMethod === "SQUASH"
+		? "squash"
+		: fail("Read merge methods", "invalid viewerDefaultMergeMethod");
+	if (!allowedMergeMethods.includes(viewerDefaultMergeMethod)) {
+		fail("Read merge methods", "viewerDefaultMergeMethod is not allowed");
 	}
-	return { methods, method: allowed.length === 1 ? allowed[0] : "squash" };
+	return { allowedMergeMethods, viewerDefaultMergeMethod };
 }
 
 async function readPushTarget(
@@ -541,7 +569,7 @@ async function readPushTarget(
 		"gh",
 		["repo", "view", pushUrls[0], "--json", "nameWithOwner,url"],
 	)).stdout);
-	return { headOid, repository, ref: push.ref };
+	return { headOid, remote: push.remote, repository, ref: push.ref };
 }
 
 async function readUnresolvedReviewThreads(
@@ -564,10 +592,33 @@ async function readUnresolvedReviewThreads(
 	return parseUnresolvedReviewThreads(result.stdout);
 }
 
+async function readBaseBranchPolicy(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	candidate: ListedPullRequest,
+): Promise<boolean> {
+	const [owner, name] = candidate.base.repository.split("/");
+	const result = await execute(pi, context, "Read base branch policy", "gh", [
+		"api",
+		"graphql",
+		"--hostname",
+		candidate.url.hostname,
+		"-f",
+		`query=${BASE_BRANCH_POLICY_QUERY}`,
+		"-F",
+		`owner=${owner}`,
+		"-F",
+		`name=${name}`,
+		"-F",
+		`qualifiedName=refs/heads/${candidate.base.ref}`,
+	]);
+	return parseBaseBranchPolicy(result.stdout, candidate);
+}
+
 async function readLocalMergeSafety(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	localHead: string,
+	pushTarget: PushTarget,
 	pullRequestHead: string,
 ): Promise<LocalMergeSafety> {
 	const status = await execute(pi, context, "Read worktree status", "git", [
@@ -576,13 +627,32 @@ async function readLocalMergeSafety(
 		"--untracked-files=all",
 	]);
 	const worktree = status.stdout === "" ? "clean" : "dirty";
-	if (localHead === pullRequestHead) return { worktree, head: "equal" };
+	if (pushTarget.headOid === pullRequestHead) return { worktree, head: "equal" };
+
+	await execute(pi, context, "Fetch pull request head", "git", [
+		"fetch",
+		"--no-tags",
+		pushTarget.remote,
+		`refs/heads/${pushTarget.ref}`,
+	]);
+	const fetchedHead = oid(
+		singleLine(
+			(await execute(pi, context, "Read fetched pull request head", "git", ["rev-parse", "--verify", "FETCH_HEAD^{commit}"])).stdout,
+			"Read fetched pull request head",
+			"FETCH_HEAD",
+		),
+		"Read fetched pull request head",
+		"FETCH_HEAD",
+	);
+	if (fetchedHead !== pullRequestHead) {
+		fail("Fetch pull request head", "FETCH_HEAD does not match advertised pull request head");
+	}
 
 	const localIsAncestor = await invoke(pi, context, "Compare pull request head", "git", [
 		"merge-base",
 		"--is-ancestor",
-		localHead,
-		pullRequestHead,
+		pushTarget.headOid,
+		fetchedHead,
 	]);
 	if (localIsAncestor.code === 0) return { worktree, head: "behind" };
 	if (localIsAncestor.code !== 1) commandFailure("Compare pull request head", localIsAncestor);
@@ -590,8 +660,8 @@ async function readLocalMergeSafety(
 	const pullRequestIsAncestor = await invoke(pi, context, "Compare pull request head", "git", [
 		"merge-base",
 		"--is-ancestor",
-		pullRequestHead,
-		localHead,
+		fetchedHead,
+		pushTarget.headOid,
 	]);
 	if (pullRequestIsAncestor.code === 0) return { worktree, head: "ahead" };
 	if (pullRequestIsAncestor.code === 1) return { worktree, head: "diverged" };
@@ -608,7 +678,7 @@ async function readMergeMethods(
 		"view",
 		`${candidate.url.hostname}/${candidate.base.repository}`,
 		"--json",
-		"mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
+		"mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod",
 	]);
 	return parseMergeMethodSettings(result.stdout);
 }
@@ -636,8 +706,11 @@ export async function loadCurrentPullRequest(
 	const unresolvedThreads = candidate.lifecycle === "open"
 		? await readUnresolvedReviewThreads(pi, context, candidate)
 		: 0;
-	const pullRequestConditions = conditions(candidate, unresolvedThreads);
-	const local = await readLocalMergeSafety(pi, context, pushTarget.headOid, candidate.head.oid);
+	const requiresStrictStatusChecks = candidate.lifecycle === "open" && candidate.mergeStateStatus === "BEHIND"
+		? await readBaseBranchPolicy(pi, context, candidate)
+		: false;
+	const pullRequestConditions = conditions(candidate, unresolvedThreads, requiresStrictStatusChecks);
+	const local = await readLocalMergeSafety(pi, context, pushTarget, candidate.head.oid);
 	const merge = candidate.lifecycle === "open" ? await readMergeMethods(pi, context, candidate) : null;
 	return {
 		id: candidate.id,

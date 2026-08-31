@@ -20,8 +20,11 @@ type HarnessOptions = {
 	listResult?: ReturnType<typeof result>;
 	localHead?: string;
 	threads?: string;
+	policyResult?: ReturnType<typeof result>;
+	requiresStrictStatusChecks?: boolean;
 	methods?: Record<string, unknown>;
 	status?: string;
+	fetchedHead?: string;
 	ancestry?: "behind" | "ahead" | "diverged";
 };
 
@@ -42,6 +45,20 @@ function reviewThreadPage(nodes: unknown[], hasNextPage = false) {
 
 function reviewThreadOutput(...pages: unknown[]): string {
 	return JSON.stringify(pages);
+}
+
+function baseBranchPolicyOutput(requiresStrictStatusChecks: boolean): string {
+	return JSON.stringify({
+		data: {
+			repository: {
+				nameWithOwner: "acme/project",
+				ref: {
+					name: "main",
+					branchProtectionRule: { requiresStrictStatusChecks },
+				},
+			},
+		},
+	});
 }
 
 function pullRequest(overrides: Record<string, unknown> = {}) {
@@ -88,10 +105,20 @@ function harness(options: HarnessOptions = {}) {
 				return options.listResult ?? result(JSON.stringify(candidates));
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
-				return result(options.threads ?? reviewThreadOutput(reviewThreadPage([])));
+				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+				if (query.includes("reviewThreads")) {
+					return result(options.threads ?? reviewThreadOutput(reviewThreadPage([])));
+				}
+				if (query.includes("branchProtectionRule")) {
+					return options.policyResult ?? result(baseBranchPolicyOutput(options.requiresStrictStatusChecks ?? false));
+				}
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return result(options.status ?? "");
+			}
+			if (command === "git" && args.join(" ") === "fetch --no-tags fork refs/heads/feature/pr") return result();
+			if (command === "git" && args.join(" ") === "rev-parse --verify FETCH_HEAD^{commit}") {
+				return result(`${options.fetchedHead ?? REMOTE_HEAD}\n`);
 			}
 			if (command === "git" && args[0] === "merge-base" && args[1] === "--is-ancestor") {
 				const [left, right] = args.slice(2);
@@ -99,11 +126,12 @@ function harness(options: HarnessOptions = {}) {
 				if (ancestry === "ahead" && left === REMOTE_HEAD && right === localHead) return result();
 				return result("", 1);
 			}
-			if (command === "gh" && args.join(" ") === "repo view github.com/acme/project --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed") {
+			if (command === "gh" && args.join(" ") === "repo view github.com/acme/project --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod") {
 				return result(JSON.stringify(options.methods ?? {
 					mergeCommitAllowed: true,
 					rebaseMergeAllowed: true,
 					squashMergeAllowed: true,
+					viewerDefaultMergeMethod: "SQUASH",
 				}));
 			}
 			throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
@@ -159,12 +187,8 @@ test("loads the unique open PR for the exact configured push target", async () =
 		base: { repository: "acme/project", ref: "main", oid: BASE_HEAD },
 		head: { repository: "acme/fork", ref: "feature/pr", oid: REMOTE_HEAD },
 		merge: {
-			method: "squash",
-			methods: {
-				mergeCommitAllowed: true,
-				rebaseMergeAllowed: true,
-				squashMergeAllowed: true,
-			},
+			allowedMergeMethods: ["merge", "rebase", "squash"],
+			viewerDefaultMergeMethod: "squash",
 		},
 	});
 
@@ -187,7 +211,9 @@ test("loads the unique open PR for the exact configured push target", async () =
 	assert.equal(threads?.args.includes("--jq"), false);
 	assert.doesNotMatch(threads?.args.join(" ") ?? "", /comments/);
 	const mergeSettings = calls.find(({ command, args }) => command === "gh" && args[0] === "repo" && args[2] === "github.com/acme/project");
-	assert.ok(mergeSettings);
+	assert.ok(mergeSettings?.args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod"));
+	const fetch = calls.find(({ command, args }) => command === "git" && args[0] === "fetch");
+	assert.deepEqual(fetch?.args, ["fetch", "--no-tags", "fork", "refs/heads/feature/pr"]);
 	for (const call of calls) {
 		assert.equal(call.options?.cwd, "/repo");
 		assert.equal(call.options?.timeout, 10_000);
@@ -237,6 +263,7 @@ test("selects historical PRs only when their head matches local HEAD", async () 
 	assert.equal(loaded.merge, null);
 	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
 	assert.equal(calls.some(({ command, args }) => command === "gh" && args[2] === "github.com/acme/project"), false);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 });
 
 test("fails for ambiguous historical PRs matching current HEAD", async () => {
@@ -332,24 +359,119 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 });
 
-test("sets required base update only for GitHub's BEHIND status", async () => {
-	const behind = harness({
+test("requires a base update for BEHIND only when the exact base policy is strict", async () => {
+	const strict = harness({
 		candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
-		methods: { mergeCommitAllowed: true, rebaseMergeAllowed: false, squashMergeAllowed: false },
+		requiresStrictStatusChecks: true,
 	});
-	const behindPullRequest = await loadCurrentPullRequest(behind.pi, behind.context);
-	assert.ok(behindPullRequest);
-	assert.equal(behindPullRequest.conditions.baseUpdateRequired, true);
-	assert.equal(behindPullRequest.conditions.policy, "pending");
-	assert.equal(behindPullRequest.merge?.method, "merge");
+	const strictPullRequest = await loadCurrentPullRequest(strict.pi, strict.context);
+	assert.ok(strictPullRequest);
+	assert.equal(strictPullRequest.conditions.baseUpdateRequired, true);
+	assert.equal(strictPullRequest.conditions.policy, "pending");
+	const policy = strict.calls.find(({ command, args }) =>
+		command === "gh" && args.some((arg) => arg.includes("branchProtectionRule"))
+	);
+	assert.ok(policy);
+	assert.ok(policy.args.includes("owner=acme"));
+	assert.ok(policy.args.includes("name=project"));
+	assert.ok(policy.args.includes("qualifiedName=refs/heads/main"));
 
-	const blocked = harness({
-		candidates: [pullRequest({ mergeStateStatus: "BLOCKED" })],
-		methods: { mergeCommitAllowed: false, rebaseMergeAllowed: false, squashMergeAllowed: true },
+	const nonStrict = harness({
+		candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
+		requiresStrictStatusChecks: false,
 	});
+	const nonStrictPullRequest = await loadCurrentPullRequest(nonStrict.pi, nonStrict.context);
+	assert.ok(nonStrictPullRequest);
+	assert.equal(nonStrictPullRequest.conditions.baseUpdateRequired, false);
+	assert.equal(nonStrictPullRequest.conditions.policy, "ready");
+
+	const blocked = harness({ candidates: [pullRequest({ mergeStateStatus: "BLOCKED" })] });
 	const blockedPullRequest = await loadCurrentPullRequest(blocked.pi, blocked.context);
 	assert.ok(blockedPullRequest);
 	assert.equal(blockedPullRequest.conditions.baseUpdateRequired, false);
 	assert.equal(blockedPullRequest.conditions.policy, "pending");
-	assert.equal(blockedPullRequest.merge?.method, "squash");
+	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
+});
+
+test("fails visibly when base branch policy authority fails or is malformed", async () => {
+	const cases = [
+		{
+			name: "query failure",
+			policyResult: result("", 1),
+			error: /Read base branch policy failed: exit code 1/,
+		},
+		{
+			name: "GraphQL denial",
+			policyResult: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
+			error: /Read base branch policy failed: GitHub GraphQL returned errors/,
+		},
+		{
+			name: "malformed authority",
+			policyResult: result(JSON.stringify({ data: { repository: null } })),
+			error: /Read base branch policy failed: invalid GitHub CLI output/,
+		},
+	];
+	for (const candidate of cases) {
+		const { pi, context } = harness({
+			candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
+			policyResult: candidate.policyResult,
+		});
+		await assert.rejects(loadCurrentPullRequest(pi, context), candidate.error, candidate.name);
+	}
+});
+
+test("exposes all allowed merge methods and the validated viewer default", async () => {
+	const { pi, context } = harness({
+		methods: {
+			mergeCommitAllowed: true,
+			rebaseMergeAllowed: true,
+			squashMergeAllowed: false,
+			viewerDefaultMergeMethod: "REBASE",
+		},
+	});
+	const loaded = await loadCurrentPullRequest(pi, context);
+	assert.ok(loaded);
+	assert.deepEqual(loaded.merge, {
+		allowedMergeMethods: ["merge", "rebase"],
+		viewerDefaultMergeMethod: "rebase",
+	});
+
+	const invalid = harness({
+		methods: {
+			mergeCommitAllowed: true,
+			rebaseMergeAllowed: true,
+			squashMergeAllowed: false,
+			viewerDefaultMergeMethod: "SQUASH",
+		},
+	});
+	await assert.rejects(
+		loadCurrentPullRequest(invalid.pi, invalid.context),
+		/Read merge methods failed: viewerDefaultMergeMethod is not allowed/,
+	);
+});
+
+test("rejects a fetched head that moved from the advertised pull request OID", async () => {
+	const movedHead = "d".repeat(40);
+	const { pi, context, calls } = harness({ fetchedHead: movedHead });
+	await assert.rejects(
+		loadCurrentPullRequest(pi, context),
+		/Fetch pull request head failed: FETCH_HEAD does not match advertised pull request head/,
+	);
+	assert.deepEqual(
+		calls.find(({ command, args }) => command === "git" && args[0] === "fetch")?.args,
+		["fetch", "--no-tags", "fork", "refs/heads/feature/pr"],
+	);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "merge-base"), false);
+});
+
+test("classifies behind, ahead, and diverged only after fetching the exact PR head", async () => {
+	for (const ancestry of ["behind", "ahead", "diverged"] as const) {
+		const { pi, context, calls } = harness({ ancestry });
+		const loaded = await loadCurrentPullRequest(pi, context);
+		assert.ok(loaded);
+		assert.equal(loaded.local.head, ancestry);
+		const fetchIndex = calls.findIndex(({ command, args }) => command === "git" && args[0] === "fetch");
+		const compareIndex = calls.findIndex(({ command, args }) => command === "git" && args[0] === "merge-base");
+		assert.ok(fetchIndex >= 0 && compareIndex > fetchIndex, ancestry);
+	}
 });
