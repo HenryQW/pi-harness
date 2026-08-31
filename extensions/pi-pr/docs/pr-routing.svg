@@ -18,8 +18,8 @@
       <rect width="1280" height="720" fill="#f0eee9"/>
 
       <!-- Header -->
-      <text x="80" y="48" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">How /pr picks one route</text>
-      <text x="80" y="72" fill="#4c5665" font-size="8" font-family="'Geist', sans-serif">Fresh state enters a strict, top-down priority ladder.</text>
+      <text x="80" y="68" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">How /pr picks one route</text>
+      <text x="80" y="88" fill="#4c5665" font-size="8" font-family="'Geist', sans-serif">Fresh state enters a strict, top-down priority ladder.</text>
       <text x="1200" y="48" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.12em">FIRST MATCHING CONDITION WINS</text>
       <text x="1200" y="68" fill="#6a7282" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.12em">AT MOST ONE ROUTE</text>
 
