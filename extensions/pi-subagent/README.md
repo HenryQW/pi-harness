@@ -85,8 +85,8 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A
 | --- | --- | --- |
 | `maxSubagents` | Safe integer ≥ 1 | `5` |
 | `maxTurns` | Safe integer ≥ 1 | `50` |
-| `timeout.idleMinutes` | Positive minutes | `10` |
-| `timeout.maxMinutes` | Positive minutes greater than `idleMinutes` | `30` |
+| `timeout.idleMinutes` | Positive minutes; minutes × 60,000 ≤ 2,147,483,647 ms | `10` |
+| `timeout.maxMinutes` | Positive minutes greater than `idleMinutes`; minutes × 60,000 ≤ 2,147,483,647 ms | `30` |
 
 Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
 
