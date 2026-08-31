@@ -19,6 +19,8 @@ Analysis sends the current conversation to the child model configured through `/
 
 The payload includes the active compaction summary and user and assistant text. It also includes effective prompt names and descriptions.
 
+Project context files and prompt templates are disabled for the child.
+
 Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
 
 Automatic analysis is off by default. It starts only after you enable it through `/promptor`.

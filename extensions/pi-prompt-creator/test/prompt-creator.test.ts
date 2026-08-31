@@ -200,6 +200,8 @@ test("automatic analysis starts once after three genuine inputs and discards a s
 		assert.ok(run.prepared.launch.args.includes("--no-session"));
 		assert.ok(run.prepared.launch.args.includes("--no-extensions"));
 		assert.ok(run.prepared.launch.args.includes("--no-skills"));
+		assert.ok(run.prepared.launch.args.includes("--no-context-files"));
+		assert.ok(run.prepared.launch.args.includes("--no-prompt-templates"));
 		assert.ok(run.prepared.launch.args.includes("--pi-subagent-role-tools"));
 		assert.ok(run.prepared.launch.args.includes("--no-approve"));
 		const payload = JSON.parse(run.prepared.task);
@@ -212,7 +214,8 @@ test("automatic analysis starts once after three genuine inputs and discards a s
 			],
 			existingPrompts: [{ name: "existing-prompt", description: "Existing template" }],
 		});
-		assert.equal(run.prepared.cwd, process.cwd());
+		assert.equal(run.prepared.cwd, tmpdir());
+		assert.notEqual(run.prepared.cwd, app.ctx.cwd);
 
 		app.handlers.get("input")!({ source: "interactive", text: "does not cancel" }, app.ctx);
 		assert.equal(run.input.signal?.aborted, false);

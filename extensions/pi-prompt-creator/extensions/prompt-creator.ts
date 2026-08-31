@@ -1,4 +1,5 @@
 import { open, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	BorderedLoader,
@@ -296,15 +297,19 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		);
 		void Promise.resolve().then(() => getExecutor().run({
 			signal: run.controller.signal,
-			prepare: async () => ({
-				launch: resolveRoleLaunch(pi, ctx, {
+			prepare: async () => {
+				const launch = resolveRoleLaunch(pi, ctx, {
 					role: DRAFT_ROLE,
 					task: DRAFT_TASK,
 					agentDir,
-				}),
-				task: JSON.stringify(payload),
-				cwd: ctx.cwd,
-			}),
+				});
+				launch.args.push("--no-context-files", "--no-prompt-templates");
+				return {
+					launch,
+					task: JSON.stringify(payload),
+					cwd: tmpdir(),
+				};
+			},
 		})).then((result) => {
 			if (!isCurrent(run)) return;
 			if (result.outcome !== "success" || result.stopReason !== "stop") throw new Error("Prompt drafting child failed.");
