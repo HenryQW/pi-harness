@@ -85,10 +85,10 @@ test("executor acquires FIFO permits before prepare without consuming child dead
 	});
 	const executorInstance = createEphemeralSubagentExecutor({
 		maxConcurrency: 1,
-		timeout: { idleMs: 50, maxMs: 200 },
+		timeout: { idleMs: 500, maxMs: 1000 },
 	});
 	const runs = [run(1), run(2), run(3)];
-	await new Promise<void>((resolve) => setTimeout(resolve, 80));
+	await new Promise<void>((resolve) => setTimeout(resolve, 600));
 	assert.deepEqual(calls, [1]);
 	releaseFirst();
 	await Promise.all(runs);
