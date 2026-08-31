@@ -15,6 +15,8 @@ export type Exec = (
 
 export type MergeMethod = "merge" | "rebase" | "squash";
 
+const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
+
 export type InspectLocalMergeSafetyInput = {
 	exec: Exec;
 	cwd: string;
@@ -29,7 +31,8 @@ export type MergeMethodSelectionInput = {
 };
 
 export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & InspectLocalMergeSafetyInput & {
-	prNumber: number;
+	pullRequestId: string;
+	hostname: string;
 };
 
 function commandText(command: string, args: string[]): string {
@@ -65,9 +68,15 @@ async function runCommand(
 	return result;
 }
 
-function requiredText(value: string, label: string): string {
-	if (!value) throw new TypeError(`${label} must be a non-empty string`);
+function requiredText(value: unknown, label: string): string {
+	if (typeof value !== "string" || !value || value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
+		throw new TypeError(`${label} must be a non-empty string`);
+	}
 	return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requiredOutput(result: ExecResult, label: string): string {
@@ -158,7 +167,40 @@ export function selectMergeMethod(input: MergeMethodSelectionInput): MergeMethod
 
 function validateExecuteInput(input: ExecuteGitHubMergeInput): void {
 	validateInspectionInput(input);
-	if (!Number.isSafeInteger(input.prNumber) || input.prNumber <= 0) throw new TypeError("prNumber must be a positive safe integer");
+	requiredText(input.pullRequestId, "pullRequestId");
+	requiredText(input.hostname, "hostname");
+}
+
+function parseMergeResponse(output: string, expectedId: string): void {
+	let value: unknown;
+	try {
+		value = JSON.parse(output);
+	} catch {
+		throw new Error("GitHub merge failed: invalid GraphQL output");
+	}
+	if (!isRecord(value)) throw new Error("GitHub merge failed: invalid GraphQL output");
+
+	const errors = value.errors;
+	if (errors !== undefined) {
+		if (!Array.isArray(errors)) throw new Error("GitHub merge failed: invalid GraphQL output");
+		if (errors.length > 0) {
+			const messages = errors.map((error) => isRecord(error) && typeof error.message === "string" && error.message ? error.message : undefined);
+			if (messages.some((message) => message === undefined)) throw new Error("GitHub merge failed: invalid GraphQL errors");
+			throw new Error(`GitHub merge failed: ${messages.join("; ")}`);
+		}
+	}
+
+	const data = value.data;
+	const mutation = isRecord(data) ? data.mergePullRequest : undefined;
+	const pullRequest = isRecord(mutation) ? mutation.pullRequest : undefined;
+	if (!isRecord(pullRequest)) throw new Error("GitHub merge failed: invalid GraphQL output");
+	const id = pullRequest.id;
+	const state = pullRequest.state;
+	if (typeof id !== "string" || !id || typeof state !== "string" || !state) {
+		throw new Error("GitHub merge failed: invalid GraphQL output");
+	}
+	if (id !== expectedId) throw new Error(`GitHub merge returned unexpected pull request id ${id}`);
+	if (state !== "MERGED") throw new Error(`GitHub merge returned pull request ${id} in state ${state}`);
 }
 
 export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promise<void> {
@@ -168,11 +210,19 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
 	}
-	await runCommand(input.exec, input.cwd, "gh", [
-		"pr",
-		"merge",
-		String(input.prNumber),
-		`--${method}`,
-		"--disable-auto",
+	const result = await runCommand(input.exec, input.cwd, "gh", [
+		"api",
+		"graphql",
+		"--hostname",
+		input.hostname,
+		"-f",
+		`query=${MERGE_PULL_REQUEST_MUTATION}`,
+		"-F",
+		`pullRequestId=${input.pullRequestId}`,
+		"-F",
+		`expectedHeadOid=${input.expectedHead}`,
+		"-F",
+		`mergeMethod=${method.toUpperCase()}`,
 	]);
+	parseMergeResponse(requiredOutput(result, "GitHub merge"), input.pullRequestId);
 }

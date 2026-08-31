@@ -9,6 +9,8 @@ import {
 } from "../extensions/pr-merge.ts";
 
 const cwd = "/repo";
+const hostname = "github.com";
+const pullRequestId = "PR_kwDOExample";
 const expectedHead = "expected-head";
 
 function result(stdout = "", code = 0, stderr = ""): ExecResult {
@@ -131,7 +133,7 @@ test("fails when no sole method, squash, or allowed viewer default exists", () =
 	);
 });
 
-test("does not issue a merge command when fresh local safety checks fail", async () => {
+test("does not issue a merge mutation when fresh local safety checks fail", async () => {
 	const cases: Array<{ name: string; responses: ExecResult[]; error: RegExp }> = [
 		{
 			name: "dirty",
@@ -165,20 +167,22 @@ test("does not issue a merge command when fresh local safety checks fail", async
 		await assert.rejects(
 			executeGitHubMerge({
 				...inspectInput(exec),
-				prNumber: 42,
+				pullRequestId,
+				hostname,
 				allowedMergeMethods: ["squash"],
 			}),
 			candidate.error,
 		);
 		assert.equal(
-			calls.some(({ command: executable, args }) => executable === "gh" && args[0] === "pr" && args[1] === "merge"),
+			calls.some(({ command: executable, args }) => executable === "gh" && args[0] === "api" && args[1] === "graphql"),
 			false,
 			candidate.name,
 		);
 	}
 });
 
-test("executes the selected GitHub merge only for equal or behind exact heads", async () => {
+test("executes the selected method with exact GraphQL variables and atomic head check", async () => {
+	const mutation = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 	const cases: Array<{ name: string; localHead: string; ancestry?: number[] }> = [
 		{ name: "equal", localHead: expectedHead },
 		{ name: "behind", localHead: "local-behind", ancestry: [0] },
@@ -192,27 +196,88 @@ test("executes the selected GitHub merge only for equal or behind exact heads", 
 			result(`${candidate.localHead}\n`),
 		];
 		for (const code of candidate.ancestry ?? []) responses.push(result("", code));
-		responses.push(result());
+		responses.push(result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequestId, state: "MERGED" } } } })));
 		const { exec, calls } = mockExec(responses);
 
 		await executeGitHubMerge({
 			...inspectInput(exec),
-			prNumber: 42,
+			pullRequestId,
+			hostname,
 			allowedMergeMethods: ["merge", "squash"],
 			viewerDefaultMergeMethod: "merge",
 		});
 
 		assert.deepEqual(calls.at(-1), {
 			command: "gh",
-			args: ["pr", "merge", "42", "--squash", "--disable-auto"],
+			args: [
+				"api",
+				"graphql",
+				"--hostname",
+				hostname,
+				"-f",
+				`query=${mutation}`,
+				"-F",
+				`pullRequestId=${pullRequestId}`,
+				"-F",
+				`expectedHeadOid=${expectedHead}`,
+				"-F",
+				"mergeMethod=SQUASH",
+			],
 			cwd,
 		}, candidate.name);
-		assert.equal(calls.at(-1)!.args.includes("--auto"), false);
-		assert.equal(calls.at(-1)!.args.includes("--delete-branch"), false);
 	}
 });
 
-test("surfaces GitHub merge failures and does not retry", async () => {
+test("rejects GraphQL errors and malformed or non-merged responses without retrying", async () => {
+	const response = (body: unknown) => JSON.stringify(body);
+	const cases: Array<{ name: string; output: string; error: RegExp }> = [
+		{
+			name: "GraphQL error",
+			output: response({ errors: [{ message: "merge blocked" }] }),
+			error: /GitHub merge failed: merge blocked/,
+		},
+		{
+			name: "malformed JSON",
+			output: "not JSON",
+			error: /GitHub merge failed: invalid GraphQL output/,
+		},
+		{
+			name: "malformed data",
+			output: response({ data: { mergePullRequest: null } }),
+			error: /GitHub merge failed: invalid GraphQL output/,
+		},
+		{
+			name: "unexpected id",
+			output: response({ data: { mergePullRequest: { pullRequest: { id: "PR_other", state: "MERGED" } } } }),
+			error: /GitHub merge returned unexpected pull request id PR_other/,
+		},
+		{
+			name: "not merged",
+			output: response({ data: { mergePullRequest: { pullRequest: { id: pullRequestId, state: "OPEN" } } } }),
+			error: /GitHub merge returned pull request PR_kwDOExample in state OPEN/,
+		},
+	];
+
+	for (const candidate of cases) {
+		const { exec, calls } = mockExec([
+			result(),
+			result(),
+			result(`${expectedHead}\n`),
+			result(`${expectedHead}\n`),
+			result(candidate.output),
+		]);
+		await assert.rejects(
+			executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
+			candidate.error,
+			candidate.name,
+		);
+		assert.equal(calls.length, 5, candidate.name);
+		assert.equal(calls.at(-1)?.command, "gh", candidate.name);
+		assert.deepEqual(calls.at(-1)?.args.slice(0, 4), ["api", "graphql", "--hostname", hostname], candidate.name);
+	}
+});
+
+test("surfaces GitHub CLI merge failures without retrying", async () => {
 	const { exec, calls } = mockExec([
 		result(),
 		result(),
@@ -222,8 +287,8 @@ test("surfaces GitHub merge failures and does not retry", async () => {
 	]);
 
 	await assert.rejects(
-		executeGitHubMerge({ ...inspectInput(exec), prNumber: 42, allowedMergeMethods: ["squash"] }),
-		/gh pr merge 42 --squash --disable-auto failed: merge blocked/,
+		executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
+		/gh api graphql --hostname github\.com .* failed: merge blocked/,
 	);
 	assert.equal(calls.length, 5);
 });
