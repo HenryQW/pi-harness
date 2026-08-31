@@ -4,6 +4,11 @@ Turn repeated requests or corrections in the current conversation into one reusa
 
 You decide whether to show, refine, and save it.
 
+## Why
+
+- **Created for**: Pi users who repeat requests or corrections and want a reusable prompt.
+- **Advantage**: It isolates drafting in a tool-free child and saves only after explicit review.
+
 ## Install
 
 ```bash
@@ -11,19 +16,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-prompt-creator
 ```
 
-Run `/task-models` before analysis. Assign a model to the `fast` profile or change the prompt drafting task.
-
-## Privacy
-
-Analysis sends the current conversation to the child model configured through `/task-models`.
-
-The payload includes the active compaction summary and user and assistant text. It also includes effective prompt names and descriptions.
-
-Project context files and prompt templates are disabled for the child.
-
-Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
-
-Automatic analysis is off by default. It starts only after you enable it through `/promptor`.
+Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`.
 
 ## Use
 
@@ -37,7 +30,7 @@ The menu adapts to the current state:
 | `Automatic On` or `Automatic Off` | Save the automatic setting. |
 | `Show candidate` | Add the candidate to the conversation for review. |
 | `Dismiss candidate` | Forget the pending candidate. |
-| `Save latest Main draft` | Save Main's latest complete assistant text as a prompt. |
+| `Save latest Main draft` | Save Main's latest successfully completed assistant reply as a prompt. |
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
 
@@ -45,15 +38,44 @@ Analysis uses a one-turn child with no base tools, user extensions, Skills, or s
 
 New user input does not stop a running child. Branch navigation discards its old result without stopping the child.
 
+## Config
+
+`~/.pi/agent/config/pi-prompt-creator/config.json`
+
+| Field | Required | Possible values | Default |
+| --- | --- | --- | --- |
+| `automatic` | Yes | `true` or `false` | `false` |
+| `inputThreshold` | No | Positive integer | `3` |
+
+Edit `inputThreshold`, then run `/reload` to apply the change.
+
+A missing file quietly uses both defaults. Startup never creates or rewrites the file.
+
+Malformed config or unknown keys disable automatic analysis. Pi warns once and leaves the file unchanged.
+
+Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the configured threshold.
+
+## Privacy
+
+Analysis sends the current conversation to the child model configured through `/task-models`.
+
+The payload includes the active compaction or branch summary and user and assistant text. It also includes effective prompt names and descriptions.
+
+Project context files and prompt templates are disabled for the child.
+
+Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
+
+Automatic analysis is off by default. It starts only after you enable it through `/promptor`.
+
 ## Automatic mode
 
-Automatic mode waits for the configured number of non-empty user inputs. The default is three. It starts at the next idle `agent_settled` event.
+Automatic mode waits for the configured number of non-empty user inputs. The default is three.
 
-It starts at most once per extension runtime. A manual analysis consumes that opportunity.
+It starts at the next idle `agent_settled` event. It starts at most once per extension runtime.
 
-Automatic mode persists, but counters and candidates do not. Branch changes reset the input counter.
+A manual analysis consumes that opportunity. Automatic mode persists, but counters and candidates do not.
 
-Automatic analysis and candidate widgets are disabled outside the interactive TUI.
+Branch changes reset the input counter. Automatic analysis and candidate widgets require the interactive TUI.
 
 ## Review and save
 
@@ -63,7 +85,9 @@ The extension never injects a candidate automatically. `Show candidate` adds one
 
 Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving.
 
-Saving always uses Main's latest retained assistant text as the entire file. It never extracts text from the candidate message.
+Saving uses Main's latest retained assistant reply as the entire file. That reply must have stopped successfully and contain valid Markdown.
+
+An interrupted, failed, empty, or tool-use reply cannot be saved. The extension never falls back to an older reply.
 
 The menu asks for a lowercase kebab-case name. A candidate name appears only as a hint.
 
@@ -79,30 +103,19 @@ The extension registers `pi-prompt-creator/draft`. Its default task profile is `
 
 Use `/task-models` to select the model and thinking level. The extension owns no model configuration.
 
-The complete child payload stays within 30,000 characters. Old messages and excess prompt metadata are omitted without cutting individual messages.
+## Limits and failures
 
-A candidate name uses bounded lowercase kebab-case. Candidate and Final Prompt Draft Markdown must be non-empty and at most 16 KiB.
+The child payload stays within 30,000 characters, including its JSON envelope and prompt metadata.
+
+It prioritizes the active summary, then the newest complete messages. It omits excess prompt metadata before conversation context.
+
+Old messages may be omitted. Individual messages are never cut.
+
+Generated candidate names use lowercase kebab-case and stay within 64 ASCII characters.
+
+Candidate and Final Prompt Draft Markdown must be non-empty and at most 16 KiB.
 
 Candidate and saved Markdown reject NUL and other terminal controls. Ordinary tabs and line feeds are allowed.
-
-## Config and failures
-
-The only config file is `~/.pi/agent/config/pi-prompt-creator/config.json`:
-
-```json
-{
-  "automatic": false,
-  "inputThreshold": 3
-}
-```
-
-`inputThreshold` is optional and defaults to three. It must be a positive integer when present. Edit it and run `/reload` to apply the change.
-
-A missing file quietly uses `false` and an input threshold of three. Startup never creates or rewrites it.
-
-Malformed config or unknown keys disable automatic analysis. Pi warns once and leaves the file unchanged.
-
-Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the configured threshold.
 
 No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`.
 

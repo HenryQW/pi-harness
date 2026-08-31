@@ -168,7 +168,7 @@ test("automatic analysis honors the configured input threshold and discards a st
 			branch: [
 				{ type: "compaction", summary: "Earlier compacted work" },
 				{ type: "message", message: { role: "user", content: [{ type: "text", text: "First request" }, { type: "image", data: "secret" }] } },
-				{ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text: "Visible answer" }, { type: "toolCall", name: "read" }] } },
+				{ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text: "Visible answer" }, { type: "toolCall", name: "read" }], stopReason: "stop" } },
 				{ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "tool secret" }] } },
 				{ type: "custom_message", customType: "other", content: "custom secret", display: true },
 				{ type: "message", message: { role: "user", content: "Latest request" } },
@@ -236,7 +236,34 @@ test("automatic analysis honors the configured input threshold and discards a st
 	});
 });
 
-test("the complete child payload stays within its limit", async () => {
+test("the child payload reserves its envelope and prioritizes the active summary", async () => {
+	await withAgentDir(async (agentDir) => {
+		const child = controlledExecutor();
+		const activeSummary = "s".repeat(29_850);
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			selections: ["Analyze now"],
+			branch: [
+				{ type: "message", message: { role: "user", content: "Replaced by the active summary." } },
+				{ type: "branch_summary", summary: activeSummary },
+				{ type: "message", message: { role: "user", content: "n".repeat(100) } },
+			],
+			commands: [{ name: "large-prompt", description: "d".repeat(500), source: "prompt" } as SlashCommandInfo],
+		});
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		await app.registeredCommands.get("promptor")!("", app.ctx);
+		await eventually(() => child.runs.length === 1);
+		const run = child.runs[0]!;
+		assert.ok(run.prepared.task.length <= 30_000);
+		assert.deepEqual(JSON.parse(run.prepared.task), {
+			currentConversation: [{ role: "summary", text: activeSummary }],
+			existingPrompts: [],
+		});
+	});
+});
+
+test("an oversized newest message does not hide smaller older messages", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
 		const app = harness({
@@ -244,15 +271,18 @@ test("the complete child payload stays within its limit", async () => {
 			executor: child.executor,
 			selections: ["Analyze now"],
 			branch: [
-				{ type: "compaction", summary: "s".repeat(29_950) },
-				{ type: "message", message: { role: "user", content: "Keep the latest complete message." } },
+				{ type: "message", message: { role: "user", content: "Older usable request" } },
+				{ type: "message", message: { role: "assistant", content: "Older usable reply", stopReason: "stop" } },
+				{ type: "message", message: { role: "user", content: "x".repeat(30_000) } },
 			],
-			commands: [{ name: "large-prompt", description: "d".repeat(2_000), source: "prompt" } as SlashCommandInfo],
 		});
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
 		await app.registeredCommands.get("promptor")!("", app.ctx);
 		await eventually(() => child.runs.length === 1);
-		assert.ok(child.runs[0]!.prepared.task.length <= 30_000);
+		assert.deepEqual(JSON.parse(child.runs[0]!.prepared.task).currentConversation, [
+			{ role: "user", text: "Older usable request" },
+			{ role: "assistant", text: "Older usable reply" },
+		]);
 	});
 });
 
@@ -276,7 +306,7 @@ test("a candidate stays pending until shown, and invalid later output fails visi
 			selections: ["Analyze now", "Show candidate", "Analyze again"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Please make these reviews repeatable" } },
-				{ type: "message", message: { role: "assistant", content: "I can help." } },
+				{ type: "message", message: { role: "assistant", content: "I can help.", stopReason: "stop" } },
 			],
 		});
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
@@ -334,7 +364,7 @@ test("saving uses the complete latest Main draft and never overwrites", async ()
 			inputs: ["taken-command", "existing-prompt", "saved-prompt"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Draft a reusable review prompt" } },
-				{ type: "message", message: { role: "assistant", content: "Initial answer" } },
+				{ type: "message", message: { role: "assistant", content: "Initial answer", stopReason: "stop" } },
 			],
 		});
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
@@ -348,7 +378,7 @@ test("saving uses the complete latest Main draft and never overwrites", async ()
 		await promptor("", app.ctx);
 
 		const finalDraft = "# Final prompt\n\nReview the whole change.\n";
-		app.branch.push({ type: "message", message: { role: "assistant", content: finalDraft } });
+		app.branch.push({ type: "message", message: { role: "assistant", content: finalDraft, stopReason: "stop" } });
 		const promptsDir = join(agentDir, "prompts");
 		await mkdir(promptsDir, { recursive: true });
 		await writeFile(join(promptsDir, "existing-prompt.md"), "keep me");
@@ -365,6 +395,29 @@ test("saving uses the complete latest Main draft and never overwrites", async ()
 		assert.deepEqual(app.inputCalls.map(({ placeholder }) => placeholder), [
 			"review-template", "review-template", "review-template",
 		]);
+	});
+});
+
+test("an incomplete latest Main reply cannot fall back to an older completed draft", async () => {
+	await withAgentDir(async (agentDir) => {
+		const child = controlledExecutor();
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			selections: ["Save latest Main draft"],
+			inputs: ["must-not-save"],
+			branch: [
+				{ type: "message", message: { role: "assistant", content: "# Older complete draft", stopReason: "stop" } },
+				{ type: "message", message: { role: "user", content: "Revise that draft" } },
+				{ type: "message", message: { role: "assistant", content: "# Interrupted revision", stopReason: "aborted" } },
+			],
+		});
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		await app.registeredCommands.get("promptor")!("", app.ctx);
+
+		assert.equal(app.selectCalls[0]!.choices.includes("Save latest Main draft"), false);
+		assert.equal(app.inputCalls.length, 0);
+		await assert.rejects(readFile(join(agentDir, "prompts", "must-not-save.md")), /ENOENT/);
 	});
 });
 

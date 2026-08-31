@@ -24,7 +24,7 @@ import {
 const EXTENSION_ID = "pi-prompt-creator";
 const WIDGET_KEY = EXTENSION_ID;
 const CANDIDATE_MESSAGE_TYPE = `${EXTENSION_ID}/candidate`;
-const MAX_CONVERSATION_CHARS = 30_000;
+const MAX_PAYLOAD_CHARS = 30_000;
 const MAX_MARKDOWN_BYTES = 16 * 1024;
 const MAX_NAME_CHARS = 64;
 const DEFAULT_INPUT_THRESHOLD = 3;
@@ -141,56 +141,63 @@ function conversationItem(entry: SessionEntry): ConversationItem | undefined {
 	return text.trim() ? { role: entry.message.role, text } : undefined;
 }
 
-function boundedConversation(entries: SessionEntry[]): ConversationItem[] {
+function boundedConversation(entries: SessionEntry[], maxChars: number): ConversationItem[] {
 	const items = entries.flatMap((entry, index) => {
 		const item = conversationItem(entry);
 		return item ? [{ index, item, chars: JSON.stringify(item).length }] : [];
 	});
-	const selected = new Set<number>();
-	let used = 2;
-	const messages = items.filter(({ item }) => item.role !== "summary");
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const item = messages[index]!;
-		const cost = item.chars + (selected.size ? 1 : 0);
-		if (used + cost > MAX_CONVERSATION_CHARS) break;
-		selected.add(item.index);
-		used += cost;
+	let summaryIndex = -1;
+	for (let index = items.length - 1; index >= 0; index--) {
+		if (items[index]!.item.role === "summary") {
+			summaryIndex = index;
+			break;
+		}
 	}
-	for (const item of items.filter(({ item }) => item.role === "summary")) {
+	const selected = new Set<number>();
+	let used = 0;
+	if (summaryIndex >= 0 && items[summaryIndex]!.chars <= maxChars) {
+		selected.add(items[summaryIndex]!.index);
+		used = items[summaryIndex]!.chars;
+	}
+	for (let index = items.length - 1; index > summaryIndex; index--) {
+		const item = items[index]!;
 		const cost = item.chars + (selected.size ? 1 : 0);
-		if (used + cost > MAX_CONVERSATION_CHARS) break;
+		if (used + cost > maxChars) continue;
 		selected.add(item.index);
 		used += cost;
 	}
 	return items
+		.slice(summaryIndex < 0 ? 0 : summaryIndex)
 		.filter(({ index }) => selected.has(index))
-		.sort((left, right) => left.index - right.index)
 		.map(({ item }) => item);
 }
 
 function analysisPayload(pi: ExtensionAPI, ctx: ExtensionContext): AnalysisPayload {
-	const payload = {
-		currentConversation: boundedConversation(ctx.sessionManager.buildContextEntries()),
-		existingPrompts: pi.getCommands()
-			.filter((command) => command.source === "prompt")
-			.map((command) => ({ name: command.name, description: command.description ?? "" }))
-			.sort((left, right) => left.name.localeCompare(right.name)),
-	};
-	while (JSON.stringify(payload).length > MAX_CONVERSATION_CHARS && payload.existingPrompts.length) {
-		payload.existingPrompts.pop();
-	}
-	while (JSON.stringify(payload).length > MAX_CONVERSATION_CHARS && payload.currentConversation.length) {
-		const summary = payload.currentConversation.findIndex(({ role }) => role === "summary");
-		payload.currentConversation.splice(summary < 0 ? 0 : summary, 1);
+	const payload: AnalysisPayload = { currentConversation: [], existingPrompts: [] };
+	const envelopeChars = JSON.stringify(payload).length;
+	payload.currentConversation = boundedConversation(
+		ctx.sessionManager.buildContextEntries(),
+		MAX_PAYLOAD_CHARS - envelopeChars,
+	);
+	let used = JSON.stringify(payload).length;
+	const prompts = pi.getCommands()
+		.filter((command) => command.source === "prompt")
+		.map((command) => ({ name: command.name, description: command.description ?? "" }))
+		.sort((left, right) => left.name.localeCompare(right.name));
+	for (const prompt of prompts) {
+		const cost = JSON.stringify(prompt).length + (payload.existingPrompts.length ? 1 : 0);
+		if (used + cost > MAX_PAYLOAD_CHARS) continue;
+		payload.existingPrompts.push(prompt);
+		used += cost;
 	}
 	return payload;
 }
 
-function latestAssistantText(ctx: ExtensionContext): string | undefined {
+function latestAssistantDraft(ctx: ExtensionContext): string | undefined {
 	for (const entry of [...ctx.sessionManager.buildContextEntries()].reverse()) {
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		const text = messageText(entry.message.content);
-		if (text.trim()) return text;
+		return entry.message.stopReason === "stop" && isPromptMarkdown(text) ? text : undefined;
 	}
 }
 
@@ -430,8 +437,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 				return;
 			}
 			const menuBranch = branchGeneration;
-			const latest = latestAssistantText(ctx);
-			const draft = isPromptMarkdown(latest) ? latest : undefined;
+			const draft = latestAssistantDraft(ctx);
 			const analyze = analysisRan ? "Analyze again" : "Analyze now";
 			const toggle = automatic ? "Automatic Off" : "Automatic On";
 			const choices = [
