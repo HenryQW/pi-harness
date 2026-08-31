@@ -97,6 +97,7 @@ Multi-context layout uses root `CONTEXT-MAP.md` and per-package `CONTEXT.md` fil
 
 ### Knowledge tiers
 
-- `pi-memory` (`MEMORY.md` and `USER.md`) is global cross-project memory; never store project-specific facts there.
-- Durable repository knowledge belongs in git: `docs/adr/`, `AGENTS.md`, and `CONTEXT.md` files.
+- Global `pi-memory` `MEMORY.md` and `USER.md` are cross-project stores. Keep `USER.md` global, and never store project-specific facts in global `MEMORY.md`.
+- A trusted project may use one project-root `MEMORY.md` for project-scoped scratch facts.
+- Authoritative repository knowledge belongs in Git docs: `docs/adr/`, `AGENTS.md`, `CONTEXT.md`, and `CONTEXT-MAP.md` files.
 - Resumable per-worktree task state belongs in `.context/progress.md`.
