@@ -1,11 +1,11 @@
 # `@henryqw/pi-pr`
 
-Show the current branch pull request's lifecycle, CI, mergeability, and review state in the Pi footer.
+Show the current branch pull request in the Pi footer and use `/pr` to run its next safe step.
 
 ## Why
 
-- **Created for**: Avoid repeated `gh` commands just to check pull-request status during work.
-- **Advantage**: Branch lifecycle, CI, mergeability, and review state appear at a glance in the footer.
+- **Created for**: Check pull-request progress without repeated `gh` commands.
+- **Advantage**: See the current pull request and its next step in one place.
 
 ## Install
 
@@ -13,42 +13,58 @@ Show the current branch pull request's lifecycle, CI, mergeability, and review s
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repository checkout.
+Requires an authenticated GitHub CLI session (`gh auth login`) and a GitHub repository checkout. It works in generic Pi sessions outside Herdr.
 
 ## With
 
-`@henryqw/pi-footer` improves this package by showing current-branch pull-request status in the footer.
+`@henryqw/pi-footer` improves this package by showing its pull-request status in the footer.
 
 ## Use
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| Footer | ui | Show the current branch pull request. |
-| `/pr` | command | Open current branch PR, or start PR workflow when absent. |
+| Footer | ui | Show a linked `PR #number` and one plain-language status. |
+| Widget hint | ui | Show at most one hint for the next `/pr` step. |
 
-Each entry is one linked `PR #number` plus one plain-language state. Possible states are:
+Footer statuses include `N unresolved`, `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `base update required`, `merge conflict`, `merge-ready`, `merged`, and `closed`. Colors support the text; they do not carry meaning alone.
 
-- `<count> unresolved`, `draft`, `open`, `approved`, and `CI running`
-- `CI failed`, `changes requested`, `merge conflict`, `merged`, and `closed`
+Use `/pr` without arguments. It reads the current branch pull request and local state, then runs one route.
 
-Colors support text. They do not carry meaning alone.
+## Routes
 
-Known states have this priority:
+| Current condition | `/pr` route |
+| --- | --- |
+| No current-branch pull request | Start pull-request creation. |
+| Base update required or merge conflict | Update from the pull request's exact base. A conflict uses this same route. |
+| Changes requested or unresolved review threads | Run the package comment sweep. |
+| CI failed | Run the CI fix workflow. |
+| No-action state | Report the state without taking action. |
+| Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
-1. `<count> unresolved` for known unresolved review threads
-2. `merge conflict`
-3. `changes requested`
-4. `CI failed`
-5. `CI running` for CI progress
+A no-action state includes a draft, merged or closed pull request, running CI, pending review, blocked merge policy, a dirty worktree, local commits ahead or diverged, or no available action.
 
-The status loads at session start and polls every 30 seconds. It refreshes after an agent successfully runs `gh pr create`, `git push`, or `/pr`.
+## Route priority
 
-Unresolved review threads are checked every 30 seconds for 20 minutes after an open PR is first found. Each new push or remote PR update, including new comments, restarts that window.
+A missing pull request uses creation. For an existing pull request, the first matching condition wins:
 
-The footer and warning notification show the unresolved count when first found or increased. The last known footer count remains after review checks stop. No pull request leaves the footer blank.
+1. Merged, closed, or draft: no action.
+2. Base update required or merge conflict.
+3. Changes requested or unresolved review threads.
+4. CI failure.
+5. Waiting or local safety block: no action.
+6. Merge-ready: final confirmation, then direct merge.
 
-`/pr` finds an open PR for the current branch. When absent, it starts bundled `/skill:pi-pr-create` workflow.
+Ordinary conversation comments do not trigger a route or block a merge. Changes requested and unresolved review threads can select the package comment sweep.
 
-The agent resolves the base and inspects and commits scoped changes. It runs relevant validation, pushes the branch, and creates or updates the PR with a live title and body.
+## Refresh
 
-This workflow handles dirty worktrees. It never silently commits unrelated changes.
+The footer and widget load at session start and poll every 30 seconds. Polling updates presentation only and may be stale. `/pr` reads fresh remote and local state before it chooses a route or merges. The command is authoritative for actions.
+
+## Safety limits
+
+- `/pr` takes no arguments and does not open a browser.
+- It does not run `/done` or `/sweep`.
+- Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
+- It does not enable auto-merge or add a merge queue.
+- It does not rebase the local branch, force-push, delete branches, or clean up worktrees.
+- Direct merge requires final confirmation and a fresh readiness check.
