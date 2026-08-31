@@ -13,7 +13,6 @@ Main is the parent Pi session. It can delegate bounded single, parallel, and cha
 
 ```bash
 pi install npm:@henryqw/pi-task-models
-pi install npm:@henryqw/pi-multi-codex
 pi install npm:@henryqw/pi-subagent
 ```
 
@@ -21,7 +20,6 @@ pi install npm:@henryqw/pi-subagent
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-multi-codex` | Required. Children can use Main's active Codex slot. |
 | `@henryqw/pi-task-models` | Required. Shared `fast` / `balanced` / `frontier` / `fav` routes. |
 
 Model routing is not configured here. Children resolve routes through shared `@henryqw/pi-task-models` config at `~/.pi/agent/config/pi-task-models/config.json`, which stores only explicit task overrides. The local `pi-subagent/delegateTask` declaration supplies the omitted-class default.
