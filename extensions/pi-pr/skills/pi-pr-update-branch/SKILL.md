@@ -13,10 +13,8 @@ Before changing anything:
 
 1. Require an attached branch and a clean tree. Resolve the branch with `git symbolic-ref --quiet --short HEAD`; stop if it is empty. Then inspect `git status --porcelain=v1 --untracked-files=all` and stop for any staged, unstaged, untracked, unresolved, or in-progress operation. Never commit, clean, stash, or otherwise hide a dirty tree.
 2. Resolve the local push repository from the branch's configured push remote. Do not assume a remote name. Stop if the branch has no unambiguous push remote or its repository cannot be identified.
-3. Resolve exactly one open PR for this branch. Use `gh pr view --json number,state,baseRepository,baseRefName,headRepository,headRefName,mergeStateStatus,mergeable` in the checkout's GitHub context; for a fork checkout that cannot resolve it, search open PRs by the exact head repository owner and branch, then inspect each candidate. Require the candidate's `headRepository.nameWithOwner` and `headRefName` to match the local push repository and branch. Stop for none, more than one, a non-open PR, or any mismatch.
-4. Record the PR number, `baseRepository.nameWithOwner`, `baseRefName`, `headRepository.nameWithOwner`, and `headRefName` from that PR. The pair `(base repository, base ref)` is the only target. Never infer it from a default branch, a local branch, or a remote-tracking ref. A forked head repository and a different base repository are normal.
-
-Re-read the PR by its recorded number after fetching and again immediately before pushing. Stop if its state, base repository/ref, head repository/ref, or current-branch identity changed.
+3. Resolve exactly one open PR for this branch. Use `gh pr view --json number,state,baseRepository,baseRefName,headRepository,headRefName,headRefOid,mergeStateStatus,mergeable` in the checkout's GitHub context; for a fork checkout that cannot resolve it, search open PRs by the exact head repository owner and branch, then inspect each candidate. Require the candidate's `headRepository.nameWithOwner` and `headRefName` to match the local push repository and branch. Stop for none, more than one, a non-open PR, or any mismatch.
+4. Record the PR number, `baseRepository.nameWithOwner`, `baseRefName`, `headRepository.nameWithOwner`, `headRefName`, and `headRefOid` from that PR. Set `EXPECTED_HEAD_SHA` to this initial `headRefOid` and never replace it with a later value. The pair `(base repository, base ref)` is the only target. Never infer it from a default branch, a local branch, or a remote-tracking ref. A forked head repository and a different base repository are normal.
 
 ## Fetch, pin, and merge
 
@@ -28,7 +26,16 @@ BASE_SHA="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
 printf 'Fetched base %s %s at %s\n' "$BASE_REPOSITORY" "$BASE_REF" "$BASE_SHA"
 ```
 
-If fetch or SHA resolution fails, stop. Preserve the printed `BASE_SHA`; it is authoritative for this run. Do not fall back to any local or remote-tracking ref. Merge the recorded SHA, never the branch name:
+If fetch or SHA resolution fails, stop. Preserve the printed `BASE_SHA`; it is authoritative for this run. Do not fall back to any local or remote-tracking ref.
+
+Re-read the PR by its recorded number now, requesting the same JSON fields including `headRefOid`. Stop if its state, base repository/ref, head repository/ref, current-branch identity, or `headRefOid` differs from the recorded values. Immediately before merging, require the local `HEAD` to be exactly `EXPECTED_HEAD_SHA`:
+
+```bash
+LOCAL_HEAD="$(git rev-parse --verify HEAD)"
+test "$LOCAL_HEAD" = "$EXPECTED_HEAD_SHA"
+```
+
+Stop if this check fails; never merge unpublished local commits. Merge the recorded SHA, never the branch name:
 
 ```bash
 git merge --no-edit "$BASE_SHA"
@@ -79,7 +86,7 @@ After the merge completes:
    ```
 
    Stop on either failure. Do not substitute a newer ref or another SHA.
-3. Reconfirm the saved PR target and resolve the push remote's repository against the saved head repository. Stop if the PR is no longer open, its target changed, or the push destination is not exact.
+3. Immediately before the single push, re-fetch the PR metadata by its recorded number with the same JSON fields, including `headRefOid`. Require the PR to remain open, its saved target and head repository/ref to remain unchanged, and its `headRefOid` to remain exactly `EXPECTED_HEAD_SHA`; stop if the PR head moved. Reconfirm the saved PR target and resolve the push remote's repository against the saved head repository. Stop if the push destination is not exact or any local-head check fails.
 4. Push the current branch to the PR's exact head ref once, without force or retry:
 
    ```bash
