@@ -2,9 +2,9 @@
 import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
 
+import ExtensionCard from "../components/ExtensionCard.astro";
 import Footer from "../components/Footer.astro";
 import { extensions } from "../extension-catalog.ts";
-import { npmBadgeUrl } from "../npm-badge.ts";
 
 const { config } = data;
 const featuredExtensions = [
@@ -13,17 +13,17 @@ const featuredExtensions = [
     outcome: "Delegate focused work to isolated Pi roles.",
   },
   {
-    name: "@henryqw/pi-memory",
-    outcome: "Keep useful context across Pi sessions.",
+    name: "@henryqw/pi-task-models",
+    outcome: "Choose shared model profiles for Pi tasks.",
   },
   {
-    name: "@henryqw/pi-ask-question",
-    outcome: "Let Pi ask when it needs your decision.",
+    name: "@henryqw/pi-memory",
+    outcome: "Keep useful context across Pi sessions.",
   },
 ].map(({ name, outcome }) => {
   const extension = extensions.find((item) => item.name === name);
   if (!extension) throw new Error(`Missing featured extension: ${name}`);
-  return { ...extension, outcome };
+  return { ...extension, description: outcome };
 });
 ---
 
@@ -46,14 +46,14 @@ const featuredExtensions = [
   page={{ title: "Henry Pi Harness", description: config.description }}
 >
   <div class="mx-auto max-w-360 px-6 py-10 md:px-10 md:py-16 lg:px-16 lg:py-20">
-    <header class="max-w-4xl">
-      <div class="max-w-3xl">
+    <header class="max-w-4xl sm:mx-auto sm:text-center">
+      <div class="max-w-3xl sm:mx-auto">
         <p class="text-sm font-medium text-accent">Henry Pi Harness</p>
         <h1 class="mt-3 text-5xl font-medium leading-none tracking-tight md:text-6xl">
           Ship better work, faster.
         </h1>
         <p class="mt-5 text-lg text-muted-foreground md:text-xl">Focused context. Less repeat work.</p>
-        <div class="mt-7 flex flex-col gap-3 sm:flex-row">
+        <div class="mt-7 flex flex-col gap-3 sm:flex-row sm:justify-center">
           <a
             class="inline-flex min-h-11 items-center justify-center rounded-blume bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:ring-2 focus-visible:ring-accent/40"
             href="#extensions"
@@ -69,27 +69,43 @@ const featuredExtensions = [
             View on GitHub <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span>
           </a>
         </div>
-        <div class="mt-6 flex items-center gap-3">
-          <img
-            class="size-14 rounded-full md:size-16"
-            src="/pi-logo.svg"
-            alt="Pi logo"
-            width="56"
-            height="56"
-          />
-          <p class="text-lg text-muted-foreground md:text-xl">Built on Pi. Tuned by Henry.</p>
-          <img
-            class="size-14 rounded-full md:size-16"
-            src="/apple-icon.png"
-            alt="Henry Wang"
-            width="56"
-            height="56"
-          />
+        <div class="mt-6 flex items-center justify-center gap-3">
+          <a
+            class="duration-200 hover:scale-103 hover:-translate-y-1"
+            href="https://pi.dev/"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <img
+              class="size-14 rounded-full md:size-16"
+              src="/pi-logo.svg"
+              alt="Pi logo"
+              width="56"
+              height="56"
+            />
+            <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span>
+          </a>
+          <p class="text-center text-lg text-muted-foreground md:text-xl">Built on Pi. Tuned by Henry.</p>
+          <a
+            class="duration-200 hover:scale-103 hover:-translate-y-1"
+            href="https://github.com/HenryQW"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <img
+              class="size-14 rounded-full md:size-16"
+              src="/apple-icon.png"
+              alt="Henry Wang"
+              width="56"
+              height="56"
+            />
+            <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span>
+          </a>
         </div>
       </div>
     </header>
 
-    <figure class="mt-10 overflow-hidden rounded-blume border border-border bg-muted/30 shadow-sm md:mt-14">
+    <figure class="mt-10 overflow-hidden md:mt-14">
       <img src="/example.png" alt="Pi running with several extensions from this repository" />
     </figure>
 
@@ -100,17 +116,7 @@ const featuredExtensions = [
       </div>
       <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {
-          featuredExtensions.map((item) => (
-            <a
-              class="group flex h-full flex-col rounded-blume border border-border bg-background p-5 transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-accent/40"
-              href={`/extensions/${item.directory}`}
-            >
-              <h3 class="break-words font-mono text-sm font-medium group-hover:text-accent">
-                {item.name}
-              </h3>
-              <p class="mt-2 flex-1 text-sm text-muted-foreground">{item.outcome}</p>
-            </a>
-          ))
+          featuredExtensions.map((item) => <ExtensionCard {...item} />)
         }
       </div>
     </section>
@@ -122,31 +128,7 @@ const featuredExtensions = [
       </div>
       <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {
-          extensions.map((item) => (
-            <a
-              class="group flex h-full flex-col rounded-blume border border-border bg-background p-5 transition-colors hover:bg-muted/60"
-              href={`/extensions/${item.directory}`}
-            >
-              <div class="flex items-start justify-between gap-3">
-                <h3 class="break-words font-mono text-sm font-medium group-hover:text-accent">
-                  {item.name}
-                </h3>
-                <span class="shrink-0 font-mono text-xs text-muted-foreground">v{item.version}</span>
-              </div>
-              <p class="mt-2 flex-1 text-sm text-muted-foreground">{item.description}</p>
-              <div class="mt-4 border-border border-t pt-3">
-                <img
-                  alt="Monthly npm downloads"
-                  class="h-5 w-auto"
-                  decoding="async"
-                  height="20"
-                  loading="lazy"
-                  src={npmBadgeUrl(item.name)}
-                  width="144"
-                />
-              </div>
-            </a>
-          ))
+          extensions.map((item) => <ExtensionCard {...item} />)
         }
       </div>
     </section>
