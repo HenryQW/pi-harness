@@ -47,7 +47,7 @@ New user input does not stop a running child. Branch navigation discards its old
 
 ## Automatic mode
 
-Automatic mode waits for three non-empty user inputs. It starts at the next idle `agent_settled` event.
+Automatic mode waits for the configured number of non-empty user inputs. The default is three. It starts at the next idle `agent_settled` event.
 
 It starts at most once per extension runtime. A manual analysis consumes that opportunity.
 
@@ -91,15 +91,18 @@ The only config file is `~/.pi/agent/config/pi-prompt-creator/config.json`:
 
 ```json
 {
-  "automatic": false
+  "automatic": false,
+  "inputThreshold": 3
 }
 ```
 
-A missing file quietly uses `false`. Startup never creates or rewrites it.
+`inputThreshold` is optional and defaults to three. It must be a positive integer when present. Edit it and run `/reload` to apply the change.
+
+A missing file quietly uses `false` and an input threshold of three. Startup never creates or rewrites it.
 
 Malformed config or unknown keys disable automatic analysis. Pi warns once and leaves the file unchanged.
 
-Only `Automatic On` or `Automatic Off` writes the config.
+Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the configured threshold.
 
 No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`.
 

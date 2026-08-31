@@ -156,10 +156,10 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
 	}
 }
 
-test("automatic analysis starts once after three genuine inputs and discards a stale branch result", async () => {
+test("automatic analysis honors the configured input threshold and discards a stale branch result", async () => {
 	await withAgentDir(async (agentDir) => {
 		await mkdir(extensionConfigDir("pi-prompt-creator", agentDir), { recursive: true });
-		await writeFile(extensionConfigPath("pi-prompt-creator", agentDir), '{"automatic":true}\n');
+		await writeFile(extensionConfigPath("pi-prompt-creator", agentDir), '{"automatic":true,"inputThreshold":4}\n');
 		const child = controlledExecutor();
 		const app = harness({
 			agentDir,
@@ -183,6 +183,9 @@ test("automatic analysis starts once after three genuine inputs and discards a s
 		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
 		assert.equal(child.runs.length, 0);
 		app.handlers.get("input")!({ source: "interactive", text: "three" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		assert.equal(child.runs.length, 0, "analysis waits for the configured threshold");
+		app.handlers.get("input")!({ source: "interactive", text: "four" }, app.ctx);
 
 		app.setMode("rpc");
 		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
@@ -369,7 +372,7 @@ test("malformed config is preserved and warns once until an explicit toggle repl
 	await withAgentDir(async (agentDir) => {
 		const configPath = extensionConfigPath("pi-prompt-creator", agentDir);
 		await mkdir(join(configPath, ".."), { recursive: true });
-		const malformed = '{"automatic":true,"unknown":true}\n';
+		const malformed = '{"automatic":true,"inputThreshold":0}\n';
 		await writeFile(configPath, malformed);
 		const child = controlledExecutor();
 		const app = harness({ agentDir, executor: child.executor, selections: ["Automatic On"] });
@@ -383,7 +386,7 @@ test("malformed config is preserved and warns once until an explicit toggle repl
 		assert.equal(child.runs.length, 0, "invalid config disables automatic analysis");
 
 		await app.registeredCommands.get("promptor")!("", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: true });
+		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: true, inputThreshold: 3 });
 		assert.equal(app.notifications.at(-1)?.message, "Automatic analysis enabled.");
 	});
 });

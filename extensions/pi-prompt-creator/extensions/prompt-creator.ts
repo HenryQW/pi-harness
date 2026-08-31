@@ -27,6 +27,7 @@ const CANDIDATE_MESSAGE_TYPE = `${EXTENSION_ID}/candidate`;
 const MAX_CONVERSATION_CHARS = 30_000;
 const MAX_MARKDOWN_BYTES = 16 * 1024;
 const MAX_NAME_CHARS = 64;
+const DEFAULT_INPUT_THRESHOLD = 3;
 const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const DISALLOWED_MARKDOWN_CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 const READY_WIDGET = "Prompt ready — /promptor";
@@ -58,7 +59,7 @@ or
 The object must have exactly these keys. name must start with a lowercase ASCII letter, use only lowercase ASCII letters, digits, and single hyphens, and be at most ${MAX_NAME_CHARS} characters. markdown must be nonempty, at most ${MAX_MARKDOWN_BYTES} UTF-8 bytes, and contain no C0 or C1 controls except tab and LF.`,
 } satisfies Role;
 
-type Config = { automatic: boolean };
+type Config = { automatic: boolean; inputThreshold: number };
 export type PromptCandidate = { name: string; markdown: string };
 type ConversationItem = { role: "summary" | "user" | "assistant"; text: string };
 type ExistingPrompt = { name: string; description: string };
@@ -78,10 +79,16 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 function parseConfig(value: unknown): Config {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Config must be an object.");
 	const config = value as Record<string, unknown>;
-	if (!exactKeys(config, ["automatic"]) || typeof config.automatic !== "boolean") {
-		throw new Error("Config must contain exactly automatic:boolean.");
-	}
-	return { automatic: config.automatic };
+	const validKeys = exactKeys(config, ["automatic"]) || exactKeys(config, ["automatic", "inputThreshold"]);
+	const inputThreshold = config.inputThreshold ?? DEFAULT_INPUT_THRESHOLD;
+	if (
+		!validKeys
+		|| typeof config.automatic !== "boolean"
+		|| typeof inputThreshold !== "number"
+		|| !Number.isSafeInteger(inputThreshold)
+		|| inputThreshold < 1
+	) throw new Error("Config must contain automatic:boolean and an optional positive integer inputThreshold.");
+	return { automatic: config.automatic, inputThreshold };
 }
 
 export function isPromptName(value: unknown): value is string {
@@ -238,11 +245,12 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	const configStore = createConfigStore<Config>({
 		extensionId: EXTENSION_ID,
 		agentDir,
-		defaults: () => ({ automatic: false }),
+		defaults: () => ({ automatic: false, inputThreshold: DEFAULT_INPUT_THRESHOLD }),
 		parse: parseConfig,
 	});
 	let executor = options.executor;
 	let automatic = false;
+	let inputThreshold = DEFAULT_INPUT_THRESHOLD;
 	let automaticConsumed = false;
 	let configWarned = false;
 	let inputCount = 0;
@@ -364,9 +372,12 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		activeRun = undefined;
 		resetBranch(ctx);
 		try {
-			automatic = configStore.loadSync().value.automatic;
+			const config = configStore.loadSync().value;
+			automatic = config.automatic;
+			inputThreshold = config.inputThreshold;
 		} catch {
 			automatic = false;
+			inputThreshold = DEFAULT_INPUT_THRESHOLD;
 			if (!configWarned) {
 				configWarned = true;
 				ctx.ui.notify("Prompt Creator config is invalid. Automatic analysis is disabled; the file was left unchanged.", "warning");
@@ -390,7 +401,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			|| !ctx.isIdle()
 			|| !automatic
 			|| automaticConsumed
-			|| inputCount < 3
+			|| inputCount < inputThreshold
 			|| activeRun
 			|| candidate
 		) return;
@@ -438,7 +449,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			if (selected === toggle) {
 				const next = !automatic;
 				try {
-					await configStore.save({ automatic: next });
+					await configStore.save({ automatic: next, inputThreshold });
 					automatic = next;
 					ctx.ui.notify(`Automatic analysis ${next ? "enabled" : "disabled"}.`, "info");
 				} catch {
