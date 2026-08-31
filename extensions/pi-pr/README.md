@@ -13,7 +13,9 @@ Show the current branch pull request in the Pi footer and use `/pr` to run its n
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires an authenticated GitHub CLI session (`gh auth login`) and a GitHub repository checkout. It works in generic Pi sessions outside Herdr.
+Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on GitHub.com or GitHub Enterprise. The PR hostname selects its GitHub API host. It works in generic Pi sessions outside Herdr.
+
+The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
 
 ## With
 
@@ -34,12 +36,16 @@ Use `/pr` without arguments. It reads the current branch pull request and local 
 
 | Current condition | `/pr` route |
 | --- | --- |
-| No current-branch pull request | Start pull-request creation. |
+| No current-branch pull request, including no upstream push target | Start pull-request creation. |
 | Base update required or merge conflict | Update from the pull request's exact base. A conflict uses this same route. |
 | Changes requested or unresolved review threads | Run the package comment sweep. |
 | CI failed | Run the CI fix workflow. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
+
+`pi-pr-create` pushes `HEAD` to `origin` and sets the upstream when absent, then creates or updates the PR.
+
+Current-branch discovery matches the exact push repository and ref. It finds a fork-head PR whose base is an upstream repository.
 
 A no-action state includes a draft, merged or closed pull request, running CI, pending review, blocked merge policy, a dirty worktree, local commits ahead or diverged, or no available action.
 
@@ -67,4 +73,8 @@ The footer and widget load at session start and poll every 30 seconds. Polling u
 - Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
 - It does not rebase the local branch, force-push, delete branches, or clean up worktrees.
+- Existing PR discovery and comment-sweep pushes require exactly one unambiguous push URL for the target head repository.
+- Before merge, `/pr` validates the PR head repository as the fetch remote, fetches the head, and verifies its OID matches the advertised head OID.
+- Before a comment-sweep push, it revalidates the full PR identity: number, URL, hostname, base repository/ref/OID, and head repository/ref/OID. A mismatch cancels the push.
 - Direct merge requires final confirmation and a fresh readiness check.
+- Only authenticated GitHub.com and GitHub Enterprise repositories are supported.
