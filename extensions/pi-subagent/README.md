@@ -53,13 +53,13 @@ Parallel tasks start together, settle together, and report in input order. Chain
 
 One call has one aggregate 50 KiB cap for Main-visible text. Background work belongs to its launching session; shutdown or reload aborts it and may leave only recoverable-work evidence or no follow-up message.
 
-Each entry resolves its own Role, resources, route, and optional isolation. A Role with `isolation: worktree` gets a separate deterministic worktree when Git has a committed `HEAD`; non-Git and unborn-`HEAD` contexts can use Main's directory. Siblings and chain steps never share a created worktree.
+Each entry resolves its own Role, resources, route, and optional isolation. A Role with `isolation: worktree` gets a separate deterministic worktree when available. Non-Git and unborn-`HEAD` contexts can use Main's directory. Other setup failures, including unsafe submodule layouts, reject instead of falling back. Siblings and chain steps never share a created worktree.
 
 See the [orchestration guide](./docs/orchestration.md) for full delegation, transport, isolation, and UI behavior.
 
 ### Flow
 
-Use Flow only for independent Git changes that can merge in any order. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
+Flow requires a clean Main worktree on an attached branch with a committed `HEAD`. Use it only for independent Git changes that can merge in any order. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
 ```text
 delegate_flow({ units: [{ id, name, task, modelClass?, validation: [{ command, args }], review? }] })
