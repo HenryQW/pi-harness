@@ -21,7 +21,7 @@ export type InspectLocalMergeSafetyInput = {
 	exec: Exec;
 	cwd: string;
 	expectedHead: string;
-	headRepository: string;
+	headFetchSource: string;
 	headRef: string;
 };
 
@@ -88,7 +88,7 @@ function requiredOutput(result: ExecResult, label: string): string {
 function validateInspectionInput(input: InspectLocalMergeSafetyInput): void {
 	requiredText(input.cwd, "cwd");
 	requiredText(input.expectedHead, "expected PR head");
-	requiredText(input.headRepository, "PR head repository");
+	requiredText(input.headFetchSource, "PR head fetch source");
 	requiredText(input.headRef, "PR head ref");
 	if (typeof input.exec !== "function") throw new TypeError("exec must be a function");
 }
@@ -103,7 +103,7 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 	await runCommand(input.exec, input.cwd, "git", [
 		"fetch",
 		"--no-tags",
-		input.headRepository,
+		input.headFetchSource,
 		`refs/heads/${input.headRef}`,
 	]);
 	const fetchedHead = requiredOutput(

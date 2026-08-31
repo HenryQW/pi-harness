@@ -97,6 +97,9 @@ async function mergePullRequest(
 	if (freshMethod !== method) {
 		throw new Error(`PR #${fresh.number} merge cancelled: merge method changed from ${method} to ${freshMethod}`);
 	}
+	if (!fresh.headFetchSource) {
+		throw new Error(`PR #${fresh.number} merge failed: head fetch source is unavailable`);
+	}
 
 	await executeGitHubMerge({
 		exec: (command, args, options) => pi.exec(command, args, {
@@ -108,7 +111,7 @@ async function mergePullRequest(
 		pullRequestId: fresh.id,
 		hostname: fresh.host,
 		expectedHead: fresh.head.oid,
-		headRepository: fresh.head.repository,
+		headFetchSource: fresh.headFetchSource,
 		headRef: fresh.head.ref,
 		allowedMergeMethods: fresh.merge.allowedMergeMethods,
 		viewerDefaultMergeMethod: fresh.merge.viewerDefaultMergeMethod,

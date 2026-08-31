@@ -90,18 +90,26 @@ function harness(options: HarnessOptions) {
 				command === "git" &&
 				(args.join(" ") === "rev-parse --verify HEAD^{commit}" || args.join(" ") === "rev-parse --verify HEAD")
 			) return result(`${configuredLocalHead}\n`);
-			if (command === "git" && args.join(" ") === "rev-parse --abbrev-ref --symbolic-full-name @{push}") return result("fork/feature/pr\n");
+			if (command === "git" && args.join(" ") === "for-each-ref --format=%(push:short) refs/heads/feature/pr") return result("fork/feature/pr\n");
 			if (command === "git" && args.join(" ") === "remote") return result("fork\norigin\n");
+			if (command === "git" && args[0] === "check-ref-format" && args[1] === "--branch") return result(`${args[2]}\n`);
 			if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
 				return result("git@github.com:acme/project.git\n");
 			}
 			if (command === "gh" && args[0] === "repo" && args[1] === "view" && args[2] === "git@github.com:acme/project.git") {
 				return result(JSON.stringify({ nameWithOwner: "acme/project", url: `https://${nextHost()}/acme/project` }));
 			}
-			if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+			if (command === "gh" && args[0] === "api" && args[1] === "search/issues") {
 				events.push("load");
 				active = options.states[stateIndex++] ?? null;
-				return result(JSON.stringify(active ? [pullRequest(active)] : []));
+				return result(JSON.stringify({
+					total_count: active ? 1 : 0,
+					incomplete_results: false,
+					items: active ? [{ html_url: `https://${active.host ?? DEFAULT_HOST}/acme/project/pull/42` }] : [],
+				}));
+			}
+			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+				return result(JSON.stringify(active ? pullRequest(active) : null));
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
@@ -371,9 +379,10 @@ test("merges only after confirmation, using fresh PR data in the atomic mutation
 		message: "Merge PR #42 using merge.",
 	}]);
 	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
-	assert.deepEqual(app.calls.find(({ command, args }) =>
-		command === "git" && args.join(" ") === "fetch --no-tags acme/project refs/heads/feature/pr",
-	)?.args, ["fetch", "--no-tags", "acme/project", "refs/heads/feature/pr"]);
+	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
+	assert.ok(fetches.length > 0);
+	assert.ok(fetches.every(({ args }) => args[2] === "fork"));
+	assert.equal(fetches.some(({ args }) => args[2] === "acme/project"), false);
 	assert.deepEqual(mutationCalls(app.calls), [{
 		command: "gh",
 		args: [
