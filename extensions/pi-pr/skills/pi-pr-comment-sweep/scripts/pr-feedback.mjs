@@ -6,8 +6,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-const PR_FIELDS = "number,url,title,state,baseRefName,headRefName,headRefOid,headRepository,mergeStateStatus,statusCheckRollup";
-const PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)$/;
+const PR_FIELDS = "number,url,title,state,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeStateStatus,statusCheckRollup";
+const PR_PATH = /^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)$/;
 const READ_ATTEMPTS = 3;
 
 const FEEDBACK_QUERY = `
@@ -128,10 +128,73 @@ function cleanHead() {
   return requiredText(git("rev-parse", "HEAD"), "local HEAD");
 }
 
+function parsePrUrl(value, label = "PR URL") {
+  const url = requiredText(value, label);
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new FeedbackError(`unsupported ${label}: ${url}`);
+  }
+  const match = PR_PATH.exec(parsed.pathname);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash || !match || !parsed.hostname) {
+    throw new FeedbackError(`unsupported ${label}: ${url}`);
+  }
+  return {
+    url: parsed.toString(),
+    hostname: parsed.hostname.toLowerCase(),
+    owner: match[1],
+    repo: match[2],
+    number: Number(match[3]),
+  };
+}
+
 function validatePrRef(pr) {
-  if (pr === undefined) return;
-  if (/^[1-9][0-9]*$/.test(pr) || PR_URL.test(pr)) return;
-  throw new UsageError("--pr must be a positive PR number or https://github.com/OWNER/REPO/pull/NUMBER");
+  if (pr === undefined || /^[1-9][0-9]*$/.test(pr)) return;
+  try {
+    parsePrUrl(pr, "--pr");
+  } catch {
+    throw new UsageError("--pr must be a positive PR number or https://HOST/OWNER/REPO/pull/NUMBER");
+  }
+}
+
+function prTarget(metadata, label) {
+  if (!isRecord(metadata)) throw new FeedbackError(`${label} is invalid`);
+  const parsed = parsePrUrl(metadata.url, `${label} URL`);
+  if (!Number.isInteger(metadata.number) || metadata.number !== parsed.number) {
+    throw new FeedbackError(`${label} number does not match URL`);
+  }
+  const hostname = requiredText(metadata.hostname, `${label} hostname`).toLowerCase();
+  if (hostname !== parsed.hostname) throw new FeedbackError(`${label} hostname does not match URL`);
+  if (!isRecord(metadata.headRepository)) throw new FeedbackError(`${label} head repository identity is unavailable`);
+  return {
+    number: metadata.number,
+    url: parsed.url,
+    hostname,
+    baseRefName: requiredText(metadata.baseRefName, `${label} base ref`),
+    baseRefOid: requiredText(metadata.baseRefOid, `${label} base OID`),
+    headRepository: requiredText(metadata.headRepository.nameWithOwner, `${label} head repository`),
+    headRefName: requiredText(metadata.headRefName, `${label} head ref`),
+    headRefOid: requiredText(metadata.headRefOid, `${label} head OID`),
+  };
+}
+
+function requireSamePr(expected, current, includeHeadOid = true) {
+  const fields = [
+    ["number", "number"],
+    ["hostname", "hostname"],
+    ["url", "URL"],
+    ["baseRefName", "base ref"],
+    ["baseRefOid", "base OID"],
+    ["headRepository", "head repository"],
+    ["headRefName", "head ref"],
+  ];
+  if (includeHeadOid) fields.push(["headRefOid", "head OID"]);
+  for (const [field, name] of fields) {
+    if (expected[field] !== current[field]) {
+      throw new FeedbackError(`PR ${name} changed since feedback fetch: ${expected[field]} -> ${current[field]}`);
+    }
+  }
 }
 
 function readOpenPr(pr) {
@@ -141,21 +204,17 @@ function readOpenPr(pr) {
   const value = readJsonCommand("gh", args);
   if (value.state !== "OPEN") throw new FeedbackError(`PR must be OPEN, got ${JSON.stringify(value.state)}`);
 
-  const url = requiredText(value.url, "PR URL");
-  const match = PR_URL.exec(url);
-  if (!match) throw new FeedbackError(`unsupported PR URL: ${url}`);
-  if (!Number.isInteger(value.number)) throw new FeedbackError("PR number must be an integer");
-  requiredText(value.headRefName, "PR head ref");
-  requiredText(value.headRefOid, "PR head OID");
-  requiredText(value.mergeStateStatus, "PR merge state");
-  list(value.statusCheckRollup, "PR status checks");
-  if (!isRecord(value.headRepository)) throw new FeedbackError("PR head repository identity is unavailable");
-  requiredText(value.headRepository.nameWithOwner, "PR head repository");
-
-  return {
+  const parsed = parsePrUrl(value.url);
+  const metadata = {
     ...value,
-    baseRepository: `${match[1]}/${match[2]}`,
+    url: parsed.url,
+    hostname: parsed.hostname,
+    baseRepository: `${parsed.owner}/${parsed.repo}`,
   };
+  prTarget(metadata, "PR");
+  requiredText(metadata.mergeStateStatus, "PR merge state");
+  list(metadata.statusCheckRollup, "PR status checks");
+  return metadata;
 }
 
 function requireMatchingHead(metadata, localHead) {
@@ -172,12 +231,16 @@ function requireDiscoveryBranch(pr, metadata) {
   }
 }
 
-function graphqlResponse(query, variables) {
-  const args = ["api", "graphql", "-F", "query=@-"];
+function graphqlArgs(hostname, variables) {
+  const args = ["api", "graphql", "--hostname", requiredText(hostname, "GitHub hostname"), "-F", "query=@-"];
   for (const [name, value] of Object.entries(variables)) {
     if (value !== null && value !== undefined) args.push("-F", `${name}=${value}`);
   }
-  const response = jsonCommand("gh", args, query);
+  return args;
+}
+
+function graphqlResponse(query, variables, hostname) {
+  const response = jsonCommand("gh", graphqlArgs(hostname, variables), query);
   if (response.errors && (!Array.isArray(response.errors) || response.errors.length)) {
     throw new FeedbackError(`GitHub GraphQL errors: ${JSON.stringify(response.errors)}`);
   }
@@ -185,12 +248,12 @@ function graphqlResponse(query, variables) {
   return response.data;
 }
 
-function readGraphql(query, variables) {
-  return retryRead(() => graphqlResponse(query, variables));
+function readGraphql(query, variables, hostname) {
+  return retryRead(() => graphqlResponse(query, variables, hostname));
 }
 
-function writeGraphql(query, variables) {
-  return graphqlResponse(query, variables);
+function writeGraphql(query, variables, hostname) {
+  return graphqlResponse(query, variables, hostname);
 }
 
 function pullRequest(data) {
@@ -230,7 +293,7 @@ function collectFeedback(metadata, request = readGraphql) {
       commentsCursor: cursors.conversationComments,
       reviewsCursor: cursors.reviews,
       threadsCursor: cursors.reviewThreads,
-    });
+    }, metadata.hostname);
     const pr = pullRequest(data);
     for (const target of targets) {
       if (!pending.has(target.key)) continue;
@@ -244,7 +307,7 @@ function collectFeedback(metadata, request = readGraphql) {
     }
   }
 
-  results.reviewThreads = results.reviewThreads.map((thread) => collectReplies(thread, request));
+  results.reviewThreads = results.reviewThreads.map((thread) => collectReplies(thread, request, metadata.hostname));
   return {
     pullRequest: metadata,
     conversationComments: results.conversationComments,
@@ -253,13 +316,13 @@ function collectFeedback(metadata, request = readGraphql) {
   };
 }
 
-function collectReplies(thread, request) {
+function collectReplies(thread, request, hostname) {
   if (!isRecord(thread)) throw new FeedbackError("invalid review thread");
   const threadId = requiredText(thread.id, "review thread ID");
   let page = connection(thread.comments, `replies for ${threadId}`);
   const comments = [...page.nodes];
   while (page.hasNextPage) {
-    const data = request(THREAD_REPLIES_QUERY, { threadId, cursor: page.endCursor });
+    const data = request(THREAD_REPLIES_QUERY, { threadId, cursor: page.endCursor }, hostname);
     if (!isRecord(data.node)) throw new FeedbackError(`review thread disappeared: ${threadId}`);
     page = connection(data.node.comments, `replies for ${threadId}`);
     comments.push(...page.nodes);
@@ -272,7 +335,7 @@ function collectThreadStates(metadata, request = readGraphql) {
   const states = new Map();
   let cursor = null;
   for (;;) {
-    const data = request(THREAD_STATES_QUERY, { owner, repo, number: metadata.number, cursor });
+    const data = request(THREAD_STATES_QUERY, { owner, repo, number: metadata.number, cursor }, metadata.hostname);
     const page = connection(pullRequest(data).reviewThreads, "review threads");
     for (const thread of page.nodes) {
       if (!isRecord(thread)) throw new FeedbackError("invalid review thread state");
@@ -283,8 +346,8 @@ function collectThreadStates(metadata, request = readGraphql) {
   }
 }
 
-function resolveThread(threadId) {
-  const data = writeGraphql(RESOLVE_THREAD_MUTATION, { threadId });
+function resolveThread(threadId, hostname) {
+  const data = writeGraphql(RESOLVE_THREAD_MUTATION, { threadId }, hostname);
   const result = data.resolveReviewThread;
   if (!isRecord(result) || !isRecord(result.thread)) throw new FeedbackError(`failed to resolve ${threadId}`);
   if (result.thread.id !== threadId || result.thread.isResolved !== true) {
@@ -302,7 +365,7 @@ function parsedSnapshot(raw, path) {
   if (!isRecord(value) || !isRecord(value.pullRequest) || !Array.isArray(value.conversationComments) || !Array.isArray(value.reviews) || !Array.isArray(value.reviewThreads)) {
     throw new FeedbackError(`invalid feedback JSON ${path}`);
   }
-  requiredText(value.pullRequest.url, "snapshot PR URL");
+  parsePrUrl(value.pullRequest.url, "snapshot PR URL");
   return value;
 }
 
@@ -493,7 +556,7 @@ function fetchFeedback(options) {
   const previous = out ? previousSnapshot(out) : null;
   const localHead = cleanHead();
   const initial = readOpenPr(options.pr);
-  if (previous && previous.pullRequest.url !== initial.url) {
+  if (previous && parsePrUrl(previous.pullRequest.url, "snapshot PR URL").url !== initial.url) {
     throw new FeedbackError(`existing feedback JSON belongs to ${previous.pullRequest.url}, not ${initial.url}`);
   }
   requireMatchingHead(initial, localHead);
@@ -539,7 +602,7 @@ function resolveFeedback(options) {
 
   metadata = currentExpectedHead(metadata.url, options.expectedHead);
   for (const threadId of requested) {
-    if (!states.get(threadId)) resolveThread(threadId);
+    if (!states.get(threadId)) resolveThread(threadId, metadata.hostname);
   }
 
   metadata = currentExpectedHead(metadata.url, options.expectedHead);
@@ -549,12 +612,13 @@ function resolveFeedback(options) {
   console.log(`resolved_thread_ids=${requested.join(",")}`);
 }
 
-function githubRemote(url) {
-  const scp = /^(?:[^@]+@)?github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(url);
-  if (scp) return `${scp[1]}/${scp[2]}`.toLowerCase();
+function githubRemote(url, hostname) {
+  const expected = requiredText(hostname, "PR hostname").toLowerCase();
+  const scp = /^(?:[^@/:]+@)?([^/:]+):([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(url);
+  if (scp) return scp[1].toLowerCase() === expected ? `${scp[2]}/${scp[3]}`.toLowerCase() : null;
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.toLowerCase() !== "github.com") return null;
+    if (!["ssh:", "https:"].includes(parsed.protocol) || parsed.hostname.toLowerCase() !== expected || parsed.search || parsed.hash) return null;
     const parts = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/");
     if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
     return `${parts[0]}/${parts[1].replace(/\.git$/i, "")}`.toLowerCase();
@@ -563,16 +627,28 @@ function githubRemote(url) {
   }
 }
 
-function pushRemote(repository) {
-  const target = requiredText(repository, "PR head repository").toLowerCase();
-  const matches = git("remote").split("\n").filter(Boolean).filter((remote) => {
-    const urls = run("git", ["remote", "get-url", "--push", "--all", remote]).trim().split("\n");
-    return urls.some((url) => githubRemote(url) === target);
-  });
-  if (matches.length !== 1) {
-    throw new FeedbackError(`expected one push remote for ${repository}, found ${matches.length}: ${matches.join(",") || "-"}`);
+function selectPushRemote(repository, hostname, remotes) {
+  const configured = list(remotes, "configured remotes");
+  if (configured.length !== 1) {
+    throw new FeedbackError(`expected exactly one configured remote for ${repository}, found ${configured.length}`);
   }
-  return matches[0];
+  const remote = configured[0];
+  if (!isRecord(remote)) throw new FeedbackError("configured remote is invalid");
+  const name = requiredText(remote.name, "remote name");
+  const urls = list(remote.urls, `push URLs for ${name}`);
+  if (urls.length !== 1) throw new FeedbackError(`expected exactly one push URL on ${name}, found ${urls.length}`);
+  if (githubRemote(requiredText(urls[0], `push URL for ${name}`), hostname) !== requiredText(repository, "PR head repository").toLowerCase()) {
+    throw new FeedbackError(`push URL for ${name} does not match PR head repository and hostname`);
+  }
+  return name;
+}
+
+function pushRemote(repository, hostname) {
+  const remotes = git("remote").split("\n").filter(Boolean).map((name) => ({
+    name,
+    urls: run("git", ["remote", "get-url", "--push", "--all", name]).trim().split("\n").filter(Boolean),
+  }));
+  return selectPushRemote(repository, hostname, remotes);
 }
 
 function verifyTarget(options) {
@@ -582,7 +658,7 @@ function verifyTarget(options) {
   requireMatchingHead(metadata, localHead);
   requireDiscoveryBranch(options.pr, metadata);
   const repository = metadata.headRepository.nameWithOwner;
-  const remote = pushRemote(repository);
+  const remote = pushRemote(repository, metadata.hostname);
   console.log(`pr=${metadata.url}`);
   console.log(`remote=${remote} repository=${repository}`);
   console.log(`push_target=git push ${remote} HEAD:${metadata.headRefName}`);
@@ -595,10 +671,11 @@ function checkPr(options) {
   printPrStatus(metadata);
 }
 
-function waitForHead(pr, expectedHead, readPr = readOpenPr, pause = sleep) {
+function waitForHead(expected, expectedHead, readPr = readOpenPr, pause = sleep) {
   let metadata;
   for (let attempt = 0; attempt < READ_ATTEMPTS; attempt += 1) {
-    metadata = readPr(pr);
+    metadata = readPr(expected.url);
+    requireSamePr(expected, prTarget(metadata, "current PR"), false);
     if (metadata.headRefOid === expectedHead) return metadata;
     if (attempt < READ_ATTEMPTS - 1) pause(250 * (attempt + 1));
   }
@@ -607,33 +684,33 @@ function waitForHead(pr, expectedHead, readPr = readOpenPr, pause = sleep) {
 
 function publishHead(initial, localHead, operations) {
   const { readPr, remoteFor, push, pause = sleep } = operations;
-  const initialHead = requiredText(initial.headRefOid, "snapshot PR head");
-  const current = readPr(initial.url);
-  if (current.headRefOid === localHead) return { metadata: current, status: "already-current" };
-  if (current.headRefOid !== initialHead) {
-    throw new FeedbackError(`PR head changed since feedback fetch: ${initialHead} -> ${current.headRefOid}`);
-  }
+  const expected = prTarget(initial, "snapshot PR");
+  const initialHead = expected.headRefOid;
+  const current = readPr(expected.url);
+  const observed = prTarget(current, "current PR");
+  requireSamePr(expected, observed);
+  if (observed.headRefOid === localHead) return { metadata: current, status: "already-current" };
 
-  const remote = remoteFor(current.headRepository.nameWithOwner);
+  const remote = remoteFor(observed.headRepository, observed.hostname);
   try {
-    push(remote, current.headRefName);
+    push(remote, observed.headRefName);
   } catch (pushError) {
-    let observed;
+    let observedAfterError;
     try {
-      observed = waitForHead(current.url, localHead, readPr, pause);
+      observedAfterError = waitForHead(expected, localHead, readPr, pause);
     } catch (readError) {
       throw new FeedbackError(`push failed: ${pushError.message}; head verification failed: ${readError.message}`);
     }
-    if (observed.headRefOid === localHead) {
-      return { metadata: observed, remote, status: "recovered-after-error" };
+    if (observedAfterError.headRefOid === localHead) {
+      return { metadata: observedAfterError, remote, status: "recovered-after-error" };
     }
-    if (observed.headRefOid !== initialHead) {
-      throw new FeedbackError(`PR head changed while recovering failed push: ${initialHead} -> ${observed.headRefOid}`);
+    if (observedAfterError.headRefOid !== initialHead) {
+      throw new FeedbackError(`PR head changed while recovering failed push: ${initialHead} -> ${observedAfterError.headRefOid}`);
     }
     throw pushError;
   }
 
-  const pushed = waitForHead(current.url, localHead, readPr, pause);
+  const pushed = waitForHead(expected, localHead, readPr, pause);
   if (pushed.headRefOid !== localHead) {
     throw new FeedbackError(`push did not update PR head to local HEAD: ${pushed.headRefOid} != ${localHead}`);
   }
@@ -658,10 +735,44 @@ function page(nodes, hasNextPage = false, endCursor = null) {
 }
 
 function selfTest() {
-  assert.equal(githubRemote("git@github.com:Owner/Repo.git"), "owner/repo");
-  assert.equal(githubRemote("ssh://git@github.com/Owner/Repo.git"), "owner/repo");
-  assert.equal(githubRemote("https://github.com/Owner/Repo.git"), "owner/repo");
-  assert.equal(githubRemote("https://example.com/Owner/Repo.git"), null);
+  const enterpriseHost = "github.example.test";
+  const enterpriseUrl = `https://${enterpriseHost}/Owner/Repo/pull/1`;
+  assert.deepEqual(parsePrUrl(enterpriseUrl), {
+    url: enterpriseUrl,
+    hostname: enterpriseHost,
+    owner: "Owner",
+    repo: "Repo",
+    number: 1,
+  });
+  assert.doesNotThrow(() => validatePrRef(enterpriseUrl));
+  assert.throws(() => validatePrRef(`http://${enterpriseHost}/Owner/Repo/pull/1`), UsageError);
+  assert.deepEqual(graphqlArgs(enterpriseHost, { owner: "owner", skipped: null }), [
+    "api", "graphql", "--hostname", enterpriseHost, "-F", "query=@-", "-F", "owner=owner",
+  ]);
+
+  for (const remoteUrl of [
+    `git@${enterpriseHost}:Owner/Repo.git`,
+    `ssh://git@${enterpriseHost}/Owner/Repo.git`,
+    `https://${enterpriseHost}/Owner/Repo.git`,
+  ]) assert.equal(githubRemote(remoteUrl, enterpriseHost), "owner/repo");
+  assert.equal(githubRemote("https://github.com/Owner/Repo.git", enterpriseHost), null);
+  assert.equal(githubRemote(`http://${enterpriseHost}/Owner/Repo.git`, enterpriseHost), null);
+  assert.equal(selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`] }]), "origin");
+  assert.throws(
+    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`, `ssh://git@${enterpriseHost}/Owner/Repo.git`] }]),
+    /exactly one push URL/,
+  );
+  assert.throws(
+    () => selectPushRemote("Owner/Repo", enterpriseHost, [
+      { name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`] },
+      { name: "fork", urls: [`https://${enterpriseHost}/Owner/Repo.git`] },
+    ]),
+    /exactly one configured remote/,
+  );
+  assert.throws(
+    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Other.git`] }]),
+    /does not match/,
+  );
 
   assert.equal(retryableReadFailure(new FeedbackError("HTTP 503")), true);
   assert.equal(retryableReadFailure(new FeedbackError("HTTP 400")), false);
@@ -679,7 +790,11 @@ function selfTest() {
   assert.equal(previousSnapshot(emptySnapshot), null);
 
   let feedbackPages = 0;
-  const request = (query) => {
+  const graphqlHosts = [];
+  const request = (query, variables, hostname) => {
+    assert.equal(typeof variables, "object");
+    assert.equal(hostname, enterpriseHost);
+    graphqlHosts.push(hostname);
     if (query === THREAD_REPLIES_QUERY) return { node: { comments: page([{ id: "reply-2" }]) } };
     assert.equal(query, FEEDBACK_QUERY);
     feedbackPages += 1;
@@ -699,7 +814,7 @@ function selfTest() {
       },
     };
   };
-  const metadata = { baseRepository: "owner/repo", number: 1 };
+  const metadata = { baseRepository: "owner/repo", number: 1, hostname: enterpriseHost };
   const buckets = threadBuckets([
     { id: "resolved", isResolved: true, isOutdated: false },
     { id: "outdated", isResolved: false, isOutdated: true },
@@ -711,9 +826,13 @@ function selfTest() {
   assert.deepEqual(nodeIds(fetched.reviews, "review"), ["review-1"]);
   assert.deepEqual(nodeIds(fetched.reviewThreads, "thread"), ["thread-1", "thread-2"]);
   assert.deepEqual(nodeIds(fetched.reviewThreads[0].comments, "reply"), ["reply-1", "reply-2"]);
+  assert.deepEqual(new Set(graphqlHosts), new Set([enterpriseHost]));
 
   let statePages = 0;
-  const stateRequest = () => {
+  const stateRequest = (query, variables, hostname) => {
+    assert.equal(typeof variables, "object");
+    assert.equal(query, THREAD_STATES_QUERY);
+    assert.equal(hostname, enterpriseHost);
     statePages += 1;
     return { repository: { pullRequest: { reviewThreads: page(
       [{ id: `thread-${statePages}`, isResolved: true }],
@@ -780,7 +899,11 @@ function selfTest() {
   rmSync(temporary, { recursive: true, force: true });
 
   const oldHead = {
-    url: "https://github.com/owner/repo/pull/1",
+    number: 1,
+    url: `https://${enterpriseHost}/owner/repo/pull/1`,
+    hostname: enterpriseHost,
+    baseRefName: "main",
+    baseRefOid: "base",
     headRefOid: "old",
     headRefName: "feature",
     headRepository: { nameWithOwner: "owner/repo" },
@@ -796,7 +919,7 @@ function selfTest() {
     push,
     pause: () => {},
   });
-  assert.equal(publishHead(oldHead, "local", operations(sequence(localHead))).status, "already-current");
+  assert.equal(publishHead(localHead, "local", operations(sequence(localHead))).status, "already-current");
   assert.equal(publishHead(oldHead, "local", operations(sequence(oldHead, oldHead, localHead))).status, "pushed");
   assert.equal(publishHead(oldHead, "local", operations(sequence(oldHead, localHead), () => {
     throw new FeedbackError("HTTP 503");
@@ -807,6 +930,25 @@ function selfTest() {
     })),
     /HTTP 503/,
   );
+
+  const drifts = [
+    ["number", { ...oldHead, number: 2, url: `https://${enterpriseHost}/owner/repo/pull/2` }],
+    ["URL", { ...oldHead, url: `https://${enterpriseHost}/owner/other/pull/1` }],
+    ["hostname", { ...oldHead, hostname: "other.example.test", url: "https://other.example.test/owner/repo/pull/1" }],
+    ["base ref", { ...oldHead, baseRefName: "release" }],
+    ["base OID", { ...oldHead, baseRefOid: "other-base" }],
+    ["head repository", { ...oldHead, headRepository: { nameWithOwner: "owner/fork" } }],
+    ["head ref", { ...oldHead, headRefName: "other-feature" }],
+    ["head OID", { ...oldHead, headRefOid: "other-head" }],
+  ];
+  for (const [field, changed] of drifts) {
+    let pushes = 0;
+    assert.throws(
+      () => publishHead(oldHead, "local", operations(sequence(changed), () => { pushes += 1; })),
+      new RegExp(`PR ${field} changed since feedback fetch`),
+    );
+    assert.equal(pushes, 0);
+  }
 
   assert.throws(
     () => collectFeedback(metadata, () => ({ repository: { pullRequest: {
