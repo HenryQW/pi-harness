@@ -173,6 +173,26 @@ Custom scout body.
 	});
 });
 
+test("Role display fields reject C0/C1 controls while system prompts stay multiline", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	const rolePath = join(rolesDir, "role.md");
+	await mkdir(rolesDir, { recursive: true });
+	for (const [field, value] of [
+		["name", '"bad\\u001bname"'],
+		["name", '"\\nrole"'],
+		["description", '"bad\\u009bdescription"'],
+		["description", '"Visible role\\t"'],
+	] as const) {
+		const name = field === "name" ? value : "role";
+		const description = field === "description" ? value : "Visible role";
+		await writeFile(rolePath, `---\nname: ${name}\ndescription: ${description}\ntools: []\nextensions: []\nskills: []\n---\nFirst line.\nSecond line.\n`);
+		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} must not contain C0/C1 control characters\\.`));
+	}
+	await writeFile(rolePath, "---\nname: role\ndescription: Visible role\ntools: []\nextensions: []\nskills: []\n---\nFirst line.\nSecond line.\n");
+	assert.equal(loadRoles(agentDir).find(({ name }) => name === "role")!.systemPrompt, "First line.\nSecond line.");
+});
+
 test("Role capability lists are required arrays", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");

@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { hasDisplayControlCharacters } from "./display-text.ts";
 import type { PiLaunch } from "./index.ts";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
@@ -301,10 +302,7 @@ function activityTooLong(value: unknown): boolean {
 }
 
 function hasTerminalControlChars(text: string): boolean {
-	return Array.from(text).some((character) => {
-		const code = character.codePointAt(0)!;
-		return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x2028 || code === 0x2029;
-	});
+	return hasDisplayControlCharacters(text) || /[\u2028\u2029]/u.test(text);
 }
 
 function activityText(value: unknown): value is string {

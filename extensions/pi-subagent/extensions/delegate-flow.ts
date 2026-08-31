@@ -19,7 +19,6 @@ import {
 } from "@henryqw/pi-subagent";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
-import { runDelegation } from "./delegation.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { TASK_NAME_CONTRACT, TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
@@ -356,7 +355,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		let started = false;
 		try {
 			assertCurrent(flow);
-			const result = await runDelegation(runtime.executor, {
+			const result = await runtime.executor.run({
 				signal,
 				onTokens: (tokens) => runtime.updateWidgetTokens(widgetId, tokens),
 				onActivity: (event) => runtime.updateWidgetActivity(widgetId, event),
