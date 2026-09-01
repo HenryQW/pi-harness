@@ -65,9 +65,14 @@ function widgetText(input: PrDisplayInput, nextStep: NextStep): string | undefin
 	}
 }
 
-export function projectPrDisplay(input: PrDisplayInput | null): PrDisplay {
+export function projectPrDisplay(input: PrDisplayInput | null, hasLocalCommit = false): PrDisplay {
 	const nextStep = deriveNextStep(input);
-	if (input === null) return { nextStep, widget: "Run /pr to create pull request" };
+	if (input === null) {
+		return {
+			nextStep,
+			widget: hasLocalCommit ? "Run /pr to create pull request" : undefined,
+		};
+	}
 
 	const status = footerStatus(input, nextStep);
 	return {

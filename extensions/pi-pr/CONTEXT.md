@@ -33,7 +33,7 @@ The single highest-priority user-authorized workflow derived from the current li
 _Avoid_: Automatic remediation, PR action, workflow chain
 
 **PR next-step hint**:
-One widget sentence tells the user which highest-priority workflow `/pr` will run, such as `Run /pr to resolve merge conflict`. The hint is absent when no workflow is available.
+One widget sentence tells the user which highest-priority workflow `/pr` will run, such as `Run /pr to resolve merge conflict`. The creation hint stays absent on a newly created local branch until that branch gains a commit. Other hints are absent when no workflow is available.
 _Avoid_: `/pr` arguments, workflow menu, multiple actions
 
 **PR workflow routing**:
@@ -41,7 +41,7 @@ Argument-free `/pr` derives one next step from fresh remote and local state. A b
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
-The footer and widget load at session start and poll every 30 seconds. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
+The footer and widget load at session start, refresh after local commits, PR creation, and pushes, and poll every 30 seconds. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:
