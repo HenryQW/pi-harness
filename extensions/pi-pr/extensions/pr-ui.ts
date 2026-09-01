@@ -34,27 +34,17 @@ function footerStatus(input: PrDisplayInput, nextStep: NextStep): Pick<PrFooter,
 	if (input.lifecycle === "merged") return { text: "merged", color: "success" };
 	if (input.lifecycle === "closed") return { text: "closed", color: "dim" };
 
-	switch (nextStep) {
-		case "update-branch":
-			return input.conditions.conflict
-				? { text: "merge conflict", color: "error" }
-				: { text: "base update required", color: "warning" };
-		case "sweep":
-			return input.conditions.unresolvedThreads > 0
-				? { text: `${input.conditions.unresolvedThreads} unresolved`, color: "warning" }
-				: { text: "changes requested", color: "error" };
-		case "fix-ci":
-			return { text: "CI failed", color: "error" };
-		case "merge":
-			return { text: "merge-ready", color: "success" };
-		case "none":
-			if (input.conditions.draft) return { text: "draft", color: "warning" };
-			if (input.conditions.ci === "running") return { text: "CI running", color: "warning" };
-			if (input.approved) return { text: "approved", color: "success" };
-			return { text: "open", color: "accent" };
-		case "create":
-			throw new Error("create is only valid without a pull request");
-	}
+	const { conditions } = input;
+	if (conditions.draft) return { text: "draft", color: "warning" };
+	if (conditions.conflict) return { text: "merge conflict", color: "error" };
+	if (conditions.baseUpdateRequired) return { text: "base update required", color: "warning" };
+	if (conditions.unresolvedThreads > 0) return { text: `${conditions.unresolvedThreads} unresolved`, color: "warning" };
+	if (conditions.changesRequested) return { text: "changes requested", color: "error" };
+	if (conditions.ci === "failure") return { text: "CI failed", color: "error" };
+	if (conditions.ci === "running") return { text: "CI running", color: "warning" };
+	if (nextStep === "merge") return { text: "merge-ready", color: "success" };
+	if (input.approved) return { text: "approved", color: "success" };
+	return { text: "open", color: "accent" };
 }
 
 function widgetText(input: PrDisplayInput, nextStep: NextStep): string | undefined {

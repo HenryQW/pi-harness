@@ -62,12 +62,13 @@ function withCapabilities(hyperlinks: boolean, fn: () => void): void {
 	}
 }
 
-test("projects every next step into one footer status and optional widget", () => {
+test("projects normal runnable, merge, and no-action states", () => {
 	const cases: Array<{
 		name: string;
 		input: PrDisplayInput | null;
 		nextStep: string;
 		footer?: string;
+		color?: PrStatusColor;
 		widget?: string;
 	}> = [
 		{
@@ -81,6 +82,7 @@ test("projects every next step into one footer status and optional widget", () =
 			input: pullRequest({ conditions: { baseUpdateRequired: true } }),
 			nextStep: "update-branch",
 			footer: "base update required",
+			color: "warning",
 			widget: "Run /pr to update branch",
 		},
 		{
@@ -88,6 +90,7 @@ test("projects every next step into one footer status and optional widget", () =
 			input: pullRequest({ conditions: { conflict: true } }),
 			nextStep: "update-branch",
 			footer: "merge conflict",
+			color: "error",
 			widget: "Run /pr to resolve merge conflict",
 		},
 		{
@@ -95,6 +98,7 @@ test("projects every next step into one footer status and optional widget", () =
 			input: pullRequest({ conditions: { changesRequested: true } }),
 			nextStep: "sweep",
 			footer: "changes requested",
+			color: "error",
 			widget: "Run /pr to address review feedback",
 		},
 		{
@@ -102,6 +106,7 @@ test("projects every next step into one footer status and optional widget", () =
 			input: pullRequest({ conditions: { ci: "failure" } }),
 			nextStep: "fix-ci",
 			footer: "CI failed",
+			color: "error",
 			widget: "Run /pr to fix CI",
 		},
 		{
@@ -109,18 +114,21 @@ test("projects every next step into one footer status and optional widget", () =
 			input: pullRequest({ conditions: { ci: "running" } }),
 			nextStep: "none",
 			footer: "CI running",
+			color: "warning",
 		},
 		{
 			name: "draft before running CI",
 			input: pullRequest({ conditions: { draft: true, ci: "running" } }),
 			nextStep: "none",
 			footer: "draft",
+			color: "warning",
 		},
 		{
 			name: "merge-ready",
 			input: pullRequest({ conditions: { ci: "success" } }),
 			nextStep: "merge",
 			footer: "merge-ready",
+			color: "success",
 			widget: "Run /pr to merge pull request",
 		},
 		{
@@ -128,59 +136,133 @@ test("projects every next step into one footer status and optional widget", () =
 			input: pullRequest({ approved: true, conditions: { policy: "pending" } }),
 			nextStep: "none",
 			footer: "approved",
+			color: "success",
 		},
 		{
 			name: "open and waiting",
 			input: pullRequest({ conditions: { review: "pending" } }),
 			nextStep: "none",
 			footer: "open",
+			color: "accent",
 		},
 		{
 			name: "merged",
 			input: pullRequest({ lifecycle: "merged", conditions: { conflict: true, ci: "failure" } }),
 			nextStep: "none",
 			footer: "merged",
+			color: "success",
 		},
 		{
 			name: "closed",
 			input: pullRequest({ lifecycle: "closed", conditions: { changesRequested: true, ci: "failure" } }),
 			nextStep: "none",
 			footer: "closed",
+			color: "dim",
 		},
 	];
 
-	for (const { name, input, nextStep, footer, widget } of cases) {
+	for (const { name, input, nextStep, footer, color, widget } of cases) {
 		const display = projectPrDisplay(input);
 		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
+		assert.equal(display.footer?.color, color, `${name} color`);
 		assert.equal(formatPrWidget(display), widget, `${name} widget`);
 	}
 });
 
-test("uses conflict and unresolved count before lower-priority conditions", () => {
-	const conflict = projectPrDisplay(pullRequest({
-		conditions: {
-			baseUpdateRequired: true,
-			conflict: true,
-			changesRequested: true,
-			unresolvedThreads: 3,
-			ci: "failure",
+test("uses visible-condition priority for combined states", () => {
+	const cases: Array<{
+		name: string;
+		input: PrDisplayInput;
+		nextStep: string;
+		footer: string;
+		color: PrStatusColor;
+		widget?: string;
+	}> = [
+		{
+			name: "draft before every open condition",
+			input: pullRequest({ conditions: {
+				draft: true,
+				conflict: true,
+				changesRequested: true,
+				unresolvedThreads: 3,
+				ci: "failure",
+			} }),
+			nextStep: "none",
+			footer: "draft",
+			color: "warning",
 		},
-	}));
-	assert.equal(conflict.nextStep, "update-branch");
-	assert.equal(conflict.footer?.text, "merge conflict");
-	assert.equal(formatPrWidget(conflict), "Run /pr to resolve merge conflict");
+		{
+			name: "conflict before base update, feedback, and CI",
+			input: pullRequest({ conditions: {
+				baseUpdateRequired: true,
+				conflict: true,
+				changesRequested: true,
+				unresolvedThreads: 3,
+				ci: "failure",
+			} }),
+			nextStep: "update-branch",
+			footer: "merge conflict",
+			color: "error",
+			widget: "Run /pr to resolve merge conflict",
+		},
+		{
+			name: "base update before feedback and CI",
+			input: pullRequest({ conditions: {
+				baseUpdateRequired: true,
+				changesRequested: true,
+				unresolvedThreads: 3,
+				ci: "failure",
+			} }),
+			nextStep: "update-branch",
+			footer: "base update required",
+			color: "warning",
+			widget: "Run /pr to update branch",
+		},
+		{
+			name: "unresolved feedback before changes requested and CI",
+			input: pullRequest({ conditions: {
+				changesRequested: true,
+				unresolvedThreads: 3,
+				ci: "failure",
+			} }),
+			nextStep: "sweep",
+			footer: "3 unresolved",
+			color: "warning",
+			widget: "Run /pr to address review feedback",
+		},
+		{
+			name: "changes requested before CI",
+			input: pullRequest({ conditions: { changesRequested: true, ci: "failure" } }),
+			nextStep: "sweep",
+			footer: "changes requested",
+			color: "error",
+			widget: "Run /pr to address review feedback",
+		},
+		{
+			name: "CI failure before waiting",
+			input: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending" } }),
+			nextStep: "fix-ci",
+			footer: "CI failed",
+			color: "error",
+			widget: "Run /pr to fix CI",
+		},
+		{
+			name: "running CI before approved fallback",
+			input: pullRequest({ approved: true, conditions: { ci: "running" } }),
+			nextStep: "none",
+			footer: "CI running",
+			color: "warning",
+		},
+	];
 
-	const feedback = projectPrDisplay(pullRequest({
-		conditions: {
-			changesRequested: true,
-			unresolvedThreads: 3,
-			ci: "failure",
-		},
-	}));
-	assert.equal(feedback.nextStep, "sweep");
-	assert.equal(feedback.footer?.text, "3 unresolved");
-	assert.equal(formatPrWidget(feedback), "Run /pr to address review feedback");
+	for (const { name, input, nextStep, footer, color, widget } of cases) {
+		const display = projectPrDisplay(input);
+		assert.equal(display.nextStep, nextStep, name);
+		assert.equal(display.footer?.text, footer, `${name} footer`);
+		assert.equal(display.footer?.color, color, `${name} color`);
+		assert.equal(formatPrWidget(display), widget, `${name} widget`);
+	}
 });
 
 test("formats themed footer text with OSC-8 only when supported", () => {
@@ -203,15 +285,38 @@ test("formats themed footer text with OSC-8 only when supported", () => {
 	});
 });
 
-test("does not advertise mutating workflows when their local prerequisite fails", () => {
-	for (const candidate of [
-		pullRequest({ conditions: { conflict: true }, local: { worktree: "dirty", head: "equal" } }),
-		pullRequest({ conditions: { changesRequested: true }, local: { worktree: "clean", head: "behind" } }),
-		pullRequest({ conditions: { ci: "failure" }, local: { worktree: "clean", head: "ahead" } }),
-	]) {
-		const display = projectPrDisplay(candidate);
-		assert.equal(display.nextStep, "none");
-		assert.equal(formatPrWidget(display), undefined);
+test("keeps blocked mutating conditions in the footer without a widget", () => {
+	const actions: Array<{
+		name: string;
+		conditions: Partial<PullRequestConditions>;
+		footer: string;
+		color: PrStatusColor;
+	}> = [
+		{ name: "base update", conditions: { baseUpdateRequired: true }, footer: "base update required", color: "warning" },
+		{ name: "conflict", conditions: { conflict: true }, footer: "merge conflict", color: "error" },
+		{ name: "changes requested", conditions: { changesRequested: true }, footer: "changes requested", color: "error" },
+		{ name: "unresolved feedback", conditions: { unresolvedThreads: 2 }, footer: "2 unresolved", color: "warning" },
+		{ name: "failed CI", conditions: { ci: "failure" }, footer: "CI failed", color: "error" },
+	];
+	const blocked: Array<{ name: string; local: LocalMergeSafety }> = [
+		{ name: "dirty", local: { worktree: "dirty", head: "equal" } },
+		{ name: "behind", local: { worktree: "clean", head: "behind" } },
+		{ name: "ahead", local: { worktree: "clean", head: "ahead" } },
+		{ name: "diverged", local: { worktree: "clean", head: "diverged" } },
+	];
+
+	for (const action of actions) {
+		for (const local of blocked) {
+			const display = projectPrDisplay(pullRequest({
+				conditions: action.conditions,
+				local: local.local,
+			}));
+			const name = `${action.name} ${local.name}`;
+			assert.equal(display.nextStep, "none", `${name} route`);
+			assert.equal(display.footer?.text, action.footer, `${name} footer`);
+			assert.equal(display.footer?.color, action.color, `${name} color`);
+			assert.equal(formatPrWidget(display), undefined, `${name} widget`);
+		}
 	}
 });
 
