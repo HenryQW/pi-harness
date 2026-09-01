@@ -27,10 +27,11 @@ Highly opinionated Pi extensions. Browse them at <https://pi.henry.wang>.
 | [`@henryqw/pi-session-recall`](./extensions/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
 | [`@henryqw/pi-subagent`](./extensions/pi-subagent) | Delegate bounded single, parallel, chained, and extension-owned Git Flow work to isolated roles. |
 | [`@henryqw/pi-task-models`](./extensions/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
+| [`@henryqw/pi-undo`](./extensions/pi-undo) | Rewind conversation context to the latest prompt. |
 
 ## Extension dependency graph
 
-Each of the 19 extensions under `extensions/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `extensions/*/package.json`.
+Each of the 20 extensions under `extensions/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `extensions/*/package.json`.
 
 Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
 

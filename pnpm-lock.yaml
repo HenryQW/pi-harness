@@ -280,6 +280,12 @@ importers:
         specifier: ^0.1.0
         version: link:../pi-config-store
 
+  extensions/pi-undo:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.84.4
+        version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
+
   website:
     devDependencies:
       blume:
