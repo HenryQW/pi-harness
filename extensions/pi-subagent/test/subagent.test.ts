@@ -32,11 +32,11 @@ type Tool = {
 };
 
 function singleEvidence(text: string, _details: any, kind: "assistant" | "failure"): string {
-	const match = /^- \[0\] .+? (assistant|failure):\n/m.exec(text);
+	const match = /^- \[1\/1\] .+? · (result|failure):\n/m.exec(text);
 	assert.ok(match);
-	assert.equal(match[1], kind);
+	assert.equal(match[1], kind === "assistant" ? "result" : "failure");
 	const contentStart = match.index + match[0].length;
-	const continued = text.indexOf("\nContinued evidence:\n", contentStart);
+	const continued = text.indexOf("\nMore detail:\n", contentStart);
 	if (continued === -1) return text.slice(contentStart);
 	const remainder = text.indexOf(match[0], continued);
 	assert.notEqual(remainder, -1);
@@ -110,6 +110,7 @@ function harness(options: {
 } = {}) {
 	let tool: Tool | undefined;
 	let widget: { render: (width: number) => string[] } | undefined;
+	let messageRenderer: ((...args: any[]) => { render: (width: number) => string[] }) | undefined;
 	let renders = 0;
 	const notifications: Array<{ message: string; type: string }> = [];
 	const sentMessages: Array<{ message: any; options: any }> = [];
@@ -121,6 +122,9 @@ function harness(options: {
 		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 		registerTool(candidate: Tool) { tool = candidate; },
+		registerMessageRenderer(customType: string, renderer: typeof messageRenderer) {
+			if (customType === "subagent-background-result") messageRenderer = renderer;
+		},
 		sendMessage(message: any, deliveryOptions: any) {
 			if (options.sendMessageError) throw options.sendMessageError;
 			sentMessages.push({ message, options: deliveryOptions });
@@ -155,6 +159,10 @@ function harness(options: {
 		get tool() { return tool!; },
 		get widget() { return widget; },
 		get renders() { return renders; },
+		renderMessage(message: any, expanded = false) {
+			assert.ok(messageRenderer, "background result renderer was not registered");
+			return messageRenderer(message, { expanded, outputPad: 0 }, theme).render(120).join("\n");
+		},
 		notifications,
 		sentMessages,
 		ctx,
@@ -319,7 +327,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			"Task: inspect auth",
 		]);
 		assert.ok(updates.length >= 2);
-		assert.ok(updates.every((update) => update.content[0].text.startsWith("Workflow update.\nMode: single")));
+		assert.ok(updates.every((update) => update.content[0].text.startsWith("Delegation ·") && !update.content[0].text.includes("id=")));
 		assert.deepEqual(app.notifications, [{
 			message: "Subagent role reviewer skipped unavailable Pi skills: unavailable-skill.",
 			type: "warning",
@@ -376,7 +384,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.match(worktree.note!, /HEAD is detached/);
 		assert.match(error.message, /HEAD is detached/);
 		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
-		assert.ok(error.message.indexOf(worktree.path) < error.message.indexOf("Evidence:"));
+		assert.ok(error.message.indexOf(worktree.path) < error.message.indexOf("Results:"));
 		assert.equal(existsSync(worktree.path), true);
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
 	});
@@ -507,7 +515,7 @@ Return concise findings.
 		assert.equal(directExplicitArgs[directExplicitArgs.indexOf("--thinking") + 1], "max");
 
 		const background = await app.tool.execute("call-4", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "fav", background: true }, undefined, undefined, app.ctx);
-		assert.match(background.content[0]!.text, /accepted/);
+		assert.match(background.content[0]!.text, /Background delegation started/);
 		await waitFor(() => app.sentMessages.length === 1);
 		const backgroundArgs = JSON.parse(singleEvidence(app.sentMessages[0]!.message.content, app.sentMessages[0]!.message.details, "assistant"));
 		assert.equal(backgroundArgs[backgroundArgs.indexOf("--model") + 1], "provider/fav-model");
@@ -1036,7 +1044,8 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
 		assert.ok(updates.length >= 2);
 		assert.ok(updates.every((update) => Buffer.byteLength(update.content[0].text, "utf8") <= 50 * 1024));
-		assertTruncated(singleOutput(updates.at(-1)), capOutput(original));
+		assert.match(updates.at(-1).content[0].text, /^Delegation · 1 running\n◌ \[1\/1\] Test delegated task · scout — a{160}$/);
+		assert.doesNotMatch(updates.at(-1).content[0].text, /Results:/);
 	});
 });
 
@@ -1276,8 +1285,8 @@ const timer = setInterval(() => {
 		assert.match(acknowledgement.details.taskId, /^bg-\d+-[a-z0-9]+$/);
 		assert.equal(acknowledgement.details.mode, "parallel");
 		assert.deepEqual(acknowledgement.details.entries, [
-			{ id: "background-parallel:parallel:0", index: 0, role: "scout" },
-			{ id: "background-parallel:parallel:1", index: 1, role: "reviewer" },
+			{ id: "background-parallel:parallel:0", index: 0, name: "Test delegated task", role: "scout" },
+			{ id: "background-parallel:parallel:1", index: 1, name: "Test delegated task", role: "reviewer" },
 		]);
 		await waitFor(() => readdirSync(started).length === 2);
 		await writeFile(join(release, "beta"), "");
@@ -1299,7 +1308,7 @@ const timer = setInterval(() => {
 			input: 3, output: 3, cacheRead: 3, cacheWrite: 3, totalTokens: 12,
 			cost: { input: 3, output: 3, cacheRead: 3, cacheWrite: 3, total: 12 },
 		});
-		assert.match(message.content, /^Background workflow failed\.\nMode: parallel/);
+		assert.match(message.content, /^Background parallel delegation failed · 1 failed · 1 completed/);
 		assert.match(message.content, /successful sibling evidence/);
 		assert.match(message.content, /beta failed/);
 		assert.ok(message.content.indexOf("successful sibling evidence") < message.content.indexOf("beta failed"));
@@ -1647,7 +1656,7 @@ setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { 
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
 		for (const path of paths) {
 			assert.equal(existsSync(path), true);
-			assert.ok(error.message.indexOf(path) >= 0 && error.message.indexOf(path) < error.message.indexOf("Evidence:"));
+			assert.ok(error.message.indexOf(path) >= 0 && error.message.indexOf(path) < error.message.indexOf("Results:"));
 		}
 	});
 });
@@ -1778,9 +1787,9 @@ test("session shutdown aborts queued background subagents without unhandled reje
 
 				const app = harness();
 				const first = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "task-1", background: true }, undefined, undefined, app.ctx);
-				assert.match(first.content[0]!.text, /accepted/);
+				assert.match(first.content[0]!.text, /Background delegation started/);
 				const second = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "task-2", background: true }, undefined, undefined, app.ctx);
-				assert.match(second.content[0]!.text, /accepted/);
+				assert.match(second.content[0]!.text, /Background delegation started/);
 				// Second task is queued; shutdown must abort it without an unhandled
 				// rejection from the discarded IIFE promise.
 				await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
@@ -2088,15 +2097,21 @@ test("background delegation returns one bounded workflow acknowledgement and res
 			"call-1", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx,
 		);
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
-		assert.match(result.content[0].text, /Background workflow bg-\d+-[a-z0-9]+ accepted/);
-		assert.deepEqual(result.details.entries, [{ id: "call-1:single:0", index: 0, role: "worker" }]);
+		assert.match(result.content[0].text, /Background delegation started/);
+		assert.doesNotMatch(result.content[0].text, /bg-\d+|id=/);
+		assert.deepEqual(result.details.entries, [{ id: "call-1:single:0", index: 0, name: "Test delegated task", role: "worker" }]);
 		await waitFor(() => app.sentMessages.length === 1);
 		const { message, options } = app.sentMessages[0]!;
 		assert.equal(message.customType, "subagent-background-result");
 		assert.equal(message.details.taskId, result.details.taskId);
 		assert.equal(message.details.outcome, "completed");
-		assert.match(message.content, /Background workflow succeeded/);
+		assert.match(message.content, /Background delegation completed/);
 		assert.match(message.content, /done/);
+		const collapsed = app.renderMessage(message);
+		assert.match(collapsed, /✓ Background subagent completed/);
+		assert.match(collapsed, /Test delegated task · worker — done/);
+		assert.doesNotMatch(collapsed, /subagent-background-result|id=|Evidence:/);
+		assert.match(app.renderMessage(message, true), /Background delegation completed/);
 		assert.equal(options.triggerTurn, false);
 	});
 });
@@ -2243,7 +2258,7 @@ setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 
 		const result = await app.tool.execute(
 			"call-1", { role: "worker", name: "Test delegated task", task: "long work", background: true }, undefined, undefined, app.ctx,
 		);
-		assert.match(result.content[0]!.text, /accepted/);
+		assert.match(result.content[0]!.text, /Background delegation started/);
 		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
 		// The aborted child settles after shutdown; its outcome must not leak into
 		// a subsequent session.
@@ -2266,9 +2281,9 @@ test("background tasks deliver again after a new session starts", async () => {
 		app.handlers.get("session_start")?.({}, app.ctx);
 		// Second session: a fresh task must deliver normally.
 		const result = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "new", background: true }, undefined, undefined, app.ctx);
-		assert.match(result.content[0]!.text, /accepted/);
+		assert.match(result.content[0]!.text, /Background delegation started/);
 		await waitFor(() => app.sentMessages.length === 1);
-		assert.match(app.sentMessages[0]!.message.content, /succeeded/);
+		assert.match(app.sentMessages[0]!.message.content, /completed/);
 	});
 });
 

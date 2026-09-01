@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
 	loadTaskModelsConfig,
@@ -222,6 +222,32 @@ export default function subagentExtension(
 	overrideTimeoutPolicy?: TimeoutPolicy,
 ): void {
 	registerModelTask(pi, DELEGATE_TASK);
+	pi.registerMessageRenderer(BACKGROUND_RESULT_TYPE, (message, { expanded, outputPad }, theme) => {
+		const details = message.details as {
+			outcome?: "completed" | "failed" | "aborted";
+			recovery?: boolean;
+			entries?: Array<{ name: string; role: string; status: string; summary?: string }>;
+		} | undefined;
+		const content = typeof message.content === "string"
+			? message.content
+			: message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+		if (!details?.entries) return new Text(content, outputPad, 0);
+		const count = details.entries.length;
+		const subject = count === 1 ? "Background subagent" : `${count} background subagents`;
+		const state = details.recovery ? "stopped; recovery needed"
+			: details.outcome === "completed" ? "completed"
+				: details.outcome === "failed" ? "failed" : "stopped";
+		const glyph = details.recovery || details.outcome === "aborted" ? "■" : details.outcome === "completed" ? "✓" : "✗";
+		const color = details.recovery || details.outcome === "aborted" ? "warning" : details.outcome === "completed" ? "success" : "error";
+		const rows = details.entries.map(({ name, role, status, summary }) =>
+			`${status === "succeeded" ? "✓" : status === "failed" || status === "rejected" ? "✗" : "•"} ${name} · ${role} — ${summary ?? status}`);
+		const raw = content.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
+		return new Text([
+			theme.fg(color, `${glyph} ${subject} ${state}`),
+			...rows,
+			...(expanded ? ["", raw] : []),
+		].join("\n"), outputPad, 0);
+	});
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
 	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
@@ -592,6 +618,7 @@ export default function subagentExtension(
 			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
 				id: entry.id,
 				index: entry.index,
+				name: entry.delegation.name,
 				role: entry.delegation.role,
 				status: "pending",
 			}]));
@@ -627,6 +654,7 @@ export default function subagentExtension(
 						const base = {
 							id: entry.id,
 							index: entry.index,
+							name: entry.delegation.name,
 							role: role.name,
 							...(model === undefined ? {} : { model }),
 							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
@@ -741,6 +769,7 @@ export default function subagentExtension(
 				states.set(target.id, {
 					id: target.id,
 					index: target.index,
+					name: target.name,
 					role: target.role,
 					...(target.model === undefined ? {} : { model: target.model }),
 					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
@@ -775,13 +804,13 @@ export default function subagentExtension(
 				})();
 				backgroundTasks.set(taskId, { controller, settled });
 				void settled;
+				const title = workflow.mode === "single" ? "Background delegation"
+					: workflow.mode === "parallel" ? "Background parallel delegation" : "Background delegation chain";
 				const acknowledgement = capOutput([
-					`Background workflow ${taskId} accepted.`,
-					`Mode: ${workflow.mode}`,
-					"Entries:",
-					...entries.map((entry) =>
-						`- [${entry.index}] id=${JSON.stringify(entry.id)} role=${JSON.stringify(entry.delegation.role)}`),
-					"The aggregate outcome arrives as one message; keep working or end your turn.",
+					`${title} started${entries.length === 1 ? "" : ` · ${entries.length} tasks`}`,
+					...entries.map((entry, index) =>
+						`○ [${index + 1}/${entries.length}] ${entry.delegation.name} · ${entry.delegation.role}`),
+					"Results will arrive in one message.",
 				].join("\n"));
 				return {
 					content: [{ type: "text" as const, text: acknowledgement }],
@@ -789,7 +818,7 @@ export default function subagentExtension(
 						taskId,
 						background: true,
 						mode: workflow.mode,
-						entries: entries.map((entry) => ({ id: entry.id, index: entry.index, role: entry.delegation.role })),
+						entries: entries.map((entry) => ({ id: entry.id, index: entry.index, name: entry.delegation.name, role: entry.delegation.role })),
 					},
 				};
 			}

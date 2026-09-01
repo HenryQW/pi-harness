@@ -51,7 +51,7 @@ Main supplies each `name`. It must be a short description, about five words and 
 
 Parallel tasks start together, settle together, and report in input order. Chains are sequential and fail at the first failure. `{previous}` passes only the immediately preceding successful assistant output. Foreground failures throw after keeping bounded sibling and recovery evidence.
 
-One call has one aggregate 50 KiB cap for Main-visible text. Background work belongs to its launching session; shutdown or reload aborts it and may leave only recoverable-work evidence or no follow-up message.
+One call has one aggregate 50 KiB cap for Main-visible text. Live updates show task names and statuses without opaque IDs. Final results show summaries first and full evidence below. Background work belongs to its launching session; shutdown or reload aborts it and may leave only recoverable-work evidence or no follow-up message.
 
 Each entry resolves its own Role, resources, route, and optional isolation. A Role with `isolation: worktree` gets a separate deterministic worktree when available. Non-Git and unborn-`HEAD` contexts can use Main's directory. Other setup failures, including unsafe submodule layouts, reject instead of falling back. Siblings and chain steps never share a created worktree.
 
