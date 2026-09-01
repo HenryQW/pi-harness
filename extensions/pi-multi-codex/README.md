@@ -25,9 +25,9 @@ pi install npm:@henryqw/pi-multi-codex
 
 ## Use
 
-Run `/codex-add` and finish OAuth login. Restart Pi or update model scope, then run `/codex-status`.
+Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`, then run `/login` and select the new `OpenAI Codex #<n>` provider. Restart Pi or update model scope, then run `/codex-status`.
 
-The new numbered slot appears with its latest shared quota snapshot.
+`/codex-status` lists the new slot. It shows cached quota when available, or `unavailable` until the first successful snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -43,6 +43,5 @@ A numbered slot is one Codex account position in Pi.
 - Routing preserves model ID and never changes in-progress work.
 - The footer shows the active slot's fresh quota or five-hour block.
 - Scoped sessions can switch only to exact scoped aliases.
-- Restart or update model scope after adding a slot.
 
 Generated credential-free quota cache: `~/.pi/agent/config/pi-multi-codex/usage.json`. The extension maintains it.
