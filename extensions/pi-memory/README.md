@@ -1,11 +1,11 @@
 # `@henryqw/pi-memory`
 
-Keep two auto-managed Markdown memory stores for Pi. Each session uses a frozen system-prompt snapshot.
+Keep compact agent notes and user facts across Pi sessions, with a frozen snapshot in each session.
 
 ## Why
 
-- **Created for**: Give Pi compact global notes and user facts that survive across sessions.
-- **Advantage**: Size-capped, auto-managed Markdown stores give predictable prompt cost without a hand-maintained knowledge tree.
+- **Created for**: Pi users who want durable preferences and cross-project facts without repeating them.
+- **Advantage**: Bounded Markdown stores control prompt size without requiring a hand-maintained knowledge tree.
 - **Inspired by**: [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its bounded `MEMORY.md`/`USER.md` cross-session memory pattern.
 
 ## Install
@@ -16,15 +16,23 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-memory
 ```
 
+Run `/task-models` and configure the `balanced` profile before adding memory. Candidate review does not use the current session model as a substitute.
+
 ## With
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-ask-question` | Required. Provides the validated conflict prompt. |
-| `@henryqw/pi-herdr-btw` | Improves. Marks side-thread children so parent-only memory injection and dream advice are suppressed. |
-| `@henryqw/pi-task-models` | Required. Provides candidate-review routes. |
+| [`@henryqw/pi-ask-question`](https://pi.henry.wang/extensions/pi-ask-question) | Required. Provides the validated conflict prompt. |
+| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Improves. Marks side-thread children, suppressing parent-only memory injection and dream advice. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required. Provides candidate-review routes. |
 
 ## Use
+
+### First memory
+
+Run `/remember I prefer concise release notes.` Approve an explicit conflict choice only if Pi finds one.
+
+Read `~/.pi/agent/config/pi-memory/memory/USER.md` to verify the default store. Start a new session to use its frozen snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

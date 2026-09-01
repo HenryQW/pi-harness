@@ -1,13 +1,13 @@
 # `@henryqw/pi-notes`
 
-Keep persistent post-it reminders in a Pi widget. Manage them with slash commands.
+Keep a few persistent worktree reminders visible above the Pi editor.
 
 ![Pi showing two persistent notes above the editor](./example.png)
 
 ## Why
 
-- **Created for**: Keep a few brief post-it-style reminders visible per worktree without leaving the Pi session.
-- **Advantage**: Notes stay intentionally bounded and visible instead of becoming clipboard storage or history.
+- **Created for**: Pi users who need small reminders tied to one worktree.
+- **Advantage**: Four visible note slots stay useful without becoming another unbounded history store.
 
 ## Install
 
@@ -16,6 +16,8 @@ pi install npm:@henryqw/pi-notes
 ```
 
 ## Use
+
+Run `/note Verify the migration rollback.` The reminder appears above the editor and returns in later sessions for this worktree.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

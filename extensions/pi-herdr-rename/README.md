@@ -1,11 +1,11 @@
 # `@henryqw/pi-herdr-rename`
 
-Give each conversation one short human title across Pi and Herdr. Use meaningful Git branch names too.
+Give each Pi conversation a short title, and use it for Herdr labels and generated Git branches.
 
 ## Why
 
-- **Created for**: Replace generated labels like `worktree-brave-meadow-4aa8` with human-readable display titles for every conversation.
-- **Advantage**: Titles stay natural (≤4 words), map to semantic Git branch names, and reapply on resume without another model request.
+- **Created for**: Users who cannot identify conversations from generated workspace labels.
+- **Advantage**: One concise title labels Pi and Herdr, maps to Git, and returns on resume without another model call.
 
 ## Install
 
@@ -14,13 +14,19 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-rename
 ```
 
+Run `/task-models` and configure the `fast` profile. Herdr is required for pane, tab, workspace, and branch updates.
+
+Outside Herdr, the extension still changes the Pi session name.
+
 ## With
 
-`@henryqw/pi-task-models` is required for shared title-generation model profiles.
+[`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) is required for shared title-generation model profiles.
 
 ## Use
 
-Use `/rename` to generate a display title and semantic branch from up to three recent user/assistant rounds.
+Send the first real prompt. A title appears in the background without delaying the reply.
+
+Run `/rename` after the task changes. It generates a new display title and semantic branch from up to three recent rounds.
 
 ### Trigger
 
@@ -41,7 +47,7 @@ A semantic branch is a Git-safe branch name made from a task type and the displa
 
 ### Model choice and resume
 
-The shared [`pi-task-models` config](../pi-task-models#config) is at `~/.pi/agent/config/pi-task-models/config.json`. It can explicitly override the local `pi-herdr-rename/rename` declaration, which defaults to `fast`.
+The shared [`pi-task-models` config](https://pi.henry.wang/extensions/pi-task-models#config) is at `~/.pi/agent/config/pi-task-models/config.json`. It can explicitly override the local `pi-herdr-rename/rename` declaration, which defaults to `fast`.
 
 The extension tries the assigned profile primary, then fallback, while honoring the configured thinking level. It never substitutes the current session model. A missing shared task-model config warns once at session start; run `/task-models` to configure rename routing. No viable route leaves titles unchanged.
 

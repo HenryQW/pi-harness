@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-task-models",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Shared task model profiles and routing for HenryQW Pi extensions.",
   "keywords": [
     "pi-package",

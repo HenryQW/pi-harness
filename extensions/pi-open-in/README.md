@@ -1,11 +1,11 @@
 # `@henryqw/pi-open-in`
 
-Open the current working directory with a configurable editor command. The default is `code`.
+Open the current Pi working directory in your editor with one command. The default editor is VS Code.
 
 ## Why
 
-- **Created for**: Replace manually typed editor commands with one configurable action for the working directory.
-- **Advantage**: `/open` works while the agent is busy and supports any simple editor command, defaulting to `code`.
+- **Created for**: Pi users who move between terminal work and an editor.
+- **Advantage**: `/open` works while the agent is busy and supports any simple editor command.
 
 ## Install
 
@@ -14,6 +14,10 @@ pi install npm:@henryqw/pi-open-in
 ```
 
 ## Use
+
+Run `/open`. With default settings, VS Code opens the current working directory.
+
+Run `/set-open-in` when you want another command.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

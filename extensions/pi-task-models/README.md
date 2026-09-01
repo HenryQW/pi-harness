@@ -1,13 +1,13 @@
 # `@henryqw/pi-task-models`
 
-Choose shared `fast`, `balanced`, `frontier`, and `fav` model profiles for consumer-owned Model Tasks.
+Choose shared model and thinking routes for extension tasks named `fast`, `balanced`, `frontier`, and `fav`.
 
 ![Pi showing task model profiles and task routes](./example.png)
 
 ## Why
 
-- **Created for**: Remove duplicated model pickers and catalogs that extensions once owned separately.
-- **Advantage**: One shared profile control plane keeps routes consistent while each consumer owns its task identity, intent, and default profile.
+- **Created for**: Pi users who want one place to route model work started by several extensions.
+- **Advantage**: Reuse profile choices while each extension keeps ownership of its task and default.
 
 ## Install
 
@@ -15,26 +15,32 @@ Choose shared `fast`, `balanced`, `frontier`, and `fav` model profiles for consu
 pi install npm:@henryqw/pi-task-models
 ```
 
+Run `/task-models` after installation. Configure each profile that your installed consumers require.
+
 ## With
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-auto-compact` | Consumer. Its local compaction task defaults to `fast`. |
-| `@henryqw/pi-herdr-btw` | Consumer. Its local side-thread task defaults to `fast`. |
-| `@henryqw/pi-herdr-rename` | Consumer. Its local rename task defaults to `fast`. |
-| `@henryqw/pi-memory` | Consumer. Its local candidate-review task defaults to `balanced`. |
-| `@henryqw/pi-multi-codex` | Improves. Numbered Codex slots dedupe to one route. |
-| `@henryqw/pi-subagent` | Consumer. Its local delegation task defaults to `fast`; callers can declare their own task. |
+| [`@henryqw/pi-auto-compact`](https://pi.henry.wang/extensions/pi-auto-compact) | Consumer. Its local compaction task defaults to `fast`. |
+| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Consumer. Its local side-thread task defaults to `fast`. |
+| [`@henryqw/pi-herdr-rename`](https://pi.henry.wang/extensions/pi-herdr-rename) | Consumer. Its local rename task defaults to `fast`. |
+| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Consumer. Its local candidate-review task defaults to `balanced`. |
+| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves. Numbered Codex slots dedupe to one route. |
+| [`@henryqw/pi-prompt-creator`](https://pi.henry.wang/extensions/pi-prompt-creator) | Consumer. Its local prompt-drafting task defaults to `fast`. |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Consumer. Its local delegation task defaults to `fast`; callers can declare their own task. |
 
 ## Use
 
-Use `/task-models` to select a profile or override an active task's default profile.
+Run `/task-models` to complete the first setup:
 
-### Profile selection
+1. Select `fast`.
+2. Choose a primary model from Pi's effective registry, then choose its thinking level.
+3. Choose a different fallback model and thinking level, or choose `None`.
+4. Reopen `/task-models`. The `fast` row now shows the saved route instead of `not configured`.
 
-Selecting a profile sets its primary model, primary thinking, optional fallback model, and fallback thinking. One completed flow writes the whole profile.
+Repeat these steps for `balanced`, `frontier`, or `fav` when a consumer needs them. The `fav` profile has no fallback.
 
-Selecting an active task sets its explicit override. Choosing its consumer-declared default removes that override.
+Select an active task to override its declared profile. Choosing that task's declared default removes the override.
 
 ### Active declarations
 
@@ -52,21 +58,23 @@ Fallback choices exclude the selected primary. BTW selects the first authenticat
 
 The shared JSON file is at `~/.pi/agent/config/pi-task-models/config.json`. Consumers use `loadTaskModelsConfig()` for validated values. They never read or write this file. Only explicit `/task-models` actions save it.
 
+The following JSON shows structure only. Every model ID is a placeholder and must not be copied.
+
 ```json
 {
   "profiles": {
     "fast": {
-      "primary": { "model": "openai-codex/gpt-fast", "thinkingLevel": "low" },
-      "fallback": { "model": "other-provider/fast-model", "thinkingLevel": "low" }
+      "primary": { "model": "<provider>/<fast-model-from-Pi>", "thinkingLevel": "low" },
+      "fallback": { "model": "<provider>/<fallback-model-from-Pi>", "thinkingLevel": "low" }
     },
     "balanced": {
-      "primary": { "model": "openai-codex/gpt-balanced", "thinkingLevel": "high" }
+      "primary": { "model": "<provider>/<balanced-model-from-Pi>", "thinkingLevel": "high" }
     },
     "frontier": {
-      "primary": { "model": "openai-codex/gpt-frontier", "thinkingLevel": "max" }
+      "primary": { "model": "<provider>/<frontier-model-from-Pi>", "thinkingLevel": "max" }
     },
     "fav": {
-      "primary": { "model": "openai-codex/gpt-favorite", "thinkingLevel": "high" }
+      "primary": { "model": "<provider>/<favorite-model-from-Pi>", "thinkingLevel": "high" }
     }
   },
   "tasks": {
@@ -74,6 +82,8 @@ The shared JSON file is at `~/.pi/agent/config/pi-task-models/config.json`. Cons
   }
 }
 ```
+
+Use exact model IDs offered by `/task-models`. Pi's registry, not this example, defines available models.
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |

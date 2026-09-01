@@ -1,13 +1,13 @@
 # `@henryqw/pi-multi-codex`
 
-Use multiple ChatGPT Codex OAuth accounts in Pi.
+Add multiple ChatGPT Codex OAuth accounts and start new Pi work on the slot with the most weekly quota.
 
 ![Pi showing Codex account quotas and the active footer slot](./example.png)
 
 ## Why
 
-- **Created for**: Use multiple ChatGPT Codex OAuth accounts from one Pi installation.
-- **Advantage**: Before work starts, quota-aware routing selects the eligible managed slot with the most remaining seven-day quota. It does not change in-progress sessions.
+- **Created for**: Pi users who work across more than one Codex subscription.
+- **Advantage**: Fresh quota data selects an eligible slot before work starts without changing active sessions.
 
 ## Install
 
@@ -19,11 +19,15 @@ pi install npm:@henryqw/pi-multi-codex
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-footer` | Improves. Shows the active slot's quota or five-hour block in the footer. |
-| `@henryqw/pi-subagent` | Improves. Isolated children keep Main's active Codex slot. |
-| `@henryqw/pi-task-models` | Improves. Numbered slots share one profile route. |
+| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves. Shows the active slot's quota or five-hour block in the footer. |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Improves. Isolated children keep Main's active Codex slot. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Improves. Numbered slots share one profile route. |
 
 ## Use
+
+Run `/codex-add` and finish OAuth login. Restart Pi or update model scope, then run `/codex-status`.
+
+The new numbered slot appears with its latest shared quota snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

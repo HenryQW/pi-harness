@@ -1,11 +1,11 @@
 # `@henryqw/pi-pr`
 
-Show the current branch pull request's lifecycle, CI, mergeability, and review state in the Pi footer.
+See the current branch's pull request state and open or create that pull request from Pi.
 
 ## Why
 
-- **Created for**: Avoid repeated `gh` commands just to check pull-request status during work.
-- **Advantage**: Branch lifecycle, CI, mergeability, and review state appear at a glance in the footer.
+- **Created for**: GitHub contributors who check one branch's pull request while working.
+- **Advantage**: See CI, review, merge, and lifecycle state without repeating `gh` commands.
 
 ## Install
 
@@ -17,9 +17,13 @@ Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repositor
 
 ## With
 
-`@henryqw/pi-footer` improves this package by showing current-branch pull-request status in the footer.
+[`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) improves this package by showing current-branch pull-request status in the footer.
 
 ## Use
+
+Run `/pr` in a GitHub checkout. Pi opens the current branch pull request when one exists.
+
+If none exists, Pi starts the bundled creation workflow instead.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

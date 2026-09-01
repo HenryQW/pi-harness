@@ -1,11 +1,11 @@
 # `@henryqw/pi-deps`
 
-Prepare locked Node and uv dependencies when Git creates a new worktree for an opted-in repository.
+Start locked Node and uv dependency installs whenever Git creates a worktree for an opted-in repository.
 
 ## Why
 
-- **Created for**: Install locked dependencies whenever Git creates a new worktree in an opted-in repository.
-- **Advantage**: Prepare each checkout regardless of which tool creates it. Do not pay install cost at every Pi startup.
+- **Created for**: Developers who create worktrees through several tools.
+- **Advantage**: One Git hook prepares every new checkout without adding work to each Pi startup.
 
 ## Install
 
@@ -17,7 +17,9 @@ Node 22.19 or newer, Git, and each selected package manager must be available on
 
 ## Use
 
-Use `/deps` to toggle dependency preparation for future worktrees in the current repository.
+Run `/deps` in a trusted repository to enable preparation. Create a worktree, then open Pi there.
+
+Pi shows install progress and reports the result. Run `/deps` again when you want to disable future preparation.
 
 ### Enable, disable, and update
 

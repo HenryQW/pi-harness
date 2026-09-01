@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-btw",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Open and merge tool-enabled Pi side threads in Herdr panes.",
   "keywords": [
     "pi-package",
