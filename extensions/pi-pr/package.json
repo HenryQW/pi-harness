@@ -22,7 +22,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "node --test test/*.test.ts && node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs self-test",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
