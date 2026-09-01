@@ -155,6 +155,14 @@ The package root exports the following mechanism-level APIs:
 | `createEphemeralSubagentExecutor(options)` | Queue and run one prepared no-session child per `run`. |
 | `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle. |
 
+`finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union:
+
+| `outcome` | Fields | Contract |
+| --- | --- | --- |
+| `pruned` | `path`, `branch` | Zero commits and a clean tree were proved. Worktree and branch cleanup completed. |
+| `retained` | `path`, `branch`, `commits`, `dirty` | Work was preserved. Both measurements are known. |
+| `recovery` | `path`, `branch`, `note`, optional `commits`, `dirty` | Recovery needs action. The note tells Main what to inspect. Present measurements completed; omitted values are unknown. |
+
 A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, optional `modelClass` and `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, optional call-level `modelClass`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
 
 `createEphemeralSubagentExecutor` requires:

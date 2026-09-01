@@ -48,6 +48,13 @@ export type WorkflowTransportDetails = {
 	entries: WorkflowTransportEntryDetails[];
 };
 
+export type BackgroundWorkflowTransportDetails = WorkflowTransportDetails & {
+	taskId: string;
+	outcome: "completed" | "failed" | "aborted";
+	recovery?: true;
+	usage?: Usage;
+};
+
 export type WorkflowTransport = {
 	text: string;
 	details: WorkflowTransportDetails;
@@ -98,12 +105,19 @@ export function displaySummary(text: string): string {
 	return Array.from(normalized).slice(0, 160).join("");
 }
 
-function entryStatus(entry: WorkflowTransportEntry): { glyph: string; fallback: string } {
-	if (entry.status === "pending") return { glyph: "○", fallback: "queued" };
-	if (entry.status === "running") return { glyph: "◌", fallback: "working" };
-	if (entry.status === "succeeded") return { glyph: "✓", fallback: "completed" };
-	if (entry.status === "skipped") return { glyph: "–", fallback: "skipped" };
-	return { glyph: "✗", fallback: "failed" };
+export type WorkflowEntryStatusPresentation = { glyph: string; fallback: string };
+
+const ENTRY_STATUS_PRESENTATION = {
+	pending: { glyph: "○", fallback: "queued" },
+	running: { glyph: "◌", fallback: "working" },
+	succeeded: { glyph: "✓", fallback: "completed" },
+	failed: { glyph: "✗", fallback: "failed" },
+	rejected: { glyph: "✗", fallback: "failed" },
+	skipped: { glyph: "–", fallback: "skipped" },
+} as const satisfies Record<WorkflowTransportEntryDetails["status"], WorkflowEntryStatusPresentation>;
+
+export function presentWorkflowEntryStatus(status: WorkflowTransportEntryDetails["status"]): WorkflowEntryStatusPresentation {
+	return ENTRY_STATUS_PRESENTATION[status];
 }
 
 function sourceFor(entry: WorkflowTransportEntry): string | undefined {
@@ -133,7 +147,10 @@ function formatWorkflowTransport(
 	}
 	const failed = ordered.some(({ status }) => status === "failed" || status === "rejected");
 	const positioned = ordered.map((entry, index) => ({ entry, position: index + 1 }));
-	const recoveries = positioned.filter(({ entry }) => entry.worktreePayload && !entry.worktreePayload.pruned);
+	const recoveries = positioned.flatMap(({ entry, position }) => {
+		const worktree = entry.worktreePayload;
+		return worktree === undefined || worktree.outcome === "pruned" ? [] : [{ entry, position, worktree }];
+	});
 	const evidence = kind === "update" ? [] : positioned.flatMap(({ entry, position }) => {
 		const value = evidenceFor(entry, position, ordered.length);
 		return value ? [value] : [];
@@ -141,14 +158,14 @@ function formatWorkflowTransport(
 	const lines = [
 		heading(mode, ordered, kind, failed),
 		...positioned.map(({ entry, position }) => {
-			const { glyph, fallback } = entryStatus(entry);
+			const { glyph, fallback } = presentWorkflowEntryStatus(entry.status);
 			const summary = displaySummary(sourceFor(entry) ?? "") || fallback;
 			return `${glyph} [${position}/${ordered.length}] ${entry.name} · ${entry.role} — ${summary}`;
 		}),
 		...(recoveries.length ? [
 			"Recovery:",
-			...recoveries.map(({ entry, position }) =>
-				`- [${position}/${ordered.length}] ${entry.name} · worktree ${JSON.stringify(entry.worktreePayload!.path)} · branch ${JSON.stringify(entry.worktreePayload!.branch)}`),
+			...recoveries.map(({ entry, position, worktree }) =>
+				`- [${position}/${ordered.length}] ${entry.name} · worktree ${JSON.stringify(worktree.path)} · branch ${JSON.stringify(worktree.branch)}`),
 		] : []),
 		...(evidence.length ? [
 			"Results:",

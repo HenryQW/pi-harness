@@ -25,7 +25,7 @@ function usage(factor: number): Usage {
 }
 
 test("keeps complete bounded model-facing content and recovery evidence", () => {
-	const worktree = { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false };
+	const worktree = { outcome: "retained" as const, path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false };
 	const result = formatWorkflowResult("parallel", [
 		succeeded(1, "second evidence"),
 		failed(0, "failure evidence", { model: "provider/one", thinkingLevel: "high", worktreePayload: worktree }),

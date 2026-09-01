@@ -14,7 +14,7 @@ import {
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
 import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
-import { WorkflowAbortedError, WorkflowFailureError } from "../extensions/result-transport.ts";
+import { WorkflowAbortedError, WorkflowFailureError, type BackgroundWorkflowTransportDetails } from "../extensions/result-transport.ts";
 import subagentExtension, { MAX_WIDGET_ACTIVE_TOOLS } from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
@@ -349,11 +349,9 @@ test("worktree isolation preserves the delegated repository subdirectory", async
 		const worktreeRoot = join(await realpath(repo), ".worktrees", name);
 		assert.equal(JSON.parse(singleOutput(result)).cwd, join(worktreeRoot, "extensions", "worker"));
 		assert.deepEqual(result.details.entries[0].worktree, {
+			outcome: "pruned",
 			path: worktreeRoot,
 			branch: `pi-subagent/${name}`,
-			commits: 0,
-			dirty: false,
-			pruned: true,
 		});
 	});
 });
@@ -378,10 +376,8 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const entry = error.details.entries[0];
 		const worktree = entry.worktree;
 		assert.equal(entry.status, "rejected");
-		assert.ok(worktree);
-		assert.equal(worktree.inspection_failed, true);
-		assert.equal(worktree.pruned, false);
-		assert.match(worktree.note!, /HEAD is detached/);
+		assert.ok(worktree && worktree.outcome === "recovery");
+		assert.match(worktree.note, /HEAD is detached/);
 		assert.match(error.message, /HEAD is detached/);
 		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
 		assert.ok(error.message.indexOf(worktree.path) < error.message.indexOf("Results:"));
@@ -1368,11 +1364,12 @@ if (task === "first") {
 		assert.ok(secondWorktree);
 		assert.ok(thirdWorktree);
 		assert.equal(firstWorktree.path, firstPath);
-		assert.equal(firstWorktree.pruned, false);
+		assert.equal(firstWorktree.outcome, "retained");
+		assert.equal(firstWorktree.dirty, true);
 		assert.equal(secondWorktree.path, secondPath);
-		assert.equal(secondWorktree.pruned, true);
+		assert.equal(secondWorktree.outcome, "pruned");
 		assert.equal(thirdWorktree.path, thirdPath);
-		assert.equal(thirdWorktree.pruned, true);
+		assert.equal(thirdWorktree.outcome, "pruned");
 		assert.equal(new Set([firstPath, secondPath, thirdPath]).size, 3);
 		assert.equal(existsSync(firstPath), true);
 		assert.equal(existsSync(secondPath), false);
@@ -1450,9 +1447,9 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.deepEqual(error.details.entries.map(({ status }: any) => status), ["succeeded", "failed"]);
 		const retained = join(await realpath(repo), ".worktrees", childName("partial:parallel:1"));
 		const worktree = error.details.entries[1]!.worktree;
-		assert.ok(worktree);
+		assert.ok(worktree && worktree.outcome === "retained");
 		assert.equal(worktree.path, retained);
-		assert.equal(worktree.pruned, false);
+		assert.equal(worktree.dirty, true);
 		assert.match(error.message, /successful sibling evidence/);
 		assert.match(error.message, /bad child failed/);
 		assert.match(error.message, new RegExp(childName("partial:parallel:1")));
@@ -1568,11 +1565,9 @@ const timer = setInterval(() => {
 		assert.equal(app.sentMessages[0]!.message.details.taskId, acknowledgement.details.taskId);
 		assert.deepEqual(entries.map(({ role }: any) => role), ["scout", "reviewer"]);
 		assert.deepEqual(entries.map(({ worktree }: any) => worktree), names.map((name, index) => ({
+			outcome: "pruned",
 			path: paths[index],
 			branch: `pi-subagent/${name}`,
-			commits: 0,
-			dirty: false,
-			pruned: true,
 		})));
 		assert.equal(new Set(paths).size, 2);
 	});
@@ -1648,10 +1643,10 @@ setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { 
 		assert.deepEqual(error.details.entries.map(({ status, worktree }: any) => ({
 			status,
 			dirty: worktree.dirty,
-			pruned: worktree.pruned,
+			outcome: worktree.outcome,
 		})), [
-			{ status: "rejected", dirty: true, pruned: false },
-			{ status: "rejected", dirty: true, pruned: false },
+			{ status: "rejected", dirty: true, outcome: "retained" },
+			{ status: "rejected", dirty: true, outcome: "retained" },
 		]);
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
 		for (const path of paths) {
@@ -2085,6 +2080,26 @@ Do bounded work.
 	});
 });
 
+test("background renderer shares workflow entry status presentation", () => {
+	const app = harness();
+	const details: BackgroundWorkflowTransportDetails = {
+		taskId: "bg-test",
+		outcome: "failed",
+		mode: "parallel",
+		entries: [
+			{ id: "one", index: 0, name: "Skipped task", role: "worker", status: "skipped" },
+			{ id: "two", index: 1, name: "Rejected task", role: "worker", status: "rejected" },
+		],
+	};
+	const message = { content: "full\u0001evidence", details };
+	const collapsed = app.renderMessage(message);
+	assert.match(collapsed, /✗ 2 background subagents failed/);
+	assert.match(collapsed, /– Skipped task · worker — skipped/);
+	assert.match(collapsed, /✗ Rejected task · worker — failed/);
+	assert.doesNotMatch(collapsed, /full evidence/);
+	assert.match(app.renderMessage(message, true), /full evidence/);
+});
+
 test("background delegation returns one bounded workflow acknowledgement and result message", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -2152,11 +2167,9 @@ test("background worktree report survives capped child output", async (t) => {
 		assert.match(message.content, /\[Output truncated: \d+ bytes omitted\]$/);
 		const name = childName("call-1:single:0");
 		assert.deepEqual(message.details.entries[0].worktree, {
+			outcome: "pruned",
 			path: join(await realpath(repo), ".worktrees", name),
 			branch: `pi-subagent/${name}`,
-			commits: 0,
-			dirty: false,
-			pruned: true,
 		});
 	});
 });
@@ -2238,7 +2251,7 @@ setInterval(() => {}, 1_000);
 		for (const [index, path] of paths.entries()) {
 			assert.match(message.content, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			assert.equal(message.details.entries[index].worktree.path, path);
-			assert.equal(message.details.entries[index].worktree.pruned, false);
+			assert.equal(message.details.entries[index].worktree.outcome, "retained");
 		}
 		assert.doesNotMatch(message.content, /DO NOT REPLAY|Subagent was aborted/);
 	});

@@ -141,4 +141,6 @@ The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated
 
 The package root exports `loadRoles`, `resolveRoleSkills`, `resolveRoleLaunch`, `createRoleLaunch`, `createEphemeralSubagentExecutor`, and worktree helpers. The executor works only inside the active Pi process; it does not discover or start a standalone Node.js Pi installation.
 
+`finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union. `pruned` proves zero commits, a clean tree, and removed worktree and branch. `retained` contains measured `commits` and `dirty` values. `recovery` has an actionable `note` and only completed measurements. An omitted recovery measurement is unknown.
+
 See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default.

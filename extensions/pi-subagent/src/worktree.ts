@@ -12,15 +12,10 @@ export interface WorktreeInfo {
 	baseCommit: string;
 }
 
-export interface WorktreePayload {
-	path: string;
-	branch: string;
-	commits: number;
-	dirty: boolean;
-	pruned: boolean;
-	inspection_failed?: boolean;
-	note?: string;
-}
+export type WorktreePayload =
+	| { outcome: "pruned"; path: string; branch: string }
+	| { outcome: "retained"; path: string; branch: string; commits: number; dirty: boolean }
+	| { outcome: "recovery"; path: string; branch: string; note: string; commits?: number; dirty?: boolean };
 
 export type GitRunner = (args: string[], cwd: string, signal?: AbortSignal) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -177,13 +172,25 @@ export async function createChildWorktree(
 	return worktree;
 }
 
-/** Flags a payload whose state could not be measured (#88113): unmeasured is not zero. */
-function markUnproven(payload: WorktreePayload, reason: string, unmeasured = "commits/dirty"): WorktreePayload {
-	payload.inspection_failed = true;
-	payload.note =
-		`git inspection failed (${reason}): ${unmeasured} UNKNOWN — not proven zero/clean. `
-		+ `Any remaining worktree or branch was preserved — inspect ${payload.path} (branch ${payload.branch}) before assuming no work.`;
-	return payload;
+/** Records only measurements that completed before recovery became necessary. */
+function recoveryPayload(
+	info: WorktreeInfo,
+	reason: string,
+	measurements: { commits?: number; dirty?: boolean } = {},
+	action = `Inspect ${info.path} (branch ${info.branch}) before assuming no work.`,
+): Extract<WorktreePayload, { outcome: "recovery" }> {
+	const unknown = [
+		...(measurements.commits === undefined ? ["commits"] : []),
+		...(measurements.dirty === undefined ? ["dirty"] : []),
+	].join("/");
+	return {
+		outcome: "recovery",
+		path: info.path,
+		branch: info.branch,
+		...(measurements.commits === undefined ? {} : { commits: measurements.commits }),
+		...(measurements.dirty === undefined ? {} : { dirty: measurements.dirty }),
+		note: `Worktree recovery required (${reason})${unknown ? `: ${unknown} UNKNOWN` : ""}. ${action}`,
+	};
 }
 
 export interface WorktreeDirtyInspection {
@@ -240,14 +247,12 @@ export async function inspectWorktreeDirty(cwd: string, run: GitRunner = runGit)
  * names it; the clean-tree proof includes untracked, ignored, and submodule
  * changes despite repository config. A worktree with zero branch commits and a
  * clean tree is removed only when every probe succeeds and base_commit was
- * recorded; any probe failure keeps everything and reports `inspection_failed`
- * so unmeasured state is never read as empty.
+ * recorded; any uncertainty preserves work and omits unknown measurements.
  */
 export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner = runGit): Promise<WorktreePayload> {
-	const payload: WorktreePayload = { path: info.path, branch: info.branch, commits: 0, dirty: false, pruned: false };
 	const checkoutExists = existsSync(info.path);
 	const gitCwd = checkoutExists ? info.path : info.repoRoot || info.path;
-	if (!info.baseCommit) return markUnproven(payload, "no base_commit recorded — commit count unmeasurable", "commits");
+	if (!info.baseCommit) return recoveryPayload(info, "no base_commit recorded — commit count unmeasurable");
 
 	const counted = await run(["rev-list", "--count", `${info.baseCommit}..${info.branch}`], gitCwd);
 	const commits = Number.parseInt(counted.stdout.trim(), 10);
@@ -255,36 +260,44 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 		? `rev-list exit ${counted.code}: ${counted.stderr.trim().slice(0, 200)}`
 		: Number.isNaN(commits) ? "rev-list produced non-numeric output" : undefined;
 	const inspection = checkoutExists ? await inspectDirty(run, info.path) : undefined;
-	if (!countFailure) payload.commits = commits;
-	if (inspection) payload.dirty = inspection.dirty;
+	const measurements = {
+		...(countFailure === undefined ? { commits } : {}),
+		...(inspection?.failure === undefined && inspection !== undefined ? { dirty: inspection.dirty } : {}),
+	};
 	if (countFailure || inspection?.failure) {
-		return markUnproven(payload, [countFailure, inspection?.failure].filter(Boolean).join("; "), [countFailure && "commits", inspection?.failure && "dirty"].filter(Boolean).join("/"));
+		return recoveryPayload(info, [countFailure, inspection?.failure].filter(Boolean).join("; "), measurements);
 	}
 
 	let forceRemove = false;
 	if (checkoutExists) {
-		if (payload.commits > 0 || payload.dirty) return payload;
+		const dirty = inspection!.dirty;
+		if (commits > 0 || dirty) return { outcome: "retained", path: info.path, branch: info.branch, commits, dirty };
 
 		const head = await run(["symbolic-ref", "--quiet", "HEAD"], info.path);
 		if (head.code !== 0 || head.stdout.trim() !== `refs/heads/${info.branch}`) {
-			return markUnproven(payload, "HEAD is detached, switched, or unreadable", "checked-out commits");
+			return recoveryPayload(info, "HEAD is detached, switched, or unreadable", measurements);
 		}
 		const rechecked = await inspectWorktreeDirty(info.path, run);
-		if (rechecked.failure) return markUnproven(payload, `final ${rechecked.failure}`, "dirty");
-		if (rechecked.dirty) {
-			payload.dirty = true;
-			return payload;
-		}
+		if (rechecked.failure) return recoveryPayload(info, `final ${rechecked.failure}`, { commits });
+		if (rechecked.dirty) return { outcome: "retained", path: info.path, branch: info.branch, commits, dirty: true };
 		forceRemove = Boolean(rechecked.initializedSubmodules);
-	} else if (payload.commits > 0) return payload;
+	} else if (commits > 0) {
+		return recoveryPayload(info, "worktree checkout is missing", { commits });
+	}
 
 	const cleanupCwd = info.repoRoot || info.path;
 	const removed = await run(["worktree", "remove", ...(forceRemove ? ["--force"] : []), info.path], cleanupCwd);
-	if (removed.code !== 0) return markUnproven(payload, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`, "cleanup");
+	if (removed.code !== 0) return recoveryPayload(info, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`, measurements);
 	const deleted = await run(["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit], cleanupCwd);
-	if (deleted.code !== 0) return markUnproven(payload, `branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`, "cleanup");
-	payload.pruned = true;
-	return payload;
+	if (deleted.code !== 0) {
+		return recoveryPayload(
+			info,
+			`branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`,
+			measurements,
+			`Inspect branch ${info.branch}; recreate ${info.path} from it before assuming no work.`,
+		);
+	}
+	return { outcome: "pruned", path: info.path, branch: info.branch };
 }
 
 /** Context block telling the child to work inside its isolated worktree. */
