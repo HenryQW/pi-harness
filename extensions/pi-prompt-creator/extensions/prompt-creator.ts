@@ -196,6 +196,7 @@ function analysisPayload(pi: ExtensionAPI, ctx: ExtensionContext): AnalysisPaylo
 
 function latestAssistantDraft(ctx: ExtensionContext): string | undefined {
 	for (const entry of [...ctx.sessionManager.buildContextEntries()].reverse()) {
+		if (entry.type === "compaction" || entry.type === "branch_summary") return;
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		const text = messageText(entry.message.content);
 		return entry.message.stopReason === "stop" && isPromptMarkdown(text) ? text : undefined;

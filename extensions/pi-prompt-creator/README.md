@@ -89,7 +89,7 @@ The extension never injects a candidate automatically. `Show candidate` adds one
 
 Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving.
 
-Saving uses Main's latest retained assistant reply as the entire file. That reply must have stopped successfully and contain valid Markdown.
+Saving uses Main's latest retained assistant reply as the entire file. Replies before the active compaction or branch summary cannot be saved. That reply must have stopped successfully and contain valid Markdown.
 
 An interrupted, failed, empty, or tool-use reply cannot be saved. The extension never falls back to an older reply.
 

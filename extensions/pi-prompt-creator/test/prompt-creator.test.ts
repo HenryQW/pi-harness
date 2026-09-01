@@ -446,6 +446,55 @@ test("an incomplete latest Main reply cannot fall back to an older completed dra
 	});
 });
 
+test("active summaries bound saved drafts to post-summary replies", async () => {
+	for (const boundary of ["compaction", "branch_summary"] as const) {
+		await withAgentDir(async (agentDir) => {
+			const child = controlledExecutor();
+			const draftName = `${boundary.replace("_", "-")}-draft`;
+			const postSummaryDraft = `# ${boundary} draft`;
+			const app = harness({
+				agentDir,
+				executor: child.executor,
+				selections: ["", "Save latest Main draft"],
+				inputs: [draftName],
+				branch: [
+					{ type: "message", message: { role: "user", content: "Write a draft" } },
+					{ type: "message", message: { role: "assistant", content: "# Replaced draft", stopReason: "stop" } },
+					{ type: boundary, summary: "Active summary" },
+				],
+			});
+			await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+			const promptor = app.registeredCommands.get("promptor")!;
+
+			await promptor("", app.ctx);
+			assert.equal(
+				app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"),
+				false,
+				`${boundary} hides drafts from replaced history`,
+			);
+
+			app.branch.push(
+				{ type: "message", message: { role: "user", content: "Write a new draft" } },
+				{ type: "message", message: { role: "assistant", content: postSummaryDraft, stopReason: "stop" } },
+			);
+			await promptor("", app.ctx);
+			assert.ok(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"));
+			assert.equal(
+				await readFile(join(agentDir, "prompts", `${draftName}.md`), "utf8"),
+				postSummaryDraft,
+			);
+
+			app.branch.push({ type: "message", message: { role: "assistant", content: "", stopReason: "stop" } });
+			await promptor("", app.ctx);
+			assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "invalid drafts do not fall back");
+
+			app.branch.push({ type: "message", message: { role: "assistant", content: "# Interrupted draft", stopReason: "aborted" } });
+			await promptor("", app.ctx);
+			assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "incomplete drafts do not fall back");
+		});
+	}
+});
+
 test("malformed config is preserved and warns once until an explicit toggle replaces it", async () => {
 	await withAgentDir(async (agentDir) => {
 		const configPath = extensionConfigPath("pi-prompt-creator", agentDir);
