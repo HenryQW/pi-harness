@@ -73,6 +73,8 @@ See the [orchestration guide](./docs/orchestration.md) for full delegation, tran
 
 ### Flow
 
+![Delegate Flow lifecycle](./docs/delegate-flow.svg)
+
 Flow requires a clean Main worktree on an attached branch with a committed `HEAD`. Use it only for independent Git changes that can merge in any order. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
 ```text

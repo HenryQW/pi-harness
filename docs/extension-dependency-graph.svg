@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 1280 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="extension-dependency-title extension-dependency-desc">
+<svg width="1280" height="900" viewBox="0 0 1280 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="extension-dependency-title extension-dependency-desc">
       <title id="extension-dependency-title">Extension dependency graph</title>
       <desc id="extension-dependency-desc">Dependency graph showing npm dependencies and direct runtime couplings among all twenty Henry Pi Harness extensions, including three standalone extensions.</desc>
       <defs>

@@ -8,6 +8,8 @@ The website inlines relative SVGs and rewrites other relative images only when p
 
 Use `./docs/diagram.svg` for an image stored beside a README's `docs/` directory. Update `repository-markdown.test.ts` when changing this behavior.
 
+Every SVG root must set `width` and `height` to its `viewBox` canvas dimensions. A `viewBox` alone gives an `<img>` the wrong intrinsic size, which prevents Blume's image zoom from enlarging it.
+
 ## Diagram design guide
 
 Use this profile whenever `/skill:diagram-design` creates or redraws a diagram for this website.
