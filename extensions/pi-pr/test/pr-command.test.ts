@@ -48,7 +48,7 @@ type HarnessOptions = {
 	statuses?: string[];
 	ancestry?: "behind" | "ahead" | "diverged";
 	localHead?: string;
-	finalState?: PullRequestSpec;
+	unresolvedThreads?: number[];
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -135,22 +135,13 @@ function harness(options: HarnessOptions) {
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 				if (query.includes("reviewThreads")) {
+					const unresolved = options.unresolvedThreads?.[stateIndex - 1] ?? 0;
 					return result(JSON.stringify([{
-						data: { node: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } },
+						data: { node: { reviewThreads: {
+							nodes: Array.from({ length: unresolved }, () => ({ isResolved: false })),
+							pageInfo: { hasNextPage: false, endCursor: null },
+						} } },
 					}]));
-				}
-				if (query.includes("headRefOid baseRefName baseRefOid")) {
-					events.push("revalidate");
-					const finalSpec = options.finalState ?? active ?? {};
-					const final = pullRequest(finalSpec);
-					return result(JSON.stringify({ data: { node: {
-						id: final.id,
-						state: final.state,
-						headRefOid: final.headRefOid,
-						baseRefName: final.baseRefName,
-						baseRefOid: final.baseRefOid,
-						repository: { nameWithOwner: finalSpec.baseRepository ?? "acme/project" },
-					} } }));
 				}
 				if (query.includes("mergePullRequest")) {
 					events.push("merge");
@@ -361,11 +352,12 @@ test("stops before refetching or mutating when merge confirmation is declined", 
 	assert.equal(mutationCalls(app.calls).length, 0);
 });
 
-test("cancels a confirmed merge when the fresh PR is absent, different, or no longer ready", async () => {
+test("cancels a confirmed merge when post-inspection authority is absent, different, or no longer ready", async () => {
 	const cases: Array<{
 		name: string;
 		states: [PullRequestSpec, PullRequestSpec | null];
 		statuses?: string[];
+		unresolvedThreads?: number[];
 		error: RegExp;
 	}> = [
 		{
@@ -387,21 +379,32 @@ test("cancels a confirmed merge when the fresh PR is absent, different, or no lo
 			name: "worktree becomes dirty",
 			states: [{}, {}],
 			statuses: ["", " M file.ts\n"],
+			error: /Local merge safety check failed/,
+		},
+		{
+			name: "optional check fails",
+			states: [{}, { statusCheckRollup: [{ conclusion: "FAILURE" }] }],
 			error: /no longer merge-ready/,
 		},
 		{
-			name: "CI fails",
-			states: [{}, { statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+			name: "changes are requested",
+			states: [{}, { reviewDecision: "CHANGES_REQUESTED" }],
+			error: /no longer merge-ready/,
+		},
+		{
+			name: "review thread becomes unresolved",
+			states: [{}, {}],
+			unresolvedThreads: [0, 1],
 			error: /no longer merge-ready/,
 		},
 	];
 
 	for (const candidate of cases) {
-		const app = harness({ states: candidate.states, statuses: candidate.statuses });
+		const app = harness({ states: candidate.states, statuses: candidate.statuses, unresolvedThreads: candidate.unresolvedThreads });
 		await assert.rejects(app.handler("", app.context), candidate.error, candidate.name);
 
 		assert.equal(app.confirmations.length, 1, candidate.name);
-		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
+		assert.deepEqual(app.events, candidate.name === "worktree becomes dirty" ? ["load", "confirm"] : ["load", "confirm", "load"], candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 	}
 });
@@ -424,22 +427,21 @@ test("cancels a confirmed merge when the confirmed head or base context changes"
 	}
 });
 
-test("cancels when the base retargets or advances during final local inspection", async () => {
+test("cancels when the base retargets or advances during final readiness evaluation", async () => {
 	for (const candidate of [
 		{ name: "base repository retarget", finalState: { baseRepository: "acme/other" } },
 		{ name: "base ref retarget", finalState: { baseRefName: "release" } },
 		{ name: "base advance", finalState: { baseRefOid: "d".repeat(40) } },
 	]) {
-		const app = harness({ states: [{}, {}], finalState: candidate.finalState });
-		await assert.rejects(app.handler("", app.context), /context changed after local inspection/, candidate.name);
+		const app = harness({ states: [{}, candidate.finalState] });
+		await assert.rejects(app.handler("", app.context), /confirmed pull request context changed/, candidate.name);
 
-		assert.deepEqual(app.events, ["load", "confirm", "load", "revalidate"], candidate.name);
+		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 		const finalFetch = app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true);
-		const revalidation = app.calls.findIndex(({ command, args }) =>
-			command === "gh" && args.some((arg) => arg.includes("headRefOid baseRefName baseRefOid"))
-		);
-		assert.ok(finalFetch >= 0 && revalidation > finalFetch, candidate.name);
+		const readiness = app.calls.map(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues").lastIndexOf(true);
+		assert.ok(finalFetch >= 0 && readiness > finalFetch, candidate.name);
+		assert.equal(app.calls.slice(readiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false, candidate.name);
 	}
 });
 
@@ -475,12 +477,15 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 		title: "Merge PR #42 with merge?",
 		message: "Merge PR #42 using merge.",
 	}]);
-	assert.deepEqual(app.events, ["load", "confirm", "load", "revalidate", "merge"]);
+	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
 	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
-	assert.ok(fetches.length > 0);
+	assert.equal(fetches.length, 2);
 	assert.ok(fetches.every(({ args }) => args[4] === `git@${host}:acme/project.git`));
 	assert.equal(fetches.some(({ args }) => args.includes("fork") || args.includes("acme/project")), false);
 	assert.equal(fetches.some(({ args }) => !args.includes("--no-write-fetch-head") || !args.includes("--no-recurse-submodules")), false);
+	const finalReadiness = app.calls.map(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues").lastIndexOf(true);
+	assert.ok(finalReadiness > app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true));
+	assert.equal(app.calls.slice(finalReadiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 	assert.deepEqual(mutationCalls(app.calls), [{
 		command: "gh",
 		args: [

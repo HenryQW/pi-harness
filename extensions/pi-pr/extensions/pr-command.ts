@@ -77,11 +77,12 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 }
 
 function isSameConfirmedMerge(current: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
-	return current.id === fresh.id && current.host === fresh.host &&
-		current.head.oid === fresh.head.oid &&
+	return current.id === fresh.id && current.number === fresh.number &&
+		current.url.href === fresh.url.href && current.host === fresh.host &&
+		current.head.repository === fresh.head.repository &&
+		current.head.ref === fresh.head.ref && current.head.oid === fresh.head.oid &&
 		current.base.repository === fresh.base.repository &&
-		current.base.ref === fresh.base.ref &&
-		current.base.oid === fresh.base.oid;
+		current.base.ref === fresh.base.ref && current.base.oid === fresh.base.oid;
 }
 
 async function mergePullRequest(
@@ -97,19 +98,6 @@ async function mergePullRequest(
 	);
 	if (!confirmed) return;
 
-	const fresh = await loadCurrentPullRequest(pi, ctx);
-	if (!fresh) throw new Error(`PR #${current.number} merge cancelled: pull request is no longer current`);
-	if (!isSameConfirmedMerge(current, fresh)) {
-		throw new Error(`PR #${current.number} merge cancelled: confirmed pull request context changed`);
-	}
-	if (deriveNextStep(fresh) !== "merge") {
-		throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
-	}
-	if (!fresh.merge) throw new Error(`PR #${fresh.number} merge failed: merge capabilities are unavailable`);
-	const freshMethod = selectMergeMethod(fresh.merge);
-	if (freshMethod !== method) {
-		throw new Error(`PR #${fresh.number} merge cancelled: merge method changed from ${method} to ${freshMethod}`);
-	}
 	await executeGitHubMerge({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
@@ -117,13 +105,28 @@ async function mergePullRequest(
 			timeout: 10_000,
 		}),
 		cwd: ctx.cwd,
-		pullRequestId: fresh.id,
-		hostname: fresh.host,
+		pullRequestId: current.id,
+		hostname: current.host,
 		expectedHead: current.head.oid,
 		expectedBase: current.base,
-		headFetchSource: fresh.headFetchSource,
-		allowedMergeMethods: fresh.merge.allowedMergeMethods,
-		viewerDefaultMergeMethod: fresh.merge.viewerDefaultMergeMethod,
+		headFetchSource: current.headFetchSource,
+		allowedMergeMethods: current.merge.allowedMergeMethods,
+		viewerDefaultMergeMethod: current.merge.viewerDefaultMergeMethod,
+		revalidateReadiness: async (local) => {
+			const fresh = await loadCurrentPullRequest(pi, ctx, local);
+			if (!fresh) throw new Error(`PR #${current.number} merge cancelled: pull request is no longer current`);
+			if (!isSameConfirmedMerge(current, fresh)) {
+				throw new Error(`PR #${current.number} merge cancelled: confirmed pull request context changed`);
+			}
+			if (deriveNextStep(fresh) !== "merge") {
+				throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
+			}
+			if (!fresh.merge) throw new Error(`PR #${fresh.number} merge failed: merge capabilities are unavailable`);
+			const freshMethod = selectMergeMethod(fresh.merge);
+			if (freshMethod !== method) {
+				throw new Error(`PR #${fresh.number} merge cancelled: merge method changed from ${method} to ${freshMethod}`);
+			}
+		},
 	});
 }
 

@@ -924,6 +924,7 @@ async function readMergeMethods(
 export async function loadCurrentPullRequest(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
+	inspectedLocal?: LocalMergeSafety,
 ): Promise<CurrentPullRequest | null> {
 	const pushTarget = await readPushTarget(pi, context);
 	if (pushTarget === null) return null;
@@ -972,7 +973,7 @@ export async function loadCurrentPullRequest(
 		: false;
 	const requiresStrictStatusChecks = legacyStrict || (rulesetPolicy?.requiresStrictStatusChecks ?? false);
 	const pullRequestConditions = conditions(candidate, unresolvedThreads, requiresStrictStatusChecks);
-	const local = await readLocalMergeSafety(pi, context, pushTarget, candidate.head.oid);
+	const local = inspectedLocal ?? await readLocalMergeSafety(pi, context, pushTarget, candidate.head.oid);
 	const merge = candidate.lifecycle === "open"
 		? await readMergeMethods(pi, context, candidate, rulesetPolicy?.allowedMergeMethods ?? null)
 		: null;

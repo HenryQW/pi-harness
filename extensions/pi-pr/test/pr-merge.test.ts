@@ -76,23 +76,8 @@ function inspectInput(exec: Exec) {
 		expectedHead,
 		expectedBase,
 		headFetchSource: "git@github.com:acme/fork.git",
+		revalidateReadiness: async () => {},
 	};
-}
-
-function finalPullRequest(overrides: Record<string, unknown> = {}): string {
-	return JSON.stringify({
-		data: {
-			node: {
-				id: pullRequestId,
-				state: "OPEN",
-				headRefOid: expectedHead,
-				baseRefName: expectedBase.ref,
-				baseRefOid: expectedBase.oid,
-				repository: { nameWithOwner: expectedBase.repository },
-				...overrides,
-			},
-		},
-	});
 }
 
 function command(call: Call): [string, string[]] {
@@ -385,7 +370,6 @@ test("executes the selected method with exact GraphQL variables and atomic head 
 		];
 		for (const code of candidate.ancestry ?? []) responses.push(result("", code));
 		responses.push(
-			result(finalPullRequest()),
 			result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequestId, state: "MERGED" } } } })),
 		);
 		const { exec, calls } = mockExec(responses);
@@ -398,20 +382,6 @@ test("executes the selected method with exact GraphQL variables and atomic head 
 			viewerDefaultMergeMethod: "merge",
 		});
 
-		assert.deepEqual(calls.at(-2), {
-			command: "gh",
-			args: [
-				"api",
-				"graphql",
-				"--hostname",
-				hostname,
-				"-f",
-				"query=query($pullRequestId:ID!){node(id:$pullRequestId){...on PullRequest{id state headRefOid baseRefName baseRefOid repository{nameWithOwner}}}}",
-				"-F",
-				`pullRequestId=${pullRequestId}`,
-			],
-			cwd,
-		}, candidate.name);
 		assert.deepEqual(calls.at(-1), {
 			command: "gh",
 			args: [
@@ -434,35 +404,36 @@ test("executes the selected method with exact GraphQL variables and atomic head 
 	}
 });
 
-test("revalidates the exact open PR context after local inspection without retrying", async () => {
-	const cases: Array<{ name: string; output: string; error: RegExp }> = [
-		{ name: "GraphQL error", output: JSON.stringify({ errors: [{ message: "unavailable" }] }), error: /revalidation failed: unavailable/ },
-		{ name: "malformed JSON", output: "not JSON", error: /revalidation failed: invalid GraphQL output/ },
-		{ name: "unavailable base OID", output: finalPullRequest({ baseRefOid: null }), error: /revalidation failed: invalid GraphQL output/ },
-		{ name: "identity change", output: finalPullRequest({ id: "PR_other" }), error: /pull request identity changed/ },
-		{ name: "closed", output: finalPullRequest({ state: "CLOSED" }), error: /pull request is no longer open/ },
-		{ name: "head change", output: finalPullRequest({ headRefOid: "other-head" }), error: /context changed after local inspection/ },
-		{ name: "base repository retarget", output: finalPullRequest({ repository: { nameWithOwner: "acme/other" } }), error: /context changed after local inspection/ },
-		{ name: "base ref retarget", output: finalPullRequest({ baseRefName: "release" }), error: /context changed after local inspection/ },
-		{ name: "base advance", output: finalPullRequest({ baseRefOid: "other-base" }), error: /context changed after local inspection/ },
-	];
-
-	for (const candidate of cases) {
+test("runs one readiness evaluation after local inspection and stops on any read failure", async () => {
+	for (const candidate of [
+		{ name: "read error", error: new Error("readiness unavailable") },
+		{ name: "malformed authority", error: new Error("invalid readiness authority") },
+	]) {
 		const { exec, calls } = mockExec([
 			result(),
 			result(),
 			result(`${expectedHead}\n`),
 			result(`${expectedHead}\n`),
-			result(candidate.output),
 		]);
+		let readinessCalls = 0;
 		await assert.rejects(
-			executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
+			executeGitHubMerge({
+				...inspectInput(exec),
+				pullRequestId,
+				hostname,
+				allowedMergeMethods: ["squash"],
+				revalidateReadiness: async (local) => {
+					readinessCalls += 1;
+					assert.deepEqual(local, { worktree: "clean", head: "equal" });
+					throw candidate.error;
+				},
+			}),
 			candidate.error,
 			candidate.name,
 		);
-		assert.equal(calls.filter(({ args }) => args.some((arg) => arg.includes("headRefOid baseRefName baseRefOid"))).length, 1, candidate.name);
+		assert.equal(readinessCalls, 1, candidate.name);
 		assert.equal(calls.some(({ args }) => args.some((arg) => arg.includes("mergePullRequest"))), false, candidate.name);
-		assert.equal(calls.at(-2)?.args[0], "rev-parse", candidate.name);
+		assert.equal(calls.at(-1)?.args[0], "rev-parse", candidate.name);
 	}
 });
 
@@ -502,7 +473,6 @@ test("rejects GraphQL errors and malformed or non-merged responses without retry
 			result(),
 			result(`${expectedHead}\n`),
 			result(`${expectedHead}\n`),
-			result(finalPullRequest()),
 			result(candidate.output),
 		]);
 		await assert.rejects(
@@ -510,7 +480,7 @@ test("rejects GraphQL errors and malformed or non-merged responses without retry
 			candidate.error,
 			candidate.name,
 		);
-		assert.equal(calls.length, 7, candidate.name);
+		assert.equal(calls.length, 6, candidate.name);
 		assert.equal(calls.at(-1)?.command, "gh", candidate.name);
 		assert.deepEqual(calls.at(-1)?.args.slice(0, 4), ["api", "graphql", "--hostname", hostname], candidate.name);
 	}
@@ -522,7 +492,6 @@ test("surfaces GitHub CLI merge failures without retrying", async () => {
 		result(),
 		result(`${expectedHead}\n`),
 		result(`${expectedHead}\n`),
-		result(finalPullRequest()),
 		result("", 1, "merge blocked"),
 	]);
 
@@ -530,5 +499,5 @@ test("surfaces GitHub CLI merge failures without retrying", async () => {
 		executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
 		/gh api graphql --hostname github\.com .* failed: merge blocked/,
 	);
-	assert.equal(calls.length, 7);
+	assert.equal(calls.length, 6);
 });

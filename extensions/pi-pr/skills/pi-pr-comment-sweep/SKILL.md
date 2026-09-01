@@ -67,8 +67,9 @@ Run standalone; never invoke, defer to, or modify Shipyard.
 
    Assess delta, then resolve all addressed IDs in one command, repeating flag:
    `node "<skill>/scripts/pr-feedback.mjs" resolve --pr "$PR" --expected-head
-   "$EXPECTED_HEAD" --thread "$ID1" --thread "$ID2"`. Never resolve
-   non-actionable or blocked threads. Re-fetch once into `FINAL_SNAPSHOT`, assess
+   "$EXPECTED_HEAD" --thread "$ID1" --thread "$ID2"`. Before each resolution,
+   the helper re-resolves the checkout's configured push target and exact open PR.
+   Never resolve non-actionable or blocked threads. Re-fetch once into `FINAL_SNAPSHOT`, assess
    late delta, batch any newly addressed IDs, then run
    `node "<skill>/scripts/pr-feedback.mjs" checks --pr "$PR" --expected-head
    "$EXPECTED_HEAD"` once. Read-only

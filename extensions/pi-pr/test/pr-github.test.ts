@@ -329,6 +329,15 @@ test("loads an upstream PR for the exact fork push target and retains its fetch 
 	}
 });
 
+test("uses inspected local safety without reopening the fetch window", async () => {
+	const { pi, context, calls } = harness();
+	const loaded = await loadCurrentPullRequest(pi, context, { worktree: "clean", head: "equal" });
+
+	assert.ok(loaded);
+	assert.deepEqual(loaded.local, { worktree: "clean", head: "equal" });
+	assert.equal(calls.some(({ command, args }) => command === "git" && ["status", "fetch", "cat-file", "merge-base"].includes(args[0] ?? "")), false);
+});
+
 test("accepts complete paginated pull request search results beyond 100", async () => {
 	const candidates = Array.from({ length: 100 }, (_, index) => pullRequest({
 		id: `PR_unrelated_${index + 1}`,

@@ -12,6 +12,7 @@ const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const PR_LIST_LIMIT = 100;
 const PR_SEARCH_CAP = 1_000;
 const READ_ATTEMPTS = 3;
+const SUBPROCESS_TIMEOUT_MS = 30_000;
 const CHECK_BUCKETS = new Map([
   ["ACTION_REQUIRED", "failing"],
   ["CANCELLED", "failing"],
@@ -93,12 +94,16 @@ function list(value, label) {
   return value;
 }
 
-function run(program, args, input) {
-  const result = spawnSync(program, args, {
+function run(program, args, input, spawn = spawnSync) {
+  const result = spawn(program, args, {
     encoding: "utf8",
     input,
     maxBuffer: 64 * 1024 * 1024,
+    timeout: SUBPROCESS_TIMEOUT_MS,
   });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new FeedbackError(`${program} timed out after ${SUBPROCESS_TIMEOUT_MS}ms`);
+  }
   if (result.error) throw new FeedbackError(`${program} failed: ${result.error.message}`);
   if (result.status !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
@@ -765,8 +770,22 @@ function currentExpectedHead(pr, expectedHead) {
   return metadata;
 }
 
+function resolveCurrentThread(threadId, expected, expectedHead, operations = {}) {
+  const localHead = (operations.readHead ?? cleanHead)();
+  if (localHead !== expectedHead) {
+    throw new FeedbackError(`local HEAD ${localHead} does not match expected head ${expectedHead}`);
+  }
+  const discovered = (operations.discover ?? discoverOpenPr)(localHead);
+  const current = prTarget(discovered.metadata, "current PR");
+  requireSamePr(expected, current);
+  requirePushTargetMatchesPr(discovered.push, current);
+  resolveThread(threadId, current.hostname, operations.mutate ?? writeGraphql);
+  return discovered.metadata;
+}
+
 function resolveFeedback(options) {
   let metadata = currentExpectedHead(options.pr, options.expectedHead);
+  const expected = prTarget(metadata, "initial PR");
   const states = collectThreadStates(metadata);
   const requested = options.threads;
   const missing = requested.filter((threadId) => !states.has(threadId));
@@ -774,8 +793,7 @@ function resolveFeedback(options) {
 
   for (const threadId of requested) {
     if (!states.get(threadId)) {
-      metadata = currentExpectedHead(metadata.url, options.expectedHead);
-      resolveThread(threadId, metadata.hostname);
+      metadata = resolveCurrentThread(threadId, expected, options.expectedHead);
     }
   }
 
@@ -814,6 +832,10 @@ function requireSamePushTarget(expected, current) {
   }
 }
 
+function pushArgs(remote, refspec) {
+  return ["push", "--recurse-submodules=no", remote, refspec];
+}
+
 function verifyTarget(options) {
   const localHead = cleanHead();
   const discovered = options.pr === undefined ? discoverOpenPr(localHead) : null;
@@ -824,7 +846,7 @@ function verifyTarget(options) {
   requirePushTargetMatchesPr(push, target);
   console.log(`pr=${metadata.url}`);
   console.log(`remote=${push.remote} repository=${target.headRepository}`);
-  console.log(`push_target=git push ${push.remote} ${localHead}:refs/heads/${push.ref}`);
+  console.log(`push_target=git ${pushArgs(push.remote, `${localHead}:refs/heads/${push.ref}`).join(" ")}`);
 }
 
 function checkPr(options) {
@@ -884,7 +906,7 @@ function pushHead(options) {
     readPr: readOpenPr,
     readTarget: configuredPushTarget,
     readHead: cleanHead,
-    push: (remote, refspec) => run("git", ["push", remote, refspec]),
+    push: (remote, refspec) => run("git", pushArgs(remote, refspec)),
   });
   const destination = result.remote ? ` remote=${result.remote} branch=${result.ref}` : "";
   console.log(`pushed_head=${localHead}${destination} status=${result.status}`);
@@ -960,6 +982,27 @@ function selfTest() {
     return "ok";
   }, () => {}), "ok");
   assert.equal(readAttempts, 2);
+  let timeoutAttempts = 0;
+  assert.throws(
+    () => retryRead(() => run("gh", ["api", "graphql"], undefined, (program, args, options) => {
+      timeoutAttempts += 1;
+      assert.equal(program, "gh");
+      assert.deepEqual(args, ["api", "graphql"]);
+      assert.equal(options.timeout, SUBPROCESS_TIMEOUT_MS);
+      assert.equal(options.maxBuffer, 64 * 1024 * 1024);
+      return {
+        error: Object.assign(new Error("credential=secret"), { code: "ETIMEDOUT" }),
+        status: null,
+        signal: "SIGTERM",
+        stdout: "",
+        stderr: "",
+      };
+    }), () => {}),
+    (error) => error instanceof FeedbackError &&
+      error.message === `gh timed out after ${SUBPROCESS_TIMEOUT_MS}ms` &&
+      !error.message.includes("secret"),
+  );
+  assert.equal(timeoutAttempts, 1);
 
   const temporary = mkdtempSync(join(tmpdir(), "pr-feedback-"));
   const emptySnapshot = join(temporary, "snapshot.json");
@@ -1215,7 +1258,7 @@ exit 1
       process.env.PATH = `${bin}:${pathBeforeResolution ?? ""}`;
       assert.throws(
         () => main(["resolve", "--pr", "1", "--expected-head", discoveryMetadata.headRefOid, "--thread", "resolved", "--thread", "first", "--thread", "second"]),
-        /PR head .* does not match expected head/,
+        /matching configured push target and local HEAD, found 0/,
       );
       assert.equal(readFileSync(resolved, "utf8"), "first\n");
       assert.match(readFileSync(resolutionCalls, "utf8"), /^pr view 1 /);
@@ -1225,7 +1268,7 @@ exit 1
       writeFileSync(resolutionCalls, "");
       assert.throws(
         () => main(["resolve", "--expected-head", discoveryMetadata.headRefOid, "--thread", "resolved", "--thread", "first", "--thread", "second"]),
-        /PR head .* does not match expected head/,
+        /matching configured push target and local HEAD, found 0/,
       );
     } finally {
       if (pathBeforeResolution === undefined) delete process.env.PATH;
@@ -1420,6 +1463,23 @@ exit 1
     push,
     pause: () => {},
   });
+  let resolutionMutations = 0;
+  assert.throws(
+    () => resolveCurrentThread("thread-1", prTarget(oldHead, "initial PR"), oldHead.headRefOid, {
+      readHead: () => oldHead.headRefOid,
+      discover: () => ({ metadata: oldHead, push: { ...pushTarget, ref: "other-feature" } }),
+      mutate: () => {
+        resolutionMutations += 1;
+        return { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } };
+      },
+    }),
+    /configured push target does not match PR head/,
+  );
+  assert.equal(resolutionMutations, 0);
+  assert.deepEqual(pushArgs("origin", `${capturedOid}:refs/heads/feature`), [
+    "push", "--recurse-submodules=no", "origin", `${capturedOid}:refs/heads/feature`,
+  ]);
+
   let alreadyCurrentTargetReads = 0;
   let alreadyCurrentPushes = 0;
   assert.equal(publishHead(oldHead, capturedOid, operations(

@@ -17,7 +17,6 @@ export type Exec = (
 
 export type MergeMethod = "merge" | "rebase" | "squash";
 
-const FINAL_PULL_REQUEST_QUERY = "query($pullRequestId:ID!){node(id:$pullRequestId){...on PullRequest{id state headRefOid baseRefName baseRefOid repository{nameWithOwner}}}}";
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 
@@ -41,6 +40,7 @@ export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & InspectLocalMe
 		ref: string;
 		oid: string;
 	};
+	revalidateReadiness: (local: LocalMergeSafety) => Promise<void>;
 };
 
 function commandText(command: string, args: string[]): string {
@@ -198,6 +198,7 @@ function validateExecuteInput(input: ExecuteGitHubMergeInput): void {
 	requiredText(input.expectedBase.repository, "expected base repository");
 	requiredText(input.expectedBase.ref, "expected base ref");
 	requiredText(input.expectedBase.oid, "expected base OID");
+	if (typeof input.revalidateReadiness !== "function") throw new TypeError("revalidateReadiness must be a function");
 }
 
 function parseGraphQLResponse(output: string, action: string): Record<string, unknown> {
@@ -218,28 +219,6 @@ function parseGraphQLResponse(output: string, action: string): Record<string, un
 		}
 	}
 	return value;
-}
-
-function parseFinalPullRequest(output: string, input: ExecuteGitHubMergeInput): void {
-	const value = parseGraphQLResponse(output, "GitHub merge revalidation failed");
-	const data = value.data;
-	const pullRequest = isRecord(data) ? data.node : undefined;
-	const repository = isRecord(pullRequest) ? pullRequest.repository : undefined;
-	if (
-		!isRecord(pullRequest) || !isRecord(repository) ||
-		![pullRequest.id, pullRequest.state, pullRequest.headRefOid, pullRequest.baseRefName, pullRequest.baseRefOid, repository.nameWithOwner]
-			.every((field) => typeof field === "string" && field && field.trim() === field && !/[\u0000-\u001f\u007f]/.test(field))
-	) throw new Error("GitHub merge revalidation failed: invalid GraphQL output");
-	if (pullRequest.id !== input.pullRequestId) {
-		throw new Error("GitHub merge cancelled: pull request identity changed");
-	}
-	if (pullRequest.state !== "OPEN") throw new Error("GitHub merge cancelled: pull request is no longer open");
-	if (
-		pullRequest.headRefOid !== input.expectedHead ||
-		repository.nameWithOwner !== input.expectedBase.repository ||
-		pullRequest.baseRefName !== input.expectedBase.ref ||
-		pullRequest.baseRefOid !== input.expectedBase.oid
-	) throw new Error("GitHub merge cancelled: pull request context changed after local inspection");
 }
 
 function parseMergeResponse(output: string, expectedId: string): void {
@@ -264,17 +243,7 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
 	}
-	const revalidated = await runCommand(input.exec, input.cwd, "gh", [
-		"api",
-		"graphql",
-		"--hostname",
-		input.hostname,
-		"-f",
-		`query=${FINAL_PULL_REQUEST_QUERY}`,
-		"-F",
-		`pullRequestId=${input.pullRequestId}`,
-	]);
-	parseFinalPullRequest(requiredOutput(revalidated, "GitHub merge revalidation"), input);
+	await input.revalidateReadiness(local);
 	const merged = await runCommand(input.exec, input.cwd, "gh", [
 		"api",
 		"graphql",

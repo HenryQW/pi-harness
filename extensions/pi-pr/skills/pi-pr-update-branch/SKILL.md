@@ -25,7 +25,7 @@ BASE_REPOSITORY_URL="$(gh api --hostname "$PR_HOST" \
   -H 'Accept: application/vnd.github+json' \
   -H 'X-GitHub-Api-Version: 2022-11-28' \
   "repos/$BASE_REPOSITORY" --jq .clone_url)"
-git fetch --no-write-fetch-head --no-tags "$BASE_REPOSITORY_URL" "$BASE_SHA"
+git fetch --no-write-fetch-head --no-tags --no-recurse-submodules "$BASE_REPOSITORY_URL" "$BASE_SHA"
 git cat-file -e "$BASE_SHA^{commit}"
 printf 'Fetched base %s %s at %s\n' "$BASE_REPOSITORY" "$BASE_REF" "$BASE_SHA"
 ```
@@ -94,7 +94,7 @@ After the merge completes:
 4. Push once to the saved configured push ref, without force or retry:
 
    ```bash
-   git push "$PUSH_REMOTE" "$MERGED_HEAD:$PUSH_REF"
+   git push --recurse-submodules=no "$PUSH_REMOTE" "$MERGED_HEAD:$PUSH_REF"
    ```
 
 A conflict, failed validation, failed ancestry check, changed PR target, or rejected push ends the workflow without a force push or a second push.

@@ -43,7 +43,7 @@ It does not waive any gate below or authorize work on another branch or PR.
 5. **Commit once, then guard and push once.**
    - Stage only the reviewed scoped paths; never use an all-files add. Inspect the staged diff and status, then create one scoped Conventional Commit such as `fix(ci): ...`. If commit fails, stop and do not retry.
    - Immediately before the push, perform one fresh non-polling guard. Require the attached branch to remain the saved checkout branch. Re-resolve its configured push target exactly as above and require the saved remote, `PUSH_REF`, sole push URL, host, and repository. Re-read the recorded PR URL and require the PR to remain open with the same number, URL, base identity, head repository, `PUSH_REF`, and original head OID. Capture the full local `HEAD` OID as `FIXED_HEAD`, require it to be the expected descendant containing only this fix, and require the tree to be clean. Stop on any mismatch.
-   - Immediately before pushing, require the full local `HEAD` OID to remain equal to `FIXED_HEAD`. Push once with `git push "$PUSH_REMOTE" "$FIXED_HEAD:$PUSH_REF"`. Do not force-push, retry, wait for CI, or poll after pushing.
+   - Immediately before pushing, require the full local `HEAD` OID to remain equal to `FIXED_HEAD`. Push once with `git push --recurse-submodules=no "$PUSH_REMOTE" "$FIXED_HEAD:$PUSH_REF"`. Do not force-push, retry, wait for CI, or poll after pushing.
 
 ## Report
 
