@@ -2236,51 +2236,72 @@ test("session shutdown promptly reports preserved isolated setup failures", asyn
 	});
 });
 
-test("multi-child shutdown sends at most one recovery-only background message", async (t) => {
+test("session shutdown recovery renderer suppresses stale child summaries", async (t) => {
 	const repo = await initializedRepository(t);
 	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir, true);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { writeFileSync } from "node:fs";
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "1";
+		try {
+			await writeWorkerRole(agentDir, true);
+			const usage = {
+				input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10,
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+			};
+			const runner = join(agentDir, "fake-pi.mjs");
+			await writeFile(runner, `import { writeFileSync } from "node:fs";
 const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\n[WORKTREE ISOLATION]", 1)[0];
 const event = (value) => console.log(JSON.stringify(value));
+const usage = ${JSON.stringify(usage)};
 writeFileSync(task + ".txt", "recover me");
-event({ type: "message_start", message: { role: "assistant", content: [] } });
-event({ type: "message_update", usage: { totalTokens: 1 }, assistantMessageEvent: { type: "text_delta", delta: "DO NOT REPLAY " + task } });
-setInterval(() => {}, 1_000);
+if (task === "completed") {
+	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "DO NOT REPLAY completed" }], stopReason: "end", usage } });
+} else {
+	event({ type: "message_start", message: { role: "assistant", content: [] } });
+	event({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "DO NOT REPLAY " + task } });
+	setInterval(() => {}, 1_000);
+}
 `);
-		process.argv[1] = runner;
+			process.argv[1] = runner;
 
-		const app = harness({ cwd: repo, timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
-		const tasks = ["one", "two", "three"];
-		const started = await app.tool.execute("shutdown", {
-			tasks: tasks.map((task) => ({ role: "worker", name: "Test delegated task", task })),
-			background: true,
-		}, undefined, undefined, app.ctx);
-		const root = await realpath(repo);
-		const names = tasks.map((_, index) => childName(`shutdown:parallel:${index}`));
-		const paths = names.map((name) => join(root, ".worktrees", name));
-		await waitFor(() => paths.every((path, index) => existsSync(join(path, `${tasks[index]}.txt`))));
+			const app = harness({ cwd: repo, timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
+			const tasks = ["completed", "running"];
+			const started = await app.tool.execute("shutdown", {
+				tasks: tasks.map((task) => ({ role: "worker", name: "Test delegated task", task })),
+				background: true,
+			}, undefined, undefined, app.ctx);
+			const root = await realpath(repo);
+			const names = tasks.map((_, index) => childName(`shutdown:parallel:${index}`));
+			const paths = names.map((name) => join(root, ".worktrees", name));
+			// The concurrency cap makes the completed entry settle before the running
+			// entry starts, leaving its ordinary summary in stale transport details.
+			await waitFor(() => existsSync(join(paths[1]!, "running.txt")));
 
-		await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
-		await new Promise((resolve) => setTimeout(resolve, 100));
+			await app.handlers.get("session_shutdown")?.({ reason: "reload" }, { hasUI: false });
 
-		assert.equal(app.sentMessages.length, 1);
-		const { message, options } = app.sentMessages[0]!;
-		assert.equal(message.customType, "subagent-background-result");
-		assert.equal(message.details.taskId, started.details.taskId);
-		assert.equal(message.details.outcome, "aborted");
-		assert.equal(message.details.recovery, true);
-		assert.deepEqual(message.details.entries.map(({ status }: any) => status), tasks.map(() => "rejected"));
-		assert.equal(options.triggerTurn, false);
-		assert.ok(Buffer.byteLength(message.content, "utf8") <= 50 * 1024);
-		assert.ok(message.content.indexOf("Recovery locations:") < message.content.indexOf("Evidence:"));
-		for (const [index, path] of paths.entries()) {
-			assert.match(message.content, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-			assert.equal(message.details.entries[index].worktree.path, path);
-			assert.equal(message.details.entries[index].worktree.outcome, "retained");
+			assert.equal(app.sentMessages.length, 1);
+			const { message, options } = app.sentMessages[0]!;
+			assert.equal(message.customType, "subagent-background-result");
+			assert.equal(message.details.taskId, started.details.taskId);
+			assert.equal(message.details.outcome, "aborted");
+			assert.equal(message.details.recovery, true);
+			assert.deepEqual(message.details.entries.map(({ status }: any) => status), ["succeeded", "rejected"]);
+			assert.equal(message.details.entries[0].summary, "DO NOT REPLAY completed");
+			assert.deepEqual(message.details.usage, usage);
+			assert.equal(options.triggerTurn, false);
+			assert.ok(Buffer.byteLength(message.content, "utf8") <= 50 * 1024);
+			assert.ok(message.content.indexOf("Recovery locations:") < message.content.indexOf("Evidence:"));
+			for (const [index, path] of paths.entries()) {
+				assert.match(message.content, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+				assert.equal(message.details.entries[index].worktree.path, path);
+				assert.equal(message.details.entries[index].worktree.outcome, "retained");
+			}
+			const collapsed = app.renderMessage(message);
+			assert.match(collapsed, /✓ Test delegated task · worker — completed/);
+			assert.match(collapsed, /✗ Test delegated task · worker — failed/);
+			assert.doesNotMatch(collapsed, /DO NOT REPLAY|Subagent was aborted/);
+			assert.doesNotMatch(message.content, /DO NOT REPLAY|Subagent was aborted/);
+		} finally {
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
-		assert.doesNotMatch(message.content, /DO NOT REPLAY|Subagent was aborted/);
 	});
 });
 
