@@ -1,9 +1,8 @@
-import { lstat } from "node:fs/promises";
-import { resolve } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { inspectLocalMergeSafety } from "./pr-merge.ts";
 import type {
 	CiStatus,
 	LocalMergeSafety,
@@ -110,7 +109,6 @@ type PushUrl = {
 
 type PushTarget = {
 	fetchSource: string;
-	headOid: string;
 	remoteHeadOid: string | null;
 	repository: PushRepository;
 	ref: string;
@@ -739,11 +737,6 @@ async function readPushTarget(
 		"Read current branch",
 		"branch",
 	);
-	const headOid = oid(
-		singleLine((await execute(pi, context, "Read current HEAD", "git", ["rev-parse", "--verify", "HEAD^{commit}"])).stdout, "Read current HEAD", "HEAD"),
-		"Read current HEAD",
-		"HEAD",
-	);
 	const pushReference = optionalPushReference(
 		(await execute(pi, context, "Read push target", "git", [
 			"for-each-ref",
@@ -794,7 +787,7 @@ async function readPushTarget(
 		if (remoteHead.code !== 0) commandFailure("Read remote push ref", remoteHead);
 		remoteHeadOid = parseRemotePushRef(remoteHead.stdout, push.ref);
 	}
-	return { fetchSource: pushUrl.fetchSource, headOid, remoteHeadOid, repository, ref: push.ref };
+	return { fetchSource: pushUrl.fetchSource, remoteHeadOid, repository, ref: push.ref };
 }
 
 async function readUnresolvedReviewThreads(
@@ -859,73 +852,6 @@ async function readRulesetBaseBranchPolicy(
 		`repos/${owner}/${name}/rules/branches/${encodeURIComponent(candidate.base.ref)}`,
 	]);
 	return parseRulesetBaseBranchPolicy(result.stdout);
-}
-
-async function readLocalMergeSafety(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	pushTarget: PushTarget,
-	pullRequestHead: string,
-): Promise<LocalMergeSafety> {
-	const status = await execute(pi, context, "Read worktree status", "git", [
-		"status",
-		"--porcelain=v1",
-		"--untracked-files=all",
-	]);
-	const operationStates = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
-	const statePaths = lines(
-		(await execute(pi, context, "Read Git operation state", "git", [
-			"rev-parse",
-			...operationStates.flatMap((state) => ["--git-path", state]),
-		])).stdout,
-		"Read Git operation state",
-		"state path",
-	);
-	if (statePaths.length !== operationStates.length) fail("Read Git operation state", "invalid state paths");
-	let operationInProgress = false;
-	for (const [index, path] of statePaths.entries()) {
-		try {
-			await lstat(resolve(context.cwd, path));
-			operationInProgress = true;
-		} catch (error) {
-			if (isRecord(error) && error.code === "ENOENT") continue;
-			const code = isRecord(error) && typeof error.code === "string" ? error.code : "filesystem error";
-			fail("Read Git operation state", `cannot inspect ${operationStates[index]}: ${code}`);
-		}
-	}
-	const worktree = status.stdout === "" && !operationInProgress ? "clean" : "dirty";
-
-	await execute(pi, context, "Fetch pull request head", "git", [
-		"fetch",
-		"--no-write-fetch-head",
-		"--no-tags",
-		"--no-recurse-submodules",
-		pushTarget.fetchSource,
-		pullRequestHead,
-	]);
-	await execute(pi, context, "Verify pull request head", "git", ["cat-file", "-e", `${pullRequestHead}^{commit}`]);
-	if (pushTarget.headOid === pullRequestHead) return { worktree, head: "equal" };
-
-	const localIsAncestor = await invoke(pi, context, "Compare pull request head", "git", [
-		"merge-base",
-		"--is-ancestor",
-		pushTarget.headOid,
-		pullRequestHead,
-	]);
-	if (localIsAncestor.killed) commandFailure("Compare pull request head", localIsAncestor);
-	if (localIsAncestor.code === 0) return { worktree, head: "behind" };
-	if (localIsAncestor.code !== 1) commandFailure("Compare pull request head", localIsAncestor);
-
-	const pullRequestIsAncestor = await invoke(pi, context, "Compare pull request head", "git", [
-		"merge-base",
-		"--is-ancestor",
-		pullRequestHead,
-		pushTarget.headOid,
-	]);
-	if (pullRequestIsAncestor.killed) commandFailure("Compare pull request head", pullRequestIsAncestor);
-	if (pullRequestIsAncestor.code === 0) return { worktree, head: "ahead" };
-	if (pullRequestIsAncestor.code === 1) return { worktree, head: "diverged" };
-	return commandFailure("Compare pull request head", pullRequestIsAncestor);
 }
 
 async function readMergeMethods(
@@ -996,10 +922,20 @@ export async function loadCurrentPullRequest(
 		: false;
 	const requiresStrictStatusChecks = legacyStrict || (rulesetPolicy?.requiresStrictStatusChecks ?? false);
 	const pullRequestConditions = conditions(candidate, unresolvedThreads, requiresStrictStatusChecks);
-	const local = inspectedLocal ?? await readLocalMergeSafety(pi, context, pushTarget, candidate.head.oid);
 	const merge = candidate.lifecycle === "open"
 		? await readMergeMethods(pi, context, candidate, rulesetPolicy?.allowedMergeMethods ?? null)
 		: null;
+	const inspected = inspectedLocal ?? await inspectLocalMergeSafety({
+		exec: (command, args, options) => pi.exec(command, args, {
+			...options,
+			signal: context.signal,
+			timeout: EXEC_TIMEOUT_MS,
+		}),
+		cwd: context.cwd,
+		expectedHead: candidate.head.oid,
+		headFetchSource: pushTarget.fetchSource,
+	});
+	const local: LocalMergeSafety = { worktree: inspected.worktree, head: inspected.head };
 	return {
 		id: candidate.id,
 		number: candidate.number,

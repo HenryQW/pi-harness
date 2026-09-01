@@ -9,6 +9,7 @@ import {
 	loadCurrentPullRequest,
 	PullRequestLoadError,
 } from "../extensions/pr-github.ts";
+import { deriveNextStep } from "../extensions/pr-routing.ts";
 
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
@@ -26,6 +27,7 @@ type HarnessOptions = {
 	candidateUrls?: unknown[];
 	listResult?: ReturnType<typeof result>;
 	localHead?: string;
+	localHeadAfterRulesetRead?: string;
 	pushResult?: ReturnType<typeof result>;
 	pushReference?: string;
 	refCheckResult?: ReturnType<typeof result>;
@@ -137,7 +139,7 @@ function pullRequest(overrides: Record<string, unknown> = {}) {
 function harness(options: HarnessOptions = {}) {
 	const calls: CommandCall[] = [];
 	const candidates = options.candidates ?? [pullRequest()];
-	const localHead = options.localHead ?? LOCAL_HEAD;
+	let localHead = options.localHead ?? LOCAL_HEAD;
 	const ancestry = options.ancestry ?? "behind";
 	const remote = options.remote ?? "fork";
 	const pushUrl = options.pushUrl ?? "git@github.com:acme/fork.git";
@@ -193,6 +195,7 @@ function harness(options: HarnessOptions = {}) {
 				}
 			}
 			if (command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main") {
+				if (options.localHeadAfterRulesetRead) localHead = options.localHeadAfterRulesetRead;
 				return options.rulesetResult ?? result(rulesetPolicyOutput(false));
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
@@ -365,6 +368,22 @@ test("uses inspected local safety without reopening the fetch window", async () 
 	assert.ok(loaded);
 	assert.deepEqual(loaded.local, { worktree: "clean", head: "equal" });
 	assert.equal(calls.some(({ command, args }) => command === "git" && ["status", "fetch", "cat-file", "merge-base"].includes(args[0] ?? "")), false);
+});
+
+test("routes from the local HEAD sampled after remote policy reads", async () => {
+	const { pi, context, calls } = harness({
+		localHead: REMOTE_HEAD,
+		localHeadAfterRulesetRead: LOCAL_HEAD,
+		ancestry: "ahead",
+	});
+
+	const loaded = await loadCurrentPullRequest(pi, context);
+	assert.ok(loaded);
+	assert.equal(loaded.local.head, "ahead");
+	assert.equal(deriveNextStep(loaded), "none");
+	const policyRead = calls.findIndex(({ command, args }) => command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main");
+	const headRead = calls.findIndex(({ command, args }) => command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}");
+	assert.ok(policyRead >= 0 && headRead > policyRead);
 });
 
 test("accepts complete paginated pull request search results beyond 100", async () => {
@@ -1001,14 +1020,14 @@ test("surfaces Git operation-state resolution failures", async () => {
 	const failed = harness({ stateResult: result("", 128) });
 	await assert.rejects(
 		loadCurrentPullRequest(failed.pi, failed.context),
-		/Read Git operation state failed: exit code 128/,
+		/git rev-parse .* failed: exit code 128/,
 	);
 	assert.equal(failed.calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 
 	const malformed = harness({ stateResult: result("/repo/.git/MERGE_HEAD\n") });
 	await assert.rejects(
 		loadCurrentPullRequest(malformed.pi, malformed.context),
-		/Read Git operation state failed: invalid state paths/,
+		/Git operation state path resolution returned invalid output/,
 	);
 });
 
@@ -1023,8 +1042,8 @@ test("rejects a remote push ref that moved from the advertised pull request OID"
 
 test("surfaces isolated exact-OID fetch and verification failures without ancestry checks", async () => {
 	for (const options of [
-		{ fetchResult: result("", 1), error: /Fetch pull request head failed: exit code 1/ },
-		{ verifyResult: result("", 1), error: /Verify pull request head failed: exit code 1/ },
+		{ fetchResult: result("", 1), error: /git fetch .* failed: exit code 1/ },
+		{ verifyResult: result("", 1), error: /git cat-file .* failed: exit code 1/ },
 	]) {
 		const { pi, context, calls } = harness(options);
 		await assert.rejects(loadCurrentPullRequest(pi, context), options.error);
@@ -1035,8 +1054,8 @@ test("surfaces isolated exact-OID fetch and verification failures without ancest
 
 test("surfaces ancestry command failures after exact-OID verification", async () => {
 	for (const candidate of [
-		{ ancestryResult: result("", 2), error: /Compare pull request head failed: exit code 2/ },
-		{ ancestryResult: { ...result("", 1), killed: true }, error: /Compare pull request head failed: command was cancelled/ },
+		{ ancestryResult: result("", 2), error: /git merge-base .* failed: exit code 2/ },
+		{ ancestryResult: { ...result("", 1), killed: true }, error: /git merge-base .* failed: command was killed/ },
 	]) {
 		const { pi, context } = harness(candidate);
 		await assert.rejects(loadCurrentPullRequest(pi, context), candidate.error);
