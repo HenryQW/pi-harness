@@ -41,9 +41,7 @@ pi install npm:@henryqw/pi-memory
 
 Each file holds entries delimited by `§` and is size-capped. When a write would exceed its cap, the tool rejects it and reports current usage.
 
-Consolidate with one batch that removes or shortens stale entries and adds the new entry together. A batch checks only the final size.
-
-Version 5 adds two breaking request limits. A batch accepts at most 100 operations. A complete serialized mutation cannot exceed 1,000,000 UTF-8 bytes.
+Consolidate with one batch that removes or shortens stale entries and adds the new entry together. A batch checks only the final size. A batch accepts at most 100 operations. A complete serialized mutation cannot exceed 1,000,000 UTF-8 bytes.
 
 Both limits are checked before source loading or review. Calls over either limit do not write.
 
@@ -63,17 +61,7 @@ Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect live state.
 
 Every single `add` and every batch containing an `add` is independently reviewed by the local `pi-memory/reviewCandidate` Model Task. It defaults to the shared `balanced` profile.
 
-```mermaid
-flowchart TD
-  request["Single add or batch containing an add"] --> duplicate{"Exact duplicate single add?"}
-  duplicate -->|Yes| skip["Skip model; leave add unwritten"]
-  duplicate -->|No| review["pi-memory/reviewCandidate"]
-  review --> conflict{"Conflict?"}
-  conflict -->|No| write["Write original add"]
-  conflict -->|Yes| question["ask_question"]
-  question -->|Add separately or Add anyway| write
-  question -->|Merge, replacement, cancellation, custom answer, or non-interactive| unwritten["Leave original add unwritten"]
-```
+![pi-memory architecture showing reviewed writes and frozen session snapshots](./docs/memory-architecture.svg)
 
 The tool snapshots live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. An initially missing `SYSTEM.md` is empty. Unreadable, oversized, or over-cap sources fail closed.
 
