@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import memoryExtensionImpl, { MEMORY_REVIEW_TASK } from "../extensions/memory.ts";
-import { ENTRY_DELIMITER, MAX_FILE_BYTES } from "../src/store.ts";
+import { ENTRY_DELIMITER, MAX_BATCH_OPERATIONS, MAX_FILE_BYTES, MemoryStore } from "../src/store.ts";
 
 function memoryExtension(api: object): void {
 	memoryExtensionImpl({
@@ -31,6 +31,7 @@ type CapturedMessage = {
 type CapturedTool = {
 	description: string;
 	executionMode?: "sequential" | "parallel";
+	parameters?: { properties?: { operations?: { maxItems?: number } } };
 	execute(
 		toolCallId: string,
 		params: Record<string, unknown>,
@@ -760,6 +761,8 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		const memoryTool = tool;
 		assert.match(memoryTool.description, /read MEMORY\.md in the configured memory directory/);
 		assert.match(memoryTool.description, /independently reviews the complete mutation/);
+		assert.match(memoryTool.description, /A batch accepts at most 100 operations/);
+		assert.match(memoryTool.description, /complete serialized mutation must not exceed 1,000,000 UTF-8 bytes/);
 		assert.match(memoryTool.description, /may ask the user to resolve an overlap or contradiction/);
 
 		const injected = await before({ systemPrompt: "base" }) as { systemPrompt: string };
@@ -872,6 +875,7 @@ test("registers memory transactions as sequential Pi tool calls", () => {
 	});
 	assert.ok(tool);
 	assert.equal(tool.executionMode, "sequential");
+	assert.equal(tool.parameters?.properties?.operations?.maxItems, MAX_BATCH_OPERATIONS);
 });
 
 test("declares a balanced review task and invokes the configured primary route", async () => {
@@ -964,23 +968,52 @@ test("missing SYSTEM is empty, while unreadable and oversized review sources fai
 	});
 
 	await withReviewFixture({}, async ({ agentDir, memoryDir, tool, ctx, calls }) => {
-		await symlink(join(agentDir, "missing-SYSTEM.md"), join(agentDir, "SYSTEM.md"));
+		const systemPath = join(agentDir, "SYSTEM.md");
+		await symlink(join(agentDir, "missing-SYSTEM.md"), systemPath);
 		await assert.rejects(
 			() => tool.execute("unreadable-system", { action: "add", content: "candidate" }, undefined, undefined, ctx),
 			/agent-global SYSTEM\.md is unreadable/,
+		);
+		await rm(systemPath);
+		await assert.rejects(
+			() => tool.execute("deleted-unreadable-system", { action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/existed during an earlier review this session but has disappeared/,
 		);
 		assert.equal(calls.length, 0);
 		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
 	});
 
 	await withReviewFixture({}, async ({ agentDir, memoryDir, tool, ctx, calls }) => {
-		await writeFile(join(agentDir, "SYSTEM.md"), "x".repeat(MAX_FILE_BYTES + 1));
+		const systemPath = join(agentDir, "SYSTEM.md");
+		await writeFile(systemPath, "x".repeat(MAX_FILE_BYTES + 1));
 		await assert.rejects(
 			() => tool.execute("oversized-system", { action: "add", content: "candidate" }, undefined, undefined, ctx),
 			/over the 1,000,000-byte review limit/,
 		);
+		await rm(systemPath);
+		await assert.rejects(
+			() => tool.execute("deleted-oversized-system", { action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/existed during an earlier review this session but has disappeared/,
+		);
 		assert.equal(calls.length, 0);
 		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+	});
+
+	await withReviewFixture({ system: "preserve policy" }, async ({ agentDir, memoryDir, tool, ctx, calls }) => {
+		const memoryPath = join(memoryDir, "MEMORY.md");
+		await writeFile(memoryPath, Buffer.from([0xff, 0xfe]));
+		await assert.rejects(
+			() => tool.execute("unusable-store", { action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/live memory store is unreadable/,
+		);
+		await writeFile(memoryPath, "repaired store");
+		await rm(join(agentDir, "SYSTEM.md"));
+		await assert.rejects(
+			() => tool.execute("deleted-system-after-store-failure", { action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/existed during an earlier review this session but has disappeared/,
+		);
+		assert.equal(calls.length, 0);
+		assert.equal(await readFile(memoryPath, "utf8"), "repaired store");
 	});
 
 	await withReviewFixture({ user: "preserve this profile" }, async ({ memoryDir, tool, ctx, calls }) => {
@@ -1004,11 +1037,43 @@ test("missing SYSTEM is empty, while unreadable and oversized review sources fai
 	});
 });
 
-test("exact duplicate single add skips review", async () => {
+test("exact duplicate single add bypasses mutation, preserves cancellation, and resets retries", async () => {
 	await withReviewFixture({ memory: "already saved" }, async ({ memoryDir, tool, ctx, calls }) => {
-		await tool.execute("duplicate", { action: "add", content: "already saved" }, undefined, undefined, ctx);
+		const path = join(memoryDir, "MEMORY.md");
+		const original = await readFile(path);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			await assert.rejects(
+				() => tool.execute(`failure-${attempt}`, { action: "remove", old_text: "missing" }, undefined, undefined, ctx),
+				/No entry matched/,
+			);
+		}
+
+		const originalAdd = MemoryStore.prototype.add;
+		let addCalls = 0;
+		MemoryStore.prototype.add = async function (target, content) {
+			addCalls++;
+			return originalAdd.call(this, target, content);
+		};
+		try {
+			const controller = new AbortController();
+			controller.abort(new Error("duplicate cancelled"));
+			await assert.rejects(
+				() => tool.execute("cancelled-duplicate", { action: "add", content: "already saved" }, controller.signal, undefined, ctx),
+				/duplicate cancelled/,
+			);
+			await tool.execute("duplicate", { action: "add", content: "already saved" }, undefined, undefined, ctx);
+		} finally {
+			MemoryStore.prototype.add = originalAdd;
+		}
+
+		assert.equal(addCalls, 0);
 		assert.equal(calls.length, 0);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "already saved");
+		assert.deepEqual(await readFile(path), original);
+		await assert.rejects(
+			() => tool.execute("failure-after-reset", { action: "remove", old_text: "missing" }, undefined, undefined, ctx),
+			/No entry matched/,
+		);
+		assert.deepEqual(await readFile(path), original);
 	});
 });
 
@@ -1216,6 +1281,56 @@ test("batch adds review the full mutation, while batches without adds bypass rev
 	});
 });
 
+test("mutation preflight rejects invalid structure and complete serialized overflow before sources or writes", async () => {
+	await withReviewFixture({}, async ({ memoryDir, tool, ctx, calls }) => {
+		const path = join(memoryDir, "MEMORY.md");
+		const invalid: Array<[Record<string, unknown>, RegExp]> = [
+			[{ action: "add", content: "safe\n═══" }, /must not contain lines starting/],
+			[{ operations: [{ action: "add" }] }, /content is required/],
+			[{ operations: [{ action: "add", content: "candidate" }, { action: "replace", content: "replacement" }] }, /old_text is required/],
+			[{ operations: [{ action: "add", content: "candidate" }, { action: "remove", old_text: " " }] }, /old_text is required/],
+			[{ operations: [{ action: "add", content: "candidate" }, { action: "replace", old_text: "old", content: "bad\nMEMORY (your personal notes" }] }, /reserved headers/],
+		];
+		for (const [params, error] of invalid) {
+			await assert.rejects(() => tool.execute("invalid", params, undefined, undefined, ctx), error);
+			await assert.rejects(readFile(path), /ENOENT/);
+		}
+
+		const tooMany = Array.from({ length: MAX_BATCH_OPERATIONS + 1 }, () => ({ action: "add", content: "candidate" }));
+		await assert.rejects(
+			() => tool.execute("too-many", { operations: tooMany }, undefined, undefined, ctx),
+			/more than 100/,
+		);
+		await assert.rejects(readFile(path), /ENOENT/);
+
+		const multibyteOldText = "界".repeat(Math.ceil(MAX_FILE_BYTES / 3));
+		await assert.rejects(
+			() => tool.execute("too-many-bytes", {
+				operations: [
+					{ action: "add", content: "candidate" },
+					{ action: "remove", old_text: multibyteOldText },
+				],
+			}, undefined, undefined, ctx),
+			/Complete serialized memory mutation is .*the limit is 1,000,000 bytes/,
+		);
+		await assert.rejects(readFile(path), /ENOENT/);
+
+		const malformed = Buffer.from([0xff, 0xfe, 0xfd]);
+		await writeFile(path, malformed);
+		await assert.rejects(
+			() => tool.execute("structural-first", {
+				operations: [
+					{ action: "add", content: "candidate" },
+					{ action: "remove" },
+				],
+			}, undefined, undefined, ctx),
+			/old_text is required/,
+		);
+		assert.deepEqual(await readFile(path), malformed);
+		assert.equal(calls.length, 0);
+	});
+});
+
 test("errors carry match previews/usage, snapshots filter frame tokens, backups live outside the memory dir", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-extension-hardening-"));
 	const agentDir = join(root, "agent");
@@ -1369,8 +1484,16 @@ test("first oversized entry is omitted with warning; unexpected-file warnings ar
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.ok(!injected.systemPrompt.includes("x".repeat(100)), "oversized single entry must not be injected");
 		assert.match(injected.systemPrompt, /1 entry was omitted/);
-		assert.match(injected.systemPrompt, /5 unexpected files in the memory directory \("a\(1\)\.md", "b\(1\)\.md", "c\(1\)\.md" and 2 more\)/);
-		assert.doesNotMatch(injected.systemPrompt, /"e\(1\)\.md"/);
+		const truncatedWarning = injected.systemPrompt.split("\n").find((line) => line.includes("at least four unexpected files"));
+		assert.ok(truncatedWarning);
+		assert.equal((truncatedWarning.match(/"[a-e]\(1\)\.md"/g) ?? []).length, 3);
+
+		await rm(join(memoryDir, "d(1).md"));
+		await rm(join(memoryDir, "e(1).md"));
+		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
+		const exact = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
+		assert.match(exact.systemPrompt, /3 unexpected files in the memory directory \("a\(1\)\.md", "b\(1\)\.md", "c\(1\)\.md"\)/);
+		assert.doesNotMatch(exact.systemPrompt, /at least four unexpected/);
 		void tool;
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

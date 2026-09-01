@@ -43,9 +43,19 @@ Each file holds entries delimited by `§` and is size-capped. When a write would
 
 Consolidate with one batch that removes or shortens stale entries and adds the new entry together. A batch checks only the final size.
 
+Version 5 adds two breaking request limits. A batch accepts at most 100 operations. A complete serialized mutation cannot exceed 1,000,000 UTF-8 bytes.
+
+Both limits are checked before source loading or review. Calls over either limit do not write.
+
 An external edit or sync can push an on-disk file over its cap. The session snapshot then omits the overflow and warns instead of injecting it.
 
 At session start, both stores are captured. Later edits do not alter injected memory.
+
+During a session, pi-memory remembers each store file proven to exist. This includes valid, invalid UTF-8, oversized, and symlinked files.
+
+If a proven store disappears, writes stay blocked until you restore it. A path never confirmed present can be repaired and created normally.
+
+A new session starts new presence tracking.
 
 Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect live state.
 
@@ -65,7 +75,9 @@ flowchart TD
   question -->|Merge, replacement, cancellation, custom answer, or non-interactive| unwritten["Leave original add unwritten"]
 ```
 
-The tool snapshots live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. A missing `SYSTEM.md` is empty. Unreadable, oversized, or over-cap sources fail closed.
+The tool snapshots live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. An initially missing `SYSTEM.md` is empty. Unreadable, oversized, or over-cap sources fail closed.
+
+A SYSTEM file proven present during review cannot disappear later in that session. Restore it before the next add.
 
 It resolves the configured Pi registry primary route, then fallback, through `/task-models`. It never substitutes the current session model. It accepts only verified bounded JSON evidence.
 
@@ -118,6 +130,8 @@ Any other invalid configuration fails fast. Malformed JSON, invalid UTF-8, files
 Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault only carries files. pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
 
 Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi-memory/backups/`.
+
+Startup lists at most three unexpected regular filenames in `directory`. It stops on the fourth and reports `at least four`.
 
 ## Threat model
 
