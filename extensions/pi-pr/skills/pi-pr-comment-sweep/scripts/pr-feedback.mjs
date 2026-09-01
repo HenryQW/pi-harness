@@ -118,10 +118,6 @@ function git(...args) {
   return run("git", args).trim();
 }
 
-function requireGh() {
-  run("gh", ["auth", "status"]);
-}
-
 function cleanHead() {
   git("rev-parse", "--show-toplevel");
   const states = [
@@ -136,7 +132,7 @@ function cleanHead() {
     const path = requiredText(git("rev-parse", "--git-path", state), `${operation} state path`);
     if (lstatSync(path, { throwIfNoEntry: false })) throw new FeedbackError(`${operation} is in progress`);
   }
-  if (git("status", "--porcelain")) throw new FeedbackError("index and worktree must be clean");
+  if (git("status", "--porcelain", "--untracked-files=all")) throw new FeedbackError("index and worktree must be clean");
   return requiredText(git("rev-parse", "HEAD"), "local HEAD");
 }
 
@@ -244,10 +240,14 @@ function discoveryPushRemote(pr, metadata) {
     "--format=%(push:remotename)%00%(push:short)",
     `refs/heads/${branch}`,
   ).split("\0");
-  if (target.length !== 2 || !target[0] || !target[1]) {
+  if (target.length !== 2 || !target[1]) {
     throw new FeedbackError(`local branch ${JSON.stringify(branch)} has no configured push target`);
   }
-  const [remote, push] = target;
+  const [configuredRemote, push] = target;
+  const remote = pushRemote(metadata.headRepository.nameWithOwner, metadata.hostname);
+  if (configuredRemote && configuredRemote !== remote) {
+    throw new FeedbackError(`configured push remote ${JSON.stringify(configuredRemote)} does not match PR head repository`);
+  }
   if (!push.startsWith(`${remote}/`)) throw new FeedbackError("configured push target is invalid");
   const ref = push.slice(remote.length + 1);
   const checkedRef = git("check-ref-format", "--branch", ref);
@@ -256,11 +256,7 @@ function discoveryPushRemote(pr, metadata) {
   if (ref !== headRef) {
     throw new FeedbackError(`configured push ref ${JSON.stringify(ref)} does not match PR head ref ${JSON.stringify(headRef)}`);
   }
-  const matchingRemote = pushRemote(metadata.headRepository.nameWithOwner, metadata.hostname);
-  if (remote !== matchingRemote) {
-    throw new FeedbackError(`configured push remote ${JSON.stringify(remote)} does not match PR head repository`);
-  }
-  return matchingRemote;
+  return remote;
 }
 
 function graphqlArgs(hostname, variables) {
@@ -583,7 +579,6 @@ function writeSnapshot(path, data) {
 }
 
 function fetchFeedback(options) {
-  requireGh();
   const out = options.json ? null : resolve(options.out);
   const previous = out ? previousSnapshot(out) : null;
   const localHead = cleanHead();
@@ -625,16 +620,17 @@ function currentExpectedHead(pr, expectedHead) {
 }
 
 function resolveFeedback(options) {
-  requireGh();
   let metadata = currentExpectedHead(options.pr, options.expectedHead);
   const states = collectThreadStates(metadata);
   const requested = options.threads;
   const missing = requested.filter((threadId) => !states.has(threadId));
   if (missing.length) throw new FeedbackError(`review thread IDs not found: ${missing.join(",")}`);
 
-  metadata = currentExpectedHead(metadata.url, options.expectedHead);
   for (const threadId of requested) {
-    if (!states.get(threadId)) resolveThread(threadId, metadata.hostname);
+    if (!states.get(threadId)) {
+      metadata = currentExpectedHead(metadata.url, options.expectedHead);
+      resolveThread(threadId, metadata.hostname);
+    }
   }
 
   metadata = currentExpectedHead(metadata.url, options.expectedHead);
@@ -686,7 +682,6 @@ function pushRemote(repository, hostname) {
 }
 
 function verifyTarget(options) {
-  requireGh();
   const localHead = cleanHead();
   const metadata = readOpenPr(options.pr);
   requireMatchingHead(metadata, localHead);
@@ -698,7 +693,6 @@ function verifyTarget(options) {
 }
 
 function checkPr(options) {
-  requireGh();
   const metadata = readOpenPr(options.pr);
   console.log(`pr=${metadata.url}`);
   printPrStatus(metadata);
@@ -754,7 +748,6 @@ function publishHead(initial, localHead, operations) {
 }
 
 function pushHead(options) {
-  requireGh();
   const initial = snapshot(resolve(options.snapshot)).pullRequest;
   const localHead = cleanHead();
   const result = publishHead(initial, localHead, {
@@ -832,6 +825,42 @@ function selfTest() {
   writeFileSync(emptySnapshot, "");
   assert.equal(previousSnapshot(emptySnapshot), null);
 
+  const bin = join(temporary, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "gh"), `#!/bin/sh
+if [ "$1" = auth ]; then
+  echo 'stale other-host credentials' >&2
+  exit 1
+fi
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  if [ "$3" = 1 ]; then
+    echo '{"number":1,"url":"https://${enterpriseHost}/Owner/Repo/pull/1","state":"OPEN","baseRefName":"main","baseRefOid":"base","headRefName":"feature","headRefOid":"head","headRepository":{"nameWithOwner":"Owner/Repo"},"mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
+    exit 0
+  fi
+  echo 'target request failed' >&2
+  exit 1
+fi
+if [ "$1" = api ] && [ "$2" = graphql ] && [ "$3" = --hostname ] && [ "$4" = ${enterpriseHost} ]; then
+  echo 'host GraphQL failed' >&2
+  exit 1
+fi
+echo "unexpected gh command: $*" >&2
+exit 1
+`, { mode: 0o755 });
+  const originalPath = process.env.PATH;
+  const originalLog = console.log;
+  try {
+    process.env.PATH = `${bin}:${originalPath ?? ""}`;
+    console.log = () => {};
+    assert.equal(main(["checks", "--pr", "1"]), 0);
+    assert.throws(() => main(["checks", "--pr", "404"]), /target request failed/);
+    assert.throws(() => graphqlResponse("query { viewer { login } }", {}, enterpriseHost), /host GraphQL failed/);
+  } finally {
+    console.log = originalLog;
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+  }
+
   const originalWorkingDirectory = process.cwd();
   const repository = join(temporary, "repository");
   try {
@@ -843,6 +872,12 @@ function selfTest() {
     git("add", "tracked.txt");
     git("commit", "-m", "base");
     const base = cleanHead();
+    git("config", "status.showUntrackedFiles", "no");
+    writeFileSync("untracked.txt", "untracked\n");
+    assert.equal(git("status", "--porcelain"), "");
+    assert.throws(() => cleanHead(), /index and worktree must be clean/);
+    rmSync("untracked.txt");
+    git("config", "--unset", "status.showUntrackedFiles");
 
     git("switch", "-c", "operation-source");
     writeFileSync("tracked.txt", "picked\n");
@@ -927,6 +962,8 @@ function selfTest() {
     git("config", "branch.feature-local.merge", "refs/heads/feature");
     assert.equal(discoveryPushRemote(undefined, discoveryMetadata), "origin");
 
+    git("config", "branch.feature-local.merge", "refs/heads/bad..ref");
+    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /check-ref-format/);
     git("config", "branch.feature-local.merge", "refs/heads/other");
     assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /configured push ref .* does not match PR head ref/);
     git("config", "branch.feature-local.merge", "refs/heads/feature");
@@ -937,6 +974,63 @@ function selfTest() {
     git("remote", "add", "fork", `ssh://git@${enterpriseHost}/Owner/Repo.git`);
     assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /exactly one matching push URL/);
     git("remote", "remove", "fork");
+
+    git("config", "--unset", "branch.feature-local.remote");
+    git("config", "--unset", "branch.feature-local.merge");
+    git("config", "push.default", "current");
+    const inferredMetadata = { ...discoveryMetadata, headRefName: "feature-local" };
+    assert.deepEqual(git(
+      "for-each-ref",
+      "--format=%(push:remotename)%00%(push:short)",
+      "refs/heads/feature-local",
+    ).split("\0"), ["", "origin/feature-local"]);
+    assert.equal(discoveryPushRemote(undefined, inferredMetadata), "origin");
+
+    const views = join(temporary, "views");
+    const resolved = join(temporary, "resolved");
+    writeFileSync(join(bin, "gh"), `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  views=0
+  [ -f "${views}" ] && views=$(cat "${views}")
+  views=$((views + 1))
+  echo "$views" > "${views}"
+  head=${discoveryMetadata.headRefOid}
+  [ "$views" -ge 3 ] && head=moved
+  printf '%s\\n' "{\\"number\\":1,\\"url\\":\\"https://${enterpriseHost}/Owner/Repo/pull/1\\",\\"state\\":\\"OPEN\\",\\"baseRefName\\":\\"main\\",\\"baseRefOid\\":\\"base\\",\\"headRefName\\":\\"feature\\",\\"headRefOid\\":\\"$head\\",\\"headRepository\\":{\\"nameWithOwner\\":\\"Owner/Repo\\"},\\"mergeStateStatus\\":\\"CLEAN\\",\\"statusCheckRollup\\":[]}"
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = graphql ] && [ "$3" = --hostname ] && [ "$4" = ${enterpriseHost} ]; then
+  query=$(cat)
+  case "$query" in
+    *resolveReviewThread*)
+      thread=
+      for arg in "$@"; do
+        case "$arg" in threadId=*) thread=\${arg#threadId=} ;; esac
+      done
+      echo "$thread" >> "${resolved}"
+      printf '%s\\n' "{\\"data\\":{\\"resolveReviewThread\\":{\\"thread\\":{\\"id\\":\\"$thread\\",\\"isResolved\\":true}}}}"
+      ;;
+    *)
+      echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"resolved","isResolved":true},{"id":"first","isResolved":false},{"id":"second","isResolved":false}]}}}}}'
+      ;;
+  esac
+  exit 0
+fi
+echo "unexpected gh command: $*" >&2
+exit 1
+`, { mode: 0o755 });
+    const pathBeforeResolution = process.env.PATH;
+    try {
+      process.env.PATH = `${bin}:${pathBeforeResolution ?? ""}`;
+      assert.throws(
+        () => main(["resolve", "--pr", "1", "--expected-head", discoveryMetadata.headRefOid, "--thread", "resolved", "--thread", "first", "--thread", "second"]),
+        /PR head moved does not match expected head/,
+      );
+    } finally {
+      if (pathBeforeResolution === undefined) delete process.env.PATH;
+      else process.env.PATH = pathBeforeResolution;
+    }
+    assert.equal(readFileSync(resolved, "utf8"), "first\n");
 
     git("switch", "--detach");
     assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /current HEAD is detached/);
