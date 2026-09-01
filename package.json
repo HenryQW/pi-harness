@@ -30,7 +30,8 @@
       "./extensions/pi-herdr-done/extensions",
       "./extensions/pi-multi-codex/extensions",
       "./extensions/pi-subagent/extensions/subagent.ts",
-      "./extensions/pi-memory/extensions/memory.ts"
+      "./extensions/pi-memory/extensions/memory.ts",
+      "./extensions/pi-undo/extensions/undo.ts"
     ]
   },
   "scripts": {

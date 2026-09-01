@@ -1,12 +1,12 @@
 {
-  "name": "@henryqw/pi-auto-compact",
-  "version": "2.0.3",
-  "description": "Proactively compact Pi context at a configurable threshold and resume the current task.",
+  "name": "@henryqw/pi-undo",
+  "version": "0.1.0",
+  "description": "Rewind Pi conversation context to the latest user prompt.",
   "keywords": [
     "pi-package",
     "pi",
-    "compaction",
-    "context"
+    "undo",
+    "conversation"
   ],
   "type": "module",
   "engines": {
@@ -20,8 +20,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "test:live": "PI_AUTO_COMPACT_LIVE=1 node --test test/live.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/auto-compact.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/undo.ts test/undo.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
@@ -30,7 +29,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-harness.git",
-    "directory": "extensions/pi-auto-compact"
+    "directory": "extensions/pi-undo"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-harness/issues"
@@ -40,11 +39,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/undo.ts"
     ]
-  },
-  "dependencies": {
-    "@henryqw/pi-config-store": "^0.1.0",
-    "@henryqw/pi-task-models": "^4.0.0"
   }
 }

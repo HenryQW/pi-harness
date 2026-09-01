@@ -12,6 +12,10 @@ import autoCompact from "../extensions/auto-compact.ts";
 
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 type Command = (args: string, ctx: ExtensionContext) => Promise<void>;
+type SentMessage = {
+	message: { customType: string; content: string; display: boolean };
+	options?: { triggerTurn?: boolean };
+};
 
 function autoCompactConfigFile(agentDir: string): string {
 	return join(agentDir, "config", "pi-auto-compact", "config.json");
@@ -23,6 +27,7 @@ function taskModelsConfigFile(agentDir: string): string {
 
 function loadExtension(
 	commands = new Map<string, Command>(),
+	sendMessage: (message: SentMessage["message"], options?: SentMessage["options"]) => void = () => {},
 	sendUserMessage: (content: string) => void = () => {},
 ): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
@@ -34,6 +39,7 @@ function loadExtension(
 		registerCommand(name: string, options: { handler: Command }) {
 			commands.set(name, options.handler);
 		},
+		sendMessage,
 		sendUserMessage,
 	} as unknown as ExtensionAPI);
 	return handlers;
@@ -483,6 +489,55 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 		assert.equal(JSON.parse(requestBody).reasoning_effort, "high");
 	} finally {
 		server.close();
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
+test("resumes compaction with a custom session message", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-resume-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+
+	try {
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		const messages: SentMessage[] = [];
+		const userMessages: string[] = [];
+		const handlers = loadExtension(
+			new Map(),
+			(message, options) => messages.push({ message, options }),
+			(content) => userMessages.push(content),
+		);
+		let onComplete: (() => void) | undefined;
+		const ctx = {
+			cwd: tempRoot,
+			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+			compact: (options: { onComplete: () => void }) => { onComplete = options.onComplete; },
+			isIdle: () => true,
+			ui: { notify() {} },
+		} as unknown as ExtensionContext;
+
+		handlers.get("session_start")?.(
+			{ type: "session_start", reason: "startup" } as never,
+			ctx,
+		);
+		handlers.get("turn_start")?.({} as never, ctx);
+		assert.ok(onComplete, "mid-task compaction must resume after completion");
+		onComplete();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		assert.deepEqual(messages, [{
+			message: {
+				customType: "pi-auto-compact/resume",
+				content: "Auto-compact ran. Continue the current task.",
+				display: false,
+			},
+			options: { triggerTurn: true },
+		}]);
+		assert.deepEqual(userMessages, []);
+	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(tempRoot, { recursive: true, force: true });

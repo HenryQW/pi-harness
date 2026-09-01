@@ -27,7 +27,7 @@ type AgentMessage = Parameters<typeof estimateTokens>[0];
  * - context: last-resort guard with a temporary keep-recent context.
  *
  * Pi's ctx.compact() aborts active low-level run internally. Mid-task
- * compaction sends a follow-up user message to resume work after summary.
+ * compaction sends a custom continuation message after summary.
  */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 70;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
@@ -87,6 +87,7 @@ function withoutDeletedHeaders(headers: Record<string, string | null> | undefine
 // Emergency context guard keeps recent messages while default compaction runs.
 const KEEP_RECENT_PERCENT = 15;
 const COMPACTION_INSTRUCTIONS = "Preserve current task to be resumed after compaction.";
+const RESUME_MESSAGE_TYPE = "pi-auto-compact/resume";
 const RESUME_MESSAGE = "Auto-compact ran. Continue the current task.";
 const COMPACTION_ABORT_ERROR = "This operation was aborted";
 const ACTIVATION_ERROR =
@@ -166,7 +167,12 @@ export default function (pi: ExtensionAPI) {
 				// Pi may flush queued input during compaction_end. Wait one macrotask
 				// before checking idle, otherwise follow-up can race that flush.
 				setImmediate(() => {
-					if (ctx.isIdle()) pi.sendUserMessage(RESUME_MESSAGE);
+					if (!ctx.isIdle()) return;
+					pi.sendMessage({
+						customType: RESUME_MESSAGE_TYPE,
+						content: RESUME_MESSAGE,
+						display: false,
+					}, { triggerTurn: true });
 				});
 			},
 			onError: () => {
