@@ -7,7 +7,7 @@ Add multiple ChatGPT Codex OAuth accounts and start new Pi work on the slot with
 ## Why
 
 - **Created for**: Pi users who work across more than one Codex subscription.
-- **Advantage**: Quota-aware routing starts with the eligible slot that has the most remaining seven-day quota. If that slot returns HTTP 429, Pi retries with another eligible slot.
+- **Advantage**: Quota-aware routing starts with the eligible slot that has the most remaining seven-day quota. With automatic switching enabled, Pi can retry an HTTP 429 response on another eligible slot.
 
 ## Install
 
@@ -36,6 +36,8 @@ Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`,
 | `/codex-switch` | command | Pick an authenticated slot. |
 
 A numbered slot is one Codex account position in Pi.
+
+![Flowchart of quota-based slot selection and conditional HTTP 429 retry](./docs/codex-routing-flow.svg)
 
 - The extension reads `auth.json`. It never writes or refreshes credentials.
 - Before the first agent start, a fresh snapshot routes a managed Codex model to the eligible slot with the most seven-day quota.

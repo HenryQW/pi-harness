@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codex quota routing and conditional retry</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; display: grid; place-items: center; padding: 32px; background: #f0eee9; color: #101828; }
+    .frame { width: min(1280px, 100%); }
+    .eyebrow { margin-bottom: 8px; color: #4c5665; font: 500 10px/1 'Geist Mono', monospace; letter-spacing: .18em; text-transform: uppercase; }
+    h1 { margin-bottom: 24px; font: 400 28px/1.15 'Instrument Serif', serif; }
+    svg { display: block; width: 100%; min-width: 960px; height: auto; }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <p class="eyebrow">Flowchart · @henryqw/pi-multi-codex</p>
+    <h1>Codex quota routing and conditional retry</h1>
+    <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="codex-routing-flow-title codex-routing-flow-desc">
+      <title id="codex-routing-flow-title">Codex quota routing and conditional retry</title>
+      <desc id="codex-routing-flow-desc">Flowchart showing fresh quota-based slot selection and three result outcomes: success keeps the active slot, HTTP 429 retries only when autoSwitchOn429 is enabled, and every other failure stops without trying another slot.</desc>
+      <defs>
+        <style>
+          @import url(&quot;https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap&quot;);
+          .node { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .node-state { fill: rgba(16,24,40,.05); stroke: #4c5665; stroke-width: 1; }
+          .node-soft { fill: rgba(16,24,40,.03); stroke: #101828; stroke-width: 1; }
+          .node-focal { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+          .name { fill: #101828; font: 600 20px 'Geist', sans-serif; text-anchor: middle; }
+          .sub { fill: #4c5665; font: 400 16px 'Geist Mono', monospace; text-anchor: middle; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+          .label-mask { fill: #f0eee9; }
+          .label { fill: #4c5665; font: 500 16px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+          .legend-label { fill: #4c5665; font: 500 14px 'Geist Mono', monospace; letter-spacing: .12em; }
+          .legend-text { fill: #4c5665; font: 400 14px 'Geist', sans-serif; }
+          .legend-code { fill: #4c5665; font: 400 14px 'Geist Mono', monospace; }
+        </style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <!-- Connectors: selection, run, three outcomes, then the conditional 429 loop. -->
+      <path class="edge" d="M640 160 V184"/>
+      <path class="edge" d="M640 280 V304"/>
+      <path class="edge" d="M760 232 H888"/>
+      <path class="edge" d="M640 384 V408"/>
+      <path class="edge" d="M640 488 V512"/>
+      <path class="edge" d="M520 560 H440"/>
+      <path class="edge" d="M700 536 H808 Q816 536 816 528 V496 Q816 488 824 488 H888"/>
+      <path class="edge" d="M700 584 H808 Q816 584 816 592 V600 Q816 608 824 608 H888"/>
+      <path class="edge" d="M248 524 V240 Q248 232 256 232 H520"/>
+
+      <!-- Connector labels. Each mask stays 8px clear of its line. -->
+      <rect class="label-mask" x="652" y="280" width="56" height="20" rx="2"/>
+      <text class="label" x="680" y="296">YES</text>
+      <rect class="label-mask" x="800" y="204" width="48" height="20" rx="2"/>
+      <text class="label" x="824" y="220">NO</text>
+      <rect class="label-mask" x="444" y="532" width="72" height="20" rx="2"/>
+      <text class="label" x="480" y="548">RETRY</text>
+      <rect class="label-mask" x="760" y="508" width="88" height="20" rx="2"/>
+      <text class="label" x="804" y="524">SUCCESS</text>
+      <rect class="label-mask" x="760" y="556" width="104" height="20" rx="2"/>
+      <text class="label" x="812" y="572">NO RETRY</text>
+      <rect class="label-mask" x="264" y="344" width="112" height="24" rx="2"/>
+      <text class="label" x="320" y="364">NEXT SLOT</text>
+
+      <!-- Nodes. -->
+      <rect x="360" y="40" width="560" height="120" rx="6" fill="#f0eee9"/>
+      <rect class="node" x="360" y="40" width="560" height="120" rx="6"/>
+      <text class="name" x="640" y="68">Build eligible slot pool</text>
+      <text class="sub" x="640" y="96">AUTHENTICATED NUMBERED SLOTS</text>
+      <text class="sub" x="640" y="120">FRESH QUOTA SNAPSHOT · CREDENTIAL-FREE</text>
+      <text class="sub" x="640" y="144">EXCLUDE: UNAUTHENTICATED · STALE · 5H 100% BLOCK</text>
+
+      <polygon class="node" points="640,184 760,232 640,280 520,232"/>
+      <text class="name" x="640" y="228">Untried eligible</text>
+      <text class="name" x="640" y="252">slot remains?</text>
+
+      <rect x="888" y="188" width="336" height="88" rx="44" fill="#f0eee9"/>
+      <rect class="node-soft" x="888" y="188" width="336" height="88" rx="44"/>
+      <text class="name" x="1056" y="224">Stop automatic routing</text>
+      <text class="sub" x="1056" y="252">NO ELIGIBLE UNTRIED SLOT</text>
+
+      <rect x="440" y="304" width="400" height="80" rx="6" fill="#f0eee9"/>
+      <rect class="node-focal" x="440" y="304" width="400" height="80" rx="6"/>
+      <text class="name" x="640" y="336">Select highest 7-day quota</text>
+      <text class="sub" x="640" y="364">PRESERVE MODEL ID</text>
+
+      <rect x="440" y="408" width="400" height="80" rx="6" fill="#f0eee9"/>
+      <rect class="node" x="440" y="408" width="400" height="80" rx="6"/>
+      <text class="name" x="640" y="440">Start agent on selected slot</text>
+      <text class="sub" x="640" y="468">SLOT BECOMES ACTIVE</text>
+
+      <polygon class="node" points="640,512 760,560 640,608 520,560"/>
+      <text class="name" x="640" y="568">Agent result</text>
+
+      <rect x="56" y="524" width="384" height="96" rx="6" fill="#f0eee9"/>
+      <rect class="node-state" x="56" y="524" width="384" height="96" rx="6"/>
+      <text class="name" x="248" y="560">Mark current slot tried</text>
+      <text class="sub" x="248" y="592">HTTP 429 · AUTO-SWITCH ON</text>
+
+      <rect x="888" y="456" width="336" height="80" rx="40" fill="#f0eee9"/>
+      <rect class="node-focal" x="888" y="456" width="336" height="80" rx="40"/>
+      <text class="name" x="1056" y="480">Keep active slot</text>
+      <text class="sub" x="1056" y="504">SUCCESS</text>
+      <text class="sub" x="1056" y="524">ACTIVE SLOT UNCHANGED</text>
+
+      <rect x="888" y="552" width="336" height="80" rx="40" fill="#f0eee9"/>
+      <rect class="node-soft" x="888" y="552" width="336" height="80" rx="40"/>
+      <text class="name" x="1056" y="576">Stop without another slot</text>
+      <text class="sub" x="1056" y="600">NON-429 FAILURE</text>
+      <text class="sub" x="1056" y="620">OR 429 + SWITCH OFF</text>
+
+      <!-- Legend and run-level guarantees. -->
+      <line x1="40" y1="648" x2="1240" y2="648" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <text class="legend-label" x="40" y="676">LEGEND</text>
+      <rect class="node" x="136" y="660" width="40" height="20" rx="2"/>
+      <text class="legend-text" x="188" y="676">Step</text>
+      <polygon class="node" points="292,670 308,660 324,670 308,680"/>
+      <text class="legend-text" x="336" y="676">Decision</text>
+      <rect class="node-soft" x="444" y="660" width="48" height="20" rx="10"/>
+      <text class="legend-text" x="504" y="676">End</text>
+      <text class="legend-label" x="572" y="676">RUN</text>
+      <text class="legend-text" x="620" y="676">Each eligible slot is tried at most once per agent run.</text>
+
+      <text class="legend-label" x="40" y="708">RETRY</text>
+      <text class="legend-code" x="128" y="708">Another slot is considered only for HTTP 429 + autoSwitchOn429=true.</text>
+    </svg>
+  </main>
+</body>
+</html>
