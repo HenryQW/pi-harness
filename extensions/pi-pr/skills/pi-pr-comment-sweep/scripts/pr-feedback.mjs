@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 
 const PR_FIELDS = "number,url,title,state,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeStateStatus,statusCheckRollup";
 const PR_PATH = /^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)$/;
+const PR_LIST_LIMIT = 100;
 const READ_ATTEMPTS = 3;
 
 const FEEDBACK_QUERY = `
@@ -177,13 +178,16 @@ function prTarget(metadata, label) {
   const hostname = requiredText(metadata.hostname, `${label} hostname`).toLowerCase();
   if (hostname !== parsed.hostname) throw new FeedbackError(`${label} hostname does not match URL`);
   if (!isRecord(metadata.headRepository)) throw new FeedbackError(`${label} head repository identity is unavailable`);
+  const headRepository = requiredText(metadata.headRepository.nameWithOwner, `${label} head repository`);
+  const headRepositoryParts = headRepository.split("/");
+  if (headRepositoryParts.length !== 2 || headRepositoryParts.some((part) => !part)) throw new FeedbackError(`${label} head repository is invalid`);
   return {
     number: metadata.number,
     url: parsed.url,
     hostname,
     baseRefName: requiredText(metadata.baseRefName, `${label} base ref`),
     baseRefOid: requiredText(metadata.baseRefOid, `${label} base OID`),
-    headRepository: requiredText(metadata.headRepository.nameWithOwner, `${label} head repository`),
+    headRepository,
     headRefName: requiredText(metadata.headRefName, `${label} head ref`),
     headRefOid: requiredText(metadata.headRefOid, `${label} head OID`),
   };
@@ -233,32 +237,118 @@ function requireMatchingHead(metadata, localHead) {
   }
 }
 
-function discoveryPushRemote(pr, metadata) {
-  if (pr !== undefined) return null;
+function pushRepositoryLocator(value) {
+  const pushUrl = requiredText(value, "push URL");
+  if (pushUrl.trim() !== pushUrl || /[\u0000-\u001f\u007f]/.test(pushUrl)) throw new FeedbackError("push URL is invalid");
+  const scp = /^(?:[^@/:]+@)?([^@/:]+):([^/]+)\/([^/]+)$/i.exec(pushUrl);
+  let hostname;
+  let parts;
+  if (scp) {
+    hostname = scp[1].toLowerCase();
+    parts = scp.slice(2);
+  } else {
+    let url;
+    try {
+      url = new URL(pushUrl);
+    } catch {
+      throw new FeedbackError("push URL is invalid");
+    }
+    if (!["ssh:", "https:"].includes(url.protocol) || !url.hostname || url.port || url.search || url.hash) {
+      throw new FeedbackError("push URL is invalid");
+    }
+    hostname = url.hostname.toLowerCase();
+    parts = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  }
+  if (parts.length === 2) parts[1] = parts[1].replace(/\.git$/i, "");
+  if (!/^[a-z0-9.-]+$/i.test(hostname) || parts.length !== 2 || parts.some((part) => !/^[a-z0-9_.-]+$/i.test(part))) {
+    throw new FeedbackError("push URL is invalid");
+  }
+  const repository = parts.join("/");
+  return { hostname, repository, locator: `${hostname}/${repository}` };
+}
+
+function readPushRepository(pushUrl, read = readJsonCommand) {
+  const push = pushRepositoryLocator(pushUrl);
+  const value = read("gh", ["repo", "view", push.locator, "--json", "nameWithOwner,url"]);
+  const repository = requiredText(value.nameWithOwner, "push repository");
+  let url;
+  try {
+    url = new URL(requiredText(value.url, "push repository URL"));
+  } catch {
+    throw new FeedbackError("push repository URL is invalid");
+  }
+  const hostname = url.hostname.toLowerCase();
+  const normalized = repository.toLowerCase();
+  if (
+    url.protocol !== "https:" || !hostname || url.username || url.password || url.port || url.search || url.hash ||
+    githubRemote(url.href, hostname) !== normalized || push.hostname !== hostname || push.repository.toLowerCase() !== normalized
+  ) throw new FeedbackError("push URL does not match GitHub repository");
+  return { hostname, repository };
+}
+
+function configuredPushTarget() {
   const branch = git("branch", "--show-current");
   if (!branch) throw new FeedbackError("current HEAD is detached");
-  const target = git(
-    "for-each-ref",
-    "--format=%(push:remotename)%00%(push:short)",
-    `refs/heads/${branch}`,
-  ).split("\0");
-  if (target.length !== 2 || !target[1]) {
-    throw new FeedbackError(`local branch ${JSON.stringify(branch)} has no configured push target`);
+  const push = git("for-each-ref", "--format=%(push:short)", `refs/heads/${branch}`);
+  if (!push) throw new FeedbackError(`local branch ${JSON.stringify(branch)} has no configured push target`);
+  const remotes = git("remote").split("\n").filter(Boolean);
+  if (new Set(remotes).size !== remotes.length) throw new FeedbackError("configured remote names are invalid");
+  const matches = remotes.filter((remote) => push.startsWith(`${remote}/`)).sort((left, right) => right.length - left.length);
+  if (!matches.length || (matches[1] && matches[1].length === matches[0].length)) {
+    throw new FeedbackError("configured push target does not name one configured remote");
   }
-  const [configuredRemote, push] = target;
-  const remote = pushRemote(metadata.headRepository.nameWithOwner, metadata.hostname);
-  if (configuredRemote && configuredRemote !== remote) {
-    throw new FeedbackError(`configured push remote ${JSON.stringify(configuredRemote)} does not match PR head repository`);
-  }
-  if (!push.startsWith(`${remote}/`)) throw new FeedbackError("configured push target is invalid");
+  const remote = matches[0];
   const ref = push.slice(remote.length + 1);
   const checkedRef = git("check-ref-format", "--branch", ref);
   if (checkedRef !== ref) throw new FeedbackError("configured push ref is invalid");
-  const headRef = requiredText(metadata.headRefName, "PR head ref");
-  if (ref !== headRef) {
-    throw new FeedbackError(`configured push ref ${JSON.stringify(ref)} does not match PR head ref ${JSON.stringify(headRef)}`);
+  const output = run("git", ["remote", "get-url", "--push", "--all", remote]).replace(/\r\n/g, "\n");
+  const urls = output.endsWith("\n") ? output.slice(0, -1).split("\n") : output.split("\n");
+  if (urls.length !== 1 || !urls[0]) throw new FeedbackError(`expected exactly one push URL on ${remote}, found ${urls.filter(Boolean).length}`);
+  return { remote, ref, ...readPushRepository(requiredText(urls[0], `push URL for ${remote}`)) };
+}
+
+function candidatePrUrls(value, hostname) {
+  if (
+    !isRecord(value) || !Number.isSafeInteger(value.total_count) || value.total_count < 0 ||
+    typeof value.incomplete_results !== "boolean" || !Array.isArray(value.items)
+  ) throw new FeedbackError("invalid pull request search response");
+  if (value.incomplete_results) throw new FeedbackError("pull request search results are incomplete");
+  if (value.total_count > PR_LIST_LIMIT) throw new FeedbackError("pull request search result limit exceeded");
+  if (value.items.length !== value.total_count) throw new FeedbackError("pull request search result count is incomplete");
+  const urls = value.items.map((item) => {
+    if (!isRecord(item)) throw new FeedbackError("pull request search item is invalid");
+    const parsed = parsePrUrl(item.html_url, "candidate PR URL");
+    if (parsed.hostname !== hostname) throw new FeedbackError("candidate PR URL hostname does not match push target");
+    return parsed.url;
+  });
+  if (new Set(urls).size !== urls.length) throw new FeedbackError("pull request search returned duplicate candidates");
+  return urls;
+}
+
+function discoverOpenPr(localHead) {
+  const push = configuredPushTarget();
+  const [owner] = push.repository.split("/", 2);
+  const response = readJsonCommand("gh", [
+    "api", "search/issues", "--hostname", push.hostname, "-X", "GET",
+    "-f", `q=is:pr is:open head:${owner}:${push.ref}`,
+    "-f", `per_page=${PR_LIST_LIMIT}`,
+  ]);
+  const candidates = candidatePrUrls(response, push.hostname).map((url) => {
+    const candidate = readOpenPr(url);
+    if (candidate.url !== url) throw new FeedbackError("candidate PR metadata URL does not match search result");
+    return candidate;
+  });
+  const matching = candidates.filter((candidate) => {
+    const headOid = requiredText(candidate.headRefOid, "candidate PR head OID");
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(headOid)) throw new FeedbackError("candidate PR head OID must be a full OID");
+    return candidate.hostname === push.hostname &&
+      candidate.headRepository.nameWithOwner.toLowerCase() === push.repository.toLowerCase() &&
+      candidate.headRefName === push.ref && headOid.toLowerCase() === localHead;
+  });
+  if (matching.length !== 1) {
+    throw new FeedbackError(`expected exactly one open PR matching configured push target and local HEAD, found ${matching.length}`);
   }
-  return remote;
+  return { metadata: matching[0], remote: push.remote };
 }
 
 function graphqlArgs(hostname, variables) {
@@ -585,12 +675,11 @@ function fetchFeedback(options) {
   const out = options.json ? null : resolve(options.out);
   const previous = out ? previousSnapshot(out) : null;
   const localHead = cleanHead();
-  const initial = readOpenPr(options.pr);
+  const initial = options.pr === undefined ? discoverOpenPr(localHead).metadata : readOpenPr(options.pr);
   if (previous && parsePrUrl(previous.pullRequest.url, "snapshot PR URL").url !== initial.url) {
     throw new FeedbackError(`existing feedback JSON belongs to ${previous.pullRequest.url}, not ${initial.url}`);
   }
   requireMatchingHead(initial, localHead);
-  discoveryPushRemote(options.pr, initial);
   const data = collectFeedback(initial);
   const current = readOpenPr(initial.url);
   if (current.headRefOid !== initial.headRefOid) {
@@ -615,7 +704,7 @@ function currentExpectedHead(pr, expectedHead) {
   if (localHead !== expectedHead) {
     throw new FeedbackError(`local HEAD ${localHead} does not match expected head ${expectedHead}`);
   }
-  const metadata = readOpenPr(pr);
+  const metadata = pr === undefined ? discoverOpenPr(localHead).metadata : readOpenPr(pr);
   if (metadata.headRefOid !== expectedHead) {
     throw new FeedbackError(`PR head ${metadata.headRefOid} does not match expected head ${expectedHead}`);
   }
@@ -686,17 +775,18 @@ function pushRemote(repository, hostname) {
 
 function verifyTarget(options) {
   const localHead = cleanHead();
-  const metadata = readOpenPr(options.pr);
+  const discovered = options.pr === undefined ? discoverOpenPr(localHead) : null;
+  const metadata = discovered?.metadata ?? readOpenPr(options.pr);
   requireMatchingHead(metadata, localHead);
   const repository = metadata.headRepository.nameWithOwner;
-  const remote = discoveryPushRemote(options.pr, metadata) ?? pushRemote(repository, metadata.hostname);
+  const remote = discovered?.remote ?? pushRemote(repository, metadata.hostname);
   console.log(`pr=${metadata.url}`);
   console.log(`remote=${remote} repository=${repository}`);
   console.log(`push_target=git push ${remote} ${localHead}:${metadata.headRefName}`);
 }
 
 function checkPr(options) {
-  const metadata = readOpenPr(options.pr);
+  const metadata = options.pr === undefined ? discoverOpenPr(cleanHead()).metadata : readOpenPr(options.pr);
   console.log(`pr=${metadata.url}`);
   printPrStatus(metadata);
 }
@@ -781,6 +871,30 @@ function selfTest() {
   assert.deepEqual(graphqlArgs(enterpriseHost, { owner: "owner", skipped: null }), [
     "api", "graphql", "--hostname", enterpriseHost, "-F", "query=@-", "-F", "owner=owner",
   ]);
+  const credentialedPushUrl = `https://account:secret@${enterpriseHost}/Owner/Repo.git`;
+  const repositoryReads = [];
+  assert.deepEqual(readPushRepository(credentialedPushUrl, (program, args) => {
+    repositoryReads.push([program, ...args]);
+    return { nameWithOwner: "Owner/Repo", url: `https://${enterpriseHost}/Owner/Repo` };
+  }), { hostname: enterpriseHost, repository: "Owner/Repo" });
+  assert.deepEqual(repositoryReads, [[
+    "gh", "repo", "view", `${enterpriseHost}/Owner/Repo`, "--json", "nameWithOwner,url",
+  ]]);
+  let invalidPushUrlRead = false;
+  assert.throws(() => readPushRepository(`https://account:secret@${enterpriseHost}/Owner`, () => {
+    invalidPushUrlRead = true;
+  }), /push URL is invalid/);
+  assert.equal(invalidPushUrlRead, false);
+  assert.deepEqual(candidatePrUrls({
+    total_count: 1,
+    incomplete_results: false,
+    items: [{ html_url: enterpriseUrl }],
+  }, enterpriseHost), [enterpriseUrl]);
+  assert.throws(() => candidatePrUrls({ total_count: 1, incomplete_results: true, items: [{ html_url: enterpriseUrl }] }, enterpriseHost), /incomplete/);
+  assert.throws(() => candidatePrUrls({ total_count: 101, incomplete_results: false, items: [] }, enterpriseHost), /limit/);
+  assert.throws(() => candidatePrUrls({ total_count: 1, incomplete_results: false, items: [] }, enterpriseHost), /count/);
+  assert.throws(() => candidatePrUrls({ total_count: 1, incomplete_results: false, items: [{}] }, enterpriseHost), /must be a string/);
+  assert.throws(() => candidatePrUrls({ total_count: 2, incomplete_results: false, items: [{ html_url: enterpriseUrl }, { html_url: enterpriseUrl }] }, enterpriseHost), /duplicate/);
 
   for (const remoteUrl of [
     `git@${enterpriseHost}:Owner/Repo.git`,
@@ -948,58 +1062,100 @@ exit 1
 
     process.chdir(repository);
     git("branch", "-m", "feature-local");
-    git("remote", "add", "origin", `https://${enterpriseHost}/Owner/Repo.git`);
+    git("remote", "add", "fork", `https://account:secret@${enterpriseHost}/Owner/Repo.git`);
     git("remote", "add", "upstream", `https://${enterpriseHost}/Owner/Other.git`);
     git("config", "push.default", "upstream");
     const discoveryMetadata = {
       hostname: enterpriseHost,
-      headRefName: "feature",
+      headRefName: "feature/pr",
       headRefOid: cleanHead(),
       headRepository: { nameWithOwner: "Owner/Repo" },
     };
     requireMatchingHead(discoveryMetadata, discoveryMetadata.headRefOid);
     assert.throws(() => requireMatchingHead(discoveryMetadata, base), /does not match PR head/);
 
-    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /has no configured push target/);
-    git("config", "branch.feature-local.remote", "origin");
-    git("config", "branch.feature-local.merge", "refs/heads/feature");
-    assert.equal(discoveryPushRemote(undefined, discoveryMetadata), "origin");
+    assert.throws(() => configuredPushTarget(), /has no configured push target/);
+    git("config", "branch.feature-local.remote", "fork");
+    git("config", "branch.feature-local.merge", "refs/heads/feature/pr");
+    const discoveryCalls = join(temporary, "discovery-calls");
+    writeFileSync(join(bin, "gh"), `#!/bin/sh
+echo "$*" >> "${discoveryCalls}"
+if [ "$*" = "repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url" ]; then
+  echo '{"nameWithOwner":"Owner/Repo","url":"https://${enterpriseHost}/Owner/Repo"}'
+  exit 0
+fi
+if [ "$*" = "api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
+  echo '{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Upstream/Project/pull/1"}]}'
+  exit 0
+fi
+if [ "$1" = pr ] && [ "$2" = view ] && [ "$3" = "https://${enterpriseHost}/Upstream/Project/pull/1" ]; then
+  printf '%s\\n' '{"number":1,"url":"https://${enterpriseHost}/Upstream/Project/pull/1","state":"OPEN","baseRefName":"main","baseRefOid":"base","headRefName":"feature/pr","headRefOid":"${discoveryMetadata.headRefOid}","headRepository":{"nameWithOwner":"Owner/Repo"},"mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
+  exit 0
+fi
+echo "unexpected gh command: $*" >&2
+exit 1
+`, { mode: 0o755 });
+    const discoveryScript = readFileSync(join(bin, "gh"), "utf8");
+    const pathBeforeDiscovery = process.env.PATH;
+    const logBeforeDiscovery = console.log;
+    try {
+      process.env.PATH = `${bin}:${pathBeforeDiscovery ?? ""}`;
+      console.log = () => {};
+      const discovered = discoverOpenPr(discoveryMetadata.headRefOid);
+      assert.equal(discovered.remote, "fork");
+      assert.equal(discovered.metadata.headRefName, "feature/pr");
+      assert.equal(main(["checks"]), 0);
+      writeFileSync(join(bin, "gh"), discoveryScript.replace(
+        `"url":"https://${enterpriseHost}/Upstream/Project/pull/1"`,
+        `"url":"https://${enterpriseHost}/Owner/Repo/pull/1"`,
+      ), { mode: 0o755 });
+      assert.throws(() => main(["checks"]), /metadata URL does not match search result/);
+      writeFileSync(join(bin, "gh"), discoveryScript.replace(
+        `"headRefOid":"${discoveryMetadata.headRefOid}"`,
+        `"headRefOid":"${base}"`,
+      ), { mode: 0o755 });
+      assert.throws(() => main(["checks"]), /matching configured push target and local HEAD, found 0/);
+    } finally {
+      console.log = logBeforeDiscovery;
+      if (pathBeforeDiscovery === undefined) delete process.env.PATH;
+      else process.env.PATH = pathBeforeDiscovery;
+    }
+    const discoveryCommands = readFileSync(discoveryCalls, "utf8").trim().split("\n");
+    assert.equal(discoveryCommands[0], `repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url`);
+    assert(!discoveryCommands.some((command) => command.includes("account") || command.includes("secret")));
+    assert.equal(discoveryCommands[1], `api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
+    assert.match(discoveryCommands[2], new RegExp(`^pr view https://${enterpriseHost}/Upstream/Project/pull/1 `));
+    assert(!discoveryCommands.some((command) => command.startsWith("pr view --json")));
 
     git("config", "branch.feature-local.merge", "refs/heads/bad..ref");
-    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /check-ref-format/);
-    git("config", "branch.feature-local.merge", "refs/heads/other");
-    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /configured push ref .* does not match PR head ref/);
-    git("config", "branch.feature-local.merge", "refs/heads/feature");
-    git("config", "branch.feature-local.remote", "upstream");
-    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /configured push remote .* does not match PR head repository/);
-    git("config", "branch.feature-local.remote", "origin");
-
-    git("remote", "add", "fork", `ssh://git@${enterpriseHost}/Owner/Repo.git`);
-    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /exactly one matching push URL/);
-    git("remote", "remove", "fork");
-
-    git("config", "--unset", "branch.feature-local.remote");
-    git("config", "--unset", "branch.feature-local.merge");
-    git("config", "push.default", "current");
-    const inferredMetadata = { ...discoveryMetadata, headRefName: "feature-local" };
-    assert.deepEqual(git(
-      "for-each-ref",
-      "--format=%(push:remotename)%00%(push:short)",
-      "refs/heads/feature-local",
-    ).split("\0"), ["", "origin/feature-local"]);
-    assert.equal(discoveryPushRemote(undefined, inferredMetadata), "origin");
+    assert.throws(() => configuredPushTarget(), /check-ref-format/);
+    git("config", "branch.feature-local.merge", "refs/heads/feature/pr");
 
     const views = join(temporary, "views");
     const resolved = join(temporary, "resolved");
+    const resolutionCalls = join(temporary, "resolution-calls");
     writeFileSync(join(bin, "gh"), `#!/bin/sh
+echo "$*" >> "${resolutionCalls}"
+if [ "$*" = "repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url" ]; then
+  echo '{"nameWithOwner":"Owner/Repo","url":"https://${enterpriseHost}/Owner/Repo"}'
+  exit 0
+fi
+if [ "$*" = "api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
+  echo '{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Owner/Repo/pull/1"}]}'
+  exit 0
+fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
+  if [ "$3" != 1 ] && [ "$3" != "https://${enterpriseHost}/Owner/Repo/pull/1" ]; then
+    echo "unexpected gh command: $*" >&2
+    exit 1
+  fi
   views=0
   [ -f "${views}" ] && views=$(cat "${views}")
   views=$((views + 1))
   echo "$views" > "${views}"
   head=${discoveryMetadata.headRefOid}
   [ "$views" -ge 3 ] && head=moved
-  printf '%s\\n' "{\\"number\\":1,\\"url\\":\\"https://${enterpriseHost}/Owner/Repo/pull/1\\",\\"state\\":\\"OPEN\\",\\"baseRefName\\":\\"main\\",\\"baseRefOid\\":\\"base\\",\\"headRefName\\":\\"feature\\",\\"headRefOid\\":\\"$head\\",\\"headRepository\\":{\\"nameWithOwner\\":\\"Owner/Repo\\"},\\"mergeStateStatus\\":\\"CLEAN\\",\\"statusCheckRollup\\":[]}"
+  printf '%s\\n' "{\\"number\\":1,\\"url\\":\\"https://${enterpriseHost}/Owner/Repo/pull/1\\",\\"state\\":\\"OPEN\\",\\"baseRefName\\":\\"main\\",\\"baseRefOid\\":\\"base\\",\\"headRefName\\":\\"feature/pr\\",\\"headRefOid\\":\\"$head\\",\\"headRepository\\":{\\"nameWithOwner\\":\\"Owner/Repo\\"},\\"mergeStateStatus\\":\\"CLEAN\\",\\"statusCheckRollup\\":[]}"
   exit 0
 fi
 if [ "$1" = api ] && [ "$2" = graphql ] && [ "$3" = --hostname ] && [ "$4" = ${enterpriseHost} ]; then
@@ -1029,15 +1185,29 @@ exit 1
         () => main(["resolve", "--pr", "1", "--expected-head", discoveryMetadata.headRefOid, "--thread", "resolved", "--thread", "first", "--thread", "second"]),
         /PR head moved does not match expected head/,
       );
+      assert.equal(readFileSync(resolved, "utf8"), "first\n");
+      assert.match(readFileSync(resolutionCalls, "utf8"), /^pr view 1 /);
+
+      rmSync(views);
+      rmSync(resolved);
+      writeFileSync(resolutionCalls, "");
+      assert.throws(
+        () => main(["resolve", "--expected-head", discoveryMetadata.headRefOid, "--thread", "resolved", "--thread", "first", "--thread", "second"]),
+        /PR head moved does not match expected head/,
+      );
     } finally {
       if (pathBeforeResolution === undefined) delete process.env.PATH;
       else process.env.PATH = pathBeforeResolution;
     }
     assert.equal(readFileSync(resolved, "utf8"), "first\n");
+    const resolutionCommands = readFileSync(resolutionCalls, "utf8").trim().split("\n");
+    assert.equal(resolutionCommands[0], `repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url`);
+    assert.equal(resolutionCommands[1], `api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
+    assert.match(resolutionCommands[2], new RegExp(`^pr view https://${enterpriseHost}/Owner/Repo/pull/1 `));
+    assert(!resolutionCommands.some((command) => command.startsWith("pr view --json")));
 
     git("switch", "--detach");
-    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /current HEAD is detached/);
-    assert.equal(discoveryPushRemote("1", discoveryMetadata), null);
+    assert.throws(() => configuredPushTarget(), /current HEAD is detached/);
   } finally {
     process.chdir(originalWorkingDirectory);
   }

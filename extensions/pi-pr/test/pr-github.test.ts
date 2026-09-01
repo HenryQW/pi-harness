@@ -317,6 +317,58 @@ test("loads an upstream PR for the exact fork push target and retains its fetch 
 	}
 });
 
+test("accepts exactly 100 complete pull request search results", async () => {
+	const candidates = Array.from({ length: 99 }, (_, index) => pullRequest({
+		id: `PR_unrelated_${index + 1}`,
+		number: index + 1,
+		url: `https://github.com/acme/project-${index + 1}/pull/${index + 1}`,
+		headRepository: { nameWithOwner: `acme/unrelated-${index + 1}` },
+	}));
+	candidates.push(pullRequest());
+	const { pi, context, calls } = harness({ candidates });
+
+	const loaded = await loadCurrentPullRequest(pi, context);
+	assert.ok(loaded);
+	assert.equal(loaded.number, 42);
+	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 100);
+});
+
+test("rejects over-limit, incomplete, mismatched, malformed, and duplicate search results", async () => {
+	const url = "https://github.com/acme/project/pull/42";
+	const cases: Array<{ name: string; value: unknown; error: RegExp }> = [
+		{
+			name: "over limit",
+			value: { total_count: 101, incomplete_results: false, items: [] },
+			error: /result limit reached/,
+		},
+		{
+			name: "incomplete",
+			value: { total_count: 1, incomplete_results: true, items: [{ html_url: url }] },
+			error: /incomplete search results/,
+		},
+		{
+			name: "count mismatch",
+			value: { total_count: 1, incomplete_results: false, items: [] },
+			error: /incomplete search results/,
+		},
+		{
+			name: "malformed item",
+			value: { total_count: 1, incomplete_results: false, items: [{}] },
+			error: /invalid url/,
+		},
+		{
+			name: "duplicate",
+			value: { total_count: 2, incomplete_results: false, items: [{ html_url: url }, { html_url: url }] },
+			error: /duplicate candidate url/,
+		},
+	];
+	for (const candidate of cases) {
+		const { pi, context, calls } = harness({ listResult: result(JSON.stringify(candidate.value)) });
+		await assert.rejects(loadCurrentPullRequest(pi, context), candidate.error, candidate.name);
+		assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view"), false, candidate.name);
+	}
+});
+
 test("returns null for an attached branch whose push target is specifically absent", async () => {
 	const { pi, context, calls } = harness({ pushResult: result("\n") });
 

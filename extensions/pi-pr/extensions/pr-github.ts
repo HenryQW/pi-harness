@@ -409,7 +409,7 @@ function parseCandidateUrls(output: string, host: string): URL[] {
 		typeof value.incomplete_results !== "boolean" || !Array.isArray(value.items)
 	) fail("Find pull requests", "invalid GitHub CLI output");
 	if (value.incomplete_results) fail("Find pull requests", "incomplete search results");
-	if (value.total_count >= PR_LIST_LIMIT) fail("Find pull requests", "result limit reached");
+	if (value.total_count > PR_LIST_LIMIT) fail("Find pull requests", "result limit reached");
 	if (value.items.length !== value.total_count) fail("Find pull requests", "incomplete search results");
 	const urls = value.items.map((candidate) => {
 		if (!isRecord(candidate)) fail("Find pull requests", "invalid GitHub CLI output");
