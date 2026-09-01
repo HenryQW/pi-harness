@@ -38,6 +38,8 @@ Pi shows install progress and reports the result. Run `/deps` again when you wan
 
 ### Background install and status
 
+![Dependency preparation with synchronous validation and detached installs](./docs/dependency-preparation-flow.svg)
+
 - Worktree creation returns immediately.
 - The hook validates lockfiles synchronously. Conflicting Node lockfiles, `packageManager` mismatches, and unsupported declarations still fail the worktree command fast.
 - A detached installer runs frozen installs in the background.
