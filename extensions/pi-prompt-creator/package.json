@@ -17,7 +17,8 @@
     "LICENSE",
     "extensions",
     "README.md",
-    "CONTEXT.md"
+    "CONTEXT.md",
+    "docs/prompt-lifecycle.svg"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",

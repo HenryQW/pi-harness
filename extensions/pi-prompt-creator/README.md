@@ -38,6 +38,10 @@ Analysis uses a one-turn child with no base tools, user extensions, Skills, or s
 
 New user input does not stop a running child. Branch navigation discards its old result without stopping the child.
 
+## Flow
+
+![Prompt creator lifecycle from conversation to saved prompt](./docs/prompt-lifecycle.svg)
+
 ## Config
 
 `~/.pi/agent/config/pi-prompt-creator/config.json`
