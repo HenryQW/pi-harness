@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "0.3.7",
-  "description": "Show the current branch pull request status in the Pi footer.",
+  "version": "1.0.0",
+  "description": "Run /pr to automatically choose the current pull request's next safe lifecycle step: create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
     "pi",
@@ -16,6 +16,7 @@
   "license": "MIT",
   "files": [
     "LICENSE",
+    "docs/pr-routing.svg",
     "extensions",
     "skills",
     "README.md"
