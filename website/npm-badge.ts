@@ -3,7 +3,7 @@ const query = (label: string) =>
     cacheSeconds: "7200",
     color: "1d4ed8",
     label,
-    labelColor: "101828",
+    labelColor: "6a7282",
     style: "flat-square",
   });
 
