@@ -30,14 +30,6 @@ A collection of 21 opinionated Pi extensions. Browse them at <https://pi.henry.w
 | [`@henryqw/pi-task-models`](./extensions/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 | [`@henryqw/pi-undo`](./extensions/pi-undo) | Rewind conversation context to the latest prompt. |
 
-## Extension dependency graph
-
-The diagram covers 20 extensions. It predates `pi-prompt-creator`, which is listed in the catalog above.
-
-Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies. Dashed arrows (`-.->`) show direct runtime protocols or couplings. Arrows point from the consumer to the provider.
-
-![Extension dependency graph](./docs/extension-dependency-graph.svg)
-
 ## Deprecated
 
 Retired extensions and their replacements are recorded under [`deprecated/`](./deprecated).
