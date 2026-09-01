@@ -14,7 +14,12 @@ import {
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
 import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
-import { WorkflowAbortedError, WorkflowFailureError, type BackgroundWorkflowTransportDetails } from "../extensions/result-transport.ts";
+import {
+	formatBackgroundWorkflowResult,
+	WorkflowAbortedError,
+	WorkflowFailureError,
+	type BackgroundWorkflowTransportDetails,
+} from "../extensions/result-transport.ts";
 import subagentExtension, { MAX_WIDGET_ACTIVE_TOOLS } from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
@@ -2099,6 +2104,26 @@ test("background renderer shares workflow entry status presentation", async () =
 		assert.match(collapsed, /✗ Rejected task · worker — failed/);
 		assert.doesNotMatch(collapsed, /full evidence/);
 		assert.match(app.renderMessage(message, true), /full evidence/);
+	});
+});
+
+test("background renderer uses typed fallback for whitespace-only child output", async () => {
+	await environment(async () => {
+		const app = harness();
+		const transport = formatBackgroundWorkflowResult("single", [{
+			id: "empty-output",
+			index: 0,
+			name: "Empty task",
+			role: "worker",
+			status: "succeeded",
+			assistantOutput: " \n\t",
+		}]);
+		const details: BackgroundWorkflowTransportDetails = {
+			...transport.details,
+			taskId: "bg-empty-output",
+			outcome: "completed",
+		};
+		assert.match(app.renderMessage({ content: transport.text, details }), /✓ Empty task · worker — completed/);
 	});
 });
 

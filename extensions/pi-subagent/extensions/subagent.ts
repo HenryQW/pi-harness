@@ -240,7 +240,7 @@ export default function subagentExtension(
 		const color = details.recovery || details.outcome === "aborted" ? "warning" : details.outcome === "completed" ? "success" : "error";
 		const rows = details.entries.map(({ name, role, status, summary }) => {
 			const { glyph, fallback } = presentWorkflowEntryStatus(status);
-			return `${glyph} ${name} · ${role} — ${summary ?? fallback}`;
+			return `${glyph} ${name} · ${role} — ${summary || fallback}`;
 		});
 		const raw = content.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
 		return new Text([
