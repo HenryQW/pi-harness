@@ -14,7 +14,7 @@ Resource Policy is split at launch preparation:
 
 Built-in `implementer`, `reviewer`, and `scout` Roles ship as Markdown in `examples/roles/` and use the same parser as user Roles. For generic delegation, a same-named user Role explicitly overrides a built-in. The package does not install, copy, or write user configuration.
 
-`modelClass` selects a task-model route. The route owns its exact thinking level. A direct `model` replaces only the route model and must honor that level.
+An explicit call `modelClass` selects a task-model route. Without one, an optional Role `modelClass` default wins; without either, the caller's Model Task assignment or declared default selects the route. The route owns its exact thinking level. A direct `model` replaces only the route model and must honor that level.
 
 ## Scope boundary
 

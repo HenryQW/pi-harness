@@ -12,6 +12,7 @@ type JsonLineIterator = AsyncIterator<string>;
 
 const live = process.env.PI_AUTO_COMPACT_LIVE === "1";
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const resumeMessageType = "pi-auto-compact/resume";
 const resumeMessage = "Auto-compact ran. Continue the current task.";
 
 function record(value: unknown, label: string): JsonObject {
@@ -141,10 +142,12 @@ test("real Pi compacts and resumes the task", { skip: !live }, async () => {
 			const resumeIndex = messages.findIndex(
 				(message) => {
 					const item = record(message, "session message");
-					return item.role === "user" && contentText(item.content).includes(resumeMessage);
+					return item.role === "custom" &&
+						item.customType === resumeMessageType &&
+						contentText(item.content).includes(resumeMessage);
 				},
 			);
-			assert.notEqual(resumeIndex, -1, "resume message must persist in session");
+			assert.notEqual(resumeIndex, -1, "custom resume message must persist in session");
 			assert.ok(
 				messages.slice(resumeIndex + 1).some((message) => record(message, "session message").role === "assistant"),
 				"assistant must respond after resume message",

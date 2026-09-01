@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, opendir, realpath, rename, unlink } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -19,10 +19,12 @@ import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.t
 import {
 	ENTRY_DELIMITER,
 	isReservedFrameLine,
+	MAX_BATCH_OPERATIONS,
 	MAX_FILE_BYTES,
 	MemoryStore,
 	normalizeEntry,
 	usage,
+	validateEntryContent,
 	type BatchOperation,
 	type Target,
 } from "../src/store.ts";
@@ -57,7 +59,7 @@ const MEMORY_DESCRIPTION = `Save durable cross-session facts. Memory is injected
 
 ADD REVIEW: ${MEMORY_REVIEW_NOTICE}
 
-HOW: For multiple changes/consolidation, use one atomic batch: the limit is checked only on the final result, so remove/shorten stale entries and add the new entry together. For one change, use action/content/old_text. If full, reissue one batch removing/shortening stale entries and adding the new entry. Stop after success.
+HOW: For multiple changes/consolidation, use one atomic batch: the limit is checked only on the final result, so remove/shorten stale entries and add the new entry together. A batch accepts at most ${MAX_BATCH_OPERATIONS} operations. The complete serialized mutation must not exceed ${MAX_FILE_BYTES.toLocaleString()} UTF-8 bytes. For one change, use action/content/old_text. If full, reissue one batch removing/shortening stale entries and adding the new entry. Stop after success.
 
 WHEN: Save user preferences/corrections/personal details or stable environment, convention, or workflow facts. Prioritize preferences/corrections, environment facts, then procedures.
 
@@ -80,7 +82,7 @@ type SystemState = "present" | "absent" | "unreadable" | "oversized";
 type SystemSource =
 	| { state: "present"; raw: string }
 	| { state: "absent"; raw: "" }
-	| { state: "unreadable" }
+	| { state: "unreadable"; confirmedPresent: boolean }
 	| { state: "oversized"; bytes: number };
 type ReviewStoreSource = { state: "ok" | "absent"; raw: string; entries: string[] };
 type ReviewSnapshot = { system: Extract<SystemSource, { raw: string }>; stores: Record<Target, ReviewStoreSource> };
@@ -109,8 +111,10 @@ function isEnoent(error: unknown): boolean {
 
 async function readSystemSource(path: string): Promise<SystemSource> {
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	let confirmedPresent = false;
 	try {
 		handle = await open(path, "r");
+		confirmedPresent = true;
 		const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
 		let total = 0;
 		for (;;) {
@@ -121,13 +125,13 @@ async function readSystemSource(path: string): Promise<SystemSource> {
 		}
 		return { state: "present", raw: new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)) };
 	} catch (error) {
-		if (!isEnoent(error)) return { state: "unreadable" };
 		try {
 			await lstat(path);
-			return { state: "unreadable" };
+			confirmedPresent = true;
 		} catch (statError) {
-			return isEnoent(statError) ? { state: "absent", raw: "" } : { state: "unreadable" };
+			if (isEnoent(error) && isEnoent(statError)) return { state: "absent", raw: "" };
 		}
+		return { state: "unreadable", confirmedPresent };
 	} finally {
 		await handle?.close().catch(() => {});
 	}
@@ -137,14 +141,21 @@ async function loadSystemState(path: string): Promise<SystemState> {
 	return (await readSystemSource(path)).state;
 }
 
-async function loadReviewSnapshot(config: MemoryConfig, stores: Record<Target, MemoryStore>, observedSystem: boolean): Promise<ReviewSnapshot> {
+async function loadReviewSnapshot(
+	config: MemoryConfig,
+	stores: Record<Target, MemoryStore>,
+	presence: { observedReviewSystem: boolean },
+): Promise<ReviewSnapshot> {
 	const systemPath = join(getAgentDir(), "SYSTEM.md");
 	const [system, memory, user] = await Promise.all([
 		readSystemSource(systemPath),
 		stores.memory.load("memory"),
 		stores.user.load("user"),
 	]);
-	if (system.state === "absent" && observedSystem) {
+	if (system.state === "present" || system.state === "oversized" || (system.state === "unreadable" && system.confirmedPresent)) {
+		presence.observedReviewSystem = true;
+	}
+	if (system.state === "absent" && presence.observedReviewSystem) {
 		throw new MemoryReviewError("Memory add blocked: agent-global SYSTEM.md existed during an earlier review this session but has disappeared. Restore it and retry.");
 	}
 	if (system.state === "unreadable") {
@@ -342,8 +353,43 @@ async function reviewMutation(
 	throw new MemoryReviewError(`${failure?.message ?? "Memory review task routes failed."} Configure ${MEMORY_REVIEW_TASK.id} with /task-models and retry.`);
 }
 
+function validateMutation(mutation: MemoryMutation): void {
+	const bytes = Buffer.byteLength(JSON.stringify(mutation), "utf8");
+	if (bytes > MAX_FILE_BYTES) {
+		throw new Error(`Complete serialized memory mutation is ${bytes.toLocaleString()} UTF-8 bytes; the limit is ${MAX_FILE_BYTES.toLocaleString()} bytes.`);
+	}
+	if (mutation.operations !== undefined && mutation.operations.length > MAX_BATCH_OPERATIONS) {
+		throw new Error(`operations cannot contain more than ${MAX_BATCH_OPERATIONS} items.`);
+	}
+	const operations = mutation.operations ?? [{
+		action: mutation.action,
+		content: mutation.content,
+		old_text: mutation.old_text,
+	}];
+	if (operations.length === 0) throw new Error("operations list is empty.");
+	for (let index = 0; index < operations.length; index++) {
+		const operation = operations[index]!;
+		const position = mutation.operations === undefined ? "Single mutation" : `Operation ${index + 1}`;
+		if (operation.action !== "add" && operation.action !== "replace" && operation.action !== "remove") {
+			throw new Error(`${position}: action must be add, replace, or remove.`);
+		}
+		if (operation.action === "add" || operation.action === "replace") {
+			if (typeof operation.content !== "string" || !normalizeEntry(operation.content)) {
+				throw new Error(`${position} (${operation.action}): content is required.`);
+			}
+			const contentError = validateEntryContent(operation.content);
+			if (contentError) throw new Error(`${position} (${operation.action}): ${contentError}`);
+		}
+		if (operation.action === "replace" || operation.action === "remove") {
+			if (typeof operation.old_text !== "string" || !normalizeEntry(operation.old_text)) {
+				throw new Error(`${position} (${operation.action}): old_text is required.`);
+			}
+		}
+	}
+}
+
 function addContents(mutation: MemoryMutation): string[] {
-	if (mutation.operations !== undefined) return mutation.operations.filter((operation) => operation.action === "add").map((operation) => operation.content ?? operation.new_text ?? "");
+	if (mutation.operations !== undefined) return mutation.operations.filter((operation) => operation.action === "add").map((operation) => operation.content ?? "");
 	return mutation.action === "add" ? [mutation.content ?? ""] : [];
 }
 
@@ -740,22 +786,34 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				memory: new MemoryStore({ ...config, backupPath }),
 				user: new MemoryStore({ ...config, backupPath }),
 			};
-			const [memory, user, siblings] = await Promise.all([
+			const [memory, user, directoryScan] = await Promise.all([
 				stores.memory.load("memory"),
 				stores.user.load("user"),
-				readdir(config.directory, { withFileTypes: true }),
+				(async () => {
+					const unexpected: string[] = [];
+					let truncated = false;
+					for await (const sibling of await opendir(config.directory)) {
+						if (!sibling.isFile() || sibling.name === "MEMORY.md" || sibling.name === "USER.md") continue;
+						if (unexpected.length === 3) {
+							truncated = true;
+							break;
+						}
+						unexpected.push(sibling.name);
+					}
+					return { unexpected: unexpected.sort(), truncated };
+				})(),
 			]);
 			const conflictWarnings = [memory.conflictWarning, user.conflictWarning].filter((warning): warning is string => !!warning);
 			// Directory contract is exactly MEMORY.md + USER.md — warn on ANY other
 			// regular file (iCloud conflict copies, stray edits) without guessing its
-			// origin from the name. Bound the list so pointing directory at a large
-			// existing folder can't flood the system prompt.
-			const MAX_LISTED_FILES = 3;
-			const unexpected = siblings.filter((sibling) => sibling.isFile() && sibling.name !== "MEMORY.md" && sibling.name !== "USER.md").map((sibling) => sibling.name).sort();
-			if (unexpected.length > 0) {
-				const listed = unexpected.slice(0, MAX_LISTED_FILES).map((name) => `"${sanitizeName(name)}"`).join(", ");
-				const more = unexpected.length > MAX_LISTED_FILES ? ` and ${unexpected.length - MAX_LISTED_FILES} more` : "";
-				conflictWarnings.push(`WARNING: ${unexpected.length} unexpected file${unexpected.length === 1 ? "" : "s"} in the memory directory (${listed}${more}). Only MEMORY.md and USER.md are loaded; reconcile or remove the rest.`);
+			// origin from the name. Stop on the fourth match so a large folder cannot
+			// consume unbounded startup work or system-prompt space.
+			if (directoryScan.unexpected.length > 0) {
+				const listed = directoryScan.unexpected.map((name) => `"${sanitizeName(name)}"`).join(", ");
+				const total = directoryScan.truncated
+					? "at least four unexpected files"
+					: `${directoryScan.unexpected.length} unexpected file${directoryScan.unexpected.length === 1 ? "" : "s"}`;
+				conflictWarnings.push(`WARNING: ${total} in the memory directory (${listed}). Only MEMORY.md and USER.md are loaded; reconcile or remove the rest.`);
 			}
 
 			const rendered = [renderBlock("memory", memory.entries, config, conflictWarnings), renderBlock("user", user.entries, config, conflictWarnings)];
@@ -810,7 +868,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				action: StringEnum(["add", "replace", "remove"] as const),
 				content: Type.Optional(Type.String()),
 				old_text: Type.Optional(Type.String()),
-			}), { description: "Preferred atomic batch of memory changes." })),
+			}), { description: "Preferred atomic batch of memory changes.", maxItems: MAX_BATCH_OPERATIONS })),
 		}),
 		executionMode: "sequential",
 
@@ -819,10 +877,38 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			if (!state.config || !state.stores) throw new Error("Memory extension is not initialized.");
 			const target = params.target ?? "memory";
 			const store = state.stores[target];
-			const mutation: MemoryMutation = { ...params, target };
+			const mutation: MemoryMutation = params.operations === undefined
+				? { target, action: params.action, content: params.content, old_text: params.old_text }
+				: {
+					target,
+					operations: params.operations.map((operation) => ({
+						action: operation.action,
+						content: operation.content,
+						old_text: operation.old_text,
+					})),
+				};
+			validateMutation(mutation);
 			const needsReview = mutation.operations !== undefined
 				? mutation.operations.some((operation) => operation.action === "add")
 				: mutation.action === "add";
+			const successResult = (result: {
+				usage?: string;
+				entryCount?: number;
+				message?: string;
+				writtenEntries?: string[];
+			}) => ({
+				content: [{
+					type: "text" as const,
+					text: JSON.stringify({
+						success: true,
+						done: true,
+						usage: result.usage,
+						entryCount: result.entryCount,
+						message: "Write saved. This update is complete — do not repeat it.",
+					}),
+				}],
+				details: { status: result.message ?? "Write saved.", entries: result.writtenEntries ?? [] },
+			});
 			const write = async () => {
 				throwIfAborted(signal);
 				let result: Awaited<ReturnType<MemoryStore["add"]>>;
@@ -844,31 +930,25 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 					throw new Error(error);
 				}
 				store.resetOnSuccess();
-				return {
-					content: [{
-						type: "text" as const,
-						text: JSON.stringify({
-							success: true,
-							done: true,
-							usage: result.usage,
-							entryCount: result.entryCount,
-							message: "Write saved. This update is complete — do not repeat it.",
-						}),
-					}],
-					details: { status: result.message ?? "Write saved.", entries: result.writtenEntries ?? [] },
-				};
+				return successResult(result);
 			};
 			if (!needsReview) return withMemoryLock(state.config, target, write);
 
 			let snapshot: ReviewSnapshot | undefined;
 			const duplicate = await withMemoryLock(state.config, target, async () => {
-				snapshot = await loadReviewSnapshot(state.config!, state.stores!, state.observedReviewSystem);
-				if (snapshot.system.state === "present") state.observedReviewSystem = true;
-				return mutation.operations === undefined
-					&& mutation.action === "add"
-					&& snapshot.stores[target].entries.includes(normalizeEntry(mutation.content ?? ""))
-					? write()
-					: undefined;
+				snapshot = await loadReviewSnapshot(state.config!, state.stores!, state);
+				const content = normalizeEntry(mutation.content ?? "");
+				if (mutation.operations !== undefined || mutation.action !== "add" || !snapshot.stores[target].entries.includes(content)) return;
+				throwIfAborted(signal);
+				store.resetOnSuccess();
+				const entries = snapshot.stores[target].entries;
+				const limit = target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit;
+				return successResult({
+					usage: usage(entries.join(ENTRY_DELIMITER).length, limit),
+					entryCount: entries.length,
+					message: "Entry already exists (no duplicate added).",
+					writtenEntries: [content],
+				});
 			});
 			if (duplicate) return duplicate;
 			if (!snapshot) throw new Error("Memory review snapshot was unavailable.");
@@ -881,7 +961,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				throwIfAborted(signal);
 			}
 			return withMemoryLock(state.config, target, async () => {
-				const current = await loadReviewSnapshot(state.config!, state.stores!, state.observedReviewSystem);
+				const current = await loadReviewSnapshot(state.config!, state.stores!, state);
 				if (!sameReviewSnapshot(snapshot!, current)) {
 					throw new MemoryReviewError("Memory add blocked: review sources changed while waiting. Nothing was written; retry to review current state.");
 				}

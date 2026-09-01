@@ -264,6 +264,7 @@ test("role profile resolves skill names and selects exact extensions, tools, mod
 		await writeFile(join(agentDir, "config", "pi-subagent", "reviewer.md"), `---
 name: reviewer
 description: Reviews focused changes
+modelClass: frontier
 tools: [read, grep]
 extensions:
   - /user/extensions/review.ts
@@ -288,7 +289,8 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 			skills: [{ name: "security", path: "/effective/skills/security/SKILL.md" }],
 			trusted: false,
 		});
-		assert.match(app.tool.description, /reviewer: Reviews focused changes/);
+		assert.match(app.tool.description, /reviewer: Reviews focused changes \(modelClass: frontier\)/);
+		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)));
 		const updates: any[] = [];
 		const result = await app.tool.execute(
 			"call-1",
@@ -436,12 +438,13 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	});
 });
 
-test("routes supply thinking for omitted, class, direct-model, and background delegation", async () => {
+test("Role and call model classes preserve selected route thinking", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
 name: worker
 description: Does bounded work
+modelClass: balanced
 tools: [read]
 extensions: []
 skills: []
@@ -484,13 +487,24 @@ Return concise findings.
 
 		const omitted = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code" }, undefined, undefined, app.ctx);
 		const omittedArgs = JSON.parse(singleOutput(omitted));
-		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/fast-model");
-		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "off");
+		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/balanced-model");
+		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "medium");
 
-		const direct = await app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/direct-model", modelClass: "frontier" }, undefined, undefined, app.ctx);
+		const direct = await app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/direct-model" }, undefined, undefined, app.ctx);
 		const directArgs = JSON.parse(singleOutput(direct));
 		assert.equal(directArgs[directArgs.indexOf("--model") + 1], "provider/direct-model");
-		assert.equal(directArgs[directArgs.indexOf("--thinking") + 1], "max");
+		assert.equal(directArgs[directArgs.indexOf("--thinking") + 1], "medium");
+
+		const directExplicit = await app.tool.execute("call-3-explicit", {
+			role: "worker",
+			name: "Test delegated task",
+			task: "inspect code",
+			model: "provider/direct-model",
+			modelClass: "frontier",
+		}, undefined, undefined, app.ctx);
+		const directExplicitArgs = JSON.parse(singleOutput(directExplicit));
+		assert.equal(directExplicitArgs[directExplicitArgs.indexOf("--model") + 1], "provider/direct-model");
+		assert.equal(directExplicitArgs[directExplicitArgs.indexOf("--thinking") + 1], "max");
 
 		const background = await app.tool.execute("call-4", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "fav", background: true }, undefined, undefined, app.ctx);
 		assert.match(background.content[0]!.text, /accepted/);
@@ -995,61 +1009,7 @@ test("delegate_task leaves rendering to Pi", async () => {
 	});
 });
 
-test("streams assistant text deltas before final message", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
-name: scout
-description: Finds relevant code
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
-event({ type: "message_update", usage: { totalTokens: 1 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "partial 🙂" } });
-setTimeout(() => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "partial 🙂 done" }], stopReason: "end" } }), 100);
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const updates: any[] = [];
-		const running = app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task: "find auth" }, undefined, (update: any) => updates.push(update), app.ctx);
-		await waitFor(() => updates.some((update) => update.content[0].text.includes("partial 🙂")));
-		assert.ok(updates.every((update) => Buffer.byteLength(update.content[0].text, "utf8") <= 50 * 1024));
-		const result = await running;
-		assert.equal(singleOutput(result), "partial 🙂 done");
-		assert.ok(updates.length > 0);
-	});
-});
-
-test("decodes JSON output across UTF-8 chunk boundaries", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
-name: scout
-description: Finds relevant code
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const line = Buffer.from(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok 🙂" }], stopReason: "end" } }) + "\\n");
-const split = line.indexOf(Buffer.from("🙂")) + 2;
-process.stdout.write(line.subarray(0, split));
-setTimeout(() => process.stdout.write(line.subarray(split)), 20);
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task: "find auth" }, undefined, undefined, app.ctx);
-		assert.equal(singleOutput(result), "ok 🙂");
-	});
-});
-
-test("large child output bounds final result and streaming update", async () => {
+test("maps bounded child output into bounded workflow results and updates", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
@@ -1078,37 +1038,6 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.ok(updates.every((update) => Buffer.byteLength(update.content[0].text, "utf8") <= 50 * 1024));
 		assertTruncated(singleOutput(updates.at(-1)), capOutput(original));
 	});
-});
-
-test("ignores oversized lifecycle events after final message", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
-name: scout
-description: Finds relevant code
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const event = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
-event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
-event({ type: "agent_end", messages: [{ role: "toolResult", content: "x".repeat(2 * 1024 * 1024) }] });
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task: "find auth" }, undefined, undefined, app.ctx);
-		assert.equal(singleOutput(result), "done");
-	});
-});
-
-test("output cap preserves complete UTF-8 characters", () => {
-	const original = "🙂".repeat(20_000);
-	const result = capOutput(original);
-	assertTruncated(result, original);
-	assert.equal(result.includes("�"), false);
 });
 
 test("invalid role config blocks delegation without blocking extension load", async () => {
@@ -2021,80 +1950,6 @@ const timer = setInterval(() => {
 	});
 });
 
-test("queued delegation does not consume its inactive-child timeout", async () => {
-	await environment(async (agentDir) => {
-		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "4";
-		try {
-			await writeWorkerRole(agentDir);
-		const tasks = Array.from({ length: 5 }, (_, index) => `task-${index + 1}`);
-		const timeoutPolicy = { idleMs: 250, maxMs: 1_250 };
-		const runner = await blockedPiRunner(agentDir, tasks.slice(0, 4));
-		const app = harness({ timeoutPolicy });
-		const active = tasks.slice(0, 4).map((task, index) => app.tool.execute(
-			`call-${index + 1}`,
-			{ role: "worker", name: "Test delegated task", task },
-			undefined,
-			undefined,
-			app.ctx,
-		));
-		const calls = [...active];
-		try {
-			await waitFor(() => runner.started().length === 4);
-			assert.deepEqual(runner.started(), tasks.slice(0, 4));
-			const queuedAt = Date.now();
-			const fifth = app.tool.execute("call-5", { role: "worker", name: "Test delegated task", task: tasks[4]! }, undefined, undefined, app.ctx);
-			calls.push(fifth);
-			let fifthSettled = false;
-			void fifth.then(() => { fifthSettled = true; }, () => { fifthSettled = true; });
-			await waitFor(() => Date.now() >= queuedAt + timeoutPolicy.idleMs + 100);
-			assert.deepEqual(runner.started(), tasks.slice(0, 4));
-			assert.equal(fifthSettled, false);
-			await runner.release(tasks[0]!);
-			await waitFor(() => runner.started().includes(tasks[4]!));
-			await assert.rejects(fifth, /Subagent timed out.*without a recognized Pi event/);
-			for (const task of tasks.slice(1, 4)) await runner.release(task);
-			await Promise.all(active);
-		} finally {
-			await Promise.all(tasks.map((task) => runner.release(task)));
-			await Promise.allSettled(calls);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
-		} finally {
-			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
-		}
-	});
-});
-
-test("malformed JSON, unknown events, and stderr do not renew the idle deadline", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Do bounded work.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `process.on("SIGTERM", () => {});
-setInterval(() => {
-	process.stdout.write('{"type":"message_update"\\n');
-	console.log(JSON.stringify({ type: "heartbeat" }));
-	process.stderr.write("still here\\n");
-}, 25);`);
-		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 120, maxMs: 270 } });
-		const startedAt = Date.now();
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
-			/Subagent timed out.*without a recognized Pi event/,
-		);
-		assert.ok(Date.now() - startedAt < 600, "idle timeout escalation exceeded the maximum runtime");
-	});
-});
-
 test("config file timeout applies when no explicit policy is passed", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -2114,37 +1969,6 @@ setInterval(() => {}, 1_000);
 			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
 			/Subagent timed out.*without a recognized Pi event/,
 		);
-	});
-});
-
-test("recognized Pi events extend the idle deadline", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Do bounded work.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
-setTimeout(() => event({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} }), 200);
-setTimeout(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 600);
-setTimeout(() => {
-	event({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", result: {}, isError: false });
-	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
-}, 1_000);
-`);
-		process.argv[1] = runner;
-		const timeoutPolicy = { idleMs: 800, maxMs: 1_500 };
-		const app = harness({ timeoutPolicy });
-		const startedAt = Date.now();
-		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
-		assert.equal(singleOutput(result), "done");
-		assert.ok(Date.now() - startedAt > timeoutPolicy.idleMs, "completion did not outlast the original idle deadline");
 	});
 });
 
@@ -2191,22 +2015,6 @@ setInterval(() => {}, 1_000);
 	});
 });
 
-test("maximum runtime stops a child that keeps emitting Pi events", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `process.on("SIGTERM", () => {});
-console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } }));
-setInterval(() => console.log(JSON.stringify({ type: "message_update", usage: { totalTokens: 1 } })), 25);`);
-		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
-			/Subagent reached its maximum runtime/,
-		);
-	});
-});
-
 test("parent abort remains an abort while timeout cleanup is underway", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
@@ -2237,91 +2045,6 @@ setInterval(() => {}, 1_000);
 		await assert.rejects(running, (error: unknown) => error instanceof Error && error.name === "AbortError");
 		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-	});
-});
-
-test("abort stops child process tree", async (t) => {
-	if (process.platform === "win32") return t.skip("Unix process groups only");
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Do bounded work.
-`);
-		const marker = join(agentDir, "descendant-survived");
-		const started = join(agentDir, "descendant-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { spawn } from "node:child_process";
-spawn(process.execPath, ["-e", ${JSON.stringify(`process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300); setInterval(() => {}, 1000)`)}], { stdio: "ignore" });
-setInterval(() => {}, 1_000);
-`);
-		process.argv[1] = runner;
-		const app = harness({ ui: true });
-		const abort = new AbortController();
-		const running = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, abort.signal, undefined, app.ctx);
-		await waitFor(() => existsSync(started));
-		abort.abort();
-		await assert.rejects(
-			running,
-			(error: unknown) => error instanceof Error && error.name === "AbortError" && !(error instanceof WorkflowFailureError),
-		);
-		assert.ok(app.widget!.render(80)[0].startsWith("■"));
-		await new Promise((resolve) => setTimeout(resolve, 400));
-		await assert.rejects(readFile(marker), /ENOENT/);
-		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-	});
-});
-
-test("normal completion stops surviving child process descendants with inherited output", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const marker = join(agentDir, "normal-descendant-survived");
-		const started = join(agentDir, "normal-descendant-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "alive"), 300); setInterval(() => {}, 1000)`)}], { stdio: "inherit" });
-descendant.unref();
-const ready = setInterval(() => {
-	if (!existsSync(${JSON.stringify(started)})) return;
-	clearInterval(ready);
-	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));
-}, 5);
-`);
-		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
-		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
-		assert.equal(singleOutput(result), "done");
-		await new Promise((resolve) => setTimeout(resolve, 400));
-		await assert.rejects(readFile(marker), /ENOENT/);
-	});
-});
-
-test("oversized unterminated stdout protocol line fails bounded", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Do bounded work.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `process.stdout.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1_000);\n`);
-		process.argv[1] = runner;
-		const app = harness();
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
-			/Subagent JSON event exceeds/,
-		);
 	});
 });
 

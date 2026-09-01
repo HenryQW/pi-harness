@@ -7,7 +7,7 @@ Create validated extension JSON stores with a shared config home and atomic asyn
 - **Created for**: Extension authors who need one owned home for user-editable JSON configuration.
 - **Advantage**: Shared paths, validation, locking, and atomic writes keep config behavior consistent.
 
-## Installation
+## Install
 
 Extension packages declare this library as a runtime dependency. End users do not install it directly with Pi.
 
@@ -63,7 +63,7 @@ await store.remove();
 | `createConfigStore({ extensionId, agentDir?, defaults, parse })` | function | Creates a store. `defaults` is `() => T`; `parse` is `(value: unknown) => T`. |
 | `store.path` | `string` | Gives the store's `config.json` path. |
 | `store.loadSync()` | `{ source: 'file' \| 'missing'; value: T }` | Loads and validates the current value. |
-| `store.save(value: T)` | `Promise<void>` | Validates and saves a value. |
+| `store.save(value: T)` | `Promise<void>` | Validates and replaces the whole config under a lock. |
 | `store.update(mutator: (current: T) => T)` | `Promise<T>` | Locks a read-modify-write operation and returns the updated value. |
 | `store.remove()` | `Promise<void>` | Removes only the store's `config.json` file. |
 
@@ -93,6 +93,17 @@ Malformed and schema-invalid files remain unchanged.
 `save`, `update`, and `remove` are asynchronous.
 Every mutation uses a lock.
 Writes use a same-directory temporary file and atomic rename.
+
+Repository default: most extension owners may assume one active config writer unless their package explicitly documents multi-process or concurrent writers.
+Under that consumer assumption, reload the extension after a manual or external edit before its next write.
+A stale in-memory full replacement is outside the supported workflow.
+
+`store.save(value)` locks and replaces the whole config.
+The lock serializes writes, but does not merge fields from stale values.
+
+Use `store.update(mutator)` for read-modify-write when an extension supports multiple processes, sessions, or writers.
+Use it also to preserve concurrent field changes.
+It reads the latest valid config under the store lock.
 
 For custom formats, call `extensionConfigDir(extensionId, agentDir?)`.
 Use the format's native library inside that directory.

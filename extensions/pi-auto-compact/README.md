@@ -42,7 +42,7 @@ Use `/auto-compact` to set the compaction threshold.
 - It checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`.
 - Its consumer-owned `pi-auto-compact/autoCompact` task defaults to `fast`.
 - It tries the effective profile primary, then fallback. If neither route works, the current session model still compacts.
-- After mid-task compaction, a follow-up message continues the current task.
+- After mid-task compaction, it resumes the current task automatically.
 
 ## Config
 

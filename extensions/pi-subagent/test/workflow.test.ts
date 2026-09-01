@@ -11,6 +11,7 @@ import {
 	type DelegationExecution,
 } from "../extensions/workflow.ts";
 import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
+import { DISPLAY_TEXT_CONTRACT } from "../src/index.ts";
 
 const delegation = (task = "work") => ({ role: "worker", name: "Test work", task });
 const succeeded = <T>(assistantOutput: string, result: T): DelegationExecution<T> => ({ ok: true, assistantOutput, result });
@@ -33,6 +34,9 @@ test("schemas expose strict delegation fields and top-level workflow modes", () 
 	assert.deepEqual(Object.keys(delegationSchema.properties), ["role", "name", "task", "model", "modelClass"]);
 	assert.equal(delegationSchema.properties.name.maxLength, TASK_NAME_CONTRACT.maxLength);
 	assert.equal(delegationSchema.properties.name.description, TASK_NAME_CONTRACT.description);
+	assert.equal(delegationSchema.properties.name.pattern, DISPLAY_TEXT_CONTRACT.pattern);
+	assert.equal(delegationSchema.properties.role.pattern, DISPLAY_TEXT_CONTRACT.pattern);
+	assert.equal(delegationSchema.properties.model.pattern, DISPLAY_TEXT_CONTRACT.pattern);
 	assert.equal(workflowSchema.additionalProperties, false);
 	assert.ok("background" in workflowSchema.properties);
 	assert.equal("background" in delegationSchema.properties, false);
@@ -137,6 +141,9 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 		["empty role", { ...delegation(), role: "" }],
 		["blank role", { ...delegation(), role: " \n " }],
 		["NUL role", { ...delegation(), role: "work\0er" }],
+		["newline role", { ...delegation(), role: "work\ner" }],
+		["terminal escape role", { ...delegation(), role: "work\u001ber" }],
+		["C1 role", { ...delegation(), role: "work\u009ber" }],
 		["empty name", { ...delegation(), name: "" }],
 		["blank name", { ...delegation(), name: "\t" }],
 		["NUL name", { ...delegation(), name: "wo\0rk" }],
@@ -148,6 +155,9 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 		["NUL task", { ...delegation(), task: "wo\0rk" }],
 		["empty model", { ...delegation(), model: "" }],
 		["NUL model", { ...delegation(), model: "p\0m" }],
+		["newline model", { ...delegation(), model: "provider\n/model" }],
+		["terminal escape model", { ...delegation(), model: "provider/\u001bmodel" }],
+		["C1 model", { ...delegation(), model: "provider/\u009bmodel" }],
 		["unknown model class", { ...delegation(), modelClass: "slow" }],
 		["blank model class", { ...delegation(), modelClass: " " }],
 	];
@@ -156,6 +166,8 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 		assert.throws(() => parseWorkflow({ tasks: [value] }), `${name} in parallel mode`);
 		assert.throws(() => parseWorkflow({ chain: [value] }), `${name} in chain mode`);
 	}
+
+	assert.equal(parseWorkflow({ ...delegation("first line\nsecond line") }).delegations[0]!.task, "first line\nsecond line");
 });
 
 test("assigns deterministic mode-scoped entry identities", () => {

@@ -1,17 +1,24 @@
 import assert from "node:assert/strict";
-import fs, { appendFileSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync } from "node:fs";
+import fs, { appendFileSync, readFileSync, writeFileSync, mkdtempSync, rmSync, truncateSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { test } from "node:test";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
 import { getWindow, readSession } from "../extensions/hydrate.ts";
 import { MAX_SESSION_FILE_BYTES } from "../extensions/transcript.ts";
 
-const FIX = join(dirname(new URL(import.meta.url).pathname), "fixtures");
+let FIX: string;
+
+before(() => {
+	FIX = mkdtempSync(join(tmpdir(), "pi-session-hydrate-fixtures-"));
+});
+
+after(() => {
+	rmSync(FIX, { recursive: true, force: true });
+});
 
 function write(name: string, lines: object[]) {
 	const p = join(FIX, name);
-	mkdirSync(FIX, { recursive: true });
 	writeFileSync(p, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
 	return p;
 }

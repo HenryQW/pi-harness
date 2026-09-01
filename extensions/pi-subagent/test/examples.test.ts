@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadRoles } from "../src/index.ts";
-
-const samplesDir = fileURLToPath(new URL("../examples/roles/", import.meta.url));
 
 const packageDir = fileURLToPath(new URL("../", import.meta.url));
 
@@ -77,6 +75,8 @@ test("missing config directory still returns validated built-in implementer, rev
 			skills: [],
 		},
 	]);
+
+	assert.deepEqual(roles.map(({ modelClass }) => modelClass), [undefined, undefined, undefined]);
 
 	assert.match(implementer!.systemPrompt, /bounded outcome, not a preassigned file list/i);
 	assert.match(implementer!.systemPrompt, /assigned cwd/i);
@@ -173,6 +173,26 @@ Custom scout body.
 	});
 });
 
+test("Role display fields reject C0/C1 controls while system prompts stay multiline", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	const rolePath = join(rolesDir, "role.md");
+	await mkdir(rolesDir, { recursive: true });
+	for (const [field, value] of [
+		["name", '"bad\\u001bname"'],
+		["name", '"\\nrole"'],
+		["description", '"bad\\u009bdescription"'],
+		["description", '"Visible role\\t"'],
+	] as const) {
+		const name = field === "name" ? value : "role";
+		const description = field === "description" ? value : "Visible role";
+		await writeFile(rolePath, `---\nname: ${name}\ndescription: ${description}\ntools: []\nextensions: []\nskills: []\n---\nFirst line.\nSecond line.\n`);
+		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} must not contain C0/C1 control characters\\.`));
+	}
+	await writeFile(rolePath, "---\nname: role\ndescription: Visible role\ntools: []\nextensions: []\nskills: []\n---\nFirst line.\nSecond line.\n");
+	assert.equal(loadRoles(agentDir).find(({ name }) => name === "role")!.systemPrompt, "First line.\nSecond line.");
+});
+
 test("Role capability lists are required arrays", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
@@ -195,6 +215,18 @@ test("Role capability lists are required arrays", async (t) => {
 	assert.deepEqual([role.tools, role.extensions, role.skills], [[], [], []]);
 });
 
+test("Role modelClass accepts shared profiles and rejects invalid values", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	const rolePath = join(rolesDir, "role.md");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(rolePath, "---\nname: role\ndescription: d\nmodelClass: frontier\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	assert.equal(loadRoles(agentDir).find(({ name }) => name === "role")!.modelClass, "frontier");
+
+	await writeFile(rolePath, "---\nname: role\ndescription: d\nmodelClass: slow\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	assert.throws(() => loadRoles(agentDir), /role\.md: modelClass must be one of fast, balanced, frontier, fav\./);
+});
+
 test("duplicate names among user role files remain an error", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
@@ -204,20 +236,4 @@ test("duplicate names among user role files remain an error", async (t) => {
 	await writeFile(join(rolesDir, "b.md"), role);
 
 	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
-});
-
-test("the optional synthesizer sample loads alongside built-in roles", async (t) => {
-	const agentDir = await isolatedAgentDir(t);
-	const rolesDir = join(agentDir, "config", "pi-subagent");
-	await mkdir(rolesDir, { recursive: true });
-	await copyFile(join(samplesDir, "synthesizer.md"), join(rolesDir, "synthesizer.md"));
-
-	assert.deepEqual(loadRoles(agentDir).map(({ name, tools, isolation, extensions, skills }) => ({
-		name, tools, isolation, extensions, skills,
-	})), [
-		{ name: "implementer", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"], isolation: "worktree", extensions: [], skills: [] },
-		{ name: "reviewer", tools: ["read", "grep", "find", "ls"], isolation: undefined, extensions: [], skills: [] },
-		{ name: "scout", tools: ["read", "grep", "find", "ls"], isolation: undefined, extensions: [], skills: [] },
-		{ name: "synthesizer", tools: ["read"], isolation: undefined, extensions: [], skills: [] },
-	]);
 });

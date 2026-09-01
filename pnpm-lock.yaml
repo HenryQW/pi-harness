@@ -131,8 +131,8 @@ importers:
         specifier: ^0.84.4
         version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
       '@henryqw/pi-herdr':
-        specifier: ^0.3.0
-        version: 0.3.1
+        specifier: ^0.4.1
+        version: link:../pi-herdr
 
   extensions/pi-herdr-rename:
     dependencies:
@@ -140,8 +140,8 @@ importers:
         specifier: ^0.84.4
         version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
       '@henryqw/pi-herdr':
-        specifier: ^0.3.0
-        version: 0.3.1
+        specifier: ^0.4.1
+        version: link:../pi-herdr
       '@henryqw/pi-task-models':
         specifier: ^4.0.0
         version: link:../pi-task-models
@@ -226,6 +226,21 @@ importers:
         specifier: ^0.84.4
         version: 0.84.4
 
+  extensions/pi-prompt-creator:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.84.4
+        version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
+      '@henryqw/pi-config-store':
+        specifier: ^0.1.0
+        version: link:../pi-config-store
+      '@henryqw/pi-subagent':
+        specifier: ^11.0.1
+        version: link:../pi-subagent
+      '@henryqw/pi-task-models':
+        specifier: ^4.0.0
+        version: link:../pi-task-models
+
   extensions/pi-session-recall:
     dependencies:
       '@earendil-works/pi-ai':
@@ -279,6 +294,12 @@ importers:
       '@henryqw/pi-config-store':
         specifier: ^0.1.0
         version: link:../pi-config-store
+
+  extensions/pi-undo:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.84.4
+        version: 0.84.4(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
 
   website:
     devDependencies:

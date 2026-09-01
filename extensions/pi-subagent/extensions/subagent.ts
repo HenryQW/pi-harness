@@ -8,7 +8,6 @@ import {
 	modelReference,
 	registerModelTask,
 	resolveAvailableModel,
-	resolveConfiguredTaskRoute,
 	type ResolvedTaskRoute,
 	taskThinkingLevels,
 } from "@henryqw/pi-task-models";
@@ -23,7 +22,7 @@ import {
 	finalizeChildWorktree,
 	formatDuration,
 	loadRoles,
-	resolveTaskRoute,
+	resolveRoleLaunch,
 	worktreeContextNote,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentResult,
@@ -34,7 +33,6 @@ import {
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
 import { registerDelegateFlow } from "./delegate-flow.ts";
-import { runDelegation } from "./delegation.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -213,7 +211,7 @@ function failedToolPatch(error: WorkflowFailureError | WorkflowAbortedError) {
 
 const roleSummary = (): string => {
 	try {
-		return loadRoles().map((role) => `${role.name}: ${role.description}`).join("; ");
+		return loadRoles().map((role) => `${role.name}: ${role.description}${role.modelClass === undefined ? "" : ` (modelClass: ${role.modelClass})`}`).join("; ");
 	} catch (error) {
 		return `configuration error: ${error instanceof Error ? error.message : String(error)}`;
 	}
@@ -509,15 +507,11 @@ export default function subagentExtension(
 		maxRuntimeMs: timeoutPolicy.maxMs,
 		getSessionGeneration: () => sessionEpoch,
 		loadRoles,
-		resolveLaunch: (role, modelClass, ctx) => {
-			const launchCtx = latestCtx ?? ctx;
-			return createRoleLaunch(pi, launchCtx, {
-				role,
-				route: modelClass === undefined
-					? resolveConfiguredTaskRoute(launchCtx, DELEGATE_TASK)
-					: resolveTaskRoute(launchCtx, modelClass),
-			});
-		},
+		resolveLaunch: (role, modelClass, ctx) => resolveRoleLaunch(pi, latestCtx ?? ctx, {
+			role,
+			task: DELEGATE_TASK,
+			...(modelClass === undefined ? {} : { modelClass }),
+		}),
 		startWidget: startWidgetItem,
 		updateWidgetTokens,
 		updateWidgetActivity,
@@ -573,12 +567,15 @@ export default function subagentExtension(
 			const launchCtx = () => latestCtx ?? ctx;
 			const resolveLaunch = (role: Role, delegation: Delegation) => {
 				const context = launchCtx();
-				const route = delegation.modelClass === undefined
-					? resolveConfiguredTaskRoute(context, DELEGATE_TASK)
-					: resolveTaskRoute(context, delegation.modelClass);
+				const launch = resolveRoleLaunch(pi, context, {
+					role,
+					task: DELEGATE_TASK,
+					...(delegation.modelClass === undefined ? {} : { modelClass: delegation.modelClass }),
+				});
+				if (delegation.model === undefined) return launch;
 				return createRoleLaunch(pi, context, {
 					role,
-					route: delegation.model === undefined ? route : replaceRouteModel(context, delegation.model, route),
+					route: replaceRouteModel(context, delegation.model, launch),
 				});
 			};
 			const notifyMissingSkills = (role: Role, launch: ReturnType<typeof resolveLaunch>) => {
@@ -641,7 +638,7 @@ export default function subagentExtension(
 							: { ...base, status: nextStatus, assistantOutput: nextText });
 					};
 					try {
-						child = await runDelegation(executor, {
+						child = await executor.run({
 							signal: workflowSignal,
 							onUpdate: (output) => {
 								setState("running", output);
