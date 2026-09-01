@@ -120,6 +120,7 @@ async function mergePullRequest(
 		pullRequestId: fresh.id,
 		hostname: fresh.host,
 		expectedHead: current.head.oid,
+		expectedBase: current.base,
 		headFetchSource: fresh.headFetchSource,
 		allowedMergeMethods: fresh.merge.allowedMergeMethods,
 		viewerDefaultMergeMethod: fresh.merge.viewerDefaultMergeMethod,

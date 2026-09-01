@@ -17,6 +17,7 @@ export type Exec = (
 
 export type MergeMethod = "merge" | "rebase" | "squash";
 
+const FINAL_PULL_REQUEST_QUERY = "query($pullRequestId:ID!){node(id:$pullRequestId){...on PullRequest{id state headRefOid baseRefName baseRefOid repository{nameWithOwner}}}}";
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 
@@ -35,6 +36,11 @@ export type MergeMethodSelectionInput = {
 export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & InspectLocalMergeSafetyInput & {
 	pullRequestId: string;
 	hostname: string;
+	expectedBase: {
+		repository: string;
+		ref: string;
+		oid: string;
+	};
 };
 
 function commandText(command: string, args: string[]): string {
@@ -127,6 +133,7 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 		"fetch",
 		"--no-write-fetch-head",
 		"--no-tags",
+		"--no-recurse-submodules",
 		input.headFetchSource,
 		input.expectedHead,
 	]);
@@ -187,27 +194,56 @@ function validateExecuteInput(input: ExecuteGitHubMergeInput): void {
 	validateInspectionInput(input);
 	requiredText(input.pullRequestId, "pullRequestId");
 	requiredText(input.hostname, "hostname");
+	if (!isRecord(input.expectedBase)) throw new TypeError("expectedBase must be an object");
+	requiredText(input.expectedBase.repository, "expected base repository");
+	requiredText(input.expectedBase.ref, "expected base ref");
+	requiredText(input.expectedBase.oid, "expected base OID");
 }
 
-function parseMergeResponse(output: string, expectedId: string): void {
+function parseGraphQLResponse(output: string, action: string): Record<string, unknown> {
 	let value: unknown;
 	try {
 		value = JSON.parse(output);
 	} catch {
-		throw new Error("GitHub merge failed: invalid GraphQL output");
+		throw new Error(`${action}: invalid GraphQL output`);
 	}
-	if (!isRecord(value)) throw new Error("GitHub merge failed: invalid GraphQL output");
-
+	if (!isRecord(value)) throw new Error(`${action}: invalid GraphQL output`);
 	const errors = value.errors;
 	if (errors !== undefined) {
-		if (!Array.isArray(errors)) throw new Error("GitHub merge failed: invalid GraphQL output");
+		if (!Array.isArray(errors)) throw new Error(`${action}: invalid GraphQL output`);
 		if (errors.length > 0) {
 			const messages = errors.map((error) => isRecord(error) && typeof error.message === "string" && error.message ? error.message : undefined);
-			if (messages.some((message) => message === undefined)) throw new Error("GitHub merge failed: invalid GraphQL errors");
-			throw new Error(`GitHub merge failed: ${messages.join("; ")}`);
+			if (messages.some((message) => message === undefined)) throw new Error(`${action}: invalid GraphQL errors`);
+			throw new Error(`${action}: ${messages.join("; ")}`);
 		}
 	}
+	return value;
+}
 
+function parseFinalPullRequest(output: string, input: ExecuteGitHubMergeInput): void {
+	const value = parseGraphQLResponse(output, "GitHub merge revalidation failed");
+	const data = value.data;
+	const pullRequest = isRecord(data) ? data.node : undefined;
+	const repository = isRecord(pullRequest) ? pullRequest.repository : undefined;
+	if (
+		!isRecord(pullRequest) || !isRecord(repository) ||
+		![pullRequest.id, pullRequest.state, pullRequest.headRefOid, pullRequest.baseRefName, pullRequest.baseRefOid, repository.nameWithOwner]
+			.every((field) => typeof field === "string" && field && field.trim() === field && !/[\u0000-\u001f\u007f]/.test(field))
+	) throw new Error("GitHub merge revalidation failed: invalid GraphQL output");
+	if (pullRequest.id !== input.pullRequestId) {
+		throw new Error("GitHub merge cancelled: pull request identity changed");
+	}
+	if (pullRequest.state !== "OPEN") throw new Error("GitHub merge cancelled: pull request is no longer open");
+	if (
+		pullRequest.headRefOid !== input.expectedHead ||
+		repository.nameWithOwner !== input.expectedBase.repository ||
+		pullRequest.baseRefName !== input.expectedBase.ref ||
+		pullRequest.baseRefOid !== input.expectedBase.oid
+	) throw new Error("GitHub merge cancelled: pull request context changed after local inspection");
+}
+
+function parseMergeResponse(output: string, expectedId: string): void {
+	const value = parseGraphQLResponse(output, "GitHub merge failed");
 	const data = value.data;
 	const mutation = isRecord(data) ? data.mergePullRequest : undefined;
 	const pullRequest = isRecord(mutation) ? mutation.pullRequest : undefined;
@@ -228,7 +264,18 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
 	}
-	const result = await runCommand(input.exec, input.cwd, "gh", [
+	const revalidated = await runCommand(input.exec, input.cwd, "gh", [
+		"api",
+		"graphql",
+		"--hostname",
+		input.hostname,
+		"-f",
+		`query=${FINAL_PULL_REQUEST_QUERY}`,
+		"-F",
+		`pullRequestId=${input.pullRequestId}`,
+	]);
+	parseFinalPullRequest(requiredOutput(revalidated, "GitHub merge revalidation"), input);
+	const merged = await runCommand(input.exec, input.cwd, "gh", [
 		"api",
 		"graphql",
 		"--hostname",
@@ -242,5 +289,5 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 		"-F",
 		`mergeMethod=${method.toUpperCase()}`,
 	]);
-	parseMergeResponse(requiredOutput(result, "GitHub merge"), input.pullRequestId);
+	parseMergeResponse(requiredOutput(merged, "GitHub merge"), input.pullRequestId);
 }

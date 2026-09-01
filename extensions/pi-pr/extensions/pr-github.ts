@@ -101,6 +101,13 @@ type PushRepository = {
 	host: string;
 };
 
+type PushUrl = {
+	fetchSource: string;
+	host: string;
+	locator: string;
+	normalizedName: string;
+};
+
 type PushTarget = {
 	fetchSource: string;
 	headOid: string;
@@ -265,20 +272,62 @@ function parsePushReference(value: string, remoteNames: string[]): { remote: str
 	return { remote, ref };
 }
 
-function parsePushRepository(output: string): PushRepository {
+function parsePushUrl(value: string): PushUrl {
+	if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value)) return fail("Read push URL", "invalid push URL");
+	const scp = /^(?:git@)?([a-z0-9.-]+):([a-z0-9_.-]+)\/([a-z0-9_.-]+)$/i.exec(value);
+	const rawUrl = scp
+		? null
+		: /^(https|ssh):\/\/(?:(git)@)?([a-z0-9.-]+)\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/?$/i.exec(value);
+	if (!scp && (!rawUrl || (rawUrl[1]!.toLowerCase() === "https" && rawUrl[2]))) {
+		return fail("Read push URL", "invalid push URL");
+	}
+	const host = (scp?.[1] ?? rawUrl![3])!;
+	const owner = (scp?.[2] ?? rawUrl![4])!;
+	const name = (scp?.[3] ?? rawUrl![5])!.replace(/\.git$/i, "");
+	const normalizedHost = host.toLowerCase();
+	if (
+		!name || owner === "." || owner === ".." || name === "." || name === ".." ||
+		normalizedHost.length > 253 || normalizedHost.split(".").some((label) =>
+			!label || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
+		)
+	) fail("Read push URL", "invalid push URL");
+	const normalizedName = normalizeRepository(`${owner}/${name}`);
+	if (rawUrl) {
+		let url: URL;
+		try {
+			url = new URL(value);
+		} catch {
+			return fail("Read push URL", "invalid push URL");
+		}
+		const path = /^\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/?$/i.exec(url.pathname);
+		if (
+			url.protocol !== `${rawUrl[1]!.toLowerCase()}:` ||
+			url.username !== (rawUrl[2] ?? "") || url.password || url.port || url.search || url.hash ||
+			url.hostname.toLowerCase() !== normalizedHost || !path ||
+			normalizeRepository(`${path[1]}/${path[2]!.replace(/\.git$/i, "")}`) !== normalizedName
+		) return fail("Read push URL", "invalid push URL");
+	}
+	return {
+		fetchSource: value,
+		host: normalizedHost,
+		locator: `${normalizedHost}/${normalizedName}`,
+		normalizedName,
+	};
+}
+
+function parsePushRepository(output: string, pushUrl: PushUrl): PushRepository {
 	const value = parseJson(output, "Read push repository");
 	if (!isRecord(value)) fail("Read push repository", "invalid GitHub CLI output");
 	const nameWithOwner = repositoryName(value.nameWithOwner, "Read push repository", "nameWithOwner");
 	const url = parseHttpUrl(value.url, "Read push repository", "url");
 	const path = url.pathname.split("/").filter(Boolean);
-	if (path.length !== 2 || normalizeRepository(path.join("/")) !== normalizeRepository(nameWithOwner)) {
-		fail("Read push repository", "url does not match nameWithOwner");
-	}
-	return {
-		nameWithOwner,
-		normalizedName: normalizeRepository(nameWithOwner),
-		host: url.hostname.toLowerCase(),
-	};
+	const normalizedName = normalizeRepository(nameWithOwner);
+	const host = url.hostname.toLowerCase();
+	if (
+		path.length !== 2 || normalizeRepository(path.join("/")) !== normalizedName ||
+		host !== pushUrl.host || normalizedName !== pushUrl.normalizedName
+	) fail("Read push repository", "response does not match push URL");
+	return { nameWithOwner, normalizedName, host };
 }
 
 function parseRemotePushRef(output: string, ref: string): string {
@@ -698,19 +747,19 @@ async function readPushTarget(
 		"push URL",
 	);
 	if (pushUrls.length !== 1) fail("Read push URL", "multiple push URLs are configured");
-	const fetchSource = pushUrls[0];
+	const pushUrl = parsePushUrl(pushUrls[0]);
 	const repository = parsePushRepository((await execute(
 		pi,
 		context,
 		"Read push repository",
 		"gh",
-		["repo", "view", fetchSource, "--json", "nameWithOwner,url"],
-	)).stdout);
+		["repo", "view", pushUrl.locator, "--json", "nameWithOwner,url"],
+	)).stdout, pushUrl);
 	const remoteHead = await invoke(pi, context, "Read remote push ref", "git", [
 		"ls-remote",
 		"--exit-code",
 		"--refs",
-		fetchSource,
+		pushUrl.fetchSource,
 		`refs/heads/${push.ref}`,
 	]);
 	let remoteHeadOid: string | null;
@@ -722,7 +771,7 @@ async function readPushTarget(
 		if (remoteHead.code !== 0) commandFailure("Read remote push ref", remoteHead);
 		remoteHeadOid = parseRemotePushRef(remoteHead.stdout, push.ref);
 	}
-	return { fetchSource, headOid, remoteHeadOid, repository, ref: push.ref };
+	return { fetchSource: pushUrl.fetchSource, headOid, remoteHeadOid, repository, ref: push.ref };
 }
 
 async function readUnresolvedReviewThreads(
@@ -827,6 +876,7 @@ async function readLocalMergeSafety(
 		"fetch",
 		"--no-write-fetch-head",
 		"--no-tags",
+		"--no-recurse-submodules",
 		pushTarget.fetchSource,
 		pullRequestHead,
 	]);

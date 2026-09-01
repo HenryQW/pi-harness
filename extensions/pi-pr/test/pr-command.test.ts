@@ -48,6 +48,7 @@ type HarnessOptions = {
 	statuses?: string[];
 	ancestry?: "behind" | "ahead" | "diverged";
 	localHead?: string;
+	finalState?: PullRequestSpec;
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -102,11 +103,12 @@ function harness(options: HarnessOptions) {
 				if (args[1]?.startsWith("refs/heads/")) return result();
 			}
 			if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
-				return result("git@github.com:acme/project.git\n");
+				return result(`git@${nextHost()}:acme/project.git\n`);
 			}
-			if (command === "gh" && args[0] === "repo" && args[1] === "view" && args[2] === "git@github.com:acme/project.git") {
-				return result(JSON.stringify({ nameWithOwner: "acme/project", url: `https://${nextHost()}/acme/project` }));
-			}
+			if (
+				command === "gh" && args[0] === "repo" && args[1] === "view" &&
+				args[2] === `${nextHost()}/acme/project` && args[4] === "nameWithOwner,url"
+			) return result(JSON.stringify({ nameWithOwner: "acme/project", url: `https://${nextHost()}/acme/project` }));
 			if (command === "git" && args[0] === "ls-remote") {
 				const remoteHead = options.states[stateIndex]?.headRefOid ?? localHead;
 				return result(`${remoteHead}\trefs/heads/feature/pr\n`);
@@ -137,9 +139,22 @@ function harness(options: HarnessOptions) {
 						data: { node: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } },
 					}]));
 				}
+				if (query.includes("headRefOid baseRefName baseRefOid")) {
+					events.push("revalidate");
+					const finalSpec = options.finalState ?? active ?? {};
+					const final = pullRequest(finalSpec);
+					return result(JSON.stringify({ data: { node: {
+						id: final.id,
+						state: final.state,
+						headRefOid: final.headRefOid,
+						baseRefName: final.baseRefName,
+						baseRefOid: final.baseRefOid,
+						repository: { nameWithOwner: finalSpec.baseRepository ?? "acme/project" },
+					} } }));
+				}
 				if (query.includes("mergePullRequest")) {
 					events.push("merge");
-					return result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: active?.id, state: "MERGED" } } } }));
+					return result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequest(active ?? {}).id, state: "MERGED" } } } }));
 				}
 			}
 			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
@@ -409,6 +424,25 @@ test("cancels a confirmed merge when the confirmed head or base context changes"
 	}
 });
 
+test("cancels when the base retargets or advances during final local inspection", async () => {
+	for (const candidate of [
+		{ name: "base repository retarget", finalState: { baseRepository: "acme/other" } },
+		{ name: "base ref retarget", finalState: { baseRefName: "release" } },
+		{ name: "base advance", finalState: { baseRefOid: "d".repeat(40) } },
+	]) {
+		const app = harness({ states: [{}, {}], finalState: candidate.finalState });
+		await assert.rejects(app.handler("", app.context), /context changed after local inspection/, candidate.name);
+
+		assert.deepEqual(app.events, ["load", "confirm", "load", "revalidate"], candidate.name);
+		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
+		const finalFetch = app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true);
+		const revalidation = app.calls.findIndex(({ command, args }) =>
+			command === "gh" && args.some((arg) => arg.includes("headRefOid baseRefName baseRefOid"))
+		);
+		assert.ok(finalFetch >= 0 && revalidation > finalFetch, candidate.name);
+	}
+});
+
 test("merges unchanged confirmed context with the atomic expected head", async () => {
 	const host = "github.example.test";
 	const app = harness({
@@ -441,12 +475,12 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 		title: "Merge PR #42 with merge?",
 		message: "Merge PR #42 using merge.",
 	}]);
-	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
+	assert.deepEqual(app.events, ["load", "confirm", "load", "revalidate", "merge"]);
 	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
 	assert.ok(fetches.length > 0);
-	assert.ok(fetches.every(({ args }) => args[3] === "git@github.com:acme/project.git"));
+	assert.ok(fetches.every(({ args }) => args[4] === `git@${host}:acme/project.git`));
 	assert.equal(fetches.some(({ args }) => args.includes("fork") || args.includes("acme/project")), false);
-	assert.equal(fetches.some(({ args }) => !args.includes("--no-write-fetch-head")), false);
+	assert.equal(fetches.some(({ args }) => !args.includes("--no-write-fetch-head") || !args.includes("--no-recurse-submodules")), false);
 	assert.deepEqual(mutationCalls(app.calls), [{
 		command: "gh",
 		args: [

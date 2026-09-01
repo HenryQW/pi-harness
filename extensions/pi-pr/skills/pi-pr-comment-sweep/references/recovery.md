@@ -34,8 +34,16 @@ git cat-file -e "$PR_HEAD_SHA^{commit}"
 git log --oneline HEAD.."$PR_HEAD_SHA"
 git diff --stat HEAD.."$PR_HEAD_SHA"
 git merge-base --is-ancestor HEAD "$PR_HEAD_SHA"
+STATUS=$(git status --porcelain=v1 --untracked-files=all) || exit 1
+test -z "$STATUS" || exit 1
+for STATE in MERGE_HEAD rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD sequencer; do
+  STATE_PATH=$(git rev-parse --git-path "$STATE") || exit 1
+  test -n "$STATE_PATH" && test ! -e "$STATE_PATH" || exit 1
+done
 git merge --ff-only "$PR_HEAD_SHA"
 ```
 
-Stop on an absent object, divergence, or ambiguous push URL. Never hard-reset.
-Re-run target verification and initial fetch after fast-forward.
+Run the clean-tree and Git-operation checks immediately before the fast-forward.
+Stop on an absent object, divergence, dirty tracked or untracked state, an active
+Git operation, or an ambiguous push URL. Never stash, reset, or clean. Re-run
+target verification and initial fetch after fast-forward.

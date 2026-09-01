@@ -31,6 +31,7 @@ type HarnessOptions = {
 	remote?: string;
 	remoteNames?: string[];
 	pushUrl?: string;
+	pushRepositoryResult?: ReturnType<typeof result>;
 	remoteHead?: string | null;
 	remoteHeadResult?: ReturnType<typeof result>;
 	threads?: string;
@@ -159,8 +160,8 @@ function harness(options: HarnessOptions = {}) {
 			if (command === "git" && args.join(" ") === `remote get-url --push --all ${remote}`) {
 				return result(`${pushUrl}\n`);
 			}
-			if (command === "gh" && args.join(" ") === `repo view ${pushUrl} --json nameWithOwner,url`) {
-				return result(JSON.stringify({ nameWithOwner: "acme/fork", url: "https://github.com/acme/fork" }));
+			if (command === "gh" && args.join(" ") === "repo view github.com/acme/fork --json nameWithOwner,url") {
+				return options.pushRepositoryResult ?? result(JSON.stringify({ nameWithOwner: "acme/fork", url: "https://github.com/acme/fork" }));
 			}
 			if (command === "git" && args[0] === "ls-remote") {
 				if (options.remoteHeadResult) return options.remoteHeadResult;
@@ -202,7 +203,7 @@ function harness(options: HarnessOptions = {}) {
 				const states = args.flatMap((arg, index) => args[index - 1] === "--git-path" ? [arg] : []);
 				return result(`${states.map((state) => `/repo/.git/${state}`).join("\n")}\n`);
 			}
-			if (command === "git" && args.join(" ") === `fetch --no-write-fetch-head --no-tags ${pushUrl} ${REMOTE_HEAD}`) {
+			if (command === "git" && args.join(" ") === `fetch --no-write-fetch-head --no-tags --no-recurse-submodules ${pushUrl} ${REMOTE_HEAD}`) {
 				return options.fetchResult ?? result();
 			}
 			if (command === "git" && args.join(" ") === `cat-file -e ${REMOTE_HEAD}^{commit}`) {
@@ -316,6 +317,7 @@ test("loads an upstream PR for the exact fork push target and retains its fetch 
 		"fetch",
 		"--no-write-fetch-head",
 		"--no-tags",
+		"--no-recurse-submodules",
 		"git@github.com:acme/fork.git",
 		REMOTE_HEAD,
 	]);
@@ -433,6 +435,56 @@ test("keeps detached HEAD, malformed push refs, and push lookup failures distinc
 		loadCurrentPullRequest(failed.pi, failed.context),
 		/Read push target failed: exit code 128/,
 	);
+});
+
+test("rejects credential-bearing and authority-confused push URLs before exposing them to subprocesses", async () => {
+	const secret = "top-secret";
+	for (const pushUrl of [
+		`https://user:${secret}@github.com/acme/fork.git`,
+		`https://github.com\\user:${secret}@evil.com/../acme/fork.git`,
+	]) {
+		const { pi, context, calls } = harness({ pushUrl });
+
+		await assert.rejects(
+			loadCurrentPullRequest(pi, context),
+			(error: unknown) => error instanceof PullRequestLoadError &&
+				/Read push URL failed: invalid push URL/.test(error.message) && !error.message.includes(secret),
+		);
+		assert.equal(calls.some(({ command }) => command === "gh"), false);
+		assert.equal(calls.some(({ command, args }) => command === "git" && (args[0] === "ls-remote" || args[0] === "fetch")), false);
+		assert.equal(calls.some(({ args }) => args.some((arg) => arg.includes(secret))), false);
+	}
+});
+
+test("requires the credential-free locator and GitHub response to identify the same repository", async () => {
+	const { pi, context, calls } = harness({
+		pushRepositoryResult: result(JSON.stringify({ nameWithOwner: "acme/other", url: "https://github.com/acme/other" })),
+	});
+
+	await assert.rejects(loadCurrentPullRequest(pi, context), /response does not match push URL/);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "ls-remote"), false);
+});
+
+test("uses a credential-free locator for GitHub and retains each supported fetch URL", async () => {
+	for (const pushUrl of [
+		"https://github.com/acme/fork.git",
+		"ssh://git@github.com/acme/fork.git",
+		"git@github.com:acme/fork.git",
+	]) {
+		const { pi, context, calls } = harness({ pushUrl });
+		const loaded = await loadCurrentPullRequest(pi, context);
+		assert.ok(loaded);
+		assert.equal(loaded.headFetchSource, pushUrl);
+		assert.ok(calls.some(({ command, args }) =>
+			command === "gh" && args.join(" ") === "repo view github.com/acme/fork --json nameWithOwner,url"
+		), pushUrl);
+		assert.ok(calls.some(({ command, args }) =>
+			command === "git" && args[0] === "ls-remote" && args[3] === pushUrl
+		), pushUrl);
+		assert.ok(calls.some(({ command, args }) =>
+			command === "git" && args[0] === "fetch" && args[4] === pushUrl
+		), pushUrl);
+	}
 });
 
 test("ignores the same head ref in an unrelated repository", async () => {
