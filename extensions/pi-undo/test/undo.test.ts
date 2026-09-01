@@ -46,14 +46,14 @@ function context(
 	} as unknown as ExtensionCommandContext;
 }
 
-test("/undo aborts, waits, and targets the latest user turn", async () => {
+test("/undo aborts, waits, and targets the latest actual user turn", async () => {
 	const events: string[] = [];
 	const navigations: Navigation[] = [];
 	await command()("", context([
 		{ id: "first", type: "message", message: { role: "user" } },
 		{ id: "second", type: "message", message: { role: "user" } },
+		{ id: "continuation", type: "custom_message", customType: "extension/continuation", content: "Continue.", display: false },
 		{ id: "assistant", type: "message", message: { role: "assistant" } },
-		{ id: "state", type: "custom" },
 	], events, navigations));
 
 	assert.deepEqual(events, ["abort", "idle", "branch", "navigate"]);
