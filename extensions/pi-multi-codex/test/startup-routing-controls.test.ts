@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { extensionConfigDir, extensionConfigPath } from "@henryqw/pi-config-store";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import multiCodex, { parseCodexUsage } from "../extensions/multi-codex.ts";
 
@@ -39,6 +39,18 @@ const credential = (accountId: string) => ({
 	refresh: "refresh-token",
 	expires: Date.now() + 60_000,
 	accountId,
+});
+
+const assistantError = (provider: string) => ({
+	role: "assistant",
+	content: [],
+	api: "openai-codex-responses",
+	provider,
+	model: "gpt-5.3-codex",
+	usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	stopReason: "error",
+	errorMessage: "You have hit your ChatGPT usage limit.",
+	timestamp: Date.now(),
 });
 
 const hash = (accountId: string) => createHash("sha256").update(accountId).digest("hex");
@@ -293,6 +305,68 @@ test("serializes automatic switch while first agent boundary is deferred", async
 			return true;
 		},
 	);
+});
+
+test("switches on final HTTP 429 and stops after every eligible slot was tried", async () => {
+	await withApp({ 1: 80, 2: 60 }, [], async ({ handlers, ctx, setModels, notices }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		const retry = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx) as any;
+		assert.deepEqual(setModels.map((selected) => selected.provider), ["openai-codex-2"]);
+		assert.match(retry.message.errorMessage, /^HTTP 429:/);
+		assert.match(notices.at(-1) ?? "", /Retrying with Codex #2/);
+
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		const exhausted = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex-2") }, ctx) as any;
+		assert.equal(setModels.length, 1);
+		assert.match(exhausted.message.errorMessage, /quota exceeded.*all eligible account slots.*failover stopped/i);
+	});
+});
+
+test("does not switch when an internal 429 retry finishes successfully", async () => {
+	await withApp({ 1: 80, 2: 60 }, [], async ({ handlers, ctx, setModels }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 200, headers: {} }, ctx);
+		const result = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+		assert.equal(result, undefined);
+		assert.equal(setModels.length, 0);
+	});
+});
+
+test("autoSwitchOn429 false leaves normal 429 handling unchanged", async () => {
+	await withApp({ 1: 80, 2: 60 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+		await writeFile(extensionConfigPath("pi-multi-codex", agentDir), '{"autoSwitchOn429":false}\n');
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		const result = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+		assert.equal(result, undefined);
+		assert.equal(setModels.length, 0);
+	});
+});
+
+test("malformed config is preserved, warns once, and disables 429 switching", async () => {
+	await withApp({ 1: 80, 2: 60 }, [], async ({ agentDir, handlers, ctx, setModels, notices }) => {
+		const path = extensionConfigPath("pi-multi-codex", agentDir);
+		const malformed = '{"autoSwitchOn429":"yes"}\n';
+		await writeFile(path, malformed);
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		assert.equal(notices.filter((notice) => notice.includes("config is invalid")).length, 1);
+		assert.equal(await readFile(path, "utf8"), malformed);
+
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		const result = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+		assert.equal(result, undefined);
+		assert.equal(setModels.length, 0);
+	});
 });
 
 test("colors fresh footer at every quota threshold", async () => {

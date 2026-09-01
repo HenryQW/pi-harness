@@ -7,7 +7,7 @@ Use multiple ChatGPT Codex OAuth accounts in Pi.
 ## Why
 
 - **Created for**: Use multiple ChatGPT Codex OAuth accounts from one Pi installation.
-- **Advantage**: Before work starts, quota-aware routing selects the eligible managed slot with the most remaining seven-day quota. It does not change in-progress sessions.
+- **Advantage**: Quota-aware routing starts with the eligible slot that has the most remaining seven-day quota. If that slot returns HTTP 429, Pi retries with another eligible slot.
 
 ## Install
 
@@ -36,9 +36,23 @@ A numbered slot is one Codex account position in Pi.
 - The extension reads `auth.json`. It never writes or refreshes credentials.
 - Before the first agent start, a fresh snapshot routes a managed Codex model to the eligible slot with the most seven-day quota.
 - A slot whose reported five-hour window has reached 100% is excluded until that window resets.
-- Routing preserves model ID and never changes in-progress work.
+- Routing preserves the model ID.
+- During one agent run, each eligible slot is tried at most once after HTTP 429 responses.
+- Automatic retry stops when no untried eligible slot remains.
 - The footer shows the active slot's fresh quota or five-hour block.
 - Scoped sessions can switch only to exact scoped aliases.
 - Restart or update model scope after adding a slot.
+
+## Config
+
+Automatic HTTP 429 switching is on by default. To disable it, create `~/.pi/agent/config/pi-multi-codex/config.json`:
+
+```json
+{
+  "autoSwitchOn429": false
+}
+```
+
+The config must contain only `autoSwitchOn429` as a boolean. Invalid config is preserved and disables automatic switching.
 
 Generated credential-free quota cache: `~/.pi/agent/config/pi-multi-codex/usage.json`. The extension maintains it.

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { createConfigStore, extensionConfigDir } from "@henryqw/pi-config-store";
 import { lock } from "proper-lockfile";
 import {
 	createAssistantMessageEventStream,
@@ -71,6 +71,7 @@ type UsageState = {
 };
 
 type ParsedUsage = { remaining: number; reset: number; limitedUntil?: number; tier?: string };
+type Config = { autoSwitchOn429: boolean };
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const CODEX_ALIAS_PATTERN = /^openai-codex-([2-9]|[1-9]\d+)$/;
@@ -85,6 +86,13 @@ const CACHE_MUTEX_RETRY_MS = 20;
 const CLEANUP_TIMEOUT_MS = 250;
 const cachePath = () => join(extensionConfigDir("pi-multi-codex"), "usage.json");
 const cacheMutexPath = () => `${cachePath()}.mutex`;
+
+function parseConfig(value: unknown): Config {
+	if (!isRecord(value) || Object.keys(value).length !== 1 || typeof value.autoSwitchOn429 !== "boolean") {
+		throw new Error("Config must contain only autoSwitchOn429:boolean.");
+	}
+	return { autoSwitchOn429: value.autoSwitchOn429 };
+}
 
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -817,10 +825,19 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	const native = builtinProviders().find((provider) => provider.id === NATIVE_PROVIDER_ID) as CodexProvider | undefined;
 	if (!native) return;
 	const quota = new CodexQuotaStatus();
+	const configStore = createConfigStore<Config>({
+		extensionId: "pi-multi-codex",
+		defaults: () => ({ autoSwitchOn429: true }),
+		parse: parseConfig,
+	});
 	const registered = new Map<number, CodexProvider>();
+	const triedSlots = new Set<number>();
 	let sessionContext: ExtensionContext | undefined;
 	let automaticOpen = false;
 	let automaticCandidate: Model<any> | undefined;
+	let autoSwitchOn429 = true;
+	let configWarned = false;
+	let providerRequest: { provider?: string; status?: number } | undefined;
 
 	const registerSlot = (slot: number): void => {
 		if (slot === 1 || registered.has(slot)) return;
@@ -861,6 +878,22 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		const tied = candidates.filter((candidate) => candidate.remaining === remaining);
 		return tied.find((candidate) => candidate.slot === currentSlot)?.slot
 			?? Math.min(...tied.map((candidate) => candidate.slot));
+	};
+
+	const failoverSlots = (ctx: ExtensionContext, model: Model<any>): number[] => {
+		const state = loadStateSync();
+		const now = Date.now();
+		return [...readCodexCredentials().entries()]
+			.flatMap(([slot, credential]) => {
+				if (triedSlots.has(slot) || (slot !== 1 && !registered.has(slot)) || !allowsModel(ctx, model, slot)) return [];
+				const identity = identityFor(credential);
+				const snapshot = state.slots.get(slot);
+				if (identity && snapshot?.accountHash === identity.accountHash && isFiveHourLimited(snapshot, now)) return [];
+				const remaining = identity && isFresh(snapshot, identity, now) ? snapshot?.remaining : undefined;
+				return [{ slot, remaining }];
+			})
+			.sort((left, right) => (right.remaining ?? -1) - (left.remaining ?? -1) || left.slot - right.slot)
+			.map(({ slot }) => slot);
 	};
 
 	const footerText = (ctx: ExtensionContext): string | undefined => {
@@ -906,6 +939,17 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		const slots = syncSlots();
 		sessionContext = ctx;
+		triedSlots.clear();
+		providerRequest = undefined;
+		try {
+			autoSwitchOn429 = configStore.loadSync().value.autoSwitchOn429;
+		} catch {
+			autoSwitchOn429 = false;
+			if (!configWarned) {
+				configWarned = true;
+				ctx.ui.notify("Pi Multi Codex config is invalid. Automatic 429 switching is disabled; the file was left unchanged.", "warning");
+			}
+		}
 		automaticOpen = isManagedProvider(ctx.model?.provider) && !sessionHasAgentWork(ctx);
 		automaticCandidate = ctx.model;
 		// Cache-only ranking happens before background refresh starts.
@@ -916,6 +960,8 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
+		triedSlots.clear();
+		providerRequest = undefined;
 		if (!automaticOpen) return;
 		const model = ctx.model;
 		updatePendingCandidate(ctx);
@@ -927,13 +973,62 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		updateFooter(ctx);
 	});
 
+	pi.on("before_provider_request", (_event, ctx) => {
+		providerRequest = { provider: ctx.model?.provider };
+	});
+	pi.on("after_provider_response", (event) => {
+		if (providerRequest) providerRequest.status = event.status;
+	});
+	pi.on("message_end", async (event, ctx) => {
+		const request = providerRequest;
+		providerRequest = undefined;
+		if (
+			!autoSwitchOn429
+			|| request?.status !== 429
+			|| event.message.role !== "assistant"
+			|| event.message.stopReason !== "error"
+		) return;
+		const model = ctx.model;
+		const failedSlot = slotForProvider(event.message.provider);
+		if (
+			!model
+			|| !failedSlot
+			|| request.provider !== event.message.provider
+			|| model.provider !== event.message.provider
+			|| model.id !== event.message.model
+		) return;
+
+		triedSlots.add(failedSlot);
+		syncSlots();
+		for (const slot of failoverSlots(ctx, model)) {
+			const provider = providerForSlot(slot);
+			if (!await pi.setModel({ ...model, provider })) continue;
+			ctx.ui.notify(`Codex #${failedSlot} returned HTTP 429. Retrying with Codex #${slot}.`, "warning");
+			updateFooter(ctx);
+			return { message: { ...event.message, errorMessage: `HTTP 429: ${event.message.errorMessage ?? "Codex request was rate limited."}` } };
+		}
+
+		return {
+			message: {
+				...event.message,
+				errorMessage: "Codex quota exceeded: all eligible account slots returned HTTP 429; automatic failover stopped.",
+			},
+		};
+	});
+
 	pi.on("agent_start", (_event, ctx) => {
 		automaticOpen = false;
 		if (!sessionHasAgentWork(ctx)) pi.appendEntry(AGENT_STARTED_ENTRY);
 	});
+	pi.on("agent_settled", () => {
+		triedSlots.clear();
+		providerRequest = undefined;
+	});
 	pi.on("session_shutdown", () => {
 		automaticOpen = false;
 		sessionContext = undefined;
+		triedSlots.clear();
+		providerRequest = undefined;
 		quota.stop();
 	});
 	pi.on("model_select", (_event, ctx) => {
