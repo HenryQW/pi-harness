@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="prompt-lifecycle-title prompt-lifecycle-desc">
+      <title id="prompt-lifecycle-title">From conversation to saved prompt</title>
+      <desc id="prompt-lifecycle-desc">Data flow showing current conversation signals becoming a passive prompt candidate, then a reviewed Markdown prompt saved only after explicit approval.</desc>
+      <defs>
+        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <polygon points="0 0, 8 4, 0 8" fill="#4c5665"/>
+        </marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <polygon points="0 0, 8 4, 0 8" fill="#1d4ed8"/>
+        </marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <polygon points="0 0, 8 4, 0 8" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="960" height="600" fill="#f0eee9"/>
+
+      <!-- Step headers -->
+      <g font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">
+        <g fill="#101828">
+          <rect x="204" y="48" width="32" height="16" rx="8" fill="rgba(16,24,40,0.10)"/>
+          <text x="220" y="60" font-size="8">01</text>
+          <text x="220" y="92" fill="#4c5665" font-size="8" font-weight="500" letter-spacing="1.2">INPUT</text>
+        </g>
+        <g fill="#101828">
+          <rect x="324" y="48" width="32" height="16" rx="8" fill="rgba(16,24,40,0.10)"/>
+          <text x="340" y="60" font-size="8">02</text>
+          <text x="340" y="92" fill="#4c5665" font-size="8" font-weight="500" letter-spacing="1.2">BOUND</text>
+        </g>
+        <g fill="#1d4ed8">
+          <rect x="444" y="48" width="32" height="16" rx="8" fill="rgba(29,78,216,0.14)"/>
+          <text x="460" y="60" font-size="8">03</text>
+          <text x="460" y="92" font-size="8" font-weight="500" letter-spacing="1.2">DRAFT</text>
+        </g>
+        <g fill="#101828">
+          <rect x="564" y="48" width="32" height="16" rx="8" fill="rgba(16,24,40,0.10)"/>
+          <text x="580" y="60" font-size="8">04</text>
+          <text x="580" y="92" fill="#4c5665" font-size="8" font-weight="500" letter-spacing="1.2">WAIT</text>
+        </g>
+        <g fill="#101828">
+          <rect x="684" y="48" width="32" height="16" rx="8" fill="rgba(16,24,40,0.10)"/>
+          <text x="700" y="60" font-size="8">05</text>
+          <text x="700" y="92" fill="#4c5665" font-size="8" font-weight="500" letter-spacing="1.2">REFINE</text>
+        </g>
+        <g fill="#101828">
+          <rect x="804" y="48" width="32" height="16" rx="8" fill="rgba(16,24,40,0.10)"/>
+          <text x="820" y="60" font-size="8">06</text>
+          <text x="820" y="92" fill="#4c5665" font-size="8" font-weight="500" letter-spacing="1.2">SAVE</text>
+        </g>
+      </g>
+
+      <!-- Lane structure -->
+      <rect x="40" y="112" width="880" height="112" fill="rgba(16,24,40,0.018)"/>
+      <rect x="40" y="336" width="880" height="112" fill="rgba(16,24,40,0.018)"/>
+      <g fill="none" stroke="rgba(16,24,40,0.14)" stroke-width="0.8">
+        <line x1="40" y1="112" x2="920" y2="112"/>
+        <line x1="40" y1="224" x2="920" y2="224"/>
+        <line x1="40" y1="336" x2="920" y2="336"/>
+        <line x1="40" y1="448" x2="920" y2="448"/>
+        <line x1="148" y1="112" x2="148" y2="448"/>
+      </g>
+      <g fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="500" text-anchor="middle" letter-spacing="1.2">
+        <text x="92" y="172">YOU</text>
+        <text x="92" y="284">EXTENSION</text>
+        <text x="92" y="388">ISOLATED</text>
+        <text x="92" y="400">CHILD</text>
+      </g>
+
+      <!-- Connectors are drawn before nodes -->
+      <g fill="none" stroke="#4c5665" stroke-width="1" marker-end="url(#arrow)">
+        <path d="M276 168 H332 Q340 168 340 176 V240"/>
+        <path d="M516 392 H572 Q580 392 580 384 V320"/>
+        <path d="M636 280 H692 Q700 280 700 272 V208"/>
+        <path d="M756 168 H812 Q820 168 820 176 V240"/>
+      </g>
+      <path d="M396 280 H452 Q460 280 460 288 V352" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+      <rect x="472" y="308" width="64" height="16" rx="4" fill="#f0eee9"/>
+      <text x="504" y="320" fill="#1d4ed8" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle" letter-spacing="0.8">CONTEXT</text>
+
+      <!-- Nodes -->
+      <g>
+        <rect x="164" y="128" width="112" height="80" rx="8" fill="#f0eee9"/>
+        <rect x="164" y="128" width="112" height="80" rx="8" fill="rgba(76,86,101,0.10)" stroke="#6a7282"/>
+        <rect x="172" y="136" width="32" height="16" rx="4" fill="rgba(76,86,101,0.14)"/>
+        <text x="188" y="148" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">YOU</text>
+        <text x="220" y="168" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Conversation</text>
+        <text x="220" y="184" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">requests · corrections</text>
+        <text x="220" y="196" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">active branch only</text>
+      </g>
+
+      <g>
+        <rect x="284" y="240" width="112" height="80" rx="8" fill="#f0eee9"/>
+        <rect x="284" y="240" width="112" height="80" rx="8" fill="#ffffff" stroke="#101828"/>
+        <rect x="292" y="248" width="32" height="16" rx="4" fill="rgba(16,24,40,0.08)"/>
+        <text x="308" y="260" fill="#101828" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">EXT</text>
+        <text x="340" y="280" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Bounded context</text>
+        <text x="340" y="296" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">summary + messages</text>
+        <text x="340" y="308" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">≤ 30,000 chars</text>
+      </g>
+
+      <g>
+        <rect x="404" y="352" width="112" height="80" rx="8" fill="#f0eee9"/>
+        <rect x="404" y="352" width="112" height="80" rx="8" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
+        <rect x="412" y="360" width="32" height="16" rx="4" fill="rgba(29,78,216,0.14)"/>
+        <text x="428" y="372" fill="#1d4ed8" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">CHD</text>
+        <text x="460" y="392" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">One-turn draft</text>
+        <text x="460" y="408" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">tool-free · isolated</text>
+        <text x="460" y="420" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">candidate JSON | null</text>
+      </g>
+
+      <g>
+        <rect x="524" y="240" width="112" height="80" rx="8" fill="#f0eee9"/>
+        <rect x="524" y="240" width="112" height="80" rx="8" fill="#ffffff" stroke="#101828"/>
+        <rect x="532" y="248" width="32" height="16" rx="4" fill="rgba(16,24,40,0.08)"/>
+        <text x="548" y="260" fill="#101828" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">EXT</text>
+        <text x="580" y="280" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Passive candidate</text>
+        <text x="580" y="296" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">Prompt ready — /promptor</text>
+        <text x="580" y="308" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">stays in memory</text>
+      </g>
+
+      <g>
+        <rect x="644" y="128" width="112" height="80" rx="8" fill="#f0eee9"/>
+        <rect x="644" y="128" width="112" height="80" rx="8" fill="rgba(76,86,101,0.10)" stroke="#6a7282"/>
+        <rect x="652" y="136" width="32" height="16" rx="4" fill="rgba(76,86,101,0.14)"/>
+        <text x="668" y="148" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">YOU</text>
+        <text x="700" y="168" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Review with Main</text>
+        <text x="700" y="184" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">show · refine · approve</text>
+        <text x="700" y="196" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">complete Markdown</text>
+      </g>
+
+      <g>
+        <rect x="764" y="240" width="112" height="80" rx="8" fill="#f0eee9"/>
+        <rect x="764" y="240" width="112" height="80" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665"/>
+        <rect x="772" y="248" width="32" height="16" rx="4" fill="rgba(16,24,40,0.10)"/>
+        <text x="788" y="260" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">FILE</text>
+        <text x="820" y="280" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Saved prompt</text>
+        <text x="820" y="296" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">prompts/&lt;name&gt;.md</text>
+        <text x="820" y="308" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">never overwrites</text>
+      </g>
+
+      <!-- Legend -->
+      <line x1="40" y1="524" x2="920" y2="524" stroke="rgba(16,24,40,0.14)" stroke-width="0.8"/>
+      <text x="40" y="556" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" letter-spacing="1.2">LEGEND</text>
+      <path d="M144 552 H176" fill="none" stroke="#4c5665" marker-end="url(#arrow)"/>
+      <text x="188" y="556" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8">CONTROLLED HANDOFF</text>
+      <path d="M404 552 H436" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+      <text x="448" y="556" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8">ISOLATED ANALYSIS</text>
+      <rect x="692" y="544" width="24" height="16" rx="4" fill="rgba(16,24,40,0.05)" stroke="#4c5665"/>
+      <text x="728" y="556" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8">SAVED AFTER APPROVAL</text>
+    </svg>

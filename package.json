@@ -17,6 +17,7 @@
       "./extensions/pi-add-dir/extensions/add-dir.ts",
       "./extensions/pi-auto-compact/extensions",
       "./extensions/pi-session-recall/extensions/session-recall.ts",
+      "./extensions/pi-prompt-creator/extensions/prompt-creator.ts",
       "./extensions/pi-deps/extensions/deps.ts",
       "./extensions/pi-footer/extensions/footer.ts",
       "./extensions/pi-notes/extensions/notes.ts",
