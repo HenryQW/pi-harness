@@ -5,6 +5,7 @@ import data from "blume:data";
 import ExtensionCard from "../components/ExtensionCard.astro";
 import Footer from "../components/Footer.astro";
 import { extensions } from "../extension-catalog.ts";
+import { mitBadgeUrl } from "../npm-badge.ts";
 
 const { config } = data;
 const featuredExtensions = [
@@ -67,6 +68,16 @@ const featuredExtensions = [
             target="_blank"
           >
             View on GitHub <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span>
+          </a>
+        </div>
+        <div class="mt-4 flex justify-center">
+          <a
+            href="https://opensource.org/license/mit"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <img alt="MIT license" height="20" src={mitBadgeUrl()} width="78" />
+            <span class="sr-only"> (opens in a new tab)</span>
           </a>
         </div>
         <div class="mt-6 flex items-center justify-center gap-3">
