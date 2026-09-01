@@ -287,13 +287,13 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 
 	const cleanupCwd = info.repoRoot || info.path;
 	const removed = await run(["worktree", "remove", ...(forceRemove ? ["--force"] : []), info.path], cleanupCwd);
-	if (removed.code !== 0) return recoveryPayload(info, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`, measurements);
+	if (removed.code !== 0) return recoveryPayload(info, `worktree remove exit ${removed.code}: ${removed.stderr.trim().slice(0, 200)}`);
 	const deleted = await run(["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit], cleanupCwd);
 	if (deleted.code !== 0) {
 		return recoveryPayload(
 			info,
 			`branch delete exit ${deleted.code}: ${deleted.stderr.trim().slice(0, 200)}`,
-			measurements,
+			{},
 			`Inspect branch ${info.branch}; recreate ${info.path} from it before assuming no work.`,
 		);
 	}

@@ -98,7 +98,24 @@ test("finalizeChildWorktree performs its final root recheck without initialized 
 	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
 });
 
-test("finalizeChildWorktree preserves a branch updated during cleanup", async (t) => {
+test("finalizeChildWorktree omits stale measurements after a failed worktree removal", async (t) => {
+	const info = worktreeInfo(await tempDir(t));
+	const calls: string[][] = [];
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
+		"rev-list --count": ok("0\n"),
+		"status --porcelain": ok(""),
+		"symbolic-ref --quiet HEAD": ok(`refs/heads/${info.branch}\n`),
+		"worktree remove": fail("worktree contains unexpected changes"),
+	}, calls)), "recovery");
+
+	assert.equal("commits" in payload, false);
+	assert.equal("dirty" in payload, false);
+	assert.match(payload.note, /worktree remove exit 1/);
+	assert.match(payload.note, /Inspect/);
+	assert.equal(calls.some((args) => args[0] === "update-ref"), false);
+});
+
+test("finalizeChildWorktree preserves a branch updated during cleanup without stale measurements", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
 	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count": ok("0\n"),
@@ -107,8 +124,8 @@ test("finalizeChildWorktree preserves a branch updated during cleanup", async (t
 		"update-ref -d": fail("cannot lock ref: reference already changed"),
 	})), "recovery");
 
-	assert.equal(payload.commits, 0);
-	assert.equal(payload.dirty, false);
+	assert.equal("commits" in payload, false);
+	assert.equal("dirty" in payload, false);
 	assert.match(payload.note, /reference already changed/);
 	assert.match(payload.note, /Inspect branch/);
 });
