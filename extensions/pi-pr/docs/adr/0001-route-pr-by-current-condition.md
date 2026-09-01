@@ -7,15 +7,15 @@
 A branch without a current-branch pull request, including a missing upstream push target, selects pull-request creation. For an existing pull request, the first matching condition wins:
 
 1. Merged, closed, or draft: no action.
-2. Required base update or merge conflict: run the branch-update workflow against the exact pull request base.
-3. Changes requested or unresolved review threads: run the package comment-sweep workflow.
-4. CI failure: run the package CI-fix workflow.
-5. Running CI, pending review, blocked merge policy, dirty worktree, local commits ahead or diverged, or another unavailable action: no action.
-6. Merge-ready: ask for final confirmation, then merge directly.
+2. Required base update or merge conflict: run branch update only when the tree is clean and local HEAD equals the PR head. Otherwise, stop with no action.
+3. Changes requested or unresolved review threads: run comment sweep under the same local prerequisite. Otherwise, stop with no action.
+4. CI failure: run CI fix under the same local prerequisite. Otherwise, stop with no action.
+5. Running CI, pending review, blocked merge policy, or unsafe local merge state: no action.
+6. Merge-ready: allow a clean local HEAD equal to or behind the PR head. Ask for final confirmation, then merge directly.
 
-Ordinary conversation comments neither select a route nor block merging. Only changes requested and unresolved review threads count as blocking PR feedback.
+Ordinary conversation comments neither select a route nor block merging. Only changes requested and unresolved review threads count as blocking PR feedback. Draft presentation outranks running CI.
 
-Current-branch discovery searches the exact push repository and ref, then validates the candidate's URL and exact head repository and ref. This finds a fork-head PR whose base is an upstream repository without selecting an unrelated PR. The selected push remote must have exactly one push URL matching the head repository and hostname.
+Current-branch discovery searches the exact push repository and ref. It validates each candidate's URL, head repository, and head ref. It preserves the sole validated push URL as fetch authority, separate from repository identity. An open PR must match the exact remote push-ref OID. Without an open PR, one historical candidate must match that OID. Discovery never falls back to local HEAD when the remote ref is absent.
 
 When creation is selected, the bundled workflow pushes `HEAD` to `origin` and sets the upstream when absent before creating or updating the PR.
 
@@ -23,7 +23,9 @@ When creation is selected, the bundled workflow pushes `HEAD` to `origin` and se
 
 Presentation polling never starts a workflow or auto-triages comments. The router does not open a browser, invoke `/done` or `/sweep`, enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees. A single invocation never chains into another route.
 
-Before merging, the local safety check validates the PR head repository as the fetch remote, fetches the head, and rejects an OID mismatch. The comment-sweep workflow resolves its helper and references from the effective package skill path. It needs no external `jq` executable. Before a sweep push, it revalidates the full PR identity: number, URL, hostname, base repository/ref/OID, and head repository/ref/OID. Any mismatch stops the push. Each PR hostname selects its GitHub API host. Only authenticated GitHub.com and GitHub Enterprise repositories are supported.
+Presentation and merge safety fetch the exact advertised PR head OID from the validated push URL. Fetches use `--no-write-fetch-head` and never read `FETCH_HEAD`. Legacy branch protection and applicable repository rulesets both provide strict-status authority. A strict result from either requires a base update; malformed or unauthorized results fail visibly.
+
+Branch update derives the exact base host and repository from the validated public PR URL. It uses supported public base ref and OID fields. The comment sweep resolves its helper and references from the effective package skill path. It needs no external `jq` executable. Before pushing, it revalidates stable PR identity and the base OID. A PR head already equal to local HEAD needs no push. Snapshot head equality remains required when a push is still needed. Each PR hostname selects its GitHub API host. Only authenticated GitHub.com and GitHub Enterprise repositories are supported.
 
 ## Consequences
 

@@ -22,7 +22,6 @@ export type InspectLocalMergeSafetyInput = {
 	cwd: string;
 	expectedHead: string;
 	headFetchSource: string;
-	headRef: string;
 };
 
 export type MergeMethodSelectionInput = {
@@ -89,7 +88,6 @@ function validateInspectionInput(input: InspectLocalMergeSafetyInput): void {
 	requiredText(input.cwd, "cwd");
 	requiredText(input.expectedHead, "expected PR head");
 	requiredText(input.headFetchSource, "PR head fetch source");
-	requiredText(input.headRef, "PR head ref");
 	if (typeof input.exec !== "function") throw new TypeError("exec must be a function");
 }
 
@@ -102,29 +100,24 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 
 	await runCommand(input.exec, input.cwd, "git", [
 		"fetch",
+		"--no-write-fetch-head",
 		"--no-tags",
 		input.headFetchSource,
-		`refs/heads/${input.headRef}`,
+		input.expectedHead,
 	]);
-	const fetchedHead = requiredOutput(
-		await runCommand(input.exec, input.cwd, "git", ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]),
-		"FETCH_HEAD",
-	);
-	if (fetchedHead !== input.expectedHead) {
-		throw new Error(`Fetched PR head ${fetchedHead} does not match expected PR head ${input.expectedHead}`);
-	}
+	await runCommand(input.exec, input.cwd, "git", ["cat-file", "-e", `${input.expectedHead}^{commit}`]);
 
 	const localHead = requiredOutput(
 		await runCommand(input.exec, input.cwd, "git", ["rev-parse", "--verify", "HEAD"]),
 		"local HEAD",
 	);
-	if (localHead === fetchedHead) return { worktree, head: "equal" };
+	if (localHead === input.expectedHead) return { worktree, head: "equal" };
 
 	const localAncestor = await runCommand(
 		input.exec,
 		input.cwd,
 		"git",
-		["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"],
+		["merge-base", "--is-ancestor", "HEAD", input.expectedHead],
 		[0, 1],
 	);
 	if (localAncestor.code === 0) return { worktree, head: "behind" };
@@ -133,7 +126,7 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 		input.exec,
 		input.cwd,
 		"git",
-		["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"],
+		["merge-base", "--is-ancestor", input.expectedHead, "HEAD"],
 		[0, 1],
 	);
 	return { worktree, head: expectedAncestor.code === 0 ? "ahead" : "diverged" };

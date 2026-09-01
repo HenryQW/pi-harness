@@ -61,6 +61,29 @@ test("ordinary conversation comments do not route", () => {
 	assert.equal(deriveNextStep(candidate), "merge");
 });
 
+test("mutating workflows require a clean worktree with local HEAD equal to the PR head", () => {
+	const routes: Array<[Partial<PullRequestConditions>, NextStep]> = [
+		[{ conflict: true }, "update-branch"],
+		[{ changesRequested: true }, "sweep"],
+		[{ ci: "failure" }, "fix-ci"],
+	];
+	for (const [routeConditions, expected] of routes) {
+		assert.equal(deriveNextStep(pullRequest({ conditions: routeConditions })), expected);
+		for (const blocked of [
+			{ worktree: "dirty", head: "equal" },
+			{ worktree: "clean", head: "behind" },
+			{ worktree: "clean", head: "ahead" },
+			{ worktree: "clean", head: "diverged" },
+		] as const) {
+			assert.equal(
+				deriveNextStep(pullRequest({ conditions: routeConditions, local: blocked })),
+				"none",
+				`${expected} ${blocked.worktree}/${blocked.head}`,
+			);
+		}
+	}
+});
+
 test("only clean local branches equal to or behind the PR head can merge", () => {
 	const cases: Array<[LocalMergeSafety, NextStep]> = [
 		[{ worktree: "clean", head: "equal" }, "merge"],

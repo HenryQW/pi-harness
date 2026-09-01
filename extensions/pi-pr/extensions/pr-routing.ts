@@ -29,6 +29,10 @@ export type PullRequest = {
 
 export type NextStep = "create" | "none" | "update-branch" | "sweep" | "fix-ci" | "merge";
 
+function localMutationSafe(local: LocalMergeSafety): boolean {
+	return local.worktree === "clean" && local.head === "equal";
+}
+
 function localMergeSafe(local: LocalMergeSafety): boolean {
 	return local.worktree === "clean" && (local.head === "equal" || local.head === "behind");
 }
@@ -36,16 +40,20 @@ function localMergeSafe(local: LocalMergeSafety): boolean {
 export function deriveNextStep(pullRequest: PullRequest | null): NextStep {
 	if (pullRequest === null) return "create";
 
-	const { lifecycle, conditions } = pullRequest;
+	const { lifecycle, conditions, local } = pullRequest;
 	if (lifecycle !== "open" || conditions.draft) return "none";
-	if (conditions.baseUpdateRequired || conditions.conflict) return "update-branch";
-	if (conditions.changesRequested || conditions.unresolvedThreads > 0) return "sweep";
-	if (conditions.ci === "failure") return "fix-ci";
+	if (conditions.baseUpdateRequired || conditions.conflict) {
+		return localMutationSafe(local) ? "update-branch" : "none";
+	}
+	if (conditions.changesRequested || conditions.unresolvedThreads > 0) {
+		return localMutationSafe(local) ? "sweep" : "none";
+	}
+	if (conditions.ci === "failure") return localMutationSafe(local) ? "fix-ci" : "none";
 	if (
 		conditions.ci === "running" ||
 		conditions.review === "pending" ||
 		conditions.policy === "pending" ||
-		!localMergeSafe(pullRequest.local)
+		!localMergeSafe(local)
 	) return "none";
 	return "merge";
 }

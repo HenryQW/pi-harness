@@ -49,6 +49,15 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	if (pullRequest.conditions.draft) {
 		return { message: `PR #${pullRequest.number} is draft; no action available`, type: "warning" };
 	}
+	const mutatingWorkflowSelected = pullRequest.conditions.baseUpdateRequired || pullRequest.conditions.conflict ||
+		pullRequest.conditions.changesRequested || pullRequest.conditions.unresolvedThreads > 0 ||
+		pullRequest.conditions.ci === "failure";
+	if (mutatingWorkflowSelected && pullRequest.local.worktree === "dirty") {
+		return { message: `PR #${pullRequest.number} is blocked by a dirty worktree`, type: "warning" };
+	}
+	if (mutatingWorkflowSelected && pullRequest.local.head !== "equal") {
+		return { message: `PR #${pullRequest.number} is blocked by local HEAD ${pullRequest.local.head}`, type: "warning" };
+	}
 	if (pullRequest.conditions.ci === "running") {
 		return { message: `PR #${pullRequest.number} is waiting for CI`, type: "warning" };
 	}
@@ -97,10 +106,6 @@ async function mergePullRequest(
 	if (freshMethod !== method) {
 		throw new Error(`PR #${fresh.number} merge cancelled: merge method changed from ${method} to ${freshMethod}`);
 	}
-	if (!fresh.headFetchSource) {
-		throw new Error(`PR #${fresh.number} merge failed: head fetch source is unavailable`);
-	}
-
 	await executeGitHubMerge({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
@@ -112,7 +117,6 @@ async function mergePullRequest(
 		hostname: fresh.host,
 		expectedHead: fresh.head.oid,
 		headFetchSource: fresh.headFetchSource,
-		headRef: fresh.head.ref,
 		allowedMergeMethods: fresh.merge.allowedMergeMethods,
 		viewerDefaultMergeMethod: fresh.merge.viewerDefaultMergeMethod,
 	});

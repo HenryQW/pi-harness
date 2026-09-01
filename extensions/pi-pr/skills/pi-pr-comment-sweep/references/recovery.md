@@ -24,16 +24,18 @@ blocked until tracked work is committed or otherwise restored by user.
 ## Adopt PR head
 
 Only exact user words **“Adopt PR head”** authorize this path. Inspect
-`gh pr view "$PR" --json headRepository,headRefName`; choose exactly one remote
-whose normalized GitHub host/owner/repository matches `headRepository`. Run:
+`gh pr view "$PR" --json url,headRepository,headRefName,headRefOid`. Validate the
+PR URL, full head OID, and ref. Choose exactly one push URL whose normalized
+GitHub host/owner/repository matches `headRepository`. Run:
 
 ```bash
-git fetch "$REMOTE" "$HEAD_REF"
-git log --oneline HEAD..FETCH_HEAD
-git diff --stat HEAD..FETCH_HEAD
-git merge-base --is-ancestor HEAD FETCH_HEAD
-git merge --ff-only FETCH_HEAD
+git fetch --no-write-fetch-head --no-tags "$PUSH_URL" "$PR_HEAD_SHA"
+git cat-file -e "$PR_HEAD_SHA^{commit}"
+git log --oneline HEAD.."$PR_HEAD_SHA"
+git diff --stat HEAD.."$PR_HEAD_SHA"
+git merge-base --is-ancestor HEAD "$PR_HEAD_SHA"
+git merge --ff-only "$PR_HEAD_SHA"
 ```
 
-Stop on divergence or ambiguous remote. Never hard-reset. Re-run target
-verification and initial fetch after fast-forward.
+Stop on an absent object, divergence, or ambiguous push URL. Never hard-reset.
+Re-run target verification and initial fetch after fast-forward.

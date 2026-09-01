@@ -48,8 +48,8 @@ function footerStatus(input: PrDisplayInput, nextStep: NextStep): Pick<PrFooter,
 		case "merge":
 			return { text: "merge-ready", color: "success" };
 		case "none":
-			if (input.conditions.ci === "running") return { text: "CI running", color: "warning" };
 			if (input.conditions.draft) return { text: "draft", color: "warning" };
+			if (input.conditions.ci === "running") return { text: "CI running", color: "warning" };
 			if (input.approved) return { text: "approved", color: "success" };
 			return { text: "open", color: "accent" };
 		case "create":

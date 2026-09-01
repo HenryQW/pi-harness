@@ -111,8 +111,8 @@ test("projects every next step into one footer status and optional widget", () =
 			footer: "CI running",
 		},
 		{
-			name: "draft",
-			input: pullRequest({ conditions: { draft: true } }),
+			name: "draft before running CI",
+			input: pullRequest({ conditions: { draft: true, ci: "running" } }),
 			nextStep: "none",
 			footer: "draft",
 		},
@@ -201,6 +201,18 @@ test("formats themed footer text with OSC-8 only when supported", () => {
 		assert.doesNotMatch(footer, /\x1b\]8;;/);
 		assert.equal(plain(footer), "PR #42 · open");
 	});
+});
+
+test("does not advertise mutating workflows when their local prerequisite fails", () => {
+	for (const candidate of [
+		pullRequest({ conditions: { conflict: true }, local: { worktree: "dirty", head: "equal" } }),
+		pullRequest({ conditions: { changesRequested: true }, local: { worktree: "clean", head: "behind" } }),
+		pullRequest({ conditions: { ci: "failure" }, local: { worktree: "clean", head: "ahead" } }),
+	]) {
+		const display = projectPrDisplay(candidate);
+		assert.equal(display.nextStep, "none");
+		assert.equal(formatPrWidget(display), undefined);
+	}
 });
 
 test("clears widget for non-actionable projections", () => {

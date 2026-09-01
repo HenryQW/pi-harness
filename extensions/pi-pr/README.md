@@ -39,34 +39,34 @@ Use `/pr` without arguments. It reads the current branch pull request and local 
 | Current condition | `/pr` route |
 | --- | --- |
 | No current-branch pull request, including no upstream push target | Start pull-request creation. |
-| Base update required or merge conflict | Update from the pull request's exact base. A conflict uses this same route. |
-| Changes requested or unresolved review threads | Run the package comment sweep. |
-| CI failed | Run the CI fix workflow. |
+| Base update required or merge conflict | Update from the exact base when the tree is clean and local HEAD equals the PR head. |
+| Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
+| CI failed | Run the CI fix workflow when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
 `pi-pr-create` pushes `HEAD` to `origin` and sets the upstream when absent, then creates or updates the PR.
 
-Current-branch discovery matches the exact push repository and ref. It finds a fork-head PR whose base is an upstream repository.
+Current-branch discovery matches the exact push repository and ref. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 
-A no-action state includes a draft, merged or closed pull request, running CI, pending review, blocked merge policy, a dirty worktree, local commits ahead or diverged, or no available action.
+A no-action state includes a draft, merged or closed pull request, running CI, pending review, or blocked merge policy. It also includes a mutating workflow whose tree is dirty or whose local HEAD differs from the PR head.
 
 ## Route priority
 
 A missing pull request uses creation. For an existing pull request, the first matching condition wins:
 
 1. Merged, closed, or draft: no action.
-2. Base update required or merge conflict.
-3. Changes requested or unresolved review threads.
-4. CI failure.
+2. Base update required or merge conflict. Run only with a clean tree and equal local and PR heads.
+3. Changes requested or unresolved review threads. Apply the same local prerequisite.
+4. CI failure. Apply the same local prerequisite.
 5. Waiting or local safety block: no action.
-6. Merge-ready: final confirmation, then direct merge.
+6. Merge-ready: allow clean local HEAD equal to or behind the PR head. Confirm, then merge directly.
 
 Ordinary conversation comments do not trigger a route or block a merge. Changes requested and unresolved review threads can select the package comment sweep.
 
 ## Refresh
 
-The footer and widget load at session start and poll every 30 seconds. Polling updates presentation only and may be stale. `/pr` reads fresh remote and local state before it chooses a route or merges. The command is authoritative for actions.
+The footer and widget load at session start and poll every 30 seconds. Polling updates presentation only and may be stale. Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
 ## Safety limits
 
@@ -76,7 +76,9 @@ The footer and widget load at session start and poll every 30 seconds. Polling u
 - It does not enable auto-merge or add a merge queue.
 - It does not rebase the local branch, force-push, delete branches, or clean up worktrees.
 - Existing PR discovery and comment-sweep pushes require exactly one unambiguous push URL for the target head repository.
-- Before merge, `/pr` validates the PR head repository as the fetch remote, fetches the head, and verifies its OID matches the advertised head OID.
-- Before a comment-sweep push, it revalidates the full PR identity: number, URL, hostname, base repository/ref/OID, and head repository/ref/OID. A mismatch cancels the push.
+- Presentation fetches use that exact push URL and exact advertised OID. They do not use shared fetch state.
+- Strict status checks in legacy branch protection or applicable repository rulesets require a base update.
+- Before merge, `/pr` fetches the exact head OID from the validated push URL without shared fetch state.
+- Before a comment-sweep push, it revalidates the full PR identity: number, URL, hostname, base repository/ref/OID, and head repository/ref/OID. An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
 - Only authenticated GitHub.com and GitHub Enterprise repositories are supported.

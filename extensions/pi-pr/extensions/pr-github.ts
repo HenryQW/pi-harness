@@ -78,7 +78,7 @@ export type CurrentPullRequest = PullRequest & {
 	approved: boolean;
 	base: PullRequestRef;
 	head: PullRequestRef;
-	headFetchSource?: string;
+	headFetchSource: string;
 	merge: PullRequestMerge | null;
 };
 
@@ -98,8 +98,9 @@ type PushRepository = {
 };
 
 type PushTarget = {
+	fetchSource: string;
 	headOid: string;
-	remote: string;
+	remoteHeadOid: string | null;
 	repository: PushRepository;
 	ref: string;
 };
@@ -241,7 +242,7 @@ async function execute(
 	args: string[],
 ): Promise<CommandOutput> {
 	const result = await invoke(pi, context, action, command, args);
-	if (result.code !== 0) commandFailure(action, result);
+	if (result.killed || result.code !== 0) commandFailure(action, result);
 	return result;
 }
 
@@ -269,6 +270,16 @@ function parsePushRepository(output: string): PushRepository {
 		normalizedName: normalizeRepository(nameWithOwner),
 		host: url.hostname.toLowerCase(),
 	};
+}
+
+function parseRemotePushRef(output: string, ref: string): string {
+	const normalized = output.replace(/\r\n/g, "\n");
+	const line = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+	const parts = line.split("\t");
+	if (line.includes("\n") || parts.length !== 2 || parts[1] !== `refs/heads/${ref}`) {
+		fail("Read remote push ref", "response does not match push ref");
+	}
+	return oid(parts[0], "Read remote push ref", "OID");
 }
 
 function parsePullRequestUrl(value: unknown, number: number): { url: URL; repository: string } {
@@ -434,12 +445,19 @@ function selectPullRequest(
 	);
 	const open = matching.filter((candidate) => candidate.lifecycle === "open");
 	if (open.length > 1) fail("Find pull requests", "multiple open pull requests match current push target");
-	if (open.length === 1) return open[0];
+	if (open.length === 1) {
+		if (pushTarget.remoteHeadOid === null) fail("Find pull requests", "remote push ref is absent for open pull request");
+		if (open[0].head.oid !== pushTarget.remoteHeadOid) {
+			fail("Find pull requests", "open pull request head does not match remote push ref");
+		}
+		return open[0];
+	}
+	if (pushTarget.remoteHeadOid === null) return null;
 
 	const historical = matching.filter((candidate) =>
-		candidate.lifecycle !== "open" && candidate.head.oid === pushTarget.headOid,
+		candidate.lifecycle !== "open" && candidate.head.oid === pushTarget.remoteHeadOid
 	);
-	if (historical.length > 1) fail("Find pull requests", "multiple historical pull requests match current HEAD");
+	if (historical.length > 1) fail("Find pull requests", "multiple historical pull requests match remote push ref");
 	return historical[0] ?? null;
 }
 
@@ -519,7 +537,7 @@ function parseUnresolvedReviewThreads(output: string): number {
 	return total;
 }
 
-function parseBaseBranchPolicy(output: string, candidate: ListedPullRequest): boolean {
+function parseLegacyBaseBranchPolicy(output: string, candidate: ListedPullRequest): boolean {
 	const value = parseJson(output, "Read base branch policy");
 	if (!isRecord(value)) fail("Read base branch policy", "invalid GitHub CLI output");
 	if (value.errors !== undefined) {
@@ -541,6 +559,22 @@ function parseBaseBranchPolicy(output: string, candidate: ListedPullRequest): bo
 		fail("Read base branch policy", "invalid GitHub CLI output");
 	}
 	return rule.requiresStrictStatusChecks;
+}
+
+function parseRulesetBaseBranchPolicy(output: string): boolean {
+	const value = parseJson(output, "Read base branch rulesets");
+	if (!Array.isArray(value)) fail("Read base branch rulesets", "invalid GitHub CLI output");
+	let strict = false;
+	for (const rule of value) {
+		if (!isRecord(rule)) fail("Read base branch rulesets", "invalid GitHub CLI output");
+		const type = text(rule.type, "Read base branch rulesets", "rule type");
+		if (type !== "required_status_checks") continue;
+		if (!isRecord(rule.parameters) || typeof rule.parameters.strict_required_status_checks_policy !== "boolean") {
+			fail("Read base branch rulesets", "invalid GitHub CLI output");
+		}
+		strict ||= rule.parameters.strict_required_status_checks_policy;
+	}
+	return strict;
 }
 
 function parseMergeMethodSettings(output: string): PullRequestMerge {
@@ -609,14 +643,31 @@ async function readPushTarget(
 		"push URL",
 	);
 	if (pushUrls.length !== 1) fail("Read push URL", "multiple push URLs are configured");
+	const fetchSource = pushUrls[0];
 	const repository = parsePushRepository((await execute(
 		pi,
 		context,
 		"Read push repository",
 		"gh",
-		["repo", "view", pushUrls[0], "--json", "nameWithOwner,url"],
+		["repo", "view", fetchSource, "--json", "nameWithOwner,url"],
 	)).stdout);
-	return { headOid, remote: push.remote, repository, ref: push.ref };
+	const remoteHead = await invoke(pi, context, "Read remote push ref", "git", [
+		"ls-remote",
+		"--exit-code",
+		"--refs",
+		fetchSource,
+		`refs/heads/${push.ref}`,
+	]);
+	let remoteHeadOid: string | null;
+	if (remoteHead.killed) commandFailure("Read remote push ref", remoteHead);
+	if (remoteHead.code === 2) {
+		if (remoteHead.stdout !== "") fail("Read remote push ref", "invalid absent-ref response");
+		remoteHeadOid = null;
+	} else {
+		if (remoteHead.code !== 0) commandFailure("Read remote push ref", remoteHead);
+		remoteHeadOid = parseRemotePushRef(remoteHead.stdout, push.ref);
+	}
+	return { fetchSource, headOid, remoteHeadOid, repository, ref: push.ref };
 }
 
 async function readUnresolvedReviewThreads(
@@ -645,7 +696,7 @@ async function readBaseBranchPolicy(
 	candidate: ListedPullRequest,
 ): Promise<boolean> {
 	const [owner, name] = candidate.base.repository.split("/");
-	const result = await execute(pi, context, "Read base branch policy", "gh", [
+	const legacy = await execute(pi, context, "Read base branch policy", "gh", [
 		"api",
 		"graphql",
 		"--hostname",
@@ -659,7 +710,19 @@ async function readBaseBranchPolicy(
 		"-F",
 		`qualifiedName=refs/heads/${candidate.base.ref}`,
 	]);
-	return parseBaseBranchPolicy(result.stdout, candidate);
+	const rulesets = await execute(pi, context, "Read base branch rulesets", "gh", [
+		"api",
+		"--hostname",
+		candidate.url.hostname,
+		"-H",
+		"Accept: application/vnd.github+json",
+		"-H",
+		"X-GitHub-Api-Version: 2022-11-28",
+		`repos/${owner}/${name}/rules/branches/${encodeURIComponent(candidate.base.ref)}`,
+	]);
+	const legacyStrict = parseLegacyBaseBranchPolicy(legacy.stdout, candidate);
+	const rulesetStrict = parseRulesetBaseBranchPolicy(rulesets.stdout);
+	return legacyStrict || rulesetStrict;
 }
 
 async function readLocalMergeSafety(
@@ -674,42 +737,34 @@ async function readLocalMergeSafety(
 		"--untracked-files=all",
 	]);
 	const worktree = status.stdout === "" ? "clean" : "dirty";
-	if (pushTarget.headOid === pullRequestHead) return { worktree, head: "equal" };
 
 	await execute(pi, context, "Fetch pull request head", "git", [
 		"fetch",
+		"--no-write-fetch-head",
 		"--no-tags",
-		pushTarget.remote,
-		`refs/heads/${pushTarget.ref}`,
+		pushTarget.fetchSource,
+		pullRequestHead,
 	]);
-	const fetchedHead = oid(
-		singleLine(
-			(await execute(pi, context, "Read fetched pull request head", "git", ["rev-parse", "--verify", "FETCH_HEAD^{commit}"])).stdout,
-			"Read fetched pull request head",
-			"FETCH_HEAD",
-		),
-		"Read fetched pull request head",
-		"FETCH_HEAD",
-	);
-	if (fetchedHead !== pullRequestHead) {
-		fail("Fetch pull request head", "FETCH_HEAD does not match advertised pull request head");
-	}
+	await execute(pi, context, "Verify pull request head", "git", ["cat-file", "-e", `${pullRequestHead}^{commit}`]);
+	if (pushTarget.headOid === pullRequestHead) return { worktree, head: "equal" };
 
 	const localIsAncestor = await invoke(pi, context, "Compare pull request head", "git", [
 		"merge-base",
 		"--is-ancestor",
 		pushTarget.headOid,
-		fetchedHead,
+		pullRequestHead,
 	]);
+	if (localIsAncestor.killed) commandFailure("Compare pull request head", localIsAncestor);
 	if (localIsAncestor.code === 0) return { worktree, head: "behind" };
 	if (localIsAncestor.code !== 1) commandFailure("Compare pull request head", localIsAncestor);
 
 	const pullRequestIsAncestor = await invoke(pi, context, "Compare pull request head", "git", [
 		"merge-base",
 		"--is-ancestor",
-		fetchedHead,
+		pullRequestHead,
 		pushTarget.headOid,
 	]);
+	if (pullRequestIsAncestor.killed) commandFailure("Compare pull request head", pullRequestIsAncestor);
 	if (pullRequestIsAncestor.code === 0) return { worktree, head: "ahead" };
 	if (pullRequestIsAncestor.code === 1) return { worktree, head: "diverged" };
 	return commandFailure("Compare pull request head", pullRequestIsAncestor);
@@ -763,6 +818,10 @@ export async function loadCurrentPullRequest(
 	}
 	const candidate = selectPullRequest(candidates, pushTarget);
 	if (candidate === null) return null;
+	await execute(pi, context, "Validate pull request base ref", "git", [
+		"check-ref-format",
+		`refs/heads/${candidate.base.ref}`,
+	]);
 
 	const unresolvedThreads = candidate.lifecycle === "open"
 		? await readUnresolvedReviewThreads(pi, context, candidate)
@@ -784,7 +843,7 @@ export async function loadCurrentPullRequest(
 		local,
 		base: candidate.base,
 		head: candidate.head,
-		headFetchSource: pushTarget.remote,
+		headFetchSource: pushTarget.fetchSource,
 		merge,
 	};
 }

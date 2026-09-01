@@ -37,11 +37,11 @@ One widget sentence tells the user which highest-priority workflow `/pr` will ru
 _Avoid_: `/pr` arguments, workflow menu, multiple actions
 
 **PR workflow routing**:
-Argument-free `/pr` derives one next step from fresh remote and local state. A branch without an upstream push target has no current-branch pull request for routing and selects creation. For an existing pull request, lifecycle and draft no-action states come first, followed by required base update or conflict, PR feedback, CI failure, waiting or local blockers, and merge readiness. It does not open a browser, invoke `/done` or `/sweep`, or continue automatically into another workflow.
+Argument-free `/pr` derives one next step from fresh remote and local state. A branch without an upstream push target has no current-branch pull request for routing and selects creation. For an existing pull request, lifecycle and draft no-action states come first, followed by required base update or conflict, PR feedback, CI failure, waiting or local blockers, and merge readiness. Branch update, comment sweep, and CI fix run only with a clean tree and local HEAD equal to the PR head. A failed local prerequisite stops routing instead of falling through. Direct merge keeps its clean equal-or-behind rule. `/pr` does not open a browser, invoke `/done` or `/sweep`, or continue automatically into another workflow.
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
-The footer and widget load at session start and poll every 30 seconds. Polling is presentation only and may be stale. `/pr` reads fresh state and is authoritative for actions.
+The footer and widget load at session start and poll every 30 seconds. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:
@@ -49,17 +49,17 @@ When the current branch has no pull request, `/pr` dispatches bundled `pi-pr-cre
 _Avoid_: Duplicated shell workflow, unscoped automatic commit
 
 **PR branch-update workflow**:
-When the current pull request needs a base update or has a merge conflict, `/pr` dispatches bundled `pi-pr-update-branch`. The workflow requires a clean worktree, uses the exact pull request base revision, merges without rewriting history, resolves clear conflicts, validates, and pushes. It stops when resolution requires a product decision.
+When the current pull request needs a base update or has a merge conflict, `/pr` dispatches bundled `pi-pr-update-branch` only when local HEAD equals the PR head and the worktree is clean. It derives the exact base host and repository from the validated public PR URL. It uses the public base ref and OID fields, merges without rewriting history, resolves clear conflicts, validates, and pushes. It stops when resolution requires a product decision.
 _Avoid_: `origin/main`, rebase, force push, automatic stashing
 
 **PR comment-sweep workflow**:
-When changes are requested or unresolved review threads exist, `/pr` dispatches the package-owned `pi-pr-comment-sweep`. It resolves its bundled helper and references from the installed package skill path and needs no external `jq` executable. Its selected push remote must have one unambiguous push URL. Before pushing, it revalidates the full PR identity: number, URL, hostname, base repository/ref/OID, and head repository/ref/OID. Ordinary conversation comments do not select it, and presentation polling never starts it.
+When changes are requested or unresolved review threads exist, `/pr` dispatches the package-owned `pi-pr-comment-sweep` only when local HEAD equals the PR head and the worktree is clean. It resolves its bundled helper and references from the installed package skill path and needs no external `jq` executable. Its selected push remote must have one unambiguous push URL. Before pushing, it revalidates stable PR identity and the base OID. It accepts the PR head already equal to local HEAD; otherwise the snapshot head must remain unchanged. Ordinary conversation comments do not select it, and presentation polling never starts it.
 _Avoid_: `/sweep`, automatic comment triage, ordinary-comment routing
 
 **PR CI-fix workflow**:
-When CI has failed, `/pr` dispatches the package-owned `pi-pr-fix-ci` as one scoped next step. Running CI, pending review, and blocked merge policy remain no-action states.
+When CI has failed, `/pr` dispatches the package-owned `pi-pr-fix-ci` only when local HEAD equals the PR head and the worktree is clean. Running CI, pending review, and blocked merge policy remain no-action states.
 _Avoid_: CI watcher, automatic retry, rerun loop
 
 **PR merge workflow**:
-When the current pull request is merge-ready, `/pr` asks for final yes-or-no confirmation, revalidates readiness, and merges directly. The readiness check validates the PR head repository as the fetch remote, fetches the head, and verifies its OID before merging. It uses the sole repository-allowed merge method, or squash when several methods are allowed. It does not enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees.
+When the current pull request is merge-ready, `/pr` asks for final yes-or-no confirmation, revalidates readiness, and merges directly. It allows a clean local HEAD equal to or behind the PR head. The readiness check fetches the exact PR head OID from the validated push URL without shared fetch state. It uses the sole repository-allowed merge method, or squash when several methods are allowed. It does not enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees.
 _Avoid_: Merge skill, unconfirmed merge, auto-merge, branch cleanup, worktree completion

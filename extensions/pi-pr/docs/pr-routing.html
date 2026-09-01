@@ -24,7 +24,7 @@
   <main>
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="pr-routing-title pr-routing-desc">
       <title id="pr-routing-title">How /pr picks one route</title>
-      <desc id="pr-routing-desc">Top-down priority flowchart. The /pr command reads fresh GitHub and local state, then checks seven combined condition and route rows in order. A downward arrow means otherwise continue. The first matching condition wins, so at most one route runs.</desc>
+      <desc id="pr-routing-desc">The /pr command creates a pull request when needed, gates branch update, feedback sweep, and CI repair on a clean worktree with local HEAD equal to the PR head, and permits direct merge when clean local HEAD is equal to or behind the PR head.</desc>
       <defs>
         <marker id="pr-routing-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
           <polygon points="0 0, 8 4, 0 8" fill="#4c5665"/>
@@ -91,8 +91,8 @@
       <text x="200" y="304" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
       <text x="200" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Base behind or conflicted</text>
       <text x="728" y="304" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Update branch</text>
-      <text x="1136" y="324" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-update-branch</text>
+      <text x="728" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Update if clean + equal</text>
+      <text x="1136" y="324" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">otherwise no action</text>
 
       <!-- 4 -->
       <rect x="120" y="352" width="1040" height="48" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
@@ -102,8 +102,8 @@
       <text x="200" y="368" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
       <text x="200" y="388" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Changes requested or unresolved threads</text>
       <text x="728" y="368" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="388" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Sweep feedback</text>
-      <text x="1136" y="388" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-comment-sweep</text>
+      <text x="728" y="388" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Sweep if clean + equal</text>
+      <text x="1136" y="388" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">otherwise no action</text>
 
       <!-- 5 -->
       <rect x="120" y="416" width="1040" height="48" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
@@ -113,8 +113,8 @@
       <text x="200" y="432" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
       <text x="200" y="452" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">CI failed</text>
       <text x="728" y="432" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="452" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Fix CI</text>
-      <text x="1136" y="452" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-fix-ci</text>
+      <text x="728" y="452" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Fix CI if clean + equal</text>
+      <text x="1136" y="452" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">otherwise no action</text>
 
       <!-- 6 -->
       <rect x="120" y="480" width="1040" height="48" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
@@ -122,10 +122,10 @@
       <line x1="704" y1="488" x2="704" y2="520" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
       <text x="148" y="512" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">6</text>
       <text x="200" y="496" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="516" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Waiting or locally unsafe</text>
+      <text x="200" y="516" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Other waiting or merge-local block</text>
       <text x="728" y="496" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
       <text x="728" y="516" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">No action</text>
-      <text x="1136" y="516" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">CI running, review pending, dirty, ahead, or diverged</text>
+      <text x="1136" y="516" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">CI running, review or policy pending, dirty, ahead, or diverged</text>
 
       <!-- 7 -->
       <rect x="120" y="544" width="1040" height="48" rx="6" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
@@ -133,7 +133,7 @@
       <line x1="704" y1="552" x2="704" y2="584" stroke="rgba(29,78,216,0.32)" stroke-width="1"/>
       <text x="148" y="576" fill="#1d4ed8" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">7</text>
       <text x="200" y="560" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="580" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Merge-ready</text>
+      <text x="200" y="580" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Merge-ready + clean + equal or behind</text>
       <text x="728" y="560" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
       <text x="728" y="580" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Confirm, recheck, merge</text>
       <text x="1136" y="580" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">expected-head GraphQL mutation</text>

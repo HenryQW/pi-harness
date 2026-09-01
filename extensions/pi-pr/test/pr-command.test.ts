@@ -92,12 +92,19 @@ function harness(options: HarnessOptions) {
 			) return result(`${configuredLocalHead}\n`);
 			if (command === "git" && args.join(" ") === "for-each-ref --format=%(push:short) refs/heads/feature/pr") return result("fork/feature/pr\n");
 			if (command === "git" && args.join(" ") === "remote") return result("fork\norigin\n");
-			if (command === "git" && args[0] === "check-ref-format" && args[1] === "--branch") return result(`${args[2]}\n`);
+			if (command === "git" && args[0] === "check-ref-format") {
+				if (args[1] === "--branch") return result(`${args[2]}\n`);
+				if (args[1] === "refs/heads/main") return result();
+			}
 			if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
 				return result("git@github.com:acme/project.git\n");
 			}
 			if (command === "gh" && args[0] === "repo" && args[1] === "view" && args[2] === "git@github.com:acme/project.git") {
 				return result(JSON.stringify({ nameWithOwner: "acme/project", url: `https://${nextHost()}/acme/project` }));
+			}
+			if (command === "git" && args[0] === "ls-remote") {
+				const remoteHead = options.states[stateIndex]?.headRefOid ?? localHead;
+				return result(`${remoteHead}\trefs/heads/feature/pr\n`);
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "search/issues") {
 				events.push("load");
@@ -133,14 +140,12 @@ function harness(options: HarnessOptions) {
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") return result(options.status ?? "");
 			if (command === "git" && args[0] === "fetch") return result();
-			if (command === "git" && args.join(" ") === "rev-parse --verify FETCH_HEAD^{commit}") {
-				return result(`${active?.headRefOid ?? localHead}\n`);
-			}
+			if (command === "git" && args[0] === "cat-file" && args[1] === "-e") return result();
 			if (command === "git" && args[0] === "merge-base" && args[1] === "--is-ancestor") {
 				const [left, right] = args.slice(2);
 				const remoteHead = active?.headRefOid ?? localHead;
 				const localReference = (value: string | undefined) => value === configuredLocalHead || value === "HEAD";
-				const remoteReference = (value: string | undefined) => value === remoteHead || value === "FETCH_HEAD";
+				const remoteReference = (value: string | undefined) => value === remoteHead;
 				if (options.ancestry === "behind" && localReference(left) && remoteReference(right)) return result();
 				if (options.ancestry === "ahead" && remoteReference(left) && localReference(right)) return result();
 				return result("", 1);
@@ -221,6 +226,28 @@ test("routes one package workflow without opening a browser or chaining", async 
 		assert.equal(app.confirmations.length, 0, route.name);
 		assert.equal(mutationCalls(app.calls).length, 0, route.name);
 		assert.equal(app.calls.some(({ args }) => args.includes("--web")), false, route.name);
+	}
+});
+
+test("does not dispatch mutating workflows when the worktree is dirty or local HEAD is behind", async () => {
+	const conditions: Array<{ name: string; state: PullRequestSpec }> = [
+		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } },
+		{ name: "comment sweep", state: { reviewDecision: "CHANGES_REQUESTED" } },
+		{ name: "CI fix", state: { statusCheckRollup: [{ conclusion: "FAILURE" }] } },
+	];
+	for (const route of conditions) {
+		const dirty = harness({ states: [route.state], status: " M file.ts\n" });
+		await dirty.handler("", dirty.context);
+		assert.deepEqual(dirty.messages, [], `${route.name} dirty`);
+		assert.match(dirty.notifications[0]?.message ?? "", /dirty worktree/, `${route.name} dirty`);
+
+		const behind = harness({
+			states: [{ ...route.state, headRefOid: nextHead }],
+			ancestry: "behind",
+		});
+		await behind.handler("", behind.context);
+		assert.deepEqual(behind.messages, [], `${route.name} behind`);
+		assert.match(behind.notifications[0]?.message ?? "", /local HEAD behind/, `${route.name} behind`);
 	}
 });
 
@@ -381,8 +408,9 @@ test("merges only after confirmation, using fresh PR data in the atomic mutation
 	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
 	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
 	assert.ok(fetches.length > 0);
-	assert.ok(fetches.every(({ args }) => args[2] === "fork"));
-	assert.equal(fetches.some(({ args }) => args[2] === "acme/project"), false);
+	assert.ok(fetches.every(({ args }) => args[3] === "git@github.com:acme/project.git"));
+	assert.equal(fetches.some(({ args }) => args.includes("fork") || args.includes("acme/project")), false);
+	assert.equal(fetches.some(({ args }) => !args.includes("--no-write-fetch-head")), false);
 	assert.deepEqual(mutationCalls(app.calls), [{
 		command: "gh",
 		args: [

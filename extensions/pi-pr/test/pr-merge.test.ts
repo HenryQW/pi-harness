@@ -37,8 +37,7 @@ function inspectInput(exec: Exec) {
 		exec,
 		cwd,
 		expectedHead,
-		headFetchSource: "fork",
-		headRef: "feature/pr",
+		headFetchSource: "git@github.com:acme/fork.git",
 	};
 }
 
@@ -74,14 +73,14 @@ test("requires a clean tree and classifies every relation to the fetched PR head
 		assert.deepEqual(await inspectLocalMergeSafety(inspectInput(exec)), candidate.expected, candidate.name);
 		assert.deepEqual(calls.map(command), [
 			["git", ["status", "--porcelain=v1", "--untracked-files=all"]],
-			["git", ["fetch", "--no-tags", "fork", "refs/heads/feature/pr"]],
-			["git", ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]],
+			["git", ["fetch", "--no-write-fetch-head", "--no-tags", "git@github.com:acme/fork.git", expectedHead]],
+			["git", ["cat-file", "-e", `${expectedHead}^{commit}`]],
 			["git", ["rev-parse", "--verify", "HEAD"]],
 			...(candidate.ancestry?.map((_, index) => [
 				"git",
 				index === 0
-					? ["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"]
-					: ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"],
+					? ["merge-base", "--is-ancestor", "HEAD", expectedHead]
+					: ["merge-base", "--is-ancestor", expectedHead, "HEAD"],
 			] as [string, string[]]) ?? []),
 		], candidate.name);
 		assert.ok(calls.every(({ command: executable, args }) =>
@@ -101,27 +100,27 @@ test("fetches from the explicit source instead of the PR repository identity", a
 
 	await inspectLocalMergeSafety({
 		...inspectInput(exec),
-		headFetchSource: "configured-remote",
+		headFetchSource: "ssh://git@github.com/acme/fork.git",
 	});
 
 	assert.deepEqual(command(calls[1]!), [
 		"git",
-		["fetch", "--no-tags", "configured-remote", "refs/heads/feature/pr"],
+		["fetch", "--no-write-fetch-head", "--no-tags", "ssh://git@github.com/acme/fork.git", expectedHead],
 	]);
 	assert.equal(calls[1]!.args.includes("acme/project"), false);
 });
 
-test("fetches before accepting an equal head and rejects a moved head", async () => {
-	const { exec, calls } = mockExec([result(), result(), result("moved-head\n")]);
+test("fetches before accepting an equal head and rejects an unavailable advertised object", async () => {
+	const { exec, calls } = mockExec([result(), result(), result("", 1, "missing object")]);
 
 	await assert.rejects(
 		inspectLocalMergeSafety(inspectInput(exec)),
-		/Fetched PR head moved-head does not match expected PR head expected-head/,
+		/git cat-file -e expected-head\^\{commit\} failed: missing object/,
 	);
 	assert.equal(calls.length, 3);
 	assert.deepEqual(command(calls[1]!), [
 		"git",
-		["fetch", "--no-tags", "fork", "refs/heads/feature/pr"],
+		["fetch", "--no-write-fetch-head", "--no-tags", "git@github.com:acme/fork.git", expectedHead],
 	]);
 });
 
@@ -130,7 +129,7 @@ test("surfaces fetch failures without attempting ancestry checks", async () => {
 
 	await assert.rejects(
 		inspectLocalMergeSafety(inspectInput(exec)),
-		/git fetch --no-tags fork refs\/heads\/feature\/pr failed: remote unavailable/,
+		/git fetch --no-write-fetch-head --no-tags git@github\.com:acme\/fork\.git expected-head failed: remote unavailable/,
 	);
 	assert.equal(calls.length, 2);
 });
@@ -188,14 +187,14 @@ test("does not issue a merge mutation when fresh local safety checks fail", asyn
 			error: /Local merge safety check failed: worktree is clean, HEAD is diverged/,
 		},
 		{
-			name: "moved head",
-			responses: [result(), result(), result("moved-head\n")],
-			error: /Fetched PR head moved-head does not match expected PR head expected-head/,
+			name: "missing advertised object",
+			responses: [result(), result(), result("", 1, "missing object")],
+			error: /git cat-file -e expected-head\^\{commit\} failed: missing object/,
 		},
 		{
 			name: "fetch failure",
 			responses: [result(), result("", 1, "remote unavailable")],
-			error: /git fetch --no-tags fork refs\/heads\/feature\/pr failed: remote unavailable/,
+			error: /git fetch --no-write-fetch-head --no-tags git@github\.com:acme\/fork\.git expected-head failed: remote unavailable/,
 		},
 	];
 

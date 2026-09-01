@@ -12,23 +12,27 @@ Update only the attached branch for its current open pull request. This handles 
 Before changing anything:
 
 1. Require an attached branch and a clean tree. Resolve the branch with `git symbolic-ref --quiet --short HEAD`; stop if it is empty. Then inspect `git status --porcelain=v1 --untracked-files=all` and stop for any staged, unstaged, untracked, unresolved, or in-progress operation. Never commit, clean, stash, or otherwise hide a dirty tree.
-2. Resolve the local push repository from the branch's configured push remote. Do not assume a remote name. Stop if the branch has no unambiguous push remote or its repository cannot be identified.
-3. Resolve exactly one open PR for this branch. Use `gh pr view --json number,state,baseRepository,baseRefName,headRepository,headRefName,headRefOid,mergeStateStatus,mergeable` in the checkout's GitHub context; for a fork checkout that cannot resolve it, search open PRs by the exact head repository owner and branch, then inspect each candidate. Require the candidate's `headRepository.nameWithOwner` and `headRefName` to match the local push repository and branch. Stop for none, more than one, a non-open PR, or any mismatch.
-4. Record the PR number, `baseRepository.nameWithOwner`, `baseRefName`, `headRepository.nameWithOwner`, `headRefName`, and `headRefOid` from that PR. Set `EXPECTED_HEAD_SHA` to this initial `headRefOid` and never replace it with a later value. The pair `(base repository, base ref)` is the only target. Never infer it from a default branch, a local branch, or a remote-tracking ref. A forked head repository and a different base repository are normal.
+2. Resolve the local push repository from the branch's configured push remote. Do not assume a remote name. Require one push URL on that remote. Validate its GitHub host and owner/repository, and preserve that exact push URL. Stop if the branch has no unambiguous push target or its repository cannot be identified.
+3. Set `PR_FIELDS=number,url,state,baseRefName,baseRefOid,headRepository,headRefName,headRefOid,mergeStateStatus,mergeable`. Resolve exactly one open PR for this branch with `gh pr view --json "$PR_FIELDS"`. For a fork checkout that cannot resolve it, search open PRs by the exact head repository owner and branch, then inspect each candidate by URL with the same fields. Require HTTPS and validate the URL as exactly `HOST/OWNER/REPOSITORY/pull/NUMBER`, with no credentials, port, query, or fragment. Require its number to match the URL. The URL gives the exact base host and repository. Require `headRepository.nameWithOwner` and `headRefName` to match the local push repository and branch. Stop for none, more than one, a non-open PR, or any mismatch.
+4. Record the PR number and URL, URL-derived host and base repository, `baseRefName`, `baseRefOid`, `headRepository.nameWithOwner`, `headRefName`, and `headRefOid`. Validate both refs and both full OIDs. Set `EXPECTED_HEAD_SHA` to this initial `headRefOid` and `BASE_SHA` to this initial `baseRefOid`; never replace either with a later value. The base repository, ref, and OID are the only target. Never infer them from a default branch, local branch, remote-tracking ref, or unsupported `gh` field. A forked head repository and a different base repository are normal.
 
 ## Fetch, pin, and merge
 
-Resolve a clone URL for the recorded base repository, on the PR's GitHub host. Fetch that repository and ref first:
+Read only the documented `clone_url` field from the repository REST API on the validated PR host. Validate that URL against the recorded host and owner/repository. Fetch the recorded base OID without writing shared fetch state:
 
 ```bash
-git fetch --no-tags "$BASE_REPOSITORY_URL" "refs/heads/$BASE_REF"
-BASE_SHA="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
+BASE_REPOSITORY_URL="$(gh api --hostname "$PR_HOST" \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  "repos/$BASE_REPOSITORY" --jq .clone_url)"
+git fetch --no-write-fetch-head --no-tags "$BASE_REPOSITORY_URL" "$BASE_SHA"
+git cat-file -e "$BASE_SHA^{commit}"
 printf 'Fetched base %s %s at %s\n' "$BASE_REPOSITORY" "$BASE_REF" "$BASE_SHA"
 ```
 
-If fetch or SHA resolution fails, stop. Preserve the printed `BASE_SHA`; it is authoritative for this run. Do not fall back to any local or remote-tracking ref.
+If API lookup, URL validation, fetch, or object verification fails, stop. The recorded `BASE_SHA` is authoritative for this run. Do not fall back to any local or remote-tracking ref.
 
-Re-read the PR by its recorded number now, requesting the same JSON fields including `headRefOid`. Stop if its state, base repository/ref, head repository/ref, current-branch identity, or `headRefOid` differs from the recorded values. Immediately before merging, require the local `HEAD` to be exactly `EXPECTED_HEAD_SHA`:
+Re-read the PR by its recorded URL now with exactly `PR_FIELDS`. Revalidate the URL-derived host/base repository and stop if its number, URL, state, base ref/OID, head repository/ref/OID, or current-branch identity differs from the recorded values. Immediately before merging, require the local `HEAD` to be exactly `EXPECTED_HEAD_SHA`:
 
 ```bash
 LOCAL_HEAD="$(git rev-parse --verify HEAD)"
@@ -86,7 +90,7 @@ After the merge completes:
    ```
 
    Stop on either failure. Do not substitute a newer ref or another SHA.
-3. Immediately before the single push, re-fetch the PR metadata by its recorded number with the same JSON fields, including `headRefOid`. Require the PR to remain open, its saved target and head repository/ref to remain unchanged, and its `headRefOid` to remain exactly `EXPECTED_HEAD_SHA`; stop if the PR head moved. Reconfirm the saved PR target and resolve the push remote's repository against the saved head repository. Stop if the push destination is not exact or any local-head check fails.
+3. Immediately before the single push, re-read the PR by its recorded URL with exactly `PR_FIELDS`. Revalidate its URL-derived host/base repository. Require the PR to remain open and its number, URL, base ref/OID, head repository/ref/OID, and current-branch identity to remain unchanged. Reconfirm the sole saved push URL against the saved head repository. Stop if the push destination is not exact or any local-head check fails.
 4. Push the current branch to the PR's exact head ref once, without force or retry:
 
    ```bash

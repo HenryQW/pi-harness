@@ -62,6 +62,7 @@ function currentPullRequest(overrides: {
 		local: { worktree: "clean", head: "equal" },
 		base: { repository: "acme/project", ref: "main", oid: "a".repeat(40) },
 		head: { repository: "acme/project", ref: "feature/pr", oid: "b".repeat(40) },
+		headFetchSource: "git@github.com:acme/project.git",
 		merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 	};
 }

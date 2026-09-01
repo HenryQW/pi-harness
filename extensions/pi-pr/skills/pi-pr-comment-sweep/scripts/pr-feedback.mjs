@@ -431,12 +431,12 @@ function checkBucket(check) {
   if (typeof check.status === "string" && check.status !== "COMPLETED") return "pending";
   if (typeof check.state === "string") {
     if (check.state === "SUCCESS") return "passing";
-    return ["ERROR", "FAILURE"].includes(check.state) ? "failing" : "pending";
+    return ["ERROR", "FAILURE", "STALE"].includes(check.state) ? "failing" : "pending";
   }
   if (check.conclusion === null || check.conclusion === undefined || check.conclusion === "") return "pending";
   const conclusion = text(check.conclusion, "PR status check conclusion");
   if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) return "passing";
-  return ["ACTION_REQUIRED", "CANCELLED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"].includes(conclusion) ? "failing" : "pending";
+  return ["ACTION_REQUIRED", "CANCELLED", "FAILURE", "STALE", "STARTUP_FAILURE", "TIMED_OUT"].includes(conclusion) ? "failing" : "pending";
 }
 
 function checkSummary(metadata) {
@@ -690,8 +690,11 @@ function publishHead(initial, localHead, operations) {
   const initialHead = expected.headRefOid;
   const current = readPr(expected.url);
   const observed = prTarget(current, "current PR");
-  requireSamePr(expected, observed);
+  requireSamePr(expected, observed, false);
   if (observed.headRefOid === localHead) return { metadata: current, status: "already-current" };
+  if (observed.headRefOid !== initialHead) {
+    throw new FeedbackError(`PR head changed before push: ${initialHead} -> ${observed.headRefOid}`);
+  }
 
   const remote = remoteFor(observed.headRepository, observed.hostname);
   try {
@@ -895,7 +898,8 @@ function selfTest() {
       { id: "new-thread", isResolved: false, isOutdated: false, path: "src/d.js", line: 6, comments: [{ id: "new-thread-comment", author: { login: "reviewer" }, body: "new thread" }] },
     ],
   };
-  assert.deepEqual(checkSummary(feedback.pullRequest), { passing: 1, pending: 2, failing: 1 });
+  assert.equal(checkBucket({ conclusion: "STALE" }), "failing");
+  assert.deepEqual(checkSummary(feedback.pullRequest), { passing: 1, pending: 1, failing: 2 });
   const initialLines = [];
   printFetchSummary(feedback, null, "/tmp/snapshot", (line) => initialLines.push(line));
   for (const body of ["edited conversation", "edited review", "edited reply", "new conversation", "new review", "new reply", "new thread"]) {
@@ -911,7 +915,7 @@ function selfTest() {
   writeSnapshot(deltaSnapshot, savedFeedback);
   assert.equal(snapshot(deltaSnapshot).reviewThreads.length, feedback.reviewThreads.length);
   const delta = deltaLines.join("\n");
-  assert(delta.includes("merge_state=BLOCKED checks_total=4 passing=1 pending=2 failing=1"));
+  assert(delta.includes("merge_state=BLOCKED checks_total=4 passing=1 pending=1 failing=2"));
   for (const body of ["edited conversation", "edited review", "edited reply", "new conversation", "new review", "new reply", "new thread"]) assert(delta.includes(body));
   for (const old of ["old conversation", "old review", "old reply"]) assert(!delta.includes(old));
   assert(delta.includes("new-thread\tcurrent"));
@@ -944,7 +948,15 @@ function selfTest() {
     push,
     pause: () => {},
   });
-  assert.equal(publishHead(localHead, "local", operations(sequence(localHead))).status, "already-current");
+  let alreadyCurrentRemoteCalls = 0;
+  let alreadyCurrentPushes = 0;
+  assert.equal(publishHead(oldHead, "local", operations(
+    sequence(localHead),
+    () => { alreadyCurrentPushes += 1; },
+    () => { alreadyCurrentRemoteCalls += 1; return "origin"; },
+  )).status, "already-current");
+  assert.equal(alreadyCurrentRemoteCalls, 0);
+  assert.equal(alreadyCurrentPushes, 0);
   const remoteCalls = [];
   const pushCalls = [];
   assert.equal(publishHead(oldHead, "local", operations(
@@ -978,17 +990,33 @@ function selfTest() {
     ["base OID", { ...oldHead, baseRefOid: "other-base" }],
     ["head repository", { ...oldHead, headRepository: { nameWithOwner: "owner/fork" } }],
     ["head ref", { ...oldHead, headRefName: "other-feature" }],
-    ["head OID", { ...oldHead, headRefOid: "other-head" }],
   ];
   for (const [field, changed] of drifts) {
     let pushes = 0;
     assert.throws(
-      () => publishHead(oldHead, "local", operations(sequence(changed), () => { pushes += 1; })),
+      () => publishHead(oldHead, "local", operations(sequence({ ...changed, headRefOid: "local" }), () => { pushes += 1; })),
       new RegExp(`PR ${field} changed since feedback fetch`),
     );
     assert.equal(pushes, 0);
   }
-
+  let driftPushes = 0;
+  assert.throws(
+    () => publishHead(oldHead, "local", operations(sequence({ ...oldHead, headRefOid: "other-head" }), () => { driftPushes += 1; })),
+    /PR head changed before push: old -> other-head/,
+  );
+  assert.equal(driftPushes, 0);
+  assert.throws(
+    () => publishHead(oldHead, "local", operations(sequence(oldHead, { ...oldHead, baseRefOid: "other-base" }), () => {
+      throw new FeedbackError("HTTP 503");
+    })),
+    /push failed: HTTP 503; head verification failed: PR base OID changed since feedback fetch/,
+  );
+  assert.throws(
+    () => publishHead(oldHead, "local", operations(sequence(oldHead, { ...oldHead, headRefOid: "other-head" }), () => {
+      throw new FeedbackError("HTTP 503");
+    })),
+    /PR head changed while recovering failed push: old -> other-head/,
+  );
   assert.throws(
     () => collectFeedback(metadata, () => ({ repository: { pullRequest: {
       comments: page([], true), reviews: page([]), reviewThreads: page([]),
