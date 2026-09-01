@@ -45,15 +45,15 @@ The footer and widget load at session start and poll every 30 seconds. Polling i
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:
-When the current branch has no pull request, `/pr` dispatches bundled `pi-pr-create`. The workflow resolves the base, scopes and commits pending changes, validates, and pushes `HEAD` to `origin`, setting the upstream when absent. It then creates or updates the PR with a derived title and body.
-_Avoid_: Duplicated shell workflow, unscoped automatic commit
+When the current branch has no pull request, `/pr` dispatches bundled `pi-pr-create`. The workflow resolves the base, scopes and commits pending changes, and validates. It pushes a captured OID to the branch's configured push target. Without one, it uses `origin` and the local branch ref, then sets upstream. It creates or updates the PR for that exact head owner and ref.
+_Avoid_: Configured-target fallback, symbolic push source, duplicated shell workflow, unscoped automatic commit
 
 **PR branch-update workflow**:
 When the current pull request needs a base update or has a merge conflict, `/pr` dispatches bundled `pi-pr-update-branch` only when local HEAD equals the PR head and the worktree is clean. It derives the exact base host and repository from the validated public PR URL. It uses the public base ref and OID fields, merges without rewriting history, resolves clear conflicts, validates, and pushes. It stops when resolution requires a product decision.
 _Avoid_: `origin/main`, rebase, force push, automatic stashing
 
 **PR comment-sweep workflow**:
-When changes are requested or unresolved review threads exist, `/pr` dispatches the package-owned `pi-pr-comment-sweep` only when local HEAD equals the PR head and the worktree is clean. It resolves its bundled helper and references from the installed package skill path and needs no external `jq` executable. Its selected push remote must have one unambiguous push URL. Before pushing, it revalidates stable PR identity and the base OID. It accepts the PR head already equal to local HEAD; otherwise the snapshot head must remain unchanged. Ordinary conversation comments do not select it, and presentation polling never starts it.
+When changes are requested or unresolved review threads exist, `/pr` dispatches the package-owned `pi-pr-comment-sweep` only when local HEAD equals the PR head and the worktree is clean. It resolves its bundled helper and references from the installed package skill path and needs no external `jq` executable. Before pushing, it revalidates the configured remote and ref, sole push URL, repository and host, full PR identity, and local HEAD. It pushes the captured OID without retry or fallback. It accepts the PR head already equal to local HEAD; otherwise the snapshot head must remain unchanged. Ordinary conversation comments do not select it, and presentation polling never starts it.
 _Avoid_: `/sweep`, automatic comment triage, ordinary-comment routing
 
 **PR CI-fix workflow**:
@@ -61,5 +61,5 @@ When CI has failed, `/pr` dispatches the package-owned `pi-pr-fix-ci` only when 
 _Avoid_: CI watcher, automatic retry, rerun loop
 
 **PR merge workflow**:
-When the current pull request is merge-ready, `/pr` asks for final yes-or-no confirmation, revalidates readiness, and merges directly. It allows a clean local HEAD equal to or behind the PR head. The readiness check fetches the exact PR head OID from the validated push URL without shared fetch state. It uses the sole repository-allowed merge method, or squash when several methods are allowed. It does not enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees.
+When the current pull request is merge-ready, `/pr` asks for final yes-or-no confirmation, revalidates readiness, and merges directly. It allows a clean local HEAD equal to or behind the PR head. An in-progress merge, rebase, cherry-pick, revert, or sequencer operation is not clean, even when status is empty. The readiness check fetches the exact PR head OID from the validated push URL without shared fetch state. Repository-wide methods are intersected with every applicable ruleset restriction. Selection uses the sole effective method, then squash, then an allowed viewer default. It does not enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees.
 _Avoid_: Merge skill, unconfirmed merge, auto-merge, branch cleanup, worktree completion

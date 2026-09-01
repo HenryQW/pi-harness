@@ -98,10 +98,18 @@ function baseBranchPolicyOutput(requiresStrictStatusChecks: boolean | null): str
 	});
 }
 
+function rulesetOutput(...pages: unknown[][]): string {
+	return JSON.stringify(pages);
+}
+
 function rulesetPolicyOutput(...pages: boolean[]): string {
-	return JSON.stringify(pages.map((strict) => strict
+	return rulesetOutput(...pages.map((strict) => strict
 		? [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: true } }]
 		: []));
+}
+
+function searchOutput(...pages: Array<{ total_count: number; incomplete_results: boolean; items: unknown[] }>): string {
+	return JSON.stringify(pages);
 }
 
 function pullRequest(overrides: Record<string, unknown> = {}) {
@@ -163,7 +171,7 @@ function harness(options: HarnessOptions = {}) {
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "search/issues") {
 				const items = options.candidateUrls ?? candidates.map((candidate) => ({ html_url: candidate.url }));
-				return options.listResult ?? result(JSON.stringify({
+				return options.listResult ?? result(searchOutput({
 					total_count: items.length,
 					incomplete_results: false,
 					items,
@@ -281,6 +289,8 @@ test("loads an upstream PR for the exact fork push target and retains its fetch 
 		"search/issues",
 		"--hostname",
 		"github.com",
+		"--paginate",
+		"--slurp",
 		"-X",
 		"GET",
 		"-f",
@@ -317,48 +327,69 @@ test("loads an upstream PR for the exact fork push target and retains its fetch 
 	}
 });
 
-test("accepts exactly 100 complete pull request search results", async () => {
-	const candidates = Array.from({ length: 99 }, (_, index) => pullRequest({
+test("accepts complete paginated pull request search results beyond 100", async () => {
+	const candidates = Array.from({ length: 100 }, (_, index) => pullRequest({
 		id: `PR_unrelated_${index + 1}`,
 		number: index + 1,
 		url: `https://github.com/acme/project-${index + 1}/pull/${index + 1}`,
 		headRepository: { nameWithOwner: `acme/unrelated-${index + 1}` },
 	}));
 	candidates.push(pullRequest());
-	const { pi, context, calls } = harness({ candidates });
+	const items = candidates.map((candidate) => ({ html_url: candidate.url }));
+	const { pi, context, calls } = harness({
+		candidates,
+		listResult: result(searchOutput(
+			{ total_count: 101, incomplete_results: false, items: items.slice(0, 100) },
+			{ total_count: 101, incomplete_results: false, items: items.slice(100) },
+		)),
+	});
 
 	const loaded = await loadCurrentPullRequest(pi, context);
 	assert.ok(loaded);
 	assert.equal(loaded.number, 42);
-	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 100);
+	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 101);
 });
 
-test("rejects over-limit, incomplete, mismatched, malformed, and duplicate search results", async () => {
+test("rejects incomplete, capped, inconsistent, malformed, and duplicate search pages", async () => {
 	const url = "https://github.com/acme/project/pull/42";
+	const repeated = Array.from({ length: 100 }, (_, index) => ({ html_url: `https://github.com/acme/project-${index + 1}/pull/${index + 1}` }));
 	const cases: Array<{ name: string; value: unknown; error: RegExp }> = [
 		{
-			name: "over limit",
-			value: { total_count: 101, incomplete_results: false, items: [] },
-			error: /result limit reached/,
+			name: "GitHub cap",
+			value: [{ total_count: 1001, incomplete_results: false, items: repeated }],
+			error: /GitHub search result cap reached/,
 		},
 		{
 			name: "incomplete",
-			value: { total_count: 1, incomplete_results: true, items: [{ html_url: url }] },
+			value: [{ total_count: 1, incomplete_results: true, items: [{ html_url: url }] }],
 			error: /incomplete search results/,
 		},
 		{
 			name: "count mismatch",
-			value: { total_count: 1, incomplete_results: false, items: [] },
+			value: [{ total_count: 1, incomplete_results: false, items: [] }],
 			error: /incomplete search results/,
 		},
 		{
+			name: "page total mismatch",
+			value: [
+				{ total_count: 101, incomplete_results: false, items: repeated },
+				{ total_count: 102, incomplete_results: false, items: [{ html_url: url }] },
+			],
+			error: /inconsistent search result pages/,
+		},
+		{
+			name: "malformed page",
+			value: [{ total_count: 0, incomplete_results: false, items: [] }, null],
+			error: /invalid GitHub CLI output/,
+		},
+		{
 			name: "malformed item",
-			value: { total_count: 1, incomplete_results: false, items: [{}] },
+			value: [{ total_count: 1, incomplete_results: false, items: [{}] }],
 			error: /invalid url/,
 		},
 		{
 			name: "duplicate",
-			value: { total_count: 2, incomplete_results: false, items: [{ html_url: url }, { html_url: url }] },
+			value: [{ total_count: 2, incomplete_results: false, items: [{ html_url: url }, { html_url: url }] }],
 			error: /duplicate candidate url/,
 		},
 	];
@@ -592,6 +623,33 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 });
 
+test("normalizes empty gh review and check fields without accepting empty records", async () => {
+	const normalized = harness({
+		candidates: [pullRequest({
+			reviewDecision: "",
+			statusCheckRollup: [
+				{ conclusion: "", status: "QUEUED" },
+				{ conclusion: "SUCCESS", state: "", status: "COMPLETED" },
+				{ conclusion: "", state: "IN_PROGRESS", status: "" },
+			],
+		})],
+	});
+	const loaded = await loadCurrentPullRequest(normalized.pi, normalized.context);
+	assert.ok(loaded);
+	assert.equal(loaded.approved, false);
+	assert.equal(loaded.conditions.review, "ready");
+	assert.equal(loaded.conditions.ci, "running");
+
+	for (const candidate of [
+		pullRequest({ reviewDecision: "DISMISSED" }),
+		pullRequest({ statusCheckRollup: [{ conclusion: "", state: "", status: "" }] }),
+		pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "FAILURE" }] }),
+	]) {
+		const invalid = harness({ candidates: [candidate] });
+		await assert.rejects(loadCurrentPullRequest(invalid.pi, invalid.context), /invalid reviewDecision|invalid statusCheckRollup/);
+	}
+});
+
 test("rejects partial review-thread data when any paginated GraphQL page has errors", async () => {
 	const { pi, context } = harness({
 		threads: reviewThreadOutput(
@@ -648,7 +706,7 @@ test("requires a base update for strict legacy protection or an applicable stric
 	assert.equal(blockedPullRequest.conditions.baseUpdateRequired, false);
 	assert.equal(blockedPullRequest.conditions.policy, "pending");
 	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
-	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), false);
+	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), true);
 });
 
 test("fails visibly when either base policy authority fails or is malformed", async () => {
@@ -680,9 +738,21 @@ test("fails visibly when either base policy authority fails or is malformed", as
 			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
 		},
 		{
-			name: "malformed rule on a valid page",
+			name: "malformed status rule on a valid page",
 			policyResult: result(baseBranchPolicyOutput(true)),
 			rulesetResult: result(JSON.stringify([[{ type: "required_status_checks", parameters: {} }]])),
+			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
+		},
+		{
+			name: "malformed pull request rule",
+			policyResult: result(baseBranchPolicyOutput(true)),
+			rulesetResult: result(rulesetOutput([{ type: "pull_request", parameters: {} }])),
+			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
+		},
+		{
+			name: "unsupported pull request merge method",
+			policyResult: result(baseBranchPolicyOutput(true)),
+			rulesetResult: result(rulesetOutput([{ type: "pull_request", parameters: { allowed_merge_methods: ["octopus"] } }])),
 			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
 		},
 	];
@@ -696,23 +766,55 @@ test("fails visibly when either base policy authority fails or is malformed", as
 	}
 });
 
-test("exposes all allowed merge methods and the validated viewer default", async () => {
-	const { pi, context } = harness({
+test("intersects repository merge methods with every applicable pull-request rule", async () => {
+	const restricted = harness({
+		rulesetResult: result(rulesetOutput(
+			[{ type: "pull_request", parameters: { allowed_merge_methods: ["merge", "squash"] } }],
+			[{ type: "pull_request", parameters: { allowed_merge_methods: ["rebase", "squash"] } }],
+		)),
+	});
+	const loaded = await loadCurrentPullRequest(restricted.pi, restricted.context);
+	assert.ok(loaded);
+	assert.deepEqual(loaded.merge, {
+		allowedMergeMethods: ["squash"],
+		viewerDefaultMergeMethod: "squash",
+	});
+
+	const repositoryRestricted = harness({
 		methods: {
 			mergeCommitAllowed: true,
 			rebaseMergeAllowed: true,
 			squashMergeAllowed: false,
 			viewerDefaultMergeMethod: "REBASE",
 		},
+		rulesetResult: result(rulesetOutput([
+			{ type: "pull_request", parameters: { allowed_merge_methods: ["rebase", "squash"] } },
+		])),
 	});
-	const loaded = await loadCurrentPullRequest(pi, context);
-	assert.ok(loaded);
-	assert.deepEqual(loaded.merge, {
-		allowedMergeMethods: ["merge", "rebase"],
+	const repositoryLoaded = await loadCurrentPullRequest(repositoryRestricted.pi, repositoryRestricted.context);
+	assert.ok(repositoryLoaded);
+	assert.deepEqual(repositoryLoaded.merge, {
+		allowedMergeMethods: ["rebase"],
 		viewerDefaultMergeMethod: "rebase",
 	});
 
-	const invalid = harness({
+	const empty = harness({
+		methods: {
+			mergeCommitAllowed: true,
+			rebaseMergeAllowed: false,
+			squashMergeAllowed: false,
+			viewerDefaultMergeMethod: "MERGE",
+		},
+		rulesetResult: result(rulesetOutput([
+			{ type: "pull_request", parameters: { allowed_merge_methods: ["squash"] } },
+		])),
+	});
+	await assert.rejects(
+		loadCurrentPullRequest(empty.pi, empty.context),
+		/Read merge methods failed: repository and applicable rules allow no common merge method/,
+	);
+
+	const invalidDefault = harness({
 		methods: {
 			mergeCommitAllowed: true,
 			rebaseMergeAllowed: true,
@@ -721,7 +823,7 @@ test("exposes all allowed merge methods and the validated viewer default", async
 		},
 	});
 	await assert.rejects(
-		loadCurrentPullRequest(invalid.pi, invalid.context),
+		loadCurrentPullRequest(invalidDefault.pi, invalidDefault.context),
 		/Read merge methods failed: viewerDefaultMergeMethod is not allowed/,
 	);
 });

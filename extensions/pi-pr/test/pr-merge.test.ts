@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
 	executeGitHubMerge,
@@ -19,17 +23,45 @@ function result(stdout = "", code = 0, stderr = ""): ExecResult {
 
 type Call = { command: string; args: string[]; cwd: string };
 
-function mockExec(responses: Array<ExecResult | Error>): { exec: Exec; calls: Call[] } {
+const STATE_PATH_ARGS = [
+	"rev-parse",
+	"--git-path", "MERGE_HEAD",
+	"--git-path", "rebase-merge",
+	"--git-path", "rebase-apply",
+	"--git-path", "CHERRY_PICK_HEAD",
+	"--git-path", "REVERT_HEAD",
+	"--git-path", "sequencer",
+];
+const STATE_PATH_OUTPUT = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"]
+	.map((state) => `/repo/.git/${state}`).join("\n") + "\n";
+
+function mockExec(
+	responses: Array<ExecResult | Error>,
+	stateResult: ExecResult | Error = result(STATE_PATH_OUTPUT),
+): { exec: Exec; calls: Call[] } {
 	let index = 0;
 	const calls: Call[] = [];
 	const exec: Exec = async (command, args, options) => {
 		calls.push({ command, args: [...args], cwd: options.cwd });
-		const response = responses[index++];
+		const response = command === "git" && args.join("\0") === STATE_PATH_ARGS.join("\0")
+			? stateResult
+			: responses[index++];
 		if (response === undefined) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
 		if (response instanceof Error) throw response;
 		return response;
 	};
 	return { exec, calls };
+}
+
+function runGit(cwd: string, args: string[]): ExecResult {
+	const command = spawnSync("git", args, { cwd, encoding: "utf8" });
+	return result(command.stdout ?? "", command.status ?? 1, command.stderr ?? "");
+}
+
+function git(cwd: string, ...args: string[]): string {
+	const command = runGit(cwd, args);
+	assert.equal(command.code, 0, `${args.join(" ")} failed: ${command.stderr}`);
+	return command.stdout.trim();
 }
 
 function inspectInput(exec: Exec) {
@@ -73,6 +105,7 @@ test("requires a clean tree and classifies every relation to the fetched PR head
 		assert.deepEqual(await inspectLocalMergeSafety(inspectInput(exec)), candidate.expected, candidate.name);
 		assert.deepEqual(calls.map(command), [
 			["git", ["status", "--porcelain=v1", "--untracked-files=all"]],
+			["git", STATE_PATH_ARGS],
 			["git", ["fetch", "--no-write-fetch-head", "--no-tags", "git@github.com:acme/fork.git", expectedHead]],
 			["git", ["cat-file", "-e", `${expectedHead}^{commit}`]],
 			["git", ["rev-parse", "--verify", "HEAD"]],
@@ -103,11 +136,11 @@ test("fetches from the explicit source instead of the PR repository identity", a
 		headFetchSource: "ssh://git@github.com/acme/fork.git",
 	});
 
-	assert.deepEqual(command(calls[1]!), [
+	assert.deepEqual(command(calls[2]!), [
 		"git",
 		["fetch", "--no-write-fetch-head", "--no-tags", "ssh://git@github.com/acme/fork.git", expectedHead],
 	]);
-	assert.equal(calls[1]!.args.includes("acme/project"), false);
+	assert.equal(calls[2]!.args.includes("acme/project"), false);
 });
 
 test("fetches before accepting an equal head and rejects an unavailable advertised object", async () => {
@@ -117,8 +150,8 @@ test("fetches before accepting an equal head and rejects an unavailable advertis
 		inspectLocalMergeSafety(inspectInput(exec)),
 		/git cat-file -e expected-head\^\{commit\} failed: missing object/,
 	);
-	assert.equal(calls.length, 3);
-	assert.deepEqual(command(calls[1]!), [
+	assert.equal(calls.length, 4);
+	assert.deepEqual(command(calls[2]!), [
 		"git",
 		["fetch", "--no-write-fetch-head", "--no-tags", "git@github.com:acme/fork.git", expectedHead],
 	]);
@@ -131,7 +164,104 @@ test("surfaces fetch failures without attempting ancestry checks", async () => {
 		inspectLocalMergeSafety(inspectInput(exec)),
 		/git fetch --no-write-fetch-head --no-tags git@github\.com:acme\/fork\.git expected-head failed: remote unavailable/,
 	);
-	assert.equal(calls.length, 2);
+	assert.equal(calls.length, 3);
+});
+
+test("fails visibly when Git operation state paths cannot be resolved", async () => {
+	const failed = mockExec([result()], result("", 128, "not a worktree"));
+	await assert.rejects(
+		inspectLocalMergeSafety(inspectInput(failed.exec)),
+		/git rev-parse .* failed: not a worktree/,
+	);
+	assert.equal(failed.calls.length, 2);
+
+	const malformed = mockExec([result()], result("/repo/.git/MERGE_HEAD\n"));
+	await assert.rejects(
+		inspectLocalMergeSafety(inspectInput(malformed.exec)),
+		/Git operation state path resolution returned invalid output/,
+	);
+	assert.equal(malformed.calls.length, 2);
+});
+
+test("final merge rejects every in-progress Git operation in a linked worktree", async (t) => {
+	const temporary = mkdtempSync(join(tmpdir(), "pi-pr-final-merge-state-"));
+	t.after(() => rmSync(temporary, { recursive: true, force: true }));
+	const repository = join(temporary, "repository");
+	const linked = join(temporary, "linked");
+
+	git(temporary, "init", "--initial-branch=main", repository);
+	git(repository, "config", "user.name", "Pi PR test");
+	git(repository, "config", "user.email", "pi-pr@example.test");
+	writeFileSync(join(repository, "tracked.txt"), "base\n");
+	git(repository, "add", "tracked.txt");
+	git(repository, "commit", "-m", "base");
+	const base = git(repository, "rev-parse", "HEAD");
+
+	git(repository, "switch", "-c", "operation-source");
+	writeFileSync(join(repository, "tracked.txt"), "picked\n");
+	git(repository, "commit", "-am", "pick one");
+	const firstPick = git(repository, "rev-parse", "HEAD");
+	writeFileSync(join(repository, "tracked.txt"), "picked again\n");
+	git(repository, "commit", "-am", "pick two");
+	const secondPick = git(repository, "rev-parse", "HEAD");
+
+	git(repository, "switch", "main");
+	writeFileSync(join(repository, "tracked.txt"), "target\n");
+	git(repository, "commit", "-am", "target");
+	git(repository, "branch", "merge-source", base);
+	git(repository, "switch", "merge-source");
+	git(repository, "commit", "--allow-empty", "-m", "merge source");
+	const mergeSource = git(repository, "rev-parse", "HEAD");
+	git(repository, "switch", "main");
+	git(repository, "worktree", "add", "-b", "linked", linked, "main");
+
+	let mergeMutations = 0;
+	const exec: Exec = async (command, args) => {
+		if (command === "git" && (args[0] === "status" || args.join("\0") === STATE_PATH_ARGS.join("\0"))) {
+			return runGit(linked, args);
+		}
+		if (command === "git" && (args[0] === "fetch" || args[0] === "cat-file")) return result();
+		if (command === "git" && args.join(" ") === "rev-parse --verify HEAD") return result(`${expectedHead}\n`);
+		if (command === "gh") {
+			mergeMutations += 1;
+			return result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequestId, state: "MERGED" } } } }));
+		}
+		throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+	};
+	const assertUnsafe = async (operation: string) => {
+		assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "", operation);
+		await assert.rejects(
+			executeGitHubMerge({ ...inspectInput(exec), cwd: linked, pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
+			/Local merge safety check failed: worktree is dirty/,
+			operation,
+		);
+		assert.equal(mergeMutations, 0, operation);
+	};
+
+	git(linked, "merge", "--no-ff", "--no-commit", mergeSource);
+	await assertUnsafe("merge");
+	git(linked, "merge", "--abort");
+
+	assert.notEqual(runGit(linked, ["rebase", "--force-rebase", "--exec", "false", base]).code, 0);
+	await assertUnsafe("rebase");
+	git(linked, "rebase", "--abort");
+
+	assert.notEqual(runGit(linked, ["cherry-pick", firstPick, secondPick]).code, 0);
+	git(linked, "checkout", "--ours", "tracked.txt");
+	git(linked, "add", "tracked.txt");
+	await assertUnsafe("cherry-pick");
+	const cherryPickHead = git(linked, "rev-parse", "--git-path", "CHERRY_PICK_HEAD");
+	const cherryPickState = readFileSync(cherryPickHead);
+	rmSync(cherryPickHead);
+	await assertUnsafe("sequencer");
+	writeFileSync(cherryPickHead, cherryPickState);
+	git(linked, "cherry-pick", "--abort");
+
+	assert.notEqual(runGit(linked, ["revert", "--no-edit", secondPick, firstPick]).code, 0);
+	git(linked, "checkout", "--ours", "tracked.txt");
+	git(linked, "add", "tracked.txt");
+	await assertUnsafe("revert");
+	git(linked, "revert", "--abort");
 });
 
 test("rejects a missing fetch source before any command or mutation", async () => {
@@ -307,7 +437,7 @@ test("rejects GraphQL errors and malformed or non-merged responses without retry
 			candidate.error,
 			candidate.name,
 		);
-		assert.equal(calls.length, 5, candidate.name);
+		assert.equal(calls.length, 6, candidate.name);
 		assert.equal(calls.at(-1)?.command, "gh", candidate.name);
 		assert.deepEqual(calls.at(-1)?.args.slice(0, 4), ["api", "graphql", "--hostname", hostname], candidate.name);
 	}
@@ -326,5 +456,5 @@ test("surfaces GitHub CLI merge failures without retrying", async () => {
 		executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
 		/gh api graphql --hostname github\.com .* failed: merge blocked/,
 	);
-	assert.equal(calls.length, 5);
+	assert.equal(calls.length, 6);
 });

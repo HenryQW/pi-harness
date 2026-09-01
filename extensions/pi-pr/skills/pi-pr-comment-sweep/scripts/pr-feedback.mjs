@@ -8,8 +8,29 @@ import { dirname, join, resolve } from "node:path";
 
 const PR_FIELDS = "number,url,title,state,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeStateStatus,statusCheckRollup";
 const PR_PATH = /^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)$/;
+const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const PR_LIST_LIMIT = 100;
+const PR_SEARCH_CAP = 1_000;
 const READ_ATTEMPTS = 3;
+const CHECK_BUCKETS = new Map([
+  ["ACTION_REQUIRED", "failing"],
+  ["CANCELLED", "failing"],
+  ["ERROR", "failing"],
+  ["FAILURE", "failing"],
+  ["STALE", "failing"],
+  ["STARTUP_FAILURE", "failing"],
+  ["TIMED_OUT", "failing"],
+  ["NEUTRAL", "passing"],
+  ["SKIPPED", "passing"],
+  ["SUCCESS", "passing"],
+  ["COMPLETED", "pending"],
+  ["EXPECTED", "pending"],
+  ["IN_PROGRESS", "pending"],
+  ["PENDING", "pending"],
+  ["QUEUED", "pending"],
+  ["REQUESTED", "pending"],
+  ["WAITING", "pending"],
+]);
 
 const FEEDBACK_QUERY = `
 query Feedback($owner:String!,$repo:String!,$number:Int!,$commentsCursor:String,$reviewsCursor:String,$threadsCursor:String){
@@ -61,6 +82,12 @@ function bool(value, label) {
   return value;
 }
 
+function oid(value, label) {
+  const result = requiredText(value, label);
+  if (!OID.test(result)) throw new FeedbackError(`${label} must be a full OID`);
+  return result.toLowerCase();
+}
+
 function list(value, label) {
   if (!Array.isArray(value)) throw new FeedbackError(`${label} must be an array`);
   return value;
@@ -80,15 +107,19 @@ function run(program, args, input) {
   return result.stdout;
 }
 
-function jsonCommand(program, args, input) {
+function jsonValueCommand(program, args, input) {
   const output = run(program, args, input);
   try {
-    const value = JSON.parse(output);
-    if (!isRecord(value)) throw new Error("root is not an object");
-    return value;
+    return JSON.parse(output);
   } catch (error) {
     throw new FeedbackError(`invalid JSON from ${program}: ${error.message}`);
   }
+}
+
+function jsonCommand(program, args, input) {
+  const value = jsonValueCommand(program, args, input);
+  if (!isRecord(value)) throw new FeedbackError(`invalid JSON from ${program}: root is not an object`);
+  return value;
 }
 
 function retryableReadFailure(error) {
@@ -115,6 +146,10 @@ function readJsonCommand(program, args, input) {
   return retryRead(() => jsonCommand(program, args, input));
 }
 
+function readJsonValueCommand(program, args, input) {
+  return retryRead(() => jsonValueCommand(program, args, input));
+}
+
 function git(...args) {
   return run("git", args).trim();
 }
@@ -134,9 +169,7 @@ function cleanHead() {
     if (lstatSync(path, { throwIfNoEntry: false })) throw new FeedbackError(`${operation} is in progress`);
   }
   if (git("status", "--porcelain", "--untracked-files=all")) throw new FeedbackError("index and worktree must be clean");
-  const head = requiredText(git("rev-parse", "--verify", "HEAD^{commit}"), "local HEAD");
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(head)) throw new FeedbackError("local HEAD must be a full OID");
-  return head.toLowerCase();
+  return oid(git("rev-parse", "--verify", "HEAD^{commit}"), "local HEAD");
 }
 
 function parsePrUrl(value, label = "PR URL") {
@@ -186,10 +219,10 @@ function prTarget(metadata, label) {
     url: parsed.url,
     hostname,
     baseRefName: requiredText(metadata.baseRefName, `${label} base ref`),
-    baseRefOid: requiredText(metadata.baseRefOid, `${label} base OID`),
+    baseRefOid: oid(metadata.baseRefOid, `${label} base OID`),
     headRepository,
     headRefName: requiredText(metadata.headRefName, `${label} head ref`),
-    headRefOid: requiredText(metadata.headRefOid, `${label} head OID`),
+    headRefOid: oid(metadata.headRefOid, `${label} head OID`),
   };
 }
 
@@ -212,10 +245,9 @@ function requireSamePr(expected, current, includeHeadOid = true) {
 }
 
 function readOpenPr(pr) {
-  const args = ["pr", "view"];
-  if (pr !== undefined) args.push(pr);
-  args.push("--json", PR_FIELDS);
-  const value = readJsonCommand("gh", args);
+  if (pr === undefined) throw new FeedbackError("explicit PR identity is required");
+  const requested = /^[1-9][0-9]*$/.test(pr) ? { number: Number(pr) } : parsePrUrl(pr, "requested PR");
+  const value = readJsonCommand("gh", ["pr", "view", pr, "--json", PR_FIELDS]);
   if (value.state !== "OPEN") throw new FeedbackError(`PR must be OPEN, got ${JSON.stringify(value.state)}`);
 
   const parsed = parsePrUrl(value.url);
@@ -225,7 +257,12 @@ function readOpenPr(pr) {
     hostname: parsed.hostname,
     baseRepository: `${parsed.owner}/${parsed.repo}`,
   };
-  prTarget(metadata, "PR");
+  const target = prTarget(metadata, "PR");
+  if (("url" in requested && target.url !== requested.url) || ("number" in requested && target.number !== requested.number)) {
+    throw new FeedbackError("PR metadata identity does not match requested PR");
+  }
+  metadata.baseRefOid = target.baseRefOid;
+  metadata.headRefOid = target.headRefOid;
   requiredText(metadata.mergeStateStatus, "PR merge state");
   list(metadata.statusCheckRollup, "PR status checks");
   return metadata;
@@ -304,32 +341,46 @@ function configuredPushTarget() {
   const output = run("git", ["remote", "get-url", "--push", "--all", remote]).replace(/\r\n/g, "\n");
   const urls = output.endsWith("\n") ? output.slice(0, -1).split("\n") : output.split("\n");
   if (urls.length !== 1 || !urls[0]) throw new FeedbackError(`expected exactly one push URL on ${remote}, found ${urls.filter(Boolean).length}`);
-  return { remote, ref, ...readPushRepository(requiredText(urls[0], `push URL for ${remote}`)) };
+  const pushUrl = requiredText(urls[0], `push URL for ${remote}`);
+  return { branch, remote, ref, pushUrl, ...readPushRepository(pushUrl) };
 }
 
-function candidatePrUrls(value, hostname) {
-  if (
-    !isRecord(value) || !Number.isSafeInteger(value.total_count) || value.total_count < 0 ||
-    typeof value.incomplete_results !== "boolean" || !Array.isArray(value.items)
-  ) throw new FeedbackError("invalid pull request search response");
-  if (value.incomplete_results) throw new FeedbackError("pull request search results are incomplete");
-  if (value.total_count > PR_LIST_LIMIT) throw new FeedbackError("pull request search result limit exceeded");
-  if (value.items.length !== value.total_count) throw new FeedbackError("pull request search result count is incomplete");
-  const urls = value.items.map((item) => {
+function candidatePrUrls(pages, hostname) {
+  if (!Array.isArray(pages) || !pages.length) throw new FeedbackError("invalid pull request search response");
+  let totalCount = null;
+  let incomplete = false;
+  const pageItems = [];
+  for (const page of pages) {
+    if (
+      !isRecord(page) || !Number.isSafeInteger(page.total_count) || page.total_count < 0 ||
+      typeof page.incomplete_results !== "boolean" || !Array.isArray(page.items)
+    ) throw new FeedbackError("invalid pull request search response");
+    if (totalCount !== null && page.total_count !== totalCount) throw new FeedbackError("pull request search pages are inconsistent");
+    totalCount = page.total_count;
+    incomplete ||= page.incomplete_results;
+    pageItems.push(page.items);
+  }
+  if (incomplete) throw new FeedbackError("pull request search results are incomplete");
+  if (totalCount > PR_SEARCH_CAP) throw new FeedbackError("GitHub pull request search cap reached");
+  const expectedPages = Math.max(1, Math.ceil(totalCount / PR_LIST_LIMIT));
+  if (pageItems.length !== expectedPages || pageItems.some((items, index) =>
+    items.length !== Math.min(PR_LIST_LIMIT, Math.max(0, totalCount - index * PR_LIST_LIMIT))
+  )) throw new FeedbackError("pull request search result count is incomplete");
+  const urls = pageItems.flat().map((item) => {
     if (!isRecord(item)) throw new FeedbackError("pull request search item is invalid");
     const parsed = parsePrUrl(item.html_url, "candidate PR URL");
     if (parsed.hostname !== hostname) throw new FeedbackError("candidate PR URL hostname does not match push target");
     return parsed.url;
   });
-  if (new Set(urls).size !== urls.length) throw new FeedbackError("pull request search returned duplicate candidates");
+  if (new Set(urls.map((url) => url.toLowerCase())).size !== urls.length) throw new FeedbackError("pull request search returned duplicate candidates");
   return urls;
 }
 
 function discoverOpenPr(localHead) {
   const push = configuredPushTarget();
   const [owner] = push.repository.split("/", 2);
-  const response = readJsonCommand("gh", [
-    "api", "search/issues", "--hostname", push.hostname, "-X", "GET",
+  const response = readJsonValueCommand("gh", [
+    "api", "search/issues", "--hostname", push.hostname, "--paginate", "--slurp", "-X", "GET",
     "-f", `q=is:pr is:open head:${owner}:${push.ref}`,
     "-f", `per_page=${PR_LIST_LIMIT}`,
   ]);
@@ -338,17 +389,15 @@ function discoverOpenPr(localHead) {
     if (candidate.url !== url) throw new FeedbackError("candidate PR metadata URL does not match search result");
     return candidate;
   });
-  const matching = candidates.filter((candidate) => {
-    const headOid = requiredText(candidate.headRefOid, "candidate PR head OID");
-    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(headOid)) throw new FeedbackError("candidate PR head OID must be a full OID");
-    return candidate.hostname === push.hostname &&
-      candidate.headRepository.nameWithOwner.toLowerCase() === push.repository.toLowerCase() &&
-      candidate.headRefName === push.ref && headOid.toLowerCase() === localHead;
-  });
+  const matching = candidates.filter((candidate) =>
+    candidate.hostname === push.hostname &&
+    candidate.headRepository.nameWithOwner.toLowerCase() === push.repository.toLowerCase() &&
+    candidate.headRefName === push.ref && candidate.headRefOid === localHead
+  );
   if (matching.length !== 1) {
     throw new FeedbackError(`expected exactly one open PR matching configured push target and local HEAD, found ${matching.length}`);
   }
-  return { metadata: matching[0], remote: push.remote };
+  return { metadata: matching[0], push };
 }
 
 function graphqlArgs(hostname, variables) {
@@ -549,15 +598,20 @@ function location(thread) {
 
 function checkBucket(check) {
   if (!isRecord(check)) throw new FeedbackError("invalid PR status check");
-  if (typeof check.status === "string" && check.status !== "COMPLETED") return "pending";
-  if (typeof check.state === "string") {
-    if (check.state === "SUCCESS") return "passing";
-    return ["ERROR", "FAILURE", "STALE"].includes(check.state) ? "failing" : "pending";
+  const states = ["conclusion", "state", "status"].flatMap((field) => {
+    const value = check[field];
+    if (value === null || value === undefined || value === "") return [];
+    if (typeof value !== "string" || !CHECK_BUCKETS.has(value)) throw new FeedbackError("invalid PR status check");
+    return [value];
+  });
+  if (!states.length) throw new FeedbackError("invalid PR status check");
+
+  // COMPLETED is a lifecycle state; the conclusion supplies its outcome.
+  const outcomes = states.filter((state) => state !== "COMPLETED").map((state) => CHECK_BUCKETS.get(state));
+  if (new Set(outcomes).size > 1 || (states.includes("COMPLETED") && outcomes.includes("pending"))) {
+    throw new FeedbackError("invalid PR status check");
   }
-  if (check.conclusion === null || check.conclusion === undefined || check.conclusion === "") return "pending";
-  const conclusion = text(check.conclusion, "PR status check conclusion");
-  if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) return "passing";
-  return ["ACTION_REQUIRED", "CANCELLED", "FAILURE", "STALE", "STARTUP_FAILURE", "TIMED_OUT"].includes(conclusion) ? "failing" : "pending";
+  return outcomes[0] ?? "pending";
 }
 
 function checkSummary(metadata) {
@@ -747,30 +801,17 @@ function githubRemote(url, hostname) {
   }
 }
 
-function selectPushRemote(repository, hostname, remotes) {
-  const target = requiredText(repository, "PR head repository").toLowerCase();
-  const expectedHost = requiredText(hostname, "PR hostname").toLowerCase();
-  const matches = [];
-  for (const remote of list(remotes, "configured remotes")) {
-    if (!isRecord(remote)) throw new FeedbackError("configured remote is invalid");
-    const name = requiredText(remote.name, "remote name");
-    const urls = list(remote.urls, `push URLs for ${name}`);
-    for (const url of urls) {
-      if (githubRemote(requiredText(url, `push URL for ${name}`), expectedHost) === target) matches.push({ name, urls });
-    }
-  }
-  if (matches.length !== 1) throw new FeedbackError(`expected exactly one matching push URL for ${repository}, found ${matches.length}`);
-  const [{ name, urls }] = matches;
-  if (urls.length !== 1) throw new FeedbackError(`expected exactly one push URL on ${name}, found ${urls.length}`);
-  return name;
+function requirePushTargetMatchesPr(push, target) {
+  if (
+    push.hostname !== target.hostname || push.repository.toLowerCase() !== target.headRepository.toLowerCase() ||
+    push.ref !== target.headRefName
+  ) throw new FeedbackError("configured push target does not match PR head");
 }
 
-function pushRemote(repository, hostname) {
-  const remotes = git("remote").split("\n").filter(Boolean).map((name) => ({
-    name,
-    urls: run("git", ["remote", "get-url", "--push", "--all", name]).trim().split("\n").filter(Boolean),
-  }));
-  return selectPushRemote(repository, hostname, remotes);
+function requireSamePushTarget(expected, current) {
+  for (const field of ["branch", "remote", "ref", "pushUrl", "hostname", "repository"]) {
+    if (expected[field] !== current[field]) throw new FeedbackError("configured push target changed before push");
+  }
 }
 
 function verifyTarget(options) {
@@ -778,15 +819,16 @@ function verifyTarget(options) {
   const discovered = options.pr === undefined ? discoverOpenPr(localHead) : null;
   const metadata = discovered?.metadata ?? readOpenPr(options.pr);
   requireMatchingHead(metadata, localHead);
-  const repository = metadata.headRepository.nameWithOwner;
-  const remote = discovered?.remote ?? pushRemote(repository, metadata.hostname);
+  const target = prTarget(metadata, "PR");
+  const push = discovered?.push ?? configuredPushTarget();
+  requirePushTargetMatchesPr(push, target);
   console.log(`pr=${metadata.url}`);
-  console.log(`remote=${remote} repository=${repository}`);
-  console.log(`push_target=git push ${remote} ${localHead}:${metadata.headRefName}`);
+  console.log(`remote=${push.remote} repository=${target.headRepository}`);
+  console.log(`push_target=git push ${push.remote} ${localHead}:refs/heads/${push.ref}`);
 }
 
 function checkPr(options) {
-  const metadata = options.pr === undefined ? discoverOpenPr(cleanHead()).metadata : readOpenPr(options.pr);
+  const metadata = currentExpectedHead(options.pr, options.expectedHead);
   console.log(`pr=${metadata.url}`);
   printPrStatus(metadata);
 }
@@ -803,7 +845,7 @@ function waitForHead(expected, expectedHead, readPr = readOpenPr, pause = sleep)
 }
 
 function publishHead(initial, localHead, operations) {
-  const { readPr, remoteFor, push, pause = sleep } = operations;
+  const { readPr, readTarget, readHead, push, pause = sleep } = operations;
   const expected = prTarget(initial, "snapshot PR");
   const initialHead = expected.headRefOid;
   const current = readPr(expected.url);
@@ -814,30 +856,25 @@ function publishHead(initial, localHead, operations) {
     throw new FeedbackError(`PR head changed before push: ${initialHead} -> ${observed.headRefOid}`);
   }
 
-  const remote = remoteFor(observed.headRepository, observed.hostname);
-  try {
-    push(remote, `${localHead}:${observed.headRefName}`);
-  } catch (pushError) {
-    let observedAfterError;
-    try {
-      observedAfterError = waitForHead(expected, localHead, readPr, pause);
-    } catch (readError) {
-      throw new FeedbackError(`push failed: ${pushError.message}; head verification failed: ${readError.message}`);
-    }
-    if (observedAfterError.headRefOid === localHead) {
-      return { metadata: observedAfterError, remote, status: "recovered-after-error" };
-    }
-    if (observedAfterError.headRefOid !== initialHead) {
-      throw new FeedbackError(`PR head changed while recovering failed push: ${initialHead} -> ${observedAfterError.headRefOid}`);
-    }
-    throw pushError;
-  }
+  const savedTarget = readTarget();
+  requirePushTargetMatchesPr(savedTarget, observed);
+  const guardedTarget = readTarget();
+  requireSamePushTarget(savedTarget, guardedTarget);
+  const guardedPr = prTarget(readPr(expected.url), "current PR");
+  requireSamePr(expected, guardedPr);
+  requirePushTargetMatchesPr(guardedTarget, guardedPr);
+  if (readHead() !== localHead) throw new FeedbackError("local HEAD changed before push");
+  push(guardedTarget.remote, `${localHead}:refs/heads/${guardedTarget.ref}`);
 
   const pushed = waitForHead(expected, localHead, readPr, pause);
   if (pushed.headRefOid !== localHead) {
     throw new FeedbackError(`push did not update PR head to local HEAD: ${pushed.headRefOid} != ${localHead}`);
   }
-  return { metadata: pushed, remote, status: "pushed" };
+  return { metadata: pushed, remote: guardedTarget.remote, ref: guardedTarget.ref, status: "pushed" };
+}
+
+function printSnapshotPrUrl(options) {
+  console.log(prTarget(snapshot(resolve(options.snapshot)).pullRequest, "snapshot PR").url);
 }
 
 function pushHead(options) {
@@ -845,11 +882,12 @@ function pushHead(options) {
   const localHead = cleanHead();
   const result = publishHead(initial, localHead, {
     readPr: readOpenPr,
-    remoteFor: pushRemote,
+    readTarget: configuredPushTarget,
+    readHead: cleanHead,
     push: (remote, refspec) => run("git", ["push", remote, refspec]),
   });
-  const remote = result.remote ? ` remote=${result.remote}` : "";
-  console.log(`pushed_head=${localHead}${remote} branch=${result.metadata.headRefName} status=${result.status}`);
+  const destination = result.remote ? ` remote=${result.remote} branch=${result.ref}` : "";
+  console.log(`pushed_head=${localHead}${destination} status=${result.status}`);
 }
 
 function page(nodes, hasNextPage = false, endCursor = null) {
@@ -885,16 +923,26 @@ function selfTest() {
     invalidPushUrlRead = true;
   }), /push URL is invalid/);
   assert.equal(invalidPushUrlRead, false);
-  assert.deepEqual(candidatePrUrls({
+  assert.deepEqual(candidatePrUrls([{
     total_count: 1,
     incomplete_results: false,
     items: [{ html_url: enterpriseUrl }],
-  }, enterpriseHost), [enterpriseUrl]);
-  assert.throws(() => candidatePrUrls({ total_count: 1, incomplete_results: true, items: [{ html_url: enterpriseUrl }] }, enterpriseHost), /incomplete/);
-  assert.throws(() => candidatePrUrls({ total_count: 101, incomplete_results: false, items: [] }, enterpriseHost), /limit/);
-  assert.throws(() => candidatePrUrls({ total_count: 1, incomplete_results: false, items: [] }, enterpriseHost), /count/);
-  assert.throws(() => candidatePrUrls({ total_count: 1, incomplete_results: false, items: [{}] }, enterpriseHost), /must be a string/);
-  assert.throws(() => candidatePrUrls({ total_count: 2, incomplete_results: false, items: [{ html_url: enterpriseUrl }, { html_url: enterpriseUrl }] }, enterpriseHost), /duplicate/);
+  }], enterpriseHost), [enterpriseUrl]);
+  const paginatedItems = Array.from({ length: 101 }, (_, index) => ({ html_url: `https://${enterpriseHost}/Owner/Repo/pull/${index + 1}` }));
+  assert.equal(candidatePrUrls([
+    { total_count: 101, incomplete_results: false, items: paginatedItems.slice(0, 100) },
+    { total_count: 101, incomplete_results: false, items: paginatedItems.slice(100) },
+  ], enterpriseHost).length, 101);
+  assert.throws(() => candidatePrUrls([{ total_count: 1, incomplete_results: true, items: [{ html_url: enterpriseUrl }] }], enterpriseHost), /incomplete/);
+  assert.throws(() => candidatePrUrls([{ total_count: 1001, incomplete_results: false, items: [] }], enterpriseHost), /cap/);
+  assert.throws(() => candidatePrUrls([{ total_count: 1, incomplete_results: false, items: [] }], enterpriseHost), /count/);
+  assert.throws(() => candidatePrUrls([
+    { total_count: 101, incomplete_results: false, items: paginatedItems.slice(0, 100) },
+    { total_count: 102, incomplete_results: false, items: paginatedItems.slice(100) },
+  ], enterpriseHost), /inconsistent/);
+  assert.throws(() => candidatePrUrls([{ total_count: 1, incomplete_results: false, items: [{}] }], enterpriseHost), /must be a string/);
+  assert.throws(() => candidatePrUrls([{ total_count: 1, incomplete_results: false, items: [{ html_url: "https://github.com/Owner/Repo/pull/1" }] }], enterpriseHost), /hostname/);
+  assert.throws(() => candidatePrUrls([{ total_count: 2, incomplete_results: false, items: [{ html_url: enterpriseUrl }, { html_url: enterpriseUrl.toLowerCase() }] }], enterpriseHost), /duplicate/);
 
   for (const remoteUrl of [
     `git@${enterpriseHost}:Owner/Repo.git`,
@@ -903,30 +951,6 @@ function selfTest() {
   ]) assert.equal(githubRemote(remoteUrl, enterpriseHost), "owner/repo");
   assert.equal(githubRemote("https://github.com/Owner/Repo.git", enterpriseHost), null);
   assert.equal(githubRemote(`http://${enterpriseHost}/Owner/Repo.git`, enterpriseHost), null);
-  assert.equal(selectPushRemote("Owner/Repo", enterpriseHost, [
-    { name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`] },
-    { name: "upstream", urls: [`https://${enterpriseHost}/Other/Repo.git`] },
-  ]), "origin");
-  assert.throws(
-    () => selectPushRemote("Owner/Repo", enterpriseHost, [
-      { name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`] },
-      { name: "fork", urls: [`ssh://git@${enterpriseHost}/Owner/Repo.git`] },
-    ]),
-    /exactly one matching push URL/,
-  );
-  assert.throws(
-    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`, `ssh://git@${enterpriseHost}/Owner/Repo.git`] }]),
-    /exactly one matching push URL/,
-  );
-  assert.throws(
-    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Repo.git`, `https://${enterpriseHost}/Owner/Other.git`] }]),
-    /exactly one push URL on origin/,
-  );
-  assert.throws(
-    () => selectPushRemote("Owner/Repo", enterpriseHost, [{ name: "origin", urls: [`https://${enterpriseHost}/Owner/Other.git`] }]),
-    /exactly one matching push URL/,
-  );
-
   assert.equal(retryableReadFailure(new FeedbackError("HTTP 503")), true);
   assert.equal(retryableReadFailure(new FeedbackError("HTTP 400")), false);
   let readAttempts = 0;
@@ -951,7 +975,7 @@ if [ "$1" = auth ]; then
 fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
   if [ "$3" = 1 ]; then
-    echo '{"number":1,"url":"https://${enterpriseHost}/Owner/Repo/pull/1","state":"OPEN","baseRefName":"main","baseRefOid":"base","headRefName":"feature","headRefOid":"head","headRepository":{"nameWithOwner":"Owner/Repo"},"mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
+    echo '{"number":1,"url":"https://${enterpriseHost}/Owner/Repo/pull/1","state":"OPEN","baseRefName":"main","baseRefOid":"${"b".repeat(40)}","headRefName":"feature","headRefOid":"${"a".repeat(40)}","headRepository":{"nameWithOwner":"Owner/Repo"},"mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
     exit 0
   fi
   echo 'target request failed' >&2
@@ -969,8 +993,8 @@ exit 1
   try {
     process.env.PATH = `${bin}:${originalPath ?? ""}`;
     console.log = () => {};
-    assert.equal(main(["checks", "--pr", "1"]), 0);
-    assert.throws(() => main(["checks", "--pr", "404"]), /target request failed/);
+    assert.equal(readOpenPr("1").hostname, enterpriseHost);
+    assert.throws(() => readOpenPr("404"), /target request failed/);
     assert.throws(() => graphqlResponse("query { viewer { login } }", {}, enterpriseHost), /host GraphQL failed/);
   } finally {
     console.log = originalLog;
@@ -1084,12 +1108,12 @@ if [ "$*" = "repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url" ];
   echo '{"nameWithOwner":"Owner/Repo","url":"https://${enterpriseHost}/Owner/Repo"}'
   exit 0
 fi
-if [ "$*" = "api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
-  echo '{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Upstream/Project/pull/1"}]}'
+if [ "$*" = "api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
+  echo '[{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Upstream/Project/pull/1"}]}]'
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = view ] && [ "$3" = "https://${enterpriseHost}/Upstream/Project/pull/1" ]; then
-  printf '%s\\n' '{"number":1,"url":"https://${enterpriseHost}/Upstream/Project/pull/1","state":"OPEN","baseRefName":"main","baseRefOid":"base","headRefName":"feature/pr","headRefOid":"${discoveryMetadata.headRefOid}","headRepository":{"nameWithOwner":"Owner/Repo"},"mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
+  printf '%s\\n' '{"number":1,"url":"https://${enterpriseHost}/Upstream/Project/pull/1","state":"OPEN","baseRefName":"main","baseRefOid":"${base}","headRefName":"feature/pr","headRefOid":"${discoveryMetadata.headRefOid}","headRepository":{"nameWithOwner":"Owner/Repo"},"mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
   exit 0
 fi
 echo "unexpected gh command: $*" >&2
@@ -1102,19 +1126,27 @@ exit 1
       process.env.PATH = `${bin}:${pathBeforeDiscovery ?? ""}`;
       console.log = () => {};
       const discovered = discoverOpenPr(discoveryMetadata.headRefOid);
-      assert.equal(discovered.remote, "fork");
+      assert.equal(discovered.push.remote, "fork");
       assert.equal(discovered.metadata.headRefName, "feature/pr");
-      assert.equal(main(["checks"]), 0);
+      assert.equal(main(["checks", "--expected-head", discoveryMetadata.headRefOid]), 0);
+      assert.throws(
+        () => main(["checks", "--pr", `https://${enterpriseHost}/Upstream/Project/pull/1`, "--expected-head", base]),
+        /local HEAD .* does not match expected head/,
+      );
       writeFileSync(join(bin, "gh"), discoveryScript.replace(
         `"url":"https://${enterpriseHost}/Upstream/Project/pull/1"`,
         `"url":"https://${enterpriseHost}/Owner/Repo/pull/1"`,
       ), { mode: 0o755 });
-      assert.throws(() => main(["checks"]), /metadata URL does not match search result/);
+      assert.throws(() => main(["checks", "--expected-head", discoveryMetadata.headRefOid]), /metadata identity does not match requested PR/);
       writeFileSync(join(bin, "gh"), discoveryScript.replace(
         `"headRefOid":"${discoveryMetadata.headRefOid}"`,
         `"headRefOid":"${base}"`,
       ), { mode: 0o755 });
-      assert.throws(() => main(["checks"]), /matching configured push target and local HEAD, found 0/);
+      assert.throws(() => main(["checks", "--expected-head", discoveryMetadata.headRefOid]), /matching configured push target and local HEAD, found 0/);
+      assert.throws(
+        () => main(["checks", "--pr", `https://${enterpriseHost}/Upstream/Project/pull/1`, "--expected-head", discoveryMetadata.headRefOid]),
+        /PR head .* does not match expected head/,
+      );
     } finally {
       console.log = logBeforeDiscovery;
       if (pathBeforeDiscovery === undefined) delete process.env.PATH;
@@ -1123,7 +1155,7 @@ exit 1
     const discoveryCommands = readFileSync(discoveryCalls, "utf8").trim().split("\n");
     assert.equal(discoveryCommands[0], `repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url`);
     assert(!discoveryCommands.some((command) => command.includes("account") || command.includes("secret")));
-    assert.equal(discoveryCommands[1], `api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
+    assert.equal(discoveryCommands[1], `api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
     assert.match(discoveryCommands[2], new RegExp(`^pr view https://${enterpriseHost}/Upstream/Project/pull/1 `));
     assert(!discoveryCommands.some((command) => command.startsWith("pr view --json")));
 
@@ -1140,8 +1172,8 @@ if [ "$*" = "repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url" ];
   echo '{"nameWithOwner":"Owner/Repo","url":"https://${enterpriseHost}/Owner/Repo"}'
   exit 0
 fi
-if [ "$*" = "api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
-  echo '{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Owner/Repo/pull/1"}]}'
+if [ "$*" = "api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
+  echo '[{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Owner/Repo/pull/1"}]}]'
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
@@ -1154,8 +1186,8 @@ if [ "$1" = pr ] && [ "$2" = view ]; then
   views=$((views + 1))
   echo "$views" > "${views}"
   head=${discoveryMetadata.headRefOid}
-  [ "$views" -ge 3 ] && head=moved
-  printf '%s\\n' "{\\"number\\":1,\\"url\\":\\"https://${enterpriseHost}/Owner/Repo/pull/1\\",\\"state\\":\\"OPEN\\",\\"baseRefName\\":\\"main\\",\\"baseRefOid\\":\\"base\\",\\"headRefName\\":\\"feature/pr\\",\\"headRefOid\\":\\"$head\\",\\"headRepository\\":{\\"nameWithOwner\\":\\"Owner/Repo\\"},\\"mergeStateStatus\\":\\"CLEAN\\",\\"statusCheckRollup\\":[]}"
+  [ "$views" -ge 3 ] && head=${"d".repeat(40)}
+  printf '%s\\n' "{\\"number\\":1,\\"url\\":\\"https://${enterpriseHost}/Owner/Repo/pull/1\\",\\"state\\":\\"OPEN\\",\\"baseRefName\\":\\"main\\",\\"baseRefOid\\":\\"${base}\\",\\"headRefName\\":\\"feature/pr\\",\\"headRefOid\\":\\"$head\\",\\"headRepository\\":{\\"nameWithOwner\\":\\"Owner/Repo\\"},\\"mergeStateStatus\\":\\"CLEAN\\",\\"statusCheckRollup\\":[]}"
   exit 0
 fi
 if [ "$1" = api ] && [ "$2" = graphql ] && [ "$3" = --hostname ] && [ "$4" = ${enterpriseHost} ]; then
@@ -1183,7 +1215,7 @@ exit 1
       process.env.PATH = `${bin}:${pathBeforeResolution ?? ""}`;
       assert.throws(
         () => main(["resolve", "--pr", "1", "--expected-head", discoveryMetadata.headRefOid, "--thread", "resolved", "--thread", "first", "--thread", "second"]),
-        /PR head moved does not match expected head/,
+        /PR head .* does not match expected head/,
       );
       assert.equal(readFileSync(resolved, "utf8"), "first\n");
       assert.match(readFileSync(resolutionCalls, "utf8"), /^pr view 1 /);
@@ -1193,7 +1225,7 @@ exit 1
       writeFileSync(resolutionCalls, "");
       assert.throws(
         () => main(["resolve", "--expected-head", discoveryMetadata.headRefOid, "--thread", "resolved", "--thread", "first", "--thread", "second"]),
-        /PR head moved does not match expected head/,
+        /PR head .* does not match expected head/,
       );
     } finally {
       if (pathBeforeResolution === undefined) delete process.env.PATH;
@@ -1202,7 +1234,7 @@ exit 1
     assert.equal(readFileSync(resolved, "utf8"), "first\n");
     const resolutionCommands = readFileSync(resolutionCalls, "utf8").trim().split("\n");
     assert.equal(resolutionCommands[0], `repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url`);
-    assert.equal(resolutionCommands[1], `api search/issues --hostname ${enterpriseHost} -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
+    assert.equal(resolutionCommands[1], `api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
     assert.match(resolutionCommands[2], new RegExp(`^pr view https://${enterpriseHost}/Owner/Repo/pull/1 `));
     assert(!resolutionCommands.some((command) => command.startsWith("pr view --json")));
 
@@ -1325,6 +1357,10 @@ exit 1
   ]);
 
   assert.equal(checkBucket({ conclusion: "STALE" }), "failing");
+  assert.equal(checkBucket({ status: "", state: "ERROR", conclusion: "" }), "failing");
+  assert.equal(checkBucket({ status: "QUEUED", state: "", conclusion: "" }), "pending");
+  assert.throws(() => checkBucket({ status: "IN_PROGRESS", conclusion: "SUCCESS" }), /invalid PR status check/);
+  assert.throws(() => checkBucket({ status: "", state: "", conclusion: "" }), /invalid PR status check/);
   assert.deepEqual(checkSummary(feedback.pullRequest), { passing: 1, pending: 1, failing: 2 });
   const initialLines = [];
   printFetchSummary(feedback, null, "/tmp/snapshot", (line) => initialLines.push(line));
@@ -1358,50 +1394,52 @@ exit 1
     url: `https://${enterpriseHost}/owner/repo/pull/1`,
     hostname: enterpriseHost,
     baseRefName: "main",
-    baseRefOid: "base",
-    headRefOid: "old",
+    baseRefOid: "b".repeat(40),
+    headRefOid: "a".repeat(40),
     headRefName: "feature",
     headRepository: { nameWithOwner: "owner/repo" },
   };
   const capturedOid = "c".repeat(40);
   const localHead = { ...oldHead, headRefOid: capturedOid };
+  const pushTarget = {
+    branch: "feature-local",
+    remote: "origin",
+    ref: "feature",
+    pushUrl: `ssh://git@${enterpriseHost}/owner/repo.git`,
+    hostname: enterpriseHost,
+    repository: "owner/repo",
+  };
   const sequence = (...values) => {
     let index = 0;
     return () => values[Math.min(index++, values.length - 1)];
   };
-  const operations = (readPr, push = () => {}, remoteFor = () => "origin") => ({
+  const operations = (readPr, push = () => {}, readTarget = sequence(pushTarget, pushTarget), readHead = () => capturedOid) => ({
     readPr,
-    remoteFor,
+    readTarget,
+    readHead,
     push,
     pause: () => {},
   });
-  let alreadyCurrentRemoteCalls = 0;
+  let alreadyCurrentTargetReads = 0;
   let alreadyCurrentPushes = 0;
   assert.equal(publishHead(oldHead, capturedOid, operations(
     sequence(localHead),
     () => { alreadyCurrentPushes += 1; },
-    () => { alreadyCurrentRemoteCalls += 1; return "origin"; },
+    () => { alreadyCurrentTargetReads += 1; return pushTarget; },
   )).status, "already-current");
-  assert.equal(alreadyCurrentRemoteCalls, 0);
+  assert.equal(alreadyCurrentTargetReads, 0);
   assert.equal(alreadyCurrentPushes, 0);
-  const remoteCalls = [];
+
   const pushCalls = [];
   assert.equal(publishHead(oldHead, capturedOid, operations(
     sequence(oldHead, oldHead, localHead),
     (remote, refspec) => pushCalls.push([remote, refspec]),
-    (repository, hostname) => {
-      remoteCalls.push([repository, hostname]);
-      return "origin";
-    },
   )).status, "pushed");
-  assert.deepEqual(remoteCalls, [["owner/repo", enterpriseHost]]);
-  assert.deepEqual(pushCalls, [["origin", `${capturedOid}:feature`]]);
-  assert.equal(publishHead(oldHead, capturedOid, operations(sequence(oldHead, localHead), () => {
-    throw new FeedbackError("HTTP 503");
-  })).status, "recovered-after-error");
+  assert.deepEqual(pushCalls, [["origin", `${capturedOid}:refs/heads/feature`]]);
+
   let failedPushes = 0;
   assert.throws(
-    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead), () => {
+    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, oldHead), () => {
       failedPushes += 1;
       throw new FeedbackError("HTTP 503");
     })),
@@ -1409,16 +1447,16 @@ exit 1
   );
   assert.equal(failedPushes, 1);
 
-  const drifts = [
+  const prDrifts = [
     ["number", { ...oldHead, number: 2, url: `https://${enterpriseHost}/owner/repo/pull/2` }],
     ["URL", { ...oldHead, url: `https://${enterpriseHost}/owner/other/pull/1` }],
     ["hostname", { ...oldHead, hostname: "other.example.test", url: "https://other.example.test/owner/repo/pull/1" }],
     ["base ref", { ...oldHead, baseRefName: "release" }],
-    ["base OID", { ...oldHead, baseRefOid: "other-base" }],
+    ["base OID", { ...oldHead, baseRefOid: "d".repeat(40) }],
     ["head repository", { ...oldHead, headRepository: { nameWithOwner: "owner/fork" } }],
     ["head ref", { ...oldHead, headRefName: "other-feature" }],
   ];
-  for (const [field, changed] of drifts) {
+  for (const [field, changed] of prDrifts) {
     let pushes = 0;
     assert.throws(
       () => publishHead(oldHead, capturedOid, operations(sequence({ ...changed, headRefOid: capturedOid }), () => { pushes += 1; })),
@@ -1428,21 +1466,51 @@ exit 1
   }
   let driftPushes = 0;
   assert.throws(
-    () => publishHead(oldHead, capturedOid, operations(sequence({ ...oldHead, headRefOid: "other-head" }), () => { driftPushes += 1; })),
-    /PR head changed before push: old -> other-head/,
+    () => publishHead(oldHead, capturedOid, operations(sequence({ ...oldHead, headRefOid: "d".repeat(40) }), () => { driftPushes += 1; })),
+    /PR head changed before push/,
   );
   assert.equal(driftPushes, 0);
+
+  for (const [field, value] of [
+    ["branch", "other-local"],
+    ["remote", "fork"],
+    ["ref", "other-feature"],
+    ["pushUrl", `ssh://git@${enterpriseHost}/owner/other.git`],
+    ["hostname", "other.example.test"],
+    ["repository", "owner/other"],
+  ]) {
+    let pushes = 0;
+    assert.throws(
+      () => publishHead(oldHead, capturedOid, operations(
+        sequence(oldHead),
+        () => { pushes += 1; },
+        sequence(pushTarget, { ...pushTarget, [field]: value }),
+      )),
+      /configured push target changed before push/,
+      field,
+    );
+    assert.equal(pushes, 0, field);
+  }
+
   assert.throws(
-    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, { ...oldHead, baseRefOid: "other-base" }), () => {
-      throw new FeedbackError("HTTP 503");
-    })),
-    /push failed: HTTP 503; head verification failed: PR base OID changed since feedback fetch/,
+    () => publishHead(oldHead, capturedOid, operations(
+      sequence(oldHead),
+      () => {},
+      sequence({ ...pushTarget, repository: "owner/other" }),
+    )),
+    /configured push target does not match PR head/,
   );
   assert.throws(
-    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, { ...oldHead, headRefOid: "other-head" }), () => {
-      throw new FeedbackError("HTTP 503");
-    })),
-    /PR head changed while recovering failed push: old -> other-head/,
+    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, { ...oldHead, baseRefOid: "d".repeat(40) }))),
+    /PR base OID changed since feedback fetch/,
+  );
+  assert.throws(
+    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, { ...oldHead, headRefOid: "d".repeat(40) }))),
+    /PR head OID changed since feedback fetch/,
+  );
+  assert.throws(
+    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, oldHead), () => {}, undefined, () => "d".repeat(40))),
+    /local HEAD changed before push/,
   );
   assert.throws(
     () => collectFeedback(metadata, () => ({ repository: { pullRequest: {
@@ -1458,7 +1526,8 @@ function usage() {
   return `usage:
   ${command} fetch [--pr PR] (--out FILE | --json)
   ${command} target [--pr PR]
-  ${command} checks [--pr PR]
+  ${command} checks [--pr PR] --expected-head SHA
+  ${command} snapshot-url --snapshot FILE
   ${command} push --snapshot FILE
   ${command} resolve [--pr PR] --expected-head SHA --thread ID [--thread ID ...]
   ${command} self-test`;
@@ -1468,7 +1537,8 @@ function parse(command, args) {
   const allowed = {
     fetch: new Set(["--pr", "--out", "--json"]),
     target: new Set(["--pr"]),
-    checks: new Set(["--pr"]),
+    checks: new Set(["--pr", "--expected-head"]),
+    "snapshot-url": new Set(["--snapshot"]),
     push: new Set(["--snapshot"]),
     resolve: new Set(["--pr", "--expected-head", "--thread"]),
   }[command];
@@ -1496,7 +1566,14 @@ function parse(command, args) {
   validatePrRef(values.pr);
   if (command === "fetch" && values.out === undefined && !values.json) throw new UsageError("fetch needs --out or --json");
   if (command === "fetch" && values.out !== undefined && values.json) throw new UsageError("fetch accepts --out or --json, not both");
-  if (command === "push" && values.snapshot === undefined) throw new UsageError("push needs --snapshot");
+  if ((command === "push" || command === "snapshot-url") && values.snapshot === undefined) {
+    throw new UsageError(`${command} needs --snapshot`);
+  }
+  if (command === "checks" && values.expectedHead === undefined) throw new UsageError("checks needs --expected-head");
+  if ((command === "checks" || command === "resolve") && values.expectedHead !== undefined) {
+    if (!OID.test(values.expectedHead)) throw new UsageError("--expected-head must be a full OID");
+    values.expectedHead = values.expectedHead.toLowerCase();
+  }
   if (command === "resolve") {
     if (values.expectedHead === undefined) throw new UsageError("resolve needs --expected-head");
     if (!values.threads.length) throw new UsageError("resolve needs at least one --thread");
@@ -1520,6 +1597,7 @@ function main(argv) {
   if (command === "fetch") fetchFeedback(options);
   if (command === "target") verifyTarget(options);
   if (command === "checks") checkPr(options);
+  if (command === "snapshot-url") printSnapshotPrUrl(options);
   if (command === "push") pushHead(options);
   if (command === "resolve") resolveFeedback(options);
   return 0;

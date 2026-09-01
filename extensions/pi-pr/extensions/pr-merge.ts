@@ -1,3 +1,5 @@
+import { lstat } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { LocalMergeSafety } from "./pr-routing.ts";
 
 export type ExecResult = {
@@ -16,6 +18,7 @@ export type Exec = (
 export type MergeMethod = "merge" | "rebase" | "squash";
 
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
+const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 
 export type InspectLocalMergeSafetyInput = {
 	exec: Exec;
@@ -96,7 +99,29 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 	validateInspectionInput(input);
 
 	const status = await runCommand(input.exec, input.cwd, "git", ["status", "--porcelain=v1", "--untracked-files=all"]);
-	const worktree = status.stdout.length === 0 ? "clean" : "dirty";
+	const stateOutput = requiredOutput(
+		await runCommand(input.exec, input.cwd, "git", [
+			"rev-parse",
+			...GIT_OPERATION_STATES.flatMap((state) => ["--git-path", state]),
+		]),
+		"Git operation state paths",
+	);
+	const statePaths = stateOutput.replace(/\r\n/g, "\n").split("\n");
+	if (statePaths.length !== GIT_OPERATION_STATES.length || statePaths.some((path) => !path)) {
+		throw new Error("Git operation state path resolution returned invalid output");
+	}
+	let operationInProgress = false;
+	for (const [index, path] of statePaths.entries()) {
+		try {
+			await lstat(resolve(input.cwd, path));
+			operationInProgress = true;
+		} catch (error) {
+			if (isRecord(error) && error.code === "ENOENT") continue;
+			const detail = isRecord(error) && typeof error.code === "string" ? error.code : errorText(error);
+			throw new Error(`Git operation state inspection failed for ${GIT_OPERATION_STATES[index]}: ${detail}`);
+		}
+	}
+	const worktree = status.stdout.length === 0 && !operationInProgress ? "clean" : "dirty";
 
 	await runCommand(input.exec, input.cwd, "git", [
 		"fetch",

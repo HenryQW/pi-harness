@@ -24,15 +24,11 @@ Run standalone; never invoke, defer to, or modify Shipyard.
      node "<skill>/scripts/pr-feedback.mjs" target
      node "<skill>/scripts/pr-feedback.mjs" fetch --out "$SNAPSHOT"
    fi
-   if [ -n "${PR:-}" ]; then
-     PR=$(gh pr view "$PR" --json url --jq .url)
-   else
-     PR=$(gh pr view --json url --jq .url)
-   fi
+   PR=$(node "<skill>/scripts/pr-feedback.mjs" snapshot-url --snapshot "$SNAPSHOT")
    ```
 
    Target verification requires authenticated `gh`, an open PR, exact local/PR
-   head, and one matching push remote. Inspect base, full diff, and raw
+   head, and one matching configured push target. Inspect base, full diff, and raw
    snapshot. Maintain recovery reference's one-line checkpoint after each
    phase.
 2. Initial fetch prints all conversation comments, review bodies, unresolved
@@ -54,7 +50,13 @@ Run standalone; never invoke, defer to, or modify Shipyard.
    tracked artifacts, then inspect both. Never wait or poll checks.
 5. Commit accepted fixes with scoped Conventional Commit message(s). With no
    fixes, do not commit or push. After clean-tree validation, run
-   `node "<skill>/scripts/pr-feedback.mjs" push --snapshot "$SNAPSHOT"`; helper pushes once and accepts only exact local-head confirmation.
+   `node "<skill>/scripts/pr-feedback.mjs" push --snapshot "$SNAPSHOT"`. The
+   helper revalidates the configured destination, PR identity, and local HEAD.
+   It pushes the captured OID once with no fallback. Then capture the swept head:
+
+   ```bash
+   EXPECTED_HEAD=$(git rev-parse --verify 'HEAD^{commit}')
+   ```
 6. Copy baseline before final fetch:
 
    ```bash
@@ -65,10 +67,11 @@ Run standalone; never invoke, defer to, or modify Shipyard.
 
    Assess delta, then resolve all addressed IDs in one command, repeating flag:
    `node "<skill>/scripts/pr-feedback.mjs" resolve --pr "$PR" --expected-head
-   "$(git rev-parse HEAD)" --thread "$ID1" --thread "$ID2"`. Never resolve
+   "$EXPECTED_HEAD" --thread "$ID1" --thread "$ID2"`. Never resolve
    non-actionable or blocked threads. Re-fetch once into `FINAL_SNAPSHOT`, assess
    late delta, batch any newly addressed IDs, then run
-   `node "<skill>/scripts/pr-feedback.mjs" checks --pr "$PR"` once. Read-only
+   `node "<skill>/scripts/pr-feedback.mjs" checks --pr "$PR" --expected-head
+   "$EXPECTED_HEAD"` once. Read-only
    transient retries are allowed; mutation retries and polling are not. Do not
    reply unless explicitly requested.
 7. Report `PR | actioned | resolved IDs | skipped IDs | pending IDs | checks |

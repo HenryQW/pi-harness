@@ -45,7 +45,7 @@ Use `/pr` without arguments. It reads the current branch pull request and local 
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
-`pi-pr-create` pushes `HEAD` to `origin` and sets the upstream when absent, then creates or updates the PR.
+`pi-pr-create` honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
 
 Current-branch discovery matches the exact push repository and ref. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 
@@ -75,10 +75,13 @@ The footer and widget load at session start and poll every 30 seconds. Polling u
 - Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
 - It does not rebase the local branch, force-push, delete branches, or clean up worktrees.
-- Existing PR discovery and comment-sweep pushes require exactly one unambiguous push URL for the target head repository.
+- Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.
 - Presentation fetches use that exact push URL and exact advertised OID. They do not use shared fetch state.
 - Strict status checks in legacy branch protection or applicable repository rulesets require a base update.
+- Applicable ruleset restrictions intersect repository-wide merge methods. An empty intersection stops the workflow.
 - Before merge, `/pr` fetches the exact head OID from the validated push URL without shared fetch state.
-- Before a comment-sweep push, it revalidates the full PR identity: number, URL, hostname, base repository/ref/OID, and head repository/ref/OID. An already-published local HEAD needs no second push.
+- A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
+- Before a comment-sweep push, it revalidates the configured destination, full PR identity, and local HEAD. It pushes the captured OID.
+- An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
 - Only authenticated GitHub.com and GitHub Enterprise repositories are supported.

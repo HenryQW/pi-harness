@@ -111,18 +111,25 @@ function harness(options: HarnessOptions) {
 				const remoteHead = options.states[stateIndex]?.headRefOid ?? localHead;
 				return result(`${remoteHead}\trefs/heads/feature/pr\n`);
 			}
-			if (command === "gh" && args[0] === "api" && args[1] === "search/issues") {
+			if (
+				command === "gh" &&
+				args.join(" ") === `api search/issues --hostname ${nextHost()} --paginate --slurp -X GET -f q=is:pr head:acme:feature/pr -f per_page=100`
+			) {
 				events.push("load");
 				active = options.states[stateIndex++] ?? null;
-				return result(JSON.stringify({
+				return result(JSON.stringify([{
 					total_count: active ? 1 : 0,
 					incomplete_results: false,
 					items: active ? [{ html_url: `https://${active.host ?? DEFAULT_HOST}/${active.baseRepository ?? "acme/project"}/pull/42` }] : [],
-				}));
+				}]));
 			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				return result(JSON.stringify(active ? pullRequest(active) : null));
 			}
+			if (
+				command === "gh" &&
+				args.join(" ") === `api --hostname ${active?.host ?? DEFAULT_HOST} --paginate --slurp -H Accept: application/vnd.github+json -H X-GitHub-Api-Version: 2022-11-28 repos/${active?.baseRepository ?? "acme/project"}/rules/branches/${encodeURIComponent(active?.baseRefName ?? "main")}`
+			) return result("[[]]");
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 				if (query.includes("reviewThreads")) {
