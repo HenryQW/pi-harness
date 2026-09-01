@@ -12,3 +12,9 @@ export const npmBadgeUrl = (packageName: string) =>
 
 export const licenseBadgeUrl = (packageName: string) =>
   `https://img.shields.io/npm/l/${encodeURIComponent(packageName)}?${query("license")}`;
+
+export const versionBadgeUrl = (version: string) => {
+  const params = query("version");
+  params.set("message", `v${version}`);
+  return `https://img.shields.io/static/v1?${params}`;
+};
