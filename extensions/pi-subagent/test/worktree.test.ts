@@ -492,8 +492,17 @@ test("finalizeChildWorktree preserves submodule edits hidden by index flags", as
 		git(join(info.path, "mod"), "update-index", flag, "tracked.txt");
 		await writeFile(join(info.path, "mod", "tracked.txt"), `${flag}\n`);
 
-		const payload = expectWorktreeOutcome(await finalizeChildWorktree(info), "recovery");
-		assert.match(payload.note, /assume-unchanged|skip-worktree/);
+		const payload = await finalizeChildWorktree(info);
+		if (flag === "--assume-unchanged") {
+			const retained = expectWorktreeOutcome(payload, "retained");
+			assert.equal(retained.commits, 0);
+			assert.equal(retained.dirty, true);
+		} else {
+			const recovery = expectWorktreeOutcome(payload, "recovery");
+			assert.equal(recovery.commits, 0);
+			assert.equal(recovery.dirty, undefined);
+			assert.match(recovery.note, /skip-worktree/);
+		}
 		assert.equal(await readFile(join(info.path, "mod", "tracked.txt"), "utf8"), `${flag}\n`);
 	}
 });

@@ -2080,24 +2080,26 @@ Do bounded work.
 	});
 });
 
-test("background renderer shares workflow entry status presentation", () => {
-	const app = harness();
-	const details: BackgroundWorkflowTransportDetails = {
-		taskId: "bg-test",
-		outcome: "failed",
-		mode: "parallel",
-		entries: [
-			{ id: "one", index: 0, name: "Skipped task", role: "worker", status: "skipped" },
-			{ id: "two", index: 1, name: "Rejected task", role: "worker", status: "rejected" },
-		],
-	};
-	const message = { content: "full\u0001evidence", details };
-	const collapsed = app.renderMessage(message);
-	assert.match(collapsed, /✗ 2 background subagents failed/);
-	assert.match(collapsed, /– Skipped task · worker — skipped/);
-	assert.match(collapsed, /✗ Rejected task · worker — failed/);
-	assert.doesNotMatch(collapsed, /full evidence/);
-	assert.match(app.renderMessage(message, true), /full evidence/);
+test("background renderer shares workflow entry status presentation", async () => {
+	await environment(async () => {
+		const app = harness();
+		const details: BackgroundWorkflowTransportDetails = {
+			taskId: "bg-test",
+			outcome: "failed",
+			mode: "parallel",
+			entries: [
+				{ id: "one", index: 0, name: "Skipped task", role: "worker", status: "skipped" },
+				{ id: "two", index: 1, name: "Rejected task", role: "worker", status: "rejected" },
+			],
+		};
+		const message = { content: "full\u0001evidence", details };
+		const collapsed = app.renderMessage(message);
+		assert.match(collapsed, /✗ 2 background subagents failed/);
+		assert.match(collapsed, /– Skipped task · worker — skipped/);
+		assert.match(collapsed, /✗ Rejected task · worker — failed/);
+		assert.doesNotMatch(collapsed, /full evidence/);
+		assert.match(app.renderMessage(message, true), /full evidence/);
+	});
 });
 
 test("background delegation returns one bounded workflow acknowledgement and result message", async () => {
