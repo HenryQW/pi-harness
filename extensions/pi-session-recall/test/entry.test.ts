@@ -9,6 +9,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { searchIndex } from "../extensions/search-core.ts";
 import { MAX_SESSION_FILE_BYTES } from "../extensions/transcript.ts";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -40,15 +41,24 @@ interface CapturedTool {
 	) => { render(width: number): string[] };
 }
 
-function makePi(): { on: () => void; registerTool: (t: CapturedTool) => void } & Record<string, unknown> {
-	const captured: { tool?: CapturedTool } = {};
+function makePi(): {
+	on: (event: string, callback: (...args: unknown[]) => void) => void;
+	registerTool: (t: CapturedTool) => void;
+	sessionStart?: (...args: unknown[]) => void;
+} & Record<string, unknown> {
+	const captured: { tool?: CapturedTool; sessionStart?: (...args: unknown[]) => void } = {};
 	return {
-		on: () => {},
+		on: (event, callback) => {
+			if (event === "session_start") captured.sessionStart = callback;
+		},
 		registerTool: (t: CapturedTool) => {
 			captured.tool = t;
 		},
 		get tool() {
 			return captured.tool!;
+		},
+		get sessionStart() {
+			return captured.sessionStart;
 		},
 	};
 }
@@ -519,8 +529,29 @@ describe("session_search entry point", () => {
 		assert.ok(parsed.results.length >= 1, "stale discovery hits stay usable after sync failure");
 	});
 
-	it("discovery drains sync backlog left by capped startup pass (bhGOb)", async () => {
-		// Fill more files than the default cap, then run only a 1-file startup backfill.
+	it("indexes sessions from the deferred session_start backfill", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-startup`);
+		register(pi as never);
+
+		const marker = "startup lifecycle unique citrine falcon";
+		msgCount = 1;
+		const session = writeSession("startup/session.jsonl", [
+			{ type: "session", version: 3, id: "startup", timestamp: "2026-01-12T00:00:00.000Z", cwd: "/tmp" },
+			msg(null, "user", marker),
+		]);
+		const sessionStart = pi.sessionStart;
+		assert.ok(sessionStart, "session_start callback must be registered");
+		sessionStart({}, {});
+
+		// This timer queues after the production timer, making it a completion barrier.
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		const { hits } = searchIndex(path.join(agentDir, "config", "pi-session-recall", "index.db"), marker);
+		assert.ok(hits.some((hit) => hit.path === session), "session_start backfill must index the session");
+	});
+
+	it("tool lazy sync drains backlog left by a capped sync pass (bhGOb)", async () => {
+		// Simulate a 1-file capped startup pass; lifecycle wiring is covered above.
 		msgCount = 1;
 		for (let i = 0; i < 3; i++) {
 			writeSession(`d/session-d${i}.jsonl`, [
@@ -546,7 +577,7 @@ describe("session_search entry point", () => {
 		await tool.execute("t8", { query: "backlog drain unique topic number 2" }, undefined, undefined, { sessionManager: {} });
 		const { searchIndex: si } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain-after`);
 		const after = si(path.join(agentDir, "config", "pi-session-recall", "index.db"), `backlog drain unique topic number 2`);
-		// Before the tool call at most cap=1 file was indexed; lazy sync drains the rest.
+		// The direct capped pass indexes at most one file; lazy sync drains the rest.
 		assert.ok(after.hits.length > 0 || before > 0);
 		assert.ok(before + after.hits.length >= 1);
 	});
