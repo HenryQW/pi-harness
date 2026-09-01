@@ -18,19 +18,35 @@ Before changing anything:
 
 ## Fetch, pin, and merge
 
-Read only the documented `clone_url` field from the repository REST API on the validated PR host. Validate that URL against the recorded host and owner/repository. Fetch the recorded base OID without writing shared fetch state:
+Read GitHub CLI's Git protocol for the validated PR host. Require exactly `https` or `ssh`. Read both documented repository URLs from the REST API for the recorded base repository. Validate the selected URL by exact host and repository before Git receives it:
 
 ```bash
-BASE_REPOSITORY_URL="$(gh api --hostname "$PR_HOST" \
+GIT_PROTOCOL="$(gh config get git_protocol --host "$PR_HOST")" || exit 1
+case "$GIT_PROTOCOL" in https|ssh) ;; *) exit 1 ;; esac
+BASE_HTTPS_URL="$(gh api --hostname "$PR_HOST" \
   -H 'Accept: application/vnd.github+json' \
   -H 'X-GitHub-Api-Version: 2022-11-28' \
-  "repos/$BASE_REPOSITORY" --jq .clone_url)"
-git fetch --no-write-fetch-head --no-tags --no-recurse-submodules "$BASE_REPOSITORY_URL" "$BASE_SHA"
-git cat-file -e "$BASE_SHA^{commit}"
+  "repos/$BASE_REPOSITORY" --jq .clone_url)" || exit 1
+BASE_SSH_URL="$(gh api --hostname "$PR_HOST" \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  "repos/$BASE_REPOSITORY" --jq .ssh_url)" || exit 1
+case "$GIT_PROTOCOL" in
+  https)
+    test "$BASE_HTTPS_URL" = "https://$PR_HOST/$BASE_REPOSITORY.git" || exit 1
+    GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+      fetch --no-write-fetch-head --no-tags --no-recurse-submodules "$BASE_HTTPS_URL" "$BASE_SHA" || exit 1
+    ;;
+  ssh)
+    test "$BASE_SSH_URL" = "git@$PR_HOST:$BASE_REPOSITORY.git" || exit 1
+    git fetch --no-write-fetch-head --no-tags --no-recurse-submodules "$BASE_SSH_URL" "$BASE_SHA" || exit 1
+    ;;
+esac
+git cat-file -e "$BASE_SHA^{commit}" || exit 1
 printf 'Fetched base %s %s at %s\n' "$BASE_REPOSITORY" "$BASE_REF" "$BASE_SHA"
 ```
 
-If API lookup, URL validation, fetch, or object verification fails, stop. The recorded `BASE_SHA` is authoritative for this run. Do not fall back to any local or remote-tracking ref.
+If protocol lookup, API lookup, URL validation, fetch, or object verification fails, stop. The HTTPS helper is command-local and receives credentials only through Git's credential protocol. Never print a token, run `gh auth setup-git`, or change persistent Git config. The recorded `BASE_SHA` is authoritative for this run. Do not fall back to another URL, ref, protocol, or credential source.
 
 Before merging, require the attached branch to remain `LOCAL_BRANCH` and the tree to remain clean. Re-resolve its configured push target exactly as above and require the saved remote, `PUSH_REF`, sole push URL, host, and repository. Re-read the PR by its recorded URL with exactly `PR_FIELDS`; require its number, URL, open state, base repository/ref/OID, head repository, `PUSH_REF`, and head OID to remain unchanged. Immediately before merging, require local `HEAD` to equal `EXPECTED_HEAD_SHA`:
 

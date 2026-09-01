@@ -15,11 +15,15 @@ import {
 const cwd = "/repo";
 const hostname = "github.com";
 const pullRequestId = "PR_kwDOExample";
-const expectedHead = "expected-head";
+const expectedHead = "a".repeat(40);
+const localBehind = "b".repeat(40);
+const localAhead = "c".repeat(40);
+const localDiverged = "d".repeat(40);
+const changedHead = "e".repeat(40);
 const expectedBase = {
 	repository: "acme/project",
 	ref: "main",
-	oid: "expected-base",
+	oid: "f".repeat(40),
 };
 
 function result(stdout = "", code = 0, stderr = ""): ExecResult {
@@ -28,6 +32,7 @@ function result(stdout = "", code = 0, stderr = ""): ExecResult {
 
 type Call = { command: string; args: string[]; cwd: string };
 
+const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 const STATE_PATH_ARGS = [
 	"rev-parse",
 	"--git-path", "MERGE_HEAD",
@@ -37,7 +42,7 @@ const STATE_PATH_ARGS = [
 	"--git-path", "REVERT_HEAD",
 	"--git-path", "sequencer",
 ];
-const STATE_PATH_OUTPUT = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"]
+const STATE_PATH_OUTPUT = GIT_OPERATION_STATES
 	.map((state) => `/repo/.git/${state}`).join("\n") + "\n";
 
 function mockExec(
@@ -90,13 +95,13 @@ test("requires a clean tree and classifies every relation to the fetched PR head
 		status: string;
 		localHead: string;
 		ancestry?: number[];
-		expected: { worktree: "clean" | "dirty"; head: "equal" | "behind" | "ahead" | "diverged" };
+		expected: { worktree: "clean" | "dirty"; head: "equal" | "behind" | "ahead" | "diverged"; headOid: string };
 	}> = [
-		{ name: "equal", status: "", localHead: expectedHead, expected: { worktree: "clean", head: "equal" } },
-		{ name: "behind", status: "", localHead: "local-behind", ancestry: [0], expected: { worktree: "clean", head: "behind" } },
-		{ name: "ahead", status: "", localHead: "local-ahead", ancestry: [1, 0], expected: { worktree: "clean", head: "ahead" } },
-		{ name: "diverged", status: "", localHead: "local-diverged", ancestry: [1, 1], expected: { worktree: "clean", head: "diverged" } },
-		{ name: "dirty equal", status: " M file.ts\n", localHead: expectedHead, expected: { worktree: "dirty", head: "equal" } },
+		{ name: "equal", status: "", localHead: expectedHead, expected: { worktree: "clean", head: "equal", headOid: expectedHead } },
+		{ name: "behind", status: "", localHead: localBehind, ancestry: [0], expected: { worktree: "clean", head: "behind", headOid: localBehind } },
+		{ name: "ahead", status: "", localHead: localAhead, ancestry: [1, 0], expected: { worktree: "clean", head: "ahead", headOid: localAhead } },
+		{ name: "diverged", status: "", localHead: localDiverged, ancestry: [1, 1], expected: { worktree: "clean", head: "diverged", headOid: localDiverged } },
+		{ name: "dirty equal", status: " M file.ts\n", localHead: expectedHead, expected: { worktree: "dirty", head: "equal", headOid: expectedHead } },
 	];
 
 	for (const candidate of cases) {
@@ -115,12 +120,12 @@ test("requires a clean tree and classifies every relation to the fetched PR head
 			["git", STATE_PATH_ARGS],
 			["git", ["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "git@github.com:acme/fork.git", expectedHead]],
 			["git", ["cat-file", "-e", `${expectedHead}^{commit}`]],
-			["git", ["rev-parse", "--verify", "HEAD"]],
+			["git", ["rev-parse", "--verify", "HEAD^{commit}"]],
 			...(candidate.ancestry?.map((_, index) => [
 				"git",
 				index === 0
-					? ["merge-base", "--is-ancestor", "HEAD", expectedHead]
-					: ["merge-base", "--is-ancestor", expectedHead, "HEAD"],
+					? ["merge-base", "--is-ancestor", candidate.localHead, expectedHead]
+					: ["merge-base", "--is-ancestor", expectedHead, candidate.localHead],
 			] as [string, string[]]) ?? []),
 		], candidate.name);
 		assert.ok(calls.every(({ command: executable, args }) =>
@@ -155,7 +160,7 @@ test("fetches before accepting an equal head and rejects an unavailable advertis
 
 	await assert.rejects(
 		inspectLocalMergeSafety(inspectInput(exec)),
-		/git cat-file -e expected-head\^\{commit\} failed: missing object/,
+		new RegExp(`git cat-file -e ${expectedHead}\\^\\{commit\\} failed: missing object`),
 	);
 	assert.equal(calls.length, 4);
 	assert.deepEqual(command(calls[2]!), [
@@ -169,7 +174,7 @@ test("surfaces fetch failures without attempting ancestry checks", async () => {
 
 	await assert.rejects(
 		inspectLocalMergeSafety(inspectInput(exec)),
-		/git fetch --no-write-fetch-head --no-tags --no-recurse-submodules git@github\.com:acme\/fork\.git expected-head failed: remote unavailable/,
+		new RegExp(`git fetch --no-write-fetch-head --no-tags --no-recurse-submodules git@github\\.com:acme/fork\\.git ${expectedHead} failed: remote unavailable`),
 	);
 	assert.equal(calls.length, 3);
 });
@@ -228,7 +233,7 @@ test("final merge rejects every in-progress Git operation in a linked worktree",
 			return runGit(linked, args);
 		}
 		if (command === "git" && (args[0] === "fetch" || args[0] === "cat-file")) return result();
-		if (command === "git" && args.join(" ") === "rev-parse --verify HEAD") return result(`${expectedHead}\n`);
+		if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}") return result(`${expectedHead}\n`);
 		if (command === "gh") {
 			mergeMutations += 1;
 			return result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequestId, state: "MERGED" } } } }));
@@ -315,23 +320,28 @@ test("does not issue a merge mutation when fresh local safety checks fail", asyn
 		},
 		{
 			name: "ahead",
-			responses: [result(), result(), result(`${expectedHead}\n`), result("local-ahead\n"), result("", 1), result("", 0)],
+			responses: [result(), result(), result(`${expectedHead}\n`), result(`${localAhead}\n`), result("", 1), result("", 0)],
 			error: /Local merge safety check failed: worktree is clean, HEAD is ahead/,
 		},
 		{
 			name: "diverged",
-			responses: [result(), result(), result(`${expectedHead}\n`), result("local-diverged\n"), result("", 1), result("", 1)],
+			responses: [result(), result(), result(`${expectedHead}\n`), result(`${localDiverged}\n`), result("", 1), result("", 1)],
 			error: /Local merge safety check failed: worktree is clean, HEAD is diverged/,
+		},
+		{
+			name: "malformed local HEAD",
+			responses: [result(), result(), result(`${expectedHead}\n`), result("short\n")],
+			error: /local HEAD must be a full Git OID/,
 		},
 		{
 			name: "missing advertised object",
 			responses: [result(), result(), result("", 1, "missing object")],
-			error: /git cat-file -e expected-head\^\{commit\} failed: missing object/,
+			error: new RegExp(`git cat-file -e ${expectedHead}\\^\\{commit\\} failed: missing object`),
 		},
 		{
 			name: "fetch failure",
 			responses: [result(), result("", 1, "remote unavailable")],
-			error: /git fetch --no-write-fetch-head --no-tags --no-recurse-submodules git@github\.com:acme\/fork\.git expected-head failed: remote unavailable/,
+			error: new RegExp(`git fetch --no-write-fetch-head --no-tags --no-recurse-submodules git@github\\.com:acme/fork\\.git ${expectedHead} failed: remote unavailable`),
 		},
 	];
 
@@ -358,7 +368,7 @@ test("executes the selected method with exact GraphQL variables and atomic head 
 	const mutation = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 	const cases: Array<{ name: string; localHead: string; ancestry?: number[] }> = [
 		{ name: "equal", localHead: expectedHead },
-		{ name: "behind", localHead: "local-behind", ancestry: [0] },
+		{ name: "behind", localHead: localBehind, ancestry: [0] },
 	];
 
 	for (const candidate of cases) {
@@ -370,6 +380,8 @@ test("executes the selected method with exact GraphQL variables and atomic head 
 		];
 		for (const code of candidate.ancestry ?? []) responses.push(result("", code));
 		responses.push(
+			result(),
+			result(`${candidate.localHead}\n`),
 			result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequestId, state: "MERGED" } } } })),
 		);
 		const { exec, calls } = mockExec(responses);
@@ -401,6 +413,53 @@ test("executes the selected method with exact GraphQL variables and atomic head 
 			cwd,
 		}, candidate.name);
 		assert.equal(calls.filter(({ args }) => args.some((arg) => arg.includes("mergePullRequest"))).length, 1, candidate.name);
+		assert.equal(calls.filter(({ command, args }) => command === "git" && args[0] === "fetch").length, 1, candidate.name);
+		assert.deepEqual(calls.slice(-4, -1).map(command), [
+			["git", ["status", "--porcelain=v1", "--untracked-files=all"]],
+			["git", STATE_PATH_ARGS],
+			["git", ["rev-parse", "--verify", "HEAD^{commit}"]],
+		], candidate.name);
+	}
+});
+
+test("blocks local changes made during readiness without a second fetch or mutation", async (t) => {
+	const temporary = mkdtempSync(join(tmpdir(), "pi-pr-final-local-"));
+	t.after(() => rmSync(temporary, { recursive: true, force: true }));
+	const operationPath = join(temporary, "MERGE_HEAD");
+	const finalStateOutput = [operationPath, ...GIT_OPERATION_STATES.slice(1).map((state) => join(temporary, state))].join("\n") + "\n";
+	const cases = [
+		{ name: "tracked change", finalStatus: " M tracked.ts\n", error: /worktree is dirty/ },
+		{ name: "untracked change", finalStatus: "?? untracked.ts\n", error: /worktree is dirty/ },
+		{ name: "HEAD change", finalStatus: "", finalHead: changedHead, error: /HEAD changed/ },
+		{ name: "Git operation", finalStatus: "", operation: true, error: /worktree is dirty/ },
+	];
+
+	for (const candidate of cases) {
+		rmSync(operationPath, { force: true });
+		const responses = [
+			result(),
+			result(),
+			result(`${expectedHead}\n`),
+			result(`${expectedHead}\n`),
+			result(candidate.finalStatus),
+		];
+		if (!candidate.finalStatus && !candidate.operation) responses.push(result(`${candidate.finalHead!}\n`));
+		const { exec, calls } = mockExec(responses, result(finalStateOutput));
+		let readinessCalls = 0;
+		await assert.rejects(executeGitHubMerge({
+			...inspectInput(exec),
+			pullRequestId,
+			hostname,
+			allowedMergeMethods: ["squash"],
+			revalidateReadiness: async (local) => {
+				readinessCalls += 1;
+				assert.deepEqual(local, { worktree: "clean", head: "equal", headOid: expectedHead });
+				if (candidate.operation) writeFileSync(operationPath, expectedHead);
+			},
+		}), candidate.error, candidate.name);
+		assert.equal(readinessCalls, 1, candidate.name);
+		assert.equal(calls.filter(({ command, args }) => command === "git" && args[0] === "fetch").length, 1, candidate.name);
+		assert.equal(calls.some(({ args }) => args.some((arg) => arg.includes("mergePullRequest"))), false, candidate.name);
 	}
 });
 
@@ -424,7 +483,7 @@ test("runs one readiness evaluation after local inspection and stops on any read
 				allowedMergeMethods: ["squash"],
 				revalidateReadiness: async (local) => {
 					readinessCalls += 1;
-					assert.deepEqual(local, { worktree: "clean", head: "equal" });
+					assert.deepEqual(local, { worktree: "clean", head: "equal", headOid: expectedHead });
 					throw candidate.error;
 				},
 			}),
@@ -473,6 +532,8 @@ test("rejects GraphQL errors and malformed or non-merged responses without retry
 			result(),
 			result(`${expectedHead}\n`),
 			result(`${expectedHead}\n`),
+			result(),
+			result(`${expectedHead}\n`),
 			result(candidate.output),
 		]);
 		await assert.rejects(
@@ -480,7 +541,7 @@ test("rejects GraphQL errors and malformed or non-merged responses without retry
 			candidate.error,
 			candidate.name,
 		);
-		assert.equal(calls.length, 6, candidate.name);
+		assert.equal(calls.length, 9, candidate.name);
 		assert.equal(calls.at(-1)?.command, "gh", candidate.name);
 		assert.deepEqual(calls.at(-1)?.args.slice(0, 4), ["api", "graphql", "--hostname", hostname], candidate.name);
 	}
@@ -492,6 +553,8 @@ test("surfaces GitHub CLI merge failures without retrying", async () => {
 		result(),
 		result(`${expectedHead}\n`),
 		result(`${expectedHead}\n`),
+		result(),
+		result(`${expectedHead}\n`),
 		result("", 1, "merge blocked"),
 	]);
 
@@ -499,5 +562,5 @@ test("surfaces GitHub CLI merge failures without retrying", async () => {
 		executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
 		/gh api graphql --hostname github\.com .* failed: merge blocked/,
 	);
-	assert.equal(calls.length, 6);
+	assert.equal(calls.length, 9);
 });

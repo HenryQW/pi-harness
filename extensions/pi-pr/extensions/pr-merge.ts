@@ -19,6 +19,7 @@ export type MergeMethod = "merge" | "rebase" | "squash";
 
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
+const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export type InspectLocalMergeSafetyInput = {
 	exec: Exec;
@@ -32,6 +33,10 @@ export type MergeMethodSelectionInput = {
 	viewerDefaultMergeMethod?: MergeMethod | null;
 };
 
+export type InspectedLocalMergeSafety = LocalMergeSafety & {
+	headOid: string;
+};
+
 export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & InspectLocalMergeSafetyInput & {
 	pullRequestId: string;
 	hostname: string;
@@ -40,7 +45,7 @@ export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & InspectLocalMe
 		ref: string;
 		oid: string;
 	};
-	revalidateReadiness: (local: LocalMergeSafety) => Promise<void>;
+	revalidateReadiness: (local: InspectedLocalMergeSafety) => Promise<void>;
 };
 
 function commandText(command: string, args: string[]): string {
@@ -83,6 +88,12 @@ function requiredText(value: unknown, label: string): string {
 	return value;
 }
 
+function requiredOid(value: unknown, label: string): string {
+	const parsed = requiredText(value, label);
+	if (!OID.test(parsed)) throw new TypeError(`${label} must be a full Git OID`);
+	return parsed;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -95,18 +106,15 @@ function requiredOutput(result: ExecResult, label: string): string {
 
 function validateInspectionInput(input: InspectLocalMergeSafetyInput): void {
 	requiredText(input.cwd, "cwd");
-	requiredText(input.expectedHead, "expected PR head");
+	requiredOid(input.expectedHead, "expected PR head");
 	requiredText(input.headFetchSource, "PR head fetch source");
 	if (typeof input.exec !== "function") throw new TypeError("exec must be a function");
 }
 
-/** Inspect local state without changing branches, the index, or the worktree. */
-export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInput): Promise<LocalMergeSafety> {
-	validateInspectionInput(input);
-
-	const status = await runCommand(input.exec, input.cwd, "git", ["status", "--porcelain=v1", "--untracked-files=all"]);
+async function inspectWorktree(exec: Exec, cwd: string): Promise<"clean" | "dirty"> {
+	const status = await runCommand(exec, cwd, "git", ["status", "--porcelain=v1", "--untracked-files=all"]);
 	const stateOutput = requiredOutput(
-		await runCommand(input.exec, input.cwd, "git", [
+		await runCommand(exec, cwd, "git", [
 			"rev-parse",
 			...GIT_OPERATION_STATES.flatMap((state) => ["--git-path", state]),
 		]),
@@ -119,7 +127,7 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 	let operationInProgress = false;
 	for (const [index, path] of statePaths.entries()) {
 		try {
-			await lstat(resolve(input.cwd, path));
+			await lstat(resolve(cwd, path));
 			operationInProgress = true;
 		} catch (error) {
 			if (isRecord(error) && error.code === "ENOENT") continue;
@@ -127,8 +135,21 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 			throw new Error(`Git operation state inspection failed for ${GIT_OPERATION_STATES[index]}: ${detail}`);
 		}
 	}
-	const worktree = status.stdout.length === 0 && !operationInProgress ? "clean" : "dirty";
+	return status.stdout.length === 0 && !operationInProgress ? "clean" : "dirty";
+}
 
+async function readLocalHead(exec: Exec, cwd: string): Promise<string> {
+	return requiredOid(
+		requiredOutput(await runCommand(exec, cwd, "git", ["rev-parse", "--verify", "HEAD^{commit}"]), "local HEAD"),
+		"local HEAD",
+	);
+}
+
+/** Inspect local state without changing branches, the index, or the worktree. */
+export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInput): Promise<InspectedLocalMergeSafety> {
+	validateInspectionInput(input);
+
+	const worktree = await inspectWorktree(input.exec, input.cwd);
 	await runCommand(input.exec, input.cwd, "git", [
 		"fetch",
 		"--no-write-fetch-head",
@@ -139,29 +160,26 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 	]);
 	await runCommand(input.exec, input.cwd, "git", ["cat-file", "-e", `${input.expectedHead}^{commit}`]);
 
-	const localHead = requiredOutput(
-		await runCommand(input.exec, input.cwd, "git", ["rev-parse", "--verify", "HEAD"]),
-		"local HEAD",
-	);
-	if (localHead === input.expectedHead) return { worktree, head: "equal" };
+	const headOid = await readLocalHead(input.exec, input.cwd);
+	if (headOid === input.expectedHead) return { worktree, head: "equal", headOid };
 
 	const localAncestor = await runCommand(
 		input.exec,
 		input.cwd,
 		"git",
-		["merge-base", "--is-ancestor", "HEAD", input.expectedHead],
+		["merge-base", "--is-ancestor", headOid, input.expectedHead],
 		[0, 1],
 	);
-	if (localAncestor.code === 0) return { worktree, head: "behind" };
+	if (localAncestor.code === 0) return { worktree, head: "behind", headOid };
 
 	const expectedAncestor = await runCommand(
 		input.exec,
 		input.cwd,
 		"git",
-		["merge-base", "--is-ancestor", input.expectedHead, "HEAD"],
+		["merge-base", "--is-ancestor", input.expectedHead, headOid],
 		[0, 1],
 	);
-	return { worktree, head: expectedAncestor.code === 0 ? "ahead" : "diverged" };
+	return { worktree, head: expectedAncestor.code === 0 ? "ahead" : "diverged", headOid };
 }
 
 function validateMergeMethods(input: MergeMethodSelectionInput): void {
@@ -244,6 +262,14 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
 	}
 	await input.revalidateReadiness(local);
+	const finalWorktree = await inspectWorktree(input.exec, input.cwd);
+	if (finalWorktree !== "clean") {
+		throw new Error("Final local merge safety check failed: worktree is dirty");
+	}
+	const finalHead = await readLocalHead(input.exec, input.cwd);
+	if (finalHead !== local.headOid) {
+		throw new Error(`Final local merge safety check failed: HEAD changed from ${local.headOid} to ${finalHead}`);
+	}
 	const merged = await runCommand(input.exec, input.cwd, "gh", [
 		"api",
 		"graphql",

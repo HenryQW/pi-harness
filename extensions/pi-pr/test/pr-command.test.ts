@@ -48,6 +48,7 @@ type HarnessOptions = {
 	statuses?: string[];
 	ancestry?: "behind" | "ahead" | "diverged";
 	localHead?: string;
+	localHeads?: string[];
 	unresolvedThreads?: number[];
 };
 
@@ -85,6 +86,7 @@ function harness(options: HarnessOptions) {
 	const events: string[] = [];
 	let stateIndex = 0;
 	let statusIndex = 0;
+	let headIndex = 0;
 	let active: PullRequestSpec | null = null;
 	const configuredLocalHead = options.localHead ?? localHead;
 	const nextHost = () => options.states[stateIndex]?.host ?? DEFAULT_HOST;
@@ -95,7 +97,7 @@ function harness(options: HarnessOptions) {
 			if (
 				command === "git" &&
 				(args.join(" ") === "rev-parse --verify HEAD^{commit}" || args.join(" ") === "rev-parse --verify HEAD")
-			) return result(`${configuredLocalHead}\n`);
+			) return result(`${options.localHeads?.[headIndex++] ?? configuredLocalHead}\n`);
 			if (command === "git" && args.join(" ") === "for-each-ref --format=%(push:short) refs/heads/feature/pr") return result("fork/feature/pr\n");
 			if (command === "git" && args.join(" ") === "remote") return result("fork\norigin\n");
 			if (command === "git" && args[0] === "check-ref-format") {
@@ -376,10 +378,16 @@ test("cancels a confirmed merge when post-inspection authority is absent, differ
 			error: /confirmed pull request context changed/,
 		},
 		{
-			name: "worktree becomes dirty",
+			name: "worktree becomes dirty during readiness",
 			states: [{}, {}],
-			statuses: ["", " M file.ts\n"],
-			error: /Local merge safety check failed/,
+			statuses: ["", "", " M file.ts\n"],
+			error: /Final local merge safety check failed: worktree is dirty/,
+		},
+		{
+			name: "untracked file appears during readiness",
+			states: [{}, {}],
+			statuses: ["", "", "?? untracked.ts\n"],
+			error: /Final local merge safety check failed: worktree is dirty/,
 		},
 		{
 			name: "optional check fails",
@@ -404,9 +412,21 @@ test("cancels a confirmed merge when post-inspection authority is absent, differ
 		await assert.rejects(app.handler("", app.context), candidate.error, candidate.name);
 
 		assert.equal(app.confirmations.length, 1, candidate.name);
-		assert.deepEqual(app.events, candidate.name === "worktree becomes dirty" ? ["load", "confirm"] : ["load", "confirm", "load"], candidate.name);
+		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 	}
+});
+
+test("cancels a confirmed merge when local HEAD changes during readiness", async () => {
+	const app = harness({
+		states: [{}, {}],
+		localHeads: [localHead, localHead, nextHead, nextHead],
+	});
+
+	await assert.rejects(app.handler("", app.context), /Final local merge safety check failed: HEAD changed/);
+	assert.deepEqual(app.events, ["load", "confirm", "load"]);
+	assert.equal(app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch").length, 2);
+	assert.equal(mutationCalls(app.calls).length, 0);
 });
 
 test("cancels a confirmed merge when the confirmed head or base context changes", async () => {
@@ -486,6 +506,12 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 	const finalReadiness = app.calls.map(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues").lastIndexOf(true);
 	assert.ok(finalReadiness > app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true));
 	assert.equal(app.calls.slice(finalReadiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
+	const finalStatus = app.calls.map(({ command, args }) => command === "git" && args[0] === "status").lastIndexOf(true);
+	const mutationIndex = app.calls.findIndex(({ command, args }) => command === "gh" && args.some((arg) => arg.includes("mergePullRequest")));
+	assert.ok(finalStatus > finalReadiness && mutationIndex > finalStatus);
+	assert.equal(app.calls.slice(finalStatus + 1, mutationIndex).some(({ command, args }) =>
+		command === "gh" || (command === "git" && (args[0] === "fetch" || args[0] === "ls-remote"))
+	), false);
 	assert.deepEqual(mutationCalls(app.calls), [{
 		command: "gh",
 		args: [
