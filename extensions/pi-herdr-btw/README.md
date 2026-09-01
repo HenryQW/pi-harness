@@ -53,10 +53,14 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 ### Merge delivery
 
-- In the side pane, `/btw merge <prompt>` sends the user/assistant text transcript to Main, refocuses Main, and closes the side pane.
+![Sequence showing a fixed context snapshot with live shared files; the transcript and prompt queue until Main is idle and authenticated, then Main appends the transcript and submits the prompt.](./docs/btw-merge-sequence.svg)
+
+- In the side pane, `/btw merge <prompt>` stores the user/assistant transcript and next prompt as pending delivery.
+- Herdr then refocuses Main and closes the side pane.
+- Pending delivery survives side-pane shutdown. It waits for Main to settle and for current model authentication.
 - Main appends the transcript without starting a turn, then submits the prompt.
 - Bare `/btw merge` opens the prompt editor.
-- Pending delivery waits for Main to settle and for current model authentication. It survives side-pane shutdown until consumed or 24-hour stale cleanup.
+- Pending delivery remains available until consumed or 24-hour stale cleanup.
 
 ### Limits and privacy
 
