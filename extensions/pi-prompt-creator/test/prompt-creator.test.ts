@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -90,6 +90,11 @@ function harness(options: {
 	const branch = options.branch ?? [];
 	const selections = [...(options.selections ?? [])];
 	const inputs = [...(options.inputs ?? [])];
+	let nextEntryId = 1;
+	const branchEntries = () => {
+		for (const entry of branch) entry.id ??= `entry-${nextEntryId++}`;
+		return branch;
+	};
 	let mode: ExtensionContext["mode"] = "tui";
 	let idle = true;
 	let reloads = 0;
@@ -101,6 +106,12 @@ function harness(options: {
 		getCommands: () => options.commands ?? [],
 		sendMessage(message: any, deliveryOptions: any) {
 			sentMessages.push({ message, options: deliveryOptions });
+			branch.push({
+				type: "custom_message",
+				customType: message.customType,
+				content: message.content,
+				display: message.display,
+			});
 		},
 	} as unknown as ExtensionAPI;
 	const ctx = {
@@ -110,7 +121,11 @@ function harness(options: {
 		model,
 		scopedModels: [],
 		modelRegistry: { getAvailable: () => [model] },
-		sessionManager: { buildContextEntries: () => branch },
+		sessionManager: {
+			buildContextEntries: branchEntries,
+			getBranch: branchEntries,
+			getLeafId: () => branchEntries().at(-1)?.id ?? null,
+		},
 		isIdle: () => idle,
 		isProjectTrusted: () => false,
 		ui: {
@@ -375,7 +390,7 @@ test("a candidate stays pending until shown, and invalid later output fails visi
 	});
 });
 
-test("saving uses the complete latest Main draft and never overwrites", async () => {
+test("saving requires a shown candidate and later Main review, retries failures, and consumes the review", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
 		const app = harness({
@@ -383,10 +398,11 @@ test("saving uses the complete latest Main draft and never overwrites", async ()
 			executor: child.executor,
 			commands: [{ name: "taken-command", source: "extension" } as SlashCommandInfo],
 			selections: [
-				"Analyze now", "Show candidate",
-				"Save latest Main draft", "Save latest Main draft", "Save latest Main draft",
+				"Analyze now", "Show candidate", "",
+				...Array<string>(5).fill("Save latest Main draft"),
+				"",
 			],
-			inputs: ["taken-command", "existing-prompt", "saved-prompt"],
+			inputs: ["Bad Name", "taken-command", "existing-prompt", "write-failure", "saved-prompt"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Draft a reusable review prompt" } },
 				{ type: "message", message: { role: "assistant", content: "Initial answer", stopReason: "stop" } },
@@ -394,13 +410,19 @@ test("saving uses the complete latest Main draft and never overwrites", async ()
 		});
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
 		const promptor = app.registeredCommands.get("promptor")!;
+
 		await promptor("", app.ctx);
+		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "ordinary replies cannot enable save");
 		await eventually(() => child.runs.length === 1);
 		child.runs[0]!.resolve(success(JSON.stringify({
 			candidate: { name: "review-template", markdown: "Candidate text must not be saved." },
 		})));
 		await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
 		await promptor("", app.ctx);
+		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "a pending candidate cannot enable save");
+
+		await promptor("", app.ctx);
+		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "showing a candidate alone cannot enable save");
 
 		const finalDraft = "# Final prompt\n\nReview the whole change.\n";
 		app.branch.push({ type: "message", message: { role: "assistant", content: finalDraft, stopReason: "stop" } });
@@ -409,63 +431,93 @@ test("saving uses the complete latest Main draft and never overwrites", async ()
 		await writeFile(join(promptsDir, "existing-prompt.md"), "keep me");
 
 		await promptor("", app.ctx);
+		assert.ok(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"));
+		assert.match(app.notifications.at(-1)!.message, /Use lowercase kebab-case/);
+		await promptor("", app.ctx);
 		assert.match(app.notifications.at(-1)!.message, /command named \/taken-command already exists/);
 		await promptor("", app.ctx);
 		assert.equal(await readFile(join(promptsDir, "existing-prompt.md"), "utf8"), "keep me");
 		assert.match(app.notifications.at(-1)!.message, /Prompt \/existing-prompt already exists/);
+
+		await chmod(promptsDir, 0o500);
+		try {
+			await promptor("", app.ctx);
+			assert.match(app.notifications.at(-1)!.message, /Could not save \/write-failure/);
+		} finally {
+			await chmod(promptsDir, 0o700);
+		}
 		await promptor("", app.ctx);
 
 		assert.equal(await readFile(join(promptsDir, "saved-prompt.md"), "utf8"), finalDraft);
 		assert.equal(app.reloads, 1);
-		assert.deepEqual(app.inputCalls.map(({ placeholder }) => placeholder), [
-			"review-template", "review-template", "review-template",
-		]);
+		assert.deepEqual(app.inputCalls.map(({ placeholder }) => placeholder), Array<string>(5).fill("review-template"));
+
+		app.branch.push({ type: "message", message: { role: "assistant", content: "Ordinary later reply", stopReason: "stop" } });
+		await promptor("", app.ctx);
+		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "a successful save consumes the review");
 	});
 });
 
-test("an incomplete latest Main reply cannot fall back to an older completed draft", async () => {
+test("an incomplete latest Main reply cannot fall back to an older reviewed draft", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
 		const app = harness({
 			agentDir,
 			executor: child.executor,
-			selections: ["Save latest Main draft"],
+			selections: ["Analyze now", "Show candidate", "Save latest Main draft"],
 			inputs: ["must-not-save"],
 			branch: [
-				{ type: "message", message: { role: "assistant", content: "# Older complete draft", stopReason: "stop" } },
-				{ type: "message", message: { role: "user", content: "Revise that draft" } },
-				{ type: "message", message: { role: "assistant", content: "# Interrupted revision", stopReason: "aborted" } },
+				{ type: "message", message: { role: "user", content: "Create a reusable prompt" } },
+				{ type: "message", message: { role: "assistant", content: "Ordinary answer", stopReason: "stop" } },
 			],
 		});
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
-		await app.registeredCommands.get("promptor")!("", app.ctx);
+		const promptor = app.registeredCommands.get("promptor")!;
+		await promptor("", app.ctx);
+		await eventually(() => child.runs.length === 1);
+		child.runs[0]!.resolve(success('{"candidate":{"name":"review-draft","markdown":"# Candidate"}}'));
+		await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
+		await promptor("", app.ctx);
 
-		assert.equal(app.selectCalls[0]!.choices.includes("Save latest Main draft"), false);
+		app.branch.push(
+			{ type: "message", message: { role: "assistant", content: "# Older complete draft", stopReason: "stop" } },
+			{ type: "message", message: { role: "user", content: "Revise that draft" } },
+			{ type: "message", message: { role: "assistant", content: "# Interrupted revision", stopReason: "aborted" } },
+		);
+		await promptor("", app.ctx);
+
+		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false);
 		assert.equal(app.inputCalls.length, 0);
 		await assert.rejects(readFile(join(agentDir, "prompts", "must-not-save.md")), /ENOENT/);
 	});
 });
 
-test("active summaries bound saved drafts to post-summary replies", async () => {
+test("active summaries bound reviewed drafts to post-summary replies", async () => {
 	for (const boundary of ["compaction", "branch_summary"] as const) {
 		await withAgentDir(async (agentDir) => {
 			const child = controlledExecutor();
 			const draftName = `${boundary.replace("_", "-")}-draft`;
 			const postSummaryDraft = `# ${boundary} draft`;
+			const finalDraft = `${postSummaryDraft}\n\nFinal review.`;
 			const app = harness({
 				agentDir,
 				executor: child.executor,
-				selections: ["", "Save latest Main draft"],
+				selections: ["Analyze now", "Show candidate", "", "", "", "", "Save latest Main draft"],
 				inputs: [draftName],
 				branch: [
 					{ type: "message", message: { role: "user", content: "Write a draft" } },
 					{ type: "message", message: { role: "assistant", content: "# Replaced draft", stopReason: "stop" } },
-					{ type: boundary, summary: "Active summary" },
 				],
 			});
 			await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
 			const promptor = app.registeredCommands.get("promptor")!;
+			await promptor("", app.ctx);
+			await eventually(() => child.runs.length === 1);
+			child.runs[0]!.resolve(success('{"candidate":{"name":"summary-draft","markdown":"# Candidate"}}'));
+			await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
+			await promptor("", app.ctx);
 
+			app.branch.push({ type: boundary, summary: "Active summary" });
 			await promptor("", app.ctx);
 			assert.equal(
 				app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"),
@@ -479,10 +531,6 @@ test("active summaries bound saved drafts to post-summary replies", async () => 
 			);
 			await promptor("", app.ctx);
 			assert.ok(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"));
-			assert.equal(
-				await readFile(join(agentDir, "prompts", `${draftName}.md`), "utf8"),
-				postSummaryDraft,
-			);
 
 			app.branch.push({ type: "message", message: { role: "assistant", content: "", stopReason: "stop" } });
 			await promptor("", app.ctx);
@@ -491,8 +539,63 @@ test("active summaries bound saved drafts to post-summary replies", async () => 
 			app.branch.push({ type: "message", message: { role: "assistant", content: "# Interrupted draft", stopReason: "aborted" } });
 			await promptor("", app.ctx);
 			assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "incomplete drafts do not fall back");
+
+			app.branch.push({ type: "message", message: { role: "assistant", content: finalDraft, stopReason: "stop" } });
+			await promptor("", app.ctx);
+			assert.equal(await readFile(join(agentDir, "prompts", `${draftName}.md`), "utf8"), finalDraft);
 		});
 	}
+});
+
+test("review eligibility resets on tree, session, and shutdown lifecycle changes", async () => {
+	await withAgentDir(async (agentDir) => {
+		const child = controlledExecutor();
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			selections: [
+				"Analyze now", "Show candidate", "", "",
+				"Analyze now", "Show candidate", "", "",
+				"Analyze now", "Show candidate", "", "",
+			],
+			branch: [
+				{ type: "message", message: { role: "user", content: "Create reusable review prompts" } },
+				{ type: "message", message: { role: "assistant", content: "Initial answer", stopReason: "stop" } },
+			],
+		});
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		const promptor = app.registeredCommands.get("promptor")!;
+		let runIndex = 0;
+		const makeReviewEligible = async () => {
+			await promptor("", app.ctx);
+			await eventually(() => child.runs.length === runIndex + 1);
+			child.runs[runIndex]!.resolve(success(JSON.stringify({
+				candidate: { name: `reset-${runIndex}`, markdown: "# Candidate" },
+			})));
+			await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
+			await promptor("", app.ctx);
+			app.branch.push({ type: "message", message: { role: "assistant", content: `# Review ${runIndex}`, stopReason: "stop" } });
+			await promptor("", app.ctx);
+			assert.ok(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"));
+			runIndex += 1;
+		};
+		const assertReset = async () => {
+			await promptor("", app.ctx);
+			assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false);
+		};
+
+		await makeReviewEligible();
+		await app.handlers.get("session_tree")!({ type: "session_tree" }, app.ctx);
+		await assertReset();
+
+		await makeReviewEligible();
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		await assertReset();
+
+		await makeReviewEligible();
+		await app.handlers.get("session_shutdown")!({ type: "session_shutdown" }, app.ctx);
+		await assertReset();
+	});
 });
 
 test("malformed config is preserved and warns once until an explicit toggle replaces it", async () => {

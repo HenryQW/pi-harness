@@ -30,17 +30,13 @@ The menu adapts to the current state:
 | `Automatic On` or `Automatic Off` | Save the automatic setting. |
 | `Show candidate` | Add the candidate to the conversation for review. |
 | `Dismiss candidate` | Forget the pending candidate. |
-| `Save latest Main draft` | Save Main's latest successfully completed assistant reply as a prompt. |
+| `Save latest Main draft` | Save Main's newest completed review reply after you show a candidate. |
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
 
 Analysis uses a one-turn child with no base tools, user extensions, Skills, or saved session. The extension does not retry failed analysis.
 
 New user input does not stop a running child. Branch navigation discards its old result without stopping the child.
-
-## Flow
-
-![Prompt creator lifecycle from conversation to saved prompt](./docs/prompt-lifecycle.svg)
 
 ## Config
 
@@ -58,6 +54,10 @@ A missing file quietly uses both defaults. Startup never creates or rewrites the
 Malformed config or unknown keys disable automatic analysis. Pi warns once and leaves the file unchanged.
 
 Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the configured threshold.
+
+## Flow
+
+![Prompt creator lifecycle from conversation to saved prompt](./docs/prompt-lifecycle.svg)
 
 ## Privacy
 
@@ -89,9 +89,13 @@ The extension never injects a candidate automatically. `Show candidate` adds one
 
 Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving.
 
-Saving uses Main's latest retained assistant reply as the entire file. Replies before the active compaction or branch summary cannot be saved. That reply must have stopped successfully and contain valid Markdown.
+The save item appears only after you show a candidate and Main then completes a valid Markdown review reply.
+
+Saving uses that latest retained Main reply as the entire file. Replies before the active compaction or branch summary cannot be saved.
 
 An interrupted, failed, empty, or tool-use reply cannot be saved. The extension never falls back to an older reply.
+
+A successful save ends that review. Show another candidate and complete another Main review reply before saving again.
 
 The menu asks for a lowercase kebab-case name. A candidate name appears only as a hint.
 

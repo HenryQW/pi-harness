@@ -65,6 +65,7 @@ type ConversationItem = { role: "summary" | "user" | "assistant"; text: string }
 type ExistingPrompt = { name: string; description: string };
 type AnalysisPayload = { currentConversation: ConversationItem[]; existingPrompts: ExistingPrompt[] };
 type ActiveRun = { controller: AbortController; branchGeneration: number };
+type ReviewBoundary = { entryId: string };
 
 export interface PromptCreatorOptions {
 	agentDir?: string;
@@ -194,12 +195,25 @@ function analysisPayload(pi: ExtensionAPI, ctx: ExtensionContext): AnalysisPaylo
 	return payload;
 }
 
-function latestAssistantDraft(ctx: ExtensionContext): string | undefined {
+function latestAssistantDraft(ctx: ExtensionContext, reviewBoundary?: ReviewBoundary): string | undefined {
+	if (!reviewBoundary) return;
+	const branch = ctx.sessionManager.getBranch();
+	const boundaryIndex = branch.findIndex((entry) => entry.id === reviewBoundary.entryId);
+	const shownIndex = branch.findIndex((entry, index) =>
+		index > boundaryIndex
+		&& entry.type === "custom_message"
+		&& entry.customType === CANDIDATE_MESSAGE_TYPE,
+	);
+	if (boundaryIndex < 0 || shownIndex < 0) return;
 	for (const entry of [...ctx.sessionManager.buildContextEntries()].reverse()) {
 		if (entry.type === "compaction" || entry.type === "branch_summary") return;
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		const text = messageText(entry.message.content);
-		return entry.message.stopReason === "stop" && isPromptMarkdown(text) ? text : undefined;
+		return branch.findIndex((candidate) => candidate.id === entry.id) > shownIndex
+			&& entry.message.stopReason === "stop"
+			&& isPromptMarkdown(text)
+			? text
+			: undefined;
 	}
 }
 
@@ -268,6 +282,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	let analysisRan = false;
 	let candidate: PromptCandidate | undefined;
 	let candidateNameHint: string | undefined;
+	let reviewBoundary: ReviewBoundary | undefined;
 	let failure = false;
 	let activeRun: ActiveRun | undefined;
 
@@ -287,6 +302,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		analysisRan = false;
 		candidate = undefined;
 		candidateNameHint = undefined;
+		reviewBoundary = undefined;
 		failure = false;
 		clearWidget(ctx);
 	};
@@ -345,9 +361,14 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		});
 	};
 
-	const saveLatestDraft = async (draft: string, expectedBranch: number, ctx: ExtensionCommandContext) => {
+	const saveLatestDraft = async (
+		draft: string,
+		expectedReview: ReviewBoundary,
+		expectedBranch: number,
+		ctx: ExtensionCommandContext,
+	) => {
 		const requested = await ctx.ui.input("Prompt name", candidateNameHint ?? "my-prompt");
-		if (requested === undefined || expectedBranch !== branchGeneration) return;
+		if (requested === undefined || expectedBranch !== branchGeneration || reviewBoundary !== expectedReview) return;
 		const name = requested.trim();
 		if (!isPromptName(name)) {
 			ctx.ui.notify(`Use lowercase kebab-case starting with a letter, up to ${MAX_NAME_CHARS} characters.`, "warning");
@@ -367,6 +388,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			);
 			return;
 		}
+		if (reviewBoundary === expectedReview) reviewBoundary = undefined;
 		ctx.ui.notify(`Saved /${name}. Reloading prompts...`, "info");
 		try {
 			await ctx.reload();
@@ -424,6 +446,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		branchGeneration += 1;
 		candidate = undefined;
 		candidateNameHint = undefined;
+		reviewBoundary = undefined;
 		failure = false;
 		inputCount = 0;
 		clearWidget(ctx);
@@ -439,7 +462,8 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 				return;
 			}
 			const menuBranch = branchGeneration;
-			const draft = latestAssistantDraft(ctx);
+			const review = reviewBoundary;
+			const draft = latestAssistantDraft(ctx, review);
 			const analyze = analysisRan ? "Analyze again" : "Analyze now";
 			const toggle = automatic ? "Automatic Off" : "Automatic On";
 			const choices = [
@@ -467,6 +491,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			}
 			if (selected === "Show candidate" && candidate) {
 				const shown = candidate;
+				const boundaryId = ctx.sessionManager.getLeafId();
 				candidate = undefined;
 				candidateNameHint = shown.name;
 				clearWidget(ctx);
@@ -475,6 +500,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 					content: candidateMessage(shown),
 					display: true,
 				}, { triggerTurn: false });
+				reviewBoundary = boundaryId ? { entryId: boundaryId } : undefined;
 				return;
 			}
 			if (selected === "Dismiss candidate" && candidate) {
@@ -483,7 +509,9 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 				clearWidget(ctx);
 				return;
 			}
-			if (selected === "Save latest Main draft" && draft) await saveLatestDraft(draft, menuBranch, ctx);
+			if (selected === "Save latest Main draft" && draft && review) {
+				await saveLatestDraft(draft, review, menuBranch, ctx);
+			}
 		},
 	});
 }
