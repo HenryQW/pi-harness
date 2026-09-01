@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="prompt-lifecycle-title prompt-lifecycle-desc">
+<svg width="960" height="600" viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="prompt-lifecycle-title prompt-lifecycle-desc">
       <title id="prompt-lifecycle-title">From conversation to saved prompt</title>
       <desc id="prompt-lifecycle-desc">Data flow showing current conversation signals becoming a passive prompt candidate, then a reviewed Markdown prompt saved only after explicit approval.</desc>
       <defs>

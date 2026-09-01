@@ -1,15 +1,17 @@
 # `@henryqw/pi-config-store`
 
-Create validated extension JSON stores with a shared config home and atomic async mutations.
+Build validated JSON configuration stores for Pi extensions, with shared paths and atomic mutations.
+
+This package is an extension-author library. End users do not install it directly in Pi.
 
 ## Why
 
-- **Created for**: Extension authors who need one owned home for user-editable JSON configuration.
-- **Advantage**: Shared paths, validation, locking, and atomic writes keep config behavior consistent.
+- **Created for**: Extension authors who need one safe home for user-editable JSON.
+- **Advantage**: Reuse path, validation, locking, and atomic-write behavior instead of rebuilding it.
 
 ## Install
 
-Extension packages declare this library as a runtime dependency. End users do not install it directly with Pi.
+Add it to an extension package with your package manager. Do not run `pi install` for this library.
 
 ## Use
 

@@ -66,7 +66,7 @@
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^0.1.0",
-    "@henryqw/pi-multi-codex": "^0.4.0",
+    "@henryqw/pi-multi-codex": "^0.4.1",
     "@henryqw/pi-task-models": "^4.0.0"
   }
 }

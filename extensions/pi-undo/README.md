@@ -1,11 +1,11 @@
 # `@henryqw/pi-undo`
 
-`/undo` rewinds conversation context and restores your latest prompt.
+Return to your latest user prompt so you can edit and retry it without later conversation context.
 
 ## Why
 
-- **Created for**: People who need to retry their latest user prompt.
-- **Advantage**: It restores that prompt without later conversation context.
+- **Created for**: Pi users who want to correct or retry their latest request.
+- **Advantage**: Restore the prompt in place instead of copying it into a new turn.
 
 ## Install
 
@@ -15,7 +15,6 @@ pi install npm:@henryqw/pi-undo
 
 ## Use
 
-Run `/undo` with no arguments.
+Run `/undo` with no arguments. Pi stops active work and puts your latest prompt back in the editor.
 
-It stops active work and restores your latest prompt.
-It does not revert filesystem changes.
+Edit or submit it again. `/undo` does not revert filesystem changes.

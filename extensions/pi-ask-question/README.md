@@ -1,13 +1,13 @@
 # `@henryqw/pi-ask-question`
 
-Ask the user one interactive question with up to three choices, or a custom answer.
+Pause Pi for one clear user choice, with up to three options or a custom answer.
 
 ![Pi asking the user to choose a database](./example.png)
 
 ## Why
 
-- **Created for**: Ask the user one interactive question with up to three choices during a Pi session.
-- **Advantage**: Show a keyboard-selectable prompt and return one explicit answer instead of parsing free-form chat.
+- **Created for**: Agents and extensions that need one decision before they continue.
+- **Advantage**: A keyboard-selectable prompt returns an explicit answer without parsing free-form chat.
 
 ## Install
 
@@ -17,7 +17,7 @@ pi install npm:@henryqw/pi-ask-question
 
 ## Use
 
-Use `ask_question` to pause for one interactive answer.
+Call `ask_question` to pause for one interactive answer. Pi shows the choices and returns the selected or custom answer.
 
 ```json
 {

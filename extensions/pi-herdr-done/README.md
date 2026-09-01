@@ -1,11 +1,11 @@
 # `@henryqw/pi-herdr-done`
 
-Close and remove the current Herdr-managed linked worktree safely.
+Finish a Herdr worktree task by removing its checkout, closing its tabs, and updating the parent.
 
 ## Why
 
-- **Created for**: Clean up finished worktree tasks without manually removing checkouts, closing tabs, and pulling parents.
-- **Advantage**: `/done` removes the checkout, closes workspace tabs, fast-forwards the parent with `--ff-only`, and refuses unsafe cases unless forced.
+- **Created for**: Pi users finishing work in a Herdr-managed linked worktree.
+- **Advantage**: One command performs cleanup and refuses unsafe removal unless you explicitly force it.
 
 ## Install
 
@@ -13,9 +13,15 @@ Close and remove the current Herdr-managed linked worktree safely.
 pi install npm:@henryqw/pi-herdr-done
 ```
 
-Requires a Pi session running inside Herdr.
+Requires the Herdr CLI and a Pi session running inside a Herdr-managed linked worktree.
+
+## With
+
+[`@henryqw/pi-herdr-clone`](https://pi.henry.wang/extensions/pi-herdr-clone) can create the worktree workspace that `/done` later removes.
 
 ## Use
+
+Commit or discard current changes, then run `/done` and confirm. The command waits for Pi to become idle before cleanup.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

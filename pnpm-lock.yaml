@@ -274,7 +274,7 @@ importers:
         specifier: ^0.1.0
         version: link:../pi-config-store
       '@henryqw/pi-multi-codex':
-        specifier: ^0.4.0
+        specifier: ^0.4.1
         version: link:../pi-multi-codex
       '@henryqw/pi-task-models':
         specifier: ^4.0.0

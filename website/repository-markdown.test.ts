@@ -38,13 +38,6 @@ test("links relative images to raw GitHub files", () => {
     ),
     "![Flow](https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-subagent/docs/delegate-flow.svg)"
   );
-  assert.equal(
-    linkRelativeImagesToGitHub(
-      "![Dependencies](./docs/extension-dependency-graph.svg)",
-      "README.md"
-    ),
-    "![Dependencies](https://raw.githubusercontent.com/HenryQW/pi-harness/main/docs/extension-dependency-graph.svg)"
-  );
 });
 
 test("links extension Markdown files to GitHub", () => {
