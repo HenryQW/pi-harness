@@ -17,6 +17,7 @@
 | `pi-session-recall` | [`extensions/pi-session-recall/CONTEXT.md`](extensions/pi-session-recall/CONTEXT.md) | FTS5 search over past Pi session transcripts with four arg-inferred tool modes |
 | `pi-footer` | [`extensions/pi-footer/CONTEXT.md`](extensions/pi-footer/CONTEXT.md) | Henry's opinionated Pi footer identity and usage display |
 | `pi-pr` | [`extensions/pi-pr/CONTEXT.md`](extensions/pi-pr/CONTEXT.md) | Current-branch pull request lifecycle in the Pi footer |
+| `pi-prompt-creator` | [`extensions/pi-prompt-creator/CONTEXT.md`](extensions/pi-prompt-creator/CONTEXT.md) | Current-conversation signals and user-approved global prompt candidates |
 | `pi-subagent` | [`extensions/pi-subagent/CONTEXT.md`](extensions/pi-subagent/CONTEXT.md) | Role-configured isolated Pi subagents |
 | `pi-open-in` | [`extensions/pi-open-in/CONTEXT.md`](extensions/pi-open-in/CONTEXT.md) | Open current Pi working directory with configurable command |
 

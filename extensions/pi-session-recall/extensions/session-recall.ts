@@ -9,8 +9,9 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import { MAX_QUERY_CHARS, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
+import { getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getWindow, readSession } from "./hydrate.ts";
+import { MAX_QUERY_CHARS } from "./query.ts";
 import type { WindowMessage } from "./types.ts";
 
 const dbPath = () => join(extensionConfigDir("pi-session-recall"), "index.db");
