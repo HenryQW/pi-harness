@@ -48,6 +48,8 @@ Consumers register declarations at extension load. When `/task-models` opens, th
 
 The control plane lists each active task's effective profile. Hidden explicit assignments stay stored when a consumer is disabled.
 
+![Task routing from consumer declaration to route or error](./docs/task-routing-architecture.svg)
+
 ### Scoped models, aliases, and fallback
 
 Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. An empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated.

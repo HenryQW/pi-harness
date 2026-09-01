@@ -18,7 +18,8 @@
     "dist",
     "extensions",
     "README.md",
-    "CONTEXT.md"
+    "CONTEXT.md",
+    "docs"
   ],
   "types": "./dist/index.d.ts",
   "exports": {
