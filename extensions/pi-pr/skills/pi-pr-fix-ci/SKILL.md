@@ -21,7 +21,7 @@ It does not waive any gate below or authorize work on another branch or PR.
 
 1. **Establish exact ownership before mutation.**
    - Confirm the checkout is a worktree on a named branch. Save it as `LOCAL_BRANCH` for checkout identity only, read the full local `HEAD` OID, and require a clean porcelain status, including untracked and in-progress state.
-   - Resolve `LOCAL_BRANCH`'s effective push remote and full remote ref from `git for-each-ref --format='%(push:remotename)%00%(push:remoteref)' "refs/heads/$LOCAL_BRANCH"` and the configured remote names. Require the emitted ref to start with `refs/heads/`. Strip only that prefix, record the remainder as `PUSH_REF`, and validate it with `git check-ref-format --branch`. Require one push URL on that remote, validate its GitHub host and owner/repository, and record the complete target. Do not derive or fall back to `LOCAL_BRANCH`.
+   - Read `LOCAL_BRANCH`'s validated `%(push:short)` with `git for-each-ref` and enumerate configured remote names. Match an exact `<remote>/` prefix, choosing the unique longest match so remote names containing `/` work. Save that remote and the remaining ref as `PUSH_REMOTE` and `PUSH_REF`, then validate `PUSH_REF` with `git check-ref-format --branch`. Require one push URL and validate its GitHub host and owner/repository. Do not use `%(push:remoteref)` or fall back to `LOCAL_BRANCH`.
    - On the push target's host, search open pull requests by the exact push owner and `PUSH_REF`. Inspect every candidate by URL and require exactly one complete, unambiguous result. Never use branch-default PR lookup.
    - Require the PR head repository and `headRefName` to equal the configured push repository and `PUSH_REF`. Require its full `headRefOid` to equal local `HEAD`. Record the PR number and URL, original head OID, local checkout branch, verified push remote, `PUSH_REF`, URL, and repository. Stop on any mismatch, missing value, detached `HEAD`, missing authentication, incomplete search, or ambiguity.
 
@@ -43,7 +43,7 @@ It does not waive any gate below or authorize work on another branch or PR.
 5. **Commit once, then guard and push once.**
    - Stage only the reviewed scoped paths; never use an all-files add. Inspect the staged diff and status, then create one scoped Conventional Commit such as `fix(ci): ...`. If commit fails, stop and do not retry.
    - Immediately before the push, perform one fresh non-polling guard. Require the attached branch to remain the saved checkout branch. Re-resolve its configured push target exactly as above and require the saved remote, `PUSH_REF`, sole push URL, host, and repository. Re-read the recorded PR URL and require the PR to remain open with the same number, URL, base identity, head repository, `PUSH_REF`, and original head OID. Require local `HEAD` to be the expected descendant containing only this fix and the tree to be clean. Stop on any mismatch.
-   - Push exact local `HEAD` to the saved configured push ref on the saved remote with one normal fast-forward push. Do not force-push, retry, wait for CI, or poll after pushing.
+   - Push once with `git push "$PUSH_REMOTE" "HEAD:$PUSH_REF"`. Do not force-push, retry, wait for CI, or poll after pushing.
 
 ## Report
 

@@ -146,6 +146,12 @@ function harness(options: HarnessOptions) {
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return result(options.statuses?.[statusIndex++] ?? options.status ?? "");
 			}
+			if (
+				command === "git" &&
+				args.join(" ") === "rev-parse --git-path MERGE_HEAD --git-path rebase-merge --git-path rebase-apply --git-path CHERRY_PICK_HEAD --git-path REVERT_HEAD --git-path sequencer"
+			) {
+				return result("/repo/.git/MERGE_HEAD\n/repo/.git/rebase-merge\n/repo/.git/rebase-apply\n/repo/.git/CHERRY_PICK_HEAD\n/repo/.git/REVERT_HEAD\n/repo/.git/sequencer\n");
+			}
 			if (command === "git" && args[0] === "fetch") return result();
 			if (command === "git" && args[0] === "cat-file" && args[1] === "-e") return result();
 			if (command === "git" && args[0] === "merge-base" && args[1] === "--is-ancestor") {

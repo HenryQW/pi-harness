@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
 	loadCurrentPullRequest,
@@ -33,9 +37,10 @@ type HarnessOptions = {
 	policyResult?: ReturnType<typeof result>;
 	requiresStrictStatusChecks?: boolean | null;
 	rulesetResult?: ReturnType<typeof result>;
-	rulesetStrictStatusChecks?: boolean;
 	methods?: Record<string, unknown>;
 	status?: string;
+	stateResult?: ReturnType<typeof result>;
+	gitStateCwd?: string;
 	fetchResult?: ReturnType<typeof result>;
 	verifyResult?: ReturnType<typeof result>;
 	ancestry?: "behind" | "ahead" | "diverged";
@@ -43,6 +48,22 @@ type HarnessOptions = {
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
+
+function runGit(cwd: string, args: string[]) {
+	const command = spawnSync("git", args, { cwd, encoding: "utf8" });
+	return {
+		stdout: command.stdout ?? "",
+		stderr: command.stderr ?? "",
+		code: command.status ?? 1,
+		killed: command.signal !== null,
+	};
+}
+
+function git(cwd: string, ...args: string[]): string {
+	const command = runGit(cwd, args);
+	assert.equal(command.code, 0, `${args.join(" ")} failed: ${command.stderr}`);
+	return command.stdout.trim();
+}
 
 function reviewThreadPage(nodes: unknown[], hasNextPage = false) {
 	return {
@@ -77,10 +98,10 @@ function baseBranchPolicyOutput(requiresStrictStatusChecks: boolean | null): str
 	});
 }
 
-function rulesetPolicyOutput(strict: boolean): string {
-	return JSON.stringify(strict
+function rulesetPolicyOutput(...pages: boolean[]): string {
+	return JSON.stringify(pages.map((strict) => strict
 		? [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: true } }]
-		: []);
+		: []));
 }
 
 function pullRequest(overrides: Record<string, unknown> = {}) {
@@ -162,10 +183,16 @@ function harness(options: HarnessOptions = {}) {
 				}
 			}
 			if (command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main") {
-				return options.rulesetResult ?? result(rulesetPolicyOutput(options.rulesetStrictStatusChecks ?? false));
+				return options.rulesetResult ?? result(rulesetPolicyOutput(false));
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
-				return result(options.status ?? "");
+				return options.gitStateCwd ? runGit(options.gitStateCwd, args) : result(options.status ?? "");
+			}
+			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) {
+				if (options.stateResult) return options.stateResult;
+				if (options.gitStateCwd) return runGit(options.gitStateCwd, args);
+				const states = args.flatMap((arg, index) => args[index - 1] === "--git-path" ? [arg] : []);
+				return result(`${states.map((state) => `/repo/.git/${state}`).join("\n")}\n`);
 			}
 			if (command === "git" && args.join(" ") === `fetch --no-write-fetch-head --no-tags ${pushUrl} ${REMOTE_HEAD}`) {
 				return options.fetchResult ?? result();
@@ -192,7 +219,7 @@ function harness(options: HarnessOptions = {}) {
 		},
 	} as unknown as Parameters<typeof loadCurrentPullRequest>[0];
 	const context = {
-		cwd: "/repo",
+		cwd: options.gitStateCwd ?? "/repo",
 		signal: new AbortController().signal,
 	} as Parameters<typeof loadCurrentPullRequest>[1];
 	return { pi, context, calls };
@@ -337,17 +364,20 @@ test("ignores the same head ref in an unrelated repository", async () => {
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
-test("rejects push targets with multiple matching remote-name prefixes", async () => {
+test("chooses the longest configured remote-name prefix for a push target", async () => {
 	const { pi, context, calls } = harness({
 		pushReference: "team/fork/feature/pr",
+		remote: "team/fork",
 		remoteNames: ["origin", "team", "team/fork"],
 	});
 
-	await assert.rejects(
-		loadCurrentPullRequest(pi, context),
-		/Read push target failed: target names multiple configured remotes/,
-	);
-	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "remote" && args.length > 1), false);
+	assert.ok(await loadCurrentPullRequest(pi, context));
+	assert.ok(calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "remote get-url --push --all team/fork"
+	));
+	assert.equal(calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "remote get-url --push --all team"
+	), false);
 });
 
 test("prefers an open PR over a matching historical PR", async () => {
@@ -529,15 +559,16 @@ test("rejects partial review-thread data when any paginated GraphQL page has err
 
 test("requires a base update for strict legacy protection or an applicable strict ruleset", async () => {
 	const cases = [
-		{ name: "legacy only", legacy: true, ruleset: false, required: true },
-		{ name: "ruleset only", legacy: null, ruleset: true, required: true },
-		{ name: "neither", legacy: null, ruleset: false, required: false },
+		{ name: "legacy only", legacy: true, rulesets: rulesetPolicyOutput(false), required: true },
+		{ name: "ruleset only", legacy: null, rulesets: rulesetPolicyOutput(true), required: true },
+		{ name: "later ruleset page", legacy: null, rulesets: rulesetPolicyOutput(false, true), required: true },
+		{ name: "neither", legacy: null, rulesets: rulesetPolicyOutput(false), required: false },
 	] as const;
 	for (const candidate of cases) {
 		const app = harness({
 			candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
 			requiresStrictStatusChecks: candidate.legacy,
-			rulesetStrictStatusChecks: candidate.ruleset,
+			rulesetResult: result(candidate.rulesets),
 		});
 		const loaded = await loadCurrentPullRequest(app.pi, app.context);
 		assert.ok(loaded);
@@ -555,6 +586,8 @@ test("requires a base update for strict legacy protection or an applicable stric
 		);
 		assert.ok(rulesets?.args.includes("--hostname"), candidate.name);
 		assert.ok(rulesets?.args.includes("github.com"), candidate.name);
+		assert.ok(rulesets?.args.includes("--paginate"), candidate.name);
+		assert.ok(rulesets?.args.includes("--slurp"), candidate.name);
 	}
 
 	const blocked = harness({ candidates: [pullRequest({ mergeStateStatus: "BLOCKED" })] });
@@ -589,9 +622,15 @@ test("fails visibly when either base policy authority fails or is malformed", as
 			error: /Read base branch rulesets failed: exit code 1/,
 		},
 		{
-			name: "malformed ruleset authority",
+			name: "malformed ruleset page collection",
 			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(JSON.stringify([{ type: "required_status_checks", parameters: {} }])),
+			rulesetResult: result(JSON.stringify([[], {}])),
+			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
+		},
+		{
+			name: "malformed rule on a valid page",
+			policyResult: result(baseBranchPolicyOutput(true)),
+			rulesetResult: result(JSON.stringify([[{ type: "required_status_checks", parameters: {} }]])),
 			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
 		},
 	];
@@ -632,6 +671,100 @@ test("exposes all allowed merge methods and the validated viewer default", async
 	await assert.rejects(
 		loadCurrentPullRequest(invalid.pi, invalid.context),
 		/Read merge methods failed: viewerDefaultMergeMethod is not allowed/,
+	);
+});
+
+test("classifies clean and in-progress Git operations in a linked worktree", async (t) => {
+	const temporary = mkdtempSync(join(tmpdir(), "pi-pr-git-state-"));
+	t.after(() => rmSync(temporary, { recursive: true, force: true }));
+	const repository = join(temporary, "repository");
+	const linked = join(temporary, "linked");
+
+	git(temporary, "init", "--initial-branch=main", repository);
+	git(repository, "config", "user.name", "Pi PR test");
+	git(repository, "config", "user.email", "pi-pr@example.test");
+	writeFileSync(join(repository, "tracked.txt"), "base\n");
+	git(repository, "add", "tracked.txt");
+	git(repository, "commit", "-m", "base");
+	const base = git(repository, "rev-parse", "HEAD");
+
+	git(repository, "switch", "-c", "operation-source");
+	writeFileSync(join(repository, "tracked.txt"), "picked\n");
+	git(repository, "commit", "-am", "pick one");
+	const firstPick = git(repository, "rev-parse", "HEAD");
+	writeFileSync(join(repository, "tracked.txt"), "picked again\n");
+	git(repository, "commit", "-am", "pick two");
+	const secondPick = git(repository, "rev-parse", "HEAD");
+
+	git(repository, "switch", "main");
+	writeFileSync(join(repository, "tracked.txt"), "target\n");
+	git(repository, "commit", "-am", "target");
+	git(repository, "branch", "merge-source", base);
+	git(repository, "switch", "merge-source");
+	git(repository, "commit", "--allow-empty", "-m", "merge source");
+	const mergeSource = git(repository, "rev-parse", "HEAD");
+	git(repository, "switch", "main");
+	git(repository, "worktree", "add", "-b", "linked", linked, "main");
+
+	const worktreeState = async () => {
+		const { pi, context } = harness({ gitStateCwd: linked });
+		const loaded = await loadCurrentPullRequest(pi, context);
+		assert.ok(loaded);
+		return loaded.local.worktree;
+	};
+	assert.equal(await worktreeState(), "clean");
+
+	git(linked, "merge", "--no-ff", "--no-commit", mergeSource);
+	assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.equal(await worktreeState(), "dirty");
+	git(linked, "merge", "--abort");
+
+	assert.notEqual(runGit(linked, ["rebase", "--force-rebase", "--exec", "false", base]).code, 0);
+	assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.equal(await worktreeState(), "dirty");
+	git(linked, "rebase", "--abort");
+
+	assert.notEqual(runGit(linked, ["cherry-pick", firstPick, secondPick]).code, 0);
+	git(linked, "checkout", "--ours", "tracked.txt");
+	git(linked, "add", "tracked.txt");
+	assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.equal(await worktreeState(), "dirty");
+	const cherryPickHead = git(linked, "rev-parse", "--git-path", "CHERRY_PICK_HEAD");
+	const cherryPickState = readFileSync(cherryPickHead);
+	rmSync(cherryPickHead);
+	assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.equal(await worktreeState(), "dirty");
+	writeFileSync(cherryPickHead, cherryPickState);
+	git(linked, "cherry-pick", "--abort");
+
+	assert.notEqual(runGit(linked, ["revert", "--no-edit", secondPick, firstPick]).code, 0);
+	git(linked, "checkout", "--ours", "tracked.txt");
+	git(linked, "add", "tracked.txt");
+	assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.equal(await worktreeState(), "dirty");
+	const revertHead = git(linked, "rev-parse", "--git-path", "REVERT_HEAD");
+	const revertState = readFileSync(revertHead);
+	rmSync(revertHead);
+	assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.equal(await worktreeState(), "dirty");
+	writeFileSync(revertHead, revertState);
+	git(linked, "revert", "--abort");
+
+	assert.equal(await worktreeState(), "clean");
+});
+
+test("surfaces Git operation-state resolution failures", async () => {
+	const failed = harness({ stateResult: result("", 128) });
+	await assert.rejects(
+		loadCurrentPullRequest(failed.pi, failed.context),
+		/Read Git operation state failed: exit code 128/,
+	);
+	assert.equal(failed.calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
+
+	const malformed = harness({ stateResult: result("/repo/.git/MERGE_HEAD\n") });
+	await assert.rejects(
+		loadCurrentPullRequest(malformed.pi, malformed.context),
+		/Read Git operation state failed: invalid state paths/,
 	);
 });
 

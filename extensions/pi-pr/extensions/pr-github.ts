@@ -1,3 +1,5 @@
+import { lstat } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -247,10 +249,10 @@ async function execute(
 }
 
 function parsePushReference(value: string, remoteNames: string[]): { remote: string; ref: string } {
-	const matches = remoteNames.filter((remote) => value.startsWith(`${remote}/`));
-	if (!matches.length) fail("Read push target", "target does not name a configured remote");
-	if (matches.length > 1) fail("Read push target", "target names multiple configured remotes");
-	const remote = matches[0];
+	const remote = remoteNames
+		.filter((name) => value.startsWith(`${name}/`))
+		.sort((left, right) => right.length - left.length)[0];
+	if (!remote) fail("Read push target", "target does not name a configured remote");
 	const ref = value.slice(remote.length + 1);
 	text(ref, "Read push target", "push ref");
 	return { remote, ref };
@@ -562,17 +564,20 @@ function parseLegacyBaseBranchPolicy(output: string, candidate: ListedPullReques
 }
 
 function parseRulesetBaseBranchPolicy(output: string): boolean {
-	const value = parseJson(output, "Read base branch rulesets");
-	if (!Array.isArray(value)) fail("Read base branch rulesets", "invalid GitHub CLI output");
+	const pages = parseJson(output, "Read base branch rulesets");
+	if (!Array.isArray(pages) || !pages.length) fail("Read base branch rulesets", "invalid GitHub CLI output");
 	let strict = false;
-	for (const rule of value) {
-		if (!isRecord(rule)) fail("Read base branch rulesets", "invalid GitHub CLI output");
-		const type = text(rule.type, "Read base branch rulesets", "rule type");
-		if (type !== "required_status_checks") continue;
-		if (!isRecord(rule.parameters) || typeof rule.parameters.strict_required_status_checks_policy !== "boolean") {
-			fail("Read base branch rulesets", "invalid GitHub CLI output");
+	for (const page of pages) {
+		if (!Array.isArray(page)) fail("Read base branch rulesets", "invalid GitHub CLI output");
+		for (const rule of page) {
+			if (!isRecord(rule)) fail("Read base branch rulesets", "invalid GitHub CLI output");
+			const type = text(rule.type, "Read base branch rulesets", "rule type");
+			if (type !== "required_status_checks") continue;
+			if (!isRecord(rule.parameters) || typeof rule.parameters.strict_required_status_checks_policy !== "boolean") {
+				fail("Read base branch rulesets", "invalid GitHub CLI output");
+			}
+			strict ||= rule.parameters.strict_required_status_checks_policy;
 		}
-		strict ||= rule.parameters.strict_required_status_checks_policy;
 	}
 	return strict;
 }
@@ -714,6 +719,8 @@ async function readBaseBranchPolicy(
 		"api",
 		"--hostname",
 		candidate.url.hostname,
+		"--paginate",
+		"--slurp",
 		"-H",
 		"Accept: application/vnd.github+json",
 		"-H",
@@ -736,7 +743,28 @@ async function readLocalMergeSafety(
 		"--porcelain=v1",
 		"--untracked-files=all",
 	]);
-	const worktree = status.stdout === "" ? "clean" : "dirty";
+	const operationStates = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
+	const statePaths = lines(
+		(await execute(pi, context, "Read Git operation state", "git", [
+			"rev-parse",
+			...operationStates.flatMap((state) => ["--git-path", state]),
+		])).stdout,
+		"Read Git operation state",
+		"state path",
+	);
+	if (statePaths.length !== operationStates.length) fail("Read Git operation state", "invalid state paths");
+	let operationInProgress = false;
+	for (const [index, path] of statePaths.entries()) {
+		try {
+			await lstat(resolve(context.cwd, path));
+			operationInProgress = true;
+		} catch (error) {
+			if (isRecord(error) && error.code === "ENOENT") continue;
+			const code = isRecord(error) && typeof error.code === "string" ? error.code : "filesystem error";
+			fail("Read Git operation state", `cannot inspect ${operationStates[index]}: ${code}`);
+		}
+	}
+	const worktree = status.stdout === "" && !operationInProgress ? "clean" : "dirty";
 
 	await execute(pi, context, "Fetch pull request head", "git", [
 		"fetch",

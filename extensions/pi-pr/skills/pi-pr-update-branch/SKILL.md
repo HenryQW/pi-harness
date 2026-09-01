@@ -12,7 +12,7 @@ Update only the attached branch for its current open pull request. This handles 
 Before changing anything:
 
 1. Require an attached branch and a clean tree. Save `git symbolic-ref --quiet --short HEAD` as `LOCAL_BRANCH`; it is checkout identity only. Inspect `git status --porcelain=v1 --untracked-files=all` and stop for any staged, unstaged, untracked, unresolved, or in-progress operation. Never commit, clean, stash, or hide a dirty tree.
-2. Resolve `LOCAL_BRANCH`'s effective push remote and full remote ref from `git for-each-ref --format='%(push:remotename)%00%(push:remoteref)' "refs/heads/$LOCAL_BRANCH"` and the configured remote names. Require one unambiguous target and require the emitted ref to start with `refs/heads/`. Strip only that prefix, record the remainder as `PUSH_REF`, and validate it with `git check-ref-format --branch`. Require one push URL on that remote. Validate its GitHub host and owner/repository, then record the remote, `PUSH_REF`, URL, host, owner, and repository. Do not derive or fall back to `LOCAL_BRANCH`.
+2. Read `LOCAL_BRANCH`'s validated `%(push:short)` with `git for-each-ref` and enumerate configured remote names. Match an exact `<remote>/` prefix, choosing the unique longest match so remote names containing `/` work. Save that remote and the remaining ref as `PUSH_REMOTE` and `PUSH_REF`, then validate `PUSH_REF` with `git check-ref-format --branch`. Require one push URL and validate its GitHub host and owner/repository. Do not use `%(push:remoteref)` or fall back to `LOCAL_BRANCH`.
 3. Set `PR_FIELDS=number,url,state,baseRefName,baseRefOid,headRepository,headRefName,headRefOid,mergeStateStatus,mergeable`. On the push target's host, search open pull requests by the exact push owner and `PUSH_REF`. Inspect every candidate by its URL with exactly `PR_FIELDS`; stop for incomplete, capped, duplicate, or ambiguous results. Never use branch-default `gh pr view` or retry with `LOCAL_BRANCH`.
 4. Require exactly one open PR. Require its HTTPS URL to be exactly `HOST/OWNER/REPOSITORY/pull/NUMBER`, with no credentials, port, query, or fragment, and require its number to match. The URL gives the base host and repository. Require `headRepository.nameWithOwner` and `headRefName` to match the recorded push repository and `PUSH_REF`. Require local `HEAD` to equal `headRefOid`. Record the PR and its base/head repositories, refs, and full OIDs. Set `EXPECTED_HEAD_SHA` and `BASE_SHA` from the initial head and base OIDs; never replace them. A fork head and upstream base are normal.
 
@@ -94,7 +94,7 @@ After the merge completes:
 4. Push once to the saved configured push ref, without force or retry:
 
    ```bash
-   git push "$PUSH_REMOTE" "HEAD:$PUSH_REF"
+   git push "$PUSH_REMOTE" "$MERGED_HEAD:$PUSH_REF"
    ```
 
 A conflict, failed validation, failed ancestry check, changed PR target, or rejected push ends the workflow without a force push or a second push.
