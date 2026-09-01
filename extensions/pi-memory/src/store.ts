@@ -35,17 +35,17 @@ export interface LoadResult {
 export interface BatchOperation {
 	action?: string;
 	content?: string;
-	new_text?: string;
 	old_text?: string;
 }
 
-/** Refuse to inject snapshots above this size into context. */
+/** Refuse to inject snapshots or accept serialized mutations above this size. */
 export const MAX_FILE_BYTES = 1_000_000;
+export const MAX_BATCH_OPERATIONS = 100;
 
 export type FileState =
 	| { kind: "ok"; raw: string }
 	| { kind: "absent" }
-	| { kind: "unreadable" }
+	| { kind: "unreadable"; confirmedPresent: boolean }
 	| { kind: "oversized"; bytes: number };
 
 type Result = {
@@ -92,6 +92,21 @@ export function normalizeEntry(raw: string): string {
 	return raw.replace(/^\uFEFF/, "").replace(/\r\n?|[\u2028\u2029\u0085\u000B\u000C]/g, "\n").trim();
 }
 
+export function validateEntryContent(content: string): string | undefined {
+	const normalized = normalizeEntry(content);
+	if (!normalized) return "Content cannot be empty.";
+	if (normalized.includes(ENTRY_DELIMITER)) return `Content must not contain the entry delimiter ("${ENTRY_DELIMITER.trim()}”).`;
+	// Same predicate as the snapshot sanitizer (leading Unicode whitespace
+	// included): anything the sanitizer would filter must be rejected here,
+	// or writes report success while vanishing from snapshots.
+	for (const line of normalized.split("\n")) {
+		if (isReservedFrameLine(line)) {
+			return "Content must not contain lines starting with '═' separators or the reserved headers 'MEMORY (your personal notes' / 'USER PROFILE (who the user is'.";
+		}
+	}
+	return undefined;
+}
+
 function parseEntries(raw: string): string[] {
 	const text = normalizeEntry(raw);
 	if (!text) return [];
@@ -111,7 +126,7 @@ export class MemoryStore {
 	// empty view.
 	private readonly observedExisting = new Set<Target>();
 	private disappearanceDetected = false;
-	private unreadableReason: string | undefined;
+	private readonly unreadableReasons = new Map<Target, string>();
 	// Metadata and content digest of the last successfully loaded file, per target.
 	private readonly loadedFingerprints = new Map<Target, { mtimeMs: number; size: number; digest: string }>();
 
@@ -174,13 +189,14 @@ export class MemoryStore {
 
 	async load(target: Target): Promise<LoadResult> {
 		const file = await this.readFileState(target);
-		if (file.kind === "ok") this.observedExisting.add(target);
 		if (file.kind === "unreadable") {
 			return {
 				entries: [],
 				state: "unreadable",
 				status: "unreadable",
-				conflictWarning: `${this.pathFor(target)} exists but could not be read; refusing to serve a possibly-wrong view.`,
+				conflictWarning: file.confirmedPresent
+					? `${this.pathFor(target)} exists but could not be read; refusing to serve a possibly-wrong view.`
+					: `${this.pathFor(target)} could not be read and its presence could not be confirmed; refusing to serve a possibly-wrong view.`,
 			};
 		}
 		if (file.kind === "oversized") {
@@ -225,10 +241,10 @@ export class MemoryStore {
 	}
 
 	/**
-	 * Returns file state: "absent" for a missing file, "unreadable" when the file
-	 * EXISTS but could not be read (permissions or invalid UTF-8), "oversized"
-	 * when it exceeds MAX_FILE_BYTES. Callers must abort on unreadable/oversized
-	 * rather than treat it as an empty store.
+	 * Returns file state: "absent" for a missing file, "unreadable" when it
+	 * could not be read, and "oversized" when it exceeds MAX_FILE_BYTES.
+	 * Unreadable states say whether this read proved the file existed. Callers
+	 * must abort on unreadable/oversized rather than assume an empty store.
 	 */
 	private async readFileState(target: Target): Promise<FileState> {
 		// Bounded, EOF-complete read: at most MAX_FILE_BYTES + 1 bytes leave the
@@ -236,16 +252,24 @@ export class MemoryStore {
 		// reading until EOF so a short read from a network/synced filesystem can
 		// never be mistaken for the whole file.
 		let handle: import("node:fs/promises").FileHandle | undefined;
+		let confirmedPresent = false;
+		this.unreadableReasons.delete(target);
 		try {
 			// Symlinked store files are rejected before anything follows the link:
 			// tmp+rename would replace the link itself and silently disconnect
 			// writes from the intended synced target.
-			const ls = await lstat(this.pathFor(target)).catch(() => null);
+			const ls = await lstat(this.pathFor(target)).catch(() => undefined);
+			if (ls) {
+				confirmedPresent = true;
+				this.observedExisting.add(target);
+			}
 			if (ls?.isSymbolicLink()) {
-				this.unreadableReason = `${this.pathFor(target)} is a symlink; symlinked store files are not supported because atomic rewrites replace the link. Point the memory directory at real files.`;
-				return { kind: "unreadable" };
+				this.unreadableReasons.set(target, `${this.pathFor(target)} is a symlink; symlinked store files are not supported because atomic rewrites replace the link. Point the memory directory at real files.`);
+				return { kind: "unreadable", confirmedPresent: true };
 			}
 			handle = await open(this.pathFor(target), "r");
+			confirmedPresent = true;
+			this.observedExisting.add(target);
 			const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
 			let total = 0;
 			for (;;) {
@@ -280,10 +304,10 @@ export class MemoryStore {
 					await stat(this.config.directory);
 					return { kind: "absent" };
 				} catch {
-					return { kind: "unreadable" };
+					return { kind: "unreadable", confirmedPresent };
 				}
 			}
-			return { kind: "unreadable" };
+			return { kind: "unreadable", confirmedPresent };
 		} finally {
 			await handle?.close().catch(() => {});
 		}
@@ -296,7 +320,12 @@ export class MemoryStore {
 	 */
 	private async reloadTarget(target: Target): Promise<boolean> {
 		const file = await this.readFileState(target);
-		if (file.kind !== "ok" && file.kind !== "absent") return false;
+		if (file.kind !== "ok" && file.kind !== "absent") {
+			if (file.kind === "unreadable" && !file.confirmedPresent) {
+				this.unreadableReasons.set(target, `${this.pathFor(target)} could not be read and its presence could not be confirmed. Fix the path and retry — nothing was changed.`);
+			}
+			return false;
+		}
 		if (file.kind === "absent" && this.observedExisting.has(target)) {
 			// The store existed earlier this session and has vanished (sync
 			// conflict, cleanup, accident). Rewriting from the in-memory view would
@@ -304,7 +333,6 @@ export class MemoryStore {
 			this.disappearanceDetected = true;
 			return false;
 		}
-		if (file.kind === "ok") this.observedExisting.add(target);
 		this.entries.set(target, file.kind === "ok" ? parseEntries(file.raw) : []);
 		return true;
 	}
@@ -377,21 +405,6 @@ export class MemoryStore {
 		}
 	}
 
-	private static checkContent(content: string): string | undefined {
-		const normalized = normalizeEntry(content);
-		if (!normalized) return "Content cannot be empty.";
-		if (normalized.includes(ENTRY_DELIMITER)) return `Content must not contain the entry delimiter ("${ENTRY_DELIMITER.trim()}”).`;
-		// Same predicate as the snapshot sanitizer (leading Unicode whitespace
-		// included): anything the sanitizer would filter must be rejected here,
-		// or writes report success while vanishing from snapshots.
-		for (const line of normalized.split("\n")) {
-			if (isReservedFrameLine(line)) {
-				return "Content must not contain lines starting with '═' separators or the reserved headers 'MEMORY (your personal notes' / 'USER PROFILE (who the user is'.";
-			}
-		}
-		return undefined;
-	}
-
 	private static missingOldTextError(target: Target, action: "replace" | "remove", store: MemoryStore): Result {
 		return {
 			success: false,
@@ -424,7 +437,7 @@ export class MemoryStore {
 	}
 
 	async add(target: Target, content: string): Promise<Result> {
-		const contentError = MemoryStore.checkContent(content);
+		const contentError = validateEntryContent(content);
 		if (contentError) return { success: false, error: contentError };
 		const text = normalizeEntry(content);
 
@@ -454,10 +467,10 @@ export class MemoryStore {
 	}
 
 	private unreadableAbort(target: Target): Result {
-		if (this.unreadableReason) {
-			const reason = this.unreadableReason;
-			this.unreadableReason = undefined;
-			return { success: false, error: reason };
+		const unreadableReason = this.unreadableReasons.get(target);
+		if (unreadableReason) {
+			this.unreadableReasons.delete(target);
+			return { success: false, error: unreadableReason };
 		}
 		if (this.disappearanceDetected) {
 			this.disappearanceDetected = false;
@@ -474,7 +487,7 @@ export class MemoryStore {
 	}
 
 	async replace(target: Target, oldText: string, newText: string): Promise<Result> {
-		const contentError = MemoryStore.checkContent(newText);
+		const contentError = validateEntryContent(newText);
 		if (contentError) return { success: false, error: contentError };
 
 		// Reload before validating old_text so failure results reflect DISK state.
@@ -541,10 +554,13 @@ export class MemoryStore {
 		if (!operations || operations.length === 0) {
 			return { success: false, error: "operations list is empty." };
 		}
+		if (operations.length > MAX_BATCH_OPERATIONS) {
+			return { success: false, error: `operations cannot contain more than ${MAX_BATCH_OPERATIONS} items.` };
+		}
 		for (const op of operations) {
-			const content = op.content ?? op.new_text ?? "";
+			const content = op.content ?? "";
 			if ((op.action === "add" || op.action === "replace") && content) {
-				const contentError = MemoryStore.checkContent(content);
+				const contentError = validateEntryContent(content);
 				if (contentError) return { success: false, error: contentError };
 			}
 		}
@@ -559,7 +575,7 @@ export class MemoryStore {
 		for (let i = 0; i < operations.length; i++) {
 			const op = operations[i] ?? {};
 			const action = op.action;
-			const content = normalizeEntry(op.content ?? op.new_text ?? "");
+			const content = normalizeEntry(op.content ?? "");
 			const oldText = normalizeEntry(op.old_text ?? "");
 			const pos = `Operation ${i + 1} (${action ?? "unknown"})`;
 
