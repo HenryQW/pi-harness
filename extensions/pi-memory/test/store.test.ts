@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ENTRY_DELIMITER, MemoryStore, type Target } from "../src/store.ts";
+import { ENTRY_DELIMITER, MAX_BATCH_OPERATIONS, MAX_FILE_BYTES, MemoryStore, type Target } from "../src/store.ts";
 
 const LIMIT = 1000;
 
@@ -77,6 +77,23 @@ test("batch is all-or-nothing on a bad op", async () => {
 		assert.deepEqual(result.currentEntries!, ["keep me"]);
 		const loaded = await store.load("memory");
 		assert.deepEqual(loaded.entries, ["keep me"]);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("batch operation limit rejects 101 and accepts 100 independently of final budgeting", async () => {
+	const { store, dir, cleanup } = await makeStore();
+	try {
+		const tooMany = Array.from({ length: MAX_BATCH_OPERATIONS + 1 }, () => ({ action: "add", content: "same entry" }));
+		const rejected = await store.applyBatch("memory", tooMany);
+		assert.equal(rejected.success, false);
+		assert.match(rejected.error!, /more than 100/);
+		assert.equal(existsSync(memoryPath(dir)), false);
+
+		const accepted = await store.applyBatch("memory", tooMany.slice(0, MAX_BATCH_OPERATIONS));
+		assert.equal(accepted.success, true, accepted.error ?? "");
+		assert.deepEqual((await store.load("memory")).entries, ["same entry"]);
 	} finally {
 		await cleanup();
 	}
@@ -272,7 +289,7 @@ test("batch replace normalizes CRLF content and old_text", async () => {
 		await mkdir(dir, { recursive: true });
 		await writeFile(memoryPath(dir), "old entry with CRLF\r\nsecond line", "utf-8");
 		const batch = await store.applyBatch("memory", [
-			{ action: "replace", old_text: "CRLF\r\nsecond", new_text: "new\r\nmultiline\r\ncontent" },
+			{ action: "replace", old_text: "CRLF\r\nsecond", content: "new\r\nmultiline\r\ncontent" },
 		]);
 		assert.equal(batch.success, true, batch.error ?? "");
 		assert.deepEqual((await store.load("memory")).entries, ["new\nmultiline\ncontent"]);
@@ -403,6 +420,50 @@ test("mid-session disappearance of an observed store aborts instead of diverging
 		assert.ok(!existsSync(memoryPath(dir)), "no divergent store file may be created");
 	} finally {
 		await cleanup();
+	}
+});
+
+test("confirmed unusable stores cannot be recreated after disappearing", async (t) => {
+	for (const source of ["invalid UTF-8", "oversized", "symlink"] as const) {
+		await t.test(source, async () => {
+			const { store, dir, cleanup } = await makeStore();
+			try {
+				if (source === "invalid UTF-8") {
+					await writeFile(memoryPath(dir), Buffer.from([0xff, 0xfe]));
+				} else if (source === "oversized") {
+					await writeFile(memoryPath(dir), "x".repeat(MAX_FILE_BYTES + 1));
+				} else {
+					await writeFile(join(dir, "real.md"), "preserve target");
+					await symlink(join(dir, "real.md"), memoryPath(dir));
+				}
+				const loaded = await store.load("memory");
+				assert.ok(loaded.status, `${source} must be unusable`);
+				await rm(memoryPath(dir));
+				const result = await store.add("memory", "must not recreate");
+				assert.equal(result.success, false);
+				assert.match(result.error ?? "", /disappeared/);
+				assert.equal(existsSync(memoryPath(dir)), false);
+			} finally {
+				await cleanup();
+			}
+		});
+	}
+});
+
+test("unconfirmed unreadable path remains recoverable for initial creation", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-memory-repair-"));
+	const dir = join(root, "missing");
+	const store = new MemoryStore({ directory: dir, memoryCharLimit: LIMIT, userCharLimit: LIMIT });
+	try {
+		const loaded = await store.load("memory");
+		assert.equal(loaded.status, "unreadable");
+		assert.match(loaded.conflictWarning ?? "", /presence could not be confirmed/);
+		await mkdir(dir);
+		const result = await store.add("memory", "initial entry");
+		assert.equal(result.success, true, result.error ?? "");
+		assert.equal(await readFile(memoryPath(dir), "utf8"), "initial entry");
+	} finally {
+		await rm(root, { recursive: true, force: true });
 	}
 });
 
