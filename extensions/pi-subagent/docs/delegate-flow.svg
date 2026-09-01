@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="delegate-flow-title delegate-flow-desc">
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="delegate-flow-title delegate-flow-desc">
       <title id="delegate-flow-title">Delegate Flow lifecycle</title>
       <desc id="delegate-flow-desc">Flowchart showing setup, implementation, validation, optional exact review, one repair attempt, integration, cleanup, and retained-worktree failure outcomes.</desc>
       <defs>

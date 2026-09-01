@@ -1,6 +1,6 @@
 # Henry Pi Harness
 
-Highly opinionated Pi extensions. Browse them at <https://pi.henry.wang>.
+A collection of 21 opinionated Pi extensions. Browse them at <https://pi.henry.wang>.
 
 ![Pi extensions in use](./example.png)
 
@@ -24,18 +24,11 @@ Highly opinionated Pi extensions. Browse them at <https://pi.henry.wang>.
 | [`@henryqw/pi-notes`](./extensions/pi-notes) | Keep persistent per-worktree notes visible in a Pi widget. |
 | [`@henryqw/pi-open-in`](./extensions/pi-open-in) | Open current working directory with configurable command. |
 | [`@henryqw/pi-pr`](./extensions/pi-pr) | Show current-branch PR lifecycle, CI, mergeability, and review state in Pi footer. |
+| [`@henryqw/pi-prompt-creator`](./extensions/pi-prompt-creator) | Turn current-conversation patterns into reviewed global prompt templates. |
 | [`@henryqw/pi-session-recall`](./extensions/pi-session-recall) | Search past Pi sessions with local FTS5 and zero LLM calls. |
 | [`@henryqw/pi-subagent`](./extensions/pi-subagent) | Delegate bounded single, parallel, chained, and extension-owned Git Flow work to isolated roles. |
 | [`@henryqw/pi-task-models`](./extensions/pi-task-models) | Shared `fast`/`balanced`/`frontier` model profiles for HenryQW extensions. |
 | [`@henryqw/pi-undo`](./extensions/pi-undo) | Rewind conversation context to the latest prompt. |
-
-## Extension dependency graph
-
-Each of the 20 extensions under `extensions/*` appears once below. Solid arrows (`-->`) show internal `@henryqw` npm runtime dependencies declared in `extensions/*/package.json`.
-
-Dashed arrows (`-.->`) show direct runtime protocols or couplings without an internal npm dependency. They are evidenced by package behavior or documentation. Arrows point from the consumer or recognizer to the provider or producer.
-
-![Extension dependency graph](./docs/extension-dependency-graph.svg)
 
 ## Deprecated
 

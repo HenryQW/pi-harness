@@ -1,11 +1,11 @@
 # `@henryqw/pi-herdr-btw`
 
-Open a focused Pi side thread in a Herdr pane. Then merge its transcript and follow-up prompt into Main.
+Ask a focused side question in Herdr, then return its transcript and next instruction to Main.
 
 ## Why
 
-- **Created for**: Ask quick side questions in a dedicated Pi thread without derailing Main's conversation or context.
-- **Advantage**: `/btw merge` returns the side transcript and follow-up to Main without manually copying context.
+- **Created for**: Pi users who need a short detour without changing Main's conversation path.
+- **Advantage**: `/btw merge` returns the useful text and next prompt without manual copying.
 - **Inspired by**: [Claude Code](https://github.com/anthropics/claude-code) and its `/btw` side-question mode. This package adds transcript merge back into Main.
 
 ## Install
@@ -15,16 +15,20 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-btw
 ```
 
-Requires Herdr 0.7.4+ and a Herdr-managed pane.
+Requires Herdr 0.7.4+ and a Herdr-managed pane. Run `/task-models` and configure the `fast` profile before opening a side thread.
 
 ## With
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-memory` | Improves. Marks side-thread children for pi-memory, suppressing parent-only memory injection and dream advice. |
-| `@henryqw/pi-task-models` | Required. Shared model profiles for side-thread routes. |
+| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves. Marks side-thread children, suppressing parent-only memory injection and dream advice. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required. Provides shared model profiles for side-thread routes. |
 
 ## Use
+
+Run `/btw Why is this test failing?` and submit the draft in the side pane. After the answer, run `/btw merge Apply the smallest safe fix` there.
+
+Main receives the side transcript, regains focus, and continues with the merge prompt.
 
 Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
@@ -49,10 +53,14 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 ### Merge delivery
 
-- In the side pane, `/btw merge <prompt>` sends the user/assistant text transcript to Main, refocuses Main, and closes the side pane.
+![Sequence showing a fixed context snapshot with live shared files; the transcript and prompt queue until Main is idle and authenticated, then Main appends the transcript and submits the prompt.](./docs/btw-merge-sequence.svg)
+
+- In the side pane, `/btw merge <prompt>` stores the user/assistant transcript and next prompt as pending delivery.
+- Herdr then refocuses Main and closes the side pane.
+- Pending delivery survives side-pane shutdown. It waits for Main to settle and for current model authentication.
 - Main appends the transcript without starting a turn, then submits the prompt.
 - Bare `/btw merge` opens the prompt editor.
-- Pending delivery waits for Main to settle and for current model authentication. It survives side-pane shutdown until consumed or 24-hour stale cleanup.
+- Pending delivery remains available until consumed or 24-hour stale cleanup.
 
 ### Limits and privacy
 

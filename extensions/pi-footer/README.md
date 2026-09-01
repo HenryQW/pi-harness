@@ -1,13 +1,13 @@
 # `@henryqw/pi-footer`
 
-Henry's opinionated Pi footer style shows checkout identity, usage, and extension status.
+Keep checkout identity, model usage, elapsed agent work, and extension status visible in Pi.
 
 ![Pi footer showing repository, pull request, quota, usage, model, and extension status](./example.png)
 
 ## Why
 
-- **Created for**: Show concise checkout identity, usage, and extension status in the Pi footer.
-- **Advantage**: Keep repository, PR, usage, model, and extension state visible without separate status commands.
+- **Created for**: Pi users who need current checkout and usage details while they work.
+- **Advantage**: See repository, PR, model, cost, and status details without running separate commands.
 
 ## Install
 
@@ -19,9 +19,9 @@ pi install npm:@henryqw/pi-footer
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-multi-codex` | Improves. Adds active Codex subscription quota and reset status. |
-| `@henryqw/pi-open-in` | Improves. Adds `/open` and `/set-open-in` commands for editor configuration. |
-| `@henryqw/pi-pr` | Improves. Adds current-branch pull-request status. |
+| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves. Adds active Codex subscription quota and reset status. |
+| [`@henryqw/pi-open-in`](https://pi.henry.wang/extensions/pi-open-in) | Improves. Adds `/open` and `/set-open-in` commands for editor configuration. |
+| [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves. Adds current-branch pull-request status. |
 
 ## Use
 
@@ -41,7 +41,7 @@ Unavailable values render as `—` without a misleading percent sign.
 
 `off` uses the same dim grey as the model name. Active levels use an ANSI-256 gradient: green `minimal`, yellow-green `low`, lime `medium`, yellow `high`, orange `xhigh`, and red `max`.
 
-`ultra` renders as a rainbow when the runtime supplies it. Pi 0.84.4 does not yet accept `ultra`, so that footer path remains unreachable until Pi adds it.
+`ultra` renders as a rainbow when the active Pi runtime supplies that thinking level. Unsupported levels never appear.
 
 Non-empty statuses from `@henryqw` extensions, currently Codex quota, occupy the right side of the first line.
 

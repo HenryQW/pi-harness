@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="dependency-preparation-flow-title dependency-preparation-flow-desc">
+      <title id="dependency-preparation-flow-title">Dependency preparation flow</title>
+      <desc id="dependency-preparation-flow-desc">Swimlane diagram showing that the shared hook synchronously validates root lockfiles plus packageManager declarations. Conflicting lockfiles, mismatches, and unsupported declarations fail the worktree command. Valid metadata starts detached installs and status reporting, but consumers may use the worktree before dependencies are ready.</desc>
+      <defs>
+        <style>
+          @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap");
+          .lane-label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .node-name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .node-sub { fill: #4c5665; font: 400 9px 'Geist Mono', monospace; text-anchor: middle; }
+          .node { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .node-input { fill: rgba(76,86,101,.10); stroke: #6a7282; stroke-width: 1; }
+          .node-async { fill: rgba(16,24,40,.02); stroke: rgba(16,24,40,.40); stroke-width: 1; stroke-dasharray: 4 3; }
+          .node-state { fill: rgba(16,24,40,.05); stroke: #4c5665; stroke-width: 1; }
+          .node-failure { fill: rgba(16,24,40,.02); stroke: #6a7282; stroke-width: 1; stroke-dasharray: 4 4; }
+          .node-risk { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+          .edge-plain { fill: none; stroke: #4c5665; stroke-width: 1.2; }
+          .edge-async { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#arrow); }
+          .boundary { fill: none; stroke: #1d4ed8; stroke-width: 1.2; stroke-dasharray: 4 4; }
+          .boundary-label { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; letter-spacing: .12em; }
+          .edge-label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .08em; }
+          .legend-text { fill: #4c5665; font: 400 9px 'Geist', sans-serif; }
+        </style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#4c5665"/>
+        </marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <!-- Swimlanes -->
+      <rect x="40" y="40" width="160" height="580" fill="#e6e4de"/>
+      <line x1="40" y1="40" x2="1240" y2="40" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <line x1="40" y1="112" x2="1240" y2="112" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <line x1="40" y1="212" x2="1240" y2="212" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <line x1="40" y1="412" x2="1240" y2="412" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <line x1="40" y1="488" x2="1240" y2="488" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <line x1="40" y1="620" x2="1240" y2="620" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <line x1="200" y1="40" x2="200" y2="620" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <text class="lane-label" x="56" y="80">TRUSTED USER</text>
+      <text class="lane-label" x="56" y="164">GIT</text>
+      <text class="lane-label" x="56" y="268">SHARED HOOK</text>
+      <text class="lane-label" x="56" y="440">DETACHED INSTALLER</text>
+      <text class="lane-label" x="56" y="556">STATUS CONSUMERS</text>
+
+      <!-- Accent 1: the asynchronous handoff -->
+      <line class="boundary" x1="888" y1="112" x2="888" y2="488"/>
+      <rect x="896" y="124" width="160" height="52" fill="#f0eee9"/>
+      <text class="boundary-label" x="900" y="140">ASYNC BOUNDARY</text>
+      <text class="boundary-label" x="900" y="156">WORKTREE RETURNS</text>
+      <text class="boundary-label" x="900" y="172">INSTALLS CONTINUE</text>
+
+      <!-- Connectors -->
+      <path class="edge" d="M368 76 H376 Q384 76 384 84 V156 Q384 164 392 164"/>
+      <path class="edge" d="M552 164 H556 Q560 164 560 168 V272 Q560 280 568 280"/>
+      <path class="edge" d="M720 344 V360"/>
+      <path class="edge-plain" d="M872 280 H884"/>
+      <path class="edge-async" d="M892 272 H976 Q984 272 984 280 V420"/>
+      <path class="edge-async" d="M892 288 Q900 288 900 296 V488 Q900 496 908 496 H972 Q980 496 980 504 V516"/>
+      <path class="edge" d="M1056 452 H1080"/>
+      <path class="edge" d="M1156 484 V500"/>
+      <path class="edge" d="M1104 484 V488 Q1104 496 1096 496 H1088 Q1072 496 1072 512 V584 Q1072 592 1080 592"/>
+
+      <!-- Connector label -->
+      <text class="edge-label" x="752" y="352">INVALID</text>
+
+      <!-- Process nodes -->
+      <rect class="node-input" x="224" y="52" width="144" height="48" rx="6"/>
+      <text class="node-name" x="296" y="76">Enable /deps</text>
+      <text class="node-sub" x="296" y="92">TRUSTED REPOSITORY</text>
+
+      <rect class="node" x="392" y="136" width="160" height="56" rx="6"/>
+      <text class="node-name" x="472" y="160">Create worktree</text>
+      <text class="node-sub" x="472" y="180">CALL SHARED POST-CHECKOUT</text>
+
+      <polygon class="node" points="720,216 872,280 720,344 568,280"/>
+      <text class="node-name" x="720" y="264">Synchronous validation</text>
+      <text class="node-sub" x="720" y="280">ROOT LOCKFILES + packageManager DECLARATIONS</text>
+      <text class="node-sub" x="720" y="296">CONFLICTING LOCKFILES · MISMATCHES</text>
+      <text class="node-sub" x="720" y="308">UNSUPPORTED DECLARATIONS?</text>
+
+      <rect class="node-failure" x="632" y="360" width="176" height="44" rx="6"/>
+      <text class="node-name" x="720" y="380">Fail fast</text>
+      <text class="node-sub" x="720" y="396">WORKTREE COMMAND</text>
+
+      <rect x="884" y="268" width="8" height="24" rx="4" fill="#4c5665"/>
+
+      <rect class="node-async" x="912" y="420" width="144" height="64" rx="6"/>
+      <text class="node-name" x="984" y="444">Run frozen installs</text>
+      <text class="node-sub" x="984" y="464">NODE + UV · LOCKED</text>
+      <text class="node-sub" x="984" y="476">DETACHED</text>
+
+      <rect class="node-state" x="1080" y="420" width="152" height="64" rx="6"/>
+      <text class="node-name" x="1156" y="444">Update status + log</text>
+      <text class="node-sub" x="1156" y="464">status.json</text>
+      <text class="node-sub" x="1156" y="476">install.log</text>
+
+      <!-- Accent 2: readiness risk -->
+      <rect class="node-risk" x="896" y="516" width="168" height="76" rx="6"/>
+      <text class="node-name" x="980" y="540">Worktree may be used</text>
+      <text class="node-name" x="980" y="556">before installs finish</text>
+      <text class="node-sub" x="980" y="576">READINESS NOT GUARANTEED</text>
+
+      <rect class="node" x="1080" y="500" width="152" height="48" rx="6"/>
+      <text class="node-name" x="1156" y="524">Pi reports status</text>
+      <text class="node-sub" x="1156" y="540">THEN REMOVES IT</text>
+
+      <rect class="node" x="1080" y="568" width="152" height="48" rx="6"/>
+      <text class="node-name" x="1156" y="592">Other consumers</text>
+      <text class="node-sub" x="1156" y="608">MUST READ IT THEMSELVES</text>
+
+      <!-- Legend -->
+      <line x1="40" y1="636" x2="1240" y2="636" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+      <text class="lane-label" x="40" y="664">LEGEND</text>
+      <rect class="node" x="124" y="652" width="24" height="16" rx="4"/>
+      <text class="legend-text" x="160" y="664">Step</text>
+      <polygon class="node" points="272,660 284,652 296,660 284,668"/>
+      <text class="legend-text" x="308" y="664">Decision</text>
+      <line x1="420" y1="660" x2="456" y2="660" stroke="#4c5665" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+      <text class="legend-text" x="468" y="664">Detached / async</text>
+      <rect class="node-state" x="612" y="652" width="24" height="16" rx="4"/>
+      <text class="legend-text" x="648" y="664">State files</text>
+      <rect class="node-failure" x="748" y="652" width="24" height="16" rx="4"/>
+      <text class="legend-text" x="784" y="664">Synchronous failure</text>
+    </svg>

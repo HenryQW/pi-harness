@@ -1,11 +1,11 @@
 # `@henryqw/pi-herdr-clone`
 
-Clone the current Pi conversation path into a new Herdr tab or Git worktree workspace.
+Continue the current Pi conversation in a new Herdr tab or a fresh Git worktree workspace.
 
 ## Why
 
-- **Created for**: Start a new Pi process that continues the current conversation in a workspace tab or fresh Git worktree.
-- **Advantage**: Clones copy only the active root-to-leaf session path. They leave sibling branches and the original session untouched.
+- **Created for**: Pi users who want to explore or implement from the current conversation in another workspace.
+- **Advantage**: Copy only the active conversation path while leaving siblings and the original session untouched.
 
 ## Install
 
@@ -13,9 +13,15 @@ Clone the current Pi conversation path into a new Herdr tab or Git worktree work
 pi install npm:@henryqw/pi-herdr-clone
 ```
 
-Requires a Pi session running inside Herdr.
+Requires the Herdr CLI and a Pi session running inside a Herdr-managed pane.
+
+## With
+
+[`@henryqw/pi-herdr-done`](https://pi.henry.wang/extensions/pi-herdr-done) improves worktree clones by cleaning them up when work finishes.
 
 ## Use
+
+Run `/clone-tab` first. A new Herdr tab opens with the saved active conversation, while the original session stays open.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

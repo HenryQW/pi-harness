@@ -19,9 +19,13 @@ The comment sweep resolves its bundled helper and references from the installed 
 
 ## With
 
-`@henryqw/pi-footer` improves this package by showing its pull-request status in the footer.
+[`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) improves this package by showing its pull-request status in the footer.
 
 ## Use
+
+Run `/pr` in a GitHub checkout. Pi opens the current branch pull request when one exists.
+
+If none exists, Pi starts the bundled creation workflow instead.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

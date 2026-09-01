@@ -1,16 +1,16 @@
-<!-- Copy to extensions/<package>/README.md. Replace placeholders, delete optional sections that do not apply, and keep remaining sections in this order. -->
+<!-- Copy to extensions/<package>/README.md. Replace placeholders and delete optional sections that do not apply. Keep the Why -> Install -> optional With -> Use backbone. Keep trivial packages short. -->
 
 # `@henryqw/<package>`
 
-<One sentence describing what users can do.>
+<One sentence describing a concrete outcome users can achieve. Lead with the outcome, not the implementation.>
 
 ## Why
 
-- **Created for**: <One sentence: who needs this and what problem it solves.>
-- **Advantage**: <One sentence: what makes it better than alternatives or doing without.>
+- **Created for**: <Name the user and problem without repeating the introduction.>
+- **Advantage**: <State one concrete benefit over the alternative or doing without.>
 
 <!-- Optional: include only when the package was learned from or adapted from another project. -->
-- **Inspired by**: <One sentence naming the source project and the idea borrowed from it.>
+- **Inspired by**: <Name the source project and the specific idea borrowed from it.>
 
 ## Install
 
@@ -18,27 +18,34 @@
 pi install npm:@henryqw/<package>
 ```
 
-<Runtime prerequisite or setup step, if needed. Do not repeat generic Pi version requirements already enforced by peerDependencies.>
+<Put prerequisites and required post-install actions here. For non-trivial setup, say how users can verify success. Do not repeat generic Pi version requirements enforced by peerDependencies.>
 
-<!-- Optional: use a table only for multiple comparable companion packages. Use a sentence or list for one companion. Alphabetize rows by package. Reasons begin Required., Improves., or Consumer. -->
+<!-- Optional: use a table only for multiple comparable companion packages. Use a sentence or list for one companion. Link companion extension docs with https://pi.henry.wang/extensions/<directory>. Alphabetize rows. Reasons begin Required., Improves., or Consumer. -->
 ## With
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/<companion-a>` | Required. <Why.> |
-| `@henryqw/<companion-b>` | Improves. <Why.> |
+| [`@henryqw/<companion-a>`](https://pi.henry.wang/extensions/<companion-a>) | Required. <Why.> |
+| [`@henryqw/<companion-b>`](https://pi.henry.wang/extensions/<companion-b>) | Improves. <Why.> |
 
-<!-- Use a table for multiple comparable surfaces. Use a sentence or list for one surface. -->
+<!-- For non-trivial packages, start with the shortest successful workflow. State the expected result before deep reference. Use a table only for multiple comparable surfaces. -->
 ## Use
+
+<First successful workflow and expected result. Delete for a trivial command whose result is obvious.>
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/<command>` | command | <What it does.> |
 | `<tool>` | tool | <What it does.> |
 
-<Behavior, limits, integrations, and safety caveats.>
+<Explain behavior and integrations without repeating the introduction or Why. Link companion docs when that helps the next step.>
 
-<!-- Optional: include Config only when the package owns a user-editable config file. Put companion/shared config guidance in With or Use, not here. Do not present generated state as this package's config. Use a table for multiple comparable settings. Use a sentence or list for one setting unless a fixed field layout is clearer. -->
+<!-- Optional: disclose data sent to models or services, model calls and possible cost, and local or remote storage. Include only what applies. -->
+## Data and cost
+
+<What leaves the machine, which models or services receive it, possible cost, and where state is stored.>
+
+<!-- Optional: include Config only when the package owns a user-editable config file. Put companion/shared config guidance in With or Use, not here. Do not present generated state as config. Use a table for multiple comparable settings. -->
 ## Config
 
 `~/.pi/agent/config/<package>/config.json`
@@ -48,9 +55,9 @@ pi install npm:@henryqw/<package>
 | `<setting-a>` | Yes or no | <Valid values> | <Default> |
 | `<setting-b>` | Yes or no | <Valid values> | <Default> |
 
-<Invalid-config behavior.>
+<Explain invalid-config behavior and recovery.>
 
-<!-- Optional: add feature-specific sections here, for example Library API, Workflow, or Recovery. Add a diagram only when a flow or relationship is clearer than prose. Do not add a Mermaid placeholder. -->
+<!-- Optional: add only useful feature-specific sections, such as Library API, Workflow, Limits, or Recovery. Make limits actionable and explain recovery. Add a diagram only when it is clearer than prose. Do not add a Mermaid placeholder. -->
 ## <Feature>
 
 <Feature-specific documentation.>

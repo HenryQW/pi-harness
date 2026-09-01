@@ -1,13 +1,13 @@
 # `@henryqw/pi-session-recall`
 
-Search past Pi sessions with local FTS5. The `session_search` tool has four modes and makes no model calls.
+Find decisions and context in past Pi sessions through a local FTS5 index with no model calls.
 
-The package also includes `pi-session-pattern-miner`. This skill finds repeated work that may be worth automating.
+The bundled `pi-session-pattern-miner` skill finds repeated work that may deserve automation.
 
 ## Why
 
-- **Created for**: Recover decisions and context from prior sessions without keeping every transcript in the active prompt.
-- **Advantage**: Local FTS5 search gives fast, private recall with zero standing context cost and no model calls.
+- **Created for**: Pi users who need earlier decisions without carrying every transcript in current context.
+- **Advantage**: Search stays local and adds no standing prompt cost.
 
 ## Install
 
@@ -16,6 +16,26 @@ pi install npm:@henryqw/pi-session-recall
 ```
 
 ## Use
+
+Start discovery with a distinctive query:
+
+```json
+{ "query": "database migration rollback" }
+```
+
+`session_search` returns ranked sessions. The top result includes nearby messages and session bookends.
+
+Use IDs from that result to ask for more context:
+
+```json
+{
+  "sessionId": "<returned sessionId>",
+  "aroundMessageId": "<returned message entryId>",
+  "window": 10
+}
+```
+
+The follow-up returns up to ten messages before and after that anchor on the selected branch.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
