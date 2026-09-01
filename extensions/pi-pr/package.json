@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-pr",
   "version": "1.0.0",
-  "description": "Show current-branch pull request lifecycle, CI, mergeability, and review state in the Pi footer; route /pr to the highest-priority next workflow.",
+  "description": "Run /pr to automatically choose the current pull request's next safe lifecycle step: create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
     "pi",
