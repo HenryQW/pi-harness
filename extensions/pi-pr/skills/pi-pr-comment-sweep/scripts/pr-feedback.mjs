@@ -133,7 +133,9 @@ function cleanHead() {
     if (lstatSync(path, { throwIfNoEntry: false })) throw new FeedbackError(`${operation} is in progress`);
   }
   if (git("status", "--porcelain", "--untracked-files=all")) throw new FeedbackError("index and worktree must be clean");
-  return requiredText(git("rev-parse", "HEAD"), "local HEAD");
+  const head = requiredText(git("rev-parse", "--verify", "HEAD^{commit}"), "local HEAD");
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(head)) throw new FeedbackError("local HEAD must be a full OID");
+  return head.toLowerCase();
 }
 
 function parsePrUrl(value, label = "PR URL") {
@@ -445,7 +447,8 @@ function login(author) {
 }
 
 function location(thread) {
-  const path = thread.path === null ? "-" : text(thread.path, "thread path");
+  const path = thread.path === null ? "-" : JSON.stringify(text(thread.path, "thread path")).slice(1, -1)
+    .replace(/[\u007f-\u009f]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
   const line = Number.isInteger(thread.line)
     ? thread.line
     : Number.isInteger(thread.originalLine)
@@ -689,7 +692,7 @@ function verifyTarget(options) {
   const remote = discoveryPushRemote(options.pr, metadata) ?? pushRemote(repository, metadata.hostname);
   console.log(`pr=${metadata.url}`);
   console.log(`remote=${remote} repository=${repository}`);
-  console.log(`push_target=git push ${remote} HEAD:${metadata.headRefName}`);
+  console.log(`push_target=git push ${remote} ${localHead}:${metadata.headRefName}`);
 }
 
 function checkPr(options) {
@@ -723,7 +726,7 @@ function publishHead(initial, localHead, operations) {
 
   const remote = remoteFor(observed.headRepository, observed.hostname);
   try {
-    push(remote, observed.headRefName);
+    push(remote, `${localHead}:${observed.headRefName}`);
   } catch (pushError) {
     let observedAfterError;
     try {
@@ -753,7 +756,7 @@ function pushHead(options) {
   const result = publishHead(initial, localHead, {
     readPr: readOpenPr,
     remoteFor: pushRemote,
-    push: (remote, branch) => run("git", ["push", remote, `HEAD:${branch}`]),
+    push: (remote, refspec) => run("git", ["push", remote, refspec]),
   });
   const remote = result.remote ? ` remote=${result.remote}` : "";
   console.log(`pushed_head=${localHead}${remote} branch=${result.metadata.headRefName} status=${result.status}`);
@@ -1136,6 +1139,21 @@ exit 1
       { id: "new-thread", isResolved: false, isOutdated: false, path: "src/d.js", line: 6, comments: [{ id: "new-thread-comment", author: { login: "reviewer" }, body: "new thread" }] },
     ],
   };
+  assert.equal(location({ path: "src/normal.js", line: 7 }), "src/normal.js:7");
+  const maliciousPathLines = [];
+  printThreads("threads", [{
+    id: "thread",
+    isResolved: false,
+    isOutdated: false,
+    path: "src/forged\nrow\t\u001b[31m\u009b31m.js",
+    line: 7,
+    comments: [],
+  }], (line) => maliciousPathLines.push(line));
+  assert.deepEqual(maliciousPathLines, [
+    "threads=thread\tstate\tlocation\tcomment\tauthor\tbody",
+    "thread\tcurrent\tsrc/forged\\nrow\\t\\u001b[31m\\u009b31m.js:7\t-\t-\t-",
+  ]);
+
   assert.equal(checkBucket({ conclusion: "STALE" }), "failing");
   assert.deepEqual(checkSummary(feedback.pullRequest), { passing: 1, pending: 1, failing: 2 });
   const initialLines = [];
@@ -1175,7 +1193,8 @@ exit 1
     headRefName: "feature",
     headRepository: { nameWithOwner: "owner/repo" },
   };
-  const localHead = { ...oldHead, headRefOid: "local" };
+  const capturedOid = "c".repeat(40);
+  const localHead = { ...oldHead, headRefOid: capturedOid };
   const sequence = (...values) => {
     let index = 0;
     return () => values[Math.min(index++, values.length - 1)];
@@ -1188,7 +1207,7 @@ exit 1
   });
   let alreadyCurrentRemoteCalls = 0;
   let alreadyCurrentPushes = 0;
-  assert.equal(publishHead(oldHead, "local", operations(
+  assert.equal(publishHead(oldHead, capturedOid, operations(
     sequence(localHead),
     () => { alreadyCurrentPushes += 1; },
     () => { alreadyCurrentRemoteCalls += 1; return "origin"; },
@@ -1197,22 +1216,22 @@ exit 1
   assert.equal(alreadyCurrentPushes, 0);
   const remoteCalls = [];
   const pushCalls = [];
-  assert.equal(publishHead(oldHead, "local", operations(
+  assert.equal(publishHead(oldHead, capturedOid, operations(
     sequence(oldHead, oldHead, localHead),
-    (remote, branch) => pushCalls.push([remote, branch]),
+    (remote, refspec) => pushCalls.push([remote, refspec]),
     (repository, hostname) => {
       remoteCalls.push([repository, hostname]);
       return "origin";
     },
   )).status, "pushed");
   assert.deepEqual(remoteCalls, [["owner/repo", enterpriseHost]]);
-  assert.deepEqual(pushCalls, [["origin", "feature"]]);
-  assert.equal(publishHead(oldHead, "local", operations(sequence(oldHead, localHead), () => {
+  assert.deepEqual(pushCalls, [["origin", `${capturedOid}:feature`]]);
+  assert.equal(publishHead(oldHead, capturedOid, operations(sequence(oldHead, localHead), () => {
     throw new FeedbackError("HTTP 503");
   })).status, "recovered-after-error");
   let failedPushes = 0;
   assert.throws(
-    () => publishHead(oldHead, "local", operations(sequence(oldHead), () => {
+    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead), () => {
       failedPushes += 1;
       throw new FeedbackError("HTTP 503");
     })),
@@ -1232,25 +1251,25 @@ exit 1
   for (const [field, changed] of drifts) {
     let pushes = 0;
     assert.throws(
-      () => publishHead(oldHead, "local", operations(sequence({ ...changed, headRefOid: "local" }), () => { pushes += 1; })),
+      () => publishHead(oldHead, capturedOid, operations(sequence({ ...changed, headRefOid: capturedOid }), () => { pushes += 1; })),
       new RegExp(`PR ${field} changed since feedback fetch`),
     );
     assert.equal(pushes, 0);
   }
   let driftPushes = 0;
   assert.throws(
-    () => publishHead(oldHead, "local", operations(sequence({ ...oldHead, headRefOid: "other-head" }), () => { driftPushes += 1; })),
+    () => publishHead(oldHead, capturedOid, operations(sequence({ ...oldHead, headRefOid: "other-head" }), () => { driftPushes += 1; })),
     /PR head changed before push: old -> other-head/,
   );
   assert.equal(driftPushes, 0);
   assert.throws(
-    () => publishHead(oldHead, "local", operations(sequence(oldHead, { ...oldHead, baseRefOid: "other-base" }), () => {
+    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, { ...oldHead, baseRefOid: "other-base" }), () => {
       throw new FeedbackError("HTTP 503");
     })),
     /push failed: HTTP 503; head verification failed: PR base OID changed since feedback fetch/,
   );
   assert.throws(
-    () => publishHead(oldHead, "local", operations(sequence(oldHead, { ...oldHead, headRefOid: "other-head" }), () => {
+    () => publishHead(oldHead, capturedOid, operations(sequence(oldHead, { ...oldHead, headRefOid: "other-head" }), () => {
       throw new FeedbackError("HTTP 503");
     })),
     /PR head changed while recovering failed push: old -> other-head/,

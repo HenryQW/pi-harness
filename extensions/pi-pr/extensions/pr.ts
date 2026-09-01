@@ -81,8 +81,9 @@ export default function pullRequestExtension(
 			let pullRequest: Awaited<ReturnType<typeof loadCurrentPullRequest>>;
 			try {
 				pullRequest = await load(pi, loadContext);
-			} catch {
+			} catch (error) {
 				// Keep the last known display when lookup is unavailable.
+				if (!controller.signal.aborted && context === ctx) reportRefreshFailure(error);
 				return;
 			}
 			if (controller.signal.aborted || context !== ctx) return;

@@ -250,6 +250,56 @@ test("reports detached render failures once and resumes after recovery", async (
 	await app.shutdown(ctx);
 });
 
+test("reports lookup failures once, retains display, and resets after recovery", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const results: Array<CurrentPullRequest | Error> = [
+		new Error("initial lookup failed"),
+		new Error("initial lookup failed again"),
+		currentPullRequest({ conditions: { ci: "failure" } }),
+		new Error("later lookup failed"),
+	];
+	const app = harness({
+		async load() {
+			const result = results.shift();
+			if (result === undefined) throw new Error("Unexpected pull request refresh");
+			if (result instanceof Error) throw result;
+			return result;
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	assert.deepEqual(app.notifications, [{
+		message: "PR status refresh failed: initial lookup failed",
+		type: "error",
+	}]);
+	assert.deepEqual(app.statuses, []);
+	assert.deepEqual(app.widgets, []);
+
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(app.notifications.length, 1, "repeated lookup failures must not spam notifications");
+
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
+	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+	const statusWrites = app.statuses.length;
+	const widgetWrites = app.widgets.length;
+
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.deepEqual(app.notifications.at(-1), {
+		message: "PR status refresh failed: later lookup failed",
+		type: "error",
+	});
+	assert.equal(app.notifications.length, 2);
+	assert.equal(app.statuses.length, statusWrites);
+	assert.equal(app.widgets.length, widgetWrites);
+
+	await app.shutdown(ctx);
+});
+
 test("polls one request at a time, retains loader errors, and stops cleanly", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const pending = deferred<CurrentPullRequest | null>();
@@ -283,7 +333,10 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 	assert.equal(calls, 3, "queued refresh runs after the active request");
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI running");
 	assert.equal(app.widgets.at(-1), undefined);
-	assert.deepEqual(app.notifications, []);
+	assert.deepEqual(app.notifications, [{
+		message: "PR status refresh failed: temporary GitHub failure",
+		type: "error",
+	}]);
 
 	t.mock.timers.tick(30_000);
 	assert.equal(calls, 4);

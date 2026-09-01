@@ -16,6 +16,7 @@
   "license": "MIT",
   "files": [
     "LICENSE",
+    "docs/pr-routing.svg",
     "extensions",
     "skills",
     "README.md"
