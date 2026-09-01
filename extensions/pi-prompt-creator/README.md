@@ -1,13 +1,13 @@
 # `@henryqw/pi-prompt-creator`
 
-Turn repeated requests or corrections in the current conversation into one reusable prompt candidate.
+Turn repeated requests or corrections in the current conversation into a reviewed global Pi prompt.
 
-You decide whether to show, refine, and save it.
+Nothing is shown or saved until you choose it.
 
 ## Why
 
-- **Created for**: Pi users who repeat requests or corrections and want a reusable prompt.
-- **Advantage**: It isolates drafting in a tool-free child and saves only after explicit review.
+- **Created for**: Pi users who notice the same instruction or correction returning in one conversation.
+- **Advantage**: A tool-free child drafts one candidate, while Main and the user control review and saving.
 
 ## Install
 
@@ -18,9 +18,24 @@ pi install npm:@henryqw/pi-prompt-creator
 
 Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`.
 
+## With
+
+[`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) is required for the isolated draft model route.
+
 ## Use
 
 Run `/promptor` in the interactive TUI.
+
+### First prompt
+
+After a repeated request or correction appears in the conversation:
+
+1. Choose `Analyze now`. Wait for the `Prompt ready — /promptor` widget.
+2. Run `/promptor` again and choose `Show candidate`.
+3. Ask Main to refine it and return only the complete Final Prompt Draft.
+4. Run `/promptor`, choose `Save latest Main draft`, and enter a lowercase kebab-case name.
+
+The prompt is created at `~/.pi/agent/prompts/<name>.md`, then Pi reloads its resources.
 
 The menu adapts to the current state:
 

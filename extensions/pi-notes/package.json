@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-notes",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Persistent notes in a Pi widget, managed with /note commands.",
   "keywords": [
     "pi-package",

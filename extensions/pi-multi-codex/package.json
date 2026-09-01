@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-multi-codex",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Use multiple ChatGPT Codex OAuth accounts in Pi.",
   "keywords": [
     "pi-package",
@@ -15,6 +15,7 @@
   "license": "MIT",
   "files": [
     "LICENSE",
+    "docs",
     "extensions",
     "README.md"
   ],

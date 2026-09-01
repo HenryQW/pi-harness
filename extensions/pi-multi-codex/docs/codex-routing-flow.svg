@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="codex-routing-flow-title codex-routing-flow-desc">
+  <title id="codex-routing-flow-title">Codex startup ranking and HTTP 429 failover</title>
+  <desc id="codex-routing-flow-desc">At startup, only authenticated, registered, scope-allowed slots with fresh quota snapshots and no known active five-hour block are ranked; the slot with the highest seven-day remaining quota is chosen, or the current slot stays active when none qualify. Success keeps the active slot. Non-429 failures and HTTP 429 with autoSwitchOn429 disabled do not retry. With switching enabled, HTTP 429 marks the failed slot tried, then failover allows authenticated, registered, scope-allowed, untried slots with stale or missing quota, excludes known active five-hour blocks, ranks fresh known quota first and then unranked slots by slot number, and retries without returning to startup ranking.</desc>
+  <defs>
+    <style>
+      @import url(&quot;https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap&quot;);
+      .node { fill: #fff; stroke: #101828; stroke-width: 1; }
+      .node-state { fill: rgba(16,24,40,.05); stroke: #4c5665; stroke-width: 1; }
+      .node-soft { fill: rgba(16,24,40,.03); stroke: #101828; stroke-width: 1; }
+      .node-focal { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+      .name { fill: #101828; font: 600 20px 'Geist', sans-serif; text-anchor: middle; }
+      .diamond-name { fill: #101828; font: 600 18px 'Geist', sans-serif; text-anchor: middle; }
+      .sub { fill: #4c5665; font: 400 16px 'Geist Mono', monospace; text-anchor: middle; }
+      .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+      .label-mask { fill: #f0eee9; }
+      .label { fill: #4c5665; font: 500 16px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+      .note-label { fill: #4c5665; font: 500 16px 'Geist Mono', monospace; letter-spacing: .12em; }
+      .note { fill: #4c5665; font: 400 16px 'Geist', sans-serif; }
+    </style>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+  </defs>
+
+  <rect width="1280" height="720" fill="#f0eee9"/>
+
+  <!-- Startup ranking uses only fresh, known quota. -->
+  <path class="edge" d="M508 104 H556"/>
+  <path class="edge" d="M864 104 H912"/>
+  <path class="edge" d="M1056 144 V192"/>
+
+  <!-- Outcomes split before the separate HTTP 429 failover pool. -->
+  <path class="edge" d="M936 240 H888"/>
+  <path class="edge" d="M1176 240 H1240 V348 H1024"/>
+  <path class="edge" d="M1056 288 V404 H300 V416"/>
+
+  <!-- Failover retries return to the request, never to startup ranking. -->
+  <path class="edge" d="M560 508 H584"/>
+  <path class="edge" d="M824 508 H856"/>
+  <path class="edge" d="M704 556 V604 H856"/>
+  <path class="edge" d="M1192 508 H1272 V104 H1200"/>
+
+  <rect class="label-mask" x="344" y="372" width="272" height="44" rx="2"/>
+  <text class="label" x="480" y="390">429 + SWITCH ON</text>
+  <text class="label" x="480" y="410">MARK FAILED SLOT TRIED</text>
+
+  <!-- Visually distinct candidate pools. -->
+  <rect class="node-focal" x="40" y="40" width="468" height="128" rx="6"/>
+  <text class="name" x="274" y="72">Startup ranking pool</text>
+  <text class="sub" x="274" y="100">AUTHENTICATED · REGISTERED · SCOPE-ALLOWED</text>
+  <text class="sub" x="274" y="124">FRESH USAGE SNAPSHOT REQUIRED</text>
+  <text class="sub" x="274" y="148">KNOWN 7-DAY REMAINING · NO ACTIVE 5H BLOCK</text>
+
+  <rect class="node" x="556" y="56" width="308" height="96" rx="6"/>
+  <text class="name" x="710" y="88">Choose startup route</text>
+  <text class="sub" x="710" y="116">HIGHEST 7-DAY REMAINING</text>
+  <text class="sub" x="710" y="140">NONE → KEEP CURRENT SLOT</text>
+
+  <rect class="node" x="912" y="64" width="288" height="80" rx="6"/>
+  <text class="name" x="1056" y="96">Send request</text>
+  <text class="sub" x="1056" y="124">ACTIVE SLOT · MODEL ID KEPT</text>
+
+  <polygon class="node" points="1056,192 1176,240 1056,288 936,240"/>
+  <text class="diamond-name" x="1056" y="247">Result</text>
+
+  <rect class="node-soft" x="648" y="200" width="240" height="80" rx="40"/>
+  <text class="name" x="768" y="232">Keep active slot</text>
+  <text class="sub" x="768" y="260">SUCCESS</text>
+
+  <rect class="node-soft" x="704" y="304" width="320" height="88" rx="44"/>
+  <text class="name" x="864" y="334">Stop without another slot</text>
+  <text class="sub" x="864" y="362">NON-429 FAILURE</text>
+  <text class="sub" x="864" y="382">429 + autoSwitchOn429=false</text>
+
+  <rect class="node-state" x="40" y="416" width="520" height="184" rx="6"/>
+  <text class="name" x="300" y="448">HTTP 429 failover pool</text>
+  <text class="sub" x="300" y="476">AUTHENTICATED · REGISTERED · SCOPE-ALLOWED</text>
+  <text class="sub" x="300" y="500">UNTRIED · STALE OR MISSING QUOTA ALLOWED</text>
+  <text class="sub" x="300" y="524">EXCLUDE: KNOWN ACTIVE 5H BLOCK</text>
+  <text class="sub" x="300" y="548">FRESH KNOWN: HIGHEST 7-DAY REMAINING FIRST</text>
+  <text class="sub" x="300" y="572">THEN UNRANKED: SLOT NUMBER ASCENDING</text>
+
+  <polygon class="node" points="704,460 824,508 704,556 584,508"/>
+  <text class="diamond-name" x="704" y="504">Failover</text>
+  <text class="diamond-name" x="704" y="528">candidate?</text>
+
+  <rect class="node-focal" x="856" y="468" width="336" height="80" rx="6"/>
+  <text class="name" x="1024" y="500">Switch slot and retry</text>
+  <text class="sub" x="1024" y="528">SAME REQUEST · MODEL ID KEPT</text>
+
+  <rect class="node-soft" x="856" y="568" width="336" height="72" rx="36"/>
+  <text class="name" x="1024" y="596">Stop failover</text>
+  <text class="sub" x="1024" y="620">NO ELIGIBLE UNTRIED SLOT</text>
+
+  <line x1="40" y1="660" x2="1240" y2="660" stroke="rgba(16,24,40,.141)" stroke-width="0.8"/>
+  <text class="note-label" x="40" y="692">RETRY</text>
+  <text class="note" x="120" y="692">Retries re-enter at Send request. Startup freshness is not checked again.</text>
+</svg>

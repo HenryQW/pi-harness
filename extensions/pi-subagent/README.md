@@ -1,13 +1,13 @@
 # `@henryqw/pi-subagent`
 
-Main, the parent Pi session, can delegate bounded single, parallel, and chained tasks to isolated child Roles. It also provides a fixed Git Flow for independent implementation work.
+Delegate bounded work from Main to isolated Pi Roles, or run independent implementation units through a fixed Git Flow.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
 
 ## Why
 
-- **Created for**: Delegate bounded work to isolated child Pi processes without losing Main's context.
-- **Advantage**: Generic delegation and Git Flow use the same Role settings.
+- **Created for**: Pi users who want focused child work without loading every detail into Main.
+- **Advantage**: One Role system covers research, review, implementation, parallel work, and ordered chains.
 
 ## Install
 
@@ -16,15 +16,29 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
+Run `/task-models` and configure the `fast` profile before delegating.
+
 ## With
 
 | Package | Why |
 | --- | --- |
-| `@henryqw/pi-task-models` | Required. Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required. Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
 
 Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. An explicit call `modelClass` wins over a Role `modelClass`; without either, pi-subagent uses its configured `pi-subagent/delegateTask` assignment or declared `fast` default. Missing shared model config warns once because delegation needs a route.
 
 ## Use
+
+Start with one read-only delegation:
+
+```json
+{
+  "role": "scout",
+  "name": "Map sign-in flow",
+  "task": "Trace the sign-in request from entry point to session creation. Report the relevant files and unresolved risks. Do not edit files."
+}
+```
+
+A separate child returns a bounded report to Main. It creates no saved Pi session and makes model requests through the selected route.
 
 | Tool | Purpose |
 | --- | --- |
@@ -58,6 +72,8 @@ Each entry resolves its own Role, resources, route, and optional isolation. A Ro
 See the [orchestration guide](./docs/orchestration.md) for full delegation, transport, isolation, and UI behavior.
 
 ### Flow
+
+![Delegate Flow lifecycle](./docs/delegate-flow.svg)
 
 Flow requires a clean Main worktree on an attached branch with a committed `HEAD`. Use it only for independent Git changes that can merge in any order. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 

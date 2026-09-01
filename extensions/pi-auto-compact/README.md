@@ -1,18 +1,22 @@
 # `@henryqw/pi-auto-compact`
 
-Compact context before it reaches the configured threshold. Then resume the current task.
+Compact Pi context at your chosen threshold, then continue the interrupted task automatically.
 
 ## Why
 
-- **Created for**: Compact session context automatically before it reaches the configured threshold.
-- **Advantage**: Trigger early, use a dedicated model, and resume the interrupted task without manual work.
+- **Created for**: Long Pi sessions that need predictable context headroom.
+- **Advantage**: Compact early through a shared model route, without making users restart the task.
 
 ## Install
+
+Install the required Task Models extension first:
 
 ```bash
 pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
+
+Run `/task-models` and configure the `fast` profile. Open `/task-models` again to verify that `fast` no longer says `not configured`.
 
 Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 
@@ -24,11 +28,13 @@ Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 }
 ```
 
-Restart Pi after install or settings changes. Trusted project settings in `.pi/settings.json` must not set `compaction.enabled` back to `true`.
+Restart Pi after install or settings changes. Trusted `.pi/settings.json` files must not set `compaction.enabled` back to `true`.
+
+Run `/auto-compact`, enter a threshold, and expect `Auto-compact threshold set to <value>%.`
 
 ## With
 
-This package requires `@henryqw/pi-task-models` for shared compaction routes.
+This package requires [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) for shared compaction routes.
 
 `~/.pi/agent/config/pi-task-models/config.json` is shared and owned by `@henryqw/pi-task-models`. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`. A task entry is an explicit user override.
 

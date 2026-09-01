@@ -274,7 +274,7 @@ importers:
         specifier: ^0.1.0
         version: link:../pi-config-store
       '@henryqw/pi-multi-codex':
-        specifier: ^0.3.8
+        specifier: ^0.4.1
         version: link:../pi-multi-codex
       '@henryqw/pi-task-models':
         specifier: ^4.0.0
@@ -1008,10 +1008,6 @@ packages:
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
-
-  '@henryqw/pi-herdr@0.3.1':
-    resolution: {integrity: sha512-xuFCD1JYt7fHvyGRN2m0he501fLhUG4zje1CTCxqzp9AZ+UaV4BRkgMna6Xjs0A4J1AqVxPnDuZsK7ZEsCT9Tw==}
-    engines: {node: '>=22.19.0'}
 
   '@hono/node-server@2.1.1':
     resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
@@ -6524,10 +6520,6 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
-
-  '@henryqw/pi-herdr@0.3.1':
-    dependencies:
-      proper-lockfile: 4.1.2
 
   '@hono/node-server@2.1.1(hono@4.13.5)':
     dependencies:

@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="task-routing-architecture-title task-routing-architecture-desc">
+      <title id="task-routing-architecture-title">Task model routing architecture</title>
+      <desc id="task-routing-architecture-desc">Architecture diagram showing an active consumer declaring a ModelTask to the shared task-models control plane, which selects an explicit override or declared default profile and resolves primary then fallback routes; Pi’s effective model registry determines availability and canonical IDs, scoped models make pinned thinking authoritative, and an empty scope falls back to Pi’s full model registry; viable routes return to the consumer and failures remain visible as TaskRouteError.</desc>
+      <defs>
+        <style>
+          @import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;display=swap");
+          .zone { fill: #e6e4de; stroke: rgba(16,24,40,.141); stroke-width: 1; }
+          .zone-label { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .node-mask { fill: #f0eee9; }
+          .node { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .node-input { fill: rgba(76,86,101,.10); stroke: #6a7282; stroke-width: 1; }
+          .node-store { fill: rgba(16,24,40,.05); stroke: #4c5665; stroke-width: 1; }
+          .node-external { fill: rgba(16,24,40,.03); stroke: rgba(16,24,40,.30); stroke-width: 1; }
+          .node-focal { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+          .node-error { fill: rgba(16,24,40,.02); stroke: rgba(16,24,40,.42); stroke-width: 1; stroke-dasharray: 4 4; }
+          .tag { fill: none; stroke: rgba(16,24,40,.34); stroke-width: .8; }
+          .tag-focal { fill: none; stroke: rgba(29,78,216,.55); stroke-width: .8; }
+          .tag-text { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .08em; text-anchor: middle; }
+          .tag-text-focal { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; letter-spacing: .08em; text-anchor: middle; }
+          .name { fill: #101828; font: 600 14px 'Geist', sans-serif; text-anchor: middle; }
+          .sub { fill: #4c5665; font: 400 10px 'Geist Mono', monospace; text-anchor: middle; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+          .edge-route { fill: none; stroke: #1d4ed8; stroke-width: 1.2; marker-end: url(#arrow-accent); }
+          .edge-error { fill: none; stroke: #6a7282; stroke-width: 1; stroke-dasharray: 5 4; marker-end: url(#arrow); }
+          .label-mask { fill: #f0eee9; }
+          .label { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; letter-spacing: .04em; text-anchor: middle; }
+          .key { fill: #101828; font: 400 14px 'Geist', sans-serif; }
+          .key-note { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; letter-spacing: .04em; text-anchor: end; }
+        </style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#4c5665"/>
+        </marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <!-- Shared control-plane boundary -->
+      <rect class="zone" x="280" y="96" width="672" height="456" rx="8"/>
+      <rect x="292" y="104" width="256" height="16" rx="2" fill="#f0eee9"/>
+      <text class="zone-label" x="304" y="116">SHARED TASK-MODELS CONTROL PLANE</text>
+
+      <!-- Connectors are drawn before nodes -->
+      <line class="edge" x1="264" y1="224" x2="304" y2="224"/>
+      <line class="edge" x1="496" y1="224" x2="528" y2="224"/>
+      <line class="edge" x1="720" y1="224" x2="752" y2="224"/>
+      <line class="edge-route" x1="928" y1="224" x2="968" y2="224"/>
+      <line class="edge" x1="400" y1="400" x2="400" y2="288"/>
+      <path class="edge" d="M152 536 V552 Q152 560 160 560 H808 Q816 560 816 552 V288"/>
+      <path class="edge-error" d="M864 288 V336 Q864 344 872 344 H1096 Q1104 344 1104 352 V400"/>
+
+      <!-- Connector labels -->
+      <rect class="label-mask" x="408" y="332" width="56" height="12" rx="2"/>
+      <text class="label" x="436" y="340">CONFIG</text>
+      <rect class="label-mask" x="568" y="540" width="128" height="12" rx="2"/>
+      <text class="label" x="632" y="548">REGISTRY RULES</text>
+      <rect class="label-mask" x="952" y="324" width="72" height="12" rx="2"/>
+      <text class="label" x="988" y="332">NO VIABLE</text>
+
+      <!-- Opaque masks -->
+      <rect class="node-mask" x="40" y="160" width="224" height="128" rx="6"/>
+      <rect class="node-mask" x="304" y="160" width="192" height="128" rx="6"/>
+      <rect class="node-mask" x="528" y="160" width="192" height="128" rx="6"/>
+      <rect class="node-mask" x="752" y="160" width="176" height="128" rx="6"/>
+      <rect class="node-mask" x="968" y="160" width="272" height="128" rx="6"/>
+      <rect class="node-mask" x="40" y="376" width="224" height="160" rx="6"/>
+      <rect class="node-mask" x="304" y="400" width="192" height="120" rx="6"/>
+      <rect class="node-mask" x="968" y="400" width="272" height="120" rx="6"/>
+
+      <!-- Active consumer and declaration -->
+      <rect class="node-input" x="40" y="160" width="224" height="128" rx="6"/>
+      <rect class="tag" x="52" y="172" width="72" height="16" rx="2"/>
+      <text class="tag-text" x="88" y="184">CONSUMER</text>
+      <text class="name" x="152" y="224">Active consumer extension</text>
+      <text class="sub" x="152" y="248">OWNS MODELTASK DECLARATION</text>
+      <text class="sub" x="152" y="264">registerModelTask(ModelTask)</text>
+
+      <!-- Control-plane stages -->
+      <rect class="node" x="304" y="160" width="192" height="128" rx="6"/>
+      <rect class="tag" x="316" y="172" width="56" height="16" rx="2"/>
+      <text class="tag-text" x="344" y="184">SELECT</text>
+      <text class="name" x="400" y="224">Effective task profile</text>
+      <text class="sub" x="400" y="248">EXPLICIT TASK OVERRIDE</text>
+      <text class="sub" x="400" y="264">OR DECLARED DEFAULT</text>
+
+      <rect class="node" x="528" y="160" width="192" height="128" rx="6"/>
+      <rect class="tag" x="540" y="172" width="56" height="16" rx="2"/>
+      <text class="tag-text" x="568" y="184">PROFILE</text>
+      <text class="name" x="624" y="224">Selected profile</text>
+      <text class="sub" x="624" y="248">PRIMARY + FALLBACK MODEL</text>
+      <text class="sub" x="624" y="264">THINKING LEVEL FOR EACH</text>
+
+      <rect class="node-focal" x="752" y="160" width="176" height="128" rx="6"/>
+      <rect class="tag-focal" x="764" y="172" width="56" height="16" rx="2"/>
+      <text class="tag-text-focal" x="792" y="184">RESOLVE</text>
+      <text class="name" x="840" y="224">Route resolver</text>
+      <text class="sub" x="840" y="248">PRIMARY FIRST</text>
+      <text class="sub" x="840" y="264">FALLBACK SECOND</text>
+
+      <!-- Consumer result -->
+      <rect class="node-input" x="968" y="160" width="272" height="128" rx="6"/>
+      <rect class="tag" x="980" y="172" width="56" height="16" rx="2"/>
+      <text class="tag-text" x="1008" y="184">RETURN</text>
+      <text class="name" x="1104" y="224">Consumer receives routes</text>
+      <text class="sub" x="1104" y="248">VIABLE PRIMARY → FALLBACK</text>
+      <text class="sub" x="1104" y="264">CANONICAL MODEL + THINKING</text>
+
+      <!-- Authorities and visible failure -->
+      <rect class="node-external" x="40" y="376" width="224" height="160" rx="6"/>
+      <rect class="tag" x="52" y="388" width="32" height="16" rx="2"/>
+      <text class="tag-text" x="68" y="400">PI</text>
+      <text class="name" x="152" y="432">Effective model registry</text>
+      <text class="sub" x="152" y="456">SCOPED MODELS</text>
+      <text class="sub" x="152" y="472">PINNED THINKING IS AUTHORITATIVE</text>
+      <text class="sub" x="152" y="488">EMPTY SCOPE → FULL PI REGISTRY</text>
+      <text class="sub" x="152" y="504">AVAILABILITY + CANONICAL IDS</text>
+
+      <rect class="node-store" x="304" y="400" width="192" height="120" rx="6"/>
+      <rect class="tag" x="316" y="412" width="56" height="16" rx="2"/>
+      <text class="tag-text" x="344" y="424">CONFIG</text>
+      <text class="name" x="400" y="448">Task-models config</text>
+      <text class="sub" x="400" y="472">PROFILES + TASK OVERRIDES</text>
+      <text class="sub" x="400" y="488">ONLY TASK-MODELS WRITES</text>
+
+      <rect class="node-error" x="968" y="400" width="272" height="120" rx="6"/>
+      <rect class="tag" x="980" y="412" width="48" height="16" rx="2"/>
+      <text class="tag-text" x="1004" y="424">ERROR</text>
+      <text class="name" x="1104" y="448">Visible TaskRouteError</text>
+      <text class="sub" x="1104" y="472">CONFIG · PROFILE · NO-ROUTE</text>
+      <text class="sub" x="1104" y="488">RUN /TASK-MODELS</text>
+
+      <!-- Bottom reading key -->
+      <line x1="40" y1="624" x2="1240" y2="624" stroke="rgba(16,24,40,.141)" stroke-width=".8"/>
+      <text class="zone-label" x="40" y="656">OWNERSHIP</text>
+      <text class="key" x="144" y="656">Only task-models writes config. Consumers use its API.</text>
+      <text class="key-note" x="1240" y="656">PRIMARY → FALLBACK · FAILURE STAYS VISIBLE</text>
+    </svg>

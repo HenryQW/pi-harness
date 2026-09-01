@@ -1,17 +1,23 @@
 # `@henryqw/pi-herdr`
 
-Run Herdr CLI commands from Node through one thin client. Callers keep orchestration and command-specific checks.
+Call the Herdr CLI from Node through one thin client while keeping orchestration in the owning extension.
+
+This package is an extension-author library. Pi users normally install a Herdr companion extension instead.
 
 ## Why
 
-- **Created for**: Call Herdr CLI commands from Node without duplicating wrapper logic across extensions.
-- **Advantage**: One thin client keeps orchestration local. The Herdr CLI remains the source of truth for commands and response shapes.
+- **Created for**: Extension authors building Herdr-aware Pi features.
+- **Advantage**: Share process handling without copying Herdr's command catalog into a second API.
 
 ## Install
 
 ```bash
 npm install @henryqw/pi-herdr
 ```
+
+Install the Herdr CLI and make `herdr` available on the calling process's `PATH`.
+
+For ready-to-use Pi workflows, see [`@henryqw/pi-herdr-clone`](https://pi.henry.wang/extensions/pi-herdr-clone).
 
 ## Use
 

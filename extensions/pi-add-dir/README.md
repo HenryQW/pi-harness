@@ -1,13 +1,13 @@
 # `@henryqw/pi-add-dir`
 
-Add external directories to the current Pi session. Pi can use their context files and skills, and search their files.
+Give the current Pi session context, skills, and searchable files from directories outside the current workspace.
 
 ![Pi using added external directories by name](./example.png)
 
 ## Why
 
-- **Created for**: Use context and skills outside the current working directory.
-- **Advantage**: Use external trees without copying them into the repository.
+- **Created for**: Pi users who keep reusable instructions or skills outside one repository.
+- **Advantage**: Use those resources in place, without copying or linking their directories.
 
 ## Install
 
@@ -16,6 +16,8 @@ pi install npm:@henryqw/pi-add-dir
 ```
 
 ## Use
+
+Run `/dir-add`, enter a directory, then run `/dir-ls`. Pi lists the directory and exposes its supported resources.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
