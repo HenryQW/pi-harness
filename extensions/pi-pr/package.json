@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Run /pr to automatically choose the current pull request's next safe lifecycle step: create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",

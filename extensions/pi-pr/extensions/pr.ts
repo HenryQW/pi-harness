@@ -4,7 +4,10 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { createPrCommandHandler } from "./pr-command.ts";
-import { loadCurrentPullRequest } from "./pr-github.ts";
+import {
+	hasLocalCommit,
+	loadCurrentPullRequest,
+} from "./pr-github.ts";
 import {
 	formatPrFooter,
 	formatPrWidget,
@@ -14,10 +17,12 @@ import {
 const POLL_INTERVAL_MS = 30_000;
 const UI_KEY = "pi-pr";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
+const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
 const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
 
 type PullRequestExtensionDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
+	hasLocalCommit?: typeof hasLocalCommit;
 	createPrCommandHandler?: typeof createPrCommandHandler;
 };
 
@@ -26,6 +31,7 @@ export default function pullRequestExtension(
 	dependencies: PullRequestExtensionDependencies = {},
 ): void {
 	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
+	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
 	let context: ExtensionContext | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
@@ -33,8 +39,12 @@ export default function pullRequestExtension(
 	let queued = false;
 	let refreshFailureReported = false;
 
-	const render = (ctx: ExtensionContext, pullRequest: Awaited<ReturnType<typeof loadCurrentPullRequest>>): void => {
-		const display = projectPrDisplay(pullRequest);
+	const render = (
+		ctx: ExtensionContext,
+		pullRequest: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
+		localCommit: boolean,
+	): void => {
+		const display = projectPrDisplay(pullRequest, localCommit);
 		const footer = pullRequest === null ? undefined : formatPrFooter(display, ctx.ui.theme);
 		if (pullRequest !== null && footer === undefined) {
 			throw new Error("Current pull request display is missing a footer");
@@ -79,15 +89,17 @@ export default function pullRequestExtension(
 		active = controller;
 		try {
 			let pullRequest: Awaited<ReturnType<typeof loadCurrentPullRequest>>;
+			let localCommit = false;
 			try {
 				pullRequest = await load(pi, loadContext);
+				if (pullRequest === null) localCommit = await detectLocalCommit(pi, loadContext);
 			} catch (error) {
 				// Keep the last known display when lookup is unavailable.
 				if (!controller.signal.aborted && context === ctx) reportRefreshFailure(error);
 				return;
 			}
 			if (controller.signal.aborted || context !== ctx) return;
-			render(ctx, pullRequest);
+			render(ctx, pullRequest, localCommit);
 			refreshFailureReported = false;
 		} finally {
 			if (active !== controller) return;
@@ -116,7 +128,7 @@ export default function pullRequestExtension(
 	pi.on("tool_result", async (event, ctx) => {
 		if (!ctx.hasUI || event.isError || !isBashToolResult(event)) return;
 		const command = event.input.command;
-		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_PUSH.test(command))) {
+		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
 			await refresh().catch(reportRefreshFailure);
 		}
 	});

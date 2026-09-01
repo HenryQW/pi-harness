@@ -66,14 +66,16 @@ test("projects normal runnable, merge, and no-action states", () => {
 	const cases: Array<{
 		name: string;
 		input: PrDisplayInput | null;
+		localCommit?: boolean;
 		nextStep: string;
 		footer?: string;
 		color?: PrStatusColor;
 		widget?: string;
 	}> = [
 		{
-			name: "no pull request",
+			name: "no pull request after local commit",
 			input: null,
+			localCommit: true,
 			nextStep: "create",
 			widget: "Run /pr to create pull request",
 		},
@@ -161,8 +163,8 @@ test("projects normal runnable, merge, and no-action states", () => {
 		},
 	];
 
-	for (const { name, input, nextStep, footer, color, widget } of cases) {
-		const display = projectPrDisplay(input);
+	for (const { name, input, localCommit, nextStep, footer, color, widget } of cases) {
+		const display = projectPrDisplay(input, localCommit);
 		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);

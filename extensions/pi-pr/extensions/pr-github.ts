@@ -707,6 +707,29 @@ function parseMergeMethodSettings(output: string, rulesetMethods: MergeMethod[] 
 	return { allowedMergeMethods, viewerDefaultMergeMethod };
 }
 
+export async function hasLocalCommit(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+): Promise<boolean> {
+	const branch = singleLine(
+		(await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])).stdout,
+		"Read current branch",
+		"branch",
+	);
+	const output = (await execute(pi, context, "Read branch history", "git", [
+		"reflog",
+		"show",
+		"--format=%H",
+		`refs/heads/${branch}`,
+	])).stdout.replace(/\r\n/g, "\n");
+	const entries = output.split("\n");
+	if (entries.at(-1) === "") entries.pop();
+	if (!entries.length) fail("Read branch history", "missing branch creation entry");
+	const commits = entries.map((entry) => oid(entry, "Read branch history", "commit"));
+	// ponytail: reflog expiry can hide old branch history; resolve the PR base if this becomes observable.
+	return commits[0] !== commits.at(-1);
+}
+
 async function readPushTarget(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,

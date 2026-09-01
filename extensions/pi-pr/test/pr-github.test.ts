@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	hasLocalCommit,
 	loadCurrentPullRequest,
 	PullRequestLoadError,
 } from "../extensions/pr-github.ts";
@@ -233,6 +234,34 @@ function harness(options: HarnessOptions = {}) {
 	} as Parameters<typeof loadCurrentPullRequest>[1];
 	return { pi, context, calls };
 }
+
+test("detects commits added after local branch creation", async (t) => {
+	const repository = mkdtempSync(join(tmpdir(), "pi-pr-local-commit-"));
+	t.after(() => rmSync(repository, { recursive: true, force: true }));
+	git(repository, "init", "-b", "main");
+	git(repository, "config", "user.name", "Pi PR Test");
+	git(repository, "config", "user.email", "pi-pr@example.com");
+	writeFileSync(join(repository, "tracked.txt"), "base\n");
+	git(repository, "add", "tracked.txt");
+	git(repository, "commit", "-m", "base");
+	git(repository, "switch", "-c", "feature");
+
+	const pi = {
+		exec: async (command: string, args: string[]) => {
+			assert.equal(command, "git");
+			return runGit(repository, args);
+		},
+	} as unknown as Parameters<typeof hasLocalCommit>[0];
+	const context = {
+		cwd: repository,
+		signal: new AbortController().signal,
+	} as Parameters<typeof hasLocalCommit>[1];
+
+	assert.equal(await hasLocalCommit(pi, context), false);
+	writeFileSync(join(repository, "tracked.txt"), "changed\n");
+	git(repository, "commit", "-am", "change");
+	assert.equal(await hasLocalCommit(pi, context), true);
+});
 
 test("loads an upstream PR for the exact fork push target and retains its fetch source", async () => {
 	const foreign = pullRequest({

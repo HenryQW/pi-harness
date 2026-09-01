@@ -73,6 +73,7 @@ function flush(): Promise<void> {
 
 function harness(options: {
 	load: Loader;
+	hasLocalCommit?: () => Promise<boolean>;
 	commandHandler?: PrCommandHandler;
 	theme?: (color: string, text: string) => string;
 }) {
@@ -95,6 +96,7 @@ function harness(options: {
 		},
 	} as unknown as ExtensionAPI, {
 		loadCurrentPullRequest: options.load,
+		hasLocalCommit: options.hasLocalCommit,
 		createPrCommandHandler: () => options.commandHandler ?? (async () => {}),
 	});
 
@@ -149,6 +151,9 @@ test("renders the shared projection and refreshes after successful create or pus
 			if (result === undefined) throw new Error("Unexpected pull request refresh");
 			return result;
 		},
+		async hasLocalCommit() {
+			return true;
+		},
 	});
 	const noUi = { hasUI: false } as ExtensionContext;
 	const ctx = app.context();
@@ -177,6 +182,31 @@ test("renders the shared projection and refreshes after successful create or pus
 	assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
 
 	await app.shutdown(ctx);
+});
+
+test("shows the create widget only after a local commit", async () => {
+	const localCommits = [false, true];
+	const app = harness({
+		async load() {
+			return null;
+		},
+		async hasLocalCommit() {
+			const value = localCommits.shift();
+			if (value === undefined) throw new Error("Unexpected local commit check");
+			return value;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		assert.equal(app.widgets.at(-1), undefined);
+
+		await app.tool({ toolName: "bash", input: { command: "git commit -m change" }, isError: false }, ctx);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+	} finally {
+		await app.shutdown(ctx);
+	}
 });
 
 test("propagates render failures before mutating UI", async () => {
