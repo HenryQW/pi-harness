@@ -5,7 +5,6 @@ import data from "blume:data";
 import ExtensionCard from "../components/ExtensionCard.astro";
 import Footer from "../components/Footer.astro";
 import { extensions } from "../extension-catalog.ts";
-import { mitBadgeUrl } from "../npm-badge.ts";
 
 const { config } = data;
 const featuredExtensions = [
@@ -49,7 +48,17 @@ const featuredExtensions = [
   <div class="mx-auto max-w-360 px-6 py-10 md:px-10 md:py-16 lg:px-16 lg:py-20">
     <header class="max-w-4xl sm:mx-auto sm:text-center">
       <div class="max-w-3xl sm:mx-auto">
-        <p class="text-sm font-medium text-accent">Henry Pi Harness</p>
+        <div class="flex items-center gap-2 sm:justify-center">
+          <p class="text-sm font-medium text-accent">Henry Pi Harness</p>
+          <a
+            class="rounded-blume border border-border px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-accent/40"
+            href="https://opensource.org/license/mit"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            MIT<span class="sr-only"> license (opens in a new tab)</span>
+          </a>
+        </div>
         <h1 class="mt-3 text-5xl font-medium leading-none tracking-tight md:text-6xl">
           Ship better work, faster.
         </h1>
@@ -68,16 +77,6 @@ const featuredExtensions = [
             target="_blank"
           >
             View on GitHub <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span>
-          </a>
-        </div>
-        <div class="mt-4 flex justify-center">
-          <a
-            href="https://opensource.org/license/mit"
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            <img alt="MIT license" height="20" src={mitBadgeUrl()} width="78" />
-            <span class="sr-only"> (opens in a new tab)</span>
           </a>
         </div>
         <div class="mt-6 flex items-center justify-center gap-3">
