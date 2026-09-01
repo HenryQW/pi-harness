@@ -15,6 +15,9 @@ type PullRequestSpec = {
 	host?: string;
 	state?: "OPEN" | "MERGED" | "CLOSED";
 	isDraft?: boolean;
+	baseRepository?: string;
+	baseRefName?: string;
+	baseRefOid?: string;
 	headRefOid?: string;
 	mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 	mergeStateStatus?: "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE";
@@ -42,6 +45,7 @@ type HarnessOptions = {
 	idle?: boolean;
 	confirmed?: boolean;
 	status?: string;
+	statuses?: string[];
 	ancestry?: "behind" | "ahead" | "diverged";
 	localHead?: string;
 };
@@ -53,11 +57,11 @@ function pullRequest(overrides: PullRequestSpec = {}) {
 	return {
 		id: overrides.id ?? "PR_kwDOExample",
 		number: overrides.number ?? 42,
-		url: `https://${host}/acme/project/pull/42`,
+		url: `https://${host}/${overrides.baseRepository ?? "acme/project"}/pull/42`,
 		state: overrides.state ?? "OPEN",
 		isDraft: overrides.isDraft ?? false,
-		baseRefName: "main",
-		baseRefOid: baseHead,
+		baseRefName: overrides.baseRefName ?? "main",
+		baseRefOid: overrides.baseRefOid ?? baseHead,
 		headRefName: "feature/pr",
 		headRefOid: overrides.headRefOid ?? localHead,
 		headRepository: { nameWithOwner: "acme/project" },
@@ -79,6 +83,7 @@ function harness(options: HarnessOptions) {
 	const confirmations: Array<{ title: string; message: string }> = [];
 	const events: string[] = [];
 	let stateIndex = 0;
+	let statusIndex = 0;
 	let active: PullRequestSpec | null = null;
 	const configuredLocalHead = options.localHead ?? localHead;
 	const nextHost = () => options.states[stateIndex]?.host ?? DEFAULT_HOST;
@@ -94,7 +99,7 @@ function harness(options: HarnessOptions) {
 			if (command === "git" && args.join(" ") === "remote") return result("fork\norigin\n");
 			if (command === "git" && args[0] === "check-ref-format") {
 				if (args[1] === "--branch") return result(`${args[2]}\n`);
-				if (args[1] === "refs/heads/main") return result();
+				if (args[1]?.startsWith("refs/heads/")) return result();
 			}
 			if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
 				return result("git@github.com:acme/project.git\n");
@@ -112,7 +117,7 @@ function harness(options: HarnessOptions) {
 				return result(JSON.stringify({
 					total_count: active ? 1 : 0,
 					incomplete_results: false,
-					items: active ? [{ html_url: `https://${active.host ?? DEFAULT_HOST}/acme/project/pull/42` }] : [],
+					items: active ? [{ html_url: `https://${active.host ?? DEFAULT_HOST}/${active.baseRepository ?? "acme/project"}/pull/42` }] : [],
 				}));
 			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
@@ -138,7 +143,9 @@ function harness(options: HarnessOptions) {
 					viewerDefaultMergeMethod: "MERGE",
 				}));
 			}
-			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") return result(options.status ?? "");
+			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
+				return result(options.statuses?.[statusIndex++] ?? options.status ?? "");
+			}
 			if (command === "git" && args[0] === "fetch") return result();
 			if (command === "git" && args[0] === "cat-file" && args[1] === "-e") return result();
 			if (command === "git" && args[0] === "merge-base" && args[1] === "--is-ancestor") {
@@ -330,7 +337,7 @@ test("cancels a confirmed merge when the fresh PR is absent, different, or no lo
 	const cases: Array<{
 		name: string;
 		states: [PullRequestSpec, PullRequestSpec | null];
-		ancestry?: "ahead";
+		statuses?: string[];
 		error: RegExp;
 	}> = [
 		{
@@ -341,17 +348,17 @@ test("cancels a confirmed merge when the fresh PR is absent, different, or no lo
 		{
 			name: "PR identity changes",
 			states: [{}, { id: "PR_other" }],
-			error: /current pull request changed/,
+			error: /confirmed pull request context changed/,
 		},
 		{
 			name: "PR host changes",
 			states: [{ host: DEFAULT_HOST }, { host: "github.example.test" }],
-			error: /current pull request changed/,
+			error: /confirmed pull request context changed/,
 		},
 		{
-			name: "local HEAD becomes ahead",
-			states: [{}, { headRefOid: nextHead }],
-			ancestry: "ahead",
+			name: "worktree becomes dirty",
+			states: [{}, {}],
+			statuses: ["", " M file.ts\n"],
 			error: /no longer merge-ready/,
 		},
 		{
@@ -362,7 +369,7 @@ test("cancels a confirmed merge when the fresh PR is absent, different, or no lo
 	];
 
 	for (const candidate of cases) {
-		const app = harness({ states: candidate.states, ancestry: candidate.ancestry });
+		const app = harness({ states: candidate.states, statuses: candidate.statuses });
 		await assert.rejects(app.handler("", app.context), candidate.error, candidate.name);
 
 		assert.equal(app.confirmations.length, 1, candidate.name);
@@ -371,7 +378,25 @@ test("cancels a confirmed merge when the fresh PR is absent, different, or no lo
 	}
 });
 
-test("merges only after confirmation, using fresh PR data in the atomic mutation", async () => {
+test("cancels a confirmed merge when the confirmed head or base context changes", async () => {
+	const cases: Array<{ name: string; fresh: PullRequestSpec; ancestry?: "behind" }> = [
+		{ name: "force-pushed head", fresh: { headRefOid: nextHead }, ancestry: "behind" },
+		{ name: "base repository retarget", fresh: { baseRepository: "acme/other" } },
+		{ name: "base ref retarget", fresh: { baseRefName: "release" } },
+		{ name: "base advances", fresh: { baseRefOid: "d".repeat(40) } },
+	];
+
+	for (const candidate of cases) {
+		const app = harness({ states: [{}, candidate.fresh], ancestry: candidate.ancestry });
+		await assert.rejects(app.handler("", app.context), /confirmed pull request context changed/, candidate.name);
+
+		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
+		assert.equal(app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch").length, 2, candidate.name);
+		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
+	}
+});
+
+test("merges unchanged confirmed context with the atomic expected head", async () => {
 	const host = "github.example.test";
 	const app = harness({
 		states: [
@@ -388,7 +413,6 @@ test("merges only after confirmation, using fresh PR data in the atomic mutation
 			{
 				id: "PR_kwDOExample",
 				host,
-				headRefOid: nextHead,
 				methods: {
 					mergeCommitAllowed: true,
 					rebaseMergeAllowed: false,
@@ -397,7 +421,6 @@ test("merges only after confirmation, using fresh PR data in the atomic mutation
 				},
 			},
 		],
-		ancestry: "behind",
 	});
 	await app.handler("", app.context);
 
@@ -423,7 +446,7 @@ test("merges only after confirmation, using fresh PR data in the atomic mutation
 			"-F",
 			"pullRequestId=PR_kwDOExample",
 			"-F",
-			`expectedHeadOid=${nextHead}`,
+			`expectedHeadOid=${localHead}`,
 			"-F",
 			"mergeMethod=MERGE",
 		],

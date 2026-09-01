@@ -76,8 +76,12 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	return { message: `PR #${pullRequest.number} has no available action`, type: "warning" };
 }
 
-function isSamePullRequest(current: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
-	return current.id === fresh.id && current.host === fresh.host;
+function isSameConfirmedMerge(current: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
+	return current.id === fresh.id && current.host === fresh.host &&
+		current.head.oid === fresh.head.oid &&
+		current.base.repository === fresh.base.repository &&
+		current.base.ref === fresh.base.ref &&
+		current.base.oid === fresh.base.oid;
 }
 
 async function mergePullRequest(
@@ -95,8 +99,8 @@ async function mergePullRequest(
 
 	const fresh = await loadCurrentPullRequest(pi, ctx);
 	if (!fresh) throw new Error(`PR #${current.number} merge cancelled: pull request is no longer current`);
-	if (!isSamePullRequest(current, fresh)) {
-		throw new Error(`PR #${current.number} merge cancelled: current pull request changed`);
+	if (!isSameConfirmedMerge(current, fresh)) {
+		throw new Error(`PR #${current.number} merge cancelled: confirmed pull request context changed`);
 	}
 	if (deriveNextStep(fresh) !== "merge") {
 		throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
@@ -115,7 +119,7 @@ async function mergePullRequest(
 		cwd: ctx.cwd,
 		pullRequestId: fresh.id,
 		hostname: fresh.host,
-		expectedHead: fresh.head.oid,
+		expectedHead: current.head.oid,
 		headFetchSource: fresh.headFetchSource,
 		allowedMergeMethods: fresh.merge.allowedMergeMethods,
 		viewerDefaultMergeMethod: fresh.merge.viewerDefaultMergeMethod,

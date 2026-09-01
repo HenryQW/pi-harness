@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -124,6 +124,18 @@ function requireGh() {
 
 function cleanHead() {
   git("rev-parse", "--show-toplevel");
+  const states = [
+    ["merge", "MERGE_HEAD"],
+    ["rebase", "rebase-merge"],
+    ["rebase", "rebase-apply"],
+    ["cherry-pick", "CHERRY_PICK_HEAD"],
+    ["revert", "REVERT_HEAD"],
+    ["sequenced cherry-pick or revert", "sequencer"],
+  ];
+  for (const [operation, state] of states) {
+    const path = requiredText(git("rev-parse", "--git-path", state), `${operation} state path`);
+    if (lstatSync(path, { throwIfNoEntry: false })) throw new FeedbackError(`${operation} is in progress`);
+  }
   if (git("status", "--porcelain")) throw new FeedbackError("index and worktree must be clean");
   return requiredText(git("rev-parse", "HEAD"), "local HEAD");
 }
@@ -223,12 +235,32 @@ function requireMatchingHead(metadata, localHead) {
   }
 }
 
-function requireDiscoveryBranch(pr, metadata) {
-  if (pr !== undefined) return;
+function discoveryPushRemote(pr, metadata) {
+  if (pr !== undefined) return null;
   const branch = git("branch", "--show-current");
-  if (branch !== metadata.headRefName) {
-    throw new FeedbackError(`local branch ${JSON.stringify(branch)} does not match PR head branch ${JSON.stringify(metadata.headRefName)}`);
+  if (!branch) throw new FeedbackError("current HEAD is detached");
+  const target = git(
+    "for-each-ref",
+    "--format=%(push:remotename)%00%(push:short)",
+    `refs/heads/${branch}`,
+  ).split("\0");
+  if (target.length !== 2 || !target[0] || !target[1]) {
+    throw new FeedbackError(`local branch ${JSON.stringify(branch)} has no configured push target`);
   }
+  const [remote, push] = target;
+  if (!push.startsWith(`${remote}/`)) throw new FeedbackError("configured push target is invalid");
+  const ref = push.slice(remote.length + 1);
+  const checkedRef = git("check-ref-format", "--branch", ref);
+  if (checkedRef !== ref) throw new FeedbackError("configured push ref is invalid");
+  const headRef = requiredText(metadata.headRefName, "PR head ref");
+  if (ref !== headRef) {
+    throw new FeedbackError(`configured push ref ${JSON.stringify(ref)} does not match PR head ref ${JSON.stringify(headRef)}`);
+  }
+  const matchingRemote = pushRemote(metadata.headRepository.nameWithOwner, metadata.hostname);
+  if (remote !== matchingRemote) {
+    throw new FeedbackError(`configured push remote ${JSON.stringify(remote)} does not match PR head repository`);
+  }
+  return matchingRemote;
 }
 
 function graphqlArgs(hostname, variables) {
@@ -560,7 +592,7 @@ function fetchFeedback(options) {
     throw new FeedbackError(`existing feedback JSON belongs to ${previous.pullRequest.url}, not ${initial.url}`);
   }
   requireMatchingHead(initial, localHead);
-  requireDiscoveryBranch(options.pr, initial);
+  discoveryPushRemote(options.pr, initial);
   const data = collectFeedback(initial);
   const current = readOpenPr(initial.url);
   if (current.headRefOid !== initial.headRefOid) {
@@ -658,9 +690,8 @@ function verifyTarget(options) {
   const localHead = cleanHead();
   const metadata = readOpenPr(options.pr);
   requireMatchingHead(metadata, localHead);
-  requireDiscoveryBranch(options.pr, metadata);
   const repository = metadata.headRepository.nameWithOwner;
-  const remote = pushRemote(repository, metadata.hostname);
+  const remote = discoveryPushRemote(options.pr, metadata) ?? pushRemote(repository, metadata.hostname);
   console.log(`pr=${metadata.url}`);
   console.log(`remote=${remote} repository=${repository}`);
   console.log(`push_target=git push ${remote} HEAD:${metadata.headRefName}`);
@@ -800,6 +831,119 @@ function selfTest() {
   const emptySnapshot = join(temporary, "snapshot.json");
   writeFileSync(emptySnapshot, "");
   assert.equal(previousSnapshot(emptySnapshot), null);
+
+  const originalWorkingDirectory = process.cwd();
+  const repository = join(temporary, "repository");
+  try {
+    run("git", ["init", "--initial-branch=main", repository]);
+    process.chdir(repository);
+    git("config", "user.name", "Pi PR self-test");
+    git("config", "user.email", "pi-pr@example.test");
+    writeFileSync("tracked.txt", "base\n");
+    git("add", "tracked.txt");
+    git("commit", "-m", "base");
+    const base = cleanHead();
+
+    git("switch", "-c", "operation-source");
+    writeFileSync("tracked.txt", "picked\n");
+    git("commit", "-am", "pick one");
+    const firstPick = git("rev-parse", "HEAD");
+    writeFileSync("tracked.txt", "picked again\n");
+    git("commit", "-am", "pick two");
+    const secondPick = git("rev-parse", "HEAD");
+
+    git("switch", "main");
+    writeFileSync("tracked.txt", "target\n");
+    git("commit", "-am", "target");
+    git("branch", "merge-source", base);
+    git("switch", "merge-source");
+    git("commit", "--allow-empty", "-m", "merge source");
+    const mergeSource = git("rev-parse", "HEAD");
+    git("switch", "main");
+
+    writeFileSync(join(temporary, "MERGE_HEAD"), "stale outside Git state\n");
+    assert.equal(cleanHead(), git("rev-parse", "HEAD"));
+
+    git("merge", "--no-ff", "--no-commit", mergeSource);
+    assert.equal(git("status", "--porcelain"), "");
+    assert.throws(() => cleanHead(), /merge is in progress/);
+    git("merge", "--abort");
+
+    assert.throws(() => run("git", ["rebase", "--force-rebase", "--exec", "false", base]), FeedbackError);
+    assert.equal(git("status", "--porcelain"), "");
+    assert.throws(() => cleanHead(), /rebase is in progress/);
+    git("rebase", "--abort");
+
+    assert.throws(() => run("git", ["cherry-pick", firstPick, secondPick]), FeedbackError);
+    git("checkout", "--ours", "tracked.txt");
+    git("add", "tracked.txt");
+    assert.equal(git("status", "--porcelain"), "");
+    assert.throws(() => cleanHead(), /cherry-pick is in progress/);
+    const cherryPickHead = git("rev-parse", "--git-path", "CHERRY_PICK_HEAD");
+    const cherryPickState = readFileSync(cherryPickHead);
+    rmSync(cherryPickHead);
+    assert.throws(() => cleanHead(), /sequenced cherry-pick or revert is in progress/);
+    writeFileSync(cherryPickHead, cherryPickState);
+    git("cherry-pick", "--abort");
+
+    assert.throws(() => run("git", ["revert", "--no-edit", secondPick, firstPick]), FeedbackError);
+    git("checkout", "--ours", "tracked.txt");
+    git("add", "tracked.txt");
+    assert.equal(git("status", "--porcelain"), "");
+    assert.throws(() => cleanHead(), /revert is in progress/);
+    const revertHead = git("rev-parse", "--git-path", "REVERT_HEAD");
+    const revertState = readFileSync(revertHead);
+    rmSync(revertHead);
+    assert.throws(() => cleanHead(), /sequenced cherry-pick or revert is in progress/);
+    writeFileSync(revertHead, revertState);
+    git("revert", "--abort");
+
+    const linked = join(temporary, "linked");
+    git("worktree", "add", "-b", "linked", linked);
+    process.chdir(linked);
+    assert.equal(cleanHead(), git("rev-parse", "HEAD"));
+    git("merge", "--no-ff", "--no-commit", mergeSource);
+    assert.equal(git("status", "--porcelain"), "");
+    assert.throws(() => cleanHead(), /merge is in progress/);
+    git("merge", "--abort");
+    assert.equal(cleanHead(), git("rev-parse", "HEAD"));
+
+    process.chdir(repository);
+    git("branch", "-m", "feature-local");
+    git("remote", "add", "origin", `https://${enterpriseHost}/Owner/Repo.git`);
+    git("remote", "add", "upstream", `https://${enterpriseHost}/Owner/Other.git`);
+    git("config", "push.default", "upstream");
+    const discoveryMetadata = {
+      hostname: enterpriseHost,
+      headRefName: "feature",
+      headRefOid: cleanHead(),
+      headRepository: { nameWithOwner: "Owner/Repo" },
+    };
+    requireMatchingHead(discoveryMetadata, discoveryMetadata.headRefOid);
+    assert.throws(() => requireMatchingHead(discoveryMetadata, base), /does not match PR head/);
+
+    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /has no configured push target/);
+    git("config", "branch.feature-local.remote", "origin");
+    git("config", "branch.feature-local.merge", "refs/heads/feature");
+    assert.equal(discoveryPushRemote(undefined, discoveryMetadata), "origin");
+
+    git("config", "branch.feature-local.merge", "refs/heads/other");
+    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /configured push ref .* does not match PR head ref/);
+    git("config", "branch.feature-local.merge", "refs/heads/feature");
+    git("config", "branch.feature-local.remote", "upstream");
+    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /configured push remote .* does not match PR head repository/);
+    git("config", "branch.feature-local.remote", "origin");
+
+    git("remote", "add", "fork", `ssh://git@${enterpriseHost}/Owner/Repo.git`);
+    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /exactly one matching push URL/);
+    git("remote", "remove", "fork");
+
+    git("switch", "--detach");
+    assert.throws(() => discoveryPushRemote(undefined, discoveryMetadata), /current HEAD is detached/);
+    assert.equal(discoveryPushRemote("1", discoveryMetadata), null);
+  } finally {
+    process.chdir(originalWorkingDirectory);
+  }
 
   let feedbackPages = 0;
   const graphqlHosts = [];
