@@ -9,7 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { buildFtsQueryPlan, DEFAULT_SYNC_CAP, getSessionRows, MAX_QUERY_CHARS, searchIndex, syncSessions } from "../extensions/search-core.ts";
+import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "../extensions/search-core.ts";
+import { buildFtsQueryPlan, MAX_QUERY_CHARS } from "../extensions/query.ts";
 import { readBoundedSnapshot } from "../extensions/transcript.ts";
 import { getWindow } from "../extensions/hydrate.ts";
 
