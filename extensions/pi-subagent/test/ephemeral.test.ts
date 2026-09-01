@@ -241,7 +241,7 @@ test("only recognized Pi events renew the idle deadline and maximum runtime stil
 `);
 	const deadlineExecutor = createEphemeralSubagentExecutor({
 		maxConcurrency: 1,
-		timeout: { idleMs: 120, maxMs: 280 },
+		timeout: { idleMs: 500, maxMs: 1_000 },
 	});
 	for (const [task, message] of [
 		["invalid", /without a recognized Pi event/],

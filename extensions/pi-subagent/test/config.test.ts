@@ -63,6 +63,7 @@ test("malformed JSON reports an error and preserves defaults", async () => {
 		assert.equal(loaded.source, "file");
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /not valid JSON/);
+		assert.match(loaded.error!, /using defaults\.$/);
 		assert.equal(await readFile(path, "utf8"), broken);
 		assert.match(readSubagentConfig(agentDir).error!, /not valid JSON/);
 	});
@@ -99,6 +100,7 @@ test("valid settings survive unrelated diagnostics", async () => {
 		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagents: 3, maxTurns: 1.5 }));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, { maxSubagents: 3 });
+		assert.match(loaded.error!, /invalid settings use defaults while valid settings still apply\.$/);
 		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1, got 1.5/);
 	});
 });

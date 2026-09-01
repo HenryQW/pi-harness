@@ -13,11 +13,11 @@ import {
 const MAX_OUTPUT_BYTES = 50 * 1024;
 
 function succeeded(index: number, assistantOutput: string, extra: Partial<WorkflowTransportEntry> = {}): WorkflowTransportEntry {
-	return { id: `call:parallel:${index}`, index, role: `role-${index}`, status: "succeeded", assistantOutput, ...extra } as WorkflowTransportEntry;
+	return { id: `call:parallel:${index}`, index, name: `Task ${index + 1}`, role: `role-${index}`, status: "succeeded", assistantOutput, ...extra } as WorkflowTransportEntry;
 }
 
 function failed(index: number, failure: string, extra: Partial<WorkflowTransportEntry> = {}): WorkflowTransportEntry {
-	return { id: `call:parallel:${index}`, index, role: `role-${index}`, status: "failed", failure, ...extra } as WorkflowTransportEntry;
+	return { id: `call:parallel:${index}`, index, name: `Task ${index + 1}`, role: `role-${index}`, status: "failed", failure, ...extra } as WorkflowTransportEntry;
 }
 
 function usage(factor: number): Usage {
@@ -25,24 +25,24 @@ function usage(factor: number): Usage {
 }
 
 test("keeps complete bounded model-facing content and recovery evidence", () => {
-	const worktree = { path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false, pruned: false };
+	const worktree = { outcome: "retained" as const, path: "/repo/.worktrees/retained", branch: "pi-subagent/retained", commits: 1, dirty: false };
 	const result = formatWorkflowResult("parallel", [
 		succeeded(1, "second evidence"),
 		failed(0, "failure evidence", { model: "provider/one", thinkingLevel: "high", worktreePayload: worktree }),
 	]);
-	assert.equal(result.text, `Workflow failed.\nMode: parallel\nEntries:\n- [0] id="call:parallel:0" role="role-0" status=failed\n- [1] id="call:parallel:1" role="role-1" status=succeeded\nRetained worktrees:\n- [0] path="/repo/.worktrees/retained" branch="pi-subagent/retained"\nEvidence:\n- [0] "call:parallel:0" failure:\nfailure evidence\n- [1] "call:parallel:1" assistant:\nsecond evidence`);
+	assert.equal(result.text, `Parallel delegation failed · 1 failed · 1 completed\n✗ [1/2] Task 1 · role-0 — failure evidence\n✓ [2/2] Task 2 · role-1 — second evidence\nRecovery:\n- [1/2] Task 1 · worktree "/repo/.worktrees/retained" · branch "pi-subagent/retained"\nResults:\n- [1/2] Task 1 · role-0 · failure:\nfailure evidence\n- [2/2] Task 2 · role-1 · result:\nsecond evidence`);
 	assert.deepEqual(result.details.entries, [
-		{ id: "call:parallel:0", index: 0, role: "role-0", status: "failed", summary: "failure evidence", model: "provider/one", thinkingLevel: "high", worktree },
-		{ id: "call:parallel:1", index: 1, role: "role-1", status: "succeeded", summary: "second evidence" },
+		{ id: "call:parallel:0", index: 0, name: "Task 1", role: "role-0", status: "failed", summary: "failure evidence", model: "provider/one", thinkingLevel: "high", worktree },
+		{ id: "call:parallel:1", index: 1, name: "Task 2", role: "role-1", status: "succeeded", summary: "second evidence" },
 	]);
 });
 
 test("orders details and sums usage", () => {
 	const entries = [succeeded(2, "two", { model: "provider/two", thinkingLevel: "low", usage: usage(2) }), succeeded(0, "zero", { usage: usage(1) })];
 	const result = formatWorkflowResult("parallel", entries);
-	assert.deepEqual(result.details.entries.map(({ id, index, role }) => ({ id, index, role })), [
-		{ id: "call:parallel:0", index: 0, role: "role-0" },
-		{ id: "call:parallel:2", index: 2, role: "role-2" },
+	assert.deepEqual(result.details.entries.map(({ id, index, name, role }) => ({ id, index, name, role })), [
+		{ id: "call:parallel:0", index: 0, name: "Task 1", role: "role-0" },
+		{ id: "call:parallel:2", index: 2, name: "Task 3", role: "role-2" },
 	]);
 	assert.equal(result.details.entries[1]!.model, "provider/two");
 	assert.equal(result.details.entries[1]!.thinkingLevel, "low");
@@ -57,10 +57,16 @@ test("bounds aggregate output on valid UTF-8 boundaries and rejects non-terminal
 	assert.ok(Buffer.byteLength(unicode.text, "utf8") <= MAX_OUTPUT_BYTES);
 	assert.equal(unicode.text.includes("�"), false);
 	assert.equal(Buffer.from(unicode.text, "utf8").toString("utf8"), unicode.text);
-	const running: WorkflowTransportEntry = { id: "call:0", index: 0, role: "worker", status: "running", assistantOutput: "partial" };
+	const running: WorkflowTransportEntry = { id: "call:0", index: 0, name: "Inspect auth", role: "worker", status: "running", assistantOutput: "partial" };
 	assert.throws(() => formatWorkflowResult("single", [running]), /terminal/);
 	assert.throws(() => formatBackgroundWorkflowResult("single", [running]), /terminal/);
-	assert.equal(formatWorkflowUpdate("single", [running]).details.entries[0]!.summary, "partial");
+	const update = formatWorkflowUpdate("parallel", [
+		running,
+		{ id: "call:1", index: 1, name: "Map callers", role: "scout", status: "pending" },
+	]);
+	assert.equal(update.text, "Parallel delegation · 1 running · 1 queued\n◌ [1/2] Inspect auth · worker — partial\n○ [2/2] Map callers · scout — queued");
+	assert.equal(update.details.entries[0]!.summary, "partial");
+	assert.doesNotMatch(update.text, /call:|Evidence:|no output yet/);
 });
 
 test("failure and abort errors retain bounded transport", () => {
