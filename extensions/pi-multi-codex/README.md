@@ -37,11 +37,12 @@ Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`,
 
 A numbered slot is one Codex account position in Pi.
 
-![Flowchart of quota-based slot selection and conditional HTTP 429 retry](./docs/codex-routing-flow.svg)
+![Flowchart separating fresh-quota startup ranking from broader HTTP 429 failover](./docs/codex-routing-flow.svg)
 
 - The extension reads `auth.json`. It never writes or refreshes credentials.
-- Before the first agent start, a fresh snapshot routes a managed Codex model to the eligible slot with the most seven-day quota.
-- A slot whose reported five-hour window has reached 100% is excluded until that window resets.
+- Before the first agent start, only fresh quota snapshots enter startup ranking. The slot with the most seven-day quota wins.
+- After HTTP 429, failover can use authenticated, registered, scope-allowed, untried slots with stale or missing quota.
+- Failover skips known active five-hour blocks. It ranks fresh known quota first, then unranked slots by slot number.
 - Routing preserves the model ID.
 - During one agent run, each eligible slot is tried at most once after HTTP 429 responses.
 - Automatic retry stops when no untried eligible slot remains.
