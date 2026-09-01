@@ -235,7 +235,7 @@ importers:
         specifier: ^0.1.0
         version: link:../pi-config-store
       '@henryqw/pi-subagent':
-        specifier: ^11.0.1
+        specifier: ^12.0.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^4.0.0
