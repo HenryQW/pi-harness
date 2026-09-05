@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-deps",
-  "version": "0.3.10",
+  "version": "1.0.0",
   "description": "Prepare Node and uv dependencies when opted-in Git worktrees are created.",
   "keywords": [
     "pi-package",

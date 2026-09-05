@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-footer",
-  "version": "0.6.3",
+  "version": "1.0.0",
   "description": "Show concise repository, branch, and usage details in the Pi footer.",
   "keywords": [
     "pi-package",
@@ -46,6 +46,6 @@
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-footer/example.png"
   },
   "dependencies": {
-    "@henryqw/pi-open-in": "^1.0.1"
+    "@henryqw/pi-open-in": "^2.0.0"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-task-models",
-  "version": "4.0.3",
+  "version": "5.0.0",
   "description": "Shared task model profiles and routing for HenryQW Pi extensions.",
   "keywords": [
     "pi-package",
@@ -57,6 +57,6 @@
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-task-models/example.png"
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^0.1.0"
+    "@henryqw/pi-config-store": "^1.0.0"
   }
 }

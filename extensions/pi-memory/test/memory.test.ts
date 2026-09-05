@@ -859,8 +859,8 @@ test("injects the memory check without claiming the current agent performs revie
 
 test("requires separately installed ask-question and task-models", async () => {
 	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
-	assert.equal(manifest.dependencies["@henryqw/pi-ask-question"], "^0.2.0");
-	assert.equal(manifest.dependencies["@henryqw/pi-task-models"], "^4.0.0");
+	assert.equal(manifest.dependencies["@henryqw/pi-ask-question"], "^1.0.0");
+	assert.equal(manifest.dependencies["@henryqw/pi-task-models"], "^5.0.0");
 	assert.equal(manifest.bundledDependencies, undefined);
 	assert.equal(manifest.scripts.prepack, undefined);
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/memory.ts"]);

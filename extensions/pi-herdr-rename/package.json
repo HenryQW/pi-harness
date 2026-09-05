@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-rename",
-  "version": "3.0.4",
+  "version": "4.0.0",
   "description": "Generate short Pi display titles and rename the current Herdr location.",
   "keywords": [
     "pi-package",
@@ -45,6 +45,6 @@
   },
   "dependencies": {
     "@henryqw/pi-herdr": "^0.4.1",
-    "@henryqw/pi-task-models": "^4.0.0"
+    "@henryqw/pi-task-models": "^5.0.0"
   }
 }

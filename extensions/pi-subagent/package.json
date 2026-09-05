@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "12.0.2",
+  "version": "13.0.0",
   "description": "Delegate bounded single, parallel, or chained tasks to isolated Pi roles.",
   "keywords": [
     "pi-package",
@@ -65,8 +65,8 @@
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-subagent/example.png"
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^0.1.0",
-    "@henryqw/pi-multi-codex": "^0.4.1",
-    "@henryqw/pi-task-models": "^4.0.0"
+    "@henryqw/pi-config-store": "^1.0.0",
+    "@henryqw/pi-multi-codex": "^1.0.0",
+    "@henryqw/pi-task-models": "^5.0.0"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-undo",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "description": "Rewind Pi conversation context to the latest user prompt.",
   "keywords": [
     "pi-package",
