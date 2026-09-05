@@ -1,6 +1,6 @@
 {
 	"name": "@henryqw/pi-session-recall",
-	"version": "0.2.5",
+	"version": "0.2.6",
 	"description": "Local FTS5 search over past Pi sessions plus a skill for turning recurring work into deterministic automation.",
 	"keywords": [
 		"pi-package",

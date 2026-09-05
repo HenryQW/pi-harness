@@ -1,11 +1,6 @@
 # `@henryqw/pi-pr`
 
-See the current branch's pull request state and open or create that pull request from Pi.
-
-## Why
-
-- **Created for**: GitHub contributors who check one branch's pull request while working.
-- **Advantage**: See CI, review, merge, and lifecycle state without repeating `gh` commands.
+See, open, or create the current GitHub branch's pull request from Pi. Contributors get visible CI, review, merge, and lifecycle status without repeating `gh` commands.
 
 ## Install
 
@@ -15,9 +10,9 @@ pi install npm:@henryqw/pi-pr
 
 Requires authenticated GitHub CLI access (`gh auth login`) in a GitHub repository checkout.
 
-## With
+## Works with
 
-[`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) improves this package by showing current-branch pull-request status in the footer.
+**Improves.** [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) shows current-branch pull-request status in the footer.
 
 ## Use
 
@@ -30,7 +25,9 @@ If none exists, Pi starts the bundled creation workflow instead.
 | Footer | ui | Show the current branch pull request. |
 | `/pr` | command | Open current branch PR, or start PR workflow when absent. |
 
-Each entry is one linked `PR #number` plus one plain-language state. Possible states are:
+## Flow
+
+Each footer entry is one linked `PR #number` plus one plain-language state. Possible states are:
 
 - `<count> unresolved`, `draft`, `open`, `approved`, and `CI running`
 - `CI failed`, `changes requested`, `merge conflict`, `merged`, and `closed`

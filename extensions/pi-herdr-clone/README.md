@@ -1,11 +1,6 @@
 # `@henryqw/pi-herdr-clone`
 
-Continue the current Pi conversation in a new Herdr tab or a fresh Git worktree workspace.
-
-## Why
-
-- **Created for**: Pi users who want to explore or implement from the current conversation in another workspace.
-- **Advantage**: Copy only the active conversation path while leaving siblings and the original session untouched.
+Explore or implement from the current Pi conversation in a new Herdr tab or fresh Git worktree workspace. The clone copies only the active path, leaving sibling branches and the original session untouched.
 
 ## Install
 
@@ -15,9 +10,9 @@ pi install npm:@henryqw/pi-herdr-clone
 
 Requires the Herdr CLI and a Pi session running inside a Herdr-managed pane.
 
-## With
+## Works with
 
-[`@henryqw/pi-herdr-done`](https://pi.henry.wang/extensions/pi-herdr-done) improves worktree clones by cleaning them up when work finishes.
+**Improves.** [`@henryqw/pi-herdr-done`](https://pi.henry.wang/extensions/pi-herdr-done) cleans up worktree clones when work finishes.
 
 ## Use
 
@@ -34,23 +29,26 @@ They copy only the active root-to-leaf path available when invoked into a new pe
 
 The original Pi session is not switched. Neither command has configuration.
 
-### `/clone-tab` behavior
+## Flow
+
+![Swimlane showing active-path validation, tab and worktree clone routes, launch order, and recovery boundaries.](./docs/clone-flow.svg)
+
+### Clone a tab
 
 1. Create an unfocused Herdr tab in the current workspace with the current working directory.
 2. Start Pi in the tab's root pane with `--session <absolute-clone-file>`.
 3. Focus the new tab after Pi starts successfully.
 
-### `/clone-worktree` behavior
+### Clone a worktree
 
-1. Create a Git worktree-backed workspace with `herdr worktree create --workspace <current-workspace> --no-focus`.
-   Herdr creates the branch from `HEAD` unless the name exists, checks out the worktree under its configured `worktrees.directory`, and opens it as a grouped workspace.
+1. Create a Git worktree-backed workspace with `herdr worktree create --workspace <current-workspace> --no-focus`. Herdr creates the branch from `HEAD` unless the name exists. It checks out the worktree under its configured `worktrees.directory` and opens it as a grouped workspace.
 2. Wait briefly for a worktree-layout plugin, such as `herdr-plus`, to start its agent in the new workspace's root pane.
 3. If the root pane is occupied, create an additional unfocused tab in the new workspace with the checkout as its working directory. The plugin's agent and the clone then coexist. Otherwise, use the root pane.
 4. Copy the active path into a clone session stamped with the fresh checkout path as its working directory.
 5. Start Pi in the chosen pane with `--session <absolute-clone-file>`.
 6. Focus the clone's tab after Pi starts successfully.
 
-### Failure semantics
+## Limits and recovery
 
 - **Target creation failed:** No clone session is kept or created.
 - **Killed or incomplete creation response:** The result is ambiguous because Herdr may have retained partial state. The error reports every identifier returned so far and suggests inspecting `herdr workspace list`.

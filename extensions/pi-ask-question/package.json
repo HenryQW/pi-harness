@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-ask-question",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Ask Pi users one interactive question with choices or a custom answer.",
   "keywords": [
     "pi-package",

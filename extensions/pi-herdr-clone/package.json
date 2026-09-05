@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-clone",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Clone the current Pi conversation path into a new Herdr tab.",
   "keywords": [
     "pi-package",
@@ -16,6 +16,7 @@
   "license": "MIT",
   "files": [
     "LICENSE",
+    "docs",
     "extensions",
     "README.md"
   ],

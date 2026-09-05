@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-done",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "Close and remove the current Herdr worktree from Pi.",
   "keywords": [
     "pi-package",
@@ -15,6 +15,7 @@
   "license": "MIT",
   "files": [
     "LICENSE",
+    "docs",
     "extensions",
     "README.md"
   ],

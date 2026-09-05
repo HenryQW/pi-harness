@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-rename",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "description": "Generate short Pi display titles and rename the current Herdr location.",
   "keywords": [
     "pi-package",

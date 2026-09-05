@@ -1,13 +1,9 @@
 # `@henryqw/pi-task-models`
 
-Choose shared model and thinking routes for extension tasks named `fast`, `balanced`, `frontier`, and `fav`.
+Choose shared model and thinking routes for extension tasks named `fast`, `balanced`, `frontier`, and `fav`. Users configure routes once while each extension keeps ownership of its task and default.
 
 ![Pi showing task model profiles and task routes](./example.png)
-
-## Why
-
-- **Created for**: Pi users who want one place to route model work started by several extensions.
-- **Advantage**: Reuse profile choices while each extension keeps ownership of its task and default.
+![Task routing from consumer declaration to route or error](./docs/task-routing-architecture.svg)
 
 ## Install
 
@@ -17,7 +13,7 @@ pi install npm:@henryqw/pi-task-models
 
 Run `/task-models` after installation. Configure each profile that your installed consumers require.
 
-## With
+## Works with
 
 | Package | Why |
 | --- | --- |
@@ -42,15 +38,11 @@ Repeat these steps for `balanced`, `frontier`, or `fav` when a consumer needs th
 
 Select an active task to override its declared profile. Choosing that task's declared default removes the override.
 
-### Active declarations
+## Flow
 
 Consumers register declarations at extension load. When `/task-models` opens, the shared control plane asks active extensions for declarations. Extension load order does not matter.
 
 The control plane lists each active task's effective profile. Hidden explicit assignments stay stored when a consumer is disabled.
-
-![Task routing from consumer declaration to route or error](./docs/task-routing-architecture.svg)
-
-### Scoped models, aliases, and fallback
 
 Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. An empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated.
 
@@ -58,7 +50,7 @@ Fallback choices exclude the selected primary. BTW selects the first authenticat
 
 ## Config
 
-The shared JSON file is at `~/.pi/agent/config/pi-task-models/config.json`. Consumers use `loadTaskModelsConfig()` for validated values. They never read or write this file. Only explicit `/task-models` actions save it.
+The shared JSON file is at `~/.pi/agent/config/pi-task-models/config.json`. Only explicit `/task-models` actions save it.
 
 The following JSON shows structure only. Every model ID is a placeholder and must not be copied.
 
@@ -90,31 +82,35 @@ Use exact model IDs offered by `/task-models`. Pi's registry, not this example, 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
 | `profiles` | No | Object keyed by `fast`, `balanced`, `frontier`, `fav`; unknown profile names are rejected | `{}` (no profiles configured) |
-| `profiles.<profile>.primary.model` | Yes within a configured profile's `primary` | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry (or session-scoped models) at resolution time, not from this file | — |
+| `profiles.<profile>.primary.model` | Yes within a configured profile's `primary` | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry or session-scoped models | — |
 | `profiles.<profile>.primary.thinkingLevel` | Yes within a configured profile's `primary` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the model must support the level when the route resolves | — |
 | `profiles.<profile>.fallback` | No | When present, requires both `model` and `thinkingLevel` with the corresponding `primary.*` values; not allowed for `fav` | Omitted |
 | `tasks` | No | Object mapping task IDs (`<package>/<task>`) to explicit user profile overrides | `{}` |
 | `tasks.<taskId>` | Value required if the key is present | `fast`, `balanced`, `frontier`, `fav` | That task declaration's `defaultProfile` |
 
-Pi's model registry, including session-scoped models, is the source of available models at resolution. This file does not contain a model catalog.
+Pi's model registry, including session-scoped models, is the source of available models. This file does not contain a model catalog.
 
 Task defaults live only in consumer declarations. Existing explicit assignments, including one equal to a declaration's default, remain valid.
 
 Model references use canonical `provider/model`. Numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
 
-Reads are strict. `loadTaskModelsConfig()` returns `{ source: "missing", value: { "profiles": {}, "tasks": {} } }` for a missing file. It does not create a file.
-
-At session start, task-models warns when `~/.pi/agent/config/pi-task-models/config.json` is missing; run `/task-models` to configure task routes.
-
-Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance. The malformed file is preserved.
-
-## For extension authors
+## API
 
 A `ModelTask` is a consumer-owned independently executed model operation. Consumers define a `ModelTask` and call `registerModelTask(pi, task)` at extension load.
 
 Use `loadTaskModelsConfig()` to get validated config without reading a file. Its `source` is `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
-Use `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)` to resolve routes. Profile thinking is authoritative for task routes. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+Use `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)` to resolve routes. Profile thinking is authoritative. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+
+Consumers never read or write the shared file directly.
+
+## Limits and recovery
+
+`loadTaskModelsConfig()` returns `{ source: "missing", value: { "profiles": {}, "tasks": {} } }` for a missing file. It does not create a file.
+
+At session start, Task Models warns when the shared config is missing. Run `/task-models` to configure task routes.
+
+Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance. The malformed file is preserved.
 
 Resolution errors are `TaskRouteError` values. Check `taskRouteCode`:
 
