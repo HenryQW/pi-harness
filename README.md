@@ -1,8 +1,16 @@
 # Henry Pi Harness
 
-A collection of 21 opinionated Pi extensions. Browse them at <https://pi.henry.wang>.
+A collection of 19 opinionated Pi extensions and two support libraries. Browse them at <https://pi.henry.wang>.
 
 ![Pi extensions in use](./example.png)
+
+## Install
+
+```sh
+curl -fsSL https://pi.henry.wang/install.sh | sh
+```
+
+The menu selects every Pi extension by default. Choose a subset when needed. It installs Pi and Herdr only when their commands are missing. Support libraries install with their dependent extensions.
 
 ## Extensions
 
