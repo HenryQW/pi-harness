@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-prompt-creator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Turn current Pi conversation signals into user-approved prompt templates.",
   "keywords": [
     "pi-package",
