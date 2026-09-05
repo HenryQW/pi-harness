@@ -123,7 +123,6 @@ const modes = [
     let pointerControl: HTMLButtonElement | null = null;
     let focusControl: HTMLButtonElement | null = null;
     let touchControl: HTMLButtonElement | null = null;
-    let lastPointerType = "";
 
     const clearTimer = (timer: number | undefined) => {
       if (timer !== undefined) window.clearTimeout(timer);
@@ -167,64 +166,95 @@ const modes = [
       }, delay);
     };
 
-    const release = () => {
-      clearTimer(releaseTimer);
-      releaseTimer = undefined;
-      touchControl = null;
-      if (userIsActive()) return;
-      if (reducedMotion.matches) clearActive();
-      else scheduleCycle(resumeDelay);
-    };
+    const activeInteraction = () => touchControl ?? pointerControl ?? focusControl;
 
     const updateAutoplay = () => {
-      if (!onscreen || document.hidden || reducedMotion.matches) {
+      if (!onscreen || document.hidden) {
         stopCycle();
-        if (!userIsActive()) clearActive();
+        clearActive();
+        return;
+      }
+      const activeControl = activeInteraction();
+      if (activeControl) {
+        activate(activeControl);
+        return;
+      }
+      if (reducedMotion.matches) {
+        stopCycle();
+        clearActive();
         return;
       }
       scheduleCycle(resumeDelay);
     };
 
+    const releaseTouch = () => {
+      clearTimer(releaseTimer);
+      releaseTimer = undefined;
+      touchControl = null;
+      updateAutoplay();
+    };
+
+    const deferTouchRelease = () => {
+      clearTimer(releaseTimer);
+      releaseTimer = window.setTimeout(releaseTouch, 1600);
+    };
+
     controls.forEach((control) => {
       control.addEventListener("pointerdown", (event) => {
-        lastPointerType = event.pointerType;
+        if (event.pointerType !== "touch") return;
+        clearTimer(releaseTimer);
+        releaseTimer = undefined;
+        touchControl = control;
+        updateAutoplay();
+      });
+
+      control.addEventListener("pointerup", (event) => {
+        if (event.pointerType === "touch" && touchControl === control) deferTouchRelease();
+      });
+
+      control.addEventListener("pointercancel", (event) => {
+        if (event.pointerType === "touch" && touchControl === control) releaseTouch();
       });
 
       control.addEventListener("pointerenter", (event) => {
         if (event.pointerType === "touch") return;
-        clearTimer(releaseTimer);
-        releaseTimer = undefined;
-        touchControl = null;
         pointerControl = control;
-        activate(control);
+        updateAutoplay();
       });
 
-      control.addEventListener("pointerleave", () => {
+      control.addEventListener("pointerleave", (event) => {
+        if (event.pointerType === "touch") return;
         if (pointerControl === control) pointerControl = null;
-        release();
+        updateAutoplay();
       });
 
       control.addEventListener("focus", () => {
         if (!control.matches(":focus-visible")) return;
         focusControl = control;
-        activate(control);
+        updateAutoplay();
       });
 
       control.addEventListener("blur", () => {
         if (focusControl === control) focusControl = null;
-        release();
+        updateAutoplay();
       });
 
-      control.addEventListener("click", (event) => {
-        if (lastPointerType) focusControl = null;
-        if (event.detail === 0) focusControl = control;
-        activate(control, true);
-        if (lastPointerType === "touch" || (!pointerControl && !focusControl)) {
-          touchControl = control;
-          clearTimer(releaseTimer);
-          releaseTimer = window.setTimeout(release, 1600);
+      control.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        focusControl = control;
+        updateAutoplay();
+      });
+
+      control.addEventListener("click", () => {
+        if (!onscreen || document.hidden) {
+          updateAutoplay();
+          return;
         }
-        lastPointerType = "";
+        const isTemporary = !activeInteraction();
+        if (isTemporary) touchControl = control;
+        const activeControl = activeInteraction();
+        if (activeControl) activate(activeControl, activeControl === control);
+        if (isTemporary) deferTouchRelease();
       });
     });
 

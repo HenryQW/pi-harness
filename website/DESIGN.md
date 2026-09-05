@@ -256,6 +256,10 @@ Package name and version form the scan line, with the name in Geist Mono. A shor
 
 At `1280px` and wider, use a `768px × 520px` scroll viewport. Reserve a `16px` right gutter inside it. The content grid is `752px` wide, with two `364px` cards and a `24px` gap. Place the `4px` scrollbar `8px` from the cards and `4px` from the viewport edge. Below `1280px`, let the catalog follow page flow and hide the custom rail.
 
+### Orchestration Modes
+
+Cycle `Single → Parallel → Chain` while the section is visible and the page is active. Hover, touch, or keyboard focus overrides the cycle. Resume from the next mode after interaction ends. Reduced motion disables automatic cycling but keeps direct interaction feedback. Clear the active mode while the section is off-screen or the page is hidden.
+
 ## Do's and Don'ts
 
 ### Do:
