@@ -1,0 +1,429 @@
+---
+import ExtensionCard from "./ExtensionCard.astro";
+
+export interface ExtensionCatalogItem {
+  description: string;
+  directory: string;
+  name: string;
+}
+
+interface Props {
+  extensions: ExtensionCatalogItem[];
+}
+
+const { extensions } = Astro.props;
+---
+
+<section
+  id="extensions"
+  data-extension-catalog
+  class="extension-catalog bg-[#F0EEE9] text-[#111827] dark:bg-[#09090B] dark:text-[#F0EEE9]"
+  aria-labelledby="extensions-heading"
+>
+  <div class="homepage-container extension-catalog-inner">
+    <header class="extension-catalog-intro">
+      <h2 id="extensions-heading" class="extension-catalog-title text-[42px] font-semibold leading-[1.05] tracking-[-1.3px]">Extensions</h2>
+      <p class="extension-catalog-copy text-base leading-[1.45] text-muted-foreground dark:text-[#C7CBD3]">
+        Find the Pi extensions that fit the way you work.
+      </p>
+      <a
+        class="extension-catalog-cta group text-base font-medium text-accent no-underline transition-colors hover:text-accent focus-visible:ring-2 focus-visible:ring-accent/40 dark:text-[#8FB3FF] dark:hover:text-[#8FB3FF]"
+        href="https://github.com/HenryQW/pi-harness/tree/main/extensions"
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        <span class="underline-offset-4 group-hover:underline">Browse all extensions ↗</span>
+        <span class="sr-only"> (opens in a new tab)</span>
+      </a>
+    </header>
+
+    <div class="extension-catalog-browser">
+      <label class="extension-catalog-search-label" for="extension-search">
+        <span class="sr-only">Search extensions</span>
+        <span class="extension-catalog-search-wrap">
+          <svg
+            aria-hidden="true"
+            class="extension-catalog-search-icon"
+            fill="none"
+            focusable="false"
+            viewBox="0 0 16 16"
+          >
+            <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.25" />
+            <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-linecap="round" stroke-width="1.25" />
+          </svg>
+          <input
+            id="extension-search"
+            class="extension-catalog-search focus-visible:ring-2 focus-visible:ring-accent/40"
+            type="search"
+            placeholder="Search extensions"
+            autocomplete="off"
+            spellcheck="false"
+            data-extension-search
+          />
+        </span>
+      </label>
+      <p class="sr-only" data-extension-results role="status" aria-live="polite">
+        {extensions.length} extensions available.
+      </p>
+
+      <div class="extension-catalog-scroll-shell">
+        <div class="extension-catalog-viewport" data-extension-viewport>
+          <div class="extension-catalog-grid">
+            {
+              extensions.map((item) => (
+                <div class="extension-catalog-result" data-extension-card data-name={item.name} data-description={item.description}>
+                  <ExtensionCard description={item.description} directory={item.directory} name={item.name} />
+                </div>
+              ))
+            }
+          </div>
+          <p class="py-8 text-center text-sm text-muted-foreground dark:text-[#C7CBD3]" data-extension-empty hidden>
+            No extensions match your search.
+          </p>
+        </div>
+        <div aria-hidden="true" class="extension-catalog-scroll-rail pointer-events-none absolute top-0 right-1 bottom-0 w-1" data-extension-scroll-rail hidden>
+          <div class="extension-catalog-scroll-thumb absolute top-0 right-0 left-0 rounded-full bg-[#111827] dark:bg-[#8FB3FF]" data-extension-scroll-thumb></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  const initializeExtensionCatalogs = () => {
+    document.querySelectorAll<HTMLElement>("[data-extension-catalog]").forEach((catalog) => {
+      if (catalog.dataset.extensionCatalogInitialized) return;
+
+      const input = catalog.querySelector<HTMLInputElement>("[data-extension-search]");
+      const cards = [...catalog.querySelectorAll<HTMLElement>("[data-extension-card]")];
+      const results = catalog.querySelector<HTMLElement>("[data-extension-results]");
+      const empty = catalog.querySelector<HTMLElement>("[data-extension-empty]");
+      const viewport = catalog.querySelector<HTMLElement>("[data-extension-viewport]");
+      const rail = catalog.querySelector<HTMLElement>("[data-extension-scroll-rail]");
+      const thumb = catalog.querySelector<HTMLElement>("[data-extension-scroll-thumb]");
+
+      if (!input || !results || !empty || !viewport || !rail || !thumb) return;
+      catalog.dataset.extensionCatalogInitialized = "true";
+
+      const updateScrollRail = () => {
+        const scrollable = viewport.scrollHeight > viewport.clientHeight;
+        rail.hidden = !scrollable;
+        if (!scrollable) {
+          thumb.style.height = "0px";
+          thumb.style.top = "0px";
+          return;
+        }
+
+        const trackHeight = rail.clientHeight;
+        const thumbHeight = trackHeight * (viewport.clientHeight / viewport.scrollHeight);
+        const scrollRange = viewport.scrollHeight - viewport.clientHeight;
+        thumb.style.height = `${thumbHeight}px`;
+        thumb.style.top = `${(trackHeight - thumbHeight) * (viewport.scrollTop / scrollRange)}px`;
+      };
+
+      const updateResults = () => {
+        const query = input.value.trim().toLowerCase();
+        let visible = 0;
+
+        cards.forEach((card) => {
+          const matches = `${card.dataset.name} ${card.dataset.description}`.toLowerCase().includes(query);
+          card.hidden = !matches;
+          if (matches) visible += 1;
+        });
+
+        empty.hidden = visible > 0;
+        results.textContent = visible
+          ? `${visible} extension${visible === 1 ? "" : "s"} found.`
+          : "No extensions match your search.";
+        viewport.scrollTop = 0;
+        updateScrollRail();
+      };
+
+      input.addEventListener("input", updateResults);
+      viewport.addEventListener("scroll", updateScrollRail, { passive: true });
+      window.addEventListener("resize", updateScrollRail);
+      updateResults();
+    });
+  };
+
+  document.addEventListener("astro:page-load", initializeExtensionCatalogs);
+  initializeExtensionCatalogs();
+</script>
+
+<style>
+  .extension-catalog {
+    box-sizing: border-box;
+    position: relative;
+  }
+
+  .extension-catalog::before,
+  .extension-catalog::after {
+    background: var(--blume-border);
+    content: "";
+    height: 1px;
+    inset-inline: 0;
+    pointer-events: none;
+    position: absolute;
+  }
+
+  .extension-catalog::before {
+    top: 0;
+  }
+
+  .extension-catalog::after {
+    bottom: 0;
+  }
+
+  :global([data-theme="dark"]) .extension-catalog::before,
+  :global([data-theme="dark"]) .extension-catalog::after {
+    background: rgb(255 255 255 / 10%);
+  }
+
+  .extension-catalog-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  .extension-catalog-intro {
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .extension-catalog-title,
+  .extension-catalog-copy {
+    margin: 0;
+  }
+
+  .extension-catalog-copy {
+    margin-top: 12px;
+    max-width: 24rem;
+  }
+
+  .extension-catalog-cta {
+    align-items: center;
+    align-self: flex-start;
+    display: inline-flex;
+    height: 20.8px;
+    line-height: 1.3;
+    margin-top: 24px;
+  }
+
+  .extension-catalog-browser {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .extension-catalog-search-label,
+  .extension-catalog-search-wrap {
+    display: block;
+  }
+
+  .extension-catalog-search-wrap {
+    position: relative;
+  }
+
+  .extension-catalog-search-icon {
+    color: var(--blume-muted-foreground);
+    height: 16px;
+    left: 12px;
+    pointer-events: none;
+    position: absolute;
+    top: 12px;
+    width: 16px;
+  }
+
+  .extension-catalog-search {
+    background: #E6E4DE;
+    border: 1px solid var(--blume-border);
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: #111827;
+    display: block;
+    font-family: var(--blume-font-body);
+    font-size: 14px;
+    height: 40px;
+    line-height: 20px;
+    outline: none;
+    padding: 0 12px 0 36px;
+    width: 100%;
+  }
+
+  .extension-catalog-search::placeholder {
+    color: var(--blume-muted-foreground);
+  }
+
+  :global([data-theme="dark"]) .extension-catalog-search {
+    background: #171D2A;
+    border-color: rgb(255 255 255 / 10%);
+    color: #F0EEE9;
+  }
+
+  .extension-catalog-scroll-shell {
+    margin-top: 16px;
+    position: relative;
+  }
+
+  .extension-catalog-viewport {
+    max-height: none;
+    overflow: visible;
+    scrollbar-width: none;
+  }
+
+  .extension-catalog-viewport::-webkit-scrollbar {
+    display: none;
+  }
+
+  .extension-catalog-grid {
+    display: grid;
+    gap: 12px;
+    grid-auto-rows: 128px;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+  }
+
+  .extension-catalog-result {
+    height: 100%;
+    min-width: 0;
+  }
+
+  .extension-catalog-scroll-rail {
+    background: #11182724;
+    border-radius: 2px;
+  }
+
+  :global([data-theme="dark"]) .extension-catalog-scroll-rail {
+    background: rgb(255 255 255 / 10%);
+  }
+
+  @media (max-width: 767px) {
+    .extension-catalog-inner {
+      gap: 24px;
+      padding: 48px 24px;
+    }
+
+    .extension-catalog-intro {
+      box-sizing: border-box;
+    }
+
+    .extension-catalog-title {
+      flex: 0 0 34px;
+      font-size: 32px;
+      height: 34px;
+      letter-spacing: -0.8px;
+      line-height: 1.05;
+    }
+
+    .extension-catalog-copy {
+      flex: 0 0 48px;
+      height: 48px;
+      margin-top: 14px;
+    }
+
+    .extension-catalog-cta {
+      flex: 0 0 44px;
+      height: 44px;
+      margin-top: 12px;
+    }
+  }
+
+  @media (min-width: 640px) {
+    .extension-catalog-grid {
+      gap: 24px;
+      grid-auto-rows: 174px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 768px) and (max-width: 1279px) {
+    .extension-catalog-inner {
+      gap: 47px;
+    }
+
+    .extension-catalog-intro {
+      box-sizing: border-box;
+    }
+
+    .extension-catalog-title {
+      flex: 0 0 55px;
+      height: 55px;
+    }
+
+    .extension-catalog-copy {
+      flex: 0 0 47px;
+      height: 47px;
+      margin-top: 9px;
+    }
+
+    .extension-catalog-cta {
+      flex: 0 0 20.8px;
+      margin-top: 13px;
+    }
+  }
+
+  @media (max-width: 1279px) {
+    .extension-catalog-scroll-rail {
+      display: none;
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .extension-catalog {
+      height: 720px;
+    }
+
+    .extension-catalog-inner {
+      display: grid;
+      gap: 0;
+      grid-template-columns: 320px 832px;
+      height: 576px;
+    }
+
+    .extension-catalog-intro {
+      box-sizing: border-box;
+      padding-right: 20px;
+      width: 320px;
+    }
+
+    .extension-catalog-title {
+      flex: initial;
+      height: auto;
+      position: relative;
+      top: -4px;
+    }
+
+    .extension-catalog-copy {
+      flex: initial;
+      height: auto;
+      margin-top: 24px;
+    }
+
+    .extension-catalog-cta {
+      height: auto;
+      margin-top: 36px;
+      min-height: 44px;
+    }
+
+    .extension-catalog-browser {
+      align-self: stretch;
+      border-left: 1px solid var(--blume-border);
+      padding-left: 63px;
+      width: 832px;
+    }
+
+    .extension-catalog-scroll-shell,
+    .extension-catalog-viewport {
+      width: 768px;
+    }
+
+    .extension-catalog-viewport {
+      box-sizing: border-box;
+      height: 520px;
+      max-height: none;
+      overflow-y: auto;
+      padding-right: 16px;
+    }
+  }
+</style>

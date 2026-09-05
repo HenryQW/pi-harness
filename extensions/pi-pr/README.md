@@ -1,11 +1,6 @@
 # `@henryqw/pi-pr`
 
-Show the current branch pull request in the Pi footer and use `/pr` to run its next safe step.
-
-## Why
-
-- **Created for**: Check pull-request progress without repeated `gh` commands.
-- **Advantage**: See the current pull request and its next step in one place.
+See the current branch pull request in the Pi footer. Use `/pr` to run its next safe step. It shows CI, review, merge, and lifecycle status without repeated `gh` commands.
 
 ## Install
 
@@ -17,24 +12,22 @@ Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on
 
 The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
 
-## With
+## Works with
 
-[`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) improves this package by showing its pull-request status in the footer.
+**Improves.** [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) shows current-branch pull-request status in the footer.
 
 ## Use
 
-Run `/pr` in a GitHub checkout. Pi opens the current branch pull request when one exists.
-
-If none exists, Pi starts the bundled creation workflow instead.
+Run `/pr` without arguments in a GitHub checkout. It reads the current branch pull request and local state, then runs one route.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
 | Widget hint | ui | Show at most one hint for the next `/pr` step. |
 
-Footer statuses include `N unresolved`, `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `base update required`, `merge conflict`, `merge-ready`, `merged`, and `closed`. Colors support the text; they do not carry meaning alone.
+## Flow
 
-Use `/pr` without arguments. It reads the current branch pull request and local state, then runs one route.
+Each footer entry is one linked `PR #number` plus one plain-language status: `N unresolved`, `draft`, `open`, `approved`, `CI running`, `CI failed`, `changes requested`, `base update required`, `merge conflict`, `merge-ready`, `merged`, or `closed`. Colors support the text; they do not carry meaning alone.
 
 ![Flowchart showing /pr reading fresh GitHub and local state, choosing the first matching condition, and stopping after one route](./docs/pr-routing.svg)
 

@@ -1,11 +1,6 @@
 # `@henryqw/pi-herdr-rename`
 
-Give each Pi conversation a short title, and use it for Herdr labels and generated Git branches.
-
-## Why
-
-- **Created for**: Users who cannot identify conversations from generated workspace labels.
-- **Advantage**: One concise title labels Pi and Herdr, maps to Git, and returns on resume without another model call.
+Replace hard-to-identify generated workspace labels with one short Pi conversation title. The title labels Pi and Herdr, maps to Git, and returns on resume without another model call.
 
 ## Install
 
@@ -18,9 +13,9 @@ Run `/task-models` and configure the `fast` profile. Herdr is required for pane,
 
 Outside Herdr, the extension still changes the Pi session name.
 
-## With
+## Works with
 
-[`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) is required for shared title-generation model profiles.
+**Required.** [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) provides shared title-generation model profiles.
 
 ## Use
 
@@ -28,13 +23,13 @@ Send the first real prompt. A title appears in the background without delaying t
 
 Run `/rename` after the task changes. It generates a new display title and semantic branch from up to three recent rounds.
 
+## Flow
+
 ### Trigger
 
 The first real user prompt generates a title in the background after Pi expands skill and prompt-template shorthand. It does not delay the main reply. Extension-injected prompts, empty prompts, and image-only input are ignored.
 
 ### Title and branch rules
-
-Display titles are natural task phrases. They are preferably three or four words and always at most four words and 20 characters.
 
 A semantic branch is a Git-safe branch name made from a task type and the display-title words. Model classification stays internal. For example, `refactor: update task logic` displays as `Update task logic` and maps to `refactor/update-task-logic`.
 
@@ -45,12 +40,18 @@ A semantic branch is a Git-safe branch name made from a task type and the displa
 - The enclosing Herdr tab updates only when this pane is the tab's only pane.
 - Outside Herdr, only the Pi session name changes.
 
-### Model choice and resume
+### Model route and resume
 
 The shared [`pi-task-models` config](https://pi.henry.wang/extensions/pi-task-models#config) is at `~/.pi/agent/config/pi-task-models/config.json`. It can explicitly override the local `pi-herdr-rename/rename` declaration, which defaults to `fast`.
 
-The extension tries the assigned profile primary, then fallback, while honoring the configured thinking level. It never substitutes the current session model. A missing shared task-model config warns once at session start; run `/task-models` to configure rename routing. No viable route leaves titles unchanged.
+The extension tries the assigned profile primary, then fallback, while honoring the configured thinking level. It never substitutes the current session model.
 
-Resuming a session created by this version reapplies the saved display title and semantic branch without another model request. Herdr and Git synchronization failures appear as warnings. Cancellation by a newer rename remains silent.
+Resuming a session created by this version reapplies the saved display title and semantic branch without another model request.
 
-Older titles receive no migration.
+## Limits and recovery
+
+Display titles are natural task phrases. They are preferably three or four words and always at most four words and 20 characters.
+
+A missing shared task-model config warns once at session start. Run `/task-models` to configure rename routing. No viable route leaves titles unchanged.
+
+Herdr and Git synchronization failures appear as warnings. Cancellation by a newer rename remains silent. Older titles receive no migration.

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-clone",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Clone the current Pi conversation path into a new Herdr tab.",
   "keywords": [
     "pi-package",

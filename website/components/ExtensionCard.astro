@@ -5,30 +5,87 @@ interface Props {
   description: string;
   directory: string;
   name: string;
-  version: string;
 }
 
 const item = Astro.props;
 ---
 
 <a
-  class="group flex h-full flex-col rounded-blume border border-border bg-background p-5 transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-accent/40"
+  class="extension-card group transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-accent/40 dark:hover:bg-[#171D2A]"
   href={`/extensions/${item.directory}`}
 >
-  <div class="flex items-start justify-between gap-3">
-    <h3 class="break-words font-mono text-sm font-medium group-hover:text-accent">{item.name}</h3>
-    <span class="shrink-0 font-mono text-xs text-muted-foreground">v{item.version}</span>
-  </div>
-  <p class="mt-2 flex-1 text-sm text-muted-foreground">{item.description}</p>
-  <div class="mt-4 border-border border-t pt-3">
-    <img
-      alt="Monthly npm downloads"
-      class="h-5 w-auto"
-      decoding="async"
-      height="20"
-      loading="lazy"
-      src={npmBadgeUrl(item.name)}
-      width="144"
-    />
-  </div>
+  <h3 class="extension-card-package group-hover:text-accent dark:group-hover:text-[#8FB3FF]">{item.name}</h3>
+  <p class="extension-card-description">{item.description}</p>
+  <img
+    alt="Monthly npm downloads"
+    class="extension-card-badge"
+    decoding="async"
+    height="20"
+    loading="lazy"
+    src={npmBadgeUrl(item.name)}
+    width="128"
+  />
 </a>
+
+<style>
+  .extension-card {
+    background: #E6E4DE;
+    border: 1px solid var(--blume-border);
+    border-radius: 12px;
+    box-sizing: border-box;
+    color: var(--blume-foreground);
+    display: block;
+    height: 100%;
+    min-width: 0;
+    padding: 20px;
+    position: relative;
+    text-decoration: none;
+  }
+
+  :global([data-theme="dark"]) .extension-card {
+    background: #171D2A;
+    border-color: rgb(255 255 255 / 10%);
+  }
+
+  .extension-card-package,
+  .extension-card-description {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .extension-card-package {
+    font-family: var(--blume-font-mono);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
+  .extension-card-description {
+    color: var(--blume-muted-foreground);
+    display: -webkit-box;
+    font-family: var(--blume-font-body);
+    font-size: 14px;
+    font-weight: 400;
+    line-clamp: 2;
+    line-height: 1.45;
+    margin-top: 8px;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .extension-card-badge {
+    bottom: 20px;
+    display: block;
+    height: 20px;
+    position: absolute;
+    right: 20px;
+    width: 128px;
+  }
+
+  @media (min-width: 1280px) {
+    .extension-card-description {
+      margin-top: 14px;
+    }
+  }
+</style>

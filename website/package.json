@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "blume dev",
-    "build": "blume build",
-    "test": "node --test repository-markdown.test.ts",
-    "validate": "pnpm test && blume validate --strict"
+    "generate:installer": "node scripts/generate-installer.mjs",
+    "check:installer": "node scripts/generate-installer.mjs --check",
+    "build": "pnpm run generate:installer && blume build",
+    "test": "node --test repository-markdown.test.ts scripts/installer.test.mjs",
+    "validate": "pnpm run check:installer && pnpm test && blume validate --strict"
   },
   "devDependencies": {
     "blume": "1.5.3"

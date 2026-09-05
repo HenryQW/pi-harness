@@ -1,0 +1,634 @@
+---
+interface Props {
+  class?: string;
+  id?: string;
+}
+
+const { class: className = "", id = "orchestration" } = Astro.props;
+const roles = [
+  { name: "Scout", kind: "scout" },
+  { name: "Implementer", kind: "implementer" },
+  { name: "Reviewer", kind: "reviewer" },
+];
+const modes = [
+  { name: "Single", kind: "single" },
+  { name: "Parallel", kind: "parallel" },
+  { name: "Chain", kind: "chain" },
+];
+---
+
+<section class:list={["orchestration", className]} id={id} aria-labelledby={`${id}-heading`}>
+  <div class="homepage-container orchestration-container">
+    <div class="orchestration-intro">
+      <h2 id={`${id}-heading`} class="orchestration-heading">Token efficient orchestration</h2>
+      <p class="orchestration-subtitle">Delegate bounded work from Main to isolated Pi Roles.</p>
+    </div>
+
+    <div class="orchestration-group">
+      <h3>Roles</h3>
+      <div class="orchestration-grid orchestration-role-grid">
+        {roles.map((role, index) => (
+          <article class:list={["orchestration-card", "orchestration-role", `orchestration-role-${role.kind}`]}>
+            <span class="orchestration-icon">
+              {role.kind === "scout" && (
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
+                  <path d="M21 32.25C27.2132 32.25 32.25 27.2132 32.25 21C32.25 14.7868 27.2132 9.75 21 9.75C14.7868 9.75 9.75 14.7868 9.75 21C9.75 27.2132 14.7868 32.25 21 32.25Z" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M29.25 29.25L40.5 40.5M16.5 21H25.5M21 16.5V25.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M21 23.25C22.2426 23.25 23.25 22.2426 23.25 21C23.25 19.7574 22.2426 18.75 21 18.75C19.7574 18.75 18.75 19.7574 18.75 21C18.75 22.2426 19.7574 23.25 21 23.25Z" fill="currentColor" />
+                </svg>
+              )}
+              {role.kind === "implementer" && (
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
+                  <path d="M16.5 12L7.5 24L16.5 36M31.5 12L40.5 24L31.5 36M27 10.5L21 37.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              )}
+              {role.kind === "reviewer" && (
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
+                  <path d="M36 7.5H12C9.51472 7.5 7.5 9.51472 7.5 12V36C7.5 38.4853 9.51472 40.5 12 40.5H36C38.4853 40.5 40.5 38.4853 40.5 36V12C40.5 9.51472 38.4853 7.5 36 7.5Z" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M15.75 24L21.75 30L33 18.75" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+                  <path opacity=".72" d="M15.75 15H24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                </svg>
+              )}
+            </span>
+            <h4>{role.name}</h4>
+            {index < roles.length - 1 && (
+              <span class="orchestration-connector" aria-hidden="true">
+                <svg width="16" height="32" viewBox="0 0 16 32" fill="none" focusable="false">
+                  <path d="M1 16H13M9 12L13 16L9 20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+            )}
+          </article>
+        ))}
+      </div>
+    </div>
+
+    <div class="orchestration-group orchestration-modes">
+      <h3>Modes</h3>
+      <div class="orchestration-grid orchestration-mode-grid">
+        {modes.map((mode) => (
+          <button
+            type="button"
+            class:list={["orchestration-card", "orchestration-mode", `orchestration-mode-${mode.kind}`]}
+            data-mode={mode.kind}
+            aria-pressed="false"
+          >
+            <span class="orchestration-icon">
+              {mode.kind === "single" && (
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
+                  <path d="M6 26.625C7.44975 26.625 8.625 25.4497 8.625 24C8.625 22.5503 7.44975 21.375 6 21.375C4.55025 21.375 3.375 22.5503 3.375 24C3.375 25.4497 4.55025 26.625 6 26.625Z" fill="currentColor" />
+                  <path opacity=".72" d="M9.75 24H15.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  <path d="M29.25 16.5H18.75C17.5074 16.5 16.5 17.5074 16.5 18.75V29.25C16.5 30.4926 17.5074 31.5 18.75 31.5H29.25C30.4926 31.5 31.5 30.4926 31.5 29.25V18.75C31.5 17.5074 30.4926 16.5 29.25 16.5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  <path opacity=".72" d="M32.25 24H38.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  <path d="M42 26.625C43.4497 26.625 44.625 25.4497 44.625 24C44.625 22.5503 43.4497 21.375 42 21.375C40.5503 21.375 39.375 22.5503 39.375 24C39.375 25.4497 40.5503 26.625 42 26.625Z" fill="currentColor" />
+                </svg>
+              )}
+              {mode.kind === "parallel" && (
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
+                  <path d="M6 26.625C7.44975 26.625 8.625 25.4497 8.625 24C8.625 22.5503 7.44975 21.375 6 21.375C4.55025 21.375 3.375 22.5503 3.375 24C3.375 25.4497 4.55025 26.625 6 26.625Z" fill="currentColor" />
+                  <path opacity=".78" d="M9.75 24H16.5H30M30 9.75H16.5V38.25H30" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M41.625 5.25H33.375C32.3395 5.25 31.5 6.08947 31.5 7.125V12.375C31.5 13.4105 32.3395 14.25 33.375 14.25H41.625C42.6605 14.25 43.5 13.4105 43.5 12.375V7.125C43.5 6.08947 42.6605 5.25 41.625 5.25Z" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M41.625 19.5H33.375C32.3395 19.5 31.5 20.3395 31.5 21.375V26.625C31.5 27.6605 32.3395 28.5 33.375 28.5H41.625C42.6605 28.5 43.5 27.6605 43.5 26.625V21.375C43.5 20.3395 42.6605 19.5 41.625 19.5Z" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M41.625 33.75H33.375C32.3395 33.75 31.5 34.5895 31.5 35.625V40.875C31.5 41.9105 32.3395 42.75 33.375 42.75H41.625C42.6605 42.75 43.5 41.9105 43.5 40.875V35.625C43.5 34.5895 42.6605 33.75 41.625 33.75Z" stroke="currentColor" stroke-width="1.5" />
+                </svg>
+              )}
+              {mode.kind === "chain" && (
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
+                  <path d="M9 16.5H4.5C3.25736 16.5 2.25 17.5074 2.25 18.75V29.25C2.25 30.4926 3.25736 31.5 4.5 31.5H9C10.2426 31.5 11.25 30.4926 11.25 29.25V18.75C11.25 17.5074 10.2426 16.5 9 16.5Z" stroke="currentColor" stroke-width="1.5" />
+                  <path opacity=".78" d="M12.75 24H17.25M15 20.25L18.75 24L15 27.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M26.25 16.5H21.75C20.5074 16.5 19.5 17.5074 19.5 18.75V29.25C19.5 30.4926 20.5074 31.5 21.75 31.5H26.25C27.4926 31.5 28.5 30.4926 28.5 29.25V18.75C28.5 17.5074 27.4926 16.5 26.25 16.5Z" stroke="currentColor" stroke-width="1.5" />
+                  <path opacity=".78" d="M30 24H34.5M32.25 20.25L36 24L32.25 27.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M43.5 16.5H39C37.7574 16.5 36.75 17.5074 36.75 18.75V29.25C36.75 30.4926 37.7574 31.5 39 31.5H43.5C44.7426 31.5 45.75 30.4926 45.75 29.25V18.75C45.75 17.5074 44.7426 16.5 43.5 16.5Z" stroke="currentColor" stroke-width="1.5" />
+                </svg>
+              )}
+            </span>
+            <span class="orchestration-card-label">{mode.name}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  document.querySelectorAll<HTMLElement>(".orchestration").forEach((section) => {
+    const controls = [...section.querySelectorAll<HTMLButtonElement>(".orchestration-mode")];
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const cycleDelay = 2400;
+    const resumeDelay = 600;
+    let cycleTimer: number | undefined;
+    let releaseTimer: number | undefined;
+    let nextIndex = 0;
+    let onscreen = false;
+    let pointerControl: HTMLButtonElement | null = null;
+    let focusControl: HTMLButtonElement | null = null;
+    let touchControl: HTMLButtonElement | null = null;
+
+    const clearTimer = (timer: number | undefined) => {
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+
+    const stopCycle = () => {
+      clearTimer(cycleTimer);
+      cycleTimer = undefined;
+    };
+
+    const clearActive = () => {
+      section.removeAttribute("data-active-mode");
+      controls.forEach((control) => control.setAttribute("aria-pressed", "false"));
+    };
+
+    const userIsActive = () => Boolean(pointerControl || focusControl || touchControl);
+
+    const activate = (control: HTMLButtonElement, restart = false) => {
+      const mode = control.dataset.mode;
+      const index = controls.indexOf(control);
+      if (!mode || index < 0) return;
+
+      stopCycle();
+      if (restart && section.dataset.activeMode === mode) {
+        section.removeAttribute("data-active-mode");
+        void section.offsetWidth;
+      }
+      section.dataset.activeMode = mode;
+      controls.forEach((candidate) => {
+        candidate.setAttribute("aria-pressed", String(candidate === control));
+      });
+      nextIndex = (index + 1) % controls.length;
+    };
+
+    const scheduleCycle = (delay = cycleDelay) => {
+      stopCycle();
+      if (!onscreen || document.hidden || reducedMotion.matches || userIsActive()) return;
+      cycleTimer = window.setTimeout(() => {
+        activate(controls[nextIndex]!);
+        scheduleCycle();
+      }, delay);
+    };
+
+    const activeInteraction = () => touchControl ?? pointerControl ?? focusControl;
+
+    const updateAutoplay = () => {
+      if (!onscreen || document.hidden) {
+        stopCycle();
+        clearActive();
+        return;
+      }
+      const activeControl = activeInteraction();
+      if (activeControl) {
+        activate(activeControl);
+        return;
+      }
+      if (reducedMotion.matches) {
+        stopCycle();
+        clearActive();
+        return;
+      }
+      scheduleCycle(resumeDelay);
+    };
+
+    const releaseTouch = () => {
+      clearTimer(releaseTimer);
+      releaseTimer = undefined;
+      touchControl = null;
+      updateAutoplay();
+    };
+
+    const deferTouchRelease = () => {
+      clearTimer(releaseTimer);
+      releaseTimer = window.setTimeout(releaseTouch, 1600);
+    };
+
+    controls.forEach((control) => {
+      control.addEventListener("pointerdown", (event) => {
+        if (event.pointerType !== "touch") return;
+        clearTimer(releaseTimer);
+        releaseTimer = undefined;
+        touchControl = control;
+        updateAutoplay();
+      });
+
+      control.addEventListener("pointerup", (event) => {
+        if (event.pointerType === "touch" && touchControl === control) deferTouchRelease();
+      });
+
+      control.addEventListener("pointercancel", (event) => {
+        if (event.pointerType === "touch" && touchControl === control) releaseTouch();
+      });
+
+      control.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "touch") return;
+        pointerControl = control;
+        updateAutoplay();
+      });
+
+      control.addEventListener("pointerleave", (event) => {
+        if (event.pointerType === "touch") return;
+        if (pointerControl === control) pointerControl = null;
+        updateAutoplay();
+      });
+
+      control.addEventListener("focus", () => {
+        if (!control.matches(":focus-visible")) return;
+        focusControl = control;
+        updateAutoplay();
+      });
+
+      control.addEventListener("blur", () => {
+        if (focusControl === control) focusControl = null;
+        updateAutoplay();
+      });
+
+      control.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        focusControl = control;
+        updateAutoplay();
+      });
+
+      control.addEventListener("click", () => {
+        if (!onscreen || document.hidden) {
+          updateAutoplay();
+          return;
+        }
+        const isTemporary = !activeInteraction();
+        if (isTemporary) touchControl = control;
+        const activeControl = activeInteraction();
+        if (activeControl) activate(activeControl, activeControl === control);
+        if (isTemporary) deferTouchRelease();
+      });
+    });
+
+    if ("IntersectionObserver" in window) {
+      const observer = new IntersectionObserver(([entry]) => {
+        onscreen = Boolean(entry?.isIntersecting);
+        updateAutoplay();
+      });
+      observer.observe(section);
+    } else {
+      onscreen = true;
+      updateAutoplay();
+    }
+
+    document.addEventListener("visibilitychange", updateAutoplay);
+    reducedMotion.addEventListener("change", updateAutoplay);
+  });
+</script>
+
+<style>
+  .orchestration {
+    background: #111827;
+    color: #f9fafb;
+  }
+
+  .orchestration-heading,
+  .orchestration-subtitle,
+  .orchestration-group h3,
+  .orchestration-card h4,
+  .orchestration-card-label {
+    font-family: Geist, sans-serif;
+    margin: 0;
+  }
+
+  .orchestration-heading {
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.8px;
+    line-height: 1.05;
+  }
+
+  .orchestration-subtitle {
+    color: #c7cbd3;
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 1.45;
+    margin-top: 16px;
+    max-width: 406px;
+  }
+
+  .orchestration-group {
+    margin-top: 20px;
+  }
+
+  .orchestration-group + .orchestration-group {
+    margin-top: 32px;
+  }
+
+  .orchestration-group h3 {
+    color: #8fb3ff;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    line-height: 20px;
+    text-transform: uppercase;
+  }
+
+  .orchestration-grid {
+    display: grid;
+    gap: 24px;
+    grid-template-columns: 1fr;
+    margin-top: 8px;
+  }
+
+  .orchestration-card {
+    align-items: center;
+    background: #111827;
+    border: 1px solid rgb(255 255 255 / 10%);
+    border-radius: 8px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 128px;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .orchestration-role {
+    position: relative;
+    transition: background-color 260ms ease, border-color 260ms ease, color 260ms ease, opacity 260ms ease, transform 260ms ease;
+  }
+
+  .orchestration-mode {
+    appearance: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-align: center;
+    transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+  }
+
+  .orchestration-mode[aria-pressed="true"],
+  .orchestration-mode:focus-visible {
+    background: #1D4ED8;
+    border-color: #8FB3FF;
+  }
+
+  .orchestration-mode[aria-pressed="true"] .orchestration-icon,
+  .orchestration-mode:focus-visible .orchestration-icon,
+  .orchestration-mode[aria-pressed="true"] .orchestration-card-label,
+  .orchestration-mode:focus-visible .orchestration-card-label {
+    color: #F0EEE9;
+  }
+
+  .orchestration-mode:focus-visible {
+    outline: 2px solid #8fb3ff;
+    outline-offset: 4px;
+  }
+
+  @media (hover: hover) {
+    .orchestration-mode:hover {
+      background: #1D4ED8;
+      border-color: #8FB3FF;
+    }
+
+    .orchestration-mode:hover .orchestration-icon,
+    .orchestration-mode:hover .orchestration-card-label {
+      color: #F0EEE9;
+    }
+  }
+
+  .orchestration[data-active-mode="single"] .orchestration-role-scout {
+    opacity: 0.18;
+    transform: translateX(-16px);
+  }
+
+  .orchestration[data-active-mode="single"] .orchestration-role-reviewer {
+    opacity: 0.18;
+    transform: translateX(16px);
+  }
+
+  .orchestration[data-active-mode="single"] .orchestration-role-implementer,
+  .orchestration[data-active-mode="parallel"] .orchestration-role {
+    background: #1D4ED8;
+    border-color: #8FB3FF;
+    color: #F0EEE9;
+  }
+
+  .orchestration[data-active-mode="single"] .orchestration-role-implementer .orchestration-icon,
+  .orchestration[data-active-mode="single"] .orchestration-role-implementer h4,
+  .orchestration[data-active-mode="parallel"] .orchestration-role .orchestration-icon,
+  .orchestration[data-active-mode="parallel"] .orchestration-role h4 {
+    color: #F0EEE9;
+  }
+
+  .orchestration[data-active-mode="parallel"] .orchestration-role {
+    animation: orchestration-role-scale 280ms ease-out both;
+  }
+
+  .orchestration[data-active-mode="parallel"] .orchestration-role .orchestration-icon {
+    animation: orchestration-role-pulse 1.6s ease-in-out 320ms infinite;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role {
+    animation: orchestration-role-scale 240ms ease-out both;
+    background: #111827;
+    border-color: #8FB3FF;
+    color: #F0EEE9;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role:nth-child(1) {
+    animation-delay: 0ms;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role:nth-child(2) {
+    animation-delay: 200ms;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role:nth-child(3) {
+    animation-delay: 400ms;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role:nth-child(1) .orchestration-connector {
+    animation-delay: 120ms;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role:nth-child(2) .orchestration-connector {
+    animation-delay: 320ms;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-connector {
+    animation: orchestration-connector-in 180ms ease-out both;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role .orchestration-icon {
+    color: #8fb3ff;
+  }
+
+  .orchestration[data-active-mode="chain"] .orchestration-role h4 {
+    color: #F0EEE9;
+  }
+
+  .orchestration-connector {
+    display: none;
+  }
+
+  .orchestration-icon {
+    color: #8fb3ff;
+    display: inline-flex;
+    height: 48px;
+    width: 48px;
+  }
+
+  .orchestration-icon svg {
+    height: 48px;
+    width: 48px;
+  }
+
+  .orchestration-card h4,
+  .orchestration-card-label {
+    color: #c7cbd3;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    line-height: 16px;
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  @media (min-width: 640px) {
+    .orchestration-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .orchestration-connector {
+      align-items: center;
+      color: #8FB3FF;
+      display: inline-flex;
+      height: 32px;
+      opacity: 0;
+      pointer-events: none;
+      position: absolute;
+      right: -20px;
+      top: calc(50% - 16px);
+      transform: translateX(-8px);
+      width: 16px;
+    }
+
+    .orchestration-connector svg {
+      display: block;
+      height: 32px;
+      width: 16px;
+    }
+  }
+
+  @media (min-width: 768px) {
+    .orchestration-container {
+      height: 573px;
+    }
+
+    .orchestration-heading {
+      font-size: 42px;
+      letter-spacing: -1.3px;
+    }
+
+    .orchestration-subtitle {
+      margin-top: 26px;
+    }
+
+    .orchestration-group {
+      margin-top: 40px;
+    }
+
+    .orchestration-group + .orchestration-group {
+      margin-top: 40px;
+    }
+
+    .orchestration-grid {
+      margin-top: 12px;
+    }
+  }
+
+  @keyframes orchestration-role-scale {
+    from {
+      transform: scale(0.92);
+    }
+
+    to {
+      transform: scale(1);
+    }
+  }
+
+  @keyframes orchestration-role-pulse {
+    0%,
+    37.5%,
+    100% {
+      transform: scale(1);
+    }
+
+    18.75% {
+      transform: scale(1.05);
+    }
+  }
+
+  @keyframes orchestration-connector-in {
+    from {
+      opacity: 0;
+      transform: translateX(-8px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .orchestration-container {
+      height: 640px;
+    }
+
+    .orchestration-subtitle {
+      margin-top: 63.9px;
+    }
+
+    .orchestration-group {
+      margin-top: 24.8px;
+    }
+
+    .orchestration-group + .orchestration-group {
+      margin-top: 32px;
+    }
+
+    .orchestration-grid {
+      grid-template-columns: repeat(3, 368px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .orchestration-mode,
+    .orchestration-role,
+    .orchestration-connector,
+    .orchestration-role .orchestration-icon {
+      animation-delay: 0ms !important;
+      animation-duration: 0ms !important;
+      animation: none !important;
+      transition: none !important;
+    }
+
+    .orchestration[data-active-mode] .orchestration-role {
+      transform: none !important;
+    }
+
+    .orchestration[data-active-mode="chain"] .orchestration-connector {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @media (max-width: 639px) {
+    .orchestration-container {
+      height: 552px;
+      padding: 48px 24px 74px;
+    }
+
+    .orchestration-grid {
+      gap: 12px;
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .orchestration-card {
+      height: 96px;
+      padding: 8px;
+    }
+  }
+</style>

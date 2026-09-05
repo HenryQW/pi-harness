@@ -1,11 +1,6 @@
 # `@henryqw/pi-auto-compact`
 
-Compact Pi context at your chosen threshold, then continue the interrupted task automatically.
-
-## Why
-
-- **Created for**: Long Pi sessions that need predictable context headroom.
-- **Advantage**: Compact early through a shared model route, without making users restart the task.
+Compact long Pi sessions early through a shared model route, then continue the interrupted task automatically. Your chosen threshold keeps predictable context headroom without restarting the task.
 
 ## Install
 
@@ -32,23 +27,24 @@ Restart Pi after install or settings changes. Trusted `.pi/settings.json` files 
 
 Run `/auto-compact`, enter a threshold, and expect `Auto-compact threshold set to <value>%.`
 
-## With
+## Works with
 
-This package requires [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) for shared compaction routes.
+**Required.** [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) provides shared compaction routes.
 
-`~/.pi/agent/config/pi-task-models/config.json` is shared and owned by `@henryqw/pi-task-models`. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`. A task entry is an explicit user override.
-
-Malformed shared config is reported and left unchanged. Compaction then uses the current session model.
+Its `~/.pi/agent/config/pi-task-models/config.json` file is shared and owned by Task Models. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`. A task entry is an explicit user override.
 
 ## Use
 
 Use `/auto-compact` to set the compaction threshold.
 
-- It refuses to activate unless effective `compaction.enabled` is `false`.
+## Flow
+
+- The extension refuses to activate unless effective `compaction.enabled` is `false`.
 - It checks `turn_start`, tool-call `turn_end`, `agent_end`, `context`, and resumed or forked `session_start`.
-- Its consumer-owned `pi-auto-compact/autoCompact` task defaults to `fast`.
 - It tries the effective profile primary, then fallback. If neither route works, the current session model still compacts.
 - After mid-task compaction, it resumes the current task automatically.
+
+Malformed shared task-model config is reported and left unchanged. Compaction then uses the current session model.
 
 ## Config
 

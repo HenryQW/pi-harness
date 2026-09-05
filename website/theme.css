@@ -15,3 +15,34 @@
   --blume-accent-foreground: oklch(0.21 0.034 263.4);
   --blume-code-background: oklch(0.26 0.045 263.4);
 }
+
+.homepage-container {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 1440px;
+  padding: 32px 24px;
+}
+
+@media (min-width: 768px) {
+  .homepage-container {
+    padding: 40px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .homepage-container {
+    padding: 72px 64px;
+  }
+}
+
+/* Catalog page-flow behavior: responsive overrides */
+@media (max-width: 1279px) {
+  .extension-catalog-viewport {
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .extension-catalog-scroll-rail {
+    display: none !important;
+  }
+}

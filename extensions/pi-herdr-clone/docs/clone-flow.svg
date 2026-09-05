@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="clone-flow-title clone-flow-desc">
+      <title id="clone-flow-title">Pi Herdr clone flow</title>
+      <desc id="clone-flow-desc">Swimlane diagram showing source validation, an active-path snapshot, tab and worktree targets, clone-session launch and focus order, and what remains after failures.</desc>
+      <defs>
+        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;display=swap');</style>
+        <style>
+          .lane-rule { stroke: rgba(16,24,40,.141); stroke-width: 1; }
+          .lane-rule-strong { stroke: #d5d8db; stroke-width: 1; }
+          .eyebrow { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .meta { fill: #6a7282; font: 400 8px 'Geist Mono', monospace; letter-spacing: .08em; }
+          .node { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .node-focal { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+          .decision { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .recovery { fill: rgba(16,24,40,.05); stroke: #4c5665; stroke-width: 1; }
+          .name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .name-left { fill: #101828; font: 600 12px 'Geist', sans-serif; }
+          .sub { fill: #4c5665; font: 400 9px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .02em; }
+          .sub-left { fill: #4c5665; font: 500 9px 'Geist Mono', monospace; letter-spacing: .08em; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#clone-flow-arrow); }
+          .edge-focal { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#clone-flow-arrow-accent); }
+          .edge-failure { fill: none; stroke: #6a7282; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#clone-flow-arrow); }
+          .legend { fill: #4c5665; font: 400 8px 'Geist', sans-serif; }
+        </style>
+        <marker id="clone-flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#4c5665"/>
+        </marker>
+        <marker id="clone-flow-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="clone-flow-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <text class="eyebrow" x="40" y="56">ACTIVE-PATH CLONE</text>
+      <text class="meta" x="1240" y="56" text-anchor="end">STATIC · TWO TARGETS · ONE RECOVERY BOUNDARY</text>
+
+      <!-- Swimlanes -->
+      <line class="lane-rule-strong" x1="40" y1="80" x2="1240" y2="80"/>
+      <line class="lane-rule" x1="40" y1="192" x2="1240" y2="192"/>
+      <line class="lane-rule" x1="40" y1="320" x2="1240" y2="320"/>
+      <line class="lane-rule" x1="40" y1="520" x2="1240" y2="520"/>
+      <line class="lane-rule-strong" x1="40" y1="620" x2="1240" y2="620"/>
+      <line class="lane-rule-strong" x1="176" y1="80" x2="176" y2="620"/>
+
+      <text class="eyebrow" x="56" y="140">CURRENT PI</text>
+      <text class="eyebrow" x="56" y="260">CLONE COMMAND</text>
+      <text class="eyebrow" x="56" y="420">HERDR TARGET</text>
+      <text class="eyebrow" x="56" y="572">RECOVERY</text>
+
+      <!-- Main flow connectors -->
+      <path class="edge" d="M344 140 H352 Q360 140 360 148 V248 Q360 256 368 256"/>
+      <path class="edge" d="M528 256 H548"/>
+      <path class="edge" d="M676 256 H692 Q700 256 700 264 V360 Q700 368 708 368 H716"/>
+      <path class="edge" d="M612 304 V448 Q612 456 620 456 H716"/>
+      <path class="edge" d="M828 336 V312 Q828 304 836 304 H960 Q968 304 968 296 V288"/>
+      <path class="edge" d="M916 460 H1024 Q1032 460 1032 452 V288"/>
+      <path class="edge-focal" d="M1096 256 H1112 Q1120 256 1120 264 V360 Q1120 368 1128 368"/>
+      <path class="edge" d="M1184 400 V424"/>
+
+      <!-- Failure outcomes -->
+      <path class="edge-failure" d="M916 368 H928 Q936 368 936 376 V500 Q936 508 928 508 H584 Q576 508 576 516 V548"/>
+      <path class="edge-failure" d="M916 476 H992 Q1000 476 1000 484 V512 Q1000 520 992 520 H632 Q624 520 624 528 V548"/>
+      <path class="edge-failure" d="M1128 384 H1112 Q1104 384 1104 392 V524 Q1104 532 1096 532 H920 Q912 532 912 540 V548"/>
+      <path class="edge-failure" d="M1184 488 V548"/>
+
+      <!-- Process nodes -->
+      <rect class="node" x="184" y="108" width="160" height="64" rx="6"/>
+      <text class="name" x="264" y="132">Validate source</text>
+      <text class="sub" x="264" y="148">HERDR PANE · SESSION FILE</text>
+      <text class="sub" x="264" y="160">ACTIVE LEAF</text>
+
+      <rect class="node" x="368" y="224" width="160" height="64" rx="6"/>
+      <text class="name" x="448" y="248">Snapshot active path</text>
+      <text class="sub" x="448" y="264">ROOT → CURRENT LEAF</text>
+      <text class="sub" x="448" y="276">NO SIBLINGS · NO STREAMING</text>
+
+      <polygon class="decision" points="612,208 676,256 612,304 548,256"/>
+      <text class="name" x="612" y="252">Choose target</text>
+      <text class="sub" x="612" y="268">TAB OR WORKTREE</text>
+
+      <rect class="node" x="716" y="336" width="200" height="64" rx="6"/>
+      <text class="name" x="816" y="360">Create clone tab</text>
+      <text class="sub" x="816" y="376">CURRENT WORKSPACE · CURRENT CWD</text>
+      <text class="sub" x="816" y="388">NO FOCUS</text>
+
+      <rect class="node" x="716" y="424" width="200" height="72" rx="6"/>
+      <text class="name" x="816" y="448">Create worktree workspace</text>
+      <text class="sub" x="816" y="464">FRESH CHECKOUT · NO FOCUS</text>
+      <text class="sub" x="816" y="476">ROOT PANE OR EXTRA TAB</text>
+      <text class="sub" x="816" y="488">IF ROOT IS OCCUPIED</text>
+
+      <rect class="node" x="936" y="224" width="160" height="64" rx="6"/>
+      <text class="name" x="1016" y="248">Persist clone session</text>
+      <text class="sub" x="1016" y="264">ACTIVE PATH ONLY</text>
+      <text class="sub" x="1016" y="276">WORKTREE STAMPS CHECKOUT CWD</text>
+
+      <rect class="node-focal" x="1128" y="336" width="112" height="64" rx="6"/>
+      <text class="name" x="1184" y="364">Start Pi</text>
+      <text class="sub" x="1184" y="380">--SESSION CLONE</text>
+
+      <rect class="node" x="1128" y="424" width="112" height="64" rx="6"/>
+      <text class="name" x="1184" y="452">Focus target</text>
+      <text class="sub" x="1184" y="468">AFTER START</text>
+
+      <!-- One recovery boundary with three observable outcomes -->
+      <rect class="recovery" x="184" y="548" width="1056" height="68" rx="8"/>
+      <line class="lane-rule" x1="664" y1="548" x2="664" y2="616"/>
+      <line class="lane-rule" x1="1024" y1="548" x2="1024" y2="616"/>
+      <text class="sub-left" x="208" y="568">DEFINITIVE CREATION FAILURE</text>
+      <text class="name-left" x="208" y="588">No clone session remains</text>
+      <text class="sub-left" x="208" y="604">KILLED/INCOMPLETE: partial state may remain; inspect herdr workspace list</text>
+      <text class="sub-left" x="688" y="568">START ATTEMPTED</text>
+      <text class="name-left" x="688" y="588">Retain target + session file</text>
+      <text class="sub-left" x="1048" y="568">FOCUS FAILS</text>
+      <text class="name-left" x="1048" y="588">Warn; clone keeps running</text>
+
+      <!-- Legend -->
+      <line class="lane-rule" x1="40" y1="640" x2="1240" y2="640"/>
+      <text class="eyebrow" x="40" y="668">KEY</text>
+      <line x1="104" y1="664" x2="140" y2="664" stroke="#4c5665" stroke-width="1.2" marker-end="url(#clone-flow-arrow)"/>
+      <text class="legend" x="152" y="668">Main flow</text>
+      <line x1="268" y1="664" x2="304" y2="664" stroke="#6a7282" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#clone-flow-arrow)"/>
+      <text class="legend" x="316" y="668">Failure outcome</text>
+      <rect x="464" y="656" width="24" height="16" rx="4" fill="rgba(29,78,216,.08)" stroke="#1d4ed8" stroke-width="1.2"/>
+      <text class="legend" x="500" y="668">Launch boundary</text>
+      <text class="meta" x="1240" y="668" text-anchor="end">ORIGINAL SESSION STAYS ACTIVE</text>
+    </svg>
