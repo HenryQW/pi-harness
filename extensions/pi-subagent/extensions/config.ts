@@ -98,7 +98,7 @@ function parseSubagentConfig(parsed: unknown, path: string): ParsedSubagentConfi
 		}
 	}
 
-	return { config, error: problems.length ? `${path}: ${problems.join("; ")}; using defaults.` : undefined };
+	return { config, error: problems.length ? `${path}: ${problems.join("; ")}; invalid settings use defaults while valid settings still apply.` : undefined };
 }
 
 /**

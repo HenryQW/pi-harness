@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "0.3.8",
-  "description": "Show the current branch pull request status in the Pi footer.",
+  "version": "2.0.0",
+  "description": "Run /pr to automatically choose the current pull request's next safe lifecycle step: create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
     "pi",
@@ -16,18 +16,19 @@
   "license": "MIT",
   "files": [
     "LICENSE",
+    "docs/pr-routing.svg",
     "extensions",
     "skills",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "node --test test/*.test.ts && node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs self-test",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4",
-    "@earendil-works/pi-tui": "^0.84.4"
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0"
   },
   "repository": {
     "type": "git",

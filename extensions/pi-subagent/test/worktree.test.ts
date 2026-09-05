@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type GitRunner } from "../src/worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type GitRunner, type WorktreePayload } from "../src/worktree.ts";
 import { loadRoles } from "../src/index.ts";
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
@@ -53,6 +53,14 @@ function fakeGit(
 	};
 }
 
+function expectWorktreeOutcome<T extends WorktreePayload["outcome"]>(
+	payload: WorktreePayload,
+	outcome: T,
+): Extract<WorktreePayload, { outcome: T }> {
+	assert.equal(payload.outcome, outcome);
+	return payload as Extract<WorktreePayload, { outcome: T }>;
+}
+
 test("finalizeChildWorktree prunes a worktree with zero commits and a clean tree", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
 	const { path } = info;
@@ -63,7 +71,7 @@ test("finalizeChildWorktree prunes a worktree with zero commits and a clean tree
 		"symbolic-ref --quiet HEAD": ok("refs/heads/pi-subagent/subagent-x\n"),
 	}, calls));
 
-	assert.deepEqual(payload, { path, branch: info.branch, commits: 0, dirty: false, pruned: true });
+	assert.deepEqual(payload, { outcome: "pruned", path, branch: info.branch });
 	assert.deepEqual(calls.filter((args) => args[0] === "worktree"), [["worktree", "remove", path]]);
 	assert.deepEqual(calls.filter((args) => args[0] === "update-ref"), [["update-ref", "-d", `refs/heads/${info.branch}`, info.baseCommit]]);
 	// Clean-tree proof must override config that hides untracked, ignored, or submodule changes.
@@ -84,42 +92,57 @@ test("finalizeChildWorktree performs its final root recheck without initialized 
 		return ok();
 	};
 
-	const payload = await finalizeChildWorktree(info, run);
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, run), "retained");
 	assert.equal(payload.dirty, true);
-	assert.equal(payload.pruned, false);
 	assert.equal(statusCalls, 3);
 	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
 });
 
-test("finalizeChildWorktree preserves a branch updated during cleanup", async (t) => {
+test("finalizeChildWorktree omits stale measurements after a failed worktree removal", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
-	const payload = await finalizeChildWorktree(info, fakeGit({
+	const calls: string[][] = [];
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
+		"rev-list --count": ok("0\n"),
+		"status --porcelain": ok(""),
+		"symbolic-ref --quiet HEAD": ok(`refs/heads/${info.branch}\n`),
+		"worktree remove": fail("worktree contains unexpected changes"),
+	}, calls)), "recovery");
+
+	assert.equal("commits" in payload, false);
+	assert.equal("dirty" in payload, false);
+	assert.match(payload.note, /worktree remove exit 1/);
+	assert.match(payload.note, /Inspect/);
+	assert.equal(calls.some((args) => args[0] === "update-ref"), false);
+});
+
+test("finalizeChildWorktree preserves a branch updated during cleanup without stale measurements", async (t) => {
+	const info = worktreeInfo(await tempDir(t));
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count": ok("0\n"),
 		"status --porcelain": ok(""),
 		"symbolic-ref --quiet HEAD": ok(`refs/heads/${info.branch}\n`),
 		"update-ref -d": fail("cannot lock ref: reference already changed"),
-	}));
+	})), "recovery");
 
-	assert.equal(payload.pruned, false);
-	assert.equal(payload.inspection_failed, true);
-	assert.match(payload.note!, /reference already changed/);
+	assert.equal("commits" in payload, false);
+	assert.equal("dirty" in payload, false);
+	assert.match(payload.note, /reference already changed/);
+	assert.match(payload.note, /Inspect branch/);
 });
 
 test("finalizeChildWorktree keeps dirty and committed worktrees", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
-	const dirty = await finalizeChildWorktree(info, fakeGit({
+	const dirty = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count abc123..pi-subagent/subagent-x": ok("0\n"),
 		"status --porcelain": ok(" M file.txt\n"),
-	}));
+	})), "retained");
 	assert.equal(dirty.dirty, true);
-	assert.equal(dirty.pruned, false);
 
-	const committed = await finalizeChildWorktree(info, fakeGit({
+	const committed = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count abc123..pi-subagent/subagent-x": ok("3\n"),
 		"status --porcelain": ok(""),
-	}));
+	})), "retained");
 	assert.equal(committed.commits, 3);
-	assert.equal(committed.pruned, false);
 });
 
 test("finalizeChildWorktree keeps the worktree when it is missing from disk", async (t) => {
@@ -129,49 +152,47 @@ test("finalizeChildWorktree keeps the worktree when it is missing from disk", as
 		{ ...worktreeInfo(path), repoRoot: "/repo" },
 		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": ok("0\n") }, calls),
 	);
-	assert.deepEqual(payload, { path, branch: "pi-subagent/subagent-x", commits: 0, dirty: false, pruned: true });
+	assert.deepEqual(payload, { outcome: "pruned", path, branch: "pi-subagent/subagent-x" });
 	// The branch probe runs from the repo root even though the checkout is gone.
 	assert.equal(calls[0]![2], "abc123..pi-subagent/subagent-x");
 	assert.ok(calls.every((args) => !args.includes(path) || args[0] === "worktree"));
 });
 
-test("finalizeChildWorktree keeps the worktree with inspection_failed on probe failure", async (t) => {
+test("finalizeChildWorktree returns recovery with only established probe measurements", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
-	const payload = await finalizeChildWorktree(info, fakeGit({
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count abc123..pi-subagent/subagent-x": fail("fatal: bad revision"),
 		"status --porcelain": ok(" M file.txt\n"),
-	}));
+	})), "recovery");
 
-	assert.equal(payload.pruned, false);
+	assert.equal(payload.commits, undefined);
 	assert.equal(payload.dirty, true);
-	assert.equal(payload.inspection_failed, true);
-	assert.match(payload.note!, /UNKNOWN/);
-	assert.match(payload.note!, /preserved/);
+	assert.match(payload.note, /commits UNKNOWN/);
+	assert.match(payload.note, /Inspect/);
 
-	const statusFailed = await finalizeChildWorktree(info, fakeGit({
+	const statusFailed = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count abc123..pi-subagent/subagent-x": ok("3\n"),
 		"status --porcelain": fail("fatal: status failed"),
-	}));
+	})), "recovery");
 	assert.equal(statusFailed.commits, 3);
-	assert.equal(statusFailed.inspection_failed, true);
+	assert.equal(statusFailed.dirty, undefined);
 
-	const refreshFailed = await finalizeChildWorktree(info, fakeGit({
+	const refreshFailed = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count abc123..pi-subagent/subagent-x": ok("0\n"),
 		"update-index --really-refresh": { code: -1, stdout: "", stderr: "timed out" },
-	}));
-	assert.equal(refreshFailed.pruned, false);
-	assert.equal(refreshFailed.inspection_failed, true);
-	assert.match(refreshFailed.note!, /update-index/);
+	})), "recovery");
+	assert.equal(refreshFailed.commits, 0);
+	assert.equal(refreshFailed.dirty, undefined);
+	assert.match(refreshFailed.note, /update-index/);
 });
 
 test("finalizeChildWorktree keeps the worktree when base_commit is missing", async (t) => {
 	const calls: string[][] = [];
-	const payload = await finalizeChildWorktree({ ...worktreeInfo(await tempDir(t)), baseCommit: "" }, fakeGit({}, calls));
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree({ ...worktreeInfo(await tempDir(t)), baseCommit: "" }, fakeGit({}, calls)), "recovery");
 
-	assert.equal(payload.commits, 0);
-	assert.equal(payload.pruned, false);
-	assert.equal(payload.inspection_failed, true);
-	assert.match(payload.note!, /base_commit/);
+	assert.equal(payload.commits, undefined);
+	assert.equal(payload.dirty, undefined);
+	assert.match(payload.note, /base_commit/);
 	assert.equal(calls.some((args) => args[0] === "rev-list"), false);
 });
 
@@ -293,12 +314,11 @@ test("createChildWorktree counts the dedicated branch, not the checkout HEAD", a
 	const info = worktreeInfo(await tempDir(t));
 	// Child detached HEAD back to base after committing: HEAD-based counting
 	// would read zero and branch -D would destroy the committed work.
-	const payload = await finalizeChildWorktree(info, fakeGit({
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count abc123..pi-subagent/subagent-x": ok("2\n"),
 		"status --porcelain": ok(""),
-	}));
+	})), "retained");
 	assert.equal(payload.commits, 2);
-	assert.equal(payload.pruned, false);
 });
 
 test("createChildWorktree preserves ambiguous state after a failed worktree add", async (t) => {
@@ -343,7 +363,7 @@ test("createChildWorktree preserves whitespace in repository paths and cwd prefi
 	assert.equal(info.repoRoot, canonicalRepo);
 	assert.equal(info.path.startsWith(join(canonicalRepo, ".worktrees")), true);
 	assert.equal(info.cwd, `${join(info.path, " nested ")}${sep}`);
-	assert.equal((await finalizeChildWorktree(info)).pruned, true);
+	assert.equal((await finalizeChildWorktree(info)).outcome, "pruned");
 });
 
 test("createChildWorktree resolves the primary checkout with a separate git directory", async (t) => {
@@ -362,7 +382,7 @@ test("createChildWorktree resolves the primary checkout with a separate git dire
 	const primary = await realpath(repo);
 	assert.equal(info.repoRoot, primary);
 	assert.equal(info.path.startsWith(join(primary, ".worktrees")), true);
-	assert.equal((await finalizeChildWorktree(info)).pruned, true);
+	assert.equal((await finalizeChildWorktree(info)).outcome, "pruned");
 });
 
 test("createChildWorktree rejects submodules whose parent cleanup can remove Git metadata", async (t) => {
@@ -397,8 +417,8 @@ test("createChildWorktree keeps children outside a removable linked checkout", a
 	await writeFile(join(info.path, "keep.txt"), "keep me\n");
 	git(repo, "worktree", "remove", "--force", linked);
 	assert.equal(await readFile(join(info.path, "keep.txt"), "utf8"), "keep me\n");
-	assert.equal((await finalizeChildWorktree(info)).dirty, true);
-	assert.equal((await finalizeChildWorktree(clean)).pruned, true);
+	assert.equal(expectWorktreeOutcome(await finalizeChildWorktree(info), "retained").dirty, true);
+	assert.equal((await finalizeChildWorktree(clean)).outcome, "pruned");
 });
 
 test("createChildWorktree preserves a dirty existing worktree on ID collision", async (t) => {
@@ -419,7 +439,7 @@ test("createChildWorktree hashes opaque IDs into valid bounded refs", async (t) 
 		assert.ok(info);
 		assert.match(info.branch, /^pi-subagent\/subagent-[0-9a-f]{24}$/);
 		git(repo, "check-ref-format", "--branch", info.branch);
-		assert.equal((await finalizeChildWorktree(info)).pruned, true);
+		assert.equal((await finalizeChildWorktree(info)).outcome, "pruned");
 	}
 });
 
@@ -433,9 +453,8 @@ test("finalizeChildWorktree preserves a clean detached-HEAD commit", async (t) =
 	git(info.path, "commit", "-qm", "detached work");
 	const detachedCommit = git(info.path, "rev-parse", "HEAD");
 
-	const payload = await finalizeChildWorktree(info);
-	assert.equal(payload.pruned, false);
-	assert.equal(payload.inspection_failed, true);
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info), "recovery");
+	assert.match(payload.note, /HEAD is detached/);
 	assert.equal(existsSync(info.path), true);
 	assert.equal(git(info.path, "rev-parse", "HEAD"), detachedCommit);
 });
@@ -449,7 +468,7 @@ test("finalizeChildWorktree removes only its stale metadata before deleting an e
 	await Promise.all([info.path, unrelated.path].map((path) => rm(path, { recursive: true, force: true })));
 
 	const payload = await finalizeChildWorktree(info);
-	assert.equal(payload.pruned, true);
+	assert.equal(payload.outcome, "pruned");
 	assert.equal(git(repo, "branch", "--list", info.branch), "");
 	const listed = git(repo, "worktree", "list", "--porcelain");
 	assert.equal(listed.includes(info.path), false);
@@ -468,7 +487,7 @@ test("finalizeChildWorktree prunes a clean submodule worktree without changing s
 	git(info.path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
 
 	const payload = await finalizeChildWorktree(info);
-	assert.equal(payload.pruned, true);
+	assert.equal(payload.outcome, "pruned");
 	assert.equal(existsSync(info.path), false);
 	assert.equal(git(repo, "branch", "--list", info.branch), "");
 	assert.equal(git(repo, "config", "--get-regexp", "^submodule\\."), config);
@@ -491,7 +510,16 @@ test("finalizeChildWorktree preserves submodule edits hidden by index flags", as
 		await writeFile(join(info.path, "mod", "tracked.txt"), `${flag}\n`);
 
 		const payload = await finalizeChildWorktree(info);
-		assert.equal(payload.pruned, false);
+		if (flag === "--assume-unchanged") {
+			const retained = expectWorktreeOutcome(payload, "retained");
+			assert.equal(retained.commits, 0);
+			assert.equal(retained.dirty, true);
+		} else {
+			const recovery = expectWorktreeOutcome(payload, "recovery");
+			assert.equal(recovery.commits, 0);
+			assert.equal(recovery.dirty, undefined);
+			assert.match(recovery.note, /skip-worktree/);
+		}
 		assert.equal(await readFile(join(info.path, "mod", "tracked.txt"), "utf8"), `${flag}\n`);
 	}
 });
@@ -509,9 +537,8 @@ test("finalizeChildWorktree preserves ignored files inside initialized submodule
 	git(info.path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
 	await writeFile(join(info.path, "mod", "result.cache"), "keep me\n");
 
-	const payload = await finalizeChildWorktree(info);
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info), "retained");
 	assert.equal(payload.dirty, true);
-	assert.equal(payload.pruned, false);
 	assert.equal(await readFile(join(info.path, "mod", "result.cache"), "utf8"), "keep me\n");
 });
 
@@ -524,9 +551,8 @@ test("finalizeChildWorktree preserves ignored files", async (t) => {
 	assert.ok(info);
 	await writeFile(join(info.path, "result.cache"), "keep me\n");
 
-	const payload = await finalizeChildWorktree(info);
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info), "retained");
 	assert.equal(payload.dirty, true);
-	assert.equal(payload.pruned, false);
 	assert.equal(await readFile(join(info.path, "result.cache"), "utf8"), "keep me\n");
 });
 
@@ -538,9 +564,8 @@ test("finalizeChildWorktree preserves tracked edits hidden by assume-unchanged",
 	await writeFile(join(info.path, "README.md"), "keep me\n");
 	assert.equal(git(info.path, "status", "--porcelain"), "");
 
-	const payload = await finalizeChildWorktree(info);
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info), "retained");
 	assert.equal(payload.dirty, true);
-	assert.equal(payload.pruned, false);
 	assert.equal(await readFile(join(info.path, "README.md"), "utf8"), "keep me\n");
 });
 
@@ -552,25 +577,21 @@ test("finalizeChildWorktree preserves tracked edits hidden by skip-worktree", as
 	await writeFile(join(info.path, "README.md"), "keep me\n");
 	assert.equal(git(info.path, "status", "--porcelain"), "");
 
-	const payload = await finalizeChildWorktree(info);
-	assert.equal(payload.pruned, false);
-	assert.equal(payload.inspection_failed, true);
-	assert.match(payload.note!, /skip-worktree/);
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info), "recovery");
+	assert.match(payload.note, /skip-worktree/);
 	assert.equal(await readFile(join(info.path, "README.md"), "utf8"), "keep me\n");
 });
 
 test("finalizeChildWorktree refuses to prune while assume-unchanged remains", async (t) => {
 	const info = worktreeInfo(await tempDir(t));
 	const calls: string[][] = [];
-	const payload = await finalizeChildWorktree(info, fakeGit({
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info, fakeGit({
 		"rev-list --count abc123..pi-subagent/subagent-x": ok("0\n"),
 		"symbolic-ref --quiet HEAD": ok("refs/heads/pi-subagent/subagent-x\n"),
 		"ls-files -v -z": ok("h README.md\0"),
-	}, calls));
+	}, calls)), "recovery");
 
-	assert.equal(payload.pruned, false);
-	assert.equal(payload.inspection_failed, true);
-	assert.match(payload.note!, /assume-unchanged/);
+	assert.match(payload.note, /assume-unchanged/);
 	assert.equal(calls.some((args) => args[0] === "worktree"), false);
 });
 
@@ -588,9 +609,8 @@ test("finalizeChildWorktree detects edits hidden by submodule ignore config", as
 	git(info.path, "config", "submodule.mod.ignore", "all");
 	await writeFile(join(info.path, "mod", "tracked.txt"), "changed\n");
 
-	const payload = await finalizeChildWorktree(info);
+	const payload = expectWorktreeOutcome(await finalizeChildWorktree(info), "retained");
 	assert.equal(payload.dirty, true);
-	assert.equal(payload.pruned, false);
 	assert.equal(await readFile(join(info.path, "mod", "tracked.txt"), "utf8"), "changed\n");
 });
 
@@ -598,12 +618,12 @@ test("finalizeChildWorktree counts the dedicated branch when the checkout is gon
 	const path = join(await tempDir(t), "gone");
 	// External cleanup removed the checkout but the child had committed:
 	// branch work must be reported, never read as empty.
-	const committed = await finalizeChildWorktree(
+	const committed = expectWorktreeOutcome(await finalizeChildWorktree(
 		{ ...worktreeInfo(path), repoRoot: "/repo" },
 		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": ok("4\n") }),
-	);
+	), "recovery");
 	assert.equal(committed.commits, 4);
-	assert.equal(committed.pruned, false);
+	assert.equal(committed.dirty, undefined);
 
 	// Genuinely empty: branch dropped, reported pruned.
 	const calls: string[][] = [];
@@ -611,18 +631,17 @@ test("finalizeChildWorktree counts the dedicated branch when the checkout is gon
 		{ ...worktreeInfo(path), repoRoot: "/repo" },
 		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": ok("0\n") }, calls),
 	);
-	assert.equal(empty.commits, 0);
-	assert.equal(empty.pruned, true);
+	assert.equal(empty.outcome, "pruned");
 	assert.deepEqual(calls.find((args) => args[0] === "worktree"), ["worktree", "remove", path]);
 	assert.deepEqual(calls.find((args) => args[0] === "update-ref"), ["update-ref", "-d", "refs/heads/pi-subagent/subagent-x", "abc123"]);
 
 	// Unmeasurable count: keep everything and say so.
-	const unproven = await finalizeChildWorktree(
+	const unproven = expectWorktreeOutcome(await finalizeChildWorktree(
 		{ ...worktreeInfo(path), repoRoot: "/repo" },
 		fakeGit({ "rev-list --count abc123..pi-subagent/subagent-x": fail("fatal: bad object") }),
-	);
-	assert.equal(unproven.pruned, false);
-	assert.equal(unproven.inspection_failed, true);
+	), "recovery");
+	assert.equal(unproven.commits, undefined);
+	assert.equal(unproven.dirty, undefined);
 });
 
 test("loadRoles accepts isolation worktree and rejects other values", async (t) => {

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-open-in",
-  "version": "1.0.3",
+  "version": "2.0.0",
   "description": "Open the current Pi working directory with a configurable command.",
   "keywords": [
     "pi-package",
@@ -28,7 +28,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4"
+    "@earendil-works/pi-coding-agent": "^0.85.0"
   },
   "repository": {
     "type": "git",
@@ -47,6 +47,6 @@
     ]
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^0.1.0"
+    "@henryqw/pi-config-store": "^1.0.0"
   }
 }

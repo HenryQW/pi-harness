@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	availableTaskModels,
 	loadTaskModelsConfig,
@@ -23,6 +23,7 @@ import {
 	formatDuration,
 	loadRoles,
 	resolveRoleLaunch,
+	WorktreeSetupError,
 	worktreeContextNote,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentResult,
@@ -38,8 +39,10 @@ import {
 	formatBackgroundWorkflowResult,
 	formatWorkflowResult,
 	formatWorkflowUpdate,
+	presentWorkflowEntryStatus,
 	WorkflowAbortedError,
 	WorkflowFailureError,
+	type BackgroundWorkflowTransportDetails,
 	type WorkflowTransportEntry,
 } from "./result-transport.ts";
 import {
@@ -222,6 +225,30 @@ export default function subagentExtension(
 	overrideTimeoutPolicy?: TimeoutPolicy,
 ): void {
 	registerModelTask(pi, DELEGATE_TASK);
+	pi.registerMessageRenderer(BACKGROUND_RESULT_TYPE, (message, { expanded, outputPad }, theme) => {
+		const details = message.details as BackgroundWorkflowTransportDetails | undefined;
+		const content = typeof message.content === "string"
+			? message.content
+			: message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+		if (!details?.entries) return new Text(content, outputPad, 0);
+		const count = details.entries.length;
+		const subject = count === 1 ? "Background subagent" : `${count} background subagents`;
+		const state = details.recovery ? "stopped; recovery needed"
+			: details.outcome === "completed" ? "completed"
+				: details.outcome === "failed" ? "failed" : "stopped";
+		const glyph = details.recovery || details.outcome === "aborted" ? "■" : details.outcome === "completed" ? "✓" : "✗";
+		const color = details.recovery || details.outcome === "aborted" ? "warning" : details.outcome === "completed" ? "success" : "error";
+		const rows = details.entries.map(({ name, role, status, summary }) => {
+			const { glyph, fallback } = presentWorkflowEntryStatus(status);
+			return `${glyph} ${name} · ${role} — ${details.recovery ? fallback : summary || fallback}`;
+		});
+		const raw = content.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
+		return new Text([
+			theme.fg(color, `${glyph} ${subject} ${state}`),
+			...rows,
+			...(expanded ? ["", raw] : []),
+		].join("\n"), outputPad, 0);
+	});
 	const widgetItems = new Map<string, WidgetItem>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
 	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
@@ -450,26 +477,35 @@ export default function subagentExtension(
 		setupRecoveries: ReadonlyMap<string, string>,
 	): void => {
 		const stale = launchEpoch !== sessionEpoch;
-		const retained = entries.filter(({ worktreePayload }) => worktreePayload && !worktreePayload.pruned);
-		if (stale && !retained.length && !setupRecoveries.size) return;
+		const recoveries = entries.flatMap((entry) => {
+			const worktree = entry.worktreePayload;
+			return worktree === undefined || worktree.outcome === "pruned" ? [] : [{ entry, worktree }];
+		});
+		if (stale && !recoveries.length && !setupRecoveries.size) return;
 		const transport = formatBackgroundWorkflowResult(mode, entries);
-		const outcome = stale ? "aborted" : transport.failed ? "failed" : "completed";
+		const outcome: BackgroundWorkflowTransportDetails["outcome"] = stale ? "aborted" : transport.failed ? "failed" : "completed";
 		const content = stale
 			? capOutput([
 				"Background workflow left recoverable isolated work after session shutdown.",
 				`Task ID: ${taskId}`,
 				`Mode: ${mode}`,
 				"Recovery locations:",
-				...retained.map((entry) =>
-					`- [${entry.index}] worktree path=${JSON.stringify(entry.worktreePayload!.path)} branch=${JSON.stringify(entry.worktreePayload!.branch)}`),
+				...recoveries.map(({ entry, worktree }) =>
+					`- [${entry.index}] worktree path=${JSON.stringify(worktree.path)} branch=${JSON.stringify(worktree.branch)}`),
 				...[...setupRecoveries].map(([id, recovery]) => {
 					const entry = entries.find((candidate) => candidate.id === id)!;
 					return `- [${entry.index}] setup state: ${recovery}`;
 				}),
 				"Evidence:",
-				...retained.map((entry) => {
-					const payload = entry.worktreePayload!;
-					return `- [${entry.index}] retained worktree commits=${payload.commits} dirty=${payload.dirty} inspection_failed=${payload.inspection_failed === true}`;
+				...recoveries.flatMap(({ entry, worktree }) => {
+					const measurements = [
+						...(worktree.commits === undefined ? [] : [`commits=${worktree.commits}`]),
+						...(worktree.dirty === undefined ? [] : [`dirty=${worktree.dirty}`]),
+					];
+					return [
+						`- [${entry.index}] ${worktree.outcome} worktree${measurements.length ? ` ${measurements.join(" ")}` : ""}`,
+						...(worktree.outcome === "recovery" ? [`  ${worktree.note}`] : []),
+					];
 				}),
 				...[...setupRecoveries].map(([id, recovery]) => {
 					const entry = entries.find((candidate) => candidate.id === id)!;
@@ -477,6 +513,13 @@ export default function subagentExtension(
 				}),
 			].join("\n"))
 			: transport.text;
+		const details: BackgroundWorkflowTransportDetails = {
+			...transport.details,
+			taskId,
+			outcome,
+			...(transport.usage === undefined ? {} : { usage: transport.usage }),
+			...(stale ? { recovery: true } : {}),
+		};
 		try {
 			// Custom messages convert to user-role LLM messages, so the parent agent
 			// sees the aggregate on its next turn without forcing one now.
@@ -484,13 +527,7 @@ export default function subagentExtension(
 				customType: BACKGROUND_RESULT_TYPE,
 				content,
 				display: true,
-				details: {
-					...transport.details,
-					taskId,
-					outcome,
-					...(transport.usage === undefined ? {} : { usage: transport.usage }),
-					...(stale ? { recovery: true } : {}),
-				},
+				details,
 			}, { triggerTurn: false });
 		} catch (error) {
 			// Delivery can disappear during teardown; only an active UI gets a visible failure.
@@ -592,6 +629,7 @@ export default function subagentExtension(
 			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
 				id: entry.id,
 				index: entry.index,
+				name: entry.delegation.name,
 				role: entry.delegation.role,
 				status: "pending",
 			}]));
@@ -627,6 +665,7 @@ export default function subagentExtension(
 						const base = {
 							id: entry.id,
 							index: entry.index,
+							name: entry.delegation.name,
 							role: role.name,
 							...(model === undefined ? {} : { model }),
 							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
@@ -680,7 +719,7 @@ export default function subagentExtension(
 							? (error as EphemeralSubagentError & { usage?: Usage }).usage
 							: undefined;
 						const cause = error instanceof EphemeralSubagentError ? error.cause : error;
-						if (cause instanceof Error && cause.name === "WorktreeSetupError") {
+						if (cause instanceof WorktreeSetupError) {
 							setupRecoveries.set(entry.id, cause.message);
 						}
 						text = capOutput(error instanceof Error ? error.message : String(error));
@@ -693,17 +732,14 @@ export default function subagentExtension(
 						status = "rejected";
 						text = capOutput(error instanceof Error ? error.message : String(error));
 						worktreePayload = worktree ? {
+							outcome: "recovery",
 							path: worktree.path,
 							branch: worktree.branch,
-							commits: 0,
-							dirty: false,
-							pruned: false,
-							inspection_failed: true,
-							note: capOutput(`Worktree finalization failed (${text}); commits/dirty UNKNOWN. Inspect retained work before assuming no changes.`),
+							note: capOutput(`Worktree finalization failed (${text}); commits/dirty UNKNOWN. Inspect ${worktree.path} (branch ${worktree.branch}) before assuming no work.`),
 						} : undefined;
 					}
-					if (worktreePayload?.inspection_failed) {
-						const note = capOutput(worktreePayload.note ?? `Worktree inspection failed; inspect ${worktreePayload.path} before assuming no work.`);
+					if (worktreePayload?.outcome === "recovery") {
+						const note = capOutput(worktreePayload.note);
 						worktreePayload = { ...worktreePayload, note };
 						rejected = new Error(note, rejected === undefined ? undefined : { cause: rejected });
 						status = "rejected";
@@ -741,6 +777,7 @@ export default function subagentExtension(
 				states.set(target.id, {
 					id: target.id,
 					index: target.index,
+					name: target.name,
 					role: target.role,
 					...(target.model === undefined ? {} : { model: target.model }),
 					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
@@ -775,13 +812,13 @@ export default function subagentExtension(
 				})();
 				backgroundTasks.set(taskId, { controller, settled });
 				void settled;
+				const title = workflow.mode === "single" ? "Background delegation"
+					: workflow.mode === "parallel" ? "Background parallel delegation" : "Background delegation chain";
 				const acknowledgement = capOutput([
-					`Background workflow ${taskId} accepted.`,
-					`Mode: ${workflow.mode}`,
-					"Entries:",
-					...entries.map((entry) =>
-						`- [${entry.index}] id=${JSON.stringify(entry.id)} role=${JSON.stringify(entry.delegation.role)}`),
-					"The aggregate outcome arrives as one message; keep working or end your turn.",
+					`${title} started${entries.length === 1 ? "" : ` · ${entries.length} tasks`}`,
+					...entries.map((entry, index) =>
+						`○ [${index + 1}/${entries.length}] ${entry.delegation.name} · ${entry.delegation.role}`),
+					"Results will arrive in one message.",
 				].join("\n"));
 				return {
 					content: [{ type: "text" as const, text: acknowledgement }],
@@ -789,7 +826,7 @@ export default function subagentExtension(
 						taskId,
 						background: true,
 						mode: workflow.mode,
-						entries: entries.map((entry) => ({ id: entry.id, index: entry.index, role: entry.delegation.role })),
+						entries: entries.map((entry) => ({ id: entry.id, index: entry.index, name: entry.delegation.name, role: entry.delegation.role })),
 					},
 				};
 			}
