@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-footer",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Show concise repository, branch, and usage details in the Pi footer.",
   "keywords": [
     "pi-package",
@@ -24,9 +24,9 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.84.4",
-    "@earendil-works/pi-coding-agent": "^0.84.4",
-    "@earendil-works/pi-tui": "^0.84.4"
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0"
   },
   "repository": {
     "type": "git",
