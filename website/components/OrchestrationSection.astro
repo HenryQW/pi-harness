@@ -112,58 +112,135 @@ const modes = [
 
 <script>
   document.querySelectorAll<HTMLElement>(".orchestration").forEach((section) => {
-    const controls = section.querySelectorAll<HTMLButtonElement>(".orchestration-mode");
-    let restoreTimer: number | undefined;
+    const controls = [...section.querySelectorAll<HTMLButtonElement>(".orchestration-mode")];
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const cycleDelay = 2400;
+    const resumeDelay = 600;
+    let cycleTimer: number | undefined;
+    let releaseTimer: number | undefined;
+    let nextIndex = 0;
+    let onscreen = false;
+    let pointerControl: HTMLButtonElement | null = null;
+    let focusControl: HTMLButtonElement | null = null;
     let touchControl: HTMLButtonElement | null = null;
+    let lastPointerType = "";
 
-    const cancelRestore = () => {
-      if (restoreTimer === undefined) return;
-      window.clearTimeout(restoreTimer);
-      restoreTimer = undefined;
+    const clearTimer = (timer: number | undefined) => {
+      if (timer !== undefined) window.clearTimeout(timer);
     };
 
-    const activate = (control: HTMLButtonElement) => {
-      const mode = control.dataset.mode;
-      if (!mode) return;
-
-      cancelRestore();
-      section.dataset.activeMode = mode;
-      controls.forEach((candidate) => {
-        candidate.setAttribute("aria-pressed", String(candidate === control));
-      });
+    const stopCycle = () => {
+      clearTimer(cycleTimer);
+      cycleTimer = undefined;
     };
 
-    const idle = () => {
-      cancelRestore();
-      touchControl = null;
+    const clearActive = () => {
       section.removeAttribute("data-active-mode");
       controls.forEach((control) => control.setAttribute("aria-pressed", "false"));
     };
 
+    const userIsActive = () => Boolean(pointerControl || focusControl || touchControl);
+
+    const activate = (control: HTMLButtonElement, restart = false) => {
+      const mode = control.dataset.mode;
+      const index = controls.indexOf(control);
+      if (!mode || index < 0) return;
+
+      stopCycle();
+      if (restart && section.dataset.activeMode === mode) {
+        section.removeAttribute("data-active-mode");
+        void section.offsetWidth;
+      }
+      section.dataset.activeMode = mode;
+      controls.forEach((candidate) => {
+        candidate.setAttribute("aria-pressed", String(candidate === control));
+      });
+      nextIndex = (index + 1) % controls.length;
+    };
+
+    const scheduleCycle = (delay = cycleDelay) => {
+      stopCycle();
+      if (!onscreen || document.hidden || reducedMotion.matches || userIsActive()) return;
+      cycleTimer = window.setTimeout(() => {
+        activate(controls[nextIndex]!);
+        scheduleCycle();
+      }, delay);
+    };
+
+    const release = () => {
+      clearTimer(releaseTimer);
+      releaseTimer = undefined;
+      touchControl = null;
+      if (userIsActive()) return;
+      if (reducedMotion.matches) clearActive();
+      else scheduleCycle(resumeDelay);
+    };
+
+    const updateAutoplay = () => {
+      if (!onscreen || document.hidden || reducedMotion.matches) {
+        stopCycle();
+        if (!userIsActive()) clearActive();
+        return;
+      }
+      scheduleCycle(resumeDelay);
+    };
+
     controls.forEach((control) => {
+      control.addEventListener("pointerdown", (event) => {
+        lastPointerType = event.pointerType;
+      });
+
       control.addEventListener("pointerenter", (event) => {
         if (event.pointerType === "touch") return;
+        clearTimer(releaseTimer);
+        releaseTimer = undefined;
         touchControl = null;
+        pointerControl = control;
         activate(control);
       });
 
       control.addEventListener("pointerleave", () => {
-        if (touchControl === control || document.activeElement === control) return;
-        idle();
+        if (pointerControl === control) pointerControl = null;
+        release();
       });
 
-      control.addEventListener("pointerup", (event) => {
-        if (event.pointerType !== "touch") return;
+      control.addEventListener("focus", () => {
+        if (!control.matches(":focus-visible")) return;
+        focusControl = control;
         activate(control);
-        touchControl = control;
-        restoreTimer = window.setTimeout(idle, 800);
       });
 
-      control.addEventListener("focus", () => activate(control));
       control.addEventListener("blur", () => {
-        if (!control.matches(":hover")) idle();
+        if (focusControl === control) focusControl = null;
+        release();
+      });
+
+      control.addEventListener("click", (event) => {
+        if (lastPointerType) focusControl = null;
+        if (event.detail === 0) focusControl = control;
+        activate(control, true);
+        if (lastPointerType === "touch" || (!pointerControl && !focusControl)) {
+          touchControl = control;
+          clearTimer(releaseTimer);
+          releaseTimer = window.setTimeout(release, 1600);
+        }
+        lastPointerType = "";
       });
     });
+
+    if ("IntersectionObserver" in window) {
+      const observer = new IntersectionObserver(([entry]) => {
+        onscreen = Boolean(entry?.isIntersecting);
+        updateAutoplay();
+      });
+      observer.observe(section);
+    } else {
+      onscreen = true;
+      updateAutoplay();
+    }
+
+    document.addEventListener("visibilitychange", updateAutoplay);
+    reducedMotion.addEventListener("change", updateAutoplay);
   });
 </script>
 
