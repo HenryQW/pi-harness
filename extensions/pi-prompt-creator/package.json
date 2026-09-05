@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-prompt-creator",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "description": "Turn current Pi conversation signals into user-approved prompt templates.",
   "keywords": [
     "pi-package",
@@ -26,7 +26,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4"
+    "@earendil-works/pi-coding-agent": "^0.85.0"
   },
   "repository": {
     "type": "git",
@@ -45,8 +45,8 @@
     ]
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^0.1.0",
-    "@henryqw/pi-subagent": "^12.0.0",
-    "@henryqw/pi-task-models": "^4.0.0"
+    "@henryqw/pi-config-store": "^1.0.0",
+    "@henryqw/pi-subagent": "^13.0.0",
+    "@henryqw/pi-task-models": "^5.0.0"
   }
 }

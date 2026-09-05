@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-task-models",
-  "version": "4.0.2",
+  "version": "5.0.0",
   "description": "Shared task model profiles and routing for HenryQW Pi extensions.",
   "keywords": [
     "pi-package",
@@ -36,8 +36,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.84.4",
-    "@earendil-works/pi-coding-agent": "^0.84.4"
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0"
   },
   "repository": {
     "type": "git",
@@ -57,6 +57,6 @@
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-task-models/example.png"
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^0.1.0"
+    "@henryqw/pi-config-store": "^1.0.0"
   }
 }
