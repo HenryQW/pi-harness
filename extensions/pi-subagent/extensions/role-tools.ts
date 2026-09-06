@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, MIN_MAX_TURNS, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
@@ -37,7 +37,7 @@ function executionBudget(value: string | undefined): { maxTurns: number; maxMs: 
 	}
 	const budget = parsed as Record<string, unknown>;
 	if (Object.keys(budget).length !== 3 || !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
-		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < MIN_MAX_TURNS
+		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < 1
 		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0
 		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0) {
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
@@ -59,6 +59,7 @@ export default function roleTools(pi: ExtensionAPI): void {
 		type: "string",
 	});
 	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
+	let handoffSent = false;
 	pi.on("session_start", () => {
 		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
 		const allTools = pi.getAllTools();
@@ -72,12 +73,16 @@ export default function roleTools(pi: ExtensionAPI): void {
 		if (unavailable.length) {
 			throw new Error(`Subagent requested unavailable tools: ${unavailable.join(", ")}. Check spelling and load the provider extension that registers them.`);
 		}
+		if (budget?.maxTurns === 1 && !handoffSent) {
+			pi.setActiveTools([]);
+			pi.sendMessage(FINAL_HANDOFF_MESSAGE, { deliverAs: "steer", triggerTurn: false });
+			handoffSent = true;
+		}
 	});
 
 	if (!budget) return;
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
 	let completedTurns = 0;
-	let handoffSent = false;
 	let turnWarningSent = false;
 	let runtimeWarningSent = false;
 	pi.on("turn_end", (event) => {
