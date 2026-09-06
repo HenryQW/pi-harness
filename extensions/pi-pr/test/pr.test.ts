@@ -643,7 +643,7 @@ test("labels the Herdr workspace with direct arguments after a create workflow s
 				{ command: "herdr", args: ["workspace", "rename", "workspace-7", "Feature · PR #42"] },
 			]);
 			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
-			assert.deepEqual(app.widgets.at(-1), ["Run /pr to merge pull request"]);
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
 		} finally {
 			await app.shutdown(ctx);
 		}
@@ -679,7 +679,7 @@ test("warns without hiding the refreshed PR when Herdr labeling fails", async ()
 				type: "warning",
 			}]);
 			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
-			assert.deepEqual(app.widgets.at(-1), ["Run /pr to merge pull request"]);
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
 		} finally {
 			await app.shutdown(ctx);
 		}
