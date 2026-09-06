@@ -63,9 +63,9 @@ Ordinary conversation comments do not trigger a route or block a merge. Changes 
 
 ## Refresh
 
-The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and the creation workflow. They also poll every 30 seconds. Polling updates presentation only and may be stale.
+The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also poll every 30 seconds. Polling updates presentation only and may be stale.
 
-The create hint stays hidden until the local branch has a commit beyond its creation point. It clears as soon as `/pr` starts creation. It returns if the workflow finishes without a pull request.
+The create hint stays hidden until the local branch has a commit beyond its creation point. Any displayed hint clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the hint when the handler finishes.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
