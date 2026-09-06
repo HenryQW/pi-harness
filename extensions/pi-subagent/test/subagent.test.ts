@@ -1151,6 +1151,90 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 	});
 });
 
+test("widget keeps terminal Flow stages grouped when capacity evicts another task", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		const validationStarted = join(agentDir, "validation-started");
+		const validationRelease = join(agentDir, "validation-release");
+		const reviewerStarted = join(agentDir, "reviewer-started");
+		const reviewerRelease = join(agentDir, "reviewer-release");
+		const validation = join(agentDir, "validation.mjs");
+		await writeFile(validation, `import { existsSync, writeFileSync } from "node:fs";
+const [started, release] = process.argv.slice(2);
+writeFileSync(started, "");
+const timer = setInterval(() => {
+	if (!existsSync(release)) return;
+	clearInterval(timer);
+	process.exit(0);
+}, 5);
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { execFileSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const task = process.argv.at(-1)?.replace(/^Task: /, "");
+const event = (text) => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end" } }));
+const waitForRelease = (path, next) => {
+	const timer = setInterval(() => {
+		if (!existsSync(path)) return;
+		clearInterval(timer);
+		next();
+	}, 5);
+};
+if (task?.startsWith("Flow Unit")) {
+	writeFileSync("flow.txt", "done\\n");
+	execFileSync("git", ["add", "flow.txt"]);
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "flow"]);
+	event("done");
+} else if (task?.startsWith("Review Flow Unit")) {
+	writeFileSync(${JSON.stringify(reviewerStarted)}, "");
+	waitForRelease(${JSON.stringify(reviewerRelease)}, () => event("PASS"));
+} else if (/^terminal \\d+$/.test(task ?? "")) event("done");
+else throw new Error("Unexpected task: " + task);
+`);
+		process.argv[1] = runner;
+		const app = harness({ cwd: repo, ui: true });
+		const flow = app.tools.get("delegate_flow")!;
+		const running = flow.execute("widget-capacity", { units: [{
+			id: "flow",
+			name: "Keep Flow stages together",
+			task: "Keep terminal stages grouped.",
+			validation: [{ command: process.execPath, args: [validation, validationStarted, validationRelease] }],
+			review: "Return PASS only.",
+		}] }, undefined, undefined, app.ctx);
+		try {
+			await waitFor(() => existsSync(validationStarted));
+			for (let index = 1; index <= 7; index++) {
+				const task = `terminal ${index}`;
+				await app.tool.execute(`terminal-${index}`, { role: "scout", name: task, task }, undefined, undefined, app.ctx);
+			}
+			const filled = app.widget!.render(160);
+			assert.equal(filled[2], "terminal 1");
+			assert.equal(filled.at(-1), "… 6 more · 6 complete");
+
+			await writeFile(validationRelease, "");
+			await waitFor(() => existsSync(reviewerStarted));
+			const widget = app.widget!.render(160);
+			assert.equal(widget.length, 6);
+			assert.equal(widget[0], "Keep Flow stages together");
+			assert.match(widget[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
+			assert.match(widget[2]!, /^  ✓ \[I\] Done/);
+			assert.equal(widget[3], "terminal 2");
+			assert.match(widget[4]!, /^  ✓ \[S\] Done/);
+			assert.equal(widget[5], "… 5 more · 5 complete");
+			assert.doesNotMatch(widget.join("\n"), /terminal 1/);
+			assertWidgetHierarchy(widget);
+			for (const width of [160, 24, 1]) assert.ok(app.widget!.render(width).every((line) => visibleWidth(line) <= width));
+
+			await writeFile(reviewerRelease, "");
+			assert.equal((await running).details.outcome, "completed");
+		} finally {
+			await Promise.all([writeFile(validationRelease, ""), writeFile(reviewerRelease, "")]);
+			await Promise.allSettled([running]);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+	});
+});
+
 test("widget summarizes overflow while evicting terminal rows for new active work", async () => {
 	await environment(async (agentDir) => {
 		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "9";

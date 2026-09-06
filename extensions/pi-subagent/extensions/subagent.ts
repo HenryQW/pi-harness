@@ -365,9 +365,16 @@ export default function subagentExtension(
 		ensureWidget(ctx);
 		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ITEMS) {
 			for (const [oldestId, item] of widgetItems) {
-				if (item.status === "working" || retainedWidgetTaskIds.has(item.taskId)) continue;
+				if (item.status === "working" || retainedWidgetTaskIds.has(item.taskId) || item.taskId === taskId) continue;
 				widgetItems.delete(oldestId);
 				if (widgetItems.size < MAX_WIDGET_ITEMS) break;
+			}
+			if (widgetItems.size >= MAX_WIDGET_ITEMS) {
+				for (const [oldestId, item] of widgetItems) {
+					if (item.status === "working" || retainedWidgetTaskIds.has(item.taskId)) continue;
+					widgetItems.delete(oldestId);
+					if (widgetItems.size < MAX_WIDGET_ITEMS) break;
+				}
 			}
 		}
 		widgetItems.set(id, {
