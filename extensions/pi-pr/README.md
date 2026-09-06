@@ -14,6 +14,8 @@ The comment sweep resolves its bundled helper and references from the installed 
 
 ## Works with
 
+**Requires.** [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) is the shared Herdr CLI client. It installs with this package.
+
 **Improves.** [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) shows current-branch pull-request status in the footer.
 
 ## Use

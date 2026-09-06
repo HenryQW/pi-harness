@@ -623,7 +623,7 @@ test("warns without hiding the refreshed PR when Herdr labeling fails", async ()
 			await app.command().handler("", ctx as ExtensionCommandContext);
 			await app.settle(ctx);
 			assert.deepEqual(app.notifications, [{
-				message: "Herdr workspace rename failed: workspace get failed: workspace unavailable",
+				message: "Herdr workspace rename failed: herdr workspace get failed: workspace unavailable",
 				type: "warning",
 			}]);
 			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");

@@ -1,9 +1,9 @@
 import {
 	isBashToolResult,
-	type ExecResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { createHerdrClient } from "@henryqw/pi-herdr";
 import { createPrCommandHandler } from "./pr-command.ts";
 import {
 	hasLocalCommit,
@@ -31,20 +31,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function commandFailure(action: string, result: ExecResult): never {
-	const detail = result.stderr.trim() || result.stdout.trim() ||
-		(result.killed ? "command was killed" : `exit code ${result.code}`);
-	throw new Error(`${action} failed: ${detail}`);
-}
-
-function parseWorkspaceLabel(output: string, workspaceId: string): string {
-	let response: unknown;
-	try {
-		response = JSON.parse(output);
-	} catch {
-		throw new Error("workspace get returned invalid JSON");
-	}
-	const result = isRecord(response) ? response.result : undefined;
+function parseWorkspaceLabel(response: Record<string, unknown>, workspaceId: string): string {
+	const result = response.result;
 	const workspace = isRecord(result) && isRecord(result.workspace) ? result.workspace : undefined;
 	if (!workspace || workspace.workspace_id !== workspaceId) {
 		throw new Error("workspace get returned a different workspace_id");
@@ -56,31 +44,29 @@ function parseWorkspaceLabel(output: string, workspaceId: string): string {
 	return label;
 }
 
-async function renameHerdrWorkspace(
-	pi: Pick<ExtensionAPI, "exec">,
-	cwd: string,
-	signal: AbortSignal,
-	workspaceId: string,
-	pullRequestNumber: number,
-): Promise<void> {
-	signal.throwIfAborted();
-	const current = await pi.exec("herdr", ["workspace", "get", workspaceId], { cwd, signal });
-	signal.throwIfAborted();
-	if (current.killed || current.code !== 0) commandFailure("workspace get", current);
-	const label = parseWorkspaceLabel(current.stdout, workspaceId);
-	const normalized = `${label.replace(/(?: · PR #[1-9][0-9]*)+$/, "")} · PR #${pullRequestNumber}`;
-	if (normalized === label) return;
-
-	signal.throwIfAborted();
-	const renamed = await pi.exec("herdr", ["workspace", "rename", workspaceId, normalized], { cwd, signal });
-	signal.throwIfAborted();
-	if (renamed.killed || renamed.code !== 0) commandFailure("workspace rename", renamed);
-}
-
 export default function pullRequestExtension(
 	pi: ExtensionAPI,
 	dependencies: PullRequestExtensionDependencies = {},
 ): void {
+	const herdr = createHerdrClient(pi.exec.bind(pi));
+	const renameHerdrWorkspace = async (
+		cwd: string,
+		signal: AbortSignal,
+		workspaceId: string,
+		pullRequestNumber: number,
+	): Promise<void> => {
+		signal.throwIfAborted();
+		const current = await herdr.json(["workspace", "get", workspaceId], { cwd, signal });
+		signal.throwIfAborted();
+		const label = parseWorkspaceLabel(current, workspaceId);
+		const normalized = `${label.replace(/(?: · PR #[1-9][0-9]*)+$/, "")} · PR #${pullRequestNumber}`;
+		if (normalized === label) return;
+
+		signal.throwIfAborted();
+		await herdr.run(["workspace", "rename", workspaceId, normalized], { cwd, signal });
+		signal.throwIfAborted();
+	};
+
 	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
 	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
@@ -178,7 +164,7 @@ export default function pullRequestExtension(
 				renameWorkspace && pullRequest !== null && process.env.HERDR_ENV === "1" && workspaceId
 			) {
 				try {
-					await renameHerdrWorkspace(pi, ctx.cwd, controller.signal, workspaceId, pullRequest.number);
+					await renameHerdrWorkspace(ctx.cwd, controller.signal, workspaceId, pullRequest.number);
 				} catch (error) {
 					if (!controller.signal.aborted && sessionGeneration === generation) {
 						reportHerdrRenameFailure(ctx, error);

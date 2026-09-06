@@ -30,6 +30,9 @@
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@earendil-works/pi-tui": "^0.85.1"
   },
+  "dependencies": {
+    "@henryqw/pi-herdr": "^0.4.5"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-harness.git",
