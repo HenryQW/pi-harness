@@ -543,7 +543,7 @@ test("successful validation-created ignored artifacts are removed before non-for
 	assert.equal(git(repo, "branch", "--list", unitBranch), "");
 	assert.equal((gitRaw(repo, "worktree", "list", "--porcelain").match(/^worktree /gm) ?? []).length, 1);
 	const inventories = app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "ls-files" && args.includes("--ignored"));
-	assert.equal(inventories.length, 3);
+	assert.equal(inventories.length, 4);
 	for (const { args } of inventories) assert.deepEqual(args.slice(1), [
 		"ls-files", "--full-name", "--others", "--ignored", "--exclude-standard", "-z", "--",
 	]);
@@ -552,31 +552,68 @@ test("successful validation-created ignored artifacts are removed before non-for
 	assert.ok(removals.every(({ args }) => !args.includes("--force")));
 });
 
-test("malformed ignored inventory preserves validation output and the existing cleanup warning", async (t) => {
+test("validation-created ignored artifacts recheck membership after each unlink", async (t) => {
 	const repo = await repository(t);
-	await writeFile(join(repo, ".gitignore"), "*.cache\n");
-	git(repo, "add", ".gitignore");
-	git(repo, "commit", "-qm", "ignore validation artifacts");
-	let inventories = 0;
-	const gate = validation("require('node:fs').writeFileSync('validation.cache', 'preserve\\n')");
+	await writeFile(join(repo, ".git", "info", "exclude"), "/.worktrees/\n/.gitignore\n");
+	const gate = validation([
+		"const fs = require('node:fs');",
+		"fs.writeFileSync('.gitignore', 'later.output\\n');",
+		"fs.writeFileSync('later.output', 'preserve\\n');",
+	].join("\n"));
 	const app = harness(repo, async (prepared) => {
 		await commit(prepared.cwd, "integrated.txt", "integrated\n");
 		return success();
-	}, (command, args, _options, next) => {
-		if (command !== "git" || args[1] !== "ls-files" || !args.includes("--ignored")) return next();
-		inventories += 1;
-		if (inventories !== 2) return next();
-		return Promise.resolve({ stdout: "validation.cache", stderr: "", code: 0, killed: false });
 	});
 
-	const result = await flowTool(app).execute("malformed-inventory", { units: [unit("malformed", "work", gate)] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("membership-order", { units: [unit("membership", "work", gate)] }, undefined, undefined, app.ctx);
 
-	assert.equal(inventories, 3);
 	assert.equal(result.details.outcome, "completed");
 	assert.equal(result.details.warnings.length, 1);
 	assert.match(result.details.warnings[0], /cleanup refused/);
 	assert.equal(result.details.retained.length, 1);
-	assert.equal(await readFile(join(result.details.retained[0].path, "validation.cache"), "utf8"), "preserve\n");
+	const retainedPath = result.details.retained[0].path;
+	assert.equal(existsSync(join(retainedPath, ".gitignore")), false);
+	assert.equal(await readFile(join(retainedPath, "later.output"), "utf8"), "preserve\n");
+	const inventories = app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "ls-files" && args.includes("--ignored"));
+	assert.equal(inventories.length, 4);
+	assert.equal(app.execLogs.some(({ command, args }) => command === "git" && args[1] === "worktree" && args[2] === "remove"), false);
+});
+
+test("malformed and escaped ignored inventory paths preserve validation output", async (t) => {
+	for (const [label, inventory] of [
+		["malformed", "validation.cache"],
+		["escaped", "../escaped.cache\0"],
+	] as const) {
+		const repo = await repository(t);
+		await writeFile(join(repo, ".gitignore"), "*.cache\n");
+		git(repo, "add", ".gitignore");
+		git(repo, "commit", "-qm", "ignore validation artifacts");
+		let inventories = 0;
+		let escapedPath = "";
+		const gate = validation("require('node:fs').writeFileSync('validation.cache', 'preserve\\n')");
+		const app = harness(repo, async (prepared) => {
+			await commit(prepared.cwd, "integrated.txt", "integrated\n");
+			escapedPath = join(prepared.cwd, "..", "escaped.cache");
+			await writeFile(escapedPath, "outside\n");
+			return success();
+		}, (command, args, _options, next) => {
+			if (command !== "git" || args[1] !== "ls-files" || !args.includes("--ignored")) return next();
+			inventories += 1;
+			if (inventories !== 3) return next();
+			return Promise.resolve({ stdout: inventory, stderr: "", code: 0, killed: false });
+		});
+
+		const result = await flowTool(app).execute(`${label}-inventory`, { units: [unit(label, "work", gate)] }, undefined, undefined, app.ctx);
+
+		assert.equal(inventories, 3);
+		assert.equal(result.details.outcome, "completed");
+		assert.equal(result.details.warnings.length, 1);
+		assert.match(result.details.warnings[0], /cleanup refused/);
+		assert.equal(result.details.retained.length, 1);
+		assert.equal(await readFile(join(result.details.retained[0].path, "validation.cache"), "utf8"), "preserve\n");
+		assert.equal(await readFile(escapedPath, "utf8"), "outside\n");
+		assert.equal(app.execLogs.some(({ command, args }) => command === "git" && args[1] === "worktree" && args[2] === "remove"), false);
+	}
 });
 
 test("a post-checkout setup failure preserves and reports the attempted allocation", async (t) => {
@@ -1410,6 +1447,121 @@ test("Reviewer mutation of a validation-created ignored artifact preserves it", 
 	const retainedPath = result.details.retained[0].path;
 	assert.equal(await readFile(join(retainedPath, "reviewed.cache"), "utf8"), "reviewer\n");
 	assert.equal(await readFile(join(retainedPath, "reviewer-created.cache"), "utf8"), "reviewer-created\n");
+});
+
+test("cleanup preserves a validation candidate that Reviewer makes tracked and non-ignored", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	const gate = validation("require('node:fs').writeFileSync('tracked.cache', 'validation\\n')");
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, "integrated.txt", "integrated\n");
+			return success();
+		}
+		git(prepared.cwd, "add", "-f", "tracked.cache");
+		return success("PASS");
+	});
+
+	const result = await flowTool(app).execute("tracked-candidate", { units: [reviewedUnit("tracked", "work", gate)] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /cleanup refused/);
+	assert.equal(result.details.retained.length, 1);
+	const retainedPath = result.details.retained[0].path;
+	assert.equal(await readFile(join(retainedPath, "tracked.cache"), "utf8"), "validation\n");
+	assert.match(gitRaw(retainedPath, "status", "--porcelain=v1", "--untracked-files=all"), /^A  tracked\.cache$/m);
+	assert.equal(app.execLogs.some(({ command, args }) => command === "git" && args[1] === "worktree" && args[2] === "remove"), false);
+});
+
+test("cleanup preserves a validation candidate changed from a file to a directory", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	const gate = validation("require('node:fs').writeFileSync('typed.cache', 'validation\\n')");
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, "integrated.txt", "integrated\n");
+			return success();
+		}
+		await rm(join(prepared.cwd, "typed.cache"));
+		await mkdir(join(prepared.cwd, "typed.cache"));
+		await writeFile(join(prepared.cwd, "typed.cache", "reviewer.txt"), "preserve\n");
+		return success("PASS");
+	});
+
+	const result = await flowTool(app).execute("directory-candidate", { units: [reviewedUnit("directory", "work", gate)] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /cleanup refused/);
+	assert.equal(result.details.retained.length, 1);
+	assert.equal(await readFile(join(result.details.retained[0].path, "typed.cache", "reviewer.txt"), "utf8"), "preserve\n");
+	assert.equal(app.execLogs.some(({ command, args }) => command === "git" && args[1] === "worktree" && args[2] === "remove"), false);
+});
+
+test("cleanup preserves ignored validation output inside an initialized submodule", async (t) => {
+	const source = await repository(t);
+	await writeFile(join(source, ".gitignore"), "*.cache\n");
+	git(source, "add", ".gitignore");
+	git(source, "commit", "-qm", "ignore cache files");
+	const repo = await repository(t);
+	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "module");
+	git(repo, "commit", "-qam", "add submodule");
+	const gate = validation("require('node:fs').writeFileSync('module/validation.cache', 'preserve\\n')");
+	const app = harness(repo, async (prepared) => {
+		git(prepared.cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
+		await commit(prepared.cwd, "integrated.txt", "integrated\n");
+		return success();
+	});
+
+	const result = await flowTool(app).execute("submodule-candidate", { units: [unit("submodule", "work", gate)] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /cleanup refused/);
+	assert.equal(result.details.retained.length, 1);
+	assert.equal(await readFile(join(result.details.retained[0].path, "module", "validation.cache"), "utf8"), "preserve\n");
+	assert.ok(app.execLogs.some(({ command, args }) => command === "git" && args[1] === "submodule" && args[2] === "foreach"));
+	assert.equal(app.execLogs.some(({ command, args }) => command === "git" && args[1] === "worktree" && args[2] === "remove"), false);
+});
+
+test("cleanup preserves a candidate when fingerprint readability becomes uncertain", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	let inventories = 0;
+	let candidatePath = "";
+	const gate = validation("require('node:fs').writeFileSync('unreadable.cache', 'preserve\\n')");
+	const app = harness(repo, async (prepared) => {
+		candidatePath = join(prepared.cwd, "unreadable.cache");
+		await commit(prepared.cwd, "integrated.txt", "integrated\n");
+		return success();
+	}, (command, args, _options, next) => {
+		if (command !== "git" || args[1] !== "ls-files" || !args.includes("--ignored")) return next();
+		inventories += 1;
+		const result = next();
+		if (inventories !== 3) return result;
+		return result.then(async (completed) => {
+			await chmod(candidatePath, 0);
+			return completed;
+		});
+	});
+
+	const result = await flowTool(app).execute("unreadable-candidate", { units: [unit("unreadable", "work", gate)] }, undefined, undefined, app.ctx);
+
+	assert.equal(inventories, 3);
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /cleanup refused/);
+	assert.equal(result.details.retained.length, 1);
+	await chmod(candidatePath, 0o600);
+	assert.equal(await readFile(candidatePath, "utf8"), "preserve\n");
+	assert.equal(app.execLogs.some(({ command, args }) => command === "git" && args[1] === "worktree" && args[2] === "remove"), false);
 });
 
 test("failed validation preserves ignored output as the repair attempt baseline", async (t) => {

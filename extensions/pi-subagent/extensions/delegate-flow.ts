@@ -436,11 +436,10 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 	};
 
 	const removeValidationArtifacts = async (unit: UnitState, signal?: AbortSignal): Promise<void> => {
-		if (unit.validationArtifacts === undefined) return;
-		const current = await ignoredLeaves(unit, signal);
-		if (!current || !unit.validationArtifacts.length) return;
+		if (!unit.validationArtifacts?.length) return;
 		for (const artifact of unit.validationArtifacts) {
-			if (!current.has(artifact.path)) continue;
+			const current = await ignoredLeaves(unit, signal);
+			if (!current?.has(artifact.path)) continue;
 			const fingerprint = await fingerprintValidationArtifact(unit.worktree.path, artifact.path, signal);
 			if (!fingerprint || !sameValidationArtifact(artifact, fingerprint)) continue;
 			const target = validationArtifactPath(unit.worktree.path, artifact.path);
