@@ -28,6 +28,7 @@ export type PrDisplay = {
 
 export type PrTheme = {
 	fg(color: PrStatusColor | "text", text: string): string;
+	bold(text: string): string;
 };
 
 function footerStatus(input: PrDisplayInput, nextStep: NextStep): Pick<PrFooter, "text" | "color"> {
@@ -93,6 +94,13 @@ export function formatPrFooter(display: PrDisplay, theme: PrTheme): string | und
 	return `${link} · ${theme.fg(display.footer.color, display.footer.text)}`;
 }
 
-export function formatPrWidget(display: PrDisplay): string | undefined {
-	return display.widget;
+export function formatPrWidget(display: PrDisplay, theme: PrTheme): string[] | undefined {
+	if (display.widget === undefined) return undefined;
+	const color = display.footer?.color ?? "accent";
+	const border = theme.fg(color, "│");
+	const state = display.footer?.text ?? "no pull request";
+	return [
+		`${border} ${theme.fg("text", theme.bold("Pull request"))} · ${theme.fg(color, state)}`,
+		`${border} ${display.widget.replace("/pr", theme.fg(color, theme.bold("/pr")))}`,
+	];
 }
