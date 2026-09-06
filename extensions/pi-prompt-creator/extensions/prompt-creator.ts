@@ -268,7 +268,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	const configStore = createConfigStore<Config>({
 		extensionId: EXTENSION_ID,
 		agentDir,
-		defaults: () => ({ automatic: false, inputThreshold: DEFAULT_INPUT_THRESHOLD }),
+		defaults: () => ({ automatic: true, inputThreshold: DEFAULT_INPUT_THRESHOLD }),
 		parse: parseConfig,
 	});
 	let executor = options.executor;
