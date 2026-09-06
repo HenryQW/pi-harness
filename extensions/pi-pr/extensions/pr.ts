@@ -39,10 +39,9 @@ export default function pullRequestExtension(
 	let active: AbortController | undefined;
 	let queued = false;
 	let refreshFailureReported = false;
-	let displayedNextStep: ReturnType<typeof projectPrDisplay>["nextStep"] | undefined;
 	let displayedWidget: string | undefined;
 	let commandGeneration = 0;
-	const pendingCreations = new Set<number>();
+	const activeInvocations = new Map<number, "routing" | "workflow">();
 
 	const render = (
 		ctx: ExtensionContext,
@@ -54,10 +53,8 @@ export default function pullRequestExtension(
 		if (pullRequest !== null && footer === undefined) {
 			throw new Error("Current pull request display is missing a footer");
 		}
-		if (pullRequest !== null) pendingCreations.clear();
 		displayedWidget = formatPrWidget(display);
-		const widget = pendingCreations.size > 0 && display.nextStep === "create" ? undefined : displayedWidget;
-		displayedNextStep = display.nextStep;
+		const widget = activeInvocations.size > 0 ? undefined : displayedWidget;
 		ctx.ui.setStatus(UI_KEY, footer);
 		ctx.ui.setWidget(UI_KEY, widget === undefined ? undefined : [widget]);
 	};
@@ -67,10 +64,9 @@ export default function pullRequestExtension(
 		context = undefined;
 		queued = false;
 		refreshFailureReported = false;
-		displayedNextStep = undefined;
 		displayedWidget = undefined;
 		commandGeneration = 0;
-		pendingCreations.clear();
+		activeInvocations.clear();
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
 		active?.abort();
@@ -148,9 +144,15 @@ export default function pullRequestExtension(
 	pi.on("session_shutdown", stop);
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!ctx.hasUI || !ctx.isIdle() || !context || !pendingCreations.size) return;
+		if (!ctx.hasUI || !ctx.isIdle() || !context) return;
+		let workflowSettled = false;
+		for (const [invocation, phase] of activeInvocations) {
+			if (phase !== "workflow") continue;
+			activeInvocations.delete(invocation);
+			workflowSettled = true;
+		}
+		if (!workflowSettled) return;
 		cancelRefresh();
-		pendingCreations.clear();
 		await refresh().catch(reportRefreshFailure);
 	});
 
@@ -169,22 +171,17 @@ export default function pullRequestExtension(
 			if (!ctx.hasUI || !context) return;
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
-			const displayedCreation = displayedNextStep === "create";
-			if (displayedCreation) {
-				pendingCreations.add(invocation);
-				ctx.ui.setWidget(UI_KEY, undefined);
-			}
+			activeInvocations.set(invocation, "routing");
+			if (displayedWidget !== undefined) ctx.ui.setWidget(UI_KEY, undefined);
 			let nextStep: Awaited<ReturnType<typeof commandHandler>>;
 			try {
 				nextStep = await commandHandler(args, ctx);
 			} catch (error) {
 				if (sessionGeneration === generation) {
 					cancelRefresh();
-					pendingCreations.delete(invocation);
-					if (!pendingCreations.size) {
-						ctx.ui.setWidget(UI_KEY, displayedNextStep === "create" && displayedWidget !== undefined
-							? [displayedWidget]
-							: undefined);
+					activeInvocations.delete(invocation);
+					if (!activeInvocations.size) {
+						ctx.ui.setWidget(UI_KEY, displayedWidget === undefined ? undefined : [displayedWidget]);
 					}
 					refreshInBackground();
 				}
@@ -192,12 +189,12 @@ export default function pullRequestExtension(
 			}
 			if (sessionGeneration !== generation) return;
 			cancelRefresh();
-			if (nextStep === "create") {
-				pendingCreations.add(invocation);
-				ctx.ui.setStatus(UI_KEY, undefined);
+			if (nextStep !== "none" && nextStep !== "merge") {
+				activeInvocations.set(invocation, "workflow");
+				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
 				ctx.ui.setWidget(UI_KEY, undefined);
 			} else {
-				pendingCreations.delete(invocation);
+				activeInvocations.delete(invocation);
 				refreshInBackground();
 			}
 		},

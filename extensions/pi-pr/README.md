@@ -36,7 +36,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | Current condition | `/pr` route |
 | --- | --- |
 | No current-branch pull request, including no upstream push target | Start pull-request creation. |
-| Base update required or merge conflict | Update from the exact base when the tree is clean and local HEAD equals the PR head. |
+| Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
 | Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | CI failed | Run the CI fix workflow when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
@@ -63,9 +63,9 @@ Ordinary conversation comments do not trigger a route or block a merge. Changes 
 
 ## Refresh
 
-The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and the creation workflow. They also poll every 30 seconds. Polling updates presentation only and may be stale.
+The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also poll every 30 seconds. Polling updates presentation only and may be stale.
 
-The create hint stays hidden until the local branch has a commit beyond its creation point. It clears as soon as `/pr` starts creation. It returns if the workflow finishes without a pull request.
+The create hint stays hidden until the local branch has a commit beyond its creation point. Any displayed hint clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the hint when the handler finishes.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
@@ -82,6 +82,7 @@ Presentation uses route priority, so draft appears before running CI. `/pr` read
 - Applicable ruleset restrictions intersect repository-wide merge methods. An empty intersection stops the workflow.
 - Before merge, `/pr` fetches the exact head OID from the validated push URL without shared fetch state.
 - A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
+- A branch update resolves the base repository ref directly. It stops if that ref moves before merge or push.
 - Before a comment-sweep push, it revalidates the configured destination, full PR identity, and local HEAD. It pushes the captured OID.
 - An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.

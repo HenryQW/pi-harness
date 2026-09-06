@@ -498,6 +498,51 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 	}
 });
 
+test("keeps a non-create hint hidden until its workflow settles", async () => {
+	const workflow = deferred<"fix-ci">();
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return loads < 3
+				? currentPullRequest({ conditions: { ci: "failure" } })
+				: currentPullRequest();
+		},
+		async commandHandler() {
+			return workflow.promise;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+		const statusWrites = app.statuses.length;
+
+		const command = app.command().handler("", ctx as ExtensionCommandContext);
+		assert.equal(app.widgets.at(-1), undefined, "the hint clears while /pr selects the route");
+		assert.equal(app.statuses.length, statusWrites, "a non-create route must not clear the footer");
+
+		workflow.resolve("fix-ci");
+		await command;
+		assert.equal(app.widgets.at(-1), undefined, "the hint stays hidden after workflow dispatch");
+		assert.equal(app.statuses.length, statusWrites, "workflow dispatch must not clear the footer");
+
+		await app.tool({
+			toolName: "bash",
+			input: { command: "git push origin HEAD" },
+			isError: false,
+		}, ctx);
+		assert.equal(app.widgets.at(-1), undefined, "a workflow refresh must not restore the hint");
+
+		await app.settle(ctx);
+		assert.equal(loads, 3);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to merge pull request"]);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
 test("restores the create hint when the dispatched workflow settles without a pull request", async () => {
 	const app = harness({
 		async load() {
@@ -700,13 +745,13 @@ test("a failed second /pr keeps the active creation workflow pending", async () 
 	}
 });
 
-test("/pr preserves command errors while scheduling a refresh", async () => {
+test("/pr restores its hint after a command error and schedules a refresh", async () => {
 	let loads = 0;
 	let commandCalls = 0;
 	const app = harness({
 		async load() {
 			loads += 1;
-			return currentPullRequest({ conditions: { ci: "running" } });
+			return currentPullRequest({ conditions: { ci: "failure" } });
 		},
 		async commandHandler() {
 			commandCalls += 1;
@@ -722,7 +767,10 @@ test("/pr preserves command errors while scheduling a refresh", async () => {
 	assert.equal(commandCalls, 0);
 	assert.equal(loads, 1);
 
-	await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /route failed/);
+	const command = app.command().handler("", ctx as ExtensionCommandContext);
+	assert.equal(app.widgets.at(-1), undefined);
+	await assert.rejects(command, /route failed/);
+	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
 	await flush();
 	assert.equal(commandCalls, 1);
 	assert.equal(loads, 2);

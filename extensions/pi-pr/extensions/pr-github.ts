@@ -18,6 +18,7 @@ const PR_LIST_LIMIT = 100;
 const PR_SEARCH_CAP = 1_000;
 const PR_FIELDS = "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
+const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
 const BASE_BRANCH_POLICY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name branchProtectionRule{requiresStrictStatusChecks}}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const FAILED_CHECK_STATES = new Set([
@@ -609,6 +610,25 @@ function parseUnresolvedReviewThreads(output: string): number {
 	return total;
 }
 
+function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
+	const value = parseJson(output, "Read base ref");
+	if (!isRecord(value)) fail("Read base ref", "invalid GitHub CLI output");
+	if (value.errors !== undefined) {
+		if (!Array.isArray(value.errors)) fail("Read base ref", "invalid GitHub CLI output");
+		if (value.errors.length) fail("Read base ref", "GitHub GraphQL returned errors");
+	}
+	const repository = isRecord(value.data) ? value.data.repository : undefined;
+	if (!isRecord(repository) || !isRecord(repository.ref) || !isRecord(repository.ref.target)) {
+		fail("Read base ref", "invalid GitHub CLI output");
+	}
+	if (
+		normalizeRepository(repositoryName(repository.nameWithOwner, "Read base ref", "repository")) !==
+		normalizeRepository(candidate.base.repository) ||
+		text(repository.ref.name, "Read base ref", "ref") !== candidate.base.ref
+	) fail("Read base ref", "response does not match pull request base");
+	return oid(repository.ref.target.oid, "Read base ref", "target OID");
+}
+
 function parseLegacyBaseBranchPolicy(output: string, candidate: ListedPullRequest): boolean {
 	const value = parseJson(output, "Read base branch policy");
 	if (!isRecord(value)) fail("Read base branch policy", "invalid GitHub CLI output");
@@ -810,6 +830,29 @@ async function readUnresolvedReviewThreads(
 	return parseUnresolvedReviewThreads(result.stdout);
 }
 
+async function readBaseRefOid(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	candidate: ListedPullRequest,
+): Promise<string> {
+	const [owner, name] = candidate.base.repository.split("/");
+	const result = await execute(pi, context, "Read base ref", "gh", [
+		"api",
+		"graphql",
+		"--hostname",
+		candidate.url.hostname,
+		"-f",
+		`query=${BASE_REF_QUERY}`,
+		"-F",
+		`owner=${owner}`,
+		"-F",
+		`name=${name}`,
+		"-F",
+		`qualifiedName=refs/heads/${candidate.base.ref}`,
+	]);
+	return parseBaseRefOid(result.stdout, candidate);
+}
+
 async function readLegacyBaseBranchPolicy(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -913,6 +956,9 @@ export async function loadCurrentPullRequest(
 	const unresolvedThreads = candidate.lifecycle === "open"
 		? await readUnresolvedReviewThreads(pi, context, candidate)
 		: 0;
+	const liveBaseOid = candidate.lifecycle === "open"
+		? await readBaseRefOid(pi, context, candidate)
+		: null;
 	const rulesetPolicy = candidate.lifecycle === "open"
 		? await readRulesetBaseBranchPolicy(pi, context, candidate)
 		: null;
@@ -944,7 +990,7 @@ export async function loadCurrentPullRequest(
 		lifecycle: candidate.lifecycle,
 		conditions: pullRequestConditions,
 		local,
-		base: candidate.base,
+		base: liveBaseOid ? { ...candidate.base, oid: liveBaseOid } : candidate.base,
 		head: candidate.head,
 		headFetchSource: pushTarget.fetchSource,
 		merge,
