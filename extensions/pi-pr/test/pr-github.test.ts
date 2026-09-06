@@ -14,6 +14,7 @@ import { deriveNextStep } from "../extensions/pr-routing.ts";
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
 const BASE_HEAD = "c".repeat(40);
+const LIVE_BASE_HEAD = "d".repeat(40);
 
 type CommandCall = {
 	command: string;
@@ -38,7 +39,9 @@ type HarnessOptions = {
 	remoteHead?: string | null;
 	remoteHeadResult?: ReturnType<typeof result>;
 	threads?: string;
+	baseRefResult?: ReturnType<typeof result>;
 	policyResult?: ReturnType<typeof result>;
+	baseRefTargetOid?: string;
 	requiresStrictStatusChecks?: boolean | null;
 	rulesetResult?: ReturnType<typeof result>;
 	methods?: Record<string, unknown>;
@@ -84,6 +87,17 @@ function reviewThreadPage(nodes: unknown[], hasNextPage = false) {
 
 function reviewThreadOutput(...pages: unknown[]): string {
 	return JSON.stringify(pages);
+}
+
+function baseRefOutput(targetOid = BASE_HEAD): string {
+	return JSON.stringify({
+		data: {
+			repository: {
+				nameWithOwner: "acme/project",
+				ref: { name: "main", target: { oid: targetOid } },
+			},
+		},
+	});
 }
 
 function baseBranchPolicyOutput(requiresStrictStatusChecks: boolean | null): string {
@@ -189,6 +203,9 @@ function harness(options: HarnessOptions = {}) {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 				if (query.includes("reviewThreads")) {
 					return result(options.threads ?? reviewThreadOutput(reviewThreadPage([])));
+				}
+				if (query.includes("target{oid}")) {
+					return options.baseRefResult ?? result(baseRefOutput(options.baseRefTargetOid));
 				}
 				if (query.includes("branchProtectionRule")) {
 					return options.policyResult ?? result(baseBranchPolicyOutput(options.requiresStrictStatusChecks ?? null));
@@ -359,6 +376,25 @@ test("discovers an upstream PR for a slash-containing fork branch with a branch-
 		assert.equal(call.options?.timeout, 10_000);
 		assert.equal(call.options?.signal, context.signal);
 	}
+});
+
+test("resolves the current base ref target instead of the pull request base snapshot", async () => {
+	const app = harness({
+		candidates: [pullRequest({
+			baseRefOid: BASE_HEAD,
+			mergeable: "CONFLICTING",
+			mergeStateStatus: "DIRTY",
+		})],
+		baseRefTargetOid: LIVE_BASE_HEAD,
+	});
+
+	const loaded = await loadCurrentPullRequest(app.pi, app.context);
+	assert.ok(loaded);
+	assert.equal(loaded.base.oid, LIVE_BASE_HEAD);
+	const baseRefQuery = app.calls.find(({ command, args }) =>
+		command === "gh" && args.some((arg) => arg.includes("target{oid}"))
+	);
+	assert.ok(baseRefQuery?.args.includes("qualifiedName=refs/heads/main"));
 });
 
 test("uses inspected local safety without reopening the fetch window", async () => {
@@ -820,8 +856,34 @@ test("requires a base update for strict legacy protection or an applicable stric
 	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), true);
 });
 
-test("fails visibly when either base policy authority fails or is malformed", async () => {
-	const cases: Array<{ name: string; policyResult?: ReturnType<typeof result>; rulesetResult?: ReturnType<typeof result>; error: RegExp }> = [
+test("fails visibly when either base branch authority fails or is malformed", async () => {
+	const cases: Array<{
+		name: string;
+		baseRefResult?: ReturnType<typeof result>;
+		policyResult?: ReturnType<typeof result>;
+		rulesetResult?: ReturnType<typeof result>;
+		error: RegExp;
+	}> = [
+		{
+			name: "base ref query failure",
+			baseRefResult: result("", 1),
+			error: /Read base ref failed: exit code 1/,
+		},
+		{
+			name: "base ref GraphQL denial",
+			baseRefResult: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
+			error: /Read base ref failed: GitHub GraphQL returned errors/,
+		},
+		{
+			name: "malformed base ref authority",
+			baseRefResult: result(JSON.stringify({ data: { repository: null } })),
+			error: /Read base ref failed: invalid GitHub CLI output/,
+		},
+		{
+			name: "malformed base target OID",
+			baseRefResult: result(baseRefOutput("not-an-oid")),
+			error: /Read base ref failed: invalid target OID/,
+		},
 		{
 			name: "legacy query failure",
 			policyResult: result("", 1),
@@ -870,6 +932,7 @@ test("fails visibly when either base policy authority fails or is malformed", as
 	for (const candidate of cases) {
 		const { pi, context } = harness({
 			candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
+			baseRefResult: candidate.baseRefResult,
 			policyResult: candidate.policyResult,
 			rulesetResult: candidate.rulesetResult,
 		});

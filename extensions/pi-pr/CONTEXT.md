@@ -49,8 +49,8 @@ When the current branch has no pull request, `/pr` dispatches bundled `pi-pr-cre
 _Avoid_: Configured-target fallback, symbolic push source, duplicated shell workflow, unscoped automatic commit
 
 **PR branch-update workflow**:
-When the current pull request needs a base update or has a merge conflict, `/pr` dispatches bundled `pi-pr-update-branch` only when local HEAD equals the PR head and the worktree is clean. It derives the exact base host and repository from the validated public PR URL. It uses the public base ref and OID fields, merges without rewriting history, resolves clear conflicts, validates, and pushes. It stops when resolution requires a product decision.
-_Avoid_: `origin/main`, rebase, force push, automatic stashing
+When the current pull request needs a base update or has a merge conflict, `/pr` dispatches bundled `pi-pr-update-branch` only when local HEAD equals the PR head and the worktree is clean. It derives the exact base host and repository from the validated public PR URL. It resolves the current target of the base repository ref, pins that OID, and stops if the ref moves before merge or push. It merges without rewriting history, resolves clear conflicts, validates, and pushes. It stops when resolution requires a product decision.
+_Avoid_: PR base snapshot OID, `origin/main`, rebase, force push, automatic stashing
 
 **PR comment-sweep workflow**:
 When changes are requested or unresolved review threads exist, `/pr` dispatches the package-owned `pi-pr-comment-sweep` only when local HEAD equals the PR head and the worktree is clean. It resolves its bundled helper and references from the installed package skill path and needs no external `jq` executable. Before pushing, it revalidates the configured remote and ref, sole push URL, repository and host, full PR identity, and local HEAD. It pushes the captured OID without retry or fallback. It accepts the PR head already equal to local HEAD; otherwise the snapshot head must remain unchanged. Ordinary conversation comments do not select it, and presentation polling never starts it.

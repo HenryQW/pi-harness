@@ -47,6 +47,7 @@ type HarnessOptions = {
 	status?: string;
 	statuses?: string[];
 	ancestry?: "behind" | "ahead" | "diverged";
+	baseRefTargets?: string[];
 	localHead?: string;
 	localHeads?: string[];
 	unresolvedThreads?: number[];
@@ -87,6 +88,7 @@ function harness(options: HarnessOptions) {
 	let stateIndex = 0;
 	let statusIndex = 0;
 	let headIndex = 0;
+	let baseTargetIndex = 0;
 	let active: PullRequestSpec | null = null;
 	const configuredLocalHead = options.localHead ?? localHead;
 	const nextHost = () => options.states[stateIndex]?.host ?? DEFAULT_HOST;
@@ -144,6 +146,21 @@ function harness(options: HarnessOptions) {
 							pageInfo: { hasNextPage: false, endCursor: null },
 						} } },
 					}]));
+				}
+				if (query.includes("target{oid}")) {
+					return result(JSON.stringify({ data: { repository: {
+						nameWithOwner: active?.baseRepository ?? "acme/project",
+						ref: {
+							name: active?.baseRefName ?? "main",
+							target: { oid: options.baseRefTargets?.[baseTargetIndex++] ?? baseHead },
+						},
+					} } }));
+				}
+				if (query.includes("branchProtectionRule")) {
+					return result(JSON.stringify({ data: { repository: {
+						nameWithOwner: active?.baseRepository ?? "acme/project",
+						ref: { name: active?.baseRefName ?? "main", branchProtectionRule: null },
+					} } }));
 				}
 				if (query.includes("mergePullRequest")) {
 					events.push("merge");
@@ -430,15 +447,19 @@ test("cancels a confirmed merge when local HEAD changes during readiness", async
 });
 
 test("cancels a confirmed merge when the confirmed head or base context changes", async () => {
-	const cases: Array<{ name: string; fresh: PullRequestSpec; ancestry?: "behind" }> = [
+	const cases: Array<{ name: string; fresh: PullRequestSpec; ancestry?: "behind"; baseRefTargets?: string[] }> = [
 		{ name: "force-pushed head", fresh: { headRefOid: nextHead }, ancestry: "behind" },
 		{ name: "base repository retarget", fresh: { baseRepository: "acme/other" } },
 		{ name: "base ref retarget", fresh: { baseRefName: "release" } },
-		{ name: "base advances", fresh: { baseRefOid: "d".repeat(40) } },
+		{ name: "base advances", fresh: {}, baseRefTargets: [baseHead, "d".repeat(40)] },
 	];
 
 	for (const candidate of cases) {
-		const app = harness({ states: [{}, candidate.fresh], ancestry: candidate.ancestry });
+		const app = harness({
+			states: [{}, candidate.fresh],
+			ancestry: candidate.ancestry,
+			baseRefTargets: candidate.baseRefTargets,
+		});
 		await assert.rejects(app.handler("", app.context), /confirmed pull request context changed/, candidate.name);
 
 		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
@@ -449,11 +470,11 @@ test("cancels a confirmed merge when the confirmed head or base context changes"
 
 test("cancels when the base retargets or advances during final readiness evaluation", async () => {
 	for (const candidate of [
-		{ name: "base repository retarget", finalState: { baseRepository: "acme/other" } },
-		{ name: "base ref retarget", finalState: { baseRefName: "release" } },
-		{ name: "base advance", finalState: { baseRefOid: "d".repeat(40) } },
+		{ name: "base repository retarget", finalState: { baseRepository: "acme/other" }, baseRefTargets: undefined },
+		{ name: "base ref retarget", finalState: { baseRefName: "release" }, baseRefTargets: undefined },
+		{ name: "base advance", finalState: {}, baseRefTargets: [baseHead, "d".repeat(40)] },
 	]) {
-		const app = harness({ states: [{}, candidate.finalState] });
+		const app = harness({ states: [{}, candidate.finalState], baseRefTargets: candidate.baseRefTargets });
 		await assert.rejects(app.handler("", app.context), /confirmed pull request context changed/, candidate.name);
 
 		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
