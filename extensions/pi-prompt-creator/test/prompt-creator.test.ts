@@ -171,6 +171,28 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
 	}
 }
 
+test("missing config starts automatic analysis after three user inputs", async () => {
+	await withAgentDir(async (agentDir) => {
+		const child = controlledExecutor();
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			branch: [{ type: "message", message: { role: "user", content: "Make this workflow reusable." } }],
+		});
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+
+		for (const text of ["first", "second"]) {
+			app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
+		}
+		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		assert.equal(child.runs.length, 0);
+
+		app.handlers.get("input")!({ source: "interactive", text: "third" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await eventually(() => child.runs.length === 1);
+	});
+});
+
 test("automatic analysis honors the configured input threshold and discards a stale branch result", async () => {
 	await withAgentDir(async (agentDir) => {
 		await mkdir(extensionConfigDir("pi-prompt-creator", agentDir), { recursive: true });
