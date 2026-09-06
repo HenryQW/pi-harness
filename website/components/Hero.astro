@@ -30,12 +30,6 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
       <h1 id={`${id}-heading`}>Ship faster<br />with <span>fewer tokens.</span></h1>
     </div>
 
-    <div class="hero-identity" role="group" aria-label="Pi, Henry Wang, and Herdr">
-      <img class="hero-identity-apple" src="/apple-icon.png" alt="Henry Wang" width="88" height="88" />
-      <img class="hero-identity-pi" src="/pi-logo.svg" alt="Pi logo" width="88" height="88" />
-      <img class="hero-identity-herdr" src="/herdr-logo.svg" alt="Herdr logo" width="88" height="88" />
-    </div>
-
     <div class="hero-proof-grid">
       <article class="hero-installer" aria-label="Henry Pi Harness installer">
         <div class="hero-command-row">
@@ -262,65 +256,29 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
   }
 
   .hero-layout {
-    height: 624px;
+    height: 616px;
     position: relative;
   }
 
   .hero-heading {
     left: 64px;
     position: absolute;
-    top: 88px;
-    width: 650px;
+    top: 72px;
+    width: 900px;
   }
 
   .hero-heading h1 {
     font-family: Geist, sans-serif;
-    font-size: 72px;
+    font-size: 84px;
     font-weight: 600;
     letter-spacing: -2.4px;
-    line-height: 1.05;
+    line-height: 1.08;
     margin: 0;
   }
 
   .hero-heading h1 span,
   .hero-proof-stat span {
     color: var(--hero-blue);
-  }
-
-  .hero-identity {
-    height: 208px;
-    left: 818px;
-    position: absolute;
-    top: 64px;
-    width: 240px;
-  }
-
-  .hero-identity img {
-    border-radius: 50%;
-    display: block;
-    position: absolute;
-  }
-
-  .hero-identity-apple {
-    height: 88px;
-    left: 76px;
-    top: 0;
-    width: 88px;
-  }
-
-  .hero-identity-pi,
-  .hero-identity-herdr {
-    height: 80px;
-    top: 128px;
-    width: 80px;
-  }
-
-  .hero-identity-pi {
-    left: 0;
-  }
-
-  .hero-identity-herdr {
-    right: 0;
   }
 
   .hero-proof-grid {
@@ -330,7 +288,7 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     height: 136px;
     left: 64px;
     position: absolute;
-    top: 344px;
+    top: 336px;
     width: calc(100% - 128px);
   }
 
@@ -523,7 +481,7 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     min-height: 44px;
     position: absolute;
     text-decoration: none;
-    top: 544px;
+    top: 536px;
   }
 
   .hero-cta:hover {
@@ -550,39 +508,16 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
   }
 
   @media (max-width: 1279px) {
-    .hero-layout {
-      height: 760px;
-    }
-
     .hero-heading {
       left: 40px;
-      top: 80px;
-      width: 620px;
+      top: 64px;
+      width: 850px;
     }
 
     .hero-heading h1 {
-      font-size: 64px;
+      font-size: 72px;
       letter-spacing: -2px;
-    }
-
-    .hero-identity {
-      height: 184px;
-      left: 660px;
-      top: 56px;
-      width: 208px;
-    }
-
-    .hero-identity-apple {
-      height: 80px;
-      left: 64px;
-      width: 80px;
-    }
-
-    .hero-identity-pi,
-    .hero-identity-herdr {
-      height: 72px;
-      top: 112px;
-      width: 72px;
+      line-height: 1.08;
     }
 
     .hero-proof-grid {
@@ -590,7 +525,7 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
       grid-template-columns: 456px;
       height: 280px;
       left: 40px;
-      top: 336px;
+      top: 304px;
       width: calc(100% - 80px);
     }
 
@@ -637,28 +572,23 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     .hero-cta {
       font-size: 17px;
       left: 40px;
-      top: 680px;
+      top: 512px;
     }
   }
 
   @media (min-width: 768px) and (max-width: 1023px) {
     .hero-layout {
-      height: 872px;
+      height: 732px;
     }
 
     .hero-heading {
-      top: 64px;
+      top: 48px;
       width: calc(100% - 80px);
-    }
-
-    .hero-identity {
-      left: calc(50% - 104px);
-      top: 208px;
     }
 
     .hero-proof-grid {
       grid-template-columns: minmax(0, 1fr);
-      top: 432px;
+      top: 292px;
     }
 
     .hero-comparison-tablet {
@@ -672,13 +602,13 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     }
 
     .hero-cta {
-      top: 784px;
+      top: 644px;
     }
   }
 
   @media (min-width: 1024px) and (max-width: 1279px) {
     .hero-layout {
-      height: 624px;
+      height: 592px;
     }
 
     .hero-proof-grid {
@@ -689,46 +619,23 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     .hero-installer {
       align-self: start;
     }
-
-    .hero-cta {
-      top: 544px;
-    }
   }
 
   @media (max-width: 767px) {
     .hero-layout {
-      height: 884px;
+      height: 730px;
     }
 
     .hero-heading {
       left: 24px;
-      top: 40px;
+      top: 32px;
       width: calc(100% - 48px);
     }
 
     .hero-heading h1 {
-      font-size: clamp(32px, 10vw, 40px);
-      letter-spacing: -1.2px;
-    }
-
-    .hero-identity {
-      height: 164px;
-      left: calc(50% - 92px);
-      top: 210px;
-      width: 184px;
-    }
-
-    .hero-identity-apple {
-      height: 72px;
-      left: 56px;
-      width: 72px;
-    }
-
-    .hero-identity-pi,
-    .hero-identity-herdr {
-      height: 64px;
-      top: 100px;
-      width: 64px;
+      font-size: clamp(32px, calc(100vw / 7.5), 52px);
+      letter-spacing: -1.5px;
+      line-height: 1.1;
     }
 
     .hero-proof-grid {
@@ -737,7 +644,7 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
       grid-template-rows: 124px 180px;
       height: 336px;
       left: 24px;
-      top: 422px;
+      top: 268px;
       width: calc(100% - 48px);
     }
 
@@ -820,7 +727,7 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
       font-size: 16px;
       height: 44px;
       left: 24px;
-      top: 820px;
+      top: 666px;
       width: 250px;
     }
   }

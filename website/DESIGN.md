@@ -40,9 +40,9 @@ typography:
     lineHeight: 1.25
 heroTypography:
   display:
-    desktop: { fontSize: "72px", lineHeight: 1.05, letterSpacing: "-2.4px" }
-    tablet: { fontSize: "64px", lineHeight: 1.05, letterSpacing: "-2px" }
-    mobile: { fontSize: "clamp(32px, 10vw, 40px)", lineHeight: 1.05, letterSpacing: "-1.2px" }
+    desktop: { fontSize: "84px", lineHeight: 1.08, letterSpacing: "-2.4px" }
+    tablet: { fontSize: "72px", lineHeight: 1.08, letterSpacing: "-2px" }
+    mobile: { fontSize: "clamp(32px, calc(100vw / 7.5), 52px)", lineHeight: 1.1, letterSpacing: "-1.5px" }
   proof:
     desktop: "20px"
     tablet: "19px"
@@ -70,8 +70,29 @@ heroTypography:
 heroLayout:
   referenceWidths:
     desktop: "1280px"
-    tablet: "1024px"
+    tabletWide: "1024px"
+    tablet: "768px"
     mobile: "390px"
+  heroHeight:
+    desktop: "616px"
+    tabletWide: "592px"
+    tablet: "732px"
+    mobile: "730px"
+  heading:
+    desktop: { x: "64px", y: "72px", width: "900px" }
+    tabletWide: { x: "40px", y: "64px", width: "850px" }
+    tablet: { x: "40px", y: "48px", width: "calc(100% - 80px)" }
+    mobile: { x: "24px", y: "32px", width: "calc(100% - 48px)" }
+  proofTop:
+    desktop: "336px"
+    tabletWide: "304px"
+    tablet: "292px"
+    mobile: "268px"
+  ctaTop:
+    desktop: "536px"
+    tabletWide: "512px"
+    tablet: "644px"
+    mobile: "666px"
   pageRail:
     desktop: "64px"
     tablet: "40px"
@@ -128,7 +149,7 @@ components:
 
 **Creative North Star: "The Personal Engineering Notebook"**
 
-Henry Pi Harness pairs a warm paper canvas with ink-navy type and a single utility-blue accent. It reads as a personal, proof-driven place for serious Pi tooling: the author identity and live-looking work screenshot make it human, while concise sans type, monospaced package names, and thin rules keep it exact.
+Henry Pi Harness pairs a warm paper canvas with ink-navy type and a single utility-blue accent. It is a proof-driven place for serious Pi tooling. Concise sans type, monospaced package names, and thin rules keep it exact.
 
 The interface is intentionally quiet. It uses flat, bordered surfaces and sparse color to support scanning instead of treating a documentation catalogue like a marketing campaign. Dark mode keeps the same hierarchy on a deep navy work surface.
 
@@ -181,17 +202,17 @@ The palette is warm and restrained in light mode, then turns into a navy work su
 
 ### Responsive Hero Type Tokens
 
-These values define the approved hero hierarchy at each reference viewport. Figma stores them as local text styles under `Hero/`.
+These values define the approved hero hierarchy. Figma stores them as local text styles under `Hero/`.
 
-| Role | Desktop · 1280px | Tablet · 1024px | Mobile · 390px |
-|---|---:|---:|---:|
-| Display | `72px / 1.05 / -2.4px` | `64px / 1.05 / -2px` | `clamp(32px, 10vw, 40px) / 1.05 / -1.2px` |
-| Proof statement | `20px` | `19px` | `18px` |
-| CTA | `18px` | `17px` | `16px` |
-| Terminal code | `13px` | `12.5px` | `12px` |
-| Benchmark label | `13px / 400 / 1.4` | `12.5px / 400 / 1.35` | `12px / 500 / 1.35` |
-| Benchmark value | `13px / 500 / 1.35` | `12.5px / 500 / 1.35` | `12px / 500 / 1.35` |
-| Method note | `11px` | `10.5px` | `10px` |
+| Role | ≥1280px | 1024–1279px | 768–1023px | ≤767px · 390px reference |
+|---|---:|---:|---:|---:|
+| Display | `84px / 1.08 / -2.4px` | `72px / 1.08 / -2px` | `72px / 1.08 / -2px` | `clamp(32px, calc(100vw / 7.5), 52px) / 1.10 / -1.5px` |
+| Proof statement | `20px` | `19px` | `19px` | `18px` |
+| CTA | `18px` | `17px` | `17px` | `16px` |
+| Terminal code | `13px` | `12.5px` | `12.5px` | `12px` |
+| Benchmark label | `13px / 400 / 1.4` | `12.5px / 400 / 1.35` | `12.5px / 400 / 1.35` | `12px / 500 / 1.35` |
+| Benchmark value | `13px / 500 / 1.35` | `12.5px / 500 / 1.35` | `12.5px / 500 / 1.35` | `12px / 500 / 1.35` |
+| Method note | `11px` | `10.5px` | `10.5px` | `10px` |
 
 Display values list `font-size / line-height / letter-spacing`. Benchmark values list `font-size / font-weight / line-height`.
 
@@ -203,7 +224,14 @@ Display values list `font-size / line-height / letter-spacing`. Benchmark values
 
 Use a centered content column capped at `90rem`. The reference rails are `64px` desktop, `40px` tablet, and `24px` mobile.
 
-The desktop hero at `1280px` and wider uses a two-column proof grid with a `40px` gap and a `624px` hero. From `1024px` through `1279px`, the tablet hero uses two equal columns with a `32px` gap; at the `1024px` reference, its proof rail is `944px` wide with `456px` columns. This mode uses a shared proof top edge, a `96px` terminal, a `152px` benchmark and proof grid, a `624px` hero, and CTA at `y=544`. From `768px` through `1023px`, the identity triangle centers below the heading and the proof panels fill the content rail, stacked with a `32px` gap in a `280px` proof area. This stacked-tablet mode uses an `872px` hero and CTA at `y=784`. Below `768px`, proof panels stay full-width and stacked with a `32px` gap, an `884px` hero, CTA at `y=820`, and a full-width proof method. Terminal padding is `12px 16px` on desktop and tablet, then `16px` on mobile. Internal terminal gaps are `12px`, `12px`, and `16px` respectively. Figma stores these values in the `Hero layout tokens` variable collection.
+| Viewport | Hero | Heading `x / y / width` | Proof top | CTA top |
+|---|---:|---|---:|---:|
+| ≥1280px | `616px` | `64px / 72px / 900px` | `336px` | `536px` |
+| 1024–1279px | `592px` | `40px / 64px / 850px` | `304px` | `512px` |
+| 768–1023px | `732px` | `40px / 48px / calc(100% - 80px)` | `292px` | `644px` |
+| ≤767px · 390px reference | `730px` | `24px / 32px / calc(100% - 48px)` | `268px` | `666px` |
+
+Desktop uses two proof columns with a `40px` gap. Wide tablet uses two equal columns with a `32px` gap; its `1024px` proof rail is `944px` wide with `456px` columns. Compact tablet and mobile stack full-width panels with a `32px` gap. Hero space serves the statement and proof only; it has no identity artwork. Terminal padding is `12px 16px` on desktop and tablet, then `16px` on mobile. Internal terminal gaps are `12px`, `12px`, and `16px` respectively. Figma stores these values in the `Hero layout tokens` variable collection.
 
 Extension lists move from one column to two at `640px` and stay at two columns at wider widths. Keep cards equal-height within a row, with metadata pinned beneath the description. Primary actions and footer links keep a `2.75rem` minimum height. Header search and icon controls stay compact at `2.25rem`.
 
