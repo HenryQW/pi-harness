@@ -23,7 +23,9 @@ Run `/pr` without arguments in a GitHub checkout. It reads the current branch pu
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
-| Widget hint | ui | Show at most one hint for the next `/pr` step. |
+| Widget | ui | Show one actionable icon-prefixed `Run /pr to …` hint. |
+
+The footer already shows the pull request and status. Actionable widgets omit duplicate identity and status. Each uses one semantic status icon, a space, and a plain `Run /pr to …` route. `✗` marks errors, `!` warnings, `✓` success, and `●` accent or neutral routes. In TUI, only the icon uses a theme color. RPC and non-TUI output use the same plain text without ANSI.
 
 ## Flow
 
@@ -65,7 +67,7 @@ Ordinary conversation comments do not trigger a route or block a merge. Changes 
 
 The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also poll every 30 seconds. Polling updates presentation only and may be stale.
 
-The create hint stays hidden until the local branch has a commit beyond its creation point. Any displayed hint clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the hint when the handler finishes.
+The create widget stays hidden until the local branch has a commit beyond its creation point. Any displayed widget clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the widget when the handler finishes.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
