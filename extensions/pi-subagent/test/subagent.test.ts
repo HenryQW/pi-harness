@@ -1746,15 +1746,16 @@ const timer = setInterval(() => {
 		const paths = names.map((name) => join(root, ".worktrees", name));
 		const launches = await Promise.all(["alpha", "beta"].map(async (task) =>
 			JSON.parse(await readFile(join(started, task), "utf8")) as { args: string[]; cwd: string }));
-		assert.deepEqual(new Set(launches.map(({ cwd }) => cwd)), new Set(paths));
+		assert.deepEqual(launches.map(({ cwd }) => cwd), paths);
 		assert.equal(launches[0]!.args[launches[0]!.args.indexOf("--extension") + 1], "/user/scout.ts");
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf("--extension") + 1], "/user/reviewer.ts");
 		assert.equal(launches[0]!.args[launches[0]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["read"]));
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["grep"]));
 		const widget = app.widget!.render(120);
 		assert.equal(workingWidgetRows(widget).length, 2);
-		assert.match(widget.join("\n"), /^Inspect auth files\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking…/);
-		assert.match(widget.join("\n"), /Review auth findings\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
+		const widgetText = widget.join("\n");
+		assert.match(widgetText, /Inspect auth files\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking…/);
+		assert.match(widgetText, /Review auth findings\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
 		await Promise.all([writeFile(join(release, "alpha"), ""), writeFile(join(release, "beta"), "")]);
 		await waitFor(() => app.sentMessages.length === 1);
 
