@@ -26,19 +26,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Validate website
         run: pnpm --filter @henryqw/pi-docs run validate
-      - name: Run tests
-        shell: bash
-        run: |
-          set +e
-          pnpm test 2>&1 | tee "$RUNNER_TEMP/pnpm-test.log"
-          status=${PIPESTATUS[0]}
-          if (( status != 0 )); then
-            {
-              echo "### Failed tests"
-              grep -E '^(not ok [0-9]+ - |# fail [1-9])' "$RUNNER_TEMP/pnpm-test.log" || echo "pnpm test failed before producing a test summary; see the full Run tests log."
-            } | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-          exit "$status"
+      - run: pnpm test
       - run: pnpm run typecheck
       - run: pnpm run pack:check
       - name: Require package version bumps

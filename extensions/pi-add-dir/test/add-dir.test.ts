@@ -165,6 +165,16 @@ test("returns no results when an external directory disappears", async () => {
 	assert.deepEqual(await findFiles(dir, "*.ts", 1), []);
 });
 
+test("propagates abort reasons that resemble missing paths", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	await rm(dir, { recursive: true, force: true });
+	const controller = new AbortController();
+	const reason = { code: "ENOENT" };
+	const search = findFiles(dir, "*.ts", 1, controller.signal);
+	queueMicrotask(() => controller.abort(reason));
+	await assert.rejects(search, (error) => error === reason);
+});
+
 test("rejects an ancestor of the current working directory", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	try {
