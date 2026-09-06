@@ -515,6 +515,70 @@ test("Unit validation rejects hidden tracked changes without rejecting ignored g
 	}
 });
 
+test("successful validation-created ignored artifacts are removed before non-forced cleanup", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n*.link\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore validation artifacts");
+	let unitPath = "";
+	let unitBranch = "";
+	const gate = validation([
+		"const fs = require('node:fs');",
+		"fs.writeFileSync('validation.cache', 'validated\\n');",
+		"fs.symlinkSync('validation.cache', 'validation.link');",
+	].join("\n"));
+	const app = harness(repo, async (prepared) => {
+		unitPath = prepared.cwd;
+		unitBranch = git(prepared.cwd, "branch", "--show-current");
+		await commit(prepared.cwd, "integrated.txt", "integrated\n");
+		return success();
+	});
+
+	const result = await flowTool(app).execute("validation-artifacts", { units: [unit("artifacts", "work", gate)] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.deepEqual(result.details.warnings, []);
+	assert.deepEqual(result.details.retained, []);
+	assert.equal(existsSync(unitPath), false);
+	assert.equal(git(repo, "branch", "--list", unitBranch), "");
+	assert.equal((gitRaw(repo, "worktree", "list", "--porcelain").match(/^worktree /gm) ?? []).length, 1);
+	const inventories = app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "ls-files" && args.includes("--ignored"));
+	assert.equal(inventories.length, 3);
+	for (const { args } of inventories) assert.deepEqual(args.slice(1), [
+		"ls-files", "--full-name", "--others", "--ignored", "--exclude-standard", "-z", "--",
+	]);
+	const removals = app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "worktree" && args[2] === "remove");
+	assert.equal(removals.length, 1);
+	assert.ok(removals.every(({ args }) => !args.includes("--force")));
+});
+
+test("malformed ignored inventory preserves validation output and the existing cleanup warning", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore validation artifacts");
+	let inventories = 0;
+	const gate = validation("require('node:fs').writeFileSync('validation.cache', 'preserve\\n')");
+	const app = harness(repo, async (prepared) => {
+		await commit(prepared.cwd, "integrated.txt", "integrated\n");
+		return success();
+	}, (command, args, _options, next) => {
+		if (command !== "git" || args[1] !== "ls-files" || !args.includes("--ignored")) return next();
+		inventories += 1;
+		if (inventories !== 2) return next();
+		return Promise.resolve({ stdout: "validation.cache", stderr: "", code: 0, killed: false });
+	});
+
+	const result = await flowTool(app).execute("malformed-inventory", { units: [unit("malformed", "work", gate)] }, undefined, undefined, app.ctx);
+
+	assert.equal(inventories, 3);
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /cleanup refused/);
+	assert.equal(result.details.retained.length, 1);
+	assert.equal(await readFile(join(result.details.retained[0].path, "validation.cache"), "utf8"), "preserve\n");
+});
+
 test("a post-checkout setup failure preserves and reports the attempted allocation", async (t) => {
 	const repo = await repository(t);
 	const hook = join(repo, ".git", "hooks", "post-checkout");
@@ -1047,22 +1111,30 @@ test("pre-rebase dirty proof preserves a later Unit's ignored collision bytes", 
 	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["second"]);
 });
 
-test("a rebase-dropped duplicate is validated and completes as a no-op without Reviewer", async (t) => {
+test("a rebase-dropped duplicate cleans successful validation artifacts on the no-op path without Reviewer", async (t) => {
 	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore validation artifacts");
 	let reviewers = 0;
+	const paths: string[] = [];
+	const gate = validation("require('node:fs').writeFileSync('validation.cache', 'validated\\n')");
 	const app = harness(repo, async (prepared) => {
 		if (childRole(prepared) === "implementer") {
+			paths.push(prepared.cwd);
 			await commit(prepared.cwd, "duplicate.txt", "same\n", `duplicate ${unitId(prepared.task)}`);
 			return success();
 		}
 		reviewers++;
 		return success("PASS");
 	});
-	const result = await flowTool(app).execute("noop", { units: [reviewedUnit("one"), reviewedUnit("two")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("noop", { units: [reviewedUnit("one", "work", gate), reviewedUnit("two", "work", gate)] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.deepEqual(result.details.completed, [{ id: "one", noOp: false }, { id: "two", noOp: true }]);
 	assert.equal(reviewers, 1);
 	assert.deepEqual(result.details.retained, []);
+	assert.deepEqual(result.details.warnings, []);
+	assert.ok(paths.every((path) => !existsSync(path)));
 	assert.equal(app.execLogs.filter(({ command }) => command === process.execPath).length, 2);
 	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 1);
 });
@@ -1283,12 +1355,13 @@ test("ignored Main collision rejects integration without overwriting data and re
 	]);
 });
 
-test("cleanup refusal after exact integration preserves ignored work with a bounded warning", async (t) => {
+test("cleanup refusal after exact integration preserves Implementer ignored work and removes validation output", async (t) => {
 	const repo = await repository(t);
 	await writeFile(join(repo, ".gitignore"), "*.cache\n");
 	git(repo, "add", ".gitignore");
 	git(repo, "commit", "-qm", "ignore cache files");
 	let approvedTip = "";
+	const gate = validation("require('node:fs').writeFileSync('validation.cache', 'remove\\n')");
 	const app = harness(repo, async (prepared) => {
 		if (childRole(prepared) === "implementer") {
 			await commit(prepared.cwd, "integrated.txt", "integrated\n");
@@ -1298,7 +1371,7 @@ test("cleanup refusal after exact integration preserves ignored work with a boun
 		approvedTip = reviewPacket(prepared.task).tip;
 		return success("PASS");
 	});
-	const result = await flowTool(app).execute("cleanup", { units: [reviewedUnit("cleanup")] }, undefined, undefined, app.ctx);
+	const result = await flowTool(app).execute("cleanup", { units: [reviewedUnit("cleanup", "work", gate)] }, undefined, undefined, app.ctx);
 	assert.equal(result.details.outcome, "completed");
 	assert.equal(git(repo, "rev-parse", "HEAD"), approvedTip);
 	assert.equal(await readFile(join(repo, "integrated.txt"), "utf8"), "integrated\n");
@@ -1306,8 +1379,67 @@ test("cleanup refusal after exact integration preserves ignored work with a boun
 	assert.match(result.details.warnings[0], /integrated, but cleanup refused/);
 	assert.ok(Buffer.byteLength(result.details.warnings[0], "utf8") <= 50 * 1024 + 200);
 	assert.equal(result.details.retained.length, 1);
-	assert.equal(await readFile(join(result.details.retained[0].path, "result.cache"), "utf8"), "retain\n");
+	const retainedPath = result.details.retained[0].path;
+	assert.equal(await readFile(join(retainedPath, "result.cache"), "utf8"), "retain\n");
+	assert.equal(existsSync(join(retainedPath, "validation.cache")), false);
 	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 1);
+});
+
+test("Reviewer mutation of a validation-created ignored artifact preserves it", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	const gate = validation("require('node:fs').writeFileSync('reviewed.cache', 'validation\\n')");
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "implementer") {
+			await commit(prepared.cwd, "integrated.txt", "integrated\n");
+			return success();
+		}
+		await writeFile(join(prepared.cwd, "reviewed.cache"), "reviewer\n");
+		await writeFile(join(prepared.cwd, "reviewer-created.cache"), "reviewer-created\n");
+		return success("PASS");
+	});
+
+	const result = await flowTool(app).execute("reviewer-mutation", { units: [reviewedUnit("mutation", "work", gate)] }, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "completed");
+	assert.equal(result.details.warnings.length, 1);
+	assert.match(result.details.warnings[0], /cleanup refused/);
+	assert.equal(result.details.retained.length, 1);
+	const retainedPath = result.details.retained[0].path;
+	assert.equal(await readFile(join(retainedPath, "reviewed.cache"), "utf8"), "reviewer\n");
+	assert.equal(await readFile(join(retainedPath, "reviewer-created.cache"), "utf8"), "reviewer-created\n");
+});
+
+test("failed validation preserves ignored output as the repair attempt baseline", async (t) => {
+	const repo = await repository(t);
+	await writeFile(join(repo, ".gitignore"), "*.cache\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore cache files");
+	const gate = validation([
+		"const fs = require('node:fs');",
+		"if (!fs.existsSync('failed.cache')) {",
+		"  fs.writeFileSync('failed.cache', 'failed validation\\n');",
+		"  process.exit(2);",
+		"}",
+	].join("\n"));
+	const app = harness(repo, async (prepared) => {
+		if (prepared.task.startsWith("Flow Unit")) await commit(prepared.cwd, "integrated.txt", "integrated\n");
+		return success();
+	});
+
+	const blocked = await flowTool(app).execute("failed-artifact", { units: [unit("failed", "work", gate)] }, undefined, undefined, app.ctx);
+	assert.equal(blocked.details.outcome, "blocked");
+	assert.equal(blocked.details.blocked.classification, "validation");
+	assert.equal(await readFile(join(blocked.details.blocked.path, "failed.cache"), "utf8"), "failed validation\n");
+
+	const completed = await continueTool(app).execute("failed-artifact-repair", { guidance: "Keep the failed validation output and retry." }, undefined, undefined, app.ctx);
+	assert.equal(completed.details.outcome, "completed");
+	assert.equal(completed.details.warnings.length, 1);
+	assert.match(completed.details.warnings[0], /cleanup refused/);
+	assert.equal(completed.details.retained.length, 1);
+	assert.equal(await readFile(join(completed.details.retained[0].path, "failed.cache"), "utf8"), "failed validation\n");
 });
 
 test("cleanup retains a detached clean commit after approved integration", async (t) => {

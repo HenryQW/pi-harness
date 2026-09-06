@@ -97,10 +97,14 @@ for each declared unit:
   ├─ no review: git merge --ff-only <exact validated tip>
   └─ review: Reviewer receives exact {base, tip, patchPath}
              exact PASS → git merge --ff-only <full reviewed OID>
-  git worktree remove; git branch -d
+  unlink unchanged proven validation artifacts; git worktree remove; git branch -d
 ```
 
-Flow derives identity from Git, not child output. Add `review` only for an explicit judgment criterion that automated validation cannot establish; it is not a second generic verification pass. The Reviewer reads the exact patch as authoritative and may use the same worktree only for referenced context. A full-OID fast-forward is the only integration path. Cleanup is non-forced; after a successful integration, cleanup refusal returns `completed` with a retained path/branch warning.
+Flow derives identity from Git, not child output. Add `review` only for an explicit judgment criterion that automated validation cannot establish; it is not a second generic verification pass. The Reviewer reads the exact patch as authoritative and may use the same worktree only for referenced context. A full-OID fast-forward is the only integration path.
+
+Immediately before each validation attempt, Flow inventories ignored leaf paths with NUL-safe Git output. Only after every command and the exact committed-state check succeed does it fingerprint new regular files and symlinks. File content is streamed into a digest, and symlink targets are read without following them.
+
+After no-op approval or exact-tip integration, Flow first proves the Unit branch and `HEAD`. It rechecks ignored membership and exact evidence before each non-recursive unlink. Failed-attempt, pre-validation, Implementer, Reviewer, changed, non-ignored, directory, submodule, malformed, escaped, unreadable, and uncertain work remains untouched. The existing dirty inspection then decides whether non-forced worktree and branch cleanup can proceed. A cleanup refusal returns `completed` with a retained path and branch warning.
 
 If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance, modelClass? })` reruns the Flow's frozen Implementer Role in that same worktree once, then repeats derivation, validation, and conditional review with fresh exact evidence. An omitted continuation class retains a supplied Unit class; when no Unit class was supplied, each frozen Role uses its own default. A supplied continuation class replaces both Role defaults for that repair and any subsequent Reviewer launch. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact integrated tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
 

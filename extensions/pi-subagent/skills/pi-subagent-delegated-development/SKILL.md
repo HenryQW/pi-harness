@@ -13,7 +13,9 @@ Before slicing, identify applicable repository prohibitions. If the request or p
 
 Use the fewest cohesive units. `delegate_flow` is for independent units expected to commute: split independent outcomes into units, combine or sequence work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants, and never divide one invariant across multiple units. Dependent work remains outside Flow; sequence it in one task or ordinary caller-controlled sequencing.
 
-Give every unit a bounded objective, owned scope and exclusions, and its direct validation command/argument array; each delegation must own one concrete outcome with one focused validation story. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Do not pass the parent request unchanged. Choose `modelClass` according to the delegation tool's guidance. Add non-empty `review` only for an explicit judgment that automated validation cannot establish. Call `delegate_flow` with 1–8 units; the runtime always supplies the effective Implementer and supplies the Reviewer only when a unit needs review.
+Give every unit a bounded objective, owned scope and exclusions, and its direct validation command/argument array. Each task packet must name the neighboring behavior that must stay unchanged. Include the exact test name or error when known CI evidence exists. Never claim a validation command matches unknown CI.
+
+Each delegation must own one concrete outcome with one focused validation story. Order declared validation from the cheapest focused check to broader required checks. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Do not pass the parent request unchanged. Choose `modelClass` according to the delegation tool's guidance. Add non-empty `review` only for an explicit judgment that automated validation cannot establish. Call `delegate_flow` with 1–8 units; the runtime always supplies the effective Implementer and supplies the Reviewer only when a unit needs review.
 
 ## Runtime Flow
 
@@ -27,7 +29,9 @@ A successful Flow owns integration and cleanup. A blocked outcome is repairable 
 delegate_flow_continue({ guidance: "Address the reported block and complete the bounded unit.", modelClass: "balanced" })
 ```
 
-Make the guidance specific to the reported implementation, validation, or review failure. Omit `modelClass` to retain an explicit blocked-unit class or otherwise use each frozen Role's default; supply it only to replace both defaults for that one repair. Do not call continuation unless Flow reports a repairable block. If continuation or Flow returns a terminal failure, inspect every retained path reported by the runtime, then reslice or manually recover from Main; do not retry the Flow or guess a rebase resolution. A cleanup warning does not undo successful integration.
+Make the guidance specific to the reported implementation, validation, or review failure. Omit `modelClass` to retain an explicit blocked-unit class or otherwise use each frozen Role's default; supply it only to replace both defaults for that one repair. Do not call continuation unless Flow reports a repairable block. If continuation or Flow returns a terminal failure, inspect every retained path reported by the runtime, then reslice or manually recover from Main; do not retry the Flow or guess a rebase resolution.
+
+A cleanup warning does not undo successful integration. Report a cleanup warning from a successful Flow as-is. Do not investigate it unless the user asks or cleanup is part of acceptance.
 
 ## Ordinary delegation
 
