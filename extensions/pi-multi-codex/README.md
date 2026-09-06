@@ -1,13 +1,9 @@
 # `@henryqw/pi-multi-codex`
 
-Add multiple ChatGPT Codex OAuth accounts and start new Pi work on the slot with the most weekly quota.
+Add multiple ChatGPT Codex OAuth accounts and start new Pi work on the eligible slot with the most weekly quota. Optional automatic switching can retry an HTTP 429 on another eligible slot.
 
 ![Pi showing Codex account quotas and the active footer slot](./example.png)
-
-## Why
-
-- **Created for**: Pi users who work across more than one Codex subscription.
-- **Advantage**: Quota-aware routing starts with the eligible slot that has the most remaining seven-day quota. With automatic switching enabled, Pi can retry an HTTP 429 response on another eligible slot.
+![Flowchart separating fresh-quota startup ranking from broader HTTP 429 failover](./docs/codex-routing-flow.svg)
 
 ## Install
 
@@ -15,7 +11,7 @@ Add multiple ChatGPT Codex OAuth accounts and start new Pi work on the slot with
 pi install npm:@henryqw/pi-multi-codex
 ```
 
-## With
+## Works with
 
 | Package | Why |
 | --- | --- |
@@ -37,9 +33,8 @@ Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`,
 
 A numbered slot is one Codex account position in Pi.
 
-![Flowchart separating fresh-quota startup ranking from broader HTTP 429 failover](./docs/codex-routing-flow.svg)
+## Flow
 
-- The extension reads `auth.json`. It never writes or refreshes credentials.
 - Before the first agent start, only fresh quota snapshots enter startup ranking. The slot with the most seven-day quota wins.
 - After HTTP 429, failover can use authenticated, registered, scope-allowed, untried slots with stale or missing quota.
 - Failover skips known active five-hour blocks. It ranks fresh known quota first, then unranked slots by slot number.
@@ -47,7 +42,6 @@ A numbered slot is one Codex account position in Pi.
 - During one agent run, each eligible slot is tried at most once after HTTP 429 responses.
 - Automatic retry stops when no untried eligible slot remains.
 - The footer shows the active slot's fresh quota or five-hour block.
-- Scoped sessions can switch only to exact scoped aliases.
 
 ## Config
 
@@ -61,4 +55,14 @@ Automatic HTTP 429 switching is on by default. To disable it, create `~/.pi/agen
 
 The config must contain only `autoSwitchOn429` as a boolean. Invalid config is preserved and disables automatic switching.
 
-Generated credential-free quota cache: `~/.pi/agent/config/pi-multi-codex/usage.json`. The extension maintains it.
+## State and storage
+
+The extension maintains a generated, credential-free quota cache at `~/.pi/agent/config/pi-multi-codex/usage.json`.
+
+## Data, cost, and privacy
+
+The extension reads `auth.json`. It never writes or refreshes credentials.
+
+## Limits and recovery
+
+Scoped sessions can switch only to exact scoped aliases.

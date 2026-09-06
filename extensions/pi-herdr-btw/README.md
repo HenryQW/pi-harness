@@ -1,12 +1,8 @@
 # `@henryqw/pi-herdr-btw`
 
-Ask a focused side question in Herdr, then return its transcript and next instruction to Main.
+Ask a focused side question in Herdr, then return its transcript and next instruction to Main. This avoids changing Main's conversation path or copying the result by hand.
 
-## Why
-
-- **Created for**: Pi users who need a short detour without changing Main's conversation path.
-- **Advantage**: `/btw merge` returns the useful text and next prompt without manual copying.
-- **Inspired by**: [Claude Code](https://github.com/anthropics/claude-code) and its `/btw` side-question mode. This package adds transcript merge back into Main.
+Inspired by [Claude Code](https://github.com/anthropics/claude-code) and its `/btw` side-question mode. This package adds transcript merge back into Main.
 
 ## Install
 
@@ -17,7 +13,7 @@ pi install npm:@henryqw/pi-herdr-btw
 
 Requires Herdr 0.7.4+ and a Herdr-managed pane. Run `/task-models` and configure the `fast` profile before opening a side thread.
 
-## With
+## Works with
 
 | Package | Why |
 | --- | --- |
@@ -30,8 +26,6 @@ Run `/btw Why is this test failing?` and submit the draft in the side pane. Afte
 
 Main receives the side transcript, regains focus, and continues with the merge prompt.
 
-Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
-
 ```text
 /btw                              open an empty side pane
 /btw <question...>                open side pane with draft question
@@ -40,6 +34,10 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 /btw merge <prompt...>            merge side thread into Main and continue
 /btw help                         show grammar
 ```
+
+Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
+
+## Flow
 
 ### Launch
 
@@ -61,12 +59,6 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 - Main appends the transcript without starting a turn, then submits the prompt.
 - Bare `/btw merge` opens the prompt editor.
 - Pending delivery remains available until consumed or 24-hour stale cleanup.
-
-### Limits and privacy
-
-- The side pane gets static parent context and shares Main's working directory. Enabled tools can change parent-visible files.
-- Large parent contexts can exceed child context limits.
-- Launch data stays in a private temporary directory.
 
 ## Config
 
@@ -92,3 +84,13 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 - `/btw config reset` saves the defaults.
 - The config file is optional. Missing config uses defaults.
 - Malformed config fails visibly and remains unchanged.
+
+## Data, cost, and privacy
+
+The side pane gets static parent context and shares Main's working directory. Enabled tools can change parent-visible files.
+
+Launch data stays in a private temporary directory.
+
+## Limits and recovery
+
+Large parent contexts can exceed child context limits.

@@ -1,0 +1,256 @@
+---
+interface PackageLink {
+  href: string;
+  name: string;
+}
+
+interface Workflow {
+  outcome: string;
+  packages: PackageLink[];
+  title: string;
+}
+
+interface Props {
+  class?: string;
+  id?: string;
+  workflows?: Workflow[];
+}
+
+const defaultWorkflows: Workflow[] = [
+  {
+    title: "Autonomous delivery",
+    outcome:
+      "Turn independent implementation units into an isolated, validation- and review-gated delivery flow.",
+    packages: [
+      { name: "@henryqw/pi-subagent", href: "/extensions/pi-subagent" },
+      { name: "@henryqw/pi-task-models", href: "/extensions/pi-task-models" },
+    ],
+  },
+  {
+    title: "Parallel investigation",
+    outcome:
+      "Branch the active conversation into a side pane or worktree, then bring the result back safely.",
+    packages: [
+      { name: "@henryqw/pi-herdr-clone", href: "/extensions/pi-herdr-clone" },
+      { name: "@henryqw/pi-herdr-btw", href: "/extensions/pi-herdr-btw" },
+    ],
+  },
+  {
+    title: "Land the change",
+    outcome:
+      "Open or create the current-branch PR, keep CI and review threads visible, then clean up the Herdr worktree when it’s done.",
+    packages: [
+      { name: "@henryqw/pi-pr", href: "/extensions/pi-pr" },
+      { name: "@henryqw/pi-footer", href: "/extensions/pi-footer" },
+      { name: "@henryqw/pi-herdr-done", href: "/extensions/pi-herdr-done" },
+    ],
+  },
+];
+
+const { class: className = "", id = "workflow-rows", workflows = defaultWorkflows } = Astro.props;
+---
+
+<section class:list={["workflow-rows", className]} id={id} aria-labelledby={`${id}-heading`}>
+  <div class="homepage-container workflow-container">
+    <h2 id={`${id}-heading`}>Start with a workflow</h2>
+    <div class="workflow-list">
+      {workflows.map((workflow) => (
+        <article class="workflow-row">
+          <h3>{workflow.title}</h3>
+          <div>
+            <p>{workflow.outcome}</p>
+            <ul aria-label={`${workflow.title} packages`}>
+              {workflow.packages.map((pkg) => (
+                <li>
+                  <a href={pkg.href}><span>{pkg.name}</span></a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </article>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .workflow-rows {
+    --workflow-paper: #f0eee9;
+    --workflow-navy: #101828;
+    --workflow-copy: #4c5665;
+    --workflow-rule: rgb(16 24 40 / 18%);
+    --workflow-blue: #1d4ed8;
+    --workflow-focus: #1d4ed8;
+    background: var(--workflow-paper);
+    color: var(--workflow-navy);
+  }
+
+  :global([data-theme="dark"]) .workflow-rows {
+    --workflow-paper: #09090b;
+    --workflow-navy: #f0eee9;
+    --workflow-copy: #c7cbd3;
+    --workflow-rule: rgb(255 255 255 / 10.2%);
+    --workflow-blue: #8fb3ff;
+    --workflow-focus: #8fb3ff;
+  }
+
+  .workflow-container {
+    padding: 32px 24px 28px;
+  }
+
+  @media (max-width: 767px) {
+    .workflow-container {
+      min-height: 823px;
+    }
+  }
+
+  .workflow-container h2 {
+    font-family: Geist, sans-serif;
+    font-size: 42px;
+    font-weight: 600;
+    letter-spacing: -1.3px;
+    line-height: 1.05;
+    margin: 0;
+  }
+
+  .workflow-list {
+    margin-top: 32px;
+  }
+
+  .workflow-row {
+    align-content: start;
+    border-bottom: 1px solid var(--workflow-rule);
+    box-sizing: border-box;
+    display: grid;
+    gap: 24px;
+    padding: 24px 0 12px;
+  }
+
+  .workflow-row:first-child {
+    border-top: 1px solid var(--workflow-rule);
+  }
+
+  .workflow-row h3,
+  .workflow-row p {
+    margin: 0;
+  }
+
+  .workflow-row h3 {
+    font-family: Geist, sans-serif;
+    font-size: 25px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+    line-height: 1.12;
+  }
+
+  .workflow-row > div {
+    align-content: start;
+    display: grid;
+    gap: 8px;
+  }
+
+  .workflow-row p {
+    color: var(--workflow-copy);
+    font-family: Geist, sans-serif;
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 1.45;
+    max-width: 42rem;
+    min-height: 69px;
+  }
+
+  .workflow-row ul {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    list-style: none;
+    margin: 0;
+    min-height: 44px;
+    padding: 0;
+  }
+
+  .workflow-row a {
+    align-items: center;
+    border-bottom: none;
+    color: var(--workflow-blue);
+    display: inline-flex;
+    font-family: Geist Mono, ui-monospace, monospace;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    text-decoration: none;
+    transition: color 160ms ease;
+  }
+
+  .workflow-row a:hover {
+    color: var(--workflow-blue);
+  }
+
+  .workflow-row a:hover span {
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+
+  .workflow-row a:focus-visible {
+    outline: 2px solid var(--workflow-focus);
+    outline-offset: 3px;
+  }
+
+  @media (min-width: 768px) {
+    .workflow-container {
+      height: 726px;
+      padding: 40px;
+    }
+
+    .workflow-list {
+      margin-top: 42px;
+    }
+
+    .workflow-row,
+    .workflow-row:first-child {
+      gap: 28px;
+      height: 180px;
+      padding: 20px 0;
+    }
+
+    .workflow-row p {
+      min-height: 46px;
+    }
+
+    .workflow-row ul {
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 4px 20px;
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .workflow-container {
+      height: 608px;
+      padding: 72px 64px;
+    }
+
+    .workflow-list {
+      margin-top: 48px;
+    }
+
+    .workflow-row,
+    .workflow-row:first-child {
+      gap: 24px;
+      grid-template-columns: 368px minmax(0, 1fr);
+      height: 128px;
+      padding: 24px 0;
+    }
+
+    .workflow-row ul {
+      min-height: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .workflow-row a {
+      transition: none;
+    }
+  }
+</style>

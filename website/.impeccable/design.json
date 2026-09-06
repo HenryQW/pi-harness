@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-02T08:04:50Z",
+  "title": "Design System: Henry Pi Harness",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Warm Paper",
+        "canonical": "oklch(0.949 0.007 88.6)",
+        "tonalRamp": ["oklch(0.15 0.007 88.6)", "oklch(0.25 0.007 88.6)", "oklch(0.35 0.007 88.6)", "oklch(0.45 0.007 88.6)", "oklch(0.55 0.007 88.6)", "oklch(0.65 0.007 88.6)", "oklch(0.78 0.007 88.6)", "oklch(0.949 0.007 88.6)"]
+      },
+      "ink-navy": {
+        "role": "neutral",
+        "displayName": "Ink Navy",
+        "canonical": "oklch(0.21 0.034 263.4)",
+        "tonalRamp": ["oklch(0.15 0.034 263.4)", "oklch(0.21 0.034 263.4)", "oklch(0.3 0.034 263.4)", "oklch(0.4 0.034 263.4)", "oklch(0.5 0.034 263.4)", "oklch(0.6 0.034 263.4)", "oklch(0.75 0.034 263.4)", "oklch(0.949 0.034 263.4)"]
+      },
+      "utility-blue": {
+        "role": "primary",
+        "displayName": "Utility Blue",
+        "canonical": "oklch(0.488 0.217 264.4)",
+        "tonalRamp": ["oklch(0.15 0.217 264.4)", "oklch(0.25 0.217 264.4)", "oklch(0.35 0.217 264.4)", "oklch(0.488 0.217 264.4)", "oklch(0.6 0.217 264.4)", "oklch(0.7 0.217 264.4)", "oklch(0.82 0.217 264.4)", "oklch(0.95 0.217 264.4)"]
+      },
+      "utility-blue-dark": {
+        "role": "primary",
+        "displayName": "Night Utility Blue",
+        "canonical": "oklch(0.77 0.116 264.4)",
+        "tonalRamp": ["oklch(0.15 0.116 264.4)", "oklch(0.25 0.116 264.4)", "oklch(0.35 0.116 264.4)", "oklch(0.45 0.116 264.4)", "oklch(0.55 0.116 264.4)", "oklch(0.65 0.116 264.4)", "oklch(0.77 0.116 264.4)", "oklch(0.95 0.116 264.4)"]
+      },
+      "paper-muted": {
+        "role": "neutral",
+        "displayName": "Paper Mist",
+        "canonical": "oklch(0.919 0.008 91.5)",
+        "tonalRamp": ["oklch(0.15 0.008 91.5)", "oklch(0.25 0.008 91.5)", "oklch(0.35 0.008 91.5)", "oklch(0.45 0.008 91.5)", "oklch(0.55 0.008 91.5)", "oklch(0.65 0.008 91.5)", "oklch(0.78 0.008 91.5)", "oklch(0.919 0.008 91.5)"]
+      },
+      "slate-copy": {
+        "role": "neutral",
+        "displayName": "Slate Copy",
+        "canonical": "oklch(0.45 0.028 259.8)",
+        "tonalRamp": ["oklch(0.15 0.028 259.8)", "oklch(0.25 0.028 259.8)", "oklch(0.35 0.028 259.8)", "oklch(0.45 0.028 259.8)", "oklch(0.55 0.028 259.8)", "oklch(0.65 0.028 259.8)", "oklch(0.78 0.028 259.8)", "oklch(0.95 0.028 259.8)"]
+      },
+      "navy-surface": {
+        "role": "neutral",
+        "displayName": "Navy Surface",
+        "canonical": "oklch(0.26 0.045 263.4)",
+        "tonalRamp": ["oklch(0.15 0.045 263.4)", "oklch(0.26 0.045 263.4)", "oklch(0.35 0.045 263.4)", "oklch(0.45 0.045 263.4)", "oklch(0.55 0.045 263.4)", "oklch(0.65 0.045 263.4)", "oklch(0.78 0.045 263.4)", "oklch(0.95 0.045 263.4)"]
+      },
+      "mist-copy": {
+        "role": "neutral",
+        "displayName": "Night Mist",
+        "canonical": "oklch(0.86 0.012 264.5)",
+        "tonalRamp": ["oklch(0.15 0.012 264.5)", "oklch(0.25 0.012 264.5)", "oklch(0.35 0.012 264.5)", "oklch(0.45 0.012 264.5)", "oklch(0.55 0.012 264.5)", "oklch(0.65 0.012 264.5)", "oklch(0.78 0.012 264.5)", "oklch(0.86 0.012 264.5)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Work Statement", "purpose": "Homepage headline and high-emphasis statements." },
+      "headline": { "displayName": "Section Headline", "purpose": "Section and card titles." },
+      "body": { "displayName": "Explanation", "purpose": "Documentation and product copy." },
+      "label": { "displayName": "Control Label", "purpose": "Buttons, navigation, and compact interface text." },
+      "mono": { "displayName": "Identifier", "purpose": "Package names, versions, and commands." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "color-state", "value": "150ms ease", "purpose": "Default button and card color changes." },
+      { "name": "identity-lift", "value": "200ms ease", "purpose": "Small logo and avatar hover movement." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one blue decision button for the next useful action.",
+      "html": "<button class=\"ds-btn-primary\">Explore extensions</button>",
+      "css": ".ds-btn-primary{min-height:2.75rem;border:1px solid transparent;border-radius:var(--blume-radius,.25rem);background:var(--blume-accent,oklch(.488 .217 264.4));color:var(--blume-accent-foreground,oklch(.949 .007 88.6));padding:.5rem 1rem;font:500 .875rem/1.25 var(--blume-font-body,ui-sans-serif);transition:background-color 150ms ease}.ds-btn-primary:hover{background:color-mix(in oklab,var(--blume-accent,oklch(.488 .217 264.4)) 90%,transparent)}.ds-btn-primary:focus-visible{outline:2px solid var(--blume-accent);outline-offset:2px}"
+    },
+    {
+      "name": "Secondary Action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A quiet outlined action that supports, rather than competes with, the primary button.",
+      "html": "<button class=\"ds-btn-secondary\">View on GitHub ↗</button>",
+      "css": ".ds-btn-secondary{min-height:2.75rem;border:1px solid var(--blume-border,oklch(.21 .034 263.4 / .141));border-radius:var(--blume-radius,.25rem);background:var(--blume-background,oklch(.949 .007 88.6));color:var(--blume-foreground,oklch(.21 .034 263.4));padding:.5rem 1rem;font:500 .875rem/1.25 var(--blume-font-body,ui-sans-serif);transition:background-color 150ms ease}.ds-btn-secondary:hover{background:color-mix(in oklab,var(--blume-muted,oklch(.919 .008 91.5)) 60%,transparent)}.ds-btn-secondary:focus-visible{outline:2px solid var(--blume-accent);outline-offset:2px}"
+    },
+    {
+      "name": "Extension Card",
+      "kind": "card",
+      "refersTo": "extension-card",
+      "description": "One linked package entry with identifier, version, explanation, and proof.",
+      "html": "<a class=\"ds-extension-card\" href=\"#\"><span class=\"ds-card-head\"><strong>@henryqw/pi-subagent</strong><small>v11.1.2</small></span><span class=\"ds-card-copy\">Delegate focused work to isolated Pi roles.</span><span class=\"ds-card-proof\">downloads 6.9k/month</span></a>",
+      "css": ".ds-extension-card{display:flex;flex-direction:column;border:1px solid var(--blume-border,oklch(.21 .034 263.4 / .141));border-radius:var(--blume-radius,.25rem);background:var(--blume-background,oklch(.949 .007 88.6));color:var(--blume-foreground,oklch(.21 .034 263.4));padding:1.25rem;text-decoration:none;transition:background-color 150ms ease}.ds-extension-card:hover{background:color-mix(in oklab,var(--blume-muted,oklch(.919 .008 91.5)) 60%,transparent)}.ds-extension-card:focus-visible{outline:2px solid var(--blume-accent);outline-offset:2px}.ds-card-head{display:flex;justify-content:space-between;gap:.75rem;font:500 .875rem/1.25 var(--blume-font-mono,ui-monospace)}.ds-card-head strong{overflow-wrap:anywhere}.ds-card-head small{color:var(--blume-muted-foreground);font:inherit}.ds-card-copy{margin-top:.5rem;color:var(--blume-muted-foreground);font:400 .875rem/1.5 var(--blume-font-body,ui-sans-serif)}.ds-card-proof{margin-top:auto;border-top:1px solid var(--blume-border);padding-top:.75rem;color:var(--blume-muted-foreground);font:500 .75rem/1.25 var(--blume-font-mono,ui-monospace)}"
+    },
+    {
+      "name": "Header Search Trigger",
+      "kind": "custom",
+      "refersTo": "header-search",
+      "description": "A compact outlined pill that opens documentation search without becoming a hero control.",
+      "html": "<button class=\"ds-search\" aria-label=\"Search\">⌕ <span>Search</span><kbd>⌘K</kbd></button>",
+      "css": ".ds-search{display:inline-flex;min-height:2.25rem;align-items:center;gap:.5rem;border:1px solid var(--blume-border,oklch(.21 .034 263.4 / .141));border-radius:9999px;background:var(--blume-background,oklch(.949 .007 88.6));color:var(--blume-muted-foreground);padding:.375rem .75rem;font:400 .875rem/1.25 var(--blume-font-body,ui-sans-serif)}.ds-search span{flex:1;text-align:left}.ds-search kbd{font:.7rem/1 var(--blume-font-mono,ui-monospace)}.ds-search:hover{border-color:var(--blume-foreground);color:var(--blume-foreground)}.ds-search:focus-visible{outline:2px solid var(--blume-accent);outline-offset:2px}"
+    },
+    {
+      "name": "Footer Link",
+      "kind": "nav",
+      "refersTo": "footer-link",
+      "description": "A text-first external navigation link with a generous target and a restrained hover cue.",
+      "html": "<a class=\"ds-footer-link\" href=\"#\">GitHub repository ↗</a>",
+      "css": ".ds-footer-link{display:inline-flex;min-height:2.75rem;align-items:center;color:var(--blume-foreground,oklch(.21 .034 263.4));font:500 .875rem/1.25 var(--blume-font-body,ui-sans-serif);text-decoration:none;text-underline-offset:.25rem}.ds-footer-link:hover{color:var(--blume-accent);text-decoration:underline}.ds-footer-link:focus-visible{outline:2px solid var(--blume-accent);outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Personal Engineering Notebook",
+    "overview": "Henry Pi Harness pairs a warm paper canvas with ink-navy type and a single utility-blue accent. It reads as a personal, proof-driven place for serious Pi tooling: author identity and a working-session screenshot make it human, while concise sans type, monospaced package names, and thin rules keep it exact. The interface stays quiet through flat, bordered surfaces and sparse color; dark mode preserves the hierarchy on a deep navy work surface.",
+    "keyCharacteristics": ["Warm editorial surface with technical dark-mode continuity.", "One blue accent for actions, links, and high-signal metadata.", "Geist for readable product copy; Geist Mono for identifiers, versions, and commands.", "Flat, rule-led organisation with compact, practical controls."],
+    "rules": [
+      { "name": "The One Accent Rule", "body": "Use utility blue for an action, link, or meaningful state. Do not use it as a general surface color.", "section": "colors" },
+      { "name": "The Identifier Rule", "body": "Reserve monospaced type for names users may copy, search, install, or compare.", "section": "typography" },
+      { "name": "The Flat-by-Default Rule", "body": "A surface earns separation through a rule or a tonal shift before it earns depth.", "section": "elevation" }
+    ],
+    "dos": ["Do use warm paper, ink navy, and a single utility blue as the dominant visual language.", "Do give package names, versions, and commands a monospaced treatment.", "Do use thin rules and generous section gaps to group dense technical information.", "Do preserve visible keyboard focus and use 2.75rem targets for primary actions and footer links."],
+    "donts": ["Don't introduce a second accent hue, decorative gradients, or interface shadows to make the catalogue feel louder.", "Don't use mono for explanatory prose or headings.", "Don't make every card or control blue; blue is a decision signal.", "Don't replace real product proof with fabricated testimonials, metrics, or imagery."]
+  }
+}

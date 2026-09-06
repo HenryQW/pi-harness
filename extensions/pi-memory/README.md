@@ -1,12 +1,8 @@
 # `@henryqw/pi-memory`
 
-Keep compact agent notes and user facts across Pi sessions, with a frozen snapshot in each session.
+Keep durable preferences and cross-project facts across Pi sessions, with a frozen snapshot in each session. Bounded Markdown controls prompt size without a hand-maintained knowledge tree.
 
-## Why
-
-- **Created for**: Pi users who want durable preferences and cross-project facts without repeating them.
-- **Advantage**: Bounded Markdown stores control prompt size without requiring a hand-maintained knowledge tree.
-- **Inspired by**: [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its bounded `MEMORY.md`/`USER.md` cross-session memory pattern.
+Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its bounded `MEMORY.md`/`USER.md` cross-session memory pattern.
 
 ## Install
 
@@ -18,7 +14,7 @@ pi install npm:@henryqw/pi-memory
 
 Run `/task-models` and configure the `balanced` profile before adding memory. Candidate review does not use the current session model as a substitute.
 
-## With
+## Works with
 
 | Package | Why |
 | --- | --- |
@@ -27,8 +23,6 @@ Run `/task-models` and configure the `balanced` profile before adding memory. Ca
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required. Provides candidate-review routes. |
 
 ## Use
-
-### First memory
 
 Run `/remember I prefer concise release notes.` Approve an explicit conflict choice only if Pi finds one.
 
@@ -40,30 +34,7 @@ Read `~/.pi/agent/config/pi-memory/memory/USER.md` to verify the default store. 
 | `/dream` | command | Promote invariant memory instructions into the agent-global `~/.pi/agent/SYSTEM.md`. |
 | `memory` | tool | Add, replace, remove, or batch-edit entries across sessions. |
 
-### Stores and snapshots
-
-| Store | Scope | Default cap |
-| --- | --- | --- |
-| `MEMORY.md` | Global agent notes shared across all projects. Do not store project-specific facts here; they belong in the repository. | 8800 characters |
-| `USER.md` | User profile. | 5500 characters |
-
-Each file holds entries delimited by `§` and is size-capped. When a write would exceed its cap, the tool rejects it and reports current usage.
-
-Consolidate with one batch that removes or shortens stale entries and adds the new entry together. A batch checks only the final size. A batch accepts at most 100 operations. A complete serialized mutation cannot exceed 1,000,000 UTF-8 bytes.
-
-Both limits are checked before source loading or review. Calls over either limit do not write.
-
-An external edit or sync can push an on-disk file over its cap. The session snapshot then omits the overflow and warns instead of injecting it.
-
-At session start, both stores are captured. Later edits do not alter injected memory.
-
-During a session, pi-memory remembers each store file proven to exist. This includes valid, invalid UTF-8, oversized, and symlinked files.
-
-If a proven store disappears, writes stay blocked until you restore it. A path never confirmed present can be repaired and created normally.
-
-A new session starts new presence tracking.
-
-Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect live state.
+## Flow
 
 ### Candidate review
 
@@ -121,14 +92,39 @@ Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory
 
 Any other invalid configuration fails fast. Malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values throw an error naming the problem. The file is never rewritten.
 
-## Storage & sync
+## State and storage
 
-Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault only carries files. pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
+| Store | Scope | Default cap |
+| --- | --- | --- |
+| `MEMORY.md` | Global agent notes shared across all projects. Do not store project-specific facts here; they belong in the repository. | 8800 characters |
+| `USER.md` | User profile. | 5500 characters |
+
+Each file holds entries delimited by `§` and is size-capped. At session start, both stores are captured. Later edits do not alter injected memory.
+
+During a session, pi-memory remembers each store file proven to exist. This includes valid, invalid UTF-8, oversized, and symlinked files.
+
+If a proven store disappears, writes stay blocked until you restore it. A path never confirmed present can be repaired and created normally. A new session starts new presence tracking.
+
+Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect live state.
 
 Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi-memory/backups/`.
 
+## Data, cost, and privacy
+
+Candidate review gives the configured model live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md` snapshots. `/dream` gives the current session agent live memory entries and instructions to edit the global SYSTEM file.
+
+Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault only carries files. pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
+
+A configured cloud-synced directory can be read outside Pi. Review [`ADR 006 — pi-memory global store threat model`](https://github.com/HenryQW/pi-harness/blob/main/docs/adr/006-pi-memory-global-store-threat-model.md) before pointing it at a shared or cloud-synced path.
+
+## Limits and recovery
+
+When a write would exceed a store's cap, the tool rejects it and reports current usage.
+
+Consolidate with one batch that removes or shortens stale entries and adds the new entry together. A batch checks only the final size. A batch accepts at most 100 operations. A complete serialized mutation cannot exceed 1,000,000 UTF-8 bytes.
+
+Both limits are checked before source loading or review. Calls over either limit do not write.
+
+An external edit or sync can push an on-disk file over its cap. The session snapshot then omits the overflow and warns instead of injecting it.
+
 Startup lists at most three unexpected regular filenames in `directory`. It stops on the fourth and reports `at least four`.
-
-## Threat model
-
-Because the directory can be a globally synced location readable outside Pi, review [`ADR 006 — pi-memory global store threat model`](https://github.com/HenryQW/pi-harness/blob/main/docs/adr/006-pi-memory-global-store-threat-model.md) before pointing it at a shared or cloud-synced path.

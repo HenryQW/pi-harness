@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Shared client for interacting with Herdr from Node.js tools and Pi packages.",
   "keywords": [
     "pi-package",
