@@ -14,12 +14,12 @@ Use `store.update(mutator)` for read-modify-write when an extension supports mul
 
 ## Widget messages
 
-These rules apply to message-style widgets. Do not force data or list widgets into this card shape.
+These rules apply to message-style widgets.
 
 - Give each widget one purpose and concise copy.
-- Persistent actions should prefer one concise action line. Add identity or state only when it adds information not already shown elsewhere.
-- Use semantic `ctx.ui.theme` colors for emphasis. Text must still state the meaning without color.
-- Emphasize the exact command. Never hard-code ANSI sequences.
+- Persistent actions should prefer one concise action line. Prefix it with one semantic status icon and a space. Avoid decorative iconography. Add identity or state only when it adds information not already shown elsewhere.
+- Color the status icon with a semantic `ctx.ui.theme` color. Text must still state the meaning without color.
+- Never hard-code ANSI sequences.
 - Keep dynamic content width-safe. Truncate it or use a width-aware renderer when it can grow.
 - In non-TUI or RPC modes, use a plain-text fallback.
 - Define when each widget clears. Clear it at that lifecycle point.

@@ -23,9 +23,9 @@ Run `/pr` without arguments in a GitHub checkout. It reads the current branch pu
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
-| Widget | ui | Show one actionable `Run /pr to …` hint. |
+| Widget | ui | Show one actionable icon-prefixed `Run /pr to …` hint. |
 
-The footer already shows the pull request and status. Actionable widgets omit duplicate identity and status and use one concise route line. They emphasize `/pr`. Theme colors reinforce the route condition; text carries meaning without color.
+The footer already shows the pull request and status. Actionable widgets omit duplicate identity and status. Each uses one semantic status icon, a space, and a plain `Run /pr to …` route. `✗` marks errors, `!` warnings, `✓` success, and `●` accent or neutral routes. In TUI, only the icon uses a theme color. RPC and non-TUI output use the same plain text without ANSI.
 
 ## Flow
 

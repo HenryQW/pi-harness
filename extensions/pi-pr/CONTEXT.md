@@ -33,7 +33,7 @@ The single highest-priority user-authorized workflow derived from the current li
 _Avoid_: Automatic remediation, PR action, workflow chain
 
 **PR next-step widget**:
-A compact one-line action hint tells the user which highest-priority workflow `/pr` will run. It omits identity and status already shown in the footer. Theme color reinforces the route, and `/pr` is emphasized; text still carries meaning without color. The creation widget stays absent on a newly created local branch until that branch gains a commit. Other widgets are absent when no workflow is available.
+A compact one-line action hint tells the user which highest-priority workflow `/pr` will run. It omits identity and status already shown in the footer. It prefixes the plain `Run /pr to …` text with `✗` for errors, `!` for warnings, `✓` for success, or `●` for accent and neutral routes. In TUI, only the icon uses a theme color; RPC and non-TUI receive the same plain line without ANSI. The creation widget stays absent on a newly created local branch until that branch gains a commit. Other widgets are absent when no workflow is available.
 _Avoid_: `/pr` arguments, workflow menu, multiple actions
 
 **PR workflow routing**:

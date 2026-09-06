@@ -28,7 +28,6 @@ export type PrDisplay = {
 
 export type PrTheme = {
 	fg(color: PrStatusColor | "text", text: string): string;
-	bold(text: string): string;
 };
 
 function footerStatus(input: PrDisplayInput, nextStep: NextStep): Pick<PrFooter, "text" | "color"> {
@@ -97,8 +96,7 @@ export function formatPrFooter(display: PrDisplay, theme: PrTheme): string | und
 export function formatPrWidget(display: PrDisplay, theme?: PrTheme, width?: number): string[] | undefined {
 	if (display.widget === undefined) return undefined;
 	const color = display.footer?.color ?? "accent";
-	const line = theme
-		? `${theme.fg(color, "│")} ${display.widget.replace("/pr", theme.fg(color, theme.bold("/pr")))}`
-		: `│ ${display.widget}`;
+	const icon = color === "error" ? "✗" : color === "warning" ? "!" : color === "success" ? "✓" : "●";
+	const line = `${theme ? theme.fg(color, icon) : icon} ${display.widget}`;
 	return [width === undefined ? line : truncateToWidth(line, Math.max(1, width))];
 }

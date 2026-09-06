@@ -30,16 +30,10 @@ const theme: PrTheme = {
 	fg(color: PrStatusColor | "text", text: string) {
 		return `<${color}>${text}</${color}>`;
 	},
-	bold(text: string) {
-		return `<bold>${text}</bold>`;
-	},
 };
 const ansiTheme: PrTheme = {
 	fg(_color, text) {
 		return `\x1b[36m${text}\x1b[0m`;
-	},
-	bold(text) {
-		return `\x1b[1m${text}\x1b[22m`;
 	},
 };
 
@@ -298,12 +292,44 @@ test("formats themed footer text with OSC-8 only when supported", () => {
 	});
 });
 
-test("formats an actionable widget as one themed action line", () => {
-	const widget = formatPrWidget(projectPrDisplay(pullRequest({ conditions: { ci: "failure" } })), theme);
-	assert.deepEqual(widget, [
-		"<error>│</error> Run <error><bold>/pr</bold></error> to fix CI",
-	]);
-	assert.deepEqual(widget?.map(plain), ["│ Run /pr to fix CI"]);
+test("prefixes plain actions with themed semantic icons", () => {
+	const cases = [
+		{
+			name: "error",
+			display: projectPrDisplay(pullRequest({ conditions: { conflict: true } })),
+			color: "error",
+			icon: "✗",
+			text: "Run /pr to resolve merge conflict",
+		},
+		{
+			name: "warning",
+			display: projectPrDisplay(pullRequest({ conditions: { baseUpdateRequired: true } })),
+			color: "warning",
+			icon: "!",
+			text: "Run /pr to update branch",
+		},
+		{
+			name: "success",
+			display: projectPrDisplay(pullRequest({ conditions: { ci: "success" } })),
+			color: "success",
+			icon: "✓",
+			text: "Run /pr to merge pull request",
+		},
+		{
+			name: "accent",
+			display: projectPrDisplay(null, true),
+			color: "accent",
+			icon: "●",
+			text: "Run /pr to create pull request",
+		},
+	];
+
+	for (const { name, display, color, icon, text } of cases) {
+		const plainWidget = formatPrWidget(display);
+		assert.deepEqual(plainWidget, [`${icon} ${text}`], `${name} plain`);
+		assert.doesNotMatch(plainWidget?.[0] ?? "", /\x1b/, `${name} plain ANSI`);
+		assert.deepEqual(formatPrWidget(display, theme), [`<${color}>${icon}</${color}> ${text}`], name);
+	}
 });
 
 test("truncates the themed action line to narrow TUI widths", () => {
