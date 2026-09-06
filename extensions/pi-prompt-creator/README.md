@@ -54,7 +54,7 @@ Branch changes reset the input counter. Automatic analysis and candidate widgets
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
 
-Analysis uses a one-turn child with no base tools, user extensions, Skills, or saved session. The extension does not retry failed analysis.
+Analysis asks a tool-free child for one JSON response. It has no user extensions, Skills, or saved session. The extension does not retry failed analysis.
 
 New user input does not stop a running child. Branch navigation discards its old result without stopping the child.
 
@@ -92,10 +92,10 @@ Use `/task-models` to select the model and thinking level. The extension owns no
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
-| `automatic` | Yes | `true` or `false` | `true` |
+| `automatic` | No | `true` or `false` | `true` |
 | `inputThreshold` | No | Positive integer | `3` |
 
-Edit `inputThreshold`, then run `/reload` to apply the change.
+Edit either field, then run `/reload` to apply the change. Omitted fields use their defaults.
 
 A missing file quietly uses both defaults. Startup never creates or rewrites the file.
 

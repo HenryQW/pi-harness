@@ -12,6 +12,7 @@ import {
 import { createConfigStore } from "@henryqw/pi-config-store";
 import {
 	createEphemeralSubagentExecutor,
+	MIN_MAX_TURNS,
 	resolveRoleLaunch,
 	type EphemeralSubagentExecutor,
 	type Role,
@@ -80,16 +81,16 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 function parseConfig(value: unknown): Config {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Config must be an object.");
 	const config = value as Record<string, unknown>;
-	const validKeys = exactKeys(config, ["automatic"]) || exactKeys(config, ["automatic", "inputThreshold"]);
-	const inputThreshold = config.inputThreshold ?? DEFAULT_INPUT_THRESHOLD;
+	const validKeys = Object.keys(config).every((key) => key === "automatic" || key === "inputThreshold");
+	const { automatic = true, inputThreshold = DEFAULT_INPUT_THRESHOLD } = config;
 	if (
 		!validKeys
-		|| typeof config.automatic !== "boolean"
+		|| typeof automatic !== "boolean"
 		|| typeof inputThreshold !== "number"
 		|| !Number.isSafeInteger(inputThreshold)
 		|| inputThreshold < 1
-	) throw new Error("Config must contain automatic:boolean and an optional positive integer inputThreshold.");
-	return { automatic: config.automatic, inputThreshold };
+	) throw new Error("Config may contain automatic:boolean and inputThreshold:positive integer.");
+	return { automatic, inputThreshold };
 }
 
 export function isPromptName(value: unknown): value is string {
@@ -308,7 +309,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	};
 	const getExecutor = () => executor ??= createEphemeralSubagentExecutor({
 		maxConcurrency: 1,
-		maxTurns: 1,
+		maxTurns: MIN_MAX_TURNS,
 		timeout: { idleMs: 2 * 60_000, maxMs: 5 * 60_000 },
 	});
 	const startAnalysis = (ctx: ExtensionContext, manual: boolean) => {

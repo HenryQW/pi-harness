@@ -1,9 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, MIN_MAX_TURNS, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
 const WARNING_MESSAGE_TYPE = "pi-subagent-execution-budget";
+const FINAL_HANDOFF_MESSAGE = {
+	customType: "pi-subagent-final-handoff",
+	content: "**Final handoff required.** Tools are disabled. If your assigned task or Role requires exact output, reply only with that output instead; it takes precedence over this decision packet. Otherwise, reply only with this decision packet:\n\n**Status:** completed | blocked | incomplete\n**Outcome:** one sentence describing what is now true\n**Evidence:** up to three concrete findings, changes, or checks; include an attempted approach only when it prevents Main from repeating failed work\n**Blocker:** none or the exact blocker\n**Risk:** none or one material risk\n**Suggested next:** none or one concrete action",
+	display: true,
+};
 
 function configuredTools(value: unknown): string[] {
 	if (typeof value !== "string") throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
@@ -32,7 +37,7 @@ function executionBudget(value: string | undefined): { maxTurns: number; maxMs: 
 	}
 	const budget = parsed as Record<string, unknown>;
 	if (Object.keys(budget).length !== 3 || !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
-		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < 1
+		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < MIN_MAX_TURNS
 		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0
 		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0) {
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
@@ -53,6 +58,7 @@ export default function roleTools(pi: ExtensionAPI): void {
 		description: "Internal Pi Subagent Role tool policy",
 		type: "string",
 	});
+	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
 	pi.on("session_start", () => {
 		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
 		const allTools = pi.getAllTools();
@@ -68,15 +74,21 @@ export default function roleTools(pi: ExtensionAPI): void {
 		}
 	});
 
-	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
 	if (!budget) return;
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
 	let completedTurns = 0;
+	let handoffSent = false;
 	let turnWarningSent = false;
 	let runtimeWarningSent = false;
 	pi.on("turn_end", (event) => {
 		completedTurns += 1;
-		if (!expectsAnotherTurn(event.message)) return;
+		if (!expectsAnotherTurn(event.message) || handoffSent) return;
+		if (completedTurns === budget.maxTurns - 1) {
+			pi.setActiveTools([]);
+			pi.sendMessage(FINAL_HANDOFF_MESSAGE, { deliverAs: "steer", triggerTurn: false });
+			handoffSent = true;
+			return;
+		}
 		const elapsedMs = Math.max(0, Date.now() - budget.startedAt);
 		const turnWarningDue = !turnWarningSent && completedTurns >= warningTurn;
 		const runtimeWarningDue = !runtimeWarningSent && elapsedMs >= budget.maxMs * WARNING_RATIO;

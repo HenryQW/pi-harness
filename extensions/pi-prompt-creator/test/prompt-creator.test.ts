@@ -193,10 +193,10 @@ test("missing config starts automatic analysis after three user inputs", async (
 	});
 });
 
-test("automatic analysis honors the configured input threshold and discards a stale branch result", async () => {
+test("automatic analysis defaults on when only the input threshold is configured and discards a stale branch result", async () => {
 	await withAgentDir(async (agentDir) => {
 		await mkdir(extensionConfigDir("pi-prompt-creator", agentDir), { recursive: true });
-		await writeFile(extensionConfigPath("pi-prompt-creator", agentDir), '{"automatic":true,"inputThreshold":4}\n');
+		await writeFile(extensionConfigPath("pi-prompt-creator", agentDir), '{"inputThreshold":4}\n');
 		const child = controlledExecutor();
 		const app = harness({
 			agentDir,

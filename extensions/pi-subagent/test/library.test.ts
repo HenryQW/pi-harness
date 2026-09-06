@@ -140,6 +140,17 @@ test("child budget payload requires the executor runtime origin", () => {
 	}
 });
 
+test("child budget rejects maxTurns below 10", () => {
+	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
+	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 9, maxMs: 30 * 60_000, startedAt: 0 });
+	try {
+		assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+	} finally {
+		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
+		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
+	}
+});
+
 test("child budget warnings use executor time and apply each threshold once", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	const originalNow = Date.now;
@@ -207,6 +218,87 @@ test("child budget warnings use executor time and apply each threshold once", ()
 		assert.deepEqual(terminal.sent, []);
 	} finally {
 		Date.now = originalNow;
+		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
+		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
+	}
+});
+
+test("child final handoff preserves exact-output contracts and reserves a response-only tenth turn", () => {
+	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
+	const policy = (maxTurns: number) => {
+		const handlers = new Map<string, (event: any) => any>();
+		const events: string[] = [];
+		const sent: Array<{ message: any; options: any }> = [];
+		const toolSets: string[][] = [];
+		let activeTools = ["read", "bash"];
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: Date.now() });
+		childToolPolicy({
+			registerFlag() {},
+			getFlag: () => JSON.stringify(["read"]),
+			on(event: string, handler: (event: any) => any) { handlers.set(event, handler); },
+			getAllTools() {
+				events.push("getAllTools");
+				return [
+					{ name: "read", sourceInfo: { source: "builtin" } },
+					{ name: "bash", sourceInfo: { source: "builtin" } },
+				];
+			},
+			setActiveTools(names: string[]) {
+				events.push("setActiveTools");
+				toolSets.push([...names]);
+				activeTools = names;
+			},
+			getActiveTools() {
+				events.push("getActiveTools");
+				return activeTools;
+			},
+			sendMessage(message: any, options: any) { sent.push({ message, options }); },
+		} as unknown as ExtensionAPI);
+		return {
+			events,
+			sent,
+			toolSets,
+			activeTools: () => activeTools,
+			start() { handlers.get("session_start")?.({}); },
+			turnEnd(event: any) { handlers.get("turn_end")?.(event); },
+		};
+	};
+	const continuing = {
+		type: "turn_end",
+		message: { role: "assistant", content: [{ type: "toolCall" }] },
+		toolResults: [],
+	};
+	try {
+		const tenTurns = policy(10);
+		tenTurns.start();
+		assert.deepEqual(tenTurns.events, ["getAllTools", "setActiveTools", "getActiveTools"]);
+		for (let turn = 1; turn < 9; turn++) tenTurns.turnEnd(continuing);
+		assert.deepEqual(tenTurns.activeTools(), ["read"]);
+		assert.equal(tenTurns.sent.length, 1);
+		assert.equal(tenTurns.sent[0]!.message.customType, "pi-subagent-execution-budget");
+
+		tenTurns.turnEnd(continuing);
+		assert.deepEqual(tenTurns.toolSets, [["read"], []]);
+		assert.deepEqual(tenTurns.sent[1]!.options, { deliverAs: "steer", triggerTurn: false });
+		assert.equal(tenTurns.sent[1]!.message.customType, "pi-subagent-final-handoff");
+		assert.match(tenTurns.sent[1]!.message.content, /If your assigned task or Role requires exact output, reply only with that output instead; it takes precedence over this decision packet\./);
+		assert.match(tenTurns.sent[1]!.message.content, /^\*\*Status:\*\* completed \| blocked \| incomplete$/m);
+		assert.match(tenTurns.sent[1]!.message.content, /\*\*Outcome:\*\*.*one sentence/);
+		assert.match(tenTurns.sent[1]!.message.content, /\*\*Evidence:\*\*.*up to three/);
+		assert.match(tenTurns.sent[1]!.message.content, /\*\*Blocker:\*\*/);
+		assert.match(tenTurns.sent[1]!.message.content, /\*\*Risk:\*\*/);
+		assert.match(tenTurns.sent[1]!.message.content, /\*\*Suggested next:\*\*/);
+		assert.doesNotMatch(tenTurns.sent[1]!.message.content, /Work attempted/);
+		tenTurns.turnEnd(continuing);
+		assert.equal(tenTurns.sent.length, 2);
+
+		const terminalPenultimate = policy(10);
+		terminalPenultimate.start();
+		for (let turn = 1; turn < 9; turn++) terminalPenultimate.turnEnd(continuing);
+		terminalPenultimate.turnEnd({ ...continuing, message: { role: "assistant", content: [] } });
+		assert.deepEqual(terminalPenultimate.activeTools(), ["read"]);
+		assert.deepEqual(terminalPenultimate.sent.map(({ message }) => message.customType), ["pi-subagent-execution-budget"]);
+	} finally {
 		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
 		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
 	}
