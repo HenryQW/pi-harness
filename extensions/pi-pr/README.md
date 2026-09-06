@@ -23,9 +23,9 @@ Run `/pr` without arguments in a GitHub checkout. It reads the current branch pu
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
-| Widget card | ui | Show a two-line status card for the next `/pr` step. |
+| Widget | ui | Show one actionable `Run /pr to …` hint. |
 
-Actionable widgets use two lines. The first uses bold `Pull request` and a plain-language condition. The second keeps the route and emphasizes `/pr`. Theme colors reinforce the state; text carries meaning without color.
+The footer already shows the pull request and status. Actionable widgets omit duplicate identity and status and use one concise route line. They emphasize `/pr`. Theme colors reinforce the route condition; text carries meaning without color.
 
 ## Flow
 

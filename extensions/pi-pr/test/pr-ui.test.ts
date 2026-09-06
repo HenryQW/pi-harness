@@ -298,26 +298,22 @@ test("formats themed footer text with OSC-8 only when supported", () => {
 	});
 });
 
-test("formats an actionable widget as a themed two-line status card", () => {
+test("formats an actionable widget as one themed action line", () => {
 	const widget = formatPrWidget(projectPrDisplay(pullRequest({ conditions: { ci: "failure" } })), theme);
 	assert.deepEqual(widget, [
-		"<error>│</error> <text><bold>Pull request</bold></text> · <error>CI failed</error>",
 		"<error>│</error> Run <error><bold>/pr</bold></error> to fix CI",
 	]);
-	assert.deepEqual(widget?.map(plain), [
-		"│ Pull request · CI failed",
-		"│ Run /pr to fix CI",
-	]);
+	assert.deepEqual(widget?.map(plain), ["│ Run /pr to fix CI"]);
 });
 
-test("truncates themed widget lines to narrow TUI widths", () => {
+test("truncates the themed action line to narrow TUI widths", () => {
 	const display = projectPrDisplay(pullRequest({ conditions: { unresolvedThreads: 123_456_789 } }));
 	assert.equal(display.footer?.text, "123456789 unresolved");
 	assert.equal(display.widget, "Run /pr to address review feedback");
 
 	for (const width of [0, 8]) {
 		const widget = formatPrWidget(display, ansiTheme, width);
-		assert.equal(widget?.length, 2);
+		assert.equal(widget?.length, 1);
 		assert.ok(widget?.every((line) => visibleWidth(line) <= Math.max(1, width)));
 	}
 });

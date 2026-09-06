@@ -17,7 +17,7 @@ Use `store.update(mutator)` for read-modify-write when an extension supports mul
 These rules apply to message-style widgets. Do not force data or list widgets into this card shape.
 
 - Give each widget one purpose and concise copy.
-- Persistent actions use at most two lines: identity and state first, then the action.
+- Persistent actions should prefer one concise action line. Add identity or state only when it adds information not already shown elsewhere.
 - Use semantic `ctx.ui.theme` colors for emphasis. Text must still state the meaning without color.
 - Emphasize the exact command. Never hard-code ANSI sequences.
 - Keep dynamic content width-safe. Truncate it or use a width-aware renderer when it can grow.

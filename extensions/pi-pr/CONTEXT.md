@@ -33,7 +33,7 @@ The single highest-priority user-authorized workflow derived from the current li
 _Avoid_: Automatic remediation, PR action, workflow chain
 
 **PR next-step widget**:
-A compact two-line status card identifies `Pull request` and its plain-language condition, then tells the user which highest-priority workflow `/pr` will run. Theme color reinforces the state, and `/pr` is emphasized; text still carries meaning without color. The creation widget stays absent on a newly created local branch until that branch gains a commit. Other widgets are absent when no workflow is available.
+A compact one-line action hint tells the user which highest-priority workflow `/pr` will run. It omits identity and status already shown in the footer. Theme color reinforces the route, and `/pr` is emphasized; text still carries meaning without color. The creation widget stays absent on a newly created local branch until that branch gains a commit. Other widgets are absent when no workflow is available.
 _Avoid_: `/pr` arguments, workflow menu, multiple actions
 
 **PR workflow routing**:

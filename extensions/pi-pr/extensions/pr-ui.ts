@@ -97,15 +97,8 @@ export function formatPrFooter(display: PrDisplay, theme: PrTheme): string | und
 export function formatPrWidget(display: PrDisplay, theme?: PrTheme, width?: number): string[] | undefined {
 	if (display.widget === undefined) return undefined;
 	const color = display.footer?.color ?? "accent";
-	const state = display.footer?.text ?? "no pull request";
-	const lines = theme
-		? [
-			`${theme.fg(color, "│")} ${theme.fg("text", theme.bold("Pull request"))} · ${theme.fg(color, state)}`,
-			`${theme.fg(color, "│")} ${display.widget.replace("/pr", theme.fg(color, theme.bold("/pr")))}`,
-		]
-		: [
-			`│ Pull request · ${state}`,
-			`│ ${display.widget}`,
-		];
-	return width === undefined ? lines : lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+	const line = theme
+		? `${theme.fg(color, "│")} ${display.widget.replace("/pr", theme.fg(color, theme.bold("/pr")))}`
+		: `│ ${display.widget}`;
+	return [width === undefined ? line : truncateToWidth(line, Math.max(1, width))];
 }

@@ -26,10 +26,7 @@ type Deferred<T> = {
 };
 
 const plain = (text: string) => text.replace(/\x1b\]8;;.*?\x1b\\/g, "");
-const widgetCard = (state: string, action: string): string[] => [
-	`│ Pull request · ${state}`,
-	`│ ${action}`,
-];
+const widgetLine = (action: string): string[] => [`│ ${action}`];
 
 function deferred<T>(): Deferred<T> {
 	let resolve!: (value: T) => void;
@@ -185,7 +182,7 @@ test("renders the shared projection and refreshes after successful create or pus
 	await app.start(ctx);
 	assert.equal(signals.length, 1);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
-	assert.deepEqual(app.widgets.at(-1), widgetCard("CI failed", "Run /pr to fix CI"));
+	assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to fix CI"));
 
 	await app.tool({
 		toolName: "bash",
@@ -199,12 +196,12 @@ test("renders the shared projection and refreshes after successful create or pus
 	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(signals.length, 3);
 	assert.equal(app.statuses.at(-1), undefined);
-	assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+	assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 
 	await app.shutdown(ctx);
 });
 
-test("keeps RPC widgets plain despite a terminal theme", async () => {
+test("keeps the RPC widget as a plain one-line action despite a terminal theme", async () => {
 	const app = harness({
 		async load() {
 			return currentPullRequest({ conditions: { ci: "failure" } });
@@ -218,13 +215,13 @@ test("keeps RPC widgets plain despite a terminal theme", async () => {
 	try {
 		await app.start(ctx);
 		assert.notEqual(typeof app.widgets.at(-1), "function");
-		assert.deepEqual(app.widgets.at(-1), widgetCard("CI failed", "Run /pr to fix CI"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to fix CI"));
 	} finally {
 		await app.shutdown(ctx);
 	}
 });
 
-test("uses a width-aware widget component in TUI", async () => {
+test("uses a width-aware single-line widget component in TUI", async () => {
 	const app = harness({
 		async load() {
 			return currentPullRequest({ conditions: { unresolvedThreads: 123_456_789 } });
@@ -245,7 +242,7 @@ test("uses a width-aware widget component in TUI", async () => {
 		});
 		for (const width of [0, 8]) {
 			const lines = component.render(width);
-			assert.equal(lines.length, 2);
+			assert.equal(lines.length, 1);
 			assert.ok(lines.every((line) => visibleWidth(line) <= Math.max(1, width)));
 		}
 	} finally {
@@ -272,7 +269,7 @@ test("shows the create widget only after a local commit", async () => {
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.tool({ toolName: "bash", input: { command: "git commit -m change" }, isError: false }, ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -382,7 +379,7 @@ test("reports lookup failures once, retains display, and resets after recovery",
 	t.mock.timers.tick(30_000);
 	await flush();
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
-	assert.deepEqual(app.widgets.at(-1), widgetCard("CI failed", "Run /pr to fix CI"));
+	assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to fix CI"));
 	const statusWrites = app.statuses.length;
 	const widgetWrites = app.widgets.length;
 
@@ -484,7 +481,7 @@ test("session context generation prevents stale /pr completion from mutating the
 	await app.shutdown(firstSession);
 	await app.start(secondSession);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
-	assert.deepEqual(app.widgets.at(-1), widgetCard("CI failed", "Run /pr to fix CI"));
+	assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to fix CI"));
 	const statusWrites = app.statuses.length;
 	const widgetWrites = app.widgets.length;
 
@@ -523,7 +520,7 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 
 	try {
 		await app.start(ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
 		assert.equal(app.widgets.at(-1), undefined, "the hint clears before the workflow completes");
@@ -543,7 +540,7 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 		assert.equal(loads, 3);
 		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 		assert.match(app.statuses.at(-1) ?? "", /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("merge-ready", "Run /pr to merge pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to merge pull request"));
 
 		staleRefresh.resolve(null);
 		await polling;
@@ -573,7 +570,7 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 
 	try {
 		await app.start(ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("CI failed", "Run /pr to fix CI"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to fix CI"));
 		const statusWrites = app.statuses.length;
 
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
@@ -594,7 +591,7 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 
 		await app.settle(ctx);
 		assert.equal(loads, 3);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("merge-ready", "Run /pr to merge pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to merge pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -620,7 +617,7 @@ test("restores the create hint when the dispatched workflow settles without a pu
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.settle(ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -700,7 +697,7 @@ test("tracks creation from the fresh command route instead of stale presentation
 		assert.equal(stalePullRequest.widgets.at(-1), undefined);
 
 		await stalePullRequest.settle(stalePullRequestContext);
-		assert.deepEqual(stalePullRequest.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(stalePullRequest.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 	} finally {
 		await stalePullRequest.shutdown(stalePullRequestContext);
 	}
@@ -726,9 +723,9 @@ test("restores the create hint immediately when /pr cannot dispatch creation", a
 	try {
 		await app.start(ctx);
 		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /dispatch failed/);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 		await flush();
-		assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -765,7 +762,7 @@ test("out-of-order /pr results keep every active creation workflow pending", asy
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.settle(ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -796,7 +793,7 @@ test("a failed second /pr keeps the active creation workflow pending", async () 
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.settle(ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -827,7 +824,7 @@ test("/pr restores its hint after a command error and schedules a refresh", asyn
 	const command = app.command().handler("", ctx as ExtensionCommandContext);
 	assert.equal(app.widgets.at(-1), undefined);
 	await assert.rejects(command, /route failed/);
-	assert.deepEqual(app.widgets.at(-1), widgetCard("CI failed", "Run /pr to fix CI"));
+	assert.deepEqual(app.widgets.at(-1), widgetLine("Run /pr to fix CI"));
 	await flush();
 	assert.equal(commandCalls, 1);
 	assert.equal(loads, 2);
