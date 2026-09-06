@@ -1,6 +1,7 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, extensionConfigPath } from "@henryqw/pi-config-store";
-import { MIN_MAX_TURNS } from "@henryqw/pi-subagent";
+
+export const MIN_MAX_TURNS = 10 as const;
 
 export interface SubagentTimeoutConfig {
 	/** Minutes a child may stay idle before it is asked to stop. */

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, MIN_MAX_TURNS, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import { MIN_MAX_TURNS } from "./config.ts";
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
