@@ -1,6 +1,6 @@
 # Pi PR
 
-Pi PR observes the current-branch pull request and routes the user to its single highest-priority next step. The footer and PR next-step hint use the same route; `/pr` reads fresh state before acting. It supports authenticated GitHub.com and GitHub Enterprise repositories. Each PR hostname selects its GitHub API host.
+Pi PR observes the current-branch pull request and routes the user to its single highest-priority next step. The footer and PR next-step widget use the same route; `/pr` reads fresh state before acting. It supports authenticated GitHub.com and GitHub Enterprise repositories. Each PR hostname selects its GitHub API host.
 
 ## Language
 
@@ -32,8 +32,8 @@ _Avoid_: No failures, no comments, approved PR
 The single highest-priority user-authorized workflow derived from the current lifecycle and conditions. One `/pr` invocation runs at most one next step, then stops. A direct merge is allowed only after final confirmation.
 _Avoid_: Automatic remediation, PR action, workflow chain
 
-**PR next-step hint**:
-One widget sentence tells the user which highest-priority workflow `/pr` will run, such as `Run /pr to resolve merge conflict`. The creation hint stays absent on a newly created local branch until that branch gains a commit. Other hints are absent when no workflow is available.
+**PR next-step widget**:
+A compact one-line action hint tells the user which highest-priority workflow `/pr` will run. It omits identity and status already shown in the footer. It prefixes the plain `Run /pr to …` text with `✗` for errors, `!` for warnings, `✓` for success, or `●` for accent and neutral routes. In TUI, only the icon uses a theme color; RPC and non-TUI receive the same plain line without ANSI. The creation widget stays absent on a newly created local branch until that branch gains a commit. Other widgets are absent when no workflow is available.
 _Avoid_: `/pr` arguments, workflow menu, multiple actions
 
 **PR workflow routing**:
@@ -41,7 +41,7 @@ Argument-free `/pr` derives one next step from fresh remote and local state. A b
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
-The footer and widget load at session start, refresh after local commits, PR creation, pushes, and dispatched workflow settlement, and poll every 30 seconds. Any displayed hint clears when `/pr` starts. A dispatched workflow keeps it hidden until agent settlement; direct and no-action routes refresh it after the handler finishes. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
+The footer and widget load at session start, refresh after local commits, PR creation, pushes, and dispatched workflow settlement, and poll every 30 seconds. Any displayed widget clears when `/pr` starts. A dispatched workflow keeps it hidden until agent settlement; direct and no-action routes refresh it after the handler finishes. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:

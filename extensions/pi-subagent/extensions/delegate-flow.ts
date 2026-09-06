@@ -65,6 +65,7 @@ type ChildSettlement =
 type UnitState = {
 	request: FlowUnitRequest;
 	modelClass: FlowModelClass;
+	widgetTaskId: string;
 	worktree: WorktreeInfo;
 	base: string;
 	implementation?: ChildSettlement;
@@ -125,12 +126,14 @@ export interface DelegateFlowRuntime {
 	resolveLaunch: (role: Role, modelClass: FlowModelClass, ctx: ExtensionContext) => ResolvedRoleLaunch;
 	startWidget: (
 		id: string,
+		taskId: string,
 		role: string,
 		model: string,
 		thinkingLevel: string | undefined,
 		name: string,
 		ctx: ExtensionContext,
 	) => void;
+	setWidgetTaskRetained: (taskId: string, retained: boolean) => void;
 	updateWidgetTokens: (id: string, tokens: number) => void;
 	updateWidgetActivity: (id: string, event: EphemeralSubagentActivityEvent) => void;
 	finishWidget: (id: string, status: WidgetStatus) => void;
@@ -262,6 +265,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		signal ? AbortSignal.any([signal, flow.sessionController.signal]) : flow.sessionController.signal;
 
 	const invalidateActive = (): void => {
+		if (active?.blocked) runtime.setWidgetTaskRetained(active.blocked.unit.widgetTaskId, false);
 		active?.sessionController.abort(new Error("Flow session ended."));
 		active = undefined;
 	};
@@ -346,6 +350,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		modelClass: FlowModelClass,
 		task: string,
 		widgetName: string,
+		widgetTaskId: string,
 		cwd: string,
 		widgetId: string,
 		signal: AbortSignal | undefined,
@@ -365,7 +370,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					if (launch.missingSkills.length) {
 						ctx.ui.notify(`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`, "warning");
 					}
-					runtime.startWidget(widgetId, role.name, launch.model.id, launch.thinkingLevel, widgetName, ctx);
+					runtime.startWidget(widgetId, widgetTaskId, role.name, launch.model.id, launch.thinkingLevel, widgetName, ctx);
 					started = true;
 					return { launch, task, cwd };
 				},
@@ -506,6 +511,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		diagnostic: string,
 		meter: UsageMeter,
 	) => {
+		if (flow.blocked) runtime.setWidgetTaskRetained(flow.blocked.unit.widgetTaskId, false);
 		if (active === flow) active = undefined;
 		return response(flow, "failed", meter, { classification, diagnostic: capOutput(diagnostic) });
 	};
@@ -521,6 +527,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		if (unit.repairUsed) return terminal(flow, classification, bounded, meter);
 		flow.phase = "blocked";
 		flow.blocked = { unit, classification, diagnostic: bounded };
+		runtime.setWidgetTaskRetained(unit.widgetTaskId, true);
 		return response(flow, "blocked", meter);
 	};
 
@@ -687,6 +694,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 						unit.modelClass,
 						reviewerTask(unit.request, reviewCriterion, { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath }),
 						unit.request.name,
+						unit.widgetTaskId,
 						unit.worktree.cwd,
 						`${toolCallId}:flow:${flow.index}:review`,
 						signal,
@@ -820,6 +828,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					flow.units.push({
 						request: unit,
 						modelClass: unit.modelClass,
+						widgetTaskId: `${toolCallId}:flow:${index}`,
 						worktree,
 						base: worktree.baseCommit,
 						repairUsed: false,
@@ -839,6 +848,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					unit.modelClass,
 					implementerTask(unit.request),
 					unit.request.name,
+					unit.widgetTaskId,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${index}:implement`,
 					operationSignal,
@@ -884,6 +894,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			const blocked = flow.blocked;
 			const unit = blocked.unit;
 			if (unit.repairUsed) throw new Error("delegate_flow_continue repair was already used for this Unit.");
+			runtime.setWidgetTaskRetained(unit.widgetTaskId, false);
 			flow.phase = "running";
 			flow.blocked = undefined;
 			unit.repairUsed = true;
@@ -901,6 +912,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 					unit.modelClass,
 					repairTask(unit.request, blocked, guidance),
 					unit.request.name,
+					unit.widgetTaskId,
 					unit.worktree.cwd,
 					`${toolCallId}:flow:${flow.index}:repair`,
 					operationSignal,

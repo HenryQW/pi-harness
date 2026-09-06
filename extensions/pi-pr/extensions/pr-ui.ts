@@ -1,4 +1,4 @@
-import { getCapabilities, hyperlink } from "@earendil-works/pi-tui";
+import { getCapabilities, hyperlink, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	deriveNextStep,
 	type NextStep,
@@ -93,6 +93,10 @@ export function formatPrFooter(display: PrDisplay, theme: PrTheme): string | und
 	return `${link} · ${theme.fg(display.footer.color, display.footer.text)}`;
 }
 
-export function formatPrWidget(display: PrDisplay): string | undefined {
-	return display.widget;
+export function formatPrWidget(display: PrDisplay, theme?: PrTheme, width?: number): string[] | undefined {
+	if (display.widget === undefined) return undefined;
+	const color = display.footer?.color ?? "accent";
+	const icon = color === "error" ? "✗" : color === "warning" ? "!" : color === "success" ? "✓" : "●";
+	const line = `${theme ? theme.fg(color, icon) : icon} ${display.widget}`;
+	return [width === undefined ? line : truncateToWidth(line, Math.max(1, width))];
 }

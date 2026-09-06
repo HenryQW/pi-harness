@@ -64,7 +64,9 @@ An explicit `model` (`provider/modelId`) replaces only the route model and must 
 
 Parallel tasks start together, settle together, and report in input order. Chains are sequential and fail at the first failure. `{previous}` passes only the immediately preceding successful assistant output.
 
-Foreground failures throw after keeping bounded sibling and recovery evidence. One call has one aggregate 50 KiB cap for Main-visible text. Live updates show task names and statuses without opaque IDs. Final results show summaries first and full evidence below.
+Foreground failures throw after keeping bounded sibling and recovery evidence. One call has one aggregate 50 KiB cap for Main-visible text. Final results show summaries first and full evidence below.
+
+The status widget shows each task group name above at most three indented child rows. Each row shows a one-letter Role badge, status, activity, usage, and duration. Flow stages for one unit share that unit's heading.
 
 Background work belongs to its launching session. Shutdown or reload aborts it and may leave only recoverable-work evidence or no follow-up message.
 

@@ -60,6 +60,7 @@ const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
 const MAX_WIDGET_LINES = 6;
+const MAX_WIDGET_GROUP_ROWS = 3;
 export const MAX_WIDGET_ACTIVE_TOOLS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
@@ -87,6 +88,7 @@ type WidgetItem = {
 	role: string;
 	model: string;
 	thinkingLevel: string;
+	taskId: string;
 	name: string;
 	tokens: number;
 	startedAt: number;
@@ -164,13 +166,35 @@ function renderWidgetRows(
 	theme: Theme,
 ): string[] {
 	const ordered = [...items.filter(({ status }) => status === "working"), ...items.filter(({ status }) => status !== "working")];
-	const visible = ordered.slice(0, ordered.length > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES);
-	if (!visible.length) return [];
-	const hidden = ordered.slice(visible.length);
-	const lines = visible.map((item) => truncateToWidth(
-		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", item.name)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
-		width,
-	));
+	if (!ordered.length) return [];
+	const groups = new Map<string, { name: string; items: WidgetItem[] }>();
+	for (const item of ordered) {
+		const group = groups.get(item.taskId);
+		if (group) group.items.push(item);
+		else groups.set(item.taskId, { name: item.name, items: [item] });
+	}
+	const maxVisibleLines = ordered.length + groups.size > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES;
+	const workingGroups = [...groups.values()].filter(({ items }) => items.some(({ status }) => status === "working"));
+	const visibleWorkingGroups = new Set(workingGroups.slice(0, Math.floor(maxVisibleLines / 2)));
+	let remainingWorkingGroups = visibleWorkingGroups.size;
+	const visible = new Set<WidgetItem>();
+	const lines: string[] = [];
+	for (const group of groups.values()) {
+		const working = group.items.some(({ status }) => status === "working");
+		if (working && !visibleWorkingGroups.has(group)) continue;
+		const reservedLines = working ? --remainingWorkingGroups * 2 : 0;
+		const childCount = Math.min(MAX_WIDGET_GROUP_ROWS, group.items.length, maxVisibleLines - lines.length - reservedLines - 1);
+		if (childCount < 1) continue;
+		lines.push(truncateToWidth(theme.fg("text", group.name), width));
+		for (const item of group.items.slice(0, childCount)) {
+			visible.add(item);
+			lines.push(truncateToWidth(
+				`  ${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
+				width,
+			));
+		}
+	}
+	const hidden = ordered.filter((item) => !visible.has(item));
 	if (hidden.length) {
 		const counts: Record<WidgetStatus, number> = { working: 0, success: 0, failure: 0, aborted: 0 };
 		for (const { status } of hidden) counts[status] += 1;
@@ -250,6 +274,7 @@ export default function subagentExtension(
 		].join("\n"), outputPad, 0);
 	});
 	const widgetItems = new Map<string, WidgetItem>();
+	const retainedWidgetTaskIds = new Set<string>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
 	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
 	// maxSubagents > default 5. Invalid present config falls back to the default
@@ -301,6 +326,11 @@ export default function subagentExtension(
 
 	const requestWidgetRender = () => activeTui?.requestRender();
 
+	const setWidgetTaskRetained = (taskId: string, retained: boolean) => {
+		if (retained) retainedWidgetTaskIds.add(taskId);
+		else retainedWidgetTaskIds.delete(taskId);
+	};
+
 	const startWidgetTimer = () => {
 		if (widgetTimer) return;
 		widgetTimer = setInterval(() => {
@@ -324,6 +354,7 @@ export default function subagentExtension(
 
 	const startWidgetItem = (
 		id: string,
+		taskId: string,
 		role: string,
 		model: string,
 		thinkingLevel: string | undefined,
@@ -334,15 +365,23 @@ export default function subagentExtension(
 		ensureWidget(ctx);
 		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ITEMS) {
 			for (const [oldestId, item] of widgetItems) {
-				if (item.status === "working") continue;
+				if (item.status === "working" || retainedWidgetTaskIds.has(item.taskId) || item.taskId === taskId) continue;
 				widgetItems.delete(oldestId);
 				if (widgetItems.size < MAX_WIDGET_ITEMS) break;
+			}
+			if (widgetItems.size >= MAX_WIDGET_ITEMS) {
+				for (const [oldestId, item] of widgetItems) {
+					if (item.status === "working" || retainedWidgetTaskIds.has(item.taskId)) continue;
+					widgetItems.delete(oldestId);
+					if (widgetItems.size < MAX_WIDGET_ITEMS) break;
+				}
 			}
 		}
 		widgetItems.set(id, {
 			role: roleBadge(role),
 			model,
 			thinkingLevel: thinkingLevel ?? "default",
+			taskId,
 			name,
 			tokens: 0,
 			startedAt: Date.now(),
@@ -434,6 +473,7 @@ export default function subagentExtension(
 		failedToolPatches.clear();
 		stopWidgetTimer();
 		widgetItems.clear();
+		retainedWidgetTaskIds.clear();
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
@@ -451,7 +491,7 @@ export default function subagentExtension(
 	pi.on("input", (event) => {
 		if (event.source === "extension") return;
 		for (const [id, item] of widgetItems) {
-			if (item.status !== "working") widgetItems.delete(id);
+			if (item.status !== "working" && !retainedWidgetTaskIds.has(item.taskId)) widgetItems.delete(id);
 		}
 		requestWidgetRender();
 	});
@@ -550,6 +590,7 @@ export default function subagentExtension(
 			...(modelClass === undefined ? {} : { modelClass }),
 		}),
 		startWidget: startWidgetItem,
+		setWidgetTaskRetained,
 		updateWidgetTokens,
 		updateWidgetActivity,
 		finishWidget: finishWidgetItem,
@@ -695,7 +736,7 @@ export default function subagentExtension(
 								if (role.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
-								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.name, ctx);
+								startWidgetItem(entry.id, entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.name, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
 								return {
