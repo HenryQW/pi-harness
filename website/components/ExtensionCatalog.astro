@@ -28,12 +28,9 @@ const { extensions } = Astro.props;
       </p>
       <a
         class="extension-catalog-cta group text-base font-medium text-accent no-underline transition-colors hover:text-accent focus-visible:ring-2 focus-visible:ring-accent/40 dark:text-[#8FB3FF] dark:hover:text-[#8FB3FF]"
-        href="https://github.com/HenryQW/pi-harness/tree/main/extensions"
-        rel="noopener noreferrer"
-        target="_blank"
+        href="/overview"
       >
-        <span class="underline-offset-4 group-hover:underline">Browse all extensions ↗</span>
-        <span class="sr-only"> (opens in a new tab)</span>
+        <span class="underline-offset-4 group-hover:underline">Read the full doc ↗</span>
       </a>
     </header>
 
@@ -57,7 +54,7 @@ const { extensions } = Astro.props;
             id="extension-search"
             class="extension-catalog-search focus-visible:ring-2 focus-visible:ring-accent/40"
             type="search"
-            placeholder="Search extensions"
+            placeholder={`Search ${extensions.length} extensions`}
             autocomplete="off"
             spellcheck="false"
             data-extension-search

@@ -16,5 +16,7 @@ npm-debug.log*
 .context/memory-context.md
 .context/memory-distill-preview.json
 
+.impeccable/
+
 # Build output
 extensions/*/dist/
