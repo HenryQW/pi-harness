@@ -87,6 +87,7 @@ type WidgetItem = {
 	role: string;
 	model: string;
 	thinkingLevel: string;
+	taskId: string;
 	name: string;
 	tokens: number;
 	startedAt: number;
@@ -164,13 +165,29 @@ function renderWidgetRows(
 	theme: Theme,
 ): string[] {
 	const ordered = [...items.filter(({ status }) => status === "working"), ...items.filter(({ status }) => status !== "working")];
-	const visible = ordered.slice(0, ordered.length > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES);
-	if (!visible.length) return [];
-	const hidden = ordered.slice(visible.length);
-	const lines = visible.map((item) => truncateToWidth(
-		`${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", item.name)} · ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
-		width,
-	));
+	if (!ordered.length) return [];
+	const groups = new Map<string, { name: string; items: WidgetItem[] }>();
+	for (const item of ordered) {
+		const group = groups.get(item.taskId);
+		if (group) group.items.push(item);
+		else groups.set(item.taskId, { name: item.name, items: [item] });
+	}
+	const maxVisibleLines = ordered.length + groups.size > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES;
+	const visible = new Set<WidgetItem>();
+	const lines: string[] = [];
+	for (const group of groups.values()) {
+		const childCount = Math.min(group.items.length, maxVisibleLines - lines.length - 1);
+		if (childCount < 1) break;
+		lines.push(truncateToWidth(theme.fg("text", group.name), width));
+		for (const item of group.items.slice(0, childCount)) {
+			visible.add(item);
+			lines.push(truncateToWidth(
+				`  ${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
+				width,
+			));
+		}
+	}
+	const hidden = ordered.filter((item) => !visible.has(item));
 	if (hidden.length) {
 		const counts: Record<WidgetStatus, number> = { working: 0, success: 0, failure: 0, aborted: 0 };
 		for (const { status } of hidden) counts[status] += 1;
@@ -324,6 +341,7 @@ export default function subagentExtension(
 
 	const startWidgetItem = (
 		id: string,
+		taskId: string,
 		role: string,
 		model: string,
 		thinkingLevel: string | undefined,
@@ -343,6 +361,7 @@ export default function subagentExtension(
 			role: roleBadge(role),
 			model,
 			thinkingLevel: thinkingLevel ?? "default",
+			taskId,
 			name,
 			tokens: 0,
 			startedAt: Date.now(),
@@ -695,7 +714,7 @@ export default function subagentExtension(
 								if (role.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
-								startWidgetItem(entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.name, ctx);
+								startWidgetItem(entry.id, entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.name, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
 								return {
