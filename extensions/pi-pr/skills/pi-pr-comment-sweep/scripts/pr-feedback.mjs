@@ -1024,6 +1024,7 @@ if [ "$1" = pr ] && [ "$2" = view ]; then
   exit 1
 fi
 if [ "$1" = api ] && [ "$2" = graphql ] && [ "$3" = --hostname ] && [ "$4" = ${enterpriseHost} ]; then
+  cat >/dev/null
   echo 'host GraphQL failed' >&2
   exit 1
 fi
