@@ -36,4 +36,23 @@ Create current branch GitHub pull request.
    Reuse one result only when its base matches. Refresh its title and body.
    Stop on a different base or multiple results. Otherwise create with explicit
    `--head <OWNER>:<ref>`, `--base <base>`, title, and body file.
-6. Reply only with PR URL.
+6. After successful create or reuse, retain the already validated PR URL. Parse
+   its PR path segment with Node's standard `URL` and derive `<number>`. Require
+   the positive decimal form `^[1-9][0-9]*$`.
+
+   Only when `HERDR_ENV=1` and trimmed `HERDR_WORKSPACE_ID` is non-empty, use
+   that trimmed value as `<workspace-id>`. Run `herdr workspace get
+   "<workspace-id>"`. Parse its default JSON with Node's standard library
+   (`node:fs` and `JSON.parse`), not `jq`. Require
+   `result.workspace.workspace_id` to exactly equal `<workspace-id>` and
+   `result.workspace.label` to be a non-empty string.
+   Remove every trailing suffix with `/(?: · PR #[1-9][0-9]*)+$/` from the
+   label, then append exactly one ` · PR #<number>` suffix. Run `herdr workspace
+   rename "<workspace-id>" "<normalized-label>"` only when the normalized label
+   differs from the current label. Rename only the workspace, never a pane, tab,
+   Pi session, or Git branch.
+
+   Otherwise, including outside Herdr, skip labeling silently. If any
+   workspace-label step fails after PR success, do not undo the PR; reply with
+   its URL and `Herdr workspace rename failed: <error>`. Otherwise reply only
+   with the PR URL.
