@@ -877,7 +877,6 @@ export async function loadCurrentPullRequest(
 ): Promise<CurrentPullRequest | null> {
 	const pushTarget = await readPushTarget(pi, context);
 	if (pushTarget === null) return null;
-	const [headOwner] = pushTarget.repository.nameWithOwner.split("/");
 	const search = await execute(pi, context, "Find pull requests", "gh", [
 		"api",
 		"search/issues",
@@ -888,7 +887,7 @@ export async function loadCurrentPullRequest(
 		"-X",
 		"GET",
 		"-f",
-		`q=is:pr head:${headOwner}:${pushTarget.ref}`,
+		`q=is:pr head:${pushTarget.ref}${pushTarget.remoteHeadOid === null ? "" : ` ${pushTarget.remoteHeadOid}`}`,
 		"-f",
 		`per_page=${PR_LIST_LIMIT}`,
 	]);

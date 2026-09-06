@@ -383,10 +383,9 @@ function candidatePrUrls(pages, hostname) {
 
 function discoverOpenPr(localHead) {
   const push = configuredPushTarget();
-  const [owner] = push.repository.split("/", 2);
   const response = readJsonValueCommand("gh", [
     "api", "search/issues", "--hostname", push.hostname, "--paginate", "--slurp", "-X", "GET",
-    "-f", `q=is:pr is:open head:${owner}:${push.ref}`,
+    "-f", `q=is:pr is:open head:${push.ref} ${localHead}`,
     "-f", `per_page=${PR_LIST_LIMIT}`,
   ]);
   const candidates = candidatePrUrls(response, push.hostname).map((url) => {
@@ -1151,7 +1150,7 @@ if [ "$*" = "repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url" ];
   echo '{"nameWithOwner":"Owner/Repo","url":"https://${enterpriseHost}/Owner/Repo"}'
   exit 0
 fi
-if [ "$*" = "api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
+if [ "$*" = "api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:feature/pr ${discoveryMetadata.headRefOid} -f per_page=100" ]; then
   echo '[{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Upstream/Project/pull/1"}]}]'
   exit 0
 fi
@@ -1198,7 +1197,7 @@ exit 1
     const discoveryCommands = readFileSync(discoveryCalls, "utf8").trim().split("\n");
     assert.equal(discoveryCommands[0], `repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url`);
     assert(!discoveryCommands.some((command) => command.includes("account") || command.includes("secret")));
-    assert.equal(discoveryCommands[1], `api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
+    assert.equal(discoveryCommands[1], `api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:feature/pr ${discoveryMetadata.headRefOid} -f per_page=100`);
     assert.match(discoveryCommands[2], new RegExp(`^pr view https://${enterpriseHost}/Upstream/Project/pull/1 `));
     assert(!discoveryCommands.some((command) => command.startsWith("pr view --json")));
 
@@ -1215,7 +1214,7 @@ if [ "$*" = "repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url" ];
   echo '{"nameWithOwner":"Owner/Repo","url":"https://${enterpriseHost}/Owner/Repo"}'
   exit 0
 fi
-if [ "$*" = "api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100" ]; then
+if [ "$*" = "api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:feature/pr ${discoveryMetadata.headRefOid} -f per_page=100" ]; then
   echo '[{"total_count":1,"incomplete_results":false,"items":[{"html_url":"https://${enterpriseHost}/Owner/Repo/pull/1"}]}]'
   exit 0
 fi
@@ -1277,7 +1276,7 @@ exit 1
     assert.equal(readFileSync(resolved, "utf8"), "first\n");
     const resolutionCommands = readFileSync(resolutionCalls, "utf8").trim().split("\n");
     assert.equal(resolutionCommands[0], `repo view ${enterpriseHost}/Owner/Repo --json nameWithOwner,url`);
-    assert.equal(resolutionCommands[1], `api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:Owner:feature/pr -f per_page=100`);
+    assert.equal(resolutionCommands[1], `api search/issues --hostname ${enterpriseHost} --paginate --slurp -X GET -f q=is:pr is:open head:feature/pr ${discoveryMetadata.headRefOid} -f per_page=100`);
     assert.match(resolutionCommands[2], new RegExp(`^pr view https://${enterpriseHost}/Owner/Repo/pull/1 `));
     assert(!resolutionCommands.some((command) => command.startsWith("pr view --json")));
 

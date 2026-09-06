@@ -266,7 +266,7 @@ test("detects commits added after local branch creation", async (t) => {
 	assert.equal(await hasLocalCommit(pi, context), true);
 });
 
-test("loads an upstream PR for the exact fork push target and retains its fetch source", async () => {
+test("discovers an upstream PR for a slash-containing fork branch with a branch-only head search", async () => {
 	const foreign = pullRequest({
 		number: 41,
 		url: "https://github.com/acme/unrelated/pull/41",
@@ -327,7 +327,7 @@ test("loads an upstream PR for the exact fork push target and retains its fetch 
 		"-X",
 		"GET",
 		"-f",
-		"q=is:pr head:acme:feature/pr",
+		`q=is:pr head:feature/pr ${REMOTE_HEAD}`,
 		"-f",
 		"per_page=100",
 	]);
@@ -650,6 +650,8 @@ test("does not fall back to local HEAD when the remote push ref is absent", asyn
 	const { pi, context, calls } = harness({ candidates: [historical], remoteHead: null });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
+	const search = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues");
+	assert.ok(search?.args.includes("q=is:pr head:feature/pr"));
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
