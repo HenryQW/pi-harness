@@ -119,6 +119,8 @@ Excess children wait FIFO without using a child timeout. A terminal response on 
 
 When a Role launch reaches a continuing penultimate turn, Pi reserves the final allowed turn for a response-only handoff. This includes `delegate_task` and every Implementer or Reviewer launch within `delegate_flow`.
 
+With `maxTurns` set to 1, Pi disables tools at startup. The sole provider turn is the response-only handoff.
+
 Pi waits for the penultimate turn's tools. It then disables all tools and requests a final report. The final allowed provider request has no tools. A terminal penultimate response gets no handoff.
 
 The fixed decision packet asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence. The child returns only that output, such as a Flow Reviewer's exact `PASS` or caller-required structured output. It reserves a turn within the existing hard limit; it never adds a model turn. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.

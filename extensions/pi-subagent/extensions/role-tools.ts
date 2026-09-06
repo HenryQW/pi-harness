@@ -59,6 +59,7 @@ export default function roleTools(pi: ExtensionAPI): void {
 		type: "string",
 	});
 	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
+	let handoffSent = false;
 	pi.on("session_start", () => {
 		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
 		const allTools = pi.getAllTools();
@@ -72,12 +73,16 @@ export default function roleTools(pi: ExtensionAPI): void {
 		if (unavailable.length) {
 			throw new Error(`Subagent requested unavailable tools: ${unavailable.join(", ")}. Check spelling and load the provider extension that registers them.`);
 		}
+		if (budget?.maxTurns === 1 && !handoffSent) {
+			pi.setActiveTools([]);
+			pi.sendMessage(FINAL_HANDOFF_MESSAGE, { deliverAs: "steer", triggerTurn: false });
+			handoffSent = true;
+		}
 	});
 
 	if (!budget) return;
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
 	let completedTurns = 0;
-	let handoffSent = false;
 	let turnWarningSent = false;
 	let runtimeWarningSent = false;
 	pi.on("turn_end", (event) => {
