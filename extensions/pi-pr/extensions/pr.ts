@@ -39,7 +39,7 @@ export default function pullRequestExtension(
 	let active: AbortController | undefined;
 	let queued = false;
 	let refreshFailureReported = false;
-	let displayedWidget: string | undefined;
+	let displayedWidget: string[] | undefined;
 	let commandGeneration = 0;
 	const activeInvocations = new Map<number, "routing" | "workflow">();
 
@@ -53,10 +53,10 @@ export default function pullRequestExtension(
 		if (pullRequest !== null && footer === undefined) {
 			throw new Error("Current pull request display is missing a footer");
 		}
-		displayedWidget = formatPrWidget(display);
+		displayedWidget = formatPrWidget(display, ctx.ui.theme);
 		const widget = activeInvocations.size > 0 ? undefined : displayedWidget;
 		ctx.ui.setStatus(UI_KEY, footer);
-		ctx.ui.setWidget(UI_KEY, widget === undefined ? undefined : [widget]);
+		ctx.ui.setWidget(UI_KEY, widget);
 	};
 
 	const stop = (): void => {
@@ -181,7 +181,7 @@ export default function pullRequestExtension(
 					cancelRefresh();
 					activeInvocations.delete(invocation);
 					if (!activeInvocations.size) {
-						ctx.ui.setWidget(UI_KEY, displayedWidget === undefined ? undefined : [displayedWidget]);
+						ctx.ui.setWidget(UI_KEY, displayedWidget);
 					}
 					refreshInBackground();
 				}

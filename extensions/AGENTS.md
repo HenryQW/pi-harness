@@ -12,6 +12,18 @@ Under that consumer assumption, reload the extension after a manual or external 
 
 Use `store.update(mutator)` for read-modify-write when an extension supports multiple processes, sessions, or writers. Use it also to preserve concurrent field changes. It reads the latest valid config under the store lock.
 
+## Widget messages
+
+These rules apply to message-style widgets. Do not force data or list widgets into this card shape.
+
+- Give each widget one purpose and concise copy.
+- Persistent actions use at most two lines: identity and state first, then the action.
+- Use semantic `ctx.ui.theme` colors for emphasis. Text must still state the meaning without color.
+- Emphasize the exact command. Never hard-code ANSI sequences.
+- Keep dynamic content width-safe. Truncate it or use a width-aware renderer when it can grow.
+- In non-TUI or RPC modes, use a plain-text fallback.
+- Define when each widget clears. Clear it at that lifecycle point.
+
 ## README
 
 Every package `README.md` must use [README-template.md](README-template.md). Copy it, replace placeholders, delete inapplicable optional sections, and keep remaining sections in order.

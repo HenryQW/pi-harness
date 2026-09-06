@@ -27,8 +27,11 @@ const conditions: PullRequestConditions = {
 };
 const local: LocalMergeSafety = { worktree: "clean", head: "equal" };
 const theme: PrTheme = {
-	fg(color: PrStatusColor, text: string) {
+	fg(color: PrStatusColor | "text", text: string) {
 		return `<${color}>${text}</${color}>`;
+	},
+	bold(text: string) {
+		return `<bold>${text}</bold>`;
 	},
 };
 
@@ -168,7 +171,7 @@ test("projects normal runnable, merge, and no-action states", () => {
 		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);
-		assert.equal(formatPrWidget(display), widget, `${name} widget`);
+		assert.equal(display.widget, widget, `${name} widget`);
 	}
 });
 
@@ -263,7 +266,7 @@ test("uses visible-condition priority for combined states", () => {
 		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);
-		assert.equal(formatPrWidget(display), widget, `${name} widget`);
+		assert.equal(display.widget, widget, `${name} widget`);
 	}
 });
 
@@ -285,6 +288,18 @@ test("formats themed footer text with OSC-8 only when supported", () => {
 		assert.doesNotMatch(footer, /\x1b\]8;;/);
 		assert.equal(plain(footer), "PR #42 · open");
 	});
+});
+
+test("formats an actionable widget as a themed two-line status card", () => {
+	const widget = formatPrWidget(projectPrDisplay(pullRequest({ conditions: { ci: "failure" } })), theme);
+	assert.deepEqual(widget, [
+		"<error>│</error> <text><bold>Pull request</bold></text> · <error>CI failed</error>",
+		"<error>│</error> Run <error><bold>/pr</bold></error> to fix CI",
+	]);
+	assert.deepEqual(widget?.map(plain), [
+		"│ Pull request · CI failed",
+		"│ Run /pr to fix CI",
+	]);
 });
 
 test("keeps blocked mutating conditions in the footer without a widget", () => {
@@ -317,14 +332,14 @@ test("keeps blocked mutating conditions in the footer without a widget", () => {
 			assert.equal(display.nextStep, "none", `${name} route`);
 			assert.equal(display.footer?.text, action.footer, `${name} footer`);
 			assert.equal(display.footer?.color, action.color, `${name} color`);
-			assert.equal(formatPrWidget(display), undefined, `${name} widget`);
+			assert.equal(display.widget, undefined, `${name} widget`);
 		}
 	}
 });
 
 test("clears widget for non-actionable projections", () => {
 	const actionable = projectPrDisplay(pullRequest({ conditions: { ci: "failure" } }));
-	assert.equal(formatPrWidget(actionable), "Run /pr to fix CI");
+	assert.equal(actionable.widget, "Run /pr to fix CI");
 
 	const cleared = [
 		projectPrDisplay(pullRequest({ conditions: { ci: "running" } })),
@@ -333,5 +348,5 @@ test("clears widget for non-actionable projections", () => {
 		projectPrDisplay(pullRequest({ lifecycle: "merged" })),
 		projectPrDisplay(pullRequest({ lifecycle: "closed" })),
 	];
-	for (const display of cleared) assert.equal(formatPrWidget(display), undefined);
+	for (const display of cleared) assert.equal(display.widget, undefined);
 });
