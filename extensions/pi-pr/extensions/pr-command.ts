@@ -1,7 +1,6 @@
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
-	RegisteredCommand,
 } from "@earendil-works/pi-coding-agent";
 import {
 	executeGitHubMerge,
@@ -26,7 +25,7 @@ const WORKFLOWS: Record<WorkflowNextStep, string> = {
 };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
-export type PrCommandHandler = RegisteredCommand["handler"];
+export type PrCommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<NextStep>;
 
 function dispatchWorkflow(pi: PrCommandPi, ctx: ExtensionCommandContext, commandName: string): void {
 	const command = pi.getCommands().find((candidate) =>
@@ -141,14 +140,15 @@ export function createPrCommandHandler(pi: PrCommandPi): PrCommandHandler {
 				const notification = noActionNotification(current);
 				ctx.ui.notify(notification.message, notification.type);
 			}
-			return;
+			return nextStep;
 		}
 		if (nextStep === "merge") {
 			if (!current) throw new Error("/pr merge failed: pull request is unavailable");
 			await mergePullRequest(pi, ctx, current);
-			return;
+			return nextStep;
 		}
 
 		dispatchWorkflow(pi, ctx, WORKFLOWS[nextStep]);
+		return nextStep;
 	};
 }
