@@ -5,6 +5,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
 import type {
 	CurrentPullRequest,
@@ -79,16 +80,24 @@ function harness(options: {
 }) {
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
+	let agentSettled: EventHandler | undefined;
 	let toolResult: EventHandler | undefined;
 	let command: Command | undefined;
 	const statuses: Array<string | undefined> = [];
 	const widgets: Array<string[] | undefined> = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	const ui = {
+		setStatus(_key: string, value: string | undefined) { statuses.push(value); },
+		setWidget(_key: string, value: string[] | undefined) { widgets.push(value); },
+		notify(message: string, type?: string) { notifications.push({ message, type }); },
+		theme: { fg(color: string, text: string) { return options.theme?.(color, text) ?? text; } },
+	};
 
 	pullRequestExtension({
 		on(event: string, handler: unknown) {
 			if (event === "session_start") sessionStart = handler as EventHandler;
 			if (event === "session_shutdown") sessionShutdown = handler as EventHandler;
+			if (event === "agent_settled") agentSettled = handler as EventHandler;
 			if (event === "tool_result") toolResult = handler as EventHandler;
 		},
 		registerCommand(name: string, registered: Command) {
@@ -97,7 +106,7 @@ function harness(options: {
 	} as unknown as ExtensionAPI, {
 		loadCurrentPullRequest: options.load,
 		hasLocalCommit: options.hasLocalCommit,
-		createPrCommandHandler: () => options.commandHandler ?? (async () => {}),
+		createPrCommandHandler: () => options.commandHandler ?? (async () => "none"),
 	});
 
 	const handler = <T>(value: T | undefined, name: string): T => {
@@ -109,13 +118,9 @@ function harness(options: {
 		cwd: "/repo",
 		signal: new AbortController().signal,
 		isIdle: () => true,
-		ui: {
-			setStatus(_key: string, value: string | undefined) { statuses.push(value); },
-			setWidget(_key: string, value: string[] | undefined) { widgets.push(value); },
-			notify(message: string, type?: string) { notifications.push({ message, type }); },
-			theme: { fg(color: string, text: string) { return options.theme?.(color, text) ?? text; } },
-		},
+		ui,
 	} as unknown as ExtensionContext);
+	const callbackContext = (ctx: ExtensionContext): ExtensionContext => ({ ...ctx });
 
 	return {
 		statuses,
@@ -123,16 +128,23 @@ function harness(options: {
 		notifications,
 		context,
 		async start(ctx: ExtensionContext): Promise<void> {
-			await handler(sessionStart, "session_start")({} as never, ctx);
+			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
 		},
 		async shutdown(ctx: ExtensionContext): Promise<void> {
-			await handler(sessionShutdown, "session_shutdown")({} as never, ctx);
+			await handler(sessionShutdown, "session_shutdown")({} as never, callbackContext(ctx));
+		},
+		async settle(ctx: ExtensionContext): Promise<void> {
+			await handler(agentSettled, "agent_settled")({} as never, callbackContext(ctx));
 		},
 		async tool(event: unknown, ctx: ExtensionContext): Promise<void> {
-			await handler(toolResult, "tool_result")(event, ctx);
+			await handler(toolResult, "tool_result")(event, callbackContext(ctx));
 		},
 		command(): Command {
-			return handler(command, "pr command");
+			const registered = handler(command, "pr command");
+			return {
+				...registered,
+				handler: (args, ctx) => registered.handler(args, callbackContext(ctx) as ExtensionCommandContext),
+			};
 		},
 	};
 }
@@ -388,6 +400,304 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 
 	t.mock.timers.tick(60_000);
 	assert.equal(calls, callsAfterShutdown, "shutdown must stop later polling");
+});
+
+test("session context generation prevents stale /pr completion from mutating the current session", async () => {
+	const workflow = deferred<"create">();
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return loads === 1 ? null : currentPullRequest({ conditions: { ci: "failure" } });
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return workflow.promise;
+		},
+	});
+	const firstSession = app.context();
+	const secondSession = app.context();
+
+	await app.start(firstSession);
+	const staleCommand = app.command().handler("", firstSession as ExtensionCommandContext);
+	assert.equal(app.widgets.at(-1), undefined);
+
+	await app.shutdown(firstSession);
+	await app.start(secondSession);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
+	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+	const statusWrites = app.statuses.length;
+	const widgetWrites = app.widgets.length;
+
+	workflow.resolve("create");
+	await staleCommand;
+	assert.equal(app.statuses.length, statusWrites);
+	assert.equal(app.widgets.length, widgetWrites);
+
+	await app.shutdown(secondSession);
+});
+
+test("keeps the create hint cleared until a fresh post-workflow refresh", async () => {
+	const staleRefresh = deferred<CurrentPullRequest | null>();
+	const workflow = deferred<void>();
+	let loads = 0;
+	let localCommitChecks = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			if (loads === 1) return null;
+			if (loads === 2) return staleRefresh.promise;
+			return currentPullRequest();
+		},
+		async hasLocalCommit() {
+			localCommitChecks += 1;
+			return true;
+		},
+		async commandHandler() {
+			await workflow.promise;
+			return "create";
+		},
+	});
+	const ctx = app.context();
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ ...previousCapabilities, hyperlinks: true });
+
+	try {
+		await app.start(ctx);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+
+		const command = app.command().handler("", ctx as ExtensionCommandContext);
+		assert.equal(app.widgets.at(-1), undefined, "the hint clears before the workflow completes");
+		workflow.resolve(undefined);
+		await command;
+
+		const polling = app.tool({
+			toolName: "bash",
+			input: { command: "git push origin HEAD" },
+			isError: false,
+		}, ctx);
+		await flush();
+		assert.equal(loads, 2);
+		assert.equal(app.widgets.at(-1), undefined, "an in-flight stale refresh must not restore the hint");
+
+		await app.settle(ctx);
+		assert.equal(loads, 3);
+		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+		assert.match(app.statuses.at(-1) ?? "", /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to merge pull request"]);
+
+		staleRefresh.resolve(null);
+		await polling;
+		assert.equal(localCommitChecks, 1, "an aborted stale lookup must not inspect local commits");
+		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+	} finally {
+		setCapabilities(previousCapabilities);
+		await app.shutdown(ctx);
+	}
+});
+
+test("restores the create hint when the dispatched workflow settles without a pull request", async () => {
+	const app = harness({
+		async load() {
+			return null;
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return "create";
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.equal(app.widgets.at(-1), undefined);
+
+		await app.settle(ctx);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("tracks creation from the fresh command route instead of stale presentation", async () => {
+	const staleNull = deferred<CurrentPullRequest | null>();
+	let staleCreateLoads = 0;
+	const staleCreate = harness({
+		async load() {
+			staleCreateLoads += 1;
+			if (staleCreateLoads === 1) return null;
+			if (staleCreateLoads === 2) return staleNull.promise;
+			return currentPullRequest();
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return "none";
+		},
+	});
+	const staleCreateContext = staleCreate.context();
+	try {
+		await staleCreate.start(staleCreateContext);
+		const polling = staleCreate.tool({
+			toolName: "bash",
+			input: { command: "git push origin HEAD" },
+			isError: false,
+		}, staleCreateContext);
+		await flush();
+
+		await staleCreate.command().handler("", staleCreateContext as ExtensionCommandContext);
+		await flush();
+		assert.equal(plain(staleCreate.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+
+		staleNull.resolve(null);
+		await polling;
+		assert.equal(plain(staleCreate.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+	} finally {
+		await staleCreate.shutdown(staleCreateContext);
+	}
+
+	const stalePr = deferred<CurrentPullRequest | null>();
+	let stalePullRequestLoads = 0;
+	const stalePullRequest = harness({
+		async load() {
+			stalePullRequestLoads += 1;
+			if (stalePullRequestLoads === 1) return currentPullRequest();
+			if (stalePullRequestLoads === 2) return stalePr.promise;
+			return null;
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return "create";
+		},
+	});
+	const stalePullRequestContext = stalePullRequest.context();
+	try {
+		await stalePullRequest.start(stalePullRequestContext);
+		const polling = stalePullRequest.tool({
+			toolName: "bash",
+			input: { command: "git push origin HEAD" },
+			isError: false,
+		}, stalePullRequestContext);
+		await flush();
+
+		await stalePullRequest.command().handler("", stalePullRequestContext as ExtensionCommandContext);
+		assert.equal(stalePullRequest.statuses.at(-1), undefined);
+		assert.equal(stalePullRequest.widgets.at(-1), undefined);
+
+		stalePr.resolve(currentPullRequest());
+		await polling;
+		assert.equal(stalePullRequest.statuses.at(-1), undefined);
+		assert.equal(stalePullRequest.widgets.at(-1), undefined);
+
+		await stalePullRequest.settle(stalePullRequestContext);
+		assert.deepEqual(stalePullRequest.widgets.at(-1), ["Run /pr to create pull request"]);
+	} finally {
+		await stalePullRequest.shutdown(stalePullRequestContext);
+	}
+});
+
+test("restores the create hint immediately when /pr cannot dispatch creation", async () => {
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			if (loads === 1) return null;
+			throw new Error("lookup unavailable");
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			throw new Error("dispatch failed");
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /dispatch failed/);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		await flush();
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("out-of-order /pr results keep every active creation workflow pending", async () => {
+	const first = deferred<"create" | "none">();
+	const second = deferred<"create" | "none">();
+	let commands = 0;
+	const app = harness({
+		async load() {
+			return null;
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			commands += 1;
+			return commands === 1 ? first.promise : second.promise;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		const older = app.command().handler("", ctx as ExtensionCommandContext);
+		const newer = app.command().handler("", ctx as ExtensionCommandContext);
+
+		second.resolve("create");
+		await newer;
+		first.resolve("none");
+		await older;
+		await flush();
+		assert.equal(app.widgets.at(-1), undefined);
+
+		await app.settle(ctx);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("a failed second /pr keeps the active creation workflow pending", async () => {
+	let commands = 0;
+	const app = harness({
+		async load() {
+			return null;
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			commands += 1;
+			if (commands === 1) return "create";
+			throw new Error("second dispatch failed");
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /second dispatch failed/);
+		await flush();
+		assert.equal(app.widgets.at(-1), undefined);
+
+		await app.settle(ctx);
+		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+	} finally {
+		await app.shutdown(ctx);
+	}
 });
 
 test("/pr preserves command errors while scheduling a refresh", async () => {

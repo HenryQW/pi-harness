@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-done",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Close and remove the current Herdr worktree from Pi.",
   "keywords": [
     "pi-package",
@@ -16,7 +16,8 @@
   "files": [
     "LICENSE",
     "extensions",
-    "README.md"
+    "README.md",
+    "docs/done-flow.svg"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",

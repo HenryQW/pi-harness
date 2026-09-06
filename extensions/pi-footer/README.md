@@ -1,13 +1,8 @@
 # `@henryqw/pi-footer`
 
-Keep checkout identity, model usage, elapsed agent work, and extension status visible in Pi.
+Keep checkout identity, model usage, elapsed agent work, and extension status visible while you work in Pi. See repository, pull request, model, cost, and status details without separate commands.
 
 ![Pi footer showing repository, pull request, quota, usage, model, and extension status](./example.png)
-
-## Why
-
-- **Created for**: Pi users who need current checkout and usage details while they work.
-- **Advantage**: See repository, PR, model, cost, and status details without running separate commands.
 
 ## Install
 
@@ -15,7 +10,7 @@ Keep checkout identity, model usage, elapsed agent work, and extension status vi
 pi install npm:@henryqw/pi-footer
 ```
 
-## With
+## Works with
 
 | Package | Why |
 | --- | --- |
@@ -45,13 +40,15 @@ Unavailable values render as `—` without a misleading percent sign.
 
 Non-empty statuses from `@henryqw` extensions, currently Codex quota, occupy the right side of the first line.
 
+Statuses from all other extensions, including Ponytail and `pi-rewind`, share the left side. They are sorted by key with producer text, spacing, colors, links, and glyphs preserved.
+
+## State and storage
+
 Agent-work time counts each run from `agent_start` through the final idle `agent_settled`. It includes automatic retries and auto-compaction inside that run. It excludes blocking user-prompt waits and idle waits between runs.
 
 Standalone `/compact` is excluded because it runs outside the agent-run lifecycle and emits no `agent_start`. The cumulative total is persisted in the session through a `pi-footer:agent-work` custom entry after each finalized run. It is restored on session resume.
 
-Statuses from all other extensions, including Ponytail and `pi-rewind`, share the left side. They are sorted by key with producer text, spacing, colors, links, and glyphs preserved.
-
-## Clickable checkout
+## Limits and recovery
 
 When the configured executable is `code` and Pi reports hyperlink support, the accent-colored checkout name links to the current path. The link opens a new window for `code -n` or `code --new-window`. A missing config silently uses `code`. Other executables and terminals with hyperlinks disabled render plain text.
 

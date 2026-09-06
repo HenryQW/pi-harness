@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="done-flow-title done-flow-desc">
+      <title id="done-flow-title">Safe worktree completion</title>
+      <desc id="done-flow-desc">Sequence showing /done waiting for Pi, requiring confirmation or explicit force, refusing unsafe normal removal, then closing workspace tabs around a conditional parent fast-forward whose failure does not stop final tab closure.</desc>
+      <defs>
+        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;display=swap');</style>
+        <style>
+          .lifeline { stroke: rgba(16,24,40,.20); stroke-width: 1; stroke-dasharray: 4 4; }
+          .activation { fill: rgba(16,24,40,.06); stroke: #4c5665; stroke-width: .8; }
+          .fragment { fill: rgba(16,24,40,.02); stroke: rgba(16,24,40,.24); stroke-width: 1; }
+          .fragment-tab { fill: #f0eee9; stroke: rgba(16,24,40,.24); stroke-width: 1; }
+          .fragment-label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .12em; }
+          .guard { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; letter-spacing: .04em; }
+          .gate-badge { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1; }
+          .gate-label { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .08em; }
+          .message { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#done-flow-arrow); }
+          .message-return { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 4 4; marker-end: url(#done-flow-arrow); }
+          .message-accent { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#done-flow-arrow-accent); }
+          .label-mask { fill: #f0eee9; }
+          .message-label { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+          .message-label-accent { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+          .actor { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .actor-input { fill: rgba(76,86,101,.10); stroke: #6a7282; stroke-width: 1; }
+          .actor-state { fill: rgba(16,24,40,.05); stroke: #4c5665; stroke-width: 1; }
+          .actor-name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .actor-sub { fill: #4c5665; font: 400 9px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .04em; }
+          .boundary { stroke: rgba(16,24,40,.24); stroke-width: 1; stroke-dasharray: 4 4; }
+          .boundary-label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .08em; }
+          .legend-label { fill: #4c5665; font: 400 8px 'Geist', sans-serif; }
+          .legend-title { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+        </style>
+        <marker id="done-flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#4c5665"/>
+        </marker>
+        <marker id="done-flow-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="done-flow-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <!-- Combined fragment frame and region divider -->
+      <rect class="fragment" x="120" y="200" width="544" height="232" rx="4"/>
+      <line x1="128" y1="352" x2="656" y2="352" stroke="rgba(16,24,40,.20)" stroke-width="1" stroke-dasharray="4 4"/>
+
+      <!-- Lifelines -->
+      <line class="lifeline" x1="136" y1="96" x2="136" y2="624"/>
+      <line class="lifeline" x1="404" y1="96" x2="404" y2="624"/>
+      <line class="lifeline" x1="652" y1="96" x2="652" y2="624"/>
+      <line class="lifeline" x1="1124" y1="96" x2="1124" y2="624"/>
+
+      <!-- Activation bars -->
+      <rect class="activation" x="400" y="124" width="8" height="476"/>
+      <rect class="activation" x="648" y="304" width="8" height="32"/>
+      <rect class="activation" x="648" y="456" width="8" height="16"/>
+      <rect class="activation" x="1120" y="544" width="8" height="24"/>
+
+      <!-- Fragment labels sit above lifelines for legibility -->
+      <rect class="fragment-tab" x="120" y="200" width="40" height="16" rx="4"/>
+      <text class="fragment-label" x="140" y="212">ALT</text>
+      <rect class="gate-badge" x="168" y="200" width="104" height="16" rx="4"/>
+      <text class="gate-label" x="220" y="212">SAFETY GATE</text>
+      <rect class="label-mask" x="128" y="220" width="528" height="16"/>
+      <text class="guard" x="132" y="232">[normal /done]</text>
+      <text class="guard" x="260" y="232">CONFIRM; DIRTY OR OTHER-WORKSPACE TAB USING CHECKOUT → REFUSE</text>
+      <rect class="label-mask" x="128" y="360" width="528" height="16"/>
+      <text class="guard" x="132" y="372">[explicit --force]</text>
+      <text class="guard" x="260" y="372">PERMITS FORCED REMOVAL · IRREVERSIBLE</text>
+
+      <!-- Messages: time flows downward -->
+      <line class="message" x1="136" y1="124" x2="400" y2="124"/>
+      <rect class="label-mask" x="200" y="104" width="136" height="12" rx="4"/>
+      <text class="message-label" x="268" y="112">RUN /DONE [--FORCE]</text>
+
+      <path class="message" d="M408 148 H452 Q460 148 460 156 V172 Q460 180 452 180 H412"/>
+      <rect class="label-mask" x="468" y="156" width="112" height="12" rx="4"/>
+      <text class="message-label" x="524" y="164">WAIT FOR PI IDLE</text>
+
+      <line class="message" x1="400" y1="256" x2="136" y2="256"/>
+      <rect class="label-mask" x="208" y="236" width="120" height="12" rx="4"/>
+      <text class="message-label" x="268" y="244">CONFIRM REMOVAL?</text>
+
+      <line class="message-return" x1="136" y1="280" x2="400" y2="280"/>
+      <rect class="label-mask" x="228" y="260" width="80" height="12" rx="4"/>
+      <text class="message-label" x="268" y="268">CONFIRMED</text>
+
+      <line class="message" x1="408" y1="304" x2="648" y2="304"/>
+      <rect class="label-mask" x="480" y="284" width="96" height="12" rx="4"/>
+      <text class="message-label" x="528" y="292">CHECK SAFETY</text>
+
+      <line class="message-return" x1="648" y1="328" x2="408" y2="328"/>
+      <rect class="label-mask" x="484" y="308" width="88" height="12" rx="4"/>
+      <text class="message-label" x="528" y="316">CLEAR / REFUSE</text>
+
+      <path class="message" d="M408 396 H452 Q460 396 460 404 V412 Q460 420 452 420 H412"/>
+      <rect class="label-mask" x="468" y="400" width="104" height="12" rx="4"/>
+      <text class="message-label" x="520" y="408">ACCEPT --FORCE</text>
+
+      <line class="message-accent" x1="408" y1="464" x2="648" y2="464"/>
+      <rect class="label-mask" x="448" y="436" width="160" height="20" rx="4"/>
+      <text class="message-label-accent" x="528" y="444">CLEAR OR EXPLICIT FORCE</text>
+      <text class="message-label-accent" x="528" y="452">REMOVE WORKTREE</text>
+
+      <!-- Successful removal is the partial-success boundary -->
+      <line class="boundary" x1="40" y1="488" x2="392" y2="488"/>
+      <line class="boundary" x1="888" y1="488" x2="1240" y2="488"/>
+      <text class="boundary-label" x="640" y="492">PARTIAL-SUCCESS BOUNDARY · WORKTREE REMOVED</text>
+
+      <line class="message" x1="400" y1="516" x2="136" y2="516"/>
+      <rect class="label-mask" x="180" y="496" width="176" height="12" rx="4"/>
+      <text class="message-label" x="268" y="504">CLOSE OTHER WORKSPACE TABS</text>
+
+      <line class="message" x1="408" y1="544" x2="1120" y2="544"/>
+      <rect class="label-mask" x="684" y="516" width="160" height="20" rx="4"/>
+      <text class="message-label" x="764" y="524">IF LINKED + NON-BARE PRIMARY</text>
+      <text class="message-label" x="764" y="532">LOCK + FAST-FORWARD ONLY</text>
+
+      <line class="message-return" x1="1120" y1="568" x2="408" y2="568"/>
+      <rect class="label-mask" x="696" y="548" width="136" height="12" rx="4"/>
+      <text class="message-label" x="764" y="556">UPDATED OR FAILED</text>
+
+      <line class="message" x1="400" y1="600" x2="136" y2="600"/>
+      <rect class="label-mask" x="184" y="580" width="168" height="12" rx="4"/>
+      <text class="message-label" x="268" y="588">ALWAYS CLOSE CURRENT TAB</text>
+
+      <!-- Actors are drawn after messages -->
+      <rect x="56" y="40" width="160" height="56" rx="6" fill="#f0eee9"/>
+      <rect class="actor-input" x="56" y="40" width="160" height="56" rx="6"/>
+      <text class="actor-name" x="136" y="68">Herdr workspace</text>
+      <text class="actor-sub" x="136" y="84">CURRENT + OTHER TABS</text>
+
+      <rect x="324" y="40" width="160" height="56" rx="6" fill="#f0eee9"/>
+      <rect class="actor" x="324" y="40" width="160" height="56" rx="6"/>
+      <text class="actor-name" x="404" y="68">Pi /done</text>
+      <text class="actor-sub" x="404" y="84">IDLE BEFORE CLEANUP</text>
+
+      <rect x="572" y="40" width="160" height="56" rx="6" fill="#f0eee9"/>
+      <rect class="actor-state" x="572" y="40" width="160" height="56" rx="6"/>
+      <text class="actor-name" x="652" y="68">Removal gate</text>
+      <text class="actor-sub" x="652" y="84">WORKTREE + TAB USE</text>
+
+      <rect x="1044" y="40" width="160" height="56" rx="6" fill="#f0eee9"/>
+      <rect class="actor" x="1044" y="40" width="160" height="56" rx="6"/>
+      <text class="actor-name" x="1124" y="68">Parent checkout</text>
+      <text class="actor-sub" x="1124" y="84">CONDITIONAL UPDATE</text>
+
+      <!-- Legend strip -->
+      <line x1="40" y1="640" x2="1240" y2="640" stroke="rgba(16,24,40,.141)" stroke-width=".8"/>
+      <text class="legend-title" x="40" y="668">LEGEND</text>
+
+      <line class="message" x1="128" y1="664" x2="164" y2="664"/>
+      <text class="legend-label" x="176" y="668">Action</text>
+
+      <line class="message-return" x1="264" y1="664" x2="300" y2="664"/>
+      <text class="legend-label" x="312" y="668">Return or result</text>
+
+      <rect class="fragment" x="448" y="656" width="32" height="16" rx="4"/>
+      <text class="fragment-label" x="464" y="668">ALT</text>
+      <text class="legend-label" x="492" y="668">Safety branch</text>
+
+      <line class="message-accent" x1="624" y1="664" x2="660" y2="664"/>
+      <text class="legend-label" x="672" y="668">Successful removal</text>
+    </svg>

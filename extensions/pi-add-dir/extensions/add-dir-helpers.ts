@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { glob } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import * as path from "node:path";
 
@@ -152,20 +152,35 @@ export async function findFiles(
 	const matchPath = normalizedPattern.includes(path.sep);
 	const results: string[] = [];
 
-	signal?.throwIfAborted();
-	for await (const entry of glob("**/@(*|.*)", {
-		cwd: root,
-		withFileTypes: true,
-		exclude: (entry) => entry.isSymbolicLink() || (entry.isDirectory() && SKIPPED_SEARCH_DIRS.has(entry.name)),
-	})) {
+	const directories = [root];
+	while (directories.length > 0) {
 		signal?.throwIfAborted();
-		if (!entry.isFile()) continue;
+		const dir = directories.pop()!;
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch (error) {
+			signal?.throwIfAborted();
+			if (!isMissingPathError(error)) throw error;
+			continue;
+		}
+		signal?.throwIfAborted();
+		for (const entry of entries) {
+			signal?.throwIfAborted();
+			if (entry.isSymbolicLink()) continue;
 
-		const fullPath = path.join(entry.parentPath, entry.name);
-		const candidate = matchPath ? path.relative(root, fullPath) : entry.name;
-		if (!path.matchesGlob(candidate, normalizedPattern)) continue;
-		results.push(fullPath);
-		if (results.length >= maxResults) return results;
+			const fullPath = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				if (!SKIPPED_SEARCH_DIRS.has(entry.name)) directories.push(fullPath);
+				continue;
+			}
+			if (!entry.isFile()) continue;
+
+			const candidate = matchPath ? path.relative(root, fullPath) : entry.name;
+			if (!path.matchesGlob(candidate, normalizedPattern)) continue;
+			results.push(fullPath);
+			if (results.length >= maxResults) return results;
+		}
 	}
 
 	return results;

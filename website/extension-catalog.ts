@@ -10,11 +10,14 @@ export const extensions = readdirSync(join(repoRoot, "extensions"), {
     const directory = entry.name;
     const manifest = JSON.parse(
       readFileSync(join(repoRoot, "extensions", directory, "package.json"), "utf8")
-    ) as { description: string; name: string; version: string };
+    ) as { description: string; name: string; pi?: unknown; private?: boolean; version: string };
     return {
       directory,
       ...manifest,
       description: manifest.description.replace(/\bPi packages\b/g, "Pi extensions"),
+      installable: !manifest.private && Boolean(manifest.pi),
     };
   })
   .sort((a, b) => a.directory.localeCompare(b.directory));
+
+export const homepageExtensions = extensions.filter((extension) => extension.installable);

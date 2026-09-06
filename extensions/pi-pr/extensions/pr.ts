@@ -34,10 +34,15 @@ export default function pullRequestExtension(
 	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
 	let context: ExtensionContext | undefined;
+	let sessionGeneration = 0;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let active: AbortController | undefined;
 	let queued = false;
 	let refreshFailureReported = false;
+	let displayedNextStep: ReturnType<typeof projectPrDisplay>["nextStep"] | undefined;
+	let displayedWidget: string | undefined;
+	let commandGeneration = 0;
+	const pendingCreations = new Set<number>();
 
 	const render = (
 		ctx: ExtensionContext,
@@ -49,15 +54,23 @@ export default function pullRequestExtension(
 		if (pullRequest !== null && footer === undefined) {
 			throw new Error("Current pull request display is missing a footer");
 		}
-		const widget = formatPrWidget(display);
+		if (pullRequest !== null) pendingCreations.clear();
+		displayedWidget = formatPrWidget(display);
+		const widget = pendingCreations.size > 0 && display.nextStep === "create" ? undefined : displayedWidget;
+		displayedNextStep = display.nextStep;
 		ctx.ui.setStatus(UI_KEY, footer);
 		ctx.ui.setWidget(UI_KEY, widget === undefined ? undefined : [widget]);
 	};
 
 	const stop = (): void => {
+		sessionGeneration += 1;
 		context = undefined;
 		queued = false;
 		refreshFailureReported = false;
+		displayedNextStep = undefined;
+		displayedWidget = undefined;
+		commandGeneration = 0;
+		pendingCreations.clear();
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
 		active?.abort();
@@ -79,6 +92,7 @@ export default function pullRequestExtension(
 	const refresh = async (): Promise<void> => {
 		const ctx = context;
 		if (!ctx) return;
+		const generation = sessionGeneration;
 		if (active) {
 			queued = true;
 			return;
@@ -92,13 +106,14 @@ export default function pullRequestExtension(
 			let localCommit = false;
 			try {
 				pullRequest = await load(pi, loadContext);
+				if (controller.signal.aborted || sessionGeneration !== generation) return;
 				if (pullRequest === null) localCommit = await detectLocalCommit(pi, loadContext);
 			} catch (error) {
 				// Keep the last known display when lookup is unavailable.
-				if (!controller.signal.aborted && context === ctx) reportRefreshFailure(error);
+				if (!controller.signal.aborted && sessionGeneration === generation) reportRefreshFailure(error);
 				return;
 			}
-			if (controller.signal.aborted || context !== ctx) return;
+			if (controller.signal.aborted || sessionGeneration !== generation) return;
 			render(ctx, pullRequest, localCommit);
 			refreshFailureReported = false;
 		} finally {
@@ -115,15 +130,29 @@ export default function pullRequestExtension(
 		void refresh().catch(reportRefreshFailure);
 	};
 
+	const cancelRefresh = (): void => {
+		active?.abort();
+		active = undefined;
+		queued = false;
+	};
+
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
+		const generation = sessionGeneration;
 		if (!ctx.hasUI) return;
 		context = ctx;
 		await refresh();
-		if (context === ctx) timer = setInterval(refreshInBackground, POLL_INTERVAL_MS);
+		if (sessionGeneration === generation) timer = setInterval(refreshInBackground, POLL_INTERVAL_MS);
 	});
 
 	pi.on("session_shutdown", stop);
+
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (!ctx.hasUI || !ctx.isIdle() || !context || !pendingCreations.size) return;
+		cancelRefresh();
+		pendingCreations.clear();
+		await refresh().catch(reportRefreshFailure);
+	});
 
 	pi.on("tool_result", async (event, ctx) => {
 		if (!ctx.hasUI || event.isError || !isBashToolResult(event)) return;
@@ -137,10 +166,38 @@ export default function pullRequestExtension(
 	pi.registerCommand("pr", {
 		description: "Run the current branch pull request next step",
 		handler: async (args, ctx) => {
-			if (!ctx.hasUI) return;
+			if (!ctx.hasUI || !context) return;
+			const generation = sessionGeneration;
+			const invocation = ++commandGeneration;
+			const displayedCreation = displayedNextStep === "create";
+			if (displayedCreation) {
+				pendingCreations.add(invocation);
+				ctx.ui.setWidget(UI_KEY, undefined);
+			}
+			let nextStep: Awaited<ReturnType<typeof commandHandler>>;
 			try {
-				await commandHandler(args, ctx);
-			} finally {
+				nextStep = await commandHandler(args, ctx);
+			} catch (error) {
+				if (sessionGeneration === generation) {
+					cancelRefresh();
+					pendingCreations.delete(invocation);
+					if (!pendingCreations.size) {
+						ctx.ui.setWidget(UI_KEY, displayedNextStep === "create" && displayedWidget !== undefined
+							? [displayedWidget]
+							: undefined);
+					}
+					refreshInBackground();
+				}
+				throw error;
+			}
+			if (sessionGeneration !== generation) return;
+			cancelRefresh();
+			if (nextStep === "create") {
+				pendingCreations.add(invocation);
+				ctx.ui.setStatus(UI_KEY, undefined);
+				ctx.ui.setWidget(UI_KEY, undefined);
+			} else {
+				pendingCreations.delete(invocation);
 				refreshInBackground();
 			}
 		},
