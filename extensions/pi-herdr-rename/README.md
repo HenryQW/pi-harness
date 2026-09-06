@@ -26,7 +26,7 @@ Outside Herdr, the extension still changes the Pi session name.
 
 Send the first real prompt. A title appears in the background without delaying the reply.
 
-Run `/rename` after the task changes. It generates a new display title and semantic branch from up to three recent rounds.
+Run `/rename` after the task changes. It generates a new display title and semantic branch from up to five recent user messages.
 
 ### Trigger
 

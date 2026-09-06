@@ -462,7 +462,7 @@ test("manual rename warns without text and the latest overlapping request wins",
 	});
 });
 
-test("manual rename uses the latest three text rounds within a 2,000 character budget", async () => {
+test("manual rename uses only the latest five user messages", async () => {
 	await withAgentDir(async () => {
 		const branch = [
 			{ type: "message", message: { role: "user", content: "oldest ignored request" } },
@@ -471,7 +471,7 @@ test("manual rename uses the latest three text rounds within a 2,000 character b
 			{
 				type: "message",
 				message: {
-					role: "assistant",
+					role: "user",
 					content: [
 						{ type: "thinking", thinking: "private reasoning" },
 						{ type: "text", text: "A".repeat(1_200) },
@@ -480,22 +480,24 @@ test("manual rename uses the latest three text rounds within a 2,000 character b
 				},
 			},
 			{ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] } },
-			{ type: "message", message: { role: "user", content: "second included request" } },
-			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "second answer" }] } },
+			{ type: "message", message: { role: "user", content: "third included request" } },
+			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "assistant answer" }] } },
+			{ type: "message", message: { role: "user", content: "fourth included request" } },
 			{ type: "message", message: { role: "user", content: "latest included request" } },
-			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "latest answer" }] } },
 		];
 		const app = harness({ sessionName: "saved", branch });
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		await app.commands.get("rename")?.("", app.ctx);
 
 		const context = app.completionCalls[0].context.messages[0].content as string;
-		assert.ok(context.length <= 2_000);
-		assert.doesNotMatch(context, /oldest ignored|oldest answer|private reasoning|secret tool|tool output/);
+		assert.ok(context.length <= 5_000);
+		assert.doesNotMatch(context, /oldest ignored|oldest answer|private reasoning|secret tool|tool output|assistant answer/);
 		assert.match(context, /user: first included request/);
-		assert.match(context, /user: second included request/);
+		assert.match(context, /user: third included request/);
+		assert.match(context, /user: fourth included request/);
 		assert.match(context, /user: latest included request/);
 		assert.equal(context.match(/A/g)?.length, 1_000);
+		assert.equal(context.match(/^user:/gm)?.length, 5);
 		assert.ok(context.indexOf("first included") < context.indexOf("latest included"));
 	});
 });

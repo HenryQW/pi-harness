@@ -16,7 +16,8 @@ import {
 const WIDGET_KEY = "pi-herdr-rename";
 const WIDGET_RESULT_MS = 2_000;
 const MAX_MESSAGE_CHARS = 1_000;
-const MAX_CONTEXT_CHARS = 2_000;
+const MAX_CONTEXT_CHARS = 5_000;
+const MAX_CONTEXT_MESSAGES = 5;
 const DISPLAY_MAX_WORDS = 4;
 const DISPLAY_MAX_CHARS = 20;
 const SEMANTIC_TYPE_MAX_CHARS = 12;
@@ -121,30 +122,23 @@ function latestSessionUserText(ctx: ExtensionContext): string | undefined {
 	}
 }
 
-function recentConversation(ctx: ExtensionContext, fallback?: string): string | undefined {
-	const rounds: Array<{ user: string; assistant?: string }> = [];
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "message") continue;
-		if (entry.message.role !== "user" && entry.message.role !== "assistant") continue;
+function recentUserMessages(ctx: ExtensionContext, fallback?: string): string | undefined {
+	const messages = ctx.sessionManager.getBranch().flatMap((entry) => {
+		if (entry.type !== "message" || entry.message.role !== "user") return [];
 		const text = messageText(entry.message.content).trim();
-		if (!text) continue;
-		if (entry.message.role === "user") rounds.push({ user: text });
-		else if (entry.message.role === "assistant" && rounds.length) rounds[rounds.length - 1].assistant = text;
-	}
-	if (!rounds.length && fallback?.trim()) rounds.push({ user: fallback.trim() });
-	if (!rounds.length) return undefined;
+		return text ? [`user: ${text.slice(0, MAX_MESSAGE_CHARS)}`] : [];
+	});
+	if (!messages.length && fallback?.trim()) messages.push(`user: ${fallback.trim().slice(0, MAX_MESSAGE_CHARS)}`);
+	if (!messages.length) return undefined;
 
-	const messages = rounds.slice(-3).flatMap((round) => [
-		`user: ${round.user.slice(0, MAX_MESSAGE_CHARS)}`,
-		...(round.assistant ? [`assistant: ${round.assistant.slice(0, MAX_MESSAGE_CHARS)}`] : []),
-	]);
+	const recentMessages = messages.slice(-MAX_CONTEXT_MESSAGES);
 	const selected: string[] = [];
 	let remaining = MAX_CONTEXT_CHARS;
-	for (let index = messages.length - 1; index >= 0 && remaining > 0; index--) {
+	for (let index = recentMessages.length - 1; index >= 0 && remaining > 0; index--) {
 		const separator = selected.length ? 2 : 0;
 		const available = remaining - separator;
 		if (available <= 0) break;
-		const text = messages[index].slice(0, available);
+		const text = recentMessages[index].slice(0, available);
 		if (!text) break;
 		selected.push(text);
 		remaining -= text.length + separator;
@@ -400,9 +394,9 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("rename", {
-		description: "Generate a new display title from recent conversation context",
+		description: "Generate a new display title from recent user messages",
 		handler: async (_args, ctx) => {
-			const context = recentConversation(ctx, latestUserText);
+			const context = recentUserMessages(ctx, latestUserText);
 			if (!context) {
 				ctx.ui.notify("No user text is available to rename this chat.", "warning");
 				return;
