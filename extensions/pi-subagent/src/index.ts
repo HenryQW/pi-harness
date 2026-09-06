@@ -24,6 +24,7 @@ export {
 	capEphemeralSubagentOutput,
 	createEphemeralSubagentExecutor,
 	DEFAULT_MAX_TURNS,
+	MIN_MAX_TURNS,
 	EphemeralSubagentError,
 	EXECUTION_BUDGET_ENV,
 	formatDuration,

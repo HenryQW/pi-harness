@@ -9,6 +9,7 @@ import {
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
 	EXECUTION_BUDGET_ENV,
+	MIN_MAX_TURNS,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentExecutor,
 	type PiLaunch,
@@ -639,16 +640,18 @@ setInterval(() => {}, 1_000);
 	});
 });
 
-test("attempted turn after child exit still rejects with retained output", async (t) => {
+test("attempted turn 11 after child exit still rejects with retained output", async (t) => {
 	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
 const event = (value) => console.log(JSON.stringify(value));
-event({ type: "turn_start", turnIndex: 0 });
-event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "before exit" }], stopReason: "toolUse" } });
-const line = JSON.stringify({ type: "turn_start", turnIndex: 1 }) + "\\n";
-const writer = spawn(process.execPath, ["-e", \`setTimeout(() => process.stdout.write(\${JSON.stringify(line)}), 50)\`], { detached: true, stdio: ["ignore", "inherit", "ignore"] });
+for (let turn = 1; turn <= 10; turn++) {
+	event({ type: "turn_start", turnIndex: turn - 1 });
+	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: turn === 10 ? "before exit" : String(turn) }], stopReason: "toolUse" } });
+}
+const line = JSON.stringify({ type: "turn_start", turnIndex: 10 }) + "\\n";
+const writer = spawn(process.execPath, ["-e", "setTimeout(() => process.stdout.write(" + JSON.stringify(line) + "), 50)"], { detached: true, stdio: ["ignore", "inherit", "ignore"] });
 writer.unref();
 `);
-	const limited = createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 1, timeout });
+	const limited = createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 10, timeout });
 	await assert.rejects(limited.run({ prepare: async () => prepared(cwd) }), (error) => {
 		assert.ok(error instanceof EphemeralSubagentError);
 		assert.equal(error.code, "turn_limit");
@@ -657,18 +660,29 @@ writer.unref();
 	});
 });
 
-test("turn limit ignores trailing records in the same stdout chunk", async (t) => {
+test("turn limit ignores trailing records after attempted turn 11", async (t) => {
 	const retainedUsage = usage(1);
 	const trailingUsage = usage(2);
-	const cwd = await useRunner(t, `const records = [
-	{ type: "turn_start", turnIndex: 0 },
-	{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "retained" }], usage: ${JSON.stringify(retainedUsage)}, stopReason: "toolUse" } },
-	{ type: "turn_start", turnIndex: 1 },
+	const cwd = await useRunner(t, `const records = [];
+for (let turn = 1; turn <= 10; turn++) {
+	records.push({ type: "turn_start", turnIndex: turn - 1 });
+	records.push({
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: turn === 10 ? "retained" : String(turn) }],
+			...(turn === 10 ? { usage: ${JSON.stringify(retainedUsage)} } : {}),
+			stopReason: "toolUse",
+		},
+	});
+}
+records.push(
+	{ type: "turn_start", turnIndex: 10 },
 	{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "must not overwrite" }], usage: ${JSON.stringify(trailingUsage)}, stopReason: "stop" } },
-];
+);
 process.stdout.write(records.map(JSON.stringify).join("\\n") + "\\n");
 `);
-	const limited = createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 1, timeout });
+	const limited = createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 10, timeout });
 	await assert.rejects(limited.run({ prepare: async () => prepared(cwd) }), (error) => {
 		assert.ok(error instanceof EphemeralSubagentError);
 		assert.equal(error.code, "turn_limit");
@@ -954,12 +968,15 @@ test("executor uses stable prepare and spawn error codes with causes", async (t)
 	});
 });
 
-test("executor validates concurrency, turn limit, and timeout at construction", () => {
+test("executor validates concurrency, minimum turn limit, and timeout at construction", (t) => {
+	simulateActivePi(t);
 	for (const maxConcurrency of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency, timeout }));
 	}
-	for (const maxTurns of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns, timeout }));
+	assert.equal(MIN_MAX_TURNS, 10);
+	assert.doesNotThrow(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: MIN_MAX_TURNS, timeout }));
+	for (const maxTurns of [MIN_MAX_TURNS - 1, 10.5, Number.MAX_SAFE_INTEGER + 1]) {
+		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns, timeout }), /maxTurns must be a safe integer >= 10/);
 	}
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 0, maxMs: 2 } }));
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 2, maxMs: 2 } }));

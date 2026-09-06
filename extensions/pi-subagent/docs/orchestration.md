@@ -142,6 +142,14 @@ Children start with ambient extension and Skill discovery disabled. Only explici
 
 Role Skill names resolve through Main's effective Pi Skill registry at launch. Missing names are returned in `ResolvedRoleLaunch.missingSkills`; `delegate_task` warns and skips them. Library callers must surface that warning themselves. Missing Skills do not block launch.
 
+### Role final-turn handoff
+
+Role launches made by `createRoleLaunch` reserve the final allowed turn for a response-only handoff. This includes `delegate_task` and every Implementer or Reviewer launch from `delegate_flow`. A raw `createEphemeralSubagentExecutor` launch does not guarantee a handoff.
+
+After a continuing penultimate turn, Pi completes its tools. It then disables every active tool and queues one structured final handoff. The final allowed provider request has no tools. A terminal penultimate response gets no handoff.
+
+The handoff requests a fixed Markdown decision packet with Status (`completed`, `blocked`, or `incomplete`), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence, and the child replies only with it. This preserves a Flow Reviewer's exact `PASS` and caller-required structured output. It reserves a turn inside the executor's existing hard limit. It never adds a model turn. A timeout, provider failure, or child-process failure can end a Role launch before handoff. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
+
 ## Public Role and executor API
 
 The package root exports the following mechanism-level APIs:
@@ -175,7 +183,7 @@ const executorOptions = {
 };
 ```
 
-Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency`, `maxTurns`, `idleMs`, and `maxMs` must be positive; integer limits must be safe integers, `maxMs` must exceed `idleMs`, and omitted `maxTurns` defaults to 50.
+Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency` must be a safe integer >= 1. `maxTurns` must be a safe integer >= 10. `idleMs` and `maxMs` must be positive. `maxMs` must exceed `idleMs`. Omitted `maxTurns` defaults to 50.
 
 The executor is **active-Pi-only**. It reuses the currently running Pi invocation and does not locate or support a standalone Node.js Pi installation. Once direct Pi exits, stdout/stderr drain normally until EOF; an escaped descendant retaining either stream is cut off after short output inactivity or a one-second hard deadline so it cannot retain the FIFO permit.
 
@@ -257,7 +265,7 @@ export function createRunRole(pi) {
 }
 ```
 
-`run` resolves to `EphemeralSubagentResult`. Both outcome variants contain `exitCode`, `output`, `stderr`, and optional `stopReason`, `errorMessage`, and `usage`. A launched child/model failure is a typed `{ outcome: "failure", ... }` result. Abort, timeout, turn-limit, spawn, protocol, preparation, and callback failures reject with `EphemeralSubagentError` and a stable `code`. A terminal response at `maxTurns` succeeds; an attempted continuation rejects with `turn_limit`, accumulated `usage`, and bounded `output`. The executor supplies the same turn/maximum-runtime budget to the existing child Role tool extension, which steers the fixed convergence warning before another model turn once at each 80% threshold, combines thresholds first due together, and uses no timer or extra turn. Assistant `output` and `stderr` are bounded, and `usage` contains aggregate child usage when Pi supplies it.
+`run` resolves to `EphemeralSubagentResult`. Both outcome variants contain `exitCode`, `output`, `stderr`, and optional `stopReason`, `errorMessage`, and `usage`. A launched child/model failure is a typed `{ outcome: "failure", ... }` result. Abort, timeout, turn-limit, spawn, protocol, preparation, and callback failures reject with `EphemeralSubagentError` and a stable `code`. A terminal response at `maxTurns` succeeds; an attempted continuation rejects with `turn_limit`, accumulated `usage`, and bounded `output`. The executor passes its turn and runtime budget through the child environment. On a Role launch, its tool policy steers the fixed convergence warning before another model turn once at each 80% threshold, combines thresholds first due together, and uses no timer or extra turn. Assistant `output` and `stderr` are bounded, and `usage` contains aggregate child usage when Pi supplies it.
 
 ### Activity callbacks
 

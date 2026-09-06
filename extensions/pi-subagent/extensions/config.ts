@@ -1,5 +1,6 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, extensionConfigPath } from "@henryqw/pi-config-store";
+import { MIN_MAX_TURNS } from "@henryqw/pi-subagent";
 
 export interface SubagentTimeoutConfig {
 	/** Minutes a child may stay idle before it is asked to stop. */
@@ -50,13 +51,21 @@ function parseSubagentConfig(parsed: unknown, path: string): ParsedSubagentConfi
 		}
 	}
 
-	for (const key of ["maxSubagents", "maxTurns"] as const) {
-		const value = record[key];
-		if (value === undefined) continue;
-		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1) {
-			config[key] = value;
+	const maxSubagents = record.maxSubagents;
+	if (maxSubagents !== undefined) {
+		if (typeof maxSubagents === "number" && Number.isSafeInteger(maxSubagents) && maxSubagents >= 1) {
+			config.maxSubagents = maxSubagents;
 		} else {
-			problems.push(`${key} must be a safe integer >= 1, got ${JSON.stringify(value)}`);
+			problems.push(`maxSubagents must be a safe integer >= 1, got ${JSON.stringify(maxSubagents)}`);
+		}
+	}
+
+	const maxTurns = record.maxTurns;
+	if (maxTurns !== undefined) {
+		if (typeof maxTurns === "number" && Number.isSafeInteger(maxTurns) && maxTurns >= MIN_MAX_TURNS) {
+			config.maxTurns = maxTurns;
+		} else {
+			problems.push(`maxTurns must be a safe integer >= ${MIN_MAX_TURNS}, got ${JSON.stringify(maxTurns)}`);
 		}
 	}
 

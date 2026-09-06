@@ -49,7 +49,7 @@ The menu adapts to the current state:
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
 
-Analysis uses a one-turn child with no base tools, user extensions, Skills, or saved session. The extension does not retry failed analysis.
+Analysis asks a tool-free child for one JSON response. It has no user extensions, Skills, or saved session. The extension does not retry failed analysis.
 
 New user input does not stop a running child. Branch navigation discards its old result without stopping the child.
 
