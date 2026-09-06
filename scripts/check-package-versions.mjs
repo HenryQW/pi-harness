@@ -2,16 +2,29 @@ import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
-const [base, head] = process.argv.slice(2)
+const revisions = process.argv.slice(2)
+if (revisions[0] === '--') revisions.shift()
 
-if (!base || !head) {
-  throw new Error('Usage: node scripts/check-package-versions.mjs <base-sha> <head-sha>')
+if (revisions.length !== 0 && revisions.length !== 2) {
+  console.error('Usage: node scripts/check-package-versions.mjs [<base-revision> <head-revision>]')
+  process.exit(2)
 }
 
-const mergeBase = execFileSync('git', ['merge-base', base, head], { encoding: 'utf8' }).trim()
-const changedFiles = execFileSync('git', ['diff', '--name-only', mergeBase, head], {
-  encoding: 'utf8',
-}).trim().split('\n').filter(Boolean)
+const workingTree = revisions.length === 0
+const [base, head] = workingTree ? ['origin/main', 'HEAD'] : revisions
+let mergeBase
+try {
+  mergeBase = execFileSync('git', ['merge-base', base, head], { encoding: 'utf8' }).trim()
+} catch (error) {
+  if (!workingTree) throw error
+  console.error('origin/main is unavailable. Fetch it before running the package version check.')
+  process.exit(1)
+}
+
+const diffArgs = ['diff', '--name-only', mergeBase]
+if (!workingTree) diffArgs.push(head)
+diffArgs.push('--')
+const changedFiles = execFileSync('git', diffArgs, { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
 
 const packageDirs = readdirSync('extensions', { withFileTypes: true })
   .filter(entry => entry.isDirectory())
@@ -65,7 +78,9 @@ const failures = []
 
 for (const packageDir of packageDirs) {
   const manifest = `${packageDir}/package.json`
-  const current = packageJsonAt(head, manifest) ?? JSON.parse(readFileSync(manifest, 'utf8'))
+  const current = workingTree
+    ? JSON.parse(readFileSync(manifest, 'utf8'))
+    : packageJsonAt(head, manifest) ?? JSON.parse(readFileSync(manifest, 'utf8'))
   if (current.private) continue
 
   const packageChanged = changedFiles.some(file => file.startsWith(`${packageDir}/`))
