@@ -1,4 +1,4 @@
-import { getCapabilities, hyperlink } from "@earendil-works/pi-tui";
+import { getCapabilities, hyperlink, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	deriveNextStep,
 	type NextStep,
@@ -94,13 +94,18 @@ export function formatPrFooter(display: PrDisplay, theme: PrTheme): string | und
 	return `${link} · ${theme.fg(display.footer.color, display.footer.text)}`;
 }
 
-export function formatPrWidget(display: PrDisplay, theme: PrTheme): string[] | undefined {
+export function formatPrWidget(display: PrDisplay, theme?: PrTheme, width?: number): string[] | undefined {
 	if (display.widget === undefined) return undefined;
 	const color = display.footer?.color ?? "accent";
-	const border = theme.fg(color, "│");
 	const state = display.footer?.text ?? "no pull request";
-	return [
-		`${border} ${theme.fg("text", theme.bold("Pull request"))} · ${theme.fg(color, state)}`,
-		`${border} ${display.widget.replace("/pr", theme.fg(color, theme.bold("/pr")))}`,
-	];
+	const lines = theme
+		? [
+			`${theme.fg(color, "│")} ${theme.fg("text", theme.bold("Pull request"))} · ${theme.fg(color, state)}`,
+			`${theme.fg(color, "│")} ${display.widget.replace("/pr", theme.fg(color, theme.bold("/pr")))}`,
+		]
+		: [
+			`│ Pull request · ${state}`,
+			`│ ${display.widget}`,
+		];
+	return width === undefined ? lines : lines.map((line) => truncateToWidth(line, Math.max(1, width)));
 }

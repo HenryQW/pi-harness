@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	formatPrFooter,
 	formatPrWidget,
@@ -32,6 +32,14 @@ const theme: PrTheme = {
 	},
 	bold(text: string) {
 		return `<bold>${text}</bold>`;
+	},
+};
+const ansiTheme: PrTheme = {
+	fg(_color, text) {
+		return `\x1b[36m${text}\x1b[0m`;
+	},
+	bold(text) {
+		return `\x1b[1m${text}\x1b[22m`;
 	},
 };
 
@@ -300,6 +308,18 @@ test("formats an actionable widget as a themed two-line status card", () => {
 		"│ Pull request · CI failed",
 		"│ Run /pr to fix CI",
 	]);
+});
+
+test("truncates themed widget lines to narrow TUI widths", () => {
+	const display = projectPrDisplay(pullRequest({ conditions: { unresolvedThreads: 123_456_789 } }));
+	assert.equal(display.footer?.text, "123456789 unresolved");
+	assert.equal(display.widget, "Run /pr to address review feedback");
+
+	for (const width of [0, 8]) {
+		const widget = formatPrWidget(display, ansiTheme, width);
+		assert.equal(widget?.length, 2);
+		assert.ok(widget?.every((line) => visibleWidth(line) <= Math.max(1, width)));
+	}
 });
 
 test("keeps blocked mutating conditions in the footer without a widget", () => {

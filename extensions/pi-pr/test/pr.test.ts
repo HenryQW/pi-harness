@@ -5,7 +5,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
 import type {
 	CurrentPullRequest,
@@ -88,11 +88,11 @@ function harness(options: {
 	let toolResult: EventHandler | undefined;
 	let command: Command | undefined;
 	const statuses: Array<string | undefined> = [];
-	const widgets: Array<string[] | undefined> = [];
+	const widgets: unknown[] = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
 	const ui = {
 		setStatus(_key: string, value: string | undefined) { statuses.push(value); },
-		setWidget(_key: string, value: string[] | undefined) { widgets.push(value); },
+		setWidget(_key: string, value: unknown) { widgets.push(value); },
 		notify(message: string, type?: string) { notifications.push({ message, type }); },
 		theme: {
 			fg(color: string, text: string) { return options.theme?.(color, text) ?? text; },
@@ -120,8 +120,9 @@ function harness(options: {
 		if (value === undefined) throw new Error(`Missing ${name} handler`);
 		return value;
 	};
-	const context = (): ExtensionContext => ({
+	const context = (mode: "tui" | "rpc" = "rpc"): ExtensionContext => ({
 		hasUI: true,
+		mode,
 		cwd: "/repo",
 		signal: new AbortController().signal,
 		isIdle: () => true,
@@ -201,6 +202,55 @@ test("renders the shared projection and refreshes after successful create or pus
 	assert.deepEqual(app.widgets.at(-1), widgetCard("no pull request", "Run /pr to create pull request"));
 
 	await app.shutdown(ctx);
+});
+
+test("keeps RPC widgets plain despite a terminal theme", async () => {
+	const app = harness({
+		async load() {
+			return currentPullRequest({ conditions: { ci: "failure" } });
+		},
+		theme(color, text) {
+			return `<${color}>${text}</${color}>`;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		assert.notEqual(typeof app.widgets.at(-1), "function");
+		assert.deepEqual(app.widgets.at(-1), widgetCard("CI failed", "Run /pr to fix CI"));
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("uses a width-aware widget component in TUI", async () => {
+	const app = harness({
+		async load() {
+			return currentPullRequest({ conditions: { unresolvedThreads: 123_456_789 } });
+		},
+	});
+	const ctx = app.context("tui");
+
+	try {
+		await app.start(ctx);
+		const widget = app.widgets.at(-1);
+		assert.equal(typeof widget, "function");
+		const component = (widget as (tui: unknown, theme: {
+			fg(color: string, text: string): string;
+			bold(text: string): string;
+		}) => { render(width: number): string[] })({} as never, {
+			fg(_color, text) { return `\x1b[36m${text}\x1b[0m`; },
+			bold(text) { return `\x1b[1m${text}\x1b[22m`; },
+		});
+		for (const width of [0, 8]) {
+			const lines = component.render(width);
+			assert.equal(lines.length, 2);
+			assert.ok(lines.every((line) => visibleWidth(line) <= Math.max(1, width)));
+		}
+	} finally {
+		await app.shutdown(ctx);
+	}
 });
 
 test("shows the create widget only after a local commit", async () => {
