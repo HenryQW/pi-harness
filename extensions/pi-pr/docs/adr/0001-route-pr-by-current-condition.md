@@ -8,8 +8,8 @@ A branch without a current-branch pull request, including a missing upstream pus
 
 1. Merged, closed, or draft: no action.
 2. Required base update or merge conflict: run branch update only when the tree is clean and local HEAD equals the PR head. Otherwise, stop with no action.
-3. Changes requested or unresolved review threads: run comment sweep under the same local prerequisite. Otherwise, stop with no action.
-4. CI failure: run CI fix under the same local prerequisite. Otherwise, stop with no action.
+3. CI failure: run CI fix under the same local prerequisite. Otherwise, stop with no action.
+4. Changes requested or unresolved review threads: run comment sweep under the same local prerequisite. Otherwise, stop with no action.
 5. Running CI, pending review, blocked merge policy, or unsafe local merge state: no action.
 6. Merge-ready: allow a clean local HEAD equal to or behind the PR head. Ask for final confirmation, then merge directly.
 

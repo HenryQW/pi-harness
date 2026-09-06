@@ -37,7 +37,7 @@ A compact one-line action hint tells the user which highest-priority workflow `/
 _Avoid_: `/pr` arguments, workflow menu, multiple actions
 
 **PR workflow routing**:
-Argument-free `/pr` derives one next step from fresh remote and local state. A branch without an upstream push target has no current-branch pull request for routing and selects creation. For an existing pull request, lifecycle and draft no-action states come first, followed by required base update or conflict, PR feedback, CI failure, waiting or local blockers, and merge readiness. Branch update, comment sweep, and CI fix run only with a clean tree and local HEAD equal to the PR head. A failed local prerequisite stops routing instead of falling through. Direct merge keeps its clean equal-or-behind rule. `/pr` does not open a browser, invoke `/done` or `/sweep`, or continue automatically into another workflow.
+Argument-free `/pr` derives one next step from fresh remote and local state. A branch without an upstream push target has no current-branch pull request for routing and selects creation. For an existing pull request, lifecycle and draft no-action states come first, followed by required base update or conflict, CI failure, PR feedback, waiting or local blockers, and merge readiness. Branch update, comment sweep, and CI fix run only with a clean tree and local HEAD equal to the PR head. A failed local prerequisite stops routing instead of falling through. Direct merge keeps its clean equal-or-behind rule. `/pr` does not open a browser, invoke `/done` or `/sweep`, or continue automatically into another workflow.
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
