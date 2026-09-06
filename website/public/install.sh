@@ -6,6 +6,7 @@
 set -eu
 
 PI_INSTALLER_URL="https://pi.dev/install.sh"
+PI_MIN_VERSION="0.85.1"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
 HERDR_MIN_VERSION="0.7.4"
 
@@ -136,12 +137,8 @@ run_installer() {
   rm -f "$installer"
 }
 
-check_herdr_version() {
-  if ! herdr_output=$("$herdr_bin" --version 2>&1); then
-    die "Herdr at $herdr_bin could not start. Install or update Herdr $HERDR_MIN_VERSION+, then run this installer again."
-  fi
-
-  herdr_version=$(printf '%s\n' "$herdr_output" | awk '
+parse_semantic_version() {
+  awk '
     match($0, /(^|[[:space:]])v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([[:space:]]|$)/) {
       version = substr($0, RSTART, RLENGTH)
       sub(/^[[:space:]]+/, "", version)
@@ -150,14 +147,38 @@ check_herdr_version() {
       print version
       exit
     }
-  ')
-  [ -n "$herdr_version" ] || die "Herdr at $herdr_bin did not report a recognized semantic version. Install or update Herdr $HERDR_MIN_VERSION+, then run this installer again."
+  '
+}
 
-  case "$herdr_version" in
-    0.[0-6].*|0.7.[0-3])
-      die "Herdr $herdr_version at $herdr_bin is too old. Herdr $HERDR_MIN_VERSION+ is required; update it, then run this installer again."
-      ;;
-  esac
+version_at_least() {
+  awk -v version="$1" -v minimum="$2" '
+    BEGIN {
+      split(version, actual, ".")
+      split(minimum, required, ".")
+      for (component = 1; component <= 3; component++) {
+        if (actual[component] + 0 > required[component] + 0) exit 0
+        if (actual[component] + 0 < required[component] + 0) exit 1
+      }
+      exit 0
+    }
+  '
+}
+
+check_version() {
+  label=$1
+  bin=$2
+  minimum=$3
+
+  if ! version_output=$("$bin" --version 2>&1); then
+    die "$label at $bin could not start. Install or update $label $minimum+, then run this installer again."
+  fi
+
+  version=$(printf '%s\n' "$version_output" | parse_semantic_version)
+  [ -n "$version" ] || die "$label at $bin did not report a recognized semantic version. Install or update $label $minimum+, then run this installer again."
+
+  if ! version_at_least "$version" "$minimum"; then
+    die "$label $version at $bin is too old. $label $minimum+ is required; update it, then run this installer again."
+  fi
 }
 
 ensure_pi() {
@@ -169,7 +190,7 @@ ensure_pi() {
     success "Pi installed: $pi_bin"
   fi
 
-  "$pi_bin" --version >/dev/null 2>&1 || die "Pi was found at $pi_bin but could not start."
+  check_version "Pi" "$pi_bin" "$PI_MIN_VERSION"
 }
 
 ensure_herdr() {
@@ -181,7 +202,7 @@ ensure_herdr() {
     herdr_status="installed"
   fi
 
-  check_herdr_version
+  check_version "Herdr" "$herdr_bin" "$HERDR_MIN_VERSION"
   success "Herdr $herdr_status: $herdr_bin"
 }
 
