@@ -98,7 +98,7 @@ Model references use canonical `provider/model`. Numbered Codex account aliases 
 
 A `ModelTask` is a consumer-owned independently executed model operation. Consumers define a `ModelTask` and call `registerModelTask(pi, task)` at extension load.
 
-Use `loadTaskModelsConfig()` to get validated config without reading a file. Its `source` is `"file"` or `"missing"`, so consumers can warn when defaults are in use.
+Use `loadTaskModelsConfig()` to read and validate the owner config file when present. Consumers do not access the file directly. Its `source` is `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
 Use `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)` to resolve routes. Profile thinking is authoritative. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
 

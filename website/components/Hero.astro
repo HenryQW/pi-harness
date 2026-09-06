@@ -39,7 +39,7 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     <div class="hero-proof-grid">
       <article class="hero-installer" aria-label="Henry Pi Harness installer">
         <div class="hero-command-row">
-          <code class="hero-command"><span aria-hidden="true">$ </span>{installCommand}</code>
+          <code class="hero-command"><span class="hero-shell-prompt" aria-hidden="true">$ </span>{installCommand}</code>
           <button
             class="hero-copy"
             type="button"
@@ -159,64 +159,92 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
 
 <script>
   const brailleFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const heroCleanups = new Map<HTMLElement, () => void>();
 
-  document.querySelectorAll<HTMLElement>("[data-copy-scope]").forEach((scope) => {
-    const comparisons = scope.querySelectorAll<SVGSVGElement>(".hero-comparison");
-    if (comparisons.length && !window.matchMedia("(prefers-reduced-motion: reduce)").matches && "IntersectionObserver" in window) {
-      const onscreen = new Set<SVGSVGElement>();
-      const updateMotion = () => {
-        comparisons.forEach((comparison) => {
-          comparison.toggleAttribute("data-motion-active", onscreen.has(comparison) && document.visibilityState === "visible");
-        });
-      };
+  const initializeHeroes = () => {
+    document.querySelectorAll<HTMLElement>("[data-copy-scope]").forEach((scope) => {
+      if (scope.dataset.heroInitialized) return;
 
-      const observer = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          const comparison = entry.target as SVGSVGElement;
-          if (entry.isIntersecting) onscreen.add(comparison);
-          else onscreen.delete(comparison);
+      const controller = new AbortController();
+      const comparisons = scope.querySelectorAll<SVGSVGElement>(".hero-comparison");
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      let observer: IntersectionObserver | undefined;
+      let spinnerTimer: number | undefined;
+      scope.dataset.heroInitialized = "true";
+
+      if (comparisons.length && !reducedMotion.matches && "IntersectionObserver" in window) {
+        const onscreen = new Set<SVGSVGElement>();
+        const updateMotion = () => {
+          comparisons.forEach((comparison) => {
+            comparison.toggleAttribute("data-motion-active", onscreen.has(comparison) && document.visibilityState === "visible");
+          });
+        };
+
+        observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            const comparison = entry.target as SVGSVGElement;
+            if (entry.isIntersecting) onscreen.add(comparison);
+            else onscreen.delete(comparison);
+          });
+          updateMotion();
         });
-        updateMotion();
+        comparisons.forEach((comparison) => observer?.observe(comparison));
+        document.addEventListener("visibilitychange", updateMotion, { signal: controller.signal });
+      }
+
+      const spinner = scope.querySelector<HTMLElement>(".hero-spinner");
+      if (spinner && !reducedMotion.matches) {
+        let frame = 0;
+        spinnerTimer = window.setInterval(() => {
+          frame = (frame + 1) % brailleFrames.length;
+          spinner.textContent = brailleFrames[frame];
+        }, 100);
+      }
+
+      const button = scope.querySelector<HTMLButtonElement>("[data-copy-command]");
+      const buttonLabel = scope.querySelector<HTMLElement>("[data-copy-label]");
+      const status = scope.querySelector<HTMLElement>("[data-copy-status]");
+      if (button && buttonLabel && status) {
+        button.addEventListener("click", async () => {
+          const command = button.dataset.copyCommand;
+          if (!command) {
+            status.textContent = "Copy failed. The installer command is unavailable.";
+            status.setAttribute("data-error", "true");
+            return;
+          }
+
+          try {
+            if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+            await navigator.clipboard.writeText(command);
+            buttonLabel.textContent = "Copied";
+            status.textContent = "Copied installer command.";
+            status.removeAttribute("data-error");
+          } catch {
+            buttonLabel.textContent = "COPY";
+            status.textContent = "Copy failed. Select the command and copy it manually.";
+            status.setAttribute("data-error", "true");
+          }
+        }, { signal: controller.signal });
+      }
+
+      heroCleanups.set(scope, () => {
+        controller.abort();
+        observer?.disconnect();
+        if (spinnerTimer !== undefined) window.clearInterval(spinnerTimer);
+        comparisons.forEach((comparison) => comparison.removeAttribute("data-motion-active"));
+        delete scope.dataset.heroInitialized;
       });
-      comparisons.forEach((comparison) => observer.observe(comparison));
-      document.addEventListener("visibilitychange", updateMotion);
-    }
-
-    const spinner = scope.querySelector<HTMLElement>(".hero-spinner");
-    if (spinner && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      let frame = 0;
-      window.setInterval(() => {
-        frame = (frame + 1) % brailleFrames.length;
-        spinner.textContent = brailleFrames[frame];
-      }, 100);
-    }
-
-    const button = scope.querySelector<HTMLButtonElement>("[data-copy-command]");
-    const buttonLabel = scope.querySelector<HTMLElement>("[data-copy-label]");
-    const status = scope.querySelector<HTMLElement>("[data-copy-status]");
-    if (!button || !buttonLabel || !status) return;
-
-    button.addEventListener("click", async () => {
-      const command = button.dataset.copyCommand;
-      if (!command) {
-        status.textContent = "Copy failed. The installer command is unavailable.";
-        status.setAttribute("data-error", "true");
-        return;
-      }
-
-      try {
-        if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
-        await navigator.clipboard.writeText(command);
-        buttonLabel.textContent = "Copied";
-        status.textContent = "Copied installer command.";
-        status.removeAttribute("data-error");
-      } catch {
-        buttonLabel.textContent = "COPY";
-        status.textContent = "Copy failed. Select the command and copy it manually.";
-        status.setAttribute("data-error", "true");
-      }
     });
-  });
+  };
+
+  const disposeHeroes = () => {
+    heroCleanups.forEach((cleanup) => cleanup());
+    heroCleanups.clear();
+  };
+
+  document.addEventListener("astro:page-load", initializeHeroes);
+  document.addEventListener("astro:before-swap", disposeHeroes);
+  initializeHeroes();
 </script>
 
 <style>
@@ -350,6 +378,11 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     white-space: nowrap;
   }
 
+  .hero-shell-prompt {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
   .hero-copy {
     align-items: center;
     background: var(--hero-blue);
@@ -478,13 +511,16 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
   }
 
   .hero-cta {
+    align-items: center;
     color: var(--hero-blue);
-    display: inline-block;
+    display: inline-flex;
     font-family: Geist, sans-serif;
     font-size: 18px;
     font-weight: 500;
     left: 64px;
+    justify-content: center;
     line-height: 1.4;
+    min-height: 44px;
     position: absolute;
     text-decoration: none;
     top: 544px;
@@ -748,8 +784,9 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     }
 
     .hero-copy-status [data-copy-status] {
-      flex: 0 0 224px;
-      width: 224px;
+      flex: 1 1 auto;
+      overflow-wrap: anywhere;
+      width: auto;
     }
 
     .hero-benchmark {

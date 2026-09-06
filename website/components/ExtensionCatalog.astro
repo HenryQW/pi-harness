@@ -17,7 +17,7 @@ const { extensions } = Astro.props;
 <section
   id="extensions"
   data-extension-catalog
-  class="extension-catalog bg-[#F0EEE9] text-[#111827] dark:bg-[#09090B] dark:text-[#F0EEE9]"
+  class="extension-catalog scroll-mt-20 bg-[#F0EEE9] text-[#111827] dark:bg-[#09090B] dark:text-[#F0EEE9]"
   aria-labelledby="extensions-heading"
 >
   <div class="homepage-container extension-catalog-inner">
@@ -46,7 +46,9 @@ const { extensions } = Astro.props;
             class="extension-catalog-search-icon"
             fill="none"
             focusable="false"
+            height="16"
             viewBox="0 0 16 16"
+            width="16"
           >
             <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.25" />
             <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-linecap="round" stroke-width="1.25" />
@@ -67,7 +69,13 @@ const { extensions } = Astro.props;
       </p>
 
       <div class="extension-catalog-scroll-shell">
-        <div class="extension-catalog-viewport" data-extension-viewport>
+        <div
+          aria-label="Extension results"
+          class="extension-catalog-viewport"
+          data-extension-viewport
+          role="region"
+          tabindex="0"
+        >
           <div class="extension-catalog-grid">
             {
               extensions.map((item) => (
@@ -80,9 +88,6 @@ const { extensions } = Astro.props;
           <p class="py-8 text-center text-sm text-muted-foreground dark:text-[#C7CBD3]" data-extension-empty hidden>
             No extensions match your search.
           </p>
-        </div>
-        <div aria-hidden="true" class="extension-catalog-scroll-rail pointer-events-none absolute top-0 right-1 bottom-0 w-1" data-extension-scroll-rail hidden>
-          <div class="extension-catalog-scroll-thumb absolute top-0 right-0 left-0 rounded-full bg-[#111827] dark:bg-[#8FB3FF]" data-extension-scroll-thumb></div>
         </div>
       </div>
     </div>
@@ -99,27 +104,9 @@ const { extensions } = Astro.props;
       const results = catalog.querySelector<HTMLElement>("[data-extension-results]");
       const empty = catalog.querySelector<HTMLElement>("[data-extension-empty]");
       const viewport = catalog.querySelector<HTMLElement>("[data-extension-viewport]");
-      const rail = catalog.querySelector<HTMLElement>("[data-extension-scroll-rail]");
-      const thumb = catalog.querySelector<HTMLElement>("[data-extension-scroll-thumb]");
 
-      if (!input || !results || !empty || !viewport || !rail || !thumb) return;
+      if (!input || !results || !empty || !viewport) return;
       catalog.dataset.extensionCatalogInitialized = "true";
-
-      const updateScrollRail = () => {
-        const scrollable = viewport.scrollHeight > viewport.clientHeight;
-        rail.hidden = !scrollable;
-        if (!scrollable) {
-          thumb.style.height = "0px";
-          thumb.style.top = "0px";
-          return;
-        }
-
-        const trackHeight = rail.clientHeight;
-        const thumbHeight = trackHeight * (viewport.clientHeight / viewport.scrollHeight);
-        const scrollRange = viewport.scrollHeight - viewport.clientHeight;
-        thumb.style.height = `${thumbHeight}px`;
-        thumb.style.top = `${(trackHeight - thumbHeight) * (viewport.scrollTop / scrollRange)}px`;
-      };
 
       const updateResults = () => {
         const query = input.value.trim().toLowerCase();
@@ -136,12 +123,9 @@ const { extensions } = Astro.props;
           ? `${visible} extension${visible === 1 ? "" : "s"} found.`
           : "No extensions match your search.";
         viewport.scrollTop = 0;
-        updateScrollRail();
       };
 
       input.addEventListener("input", updateResults);
-      viewport.addEventListener("scroll", updateScrollRail, { passive: true });
-      window.addEventListener("resize", updateScrollRail);
       updateResults();
     });
   };
@@ -269,11 +253,11 @@ const { extensions } = Astro.props;
   .extension-catalog-viewport {
     max-height: none;
     overflow: visible;
-    scrollbar-width: none;
   }
 
-  .extension-catalog-viewport::-webkit-scrollbar {
-    display: none;
+  .extension-catalog-viewport:focus-visible {
+    outline: 2px solid var(--blume-accent);
+    outline-offset: 4px;
   }
 
   .extension-catalog-grid {
@@ -287,15 +271,6 @@ const { extensions } = Astro.props;
   .extension-catalog-result {
     height: 100%;
     min-width: 0;
-  }
-
-  .extension-catalog-scroll-rail {
-    background: #11182724;
-    border-radius: 2px;
-  }
-
-  :global([data-theme="dark"]) .extension-catalog-scroll-rail {
-    background: rgb(255 255 255 / 10%);
   }
 
   @media (max-width: 767px) {
@@ -363,12 +338,6 @@ const { extensions } = Astro.props;
     }
   }
 
-  @media (max-width: 1279px) {
-    .extension-catalog-scroll-rail {
-      display: none;
-    }
-  }
-
   @media (min-width: 1280px) {
     .extension-catalog {
       height: 720px;
@@ -423,7 +392,18 @@ const { extensions } = Astro.props;
       height: 520px;
       max-height: none;
       overflow-y: auto;
-      padding-right: 16px;
+      scrollbar-color: #111827 #11182724;
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+    }
+
+    .extension-catalog-grid {
+      grid-template-columns: repeat(2, 364px);
+      width: 752px;
+    }
+
+    :global([data-theme="dark"]) .extension-catalog-viewport {
+      scrollbar-color: #8FB3FF rgb(255 255 255 / 10%);
     }
   }
 </style>

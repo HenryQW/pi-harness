@@ -7,7 +7,7 @@ import Footer from "../components/Footer.astro";
 import Hero from "../components/Hero.astro";
 import OrchestrationSection from "../components/OrchestrationSection.astro";
 import WorkflowRows from "../components/WorkflowRows.astro";
-import { extensions } from "../extension-catalog.ts";
+import { homepageExtensions } from "../extension-catalog.ts";
 
 const { config } = data;
 ---
@@ -33,6 +33,6 @@ const { config } = data;
   <Hero />
   <WorkflowRows id="start-with-workflow" />
   <OrchestrationSection />
-  <ExtensionCatalog extensions={extensions} />
+  <ExtensionCatalog extensions={homepageExtensions} />
   <Footer slot="footer" />
 </PageLayout>

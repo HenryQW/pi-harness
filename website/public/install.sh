@@ -7,6 +7,7 @@ set -eu
 
 PI_INSTALLER_URL="https://pi.dev/install.sh"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
+HERDR_MIN_VERSION="0.7.4"
 
 # BEGIN GENERATED EXTENSIONS
 EXTENSIONS='
@@ -135,6 +136,30 @@ run_installer() {
   rm -f "$installer"
 }
 
+check_herdr_version() {
+  if ! herdr_output=$("$herdr_bin" --version 2>&1); then
+    die "Herdr at $herdr_bin could not start. Install or update Herdr $HERDR_MIN_VERSION+, then run this installer again."
+  fi
+
+  herdr_version=$(printf '%s\n' "$herdr_output" | awk '
+    match($0, /(^|[[:space:]])v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([[:space:]]|$)/) {
+      version = substr($0, RSTART, RLENGTH)
+      sub(/^[[:space:]]+/, "", version)
+      sub(/^v/, "", version)
+      sub(/[[:space:]]+$/, "", version)
+      print version
+      exit
+    }
+  ')
+  [ -n "$herdr_version" ] || die "Herdr at $herdr_bin did not report a recognized semantic version. Install or update Herdr $HERDR_MIN_VERSION+, then run this installer again."
+
+  case "$herdr_version" in
+    0.[0-6].*|0.7.[0-3])
+      die "Herdr $herdr_version at $herdr_bin is too old. Herdr $HERDR_MIN_VERSION+ is required; update it, then run this installer again."
+      ;;
+  esac
+}
+
 ensure_pi() {
   if pi_bin=$(find_pi); then
     success "Pi already installed: $pi_bin"
@@ -149,12 +174,15 @@ ensure_pi() {
 
 ensure_herdr() {
   if herdr_bin=$(find_herdr); then
-    success "Herdr already installed: $herdr_bin"
+    herdr_status="already installed"
   else
     run_installer "Herdr" "$HERDR_INSTALLER_URL"
     herdr_bin=$(find_herdr) || die "Herdr installed, but could not be found. Restart your shell, then run this installer again."
-    success "Herdr installed: $herdr_bin"
+    herdr_status="installed"
   fi
+
+  check_herdr_version
+  success "Herdr $herdr_status: $herdr_bin"
 }
 
 show_extensions() {

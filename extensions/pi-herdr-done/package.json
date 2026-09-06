@@ -16,7 +16,8 @@
   "files": [
     "LICENSE",
     "extensions",
-    "README.md"
+    "README.md",
+    "docs/done-flow.svg"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",

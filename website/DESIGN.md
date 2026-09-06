@@ -205,7 +205,7 @@ Use a centered content column capped at `90rem`. The reference rails are `64px` 
 
 The desktop hero at `1280px` and wider uses a two-column proof grid with a `40px` gap and a `624px` hero. From `1024px` through `1279px`, the tablet hero uses two equal columns with a `32px` gap; at the `1024px` reference, its proof rail is `944px` wide with `456px` columns. This mode uses a shared proof top edge, a `96px` terminal, a `152px` benchmark and proof grid, a `624px` hero, and CTA at `y=544`. From `768px` through `1023px`, the identity triangle centers below the heading and the proof panels fill the content rail, stacked with a `32px` gap in a `280px` proof area. This stacked-tablet mode uses an `872px` hero and CTA at `y=784`. Below `768px`, proof panels stay full-width and stacked with a `32px` gap, an `884px` hero, CTA at `y=820`, and a full-width proof method. Terminal padding is `12px 16px` on desktop and tablet, then `16px` on mobile. Internal terminal gaps are `12px`, `12px`, and `16px` respectively. Figma stores these values in the `Hero layout tokens` variable collection.
 
-Extension lists move from one column to two at `640px` and three at `1024px`. Keep cards equal-height within a row, with metadata pinned beneath the description. Primary actions and footer links keep a `2.75rem` minimum height. Header search and icon controls stay compact at `2.25rem`.
+Extension lists move from one column to two at `640px` and stay at two columns at wider widths. Keep cards equal-height within a row, with metadata pinned beneath the description. Primary actions and footer links keep a `2.75rem` minimum height. Header search and icon controls stay compact at `2.25rem`.
 
 ### Named Rules
 
@@ -254,7 +254,7 @@ Package name and version form the scan line, with the name in Geist Mono. A shor
 
 ### Extension Catalog
 
-At `1280px` and wider, use a `768px × 520px` scroll viewport. Reserve a `16px` right gutter inside it. The content grid is `752px` wide, with two `364px` cards and a `24px` gap. Place the `4px` scrollbar `8px` from the cards and `4px` from the viewport edge. Below `1280px`, let the catalog follow page flow and hide the custom rail.
+At `1280px` and wider, use a `768px × 520px` native scroll viewport. Keep the content grid `752px` wide, with two `364px` cards and a `24px` gap. Use a narrow, theme-aware native scrollbar. Below `1280px`, let the catalog follow page flow without a scrollbar.
 
 ### Orchestration Modes
 

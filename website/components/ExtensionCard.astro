@@ -29,9 +29,9 @@ const item = Astro.props;
 
 <style>
   .extension-card {
-    background: #E6E4DE;
+    background: var(--blume-background);
     border: 1px solid var(--blume-border);
-    border-radius: 12px;
+    border-radius: 4px;
     box-sizing: border-box;
     color: var(--blume-foreground);
     display: block;
@@ -43,7 +43,6 @@ const item = Astro.props;
   }
 
   :global([data-theme="dark"]) .extension-card {
-    background: #171D2A;
     border-color: rgb(255 255 255 / 10%);
   }
 

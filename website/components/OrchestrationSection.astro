@@ -111,13 +111,21 @@ const modes = [
 </section>
 
 <script>
-  document.querySelectorAll<HTMLElement>(".orchestration").forEach((section) => {
-    const controls = [...section.querySelectorAll<HTMLButtonElement>(".orchestration-mode")];
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const orchestrationCleanups = new Map<HTMLElement, () => void>();
+
+  const initializeOrchestrationSections = () => {
+    document.querySelectorAll<HTMLElement>(".orchestration").forEach((section) => {
+      if (section.dataset.orchestrationInitialized) return;
+
+      const controls = [...section.querySelectorAll<HTMLButtonElement>(".orchestration-mode")];
+      const controller = new AbortController();
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      section.dataset.orchestrationInitialized = "true";
     const cycleDelay = 2400;
     const resumeDelay = 600;
     let cycleTimer: number | undefined;
     let releaseTimer: number | undefined;
+    let observer: IntersectionObserver | undefined;
     let nextIndex = 0;
     let onscreen = false;
     let pointerControl: HTMLButtonElement | null = null;
@@ -206,44 +214,44 @@ const modes = [
         releaseTimer = undefined;
         touchControl = control;
         updateAutoplay();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("pointerup", (event) => {
         if (event.pointerType === "touch" && touchControl === control) deferTouchRelease();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("pointercancel", (event) => {
         if (event.pointerType === "touch" && touchControl === control) releaseTouch();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("pointerenter", (event) => {
         if (event.pointerType === "touch") return;
         pointerControl = control;
         updateAutoplay();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("pointerleave", (event) => {
         if (event.pointerType === "touch") return;
         if (pointerControl === control) pointerControl = null;
         updateAutoplay();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("focus", () => {
         if (!control.matches(":focus-visible")) return;
         focusControl = control;
         updateAutoplay();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("blur", () => {
         if (focusControl === control) focusControl = null;
         updateAutoplay();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         focusControl = control;
         updateAutoplay();
-      });
+      }, { signal: controller.signal });
 
       control.addEventListener("click", () => {
         if (!onscreen || document.hidden) {
@@ -255,11 +263,11 @@ const modes = [
         const activeControl = activeInteraction();
         if (activeControl) activate(activeControl, activeControl === control);
         if (isTemporary) deferTouchRelease();
-      });
+      }, { signal: controller.signal });
     });
 
     if ("IntersectionObserver" in window) {
-      const observer = new IntersectionObserver(([entry]) => {
+      observer = new IntersectionObserver(([entry]) => {
         onscreen = Boolean(entry?.isIntersecting);
         updateAutoplay();
       });
@@ -269,9 +277,29 @@ const modes = [
       updateAutoplay();
     }
 
-    document.addEventListener("visibilitychange", updateAutoplay);
-    reducedMotion.addEventListener("change", updateAutoplay);
-  });
+      document.addEventListener("visibilitychange", updateAutoplay, { signal: controller.signal });
+      reducedMotion.addEventListener("change", updateAutoplay, { signal: controller.signal });
+
+      orchestrationCleanups.set(section, () => {
+        controller.abort();
+        observer?.disconnect();
+        stopCycle();
+        clearTimer(releaseTimer);
+        releaseTimer = undefined;
+        clearActive();
+        delete section.dataset.orchestrationInitialized;
+      });
+    });
+  };
+
+  const disposeOrchestrationSections = () => {
+    orchestrationCleanups.forEach((cleanup) => cleanup());
+    orchestrationCleanups.clear();
+  };
+
+  document.addEventListener("astro:page-load", initializeOrchestrationSections);
+  document.addEventListener("astro:before-swap", disposeOrchestrationSections);
+  initializeOrchestrationSections();
 </script>
 
 <style>
