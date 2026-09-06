@@ -60,6 +60,7 @@ const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
 const MAX_WIDGET_LINES = 6;
+const MAX_WIDGET_GROUP_ROWS = 3;
 export const MAX_WIDGET_ACTIVE_TOOLS = 8;
 const DEFAULT_TIMEOUT_POLICY = {
 	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
@@ -182,7 +183,7 @@ function renderWidgetRows(
 		const working = group.items.some(({ status }) => status === "working");
 		if (working && !visibleWorkingGroups.has(group)) continue;
 		const reservedLines = working ? --remainingWorkingGroups * 2 : 0;
-		const childCount = Math.min(group.items.length, maxVisibleLines - lines.length - reservedLines - 1);
+		const childCount = Math.min(MAX_WIDGET_GROUP_ROWS, group.items.length, maxVisibleLines - lines.length - reservedLines - 1);
 		if (childCount < 1) continue;
 		lines.push(truncateToWidth(theme.fg("text", group.name), width));
 		for (const item of group.items.slice(0, childCount)) {

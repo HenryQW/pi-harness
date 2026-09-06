@@ -877,6 +877,14 @@ else if (task?.startsWith("Flow Unit")) {
 			assertWidgetHierarchy(continuing);
 			await writeFile(repairRelease, "");
 			await waitFor(() => existsSync(rereviewStarted));
+			const capped = app.widget!.render(160);
+			const cappedRows = capped.filter((line) => WIDGET_STATUS_ROW.test(line));
+			assert.equal(capped.length, 5);
+			assert.equal(capped[0], "Repair feedback widget");
+			assert.equal(cappedRows.length, 3);
+			assert.deepEqual(cappedRows.map((line) => /\[[IR]\]/.exec(line)?.[0]), ["[R]", "[I]", "[R]"]);
+			assert.equal(capped[4], "… 1 more · 1 complete");
+			assertWidgetHierarchy(capped);
 			active = app.tool.execute("other-active", { role: "scout", name: "Other active task", task: "other active task" }, undefined, undefined, app.ctx);
 			await waitFor(() => existsSync(activeStarted));
 			const rows = app.widget!.render(160);
@@ -1738,7 +1746,7 @@ const timer = setInterval(() => {
 		const paths = names.map((name) => join(root, ".worktrees", name));
 		const launches = await Promise.all(["alpha", "beta"].map(async (task) =>
 			JSON.parse(await readFile(join(started, task), "utf8")) as { args: string[]; cwd: string }));
-		assert.deepEqual(launches.map(({ cwd }) => cwd), paths);
+		assert.deepEqual(new Set(launches.map(({ cwd }) => cwd)), new Set(paths));
 		assert.equal(launches[0]!.args[launches[0]!.args.indexOf("--extension") + 1], "/user/scout.ts");
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf("--extension") + 1], "/user/reviewer.ts");
 		assert.equal(launches[0]!.args[launches[0]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["read"]));

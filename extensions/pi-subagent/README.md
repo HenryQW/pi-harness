@@ -66,7 +66,7 @@ Parallel tasks start together, settle together, and report in input order. Chain
 
 Foreground failures throw after keeping bounded sibling and recovery evidence. One call has one aggregate 50 KiB cap for Main-visible text. Final results show summaries first and full evidence below.
 
-The status widget shows each task name above indented child rows. Each row shows a one-letter Role badge, status, activity, usage, and duration. Flow stages for one unit share that unit's heading.
+The status widget shows each task group name above at most three indented child rows. Each row shows a one-letter Role badge, status, activity, usage, and duration. Flow stages for one unit share that unit's heading.
 
 Background work belongs to its launching session. Shutdown or reload aborts it and may leave only recoverable-work evidence or no follow-up message.
 
