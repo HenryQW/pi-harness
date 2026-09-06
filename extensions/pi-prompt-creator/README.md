@@ -59,7 +59,7 @@ New user input does not stop a running child. Branch navigation discards its old
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
-| `automatic` | Yes | `true` or `false` | `false` |
+| `automatic` | Yes | `true` or `false` | `true` |
 | `inputThreshold` | No | Positive integer | `3` |
 
 Edit `inputThreshold`, then run `/reload` to apply the change.
@@ -76,15 +76,15 @@ Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the
 
 ## Privacy
 
-Analysis sends the current conversation to the child model configured through `/task-models`.
+Automatic analysis is on by default. It sends the current conversation to the child model configured through `/task-models`.
+
+Disable automatic analysis through `/promptor`.
 
 The payload includes the active compaction or branch summary, user text, and successfully completed assistant text. It also includes effective prompt names and descriptions.
 
 Project context files and prompt templates are disabled for the child.
 
 Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
-
-Automatic analysis is off by default. It starts only after you enable it through `/promptor`.
 
 ## Automatic mode
 
