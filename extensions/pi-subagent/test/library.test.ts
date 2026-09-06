@@ -140,11 +140,15 @@ test("child budget payload requires the executor runtime origin", () => {
 	}
 });
 
-test("child budget rejects maxTurns below 10", () => {
+test("child budget requires maxTurns to be a safe integer >= 1", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
-	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 9, maxMs: 30 * 60_000, startedAt: 0 });
 	try {
-		assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0 });
+		assert.doesNotThrow(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI));
+		for (const maxTurns of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+			process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: 0 });
+			assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+		}
 	} finally {
 		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
 		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
@@ -223,7 +227,7 @@ test("child budget warnings use executor time and apply each threshold once", ()
 	}
 });
 
-test("child final handoff preserves exact-output contracts and reserves a response-only tenth turn", () => {
+test("child final handoff preserves exact-output contracts and reserves the final turn", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	const policy = (maxTurns: number) => {
 		const handlers = new Map<string, (event: any) => any>();

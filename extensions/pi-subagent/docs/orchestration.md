@@ -183,7 +183,7 @@ const executorOptions = {
 };
 ```
 
-Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency` must be a safe integer >= 1. `maxTurns` must be a safe integer >= 10. `idleMs` and `maxMs` must be positive. `maxMs` must exceed `idleMs`. Omitted `maxTurns` defaults to 50.
+Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency` and `maxTurns` must be safe integers >= 1. `idleMs` and `maxMs` must be positive. `maxMs` must exceed `idleMs`. Omitted `maxTurns` defaults to 50.
 
 The executor is **active-Pi-only**. It reuses the currently running Pi invocation and does not locate or support a standalone Node.js Pi installation. Once direct Pi exits, stdout/stderr drain normally until EOF; an escaped descendant retaining either stream is cut off after short output inactivity or a one-second hard deadline so it cannot retain the FIFO permit.
 

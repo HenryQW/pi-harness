@@ -9,7 +9,6 @@ import {
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
 	EXECUTION_BUDGET_ENV,
-	MIN_MAX_TURNS,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentExecutor,
 	type PiLaunch,
@@ -968,15 +967,14 @@ test("executor uses stable prepare and spawn error codes with causes", async (t)
 	});
 });
 
-test("executor validates concurrency, minimum turn limit, and timeout at construction", (t) => {
+test("executor validates concurrency, turn limit, and timeout at construction", (t) => {
 	simulateActivePi(t);
 	for (const maxConcurrency of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency, timeout }));
 	}
-	assert.equal(MIN_MAX_TURNS, 10);
-	assert.doesNotThrow(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: MIN_MAX_TURNS, timeout }));
-	for (const maxTurns of [MIN_MAX_TURNS - 1, 10.5, Number.MAX_SAFE_INTEGER + 1]) {
-		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns, timeout }), /maxTurns must be a safe integer >= 10/);
+	assert.doesNotThrow(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 1, timeout }));
+	for (const maxTurns of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns, timeout }), /maxTurns must be a safe integer >= 1/);
 	}
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 0, maxMs: 2 } }));
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 2, maxMs: 2 } }));

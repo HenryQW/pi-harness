@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
-import { MIN_MAX_TURNS } from "./config.ts";
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
@@ -38,7 +37,7 @@ function executionBudget(value: string | undefined): { maxTurns: number; maxMs: 
 	}
 	const budget = parsed as Record<string, unknown>;
 	if (Object.keys(budget).length !== 3 || !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
-		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < MIN_MAX_TURNS
+		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < 1
 		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0
 		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0) {
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);

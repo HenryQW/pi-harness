@@ -22,7 +22,7 @@ async function configDir(agentDir: string): Promise<void> {
 test("missing config yields defaults without a legacy fallback", async () => {
 	await withAgentDir(async (agentDir) => {
 		const legacyPath = join(agentDir, "config", "pi-subagent", "pi-subagent.json");
-		const legacy = JSON.stringify({ maxTurns: 9 });
+		const legacy = JSON.stringify({ maxTurns: 1 });
 		await configDir(agentDir);
 		await writeFile(legacyPath, legacy);
 
@@ -34,19 +34,19 @@ test("missing config yields defaults without a legacy fallback", async () => {
 	});
 });
 
-test("valid maxSubagents, minimum maxTurns, and timeout are accepted", async () => {
+test("valid maxSubagents, maxTurns, and timeout are accepted", async () => {
 	await withAgentDir(async (agentDir) => {
 		await configDir(agentDir);
 		await writeFile(configPath(agentDir), JSON.stringify({
 			maxSubagents: 3,
-			maxTurns: 10,
+			maxTurns: 1,
 			timeout: { idleMinutes: 15, maxMinutes: 60 },
 		}));
 		assert.deepEqual(readSubagentConfig(agentDir), {
 			source: "file",
 			config: {
 				maxSubagents: 3,
-				maxTurns: 10,
+				maxTurns: 1,
 				timeout: { idleMinutes: 15, maxMinutes: 60 },
 			},
 		});
@@ -73,7 +73,7 @@ test("invalid UTF-8 reports an error and preserves the file", async () => {
 	await withAgentDir(async (agentDir) => {
 		await configDir(agentDir);
 		const path = configPath(agentDir);
-		const bytes = Buffer.concat([Buffer.from('{"maxTurns": 9}'), Buffer.from([0xff])]);
+		const bytes = Buffer.concat([Buffer.from('{"maxTurns": 1}'), Buffer.from([0xff])]);
 		await writeFile(path, bytes);
 		const loaded = readSubagentConfig(agentDir);
 		assert.equal(loaded.source, "file");
@@ -86,11 +86,11 @@ test("invalid UTF-8 reports an error and preserves the file", async () => {
 test("invalid concurrency and turn limits report errors and preserve defaults", async () => {
 	await withAgentDir(async (agentDir) => {
 		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagents: 0, maxTurns: 9 }));
+		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagents: 0, maxTurns: 0 }));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /maxSubagents must be a safe integer >= 1, got 0/);
-		assert.match(loaded.error!, /maxTurns must be a safe integer >= 10, got 9/);
+		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1, got 0/);
 	});
 });
 
@@ -101,7 +101,7 @@ test("valid settings survive unrelated diagnostics", async () => {
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, { maxSubagents: 3 });
 		assert.match(loaded.error!, /invalid settings use defaults while valid settings still apply\.$/);
-		assert.match(loaded.error!, /maxTurns must be a safe integer >= 10, got 1.5/);
+		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1, got 1.5/);
 	});
 });
 
@@ -151,13 +151,17 @@ test("non-object config root reports an error", async () => {
 	});
 });
 
-test("non-safe maxSubagents values report an error", async () => {
+test("non-safe maxSubagents and maxTurns values report errors", async () => {
 	await withAgentDir(async (agentDir) => {
 		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagents: 1e100 }));
+		await writeFile(configPath(agentDir), JSON.stringify({
+			maxSubagents: Number.MAX_SAFE_INTEGER + 1,
+			maxTurns: Number.MAX_SAFE_INTEGER + 1,
+		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /maxSubagents must be a safe integer >= 1/);
+		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1/);
 	});
 });
 

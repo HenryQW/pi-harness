@@ -1,8 +1,6 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, extensionConfigPath } from "@henryqw/pi-config-store";
 
-export const MIN_MAX_TURNS = 10 as const;
-
 export interface SubagentTimeoutConfig {
 	/** Minutes a child may stay idle before it is asked to stop. */
 	idleMinutes?: number;
@@ -63,10 +61,10 @@ function parseSubagentConfig(parsed: unknown, path: string): ParsedSubagentConfi
 
 	const maxTurns = record.maxTurns;
 	if (maxTurns !== undefined) {
-		if (typeof maxTurns === "number" && Number.isSafeInteger(maxTurns) && maxTurns >= MIN_MAX_TURNS) {
+		if (typeof maxTurns === "number" && Number.isSafeInteger(maxTurns) && maxTurns >= 1) {
 			config.maxTurns = maxTurns;
 		} else {
-			problems.push(`maxTurns must be a safe integer >= ${MIN_MAX_TURNS}, got ${JSON.stringify(maxTurns)}`);
+			problems.push(`maxTurns must be a safe integer >= 1, got ${JSON.stringify(maxTurns)}`);
 		}
 	}
 
