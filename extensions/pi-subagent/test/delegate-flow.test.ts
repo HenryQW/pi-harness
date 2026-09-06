@@ -123,6 +123,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 	const routes: Array<{ role: string; modelClass: string | undefined }> = [];
 	const execLogs: ExecLog[] = [];
 	const widgets: Array<{ action: "start" | "finish"; id: string; taskId?: string; role?: string; status?: string; task?: string }> = [];
+	const widgetTaskRetention: Array<{ taskId: string; retained: boolean }> = [];
 	const widgetActivity: Array<{ id: string; event: EphemeralSubagentActivityEvent }> = [];
 	let sessionGeneration = 0;
 	const executor: EphemeralSubagentExecutor = {
@@ -163,6 +164,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 			} as unknown as ResolvedRoleLaunch;
 		},
 		startWidget(id, taskId, role, _model, _thinkingLevel, task) { widgets.push({ action: "start", id, taskId, role, task }); },
+		setWidgetTaskRetained(taskId, retained) { widgetTaskRetention.push({ taskId, retained }); },
 		updateWidgetTokens() {},
 		updateWidgetActivity(id, event) { widgetActivity.push({ id, event }); },
 		finishWidget(id, status) { widgets.push({ action: "finish", id, status }); },
@@ -174,6 +176,7 @@ function harness(cwd: string, handler: ChildHandler, overrideExec?: (
 		routes,
 		execLogs,
 		widgets,
+		widgetTaskRetention,
 		widgetActivity,
 		ctx,
 		async emitSession(_event: "session_start" | "session_shutdown") {
@@ -808,6 +811,10 @@ test("Flow widgets keep implementer, reviewer, and repair under one stable unit 
 		["reviewer", name, "widget-label:flow:0"],
 	]);
 	for (const { task: widgetName } of starts) assert.doesNotMatch(widgetName!, /^(?:Flow Unit|Review Flow Unit|Repair Flow Unit)/);
+	assert.deepEqual(app.widgetTaskRetention, [
+		{ taskId: "widget-label:flow:0", retained: true },
+		{ taskId: "widget-label:flow:0", retained: false },
+	]);
 });
 
 test("Flow widget identities keep same-named units separate", async (t) => {

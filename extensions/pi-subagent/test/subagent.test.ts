@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -114,6 +114,7 @@ function harness(options: {
 	sendMessageError?: Error;
 } = {}) {
 	let tool: Tool | undefined;
+	const tools = new Map<string, Tool>();
 	let widget: { render: (width: number) => string[] } | undefined;
 	let messageRenderer: ((...args: any[]) => { render: (width: number) => string[] }) | undefined;
 	let renders = 0;
@@ -126,7 +127,20 @@ function harness(options: {
 	const api = {
 		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
-		registerTool(candidate: Tool) { tool = candidate; },
+		exec(command: string, args: string[], options?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
+			return new Promise((resolve) => {
+				execFile(command, args, options, (error, stdout, stderr) => resolve({
+					stdout: String(stdout),
+					stderr: String(stderr),
+					code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
+					killed: Boolean(error && "killed" in error && error.killed),
+				}));
+			});
+		},
+		registerTool(candidate: Tool) {
+			tools.set(candidate.name, candidate);
+			if (candidate.name === "delegate_task") tool = candidate;
+		},
 		registerMessageRenderer(customType: string, renderer: typeof messageRenderer) {
 			if (customType === "subagent-background-result") messageRenderer = renderer;
 		},
@@ -162,6 +176,7 @@ function harness(options: {
 	} as unknown as ExtensionContext;
 	return {
 		get tool() { return tool!; },
+		tools,
 		get widget() { return widget; },
 		get renders() { return renders; },
 		renderMessage(message: any, expanded = false) {
@@ -775,6 +790,121 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		assert.match(afterInput, /Keep worker active\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\]/);
 		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+	});
+});
+
+test("widget preserves blocked Flow rows through input and prioritizes active task groups", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		const reviewCount = join(agentDir, "flow-review-count");
+		const repairStarted = join(agentDir, "flow-repair-started");
+		const repairRelease = join(agentDir, "flow-repair-release");
+		const rereviewStarted = join(agentDir, "flow-rereview-started");
+		const rereviewRelease = join(agentDir, "flow-rereview-release");
+		const activeStarted = join(agentDir, "flow-active-started");
+		const activeRelease = join(agentDir, "flow-active-release");
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { execFileSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const task = process.argv.at(-1)?.replace(/^Task: /, "");
+const event = (text = "done") => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end" } }));
+const waitForRelease = (path, next) => {
+	const timer = setInterval(() => {
+		if (!existsSync(path)) return;
+		clearInterval(timer);
+		next();
+	}, 5);
+};
+if (task === "ordinary terminal") event();
+else if (task?.startsWith("Flow Unit")) {
+	writeFileSync("initial.txt", "initial\\n");
+	execFileSync("git", ["add", "initial.txt"]);
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"]);
+	event();
+} else if (task?.startsWith("Repair Flow Unit")) {
+	writeFileSync(${JSON.stringify(repairStarted)}, "");
+	waitForRelease(${JSON.stringify(repairRelease)}, () => {
+		writeFileSync("repair.txt", "repair\\n");
+		execFileSync("git", ["add", "repair.txt"]);
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "repair"]);
+		event();
+	});
+} else if (task?.startsWith("Review Flow Unit")) {
+	if (!existsSync(${JSON.stringify(reviewCount)})) {
+		writeFileSync(${JSON.stringify(reviewCount)}, "1");
+		event("repair needed");
+	} else {
+		writeFileSync(${JSON.stringify(rereviewStarted)}, "");
+		waitForRelease(${JSON.stringify(rereviewRelease)}, () => event("PASS"));
+	}
+} else if (task === "other active task") {
+	writeFileSync(${JSON.stringify(activeStarted)}, "");
+	waitForRelease(${JSON.stringify(activeRelease)}, () => event("active done"));
+} else throw new Error("Unexpected task: " + task);
+`);
+		process.argv[1] = runner;
+		const app = harness({ cwd: repo, ui: true });
+		const flow = app.tools.get("delegate_flow")!;
+		const continuation = app.tools.get("delegate_flow_continue")!;
+		let active: Promise<any> | undefined;
+		let resumed: Promise<any> | undefined;
+		try {
+			await app.tool.execute("ordinary", { role: "scout", name: "Ordinary terminal", task: "ordinary terminal" }, undefined, undefined, app.ctx);
+			const blocked = await flow.execute("widget-flow", { units: [{
+				id: "widget",
+				name: "Repair feedback widget",
+				task: "Repair the widget.",
+				validation: [{ command: process.execPath, args: ["-e", "process.exit(0)"] }],
+				review: "Require exact approval.",
+			}] }, undefined, undefined, app.ctx);
+			assert.equal(blocked.details.outcome, "blocked");
+
+			await app.handlers.get("input")?.({ source: "interactive", text: "continue" }, app.ctx);
+			const afterInput = app.widget!.render(160);
+			assert.doesNotMatch(afterInput.join("\n"), /Ordinary terminal/);
+			assert.equal(afterInput[0], "Repair feedback widget");
+			assert.deepEqual(afterInput.filter((line) => WIDGET_STATUS_ROW.test(line)).map((line) => /\[[IR]\]/.exec(line)?.[0]), ["[I]", "[R]"]);
+			assertWidgetHierarchy(afterInput);
+
+			resumed = continuation.execute("widget-flow-continue", { guidance: "Repair the widget." }, undefined, undefined, app.ctx);
+			await waitFor(() => existsSync(repairStarted));
+			const continuing = app.widget!.render(160);
+			assert.equal(continuing.length, 4);
+			assert.equal(continuing[0], "Repair feedback widget");
+			assert.match(continuing[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[I\] thinking…/);
+			assert.match(continuing[2]!, /^  ✓ \[I\] Done/);
+			assert.match(continuing[3]!, /^  ✓ \[R\] Done/);
+			assertWidgetHierarchy(continuing);
+			await writeFile(repairRelease, "");
+			await waitFor(() => existsSync(rereviewStarted));
+			active = app.tool.execute("other-active", { role: "scout", name: "Other active task", task: "other active task" }, undefined, undefined, app.ctx);
+			await waitFor(() => existsSync(activeStarted));
+			const rows = app.widget!.render(160);
+			assert.equal(rows.length, 6);
+			assert.equal(rows[0], "Repair feedback widget");
+			assert.match(rows[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
+			assert.match(rows[2]!, /^  ✓ \[I\] Done/);
+			assert.equal(rows[3], "Other active task");
+			assert.match(rows[4]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking…/);
+			assert.equal(rows[5], "… 2 more · 2 complete");
+			assertWidgetHierarchy(rows);
+			for (const width of [160, 24, 1]) {
+				const rendered = app.widget!.render(width);
+				assert.equal(rendered.length, 6);
+				assert.ok(rendered.every((line) => visibleWidth(line) <= width));
+				if (width > 1) assertWidgetHierarchy(rendered);
+			}
+
+			await Promise.all([writeFile(rereviewRelease, ""), writeFile(activeRelease, "")]);
+			const [completed] = await Promise.all([resumed, active]);
+			assert.equal(completed.details.outcome, "completed");
+			await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
+			assert.deepEqual(app.widget!.render(160), []);
+		} finally {
+			await Promise.all([writeFile(repairRelease, ""), writeFile(rereviewRelease, ""), writeFile(activeRelease, "")]);
+			await Promise.allSettled([resumed, active].filter((task): task is Promise<unknown> => task !== undefined));
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
 	});
 });
 

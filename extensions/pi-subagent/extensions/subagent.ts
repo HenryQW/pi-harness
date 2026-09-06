@@ -173,11 +173,17 @@ function renderWidgetRows(
 		else groups.set(item.taskId, { name: item.name, items: [item] });
 	}
 	const maxVisibleLines = ordered.length + groups.size > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES;
+	const workingGroups = [...groups.values()].filter(({ items }) => items.some(({ status }) => status === "working"));
+	const visibleWorkingGroups = new Set(workingGroups.slice(0, Math.floor(maxVisibleLines / 2)));
+	let remainingWorkingGroups = visibleWorkingGroups.size;
 	const visible = new Set<WidgetItem>();
 	const lines: string[] = [];
 	for (const group of groups.values()) {
-		const childCount = Math.min(group.items.length, maxVisibleLines - lines.length - 1);
-		if (childCount < 1) break;
+		const working = group.items.some(({ status }) => status === "working");
+		if (working && !visibleWorkingGroups.has(group)) continue;
+		const reservedLines = working ? --remainingWorkingGroups * 2 : 0;
+		const childCount = Math.min(group.items.length, maxVisibleLines - lines.length - reservedLines - 1);
+		if (childCount < 1) continue;
 		lines.push(truncateToWidth(theme.fg("text", group.name), width));
 		for (const item of group.items.slice(0, childCount)) {
 			visible.add(item);
@@ -267,6 +273,7 @@ export default function subagentExtension(
 		].join("\n"), outputPad, 0);
 	});
 	const widgetItems = new Map<string, WidgetItem>();
+	const retainedWidgetTaskIds = new Set<string>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
 	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
 	// maxSubagents > default 5. Invalid present config falls back to the default
@@ -318,6 +325,11 @@ export default function subagentExtension(
 
 	const requestWidgetRender = () => activeTui?.requestRender();
 
+	const setWidgetTaskRetained = (taskId: string, retained: boolean) => {
+		if (retained) retainedWidgetTaskIds.add(taskId);
+		else retainedWidgetTaskIds.delete(taskId);
+	};
+
 	const startWidgetTimer = () => {
 		if (widgetTimer) return;
 		widgetTimer = setInterval(() => {
@@ -352,7 +364,7 @@ export default function subagentExtension(
 		ensureWidget(ctx);
 		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ITEMS) {
 			for (const [oldestId, item] of widgetItems) {
-				if (item.status === "working") continue;
+				if (item.status === "working" || retainedWidgetTaskIds.has(item.taskId)) continue;
 				widgetItems.delete(oldestId);
 				if (widgetItems.size < MAX_WIDGET_ITEMS) break;
 			}
@@ -453,6 +465,7 @@ export default function subagentExtension(
 		failedToolPatches.clear();
 		stopWidgetTimer();
 		widgetItems.clear();
+		retainedWidgetTaskIds.clear();
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
@@ -470,7 +483,7 @@ export default function subagentExtension(
 	pi.on("input", (event) => {
 		if (event.source === "extension") return;
 		for (const [id, item] of widgetItems) {
-			if (item.status !== "working") widgetItems.delete(id);
+			if (item.status !== "working" && !retainedWidgetTaskIds.has(item.taskId)) widgetItems.delete(id);
 		}
 		requestWidgetRender();
 	});
@@ -569,6 +582,7 @@ export default function subagentExtension(
 			...(modelClass === undefined ? {} : { modelClass }),
 		}),
 		startWidget: startWidgetItem,
+		setWidgetTaskRetained,
 		updateWidgetTokens,
 		updateWidgetActivity,
 		finishWidget: finishWidgetItem,
