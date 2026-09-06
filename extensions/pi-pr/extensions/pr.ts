@@ -13,6 +13,7 @@ import {
 	formatPrFooter,
 	formatPrWidget,
 	projectPrDisplay,
+	type PrDisplay,
 } from "./pr-ui.ts";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -76,9 +77,24 @@ export default function pullRequestExtension(
 	let active: AbortController | undefined;
 	let queued = false;
 	let refreshFailureReported = false;
-	let displayedWidget: string | undefined;
+	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
 	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
+
+	const setWidget = (ctx: ExtensionContext, display: PrDisplay | undefined): void => {
+		if (display?.widget === undefined) {
+			ctx.ui.setWidget(UI_KEY, undefined);
+			return;
+		}
+		if (ctx.mode === "tui") {
+			ctx.ui.setWidget(UI_KEY, (_tui, theme) => ({
+				invalidate() {},
+				render: (width) => formatPrWidget(display, theme, width)!,
+			}));
+			return;
+		}
+		ctx.ui.setWidget(UI_KEY, formatPrWidget(display));
+	};
 
 	const render = (
 		ctx: ExtensionContext,
@@ -90,10 +106,10 @@ export default function pullRequestExtension(
 		if (pullRequest !== null && footer === undefined) {
 			throw new Error("Current pull request display is missing a footer");
 		}
-		displayedWidget = formatPrWidget(display);
+		displayedWidget = display.widget === undefined ? undefined : display;
 		const widget = activeInvocations.size > 0 ? undefined : displayedWidget;
 		ctx.ui.setStatus(UI_KEY, footer);
-		ctx.ui.setWidget(UI_KEY, widget === undefined ? undefined : [widget]);
+		setWidget(ctx, widget);
 	};
 
 	const stop = (): void => {
@@ -233,7 +249,7 @@ export default function pullRequestExtension(
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");
-			if (displayedWidget !== undefined) ctx.ui.setWidget(UI_KEY, undefined);
+			if (displayedWidget !== undefined) setWidget(ctx, undefined);
 			let nextStep: Awaited<ReturnType<typeof commandHandler>>;
 			try {
 				nextStep = await commandHandler(args, ctx);
@@ -242,7 +258,7 @@ export default function pullRequestExtension(
 					cancelRefresh();
 					activeInvocations.delete(invocation);
 					if (!activeInvocations.size) {
-						ctx.ui.setWidget(UI_KEY, displayedWidget === undefined ? undefined : [displayedWidget]);
+						setWidget(ctx, displayedWidget);
 					}
 					refreshInBackground();
 				}
@@ -253,7 +269,7 @@ export default function pullRequestExtension(
 			if (nextStep !== "none" && nextStep !== "merge") {
 				activeInvocations.set(invocation, nextStep === "create" ? "create-workflow" : "workflow");
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
-				ctx.ui.setWidget(UI_KEY, undefined);
+				setWidget(ctx, undefined);
 			} else {
 				activeInvocations.delete(invocation);
 				refreshInBackground();
