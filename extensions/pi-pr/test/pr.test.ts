@@ -196,6 +196,33 @@ test("renders the shared projection and refreshes after successful create or pus
 	await app.shutdown(ctx);
 });
 
+test("failed CI replaces review feedback in the footer on refresh", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const results = [
+		currentPullRequest({ conditions: { unresolvedThreads: 1 } }),
+		currentPullRequest({ conditions: { unresolvedThreads: 1, ci: "failure" } }),
+	];
+	const app = harness({
+		async load() {
+			const result = results.shift();
+			if (result === undefined) throw new Error("Unexpected pull request refresh");
+			return result;
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · 1 unresolved");
+	assert.deepEqual(app.widgets.at(-1), ["Run /pr to address review feedback"]);
+
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
+	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+
+	await app.shutdown(ctx);
+});
+
 test("shows the create widget only after a local commit", async () => {
 	const localCommits = [false, true];
 	const app = harness({

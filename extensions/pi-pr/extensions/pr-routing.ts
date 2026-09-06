@@ -45,10 +45,10 @@ export function deriveNextStep(pullRequest: PullRequest | null): NextStep {
 	if (conditions.baseUpdateRequired || conditions.conflict) {
 		return localMutationSafe(local) ? "update-branch" : "none";
 	}
+	if (conditions.ci === "failure") return localMutationSafe(local) ? "fix-ci" : "none";
 	if (conditions.changesRequested || conditions.unresolvedThreads > 0) {
 		return localMutationSafe(local) ? "sweep" : "none";
 	}
-	if (conditions.ci === "failure") return localMutationSafe(local) ? "fix-ci" : "none";
 	if (
 		conditions.ci === "running" ||
 		conditions.review === "pending" ||

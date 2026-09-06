@@ -222,11 +222,10 @@ test("uses visible-condition priority for combined states", () => {
 			widget: "Run /pr to update branch",
 		},
 		{
-			name: "unresolved feedback before changes requested and CI",
+			name: "unresolved feedback before changes requested",
 			input: pullRequest({ conditions: {
 				changesRequested: true,
 				unresolvedThreads: 3,
-				ci: "failure",
 			} }),
 			nextStep: "sweep",
 			footer: "3 unresolved",
@@ -234,12 +233,12 @@ test("uses visible-condition priority for combined states", () => {
 			widget: "Run /pr to address review feedback",
 		},
 		{
-			name: "changes requested before CI",
-			input: pullRequest({ conditions: { changesRequested: true, ci: "failure" } }),
-			nextStep: "sweep",
-			footer: "changes requested",
+			name: "CI failure before feedback",
+			input: pullRequest({ conditions: { changesRequested: true, unresolvedThreads: 3, ci: "failure" } }),
+			nextStep: "fix-ci",
+			footer: "CI failed",
 			color: "error",
-			widget: "Run /pr to address review feedback",
+			widget: "Run /pr to fix CI",
 		},
 		{
 			name: "CI failure before waiting",
