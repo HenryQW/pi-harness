@@ -9,13 +9,15 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-rename
 ```
 
-Run `/task-models` and configure the `fast` profile. Herdr is required for pane, tab, workspace, and branch updates.
+Run `/task-models` and configure the `fast` profile. Open `/task-models` again and verify that `fast` no longer says `not configured`. Herdr is required for pane, tab, workspace, and branch updates.
 
 Outside Herdr, the extension still changes the Pi session name.
 
 ## Works with
 
-**Required.** [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) provides shared title-generation model profiles.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared title-generation model profiles. |
 
 ## Use
 

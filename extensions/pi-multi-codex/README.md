@@ -13,11 +13,11 @@ pi install npm:@henryqw/pi-multi-codex
 
 ## Works with
 
-| Package | Why |
-| --- | --- |
-| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves. Shows the active slot's quota or five-hour block in the footer. |
-| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Improves. Isolated children keep Main's active Codex slot. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Improves. Numbered slots share one profile route. |
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows the active slot's quota or five-hour block in the footer. |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Improves | Isolated children keep Main's active Codex slot. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Improves | Numbered slots share one profile route. |
 
 ## Use
 
@@ -45,7 +45,7 @@ A numbered slot is one Codex account position in Pi.
 
 ## Config
 
-Automatic HTTP 429 switching is on by default. To disable it, create `~/.pi/agent/config/pi-multi-codex/config.json`:
+Package-owned: `~/.pi/agent/config/pi-multi-codex/config.json`
 
 ```json
 {
@@ -53,7 +53,11 @@ Automatic HTTP 429 switching is on by default. To disable it, create `~/.pi/agen
 }
 ```
 
-The config must contain only `autoSwitchOn429` as a boolean. Invalid config is preserved and disables automatic switching.
+| Name | Required | Description | Values | Default |
+| --- | --- | --- | --- | --- |
+| `autoSwitchOn429` | No | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` |
+
+Set `autoSwitchOn429` to `false` to disable automatic switching. The config must contain only this field as a boolean. Invalid config is preserved and disables automatic switching.
 
 ## State and storage
 

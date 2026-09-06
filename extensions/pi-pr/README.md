@@ -8,20 +8,21 @@ See the current branch pull request in the Pi footer. Use `/pr` to run its next 
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on GitHub.com or GitHub Enterprise. The PR hostname selects its GitHub API host. It works in generic Pi sessions outside Herdr.
-
-The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
+Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on GitHub.com or GitHub Enterprise. Run `gh auth status` to verify authentication.
 
 ## Works with
 
-**Improves.** [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) shows current-branch pull-request status in the footer.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows current-branch pull-request status in the footer. |
 
 ## Use
 
-Run `/pr` without arguments in a GitHub checkout. It reads the current branch pull request and local state, then runs one route.
+Run `/pr` without arguments in a GitHub checkout. It reads the current branch pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
+| `/pr` | command | Run the current pull request's next safe route. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
 | Widget hint | ui | Show at most one hint for the next `/pr` step. |
 
@@ -31,7 +32,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 ![Flowchart showing /pr reading fresh GitHub and local state, choosing the first matching condition, and stopping after one route](./docs/pr-routing.svg)
 
-## Routes
+### Routes
 
 | Current condition | `/pr` route |
 | --- | --- |
@@ -54,7 +55,7 @@ Current-branch discovery matches the exact push repository and ref. It finds a f
 
 A no-action state includes a draft, merged or closed pull request, running CI, pending review, or blocked merge policy. It also includes a mutating workflow whose tree is dirty or whose local HEAD differs from the PR head.
 
-## Route priority
+### Route priority
 
 A missing pull request uses creation. For an existing pull request, the first matching condition wins:
 
@@ -67,7 +68,9 @@ A missing pull request uses creation. For an existing pull request, the first ma
 
 Ordinary conversation comments do not trigger a route or block a merge. Changes requested and unresolved review threads can select the package comment sweep.
 
-## Refresh
+The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
+
+### Refresh
 
 The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also poll every 30 seconds. Polling updates presentation only and may be stale.
 
@@ -75,7 +78,7 @@ The create hint stays hidden until the local branch has a commit beyond its crea
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
-## Safety limits
+## Limits and recovery
 
 - `/pr` takes no arguments and does not open a browser.
 - It does not run `/done` or `/sweep`.

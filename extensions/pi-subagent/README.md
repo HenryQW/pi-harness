@@ -12,11 +12,13 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
-Run `/task-models` and configure the `fast` profile before delegating.
+Run `/task-models` and configure the `fast` profile before delegating. Open `/task-models` again and verify that `fast` no longer says `not configured`.
 
 ## Works with
 
-**Required.** [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) supplies `fast`, `balanced`, `frontier`, and `fav` model routes.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
 
 Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. Missing shared model config warns once because delegation needs a route.
 
@@ -104,14 +106,12 @@ Flow has no dependency graph, saved recovery, automatic retry, aggregate review,
 
 pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A missing file uses these defaults without a warning.
 
-| Field | Valid value | Default |
-| --- | --- | --- |
-| `maxSubagents` | Safe integer ≥ 1 | `5` |
-| `maxTurns` | Safe integer ≥ 1 | `50` |
-| `timeout.idleMinutes` | Positive minutes; minutes × 60,000 ≤ 2,147,483,647 ms | `10` |
-| `timeout.maxMinutes` | Positive minutes greater than `idleMinutes`; minutes × 60,000 ≤ 2,147,483,647 ms | `30` |
-
-`maxTurns` defaults to 50.
+| Name | Required | Description | Values | Default |
+| --- | --- | --- | --- | --- |
+| `maxSubagents` | No | Sets the maximum number of active child processes. | Safe integer of at least 1. | `5` |
+| `maxTurns` | No | Sets the hard provider-turn limit for each child. | Safe integer of at least 1. | `50` |
+| `timeout.idleMinutes` | No | Sets the idle timeout for a child. | Positive minutes where minutes × 60,000 is at most 2,147,483,647 ms. | `10` |
+| `timeout.maxMinutes` | No | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`, where minutes × 60,000 is at most 2,147,483,647 ms. | `30` |
 
 Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
 
@@ -162,7 +162,16 @@ Flow uses the effective Implementer and, only when requested, Reviewer. The Scou
 
 ## API
 
-The package root exports `loadRoles`, `resolveRoleSkills`, `resolveRoleLaunch`, `createRoleLaunch`, `createEphemeralSubagentExecutor`, and worktree helpers.
+The package root includes these main exports:
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `loadRoles` | function | Loads built-in and user Role definitions. |
+| `resolveRoleSkills` | function | Resolves a Role's named Skills from Pi's effective registry. |
+| `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
+| `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
+| `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
+| Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
 
 The executor works only inside the active Pi process. It does not discover or start a standalone Node.js Pi installation.
 

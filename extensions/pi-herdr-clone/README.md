@@ -12,7 +12,9 @@ Requires the Herdr CLI and a Pi session running inside a Herdr-managed pane.
 
 ## Works with
 
-**Improves.** [`@henryqw/pi-herdr-done`](https://pi.henry.wang/extensions/pi-herdr-done) cleans up worktree clones when work finishes.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-herdr-done`](https://pi.henry.wang/extensions/pi-herdr-done) | Improves | Cleans up worktree clones when work finishes. |
 
 ## Use
 

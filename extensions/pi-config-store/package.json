@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-config-store",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Safe JSON configuration storage for Pi extensions.",
   "keywords": [
     "pi-package",

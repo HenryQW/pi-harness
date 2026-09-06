@@ -11,14 +11,14 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-btw
 ```
 
-Requires Herdr 0.7.4+ and a Herdr-managed pane. Run `/task-models` and configure the `fast` profile before opening a side thread.
+Requires Herdr 0.7.4+ and a Herdr-managed pane. Run `/task-models` and configure the `fast` profile before opening a side thread. Open `/task-models` again and verify that `fast` no longer says `not configured`.
 
 ## Works with
 
-| Package | Why |
-| --- | --- |
-| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves. Marks side-thread children, suppressing parent-only memory injection and dream advice. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required. Provides shared model profiles for side-thread routes. |
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves | Marks side-thread children, suppressing parent-only memory injection and dream advice. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared model profiles for side-thread routes. |
 
 ## Use
 
@@ -72,11 +72,11 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 }
 ```
 
-| Field | Required | Possible values | Default |
-| --- | --- | --- | --- |
-| `autoSubmit` | No | `true`, `false` — submit the draft question automatically instead of leaving it editable in the side pane | `false` |
-| `tools` | No | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), `none` | `inherit` |
-| `split` | No | `right`, `down` — side-pane placement | `right` |
+| Name | Required | Description | Values | Default |
+| --- | --- | --- | --- | --- |
+| `autoSubmit` | No | Submits the draft question instead of leaving it editable in the side pane. | Boolean. | `false` |
+| `tools` | No | Selects the tools available in the side pane. | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
+| `split` | No | Sets the side-pane placement. | `right` or `down`. | `right` |
 
 - All fields are optional.
 - Unknown keys and non-object files are rejected.

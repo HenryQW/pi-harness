@@ -12,15 +12,17 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-memory
 ```
 
-Run `/task-models` and configure the `balanced` profile before adding memory. Candidate review does not use the current session model as a substitute.
+Run `/task-models` and configure the `balanced` profile before adding memory. Open `/task-models` again and verify that `balanced` no longer says `not configured`.
 
 ## Works with
 
-| Package | Why |
-| --- | --- |
-| [`@henryqw/pi-ask-question`](https://pi.henry.wang/extensions/pi-ask-question) | Required. Provides the validated conflict prompt. |
-| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Improves. Marks side-thread children, suppressing parent-only memory injection and dream advice. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required. Provides candidate-review routes. |
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-ask-question`](https://pi.henry.wang/extensions/pi-ask-question) | Required | Provides the validated conflict prompt. |
+| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Improves | Marks side-thread children, suppressing parent-only memory injection and dream advice. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides candidate-review routes. |
+
+Candidate review does not use the current session model as a substitute.
 
 ## Use
 
@@ -84,11 +86,11 @@ Use the memory tool immediately only when something qualifies. Save inferred hab
 
 Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional. A missing file uses defaults. Startup never creates or rewrites the file.
 
-| Field | Required | Possible values | Default |
-| --- | --- | --- | --- |
-| `directory` | No | Non-empty absolute path without control characters, e.g. an iCloud- or Obsidian-synced folder | `~/.pi/agent/config/pi-memory/memory` |
-| `memoryCharLimit` | No | Safe integer 1–100000 | `8800` |
-| `userCharLimit` | No | Safe integer 1–100000 | `5500` |
+| Name | Required | Description | Values | Default |
+| --- | --- | --- | --- | --- |
+| `directory` | No | Sets the folder for both memory stores. | Non-empty absolute path without control characters, such as an iCloud- or Obsidian-synced folder. | `~/.pi/agent/config/pi-memory/memory` |
+| `memoryCharLimit` | No | Caps `MEMORY.md` by character count. | Safe integer from 1 to 100000. | `8800` |
+| `userCharLimit` | No | Caps `USER.md` by character count. | Safe integer from 1 to 100000. | `5500` |
 
 Any other invalid configuration fails fast. Malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values throw an error naming the problem. The file is never rewritten.
 

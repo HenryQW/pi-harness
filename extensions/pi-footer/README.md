@@ -12,11 +12,11 @@ pi install npm:@henryqw/pi-footer
 
 ## Works with
 
-| Package | Why |
-| --- | --- |
-| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves. Adds active Codex subscription quota and reset status. |
-| [`@henryqw/pi-open-in`](https://pi.henry.wang/extensions/pi-open-in) | Improves. Adds `/open` and `/set-open-in` commands for editor configuration. |
-| [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves. Adds current-branch pull-request status. |
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Adds active Codex subscription quota and reset status. |
+| [`@henryqw/pi-open-in`](https://pi.henry.wang/extensions/pi-open-in) | Improves | Adds `/open` and `/set-open-in` commands for editor configuration. |
+| [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves | Adds current-branch pull-request status. |
 
 ## Use
 
