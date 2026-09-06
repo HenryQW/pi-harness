@@ -48,13 +48,15 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 `pi-pr-create` honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
 
-After a `/pr` create workflow settles, the extension loads the current PR. It then ends the Herdr workspace label with one ` · PR #<number>` suffix.
+After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then ends the Herdr workspace label with one ` · PR #<number>` suffix.
+
+Failed or empty discovery leaves one rename pending for a later refresh. Closed or merged historical matches do not trigger it.
 
 It removes every stale trailing PR suffix before adding the current one. This requires `HERDR_ENV=1` and a non-empty, trimmed `HERDR_WORKSPACE_ID`.
 
 It renames only the workspace. Outside Herdr, it does nothing.
 
-If Herdr lookup, JSON validation, or rename fails, the PR and normal UI refresh remain available. The extension warns with `Herdr workspace rename failed: <error>`.
+If Herdr lookup, JSON validation, or rename fails, the PR and normal UI refresh remain available. Each Herdr command has a 10-second timeout. The extension warns with `Herdr workspace rename failed: <error>`.
 
 Current-branch discovery matches the exact push repository and ref. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 

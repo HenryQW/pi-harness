@@ -17,6 +17,7 @@ import {
 } from "./pr-ui.ts";
 
 const POLL_INTERVAL_MS = 30_000;
+const HERDR_TIMEOUT_MS = 10_000;
 const UI_KEY = "pi-pr";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
@@ -57,14 +58,22 @@ export default function pullRequestExtension(
 		pullRequestNumber: number,
 	): Promise<void> => {
 		signal.throwIfAborted();
-		const current = await herdr.json(["workspace", "get", workspaceId], { cwd, signal });
+		const current = await herdr.json(["workspace", "get", workspaceId], {
+			cwd,
+			signal,
+			timeout: HERDR_TIMEOUT_MS,
+		});
 		signal.throwIfAborted();
 		const label = parseWorkspaceLabel(current, workspaceId);
 		const normalized = `${label.replace(/(?: · PR #[1-9][0-9]*)+$/, "")} · PR #${pullRequestNumber}`;
 		if (normalized === label) return;
 
 		signal.throwIfAborted();
-		await herdr.run(["workspace", "rename", workspaceId, normalized], { cwd, signal });
+		await herdr.run(["workspace", "rename", workspaceId, normalized], {
+			cwd,
+			signal,
+			timeout: HERDR_TIMEOUT_MS,
+		});
 		signal.throwIfAborted();
 	};
 
@@ -77,6 +86,7 @@ export default function pullRequestExtension(
 	let active: AbortController | undefined;
 	let queued = false;
 	let refreshFailureReported = false;
+	let pendingWorkspaceRename = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
 	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
@@ -117,6 +127,7 @@ export default function pullRequestExtension(
 		context = undefined;
 		queued = false;
 		refreshFailureReported = false;
+		pendingWorkspaceRename = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
 		activeInvocations.clear();
@@ -147,7 +158,7 @@ export default function pullRequestExtension(
 		}
 	};
 
-	const refresh = async (renameWorkspace = false): Promise<void> => {
+	const refresh = async (): Promise<void> => {
 		const ctx = context;
 		if (!ctx) return;
 		const generation = sessionGeneration;
@@ -175,15 +186,16 @@ export default function pullRequestExtension(
 			render(ctx, pullRequest, localCommit);
 			refreshFailureReported = false;
 
-			const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
-			if (
-				renameWorkspace && pullRequest !== null && process.env.HERDR_ENV === "1" && workspaceId
-			) {
-				try {
-					await renameHerdrWorkspace(ctx.cwd, controller.signal, workspaceId, pullRequest.number);
-				} catch (error) {
-					if (!controller.signal.aborted && sessionGeneration === generation) {
-						reportHerdrRenameFailure(ctx, error);
+			if (pendingWorkspaceRename && pullRequest?.lifecycle === "open") {
+				pendingWorkspaceRename = false;
+				const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
+				if (process.env.HERDR_ENV === "1" && workspaceId) {
+					try {
+						await renameHerdrWorkspace(ctx.cwd, controller.signal, workspaceId, pullRequest.number);
+					} catch (error) {
+						if (!controller.signal.aborted && sessionGeneration === generation) {
+							reportHerdrRenameFailure(ctx, error);
+						}
 					}
 				}
 			}
@@ -230,7 +242,8 @@ export default function pullRequestExtension(
 		}
 		if (!workflowSettled) return;
 		cancelRefresh();
-		await refresh(createWorkflowSettled).catch(reportRefreshFailure);
+		if (createWorkflowSettled) pendingWorkspaceRename = true;
+		await refresh().catch(reportRefreshFailure);
 	});
 
 	pi.on("tool_result", async (event, ctx) => {

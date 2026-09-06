@@ -638,9 +638,24 @@ test("labels the Herdr workspace with direct arguments after a create workflow s
 			assert.equal(app.execCalls.length, 0);
 
 			await app.settle(ctx);
-			assert.deepEqual(app.execCalls.map(({ command, args }) => ({ command, args })), [
-				{ command: "herdr", args: ["workspace", "get", "workspace-7"] },
-				{ command: "herdr", args: ["workspace", "rename", "workspace-7", "Feature · PR #42"] },
+			assert.deepEqual(app.execCalls.map(({ command, args, options }) => ({
+				command,
+				args,
+				cwd: options?.cwd,
+				timeout: options?.timeout,
+			})), [
+				{
+					command: "herdr",
+					args: ["workspace", "get", "workspace-7"],
+					cwd: "/repo",
+					timeout: 10_000,
+				},
+				{
+					command: "herdr",
+					args: ["workspace", "rename", "workspace-7", "Feature · PR #42"],
+					cwd: "/repo",
+					timeout: 10_000,
+				},
 			]);
 			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
@@ -648,6 +663,105 @@ test("labels the Herdr workspace with direct arguments after a create workflow s
 			await app.shutdown(ctx);
 		}
 	});
+});
+
+test("keeps one Herdr rename pending through delayed PR discovery", async () => {
+	for (const scenario of [
+		{ name: "missing", delayed: null },
+		{ name: "failed", delayed: new Error("GitHub unavailable") },
+	]) {
+		await withHerdrEnvironment("1", "workspace-7", async () => {
+			let loads = 0;
+			const app = harness({
+				async load() {
+					loads += 1;
+					if (loads === 1) return null;
+					if (loads === 2) {
+						if (scenario.delayed instanceof Error) throw scenario.delayed;
+						return scenario.delayed;
+					}
+					return currentPullRequest();
+				},
+				async hasLocalCommit() {
+					return true;
+				},
+				async commandHandler() {
+					return "create";
+				},
+				async exec(_command, args) {
+					return args[1] === "get"
+						? execResult(JSON.stringify({
+							result: { workspace: { workspace_id: "workspace-7", label: "Feature" } },
+						}))
+						: execResult();
+				},
+			});
+			const ctx = app.context();
+
+			try {
+				await app.start(ctx);
+				await app.command().handler("", ctx as ExtensionCommandContext);
+				await app.settle(ctx);
+				assert.equal(app.execCalls.length, 0, scenario.name);
+
+				await app.tool({
+					toolName: "bash",
+					input: { command: "git push origin HEAD" },
+					isError: false,
+				}, ctx);
+				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], scenario.name);
+			} finally {
+				await app.shutdown(ctx);
+			}
+		});
+	}
+});
+
+test("waits for an open PR instead of renaming from a historical match", async () => {
+	for (const lifecycle of ["closed", "merged"] as const) {
+		await withHerdrEnvironment("1", "workspace-7", async () => {
+			let loads = 0;
+			const app = harness({
+				async load() {
+					loads += 1;
+					if (loads === 1) return null;
+					if (loads === 2) return currentPullRequest({ lifecycle });
+					return currentPullRequest();
+				},
+				async hasLocalCommit() {
+					return true;
+				},
+				async commandHandler() {
+					return "create";
+				},
+				async exec(_command, args) {
+					return args[1] === "get"
+						? execResult(JSON.stringify({
+							result: { workspace: { workspace_id: "workspace-7", label: "Feature" } },
+						}))
+						: execResult();
+				},
+			});
+			const ctx = app.context();
+
+			try {
+				await app.start(ctx);
+				await app.command().handler("", ctx as ExtensionCommandContext);
+				await app.settle(ctx);
+				assert.equal(plain(app.statuses.at(-1) ?? ""), `PR #42 · ${lifecycle}`);
+				assert.equal(app.execCalls.length, 0, lifecycle);
+
+				await app.tool({
+					toolName: "bash",
+					input: { command: "git push origin HEAD" },
+					isError: false,
+				}, ctx);
+				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], lifecycle);
+			} finally {
+				await app.shutdown(ctx);
+			}
+		});
+	}
 });
 
 test("warns without hiding the refreshed PR when Herdr labeling fails", async () => {
@@ -680,6 +794,14 @@ test("warns without hiding the refreshed PR when Herdr labeling fails", async ()
 			}]);
 			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+
+			await app.tool({
+				toolName: "bash",
+				input: { command: "git push origin HEAD" },
+				isError: false,
+			}, ctx);
+			assert.equal(app.execCalls.length, 1, "an observed open PR consumes the rename after failure");
+			assert.equal(app.notifications.length, 1);
 		} finally {
 			await app.shutdown(ctx);
 		}
