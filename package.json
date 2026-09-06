@@ -37,8 +37,9 @@
   "scripts": {
     "build": "pnpm --filter @henryqw/pi-config-store --filter @henryqw/pi-herdr --filter @henryqw/pi-task-models --filter @henryqw/pi-subagent --filter @henryqw/pi-ask-question run build",
     "postinstall": "pnpm run build",
-    "test": "node scripts/test-workspaces.mjs",
+    "test": "node --test scripts/check-package-versions.test.mjs && node scripts/test-workspaces.mjs",
     "test:live": "pnpm --filter @henryqw/pi-auto-compact run test:live",
+    "check:package-versions": "node scripts/check-package-versions.mjs",
     "typecheck": "pnpm --recursive --if-present run typecheck",
     "pack:check": "pnpm --recursive --if-present run pack:check",
     "docs:dev": "pnpm --filter @henryqw/pi-docs run dev",

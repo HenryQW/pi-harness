@@ -40,7 +40,8 @@ This repository is a pnpm workspace monorepo. Each public package under `extensi
   pnpm --filter ./extensions/<package> version patch --no-git-tag-version
   ```
 
-- Commit version and `pnpm-lock.yaml` changes with feature or fix. Do not create release tags.
+- Regenerate `pnpm-lock.yaml` after manifest edits. Commit it when it changes. Do not create release tags.
+- After the final base sync, run `pnpm run check:package-versions` before committing or pushing.
 - Treat local files linked from a published README as package contents. Include required assets in the package allowlist and verify them with `npm pack --dry-run`.
 - Push `main`; `.github/workflows/publish.yml` publishes each public workspace whose version is newer than npm.
 - Root package `@henryqw/pi-harness` is private and never releases.

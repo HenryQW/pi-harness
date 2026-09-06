@@ -9,7 +9,6 @@ import type { PiLaunch } from "./index.ts";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_JSON_EVENT_BYTES = 1024 * 1024;
-export const MIN_MAX_TURNS = 10 as const;
 export const DEFAULT_MAX_TURNS = 50;
 export const EXECUTION_BUDGET_ENV = "PI_SUBAGENT_EXECUTION_BUDGET";
 const MAX_ACTIVITY_TEXT_BYTES = 4 * 1024;
@@ -122,8 +121,8 @@ function validateOptions(options: EphemeralSubagentExecutorOptions): Required<Ep
 		throw new RangeError("maxConcurrency must be a positive safe integer.");
 	}
 	const maxTurns = options.maxTurns === undefined ? DEFAULT_MAX_TURNS : options.maxTurns;
-	if (!Number.isSafeInteger(maxTurns) || maxTurns < MIN_MAX_TURNS) {
-		throw new RangeError(`maxTurns must be a safe integer >= ${MIN_MAX_TURNS}.`);
+	if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
+		throw new RangeError("maxTurns must be a safe integer >= 1.");
 	}
 	if (!options.timeout || typeof options.timeout !== "object") throw new TypeError("timeout is required.");
 	const timeout = {

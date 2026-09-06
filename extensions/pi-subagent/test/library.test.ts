@@ -140,11 +140,15 @@ test("child budget payload requires the executor runtime origin", () => {
 	}
 });
 
-test("child budget rejects maxTurns below 10", () => {
+test("child budget requires maxTurns to be a safe integer >= 1", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
-	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 9, maxMs: 30 * 60_000, startedAt: 0 });
 	try {
-		assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0 });
+		assert.doesNotThrow(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI));
+		for (const maxTurns of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+			process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: 0 });
+			assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+		}
 	} finally {
 		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
 		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
@@ -223,7 +227,62 @@ test("child budget warnings use executor time and apply each threshold once", ()
 	}
 });
 
-test("child final handoff preserves exact-output contracts and reserves a response-only tenth turn", () => {
+test("one-turn Role starts with exactly one response-only handoff", () => {
+	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
+	const handlers = new Map<string, (event: any) => any>();
+	const events: string[] = [];
+	const sent: Array<{ message: any; options: any }> = [];
+	let activeTools = ["read"];
+	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: Date.now() });
+	try {
+		childToolPolicy({
+			registerFlag() {},
+			getFlag: () => JSON.stringify(["read"]),
+			on(event: string, handler: (event: any) => any) { handlers.set(event, handler); },
+			getAllTools() {
+				events.push("getAllTools");
+				return [{ name: "read", sourceInfo: { source: "builtin" } }];
+			},
+			setActiveTools(names: string[]) {
+				events.push(`setActiveTools:${names.join(",")}`);
+				activeTools = names;
+			},
+			getActiveTools() {
+				events.push("getActiveTools");
+				return activeTools;
+			},
+			sendMessage(message: any, options: any) {
+				events.push("sendMessage");
+				sent.push({ message, options });
+			},
+		} as unknown as ExtensionAPI);
+
+		handlers.get("session_start")?.({});
+		events.push("providerTurn");
+		assert.deepEqual(events, ["getAllTools", "setActiveTools:read", "getActiveTools", "setActiveTools:", "sendMessage", "providerTurn"]);
+		assert.deepEqual(activeTools, []);
+		assert.deepEqual(sent, [{
+			message: {
+				customType: "pi-subagent-final-handoff",
+				content: "**Final handoff required.** Tools are disabled. If your assigned task or Role requires exact output, reply only with that output instead; it takes precedence over this decision packet. Otherwise, reply only with this decision packet:\n\n**Status:** completed | blocked | incomplete\n**Outcome:** one sentence describing what is now true\n**Evidence:** up to three concrete findings, changes, or checks; include an attempted approach only when it prevents Main from repeating failed work\n**Blocker:** none or the exact blocker\n**Risk:** none or one material risk\n**Suggested next:** none or one concrete action",
+				display: true,
+			},
+			options: { deliverAs: "steer", triggerTurn: false },
+		}]);
+
+		handlers.get("turn_end")?.({
+			type: "turn_end",
+			message: { role: "assistant", content: [{ type: "toolCall" }] },
+			toolResults: [],
+		});
+		assert.equal(sent.length, 1);
+	} finally {
+		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
+		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
+	}
+});
+
+test("child final handoff preserves exact-output contracts and reserves the final turn", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	const policy = (maxTurns: number) => {
 		const handlers = new Map<string, (event: any) => any>();
