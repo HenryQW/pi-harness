@@ -212,6 +212,90 @@ test("child budget warnings use executor time and apply each threshold once", ()
 	}
 });
 
+test("child final handoff reserves a response-only final turn", () => {
+	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
+	const policy = (maxTurns: number) => {
+		const handlers = new Map<string, (event: any) => any>();
+		const events: string[] = [];
+		const sent: Array<{ message: any; options: any }> = [];
+		const toolSets: string[][] = [];
+		let activeTools = ["read", "bash"];
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: Date.now() });
+		childToolPolicy({
+			registerFlag() {},
+			getFlag: () => JSON.stringify(["read"]),
+			on(event: string, handler: (event: any) => any) { handlers.set(event, handler); },
+			getAllTools() {
+				events.push("getAllTools");
+				return [
+					{ name: "read", sourceInfo: { source: "builtin" } },
+					{ name: "bash", sourceInfo: { source: "builtin" } },
+				];
+			},
+			setActiveTools(names: string[]) {
+				events.push("setActiveTools");
+				toolSets.push([...names]);
+				activeTools = names;
+			},
+			getActiveTools() {
+				events.push("getActiveTools");
+				return activeTools;
+			},
+			sendMessage(message: any, options: any) { sent.push({ message, options }); },
+		} as unknown as ExtensionAPI);
+		return {
+			events,
+			sent,
+			toolSets,
+			activeTools: () => activeTools,
+			start() { handlers.get("session_start")?.({}); },
+			turnEnd(event: any) { handlers.get("turn_end")?.(event); },
+			beforeAgentStart() { return handlers.get("before_agent_start")?.({}); },
+		};
+	};
+	const continuing = {
+		type: "turn_end",
+		message: { role: "assistant", content: [{ type: "toolCall" }] },
+		toolResults: [],
+	};
+	try {
+		const fiveTurns = policy(5);
+		fiveTurns.start();
+		assert.deepEqual(fiveTurns.events, ["getAllTools", "setActiveTools", "getActiveTools"]);
+		for (let turn = 1; turn < 4; turn++) fiveTurns.turnEnd(continuing);
+		assert.deepEqual(fiveTurns.activeTools(), ["read"]);
+		assert.equal(fiveTurns.sent.length, 0);
+
+		fiveTurns.turnEnd(continuing);
+		assert.deepEqual(fiveTurns.toolSets, [["read"], []]);
+		assert.deepEqual(fiveTurns.sent[0]!.options, { deliverAs: "steer", triggerTurn: false });
+		assert.equal(fiveTurns.sent[0]!.message.customType, "pi-subagent-final-handoff");
+		assert.match(fiveTurns.sent[0]!.message.content, /Status:.*completed.*blocked.*incomplete/);
+		assert.match(fiveTurns.sent[0]!.message.content, /Work attempted/);
+		assert.match(fiveTurns.sent[0]!.message.content, /Evidence and changes.*commit and checks run when applicable/);
+		assert.match(fiveTurns.sent[0]!.message.content, /exact remaining work and risks/);
+		fiveTurns.turnEnd(continuing);
+		assert.equal(fiveTurns.sent.length, 1);
+
+		const terminalPenultimate = policy(5);
+		terminalPenultimate.start();
+		for (let turn = 1; turn < 4; turn++) terminalPenultimate.turnEnd(continuing);
+		terminalPenultimate.turnEnd({ ...continuing, message: { role: "assistant", content: [] } });
+		assert.deepEqual(terminalPenultimate.activeTools(), ["read"]);
+		assert.deepEqual(terminalPenultimate.sent, []);
+
+		const oneTurn = policy(1);
+		oneTurn.start();
+		assert.deepEqual(oneTurn.events, ["getAllTools", "setActiveTools", "getActiveTools", "setActiveTools"]);
+		assert.deepEqual(oneTurn.toolSets, [["read"], []]);
+		assert.deepEqual(oneTurn.beforeAgentStart(), { message: fiveTurns.sent[0]!.message });
+		assert.deepEqual(oneTurn.sent, []);
+	} finally {
+		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
+		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
+	}
+});
+
 test("empty Role tools activate only trusted extension tools and caller additions", () => {
 	const role: Role = {
 		name: "worker",

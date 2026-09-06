@@ -4,6 +4,11 @@ import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, ROLE_TOOL_POLICY_FLAG 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
 const WARNING_MESSAGE_TYPE = "pi-subagent-execution-budget";
+const FINAL_HANDOFF_MESSAGE = {
+	customType: "pi-subagent-final-handoff",
+	content: "**Final handoff required.** Tools are disabled. Reply only with:\n- **Status:** `completed`, `blocked`, or `incomplete`.\n- **Work attempted:** what you did.\n- **Evidence and changes:** relevant evidence and changes; include the commit and checks run when applicable.\n- **Remaining work and risks:** exact remaining work and risks.",
+	display: true,
+};
 
 function configuredTools(value: unknown): string[] {
 	if (typeof value !== "string") throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
@@ -53,6 +58,7 @@ export default function roleTools(pi: ExtensionAPI): void {
 		description: "Internal Pi Subagent Role tool policy",
 		type: "string",
 	});
+	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
 	pi.on("session_start", () => {
 		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
 		const allTools = pi.getAllTools();
@@ -66,17 +72,28 @@ export default function roleTools(pi: ExtensionAPI): void {
 		if (unavailable.length) {
 			throw new Error(`Subagent requested unavailable tools: ${unavailable.join(", ")}. Check spelling and load the provider extension that registers them.`);
 		}
+		if (budget?.maxTurns === 1) pi.setActiveTools([]);
 	});
 
-	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
 	if (!budget) return;
+	if (budget.maxTurns === 1) {
+		pi.on("before_agent_start", () => ({ message: FINAL_HANDOFF_MESSAGE }));
+		return;
+	}
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
 	let completedTurns = 0;
+	let handoffSent = false;
 	let turnWarningSent = false;
 	let runtimeWarningSent = false;
 	pi.on("turn_end", (event) => {
 		completedTurns += 1;
-		if (!expectsAnotherTurn(event.message)) return;
+		if (!expectsAnotherTurn(event.message) || handoffSent) return;
+		if (completedTurns === budget.maxTurns - 1) {
+			pi.setActiveTools([]);
+			pi.sendMessage(FINAL_HANDOFF_MESSAGE, { deliverAs: "steer", triggerTurn: false });
+			handoffSent = true;
+			return;
+		}
 		const elapsedMs = Math.max(0, Date.now() - budget.startedAt);
 		const turnWarningDue = !turnWarningSent && completedTurns >= warningTurn;
 		const runtimeWarningDue = !runtimeWarningSent && elapsedMs >= budget.maxMs * WARNING_RATIO;

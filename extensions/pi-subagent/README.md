@@ -106,6 +106,16 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A
 
 Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
 
+### Final response handoff
+
+Role launches reserve the final allowed turn for a response-only handoff. This includes `delegate_task` and every Implementer or Reviewer launch within `delegate_flow`.
+
+With multiple turns, Pi waits for the penultimate turn's tools, disables all tools, then requests a final report. With `maxTurns: 1`, Pi validates initial Role tools, disables them, and injects the request before the only response. A terminal penultimate response gets no handoff.
+
+The report asks for status, work attempted, evidence, changes, commits, checks when applicable, and exact remaining work and risks. This reserves a turn within the existing hard limit; it never adds a model turn.
+
+A raw `createEphemeralSubagentExecutor` launch does not guarantee this handoff. A timeout, provider failure, or child-process failure can end a Role launch before handoff.
+
 Malformed or unreadable JSON, a non-object root, unknown keys, and invalid values produce one warning. Invalid settings use defaults while valid settings still apply. If the effective maximum is not greater than the idle timeout, both timeout settings use defaults. The file is never rewritten.
 
 `PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session. It must be a positive integer. An invalid value prevents the extension from loading, so `delegate_task` is unavailable.

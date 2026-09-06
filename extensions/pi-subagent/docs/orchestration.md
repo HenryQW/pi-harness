@@ -142,6 +142,14 @@ Children start with ambient extension and Skill discovery disabled. Only explici
 
 Role Skill names resolve through Main's effective Pi Skill registry at launch. Missing names are returned in `ResolvedRoleLaunch.missingSkills`; `delegate_task` warns and skips them. Library callers must surface that warning themselves. Missing Skills do not block launch.
 
+### Role final-turn handoff
+
+Role launches made by `createRoleLaunch` reserve the final allowed turn for a response-only handoff. This includes `delegate_task` and every Implementer or Reviewer launch from `delegate_flow`. A raw `createEphemeralSubagentExecutor` launch does not guarantee a handoff.
+
+With `maxTurns > 1`, a continuing penultimate turn completes its tools, then Pi disables every active tool and queues one structured final handoff. The final allowed provider request has no tools. With `maxTurns: 1`, Pi validates the initial Role registry, disables tools at `session_start`, and injects the same handoff at `before_agent_start`. A terminal penultimate response gets no handoff.
+
+The handoff requests a `completed`, `blocked`, or `incomplete` status, work attempted, evidence and changes, commits and checks when applicable, and exact remaining work and risks. It reserves a turn inside the executor's existing hard limit. It never adds a model turn. A timeout, provider failure, or child-process failure can end a Role launch before handoff.
+
 ## Public Role and executor API
 
 The package root exports the following mechanism-level APIs:
@@ -257,7 +265,7 @@ export function createRunRole(pi) {
 }
 ```
 
-`run` resolves to `EphemeralSubagentResult`. Both outcome variants contain `exitCode`, `output`, `stderr`, and optional `stopReason`, `errorMessage`, and `usage`. A launched child/model failure is a typed `{ outcome: "failure", ... }` result. Abort, timeout, turn-limit, spawn, protocol, preparation, and callback failures reject with `EphemeralSubagentError` and a stable `code`. A terminal response at `maxTurns` succeeds; an attempted continuation rejects with `turn_limit`, accumulated `usage`, and bounded `output`. The executor supplies the same turn/maximum-runtime budget to the existing child Role tool extension, which steers the fixed convergence warning before another model turn once at each 80% threshold, combines thresholds first due together, and uses no timer or extra turn. Assistant `output` and `stderr` are bounded, and `usage` contains aggregate child usage when Pi supplies it.
+`run` resolves to `EphemeralSubagentResult`. Both outcome variants contain `exitCode`, `output`, `stderr`, and optional `stopReason`, `errorMessage`, and `usage`. A launched child/model failure is a typed `{ outcome: "failure", ... }` result. Abort, timeout, turn-limit, spawn, protocol, preparation, and callback failures reject with `EphemeralSubagentError` and a stable `code`. A terminal response at `maxTurns` succeeds; an attempted continuation rejects with `turn_limit`, accumulated `usage`, and bounded `output`. The executor passes its turn and runtime budget through the child environment. On a Role launch, its tool policy steers the fixed convergence warning before another model turn once at each 80% threshold, combines thresholds first due together, and uses no timer or extra turn. Assistant `output` and `stderr` are bounded, and `usage` contains aggregate child usage when Pi supplies it.
 
 ### Activity callbacks
 
