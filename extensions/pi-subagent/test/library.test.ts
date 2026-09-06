@@ -223,7 +223,7 @@ test("child budget warnings use executor time and apply each threshold once", ()
 	}
 });
 
-test("child final handoff reserves a response-only tenth turn", () => {
+test("child final handoff preserves exact-output contracts and reserves a response-only tenth turn", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	const policy = (maxTurns: number) => {
 		const handlers = new Map<string, (event: any) => any>();
@@ -281,6 +281,7 @@ test("child final handoff reserves a response-only tenth turn", () => {
 		assert.deepEqual(tenTurns.toolSets, [["read"], []]);
 		assert.deepEqual(tenTurns.sent[1]!.options, { deliverAs: "steer", triggerTurn: false });
 		assert.equal(tenTurns.sent[1]!.message.customType, "pi-subagent-final-handoff");
+		assert.match(tenTurns.sent[1]!.message.content, /If your assigned task or Role requires exact output, reply only with that output instead; it takes precedence over this decision packet\./);
 		assert.match(tenTurns.sent[1]!.message.content, /^\*\*Status:\*\* completed \| blocked \| incomplete$/m);
 		assert.match(tenTurns.sent[1]!.message.content, /\*\*Outcome:\*\*.*one sentence/);
 		assert.match(tenTurns.sent[1]!.message.content, /\*\*Evidence:\*\*.*up to three/);

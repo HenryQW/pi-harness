@@ -114,7 +114,7 @@ Role launches reserve the final allowed turn for a response-only handoff. This i
 
 After a continuing penultimate turn, Pi waits for its tools. It then disables all tools and requests a final report. The final allowed provider request has no tools. A terminal penultimate response gets no handoff.
 
-The handoff asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It reserves a turn within the existing hard limit; it never adds a model turn. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
+The fixed decision packet asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence. The child returns only that output, such as a Flow Reviewer's exact `PASS` or caller-required structured output. It reserves a turn within the existing hard limit; it never adds a model turn. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
 
 A raw `createEphemeralSubagentExecutor` launch does not guarantee this handoff. A timeout, provider failure, or child-process failure can end a Role launch before handoff.
 
