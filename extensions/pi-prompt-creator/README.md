@@ -59,10 +59,10 @@ New user input does not stop a running child. Branch navigation discards its old
 
 | Field | Required | Possible values | Default |
 | --- | --- | --- | --- |
-| `automatic` | Yes | `true` or `false` | `true` |
+| `automatic` | No | `true` or `false` | `true` |
 | `inputThreshold` | No | Positive integer | `3` |
 
-Edit `inputThreshold`, then run `/reload` to apply the change.
+Edit either field, then run `/reload` to apply the change. Omitted fields use their defaults.
 
 A missing file quietly uses both defaults. Startup never creates or rewrites the file.
 
