@@ -55,7 +55,7 @@ const { extensions } = Astro.props;
             id="extension-search"
             class="extension-catalog-search focus-visible:ring-2 focus-visible:ring-accent/40"
             type="search"
-            placeholder="Search extensions"
+            placeholder={`Search ${extensions.length} extensions`}
             autocomplete="off"
             spellcheck="false"
             data-extension-search
