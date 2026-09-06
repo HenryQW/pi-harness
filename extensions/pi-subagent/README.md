@@ -100,9 +100,11 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A
 | Field | Valid value | Default |
 | --- | --- | --- |
 | `maxSubagents` | Safe integer ≥ 1 | `5` |
-| `maxTurns` | Safe integer ≥ 1 | `50` |
+| `maxTurns` | Safe integer ≥ 10 | `50` |
 | `timeout.idleMinutes` | Positive minutes; minutes × 60,000 ≤ 2,147,483,647 ms | `10` |
 | `timeout.maxMinutes` | Positive minutes greater than `idleMinutes`; minutes × 60,000 ≤ 2,147,483,647 ms | `30` |
+
+`maxTurns` defaults to 50. Its minimum is 10.
 
 Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
 
@@ -110,7 +112,7 @@ Excess children wait FIFO without using a child timeout. A terminal response on 
 
 Role launches reserve the final allowed turn for a response-only handoff. This includes `delegate_task` and every Implementer or Reviewer launch within `delegate_flow`.
 
-With multiple turns, Pi waits for the penultimate turn's tools, disables all tools, then requests a final report. With `maxTurns: 1`, Pi validates initial Role tools, disables them, and injects the request before the only response. A terminal penultimate response gets no handoff.
+After a continuing penultimate turn, Pi waits for its tools. It then disables all tools and requests a final report. The final allowed provider request has no tools. A terminal penultimate response gets no handoff.
 
 The handoff asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It reserves a turn within the existing hard limit; it never adds a model turn. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
 

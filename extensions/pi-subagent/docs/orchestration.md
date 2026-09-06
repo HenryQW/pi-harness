@@ -146,7 +146,7 @@ Role Skill names resolve through Main's effective Pi Skill registry at launch. M
 
 Role launches made by `createRoleLaunch` reserve the final allowed turn for a response-only handoff. This includes `delegate_task` and every Implementer or Reviewer launch from `delegate_flow`. A raw `createEphemeralSubagentExecutor` launch does not guarantee a handoff.
 
-With `maxTurns > 1`, a continuing penultimate turn completes its tools, then Pi disables every active tool and queues one structured final handoff. The final allowed provider request has no tools. With `maxTurns: 1`, Pi validates the initial Role registry, disables tools at `session_start`, and injects the same handoff at `before_agent_start`. A terminal penultimate response gets no handoff.
+After a continuing penultimate turn, Pi completes its tools. It then disables every active tool and queues one structured final handoff. The final allowed provider request has no tools. A terminal penultimate response gets no handoff.
 
 The handoff requests a fixed Markdown decision packet with Status (`completed`, `blocked`, or `incomplete`), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. The child must reply only in that template. It reserves a turn inside the executor's existing hard limit. It never adds a model turn. A timeout, provider failure, or child-process failure can end a Role launch before handoff. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
 
@@ -183,7 +183,7 @@ const executorOptions = {
 };
 ```
 
-Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency`, `maxTurns`, `idleMs`, and `maxMs` must be positive; integer limits must be safe integers, `maxMs` must exceed `idleMs`, and omitted `maxTurns` defaults to 50.
+Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency` must be a safe integer >= 1. `maxTurns` must be a safe integer >= 10. `idleMs` and `maxMs` must be positive. `maxMs` must exceed `idleMs`. Omitted `maxTurns` defaults to 50.
 
 The executor is **active-Pi-only**. It reuses the currently running Pi invocation and does not locate or support a standalone Node.js Pi installation. Once direct Pi exits, stdout/stderr drain normally until EOF; an escaped descendant retaining either stream is cut off after short output inactivity or a one-second hard deadline so it cannot retain the FIFO permit.
 

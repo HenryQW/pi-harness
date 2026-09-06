@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, MIN_MAX_TURNS, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
@@ -37,7 +37,7 @@ function executionBudget(value: string | undefined): { maxTurns: number; maxMs: 
 	}
 	const budget = parsed as Record<string, unknown>;
 	if (Object.keys(budget).length !== 3 || !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
-		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < 1
+		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < MIN_MAX_TURNS
 		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0
 		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0) {
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
@@ -72,14 +72,9 @@ export default function roleTools(pi: ExtensionAPI): void {
 		if (unavailable.length) {
 			throw new Error(`Subagent requested unavailable tools: ${unavailable.join(", ")}. Check spelling and load the provider extension that registers them.`);
 		}
-		if (budget?.maxTurns === 1) pi.setActiveTools([]);
 	});
 
 	if (!budget) return;
-	if (budget.maxTurns === 1) {
-		pi.on("before_agent_start", () => ({ message: FINAL_HANDOFF_MESSAGE }));
-		return;
-	}
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
 	let completedTurns = 0;
 	let handoffSent = false;

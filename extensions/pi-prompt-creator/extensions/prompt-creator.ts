@@ -12,6 +12,7 @@ import {
 import { createConfigStore } from "@henryqw/pi-config-store";
 import {
 	createEphemeralSubagentExecutor,
+	MIN_MAX_TURNS,
 	resolveRoleLaunch,
 	type EphemeralSubagentExecutor,
 	type Role,
@@ -308,7 +309,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	};
 	const getExecutor = () => executor ??= createEphemeralSubagentExecutor({
 		maxConcurrency: 1,
-		maxTurns: 1,
+		maxTurns: MIN_MAX_TURNS,
 		timeout: { idleMs: 2 * 60_000, maxMs: 5 * 60_000 },
 	});
 	const startAnalysis = (ctx: ExtensionContext, manual: boolean) => {

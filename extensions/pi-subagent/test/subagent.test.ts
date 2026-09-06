@@ -2005,12 +2005,14 @@ test("workflow transport retains executor rejection Usage when no child result e
 test("ordinary delegation turn-limit failure includes retained assistant output", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxTurns: 1 }));
+		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxTurns: 10 }));
 		const runner = join(agentDir, "fake-pi.mjs");
 		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
-event({ type: "turn_start", turnIndex: 0 });
-event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "retained failure evidence" }], stopReason: "toolUse" } });
-event({ type: "turn_start", turnIndex: 1 });
+for (let turn = 1; turn <= 10; turn++) {
+	event({ type: "turn_start", turnIndex: turn - 1 });
+	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: turn === 10 ? "retained failure evidence" : String(turn) }], stopReason: "toolUse" } });
+}
+event({ type: "turn_start", turnIndex: 10 });
 setInterval(() => {}, 1_000);
 `);
 		process.argv[1] = runner;
@@ -2020,7 +2022,7 @@ setInterval(() => {}, 1_000);
 			(reason) => reason,
 		);
 		assert.ok(error instanceof WorkflowFailureError);
-		assert.match(error.message, /Subagent reached its maximum turn limit of 1\.[\s\S]*retained failure evidence/);
+		assert.match(error.message, /Subagent reached its maximum turn limit of 10\.[\s\S]*retained failure evidence/);
 	});
 });
 
