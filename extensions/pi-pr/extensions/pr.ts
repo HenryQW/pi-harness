@@ -3,6 +3,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { createHerdrClient } from "@henryqw/pi-herdr";
 import { createPrCommandHandler } from "./pr-command.ts";
 import {
 	hasLocalCommit,
@@ -16,6 +17,7 @@ import {
 } from "./pr-ui.ts";
 
 const POLL_INTERVAL_MS = 30_000;
+const HERDR_TIMEOUT_MS = 10_000;
 const UI_KEY = "pi-pr";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
@@ -27,10 +29,54 @@ type PullRequestExtensionDependencies = {
 	createPrCommandHandler?: typeof createPrCommandHandler;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseWorkspaceLabel(response: Record<string, unknown>, workspaceId: string): string {
+	const result = response.result;
+	const workspace = isRecord(result) && isRecord(result.workspace) ? result.workspace : undefined;
+	if (!workspace || workspace.workspace_id !== workspaceId) {
+		throw new Error("workspace get returned a different workspace_id");
+	}
+	const label = workspace.label;
+	if (typeof label !== "string" || !label.trim()) {
+		throw new Error("workspace get returned an empty label");
+	}
+	return label;
+}
+
 export default function pullRequestExtension(
 	pi: ExtensionAPI,
 	dependencies: PullRequestExtensionDependencies = {},
 ): void {
+	const herdr = createHerdrClient(pi.exec.bind(pi));
+	const renameHerdrWorkspace = async (
+		cwd: string,
+		signal: AbortSignal,
+		workspaceId: string,
+		pullRequestNumber: number,
+	): Promise<void> => {
+		signal.throwIfAborted();
+		const current = await herdr.json(["workspace", "get", workspaceId], {
+			cwd,
+			signal,
+			timeout: HERDR_TIMEOUT_MS,
+		});
+		signal.throwIfAborted();
+		const label = parseWorkspaceLabel(current, workspaceId);
+		const normalized = `${label.replace(/(?: · PR #[1-9][0-9]*)+$/, "")} · PR #${pullRequestNumber}`;
+		if (normalized === label) return;
+
+		signal.throwIfAborted();
+		await herdr.run(["workspace", "rename", workspaceId, normalized], {
+			cwd,
+			signal,
+			timeout: HERDR_TIMEOUT_MS,
+		});
+		signal.throwIfAborted();
+	};
+
 	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
 	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
@@ -40,9 +86,10 @@ export default function pullRequestExtension(
 	let active: AbortController | undefined;
 	let queued = false;
 	let refreshFailureReported = false;
+	let pendingWorkspaceRename = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
-	const activeInvocations = new Map<number, "routing" | "workflow">();
+	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
 
 	const setWidget = (ctx: ExtensionContext, display: PrDisplay | undefined): void => {
 		if (display?.widget === undefined) {
@@ -80,6 +127,7 @@ export default function pullRequestExtension(
 		context = undefined;
 		queued = false;
 		refreshFailureReported = false;
+		pendingWorkspaceRename = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
 		activeInvocations.clear();
@@ -98,6 +146,15 @@ export default function pullRequestExtension(
 			ctx.ui.notify(`PR status refresh failed: ${message.slice(0, 500)}`, "error");
 		} catch (reportError) {
 			console.error("PR status refresh failed and could not be reported", error, reportError);
+		}
+	};
+
+	const reportHerdrRenameFailure = (ctx: ExtensionContext, error: unknown): void => {
+		try {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Herdr workspace rename failed: ${message.slice(0, 500)}`, "warning");
+		} catch (reportError) {
+			console.error("Herdr workspace rename failed and could not be reported", error, reportError);
 		}
 	};
 
@@ -128,6 +185,20 @@ export default function pullRequestExtension(
 			if (controller.signal.aborted || sessionGeneration !== generation) return;
 			render(ctx, pullRequest, localCommit);
 			refreshFailureReported = false;
+
+			if (pendingWorkspaceRename && pullRequest?.lifecycle === "open") {
+				pendingWorkspaceRename = false;
+				const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
+				if (process.env.HERDR_ENV === "1" && workspaceId) {
+					try {
+						await renameHerdrWorkspace(ctx.cwd, controller.signal, workspaceId, pullRequest.number);
+					} catch (error) {
+						if (!controller.signal.aborted && sessionGeneration === generation) {
+							reportHerdrRenameFailure(ctx, error);
+						}
+					}
+				}
+			}
 		} finally {
 			if (active !== controller) return;
 			active = undefined;
@@ -162,13 +233,16 @@ export default function pullRequestExtension(
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!ctx.hasUI || !ctx.isIdle() || !context) return;
 		let workflowSettled = false;
+		let createWorkflowSettled = false;
 		for (const [invocation, phase] of activeInvocations) {
-			if (phase !== "workflow") continue;
+			if (phase !== "workflow" && phase !== "create-workflow") continue;
 			activeInvocations.delete(invocation);
 			workflowSettled = true;
+			if (phase === "create-workflow") createWorkflowSettled = true;
 		}
 		if (!workflowSettled) return;
 		cancelRefresh();
+		if (createWorkflowSettled) pendingWorkspaceRename = true;
 		await refresh().catch(reportRefreshFailure);
 	});
 
@@ -206,7 +280,7 @@ export default function pullRequestExtension(
 			if (sessionGeneration !== generation) return;
 			cancelRefresh();
 			if (nextStep !== "none" && nextStep !== "merge") {
-				activeInvocations.set(invocation, "workflow");
+				activeInvocations.set(invocation, nextStep === "create" ? "create-workflow" : "workflow");
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
 				setWidget(ctx, undefined);
 			} else {

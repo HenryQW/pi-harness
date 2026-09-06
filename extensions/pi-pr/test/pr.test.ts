@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import type {
+	ExecOptions,
+	ExecResult,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
@@ -24,9 +26,30 @@ type Deferred<T> = {
 	resolve(value: T): void;
 	reject(reason?: unknown): void;
 };
+type Exec = (
+	command: string,
+	args: string[],
+	options?: ExecOptions,
+) => Promise<ExecResult> | ExecResult;
 
 const plain = (text: string) => text.replace(/\x1b\]8;;.*?\x1b\\/g, "");
 const widgetLine = (text: string): string[] => [text];
+const inheritedHerdrEnvironment = {
+	HERDR_ENV: process.env.HERDR_ENV,
+	HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
+};
+
+before(() => {
+	delete process.env.HERDR_ENV;
+	delete process.env.HERDR_WORKSPACE_ID;
+});
+
+after(() => {
+	for (const [key, value] of Object.entries(inheritedHerdrEnvironment)) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+});
 
 function deferred<T>(): Deferred<T> {
 	let resolve!: (value: T) => void;
@@ -73,11 +96,39 @@ function flush(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
+function execResult(stdout = "", code = 0, stderr = "", killed = false): ExecResult {
+	return { stdout, stderr, code, killed };
+}
+
+async function withHerdrEnvironment(
+	herdrEnv: string | undefined,
+	workspaceId: string | undefined,
+	run: () => Promise<void>,
+): Promise<void> {
+	const previous = {
+		HERDR_ENV: process.env.HERDR_ENV,
+		HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
+	};
+	if (herdrEnv === undefined) delete process.env.HERDR_ENV;
+	else process.env.HERDR_ENV = herdrEnv;
+	if (workspaceId === undefined) delete process.env.HERDR_WORKSPACE_ID;
+	else process.env.HERDR_WORKSPACE_ID = workspaceId;
+	try {
+		await run();
+	} finally {
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+}
+
 function harness(options: {
 	load: Loader;
 	hasLocalCommit?: () => Promise<boolean>;
 	commandHandler?: PrCommandHandler;
 	theme?: (color: string, text: string) => string;
+	exec?: Exec;
 }) {
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
@@ -87,6 +138,7 @@ function harness(options: {
 	const statuses: Array<string | undefined> = [];
 	const widgets: unknown[] = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	const execCalls: Array<{ command: string; args: string[]; options?: ExecOptions }> = [];
 	const ui = {
 		setStatus(_key: string, value: string | undefined) { statuses.push(value); },
 		setWidget(_key: string, value: unknown) { widgets.push(value); },
@@ -105,6 +157,11 @@ function harness(options: {
 		},
 		registerCommand(name: string, registered: Command) {
 			if (name === "pr") command = registered;
+		},
+		async exec(command: string, args: string[], execOptions?: ExecOptions) {
+			execCalls.push({ command, args: [...args], options: execOptions });
+			if (!options.exec) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+			return options.exec(command, args, execOptions);
 		},
 	} as unknown as ExtensionAPI, {
 		loadCurrentPullRequest: options.load,
@@ -130,6 +187,7 @@ function harness(options: {
 		statuses,
 		widgets,
 		notifications,
+		execCalls,
 		context,
 		async start(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
@@ -548,6 +606,250 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 		setCapabilities(previousCapabilities);
 		await app.shutdown(ctx);
 	}
+});
+
+test("labels the Herdr workspace with direct arguments after a create workflow settles", async () => {
+	await withHerdrEnvironment("1", "workspace-7", async () => {
+		let loads = 0;
+		const app = harness({
+			async load() {
+				loads += 1;
+				return loads === 1 ? null : currentPullRequest();
+			},
+			async hasLocalCommit() {
+				return true;
+			},
+			async commandHandler() {
+				return "create";
+			},
+			async exec(_command, args) {
+				return args[1] === "get"
+					? execResult(JSON.stringify({
+						result: { workspace: { workspace_id: "workspace-7", label: "Feature · PR #7 · PR #8" } },
+					}))
+					: execResult();
+			},
+		});
+		const ctx = app.context();
+
+		try {
+			await app.start(ctx);
+			await app.command().handler("", ctx as ExtensionCommandContext);
+			assert.equal(app.execCalls.length, 0);
+
+			await app.settle(ctx);
+			assert.deepEqual(app.execCalls.map(({ command, args, options }) => ({
+				command,
+				args,
+				cwd: options?.cwd,
+				timeout: options?.timeout,
+			})), [
+				{
+					command: "herdr",
+					args: ["workspace", "get", "workspace-7"],
+					cwd: "/repo",
+					timeout: 10_000,
+				},
+				{
+					command: "herdr",
+					args: ["workspace", "rename", "workspace-7", "Feature · PR #42"],
+					cwd: "/repo",
+					timeout: 10_000,
+				},
+			]);
+			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+		} finally {
+			await app.shutdown(ctx);
+		}
+	});
+});
+
+test("keeps one Herdr rename pending through delayed PR discovery", async () => {
+	for (const scenario of [
+		{ name: "missing", delayed: null },
+		{ name: "failed", delayed: new Error("GitHub unavailable") },
+	]) {
+		await withHerdrEnvironment("1", "workspace-7", async () => {
+			let loads = 0;
+			const app = harness({
+				async load() {
+					loads += 1;
+					if (loads === 1) return null;
+					if (loads === 2) {
+						if (scenario.delayed instanceof Error) throw scenario.delayed;
+						return scenario.delayed;
+					}
+					return currentPullRequest();
+				},
+				async hasLocalCommit() {
+					return true;
+				},
+				async commandHandler() {
+					return "create";
+				},
+				async exec(_command, args) {
+					return args[1] === "get"
+						? execResult(JSON.stringify({
+							result: { workspace: { workspace_id: "workspace-7", label: "Feature" } },
+						}))
+						: execResult();
+				},
+			});
+			const ctx = app.context();
+
+			try {
+				await app.start(ctx);
+				await app.command().handler("", ctx as ExtensionCommandContext);
+				await app.settle(ctx);
+				assert.equal(app.execCalls.length, 0, scenario.name);
+
+				await app.tool({
+					toolName: "bash",
+					input: { command: "git push origin HEAD" },
+					isError: false,
+				}, ctx);
+				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], scenario.name);
+			} finally {
+				await app.shutdown(ctx);
+			}
+		});
+	}
+});
+
+test("waits for an open PR instead of renaming from a historical match", async () => {
+	for (const lifecycle of ["closed", "merged"] as const) {
+		await withHerdrEnvironment("1", "workspace-7", async () => {
+			let loads = 0;
+			const app = harness({
+				async load() {
+					loads += 1;
+					if (loads === 1) return null;
+					if (loads === 2) return currentPullRequest({ lifecycle });
+					return currentPullRequest();
+				},
+				async hasLocalCommit() {
+					return true;
+				},
+				async commandHandler() {
+					return "create";
+				},
+				async exec(_command, args) {
+					return args[1] === "get"
+						? execResult(JSON.stringify({
+							result: { workspace: { workspace_id: "workspace-7", label: "Feature" } },
+						}))
+						: execResult();
+				},
+			});
+			const ctx = app.context();
+
+			try {
+				await app.start(ctx);
+				await app.command().handler("", ctx as ExtensionCommandContext);
+				await app.settle(ctx);
+				assert.equal(plain(app.statuses.at(-1) ?? ""), `PR #42 · ${lifecycle}`);
+				assert.equal(app.execCalls.length, 0, lifecycle);
+
+				await app.tool({
+					toolName: "bash",
+					input: { command: "git push origin HEAD" },
+					isError: false,
+				}, ctx);
+				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], lifecycle);
+			} finally {
+				await app.shutdown(ctx);
+			}
+		});
+	}
+});
+
+test("warns without hiding the refreshed PR when Herdr labeling fails", async () => {
+	await withHerdrEnvironment("1", "workspace-7", async () => {
+		let loads = 0;
+		const app = harness({
+			async load() {
+				loads += 1;
+				return loads === 1 ? null : currentPullRequest();
+			},
+			async hasLocalCommit() {
+				return true;
+			},
+			async commandHandler() {
+				return "create";
+			},
+			async exec() {
+				return execResult("", 7, "workspace unavailable");
+			},
+		});
+		const ctx = app.context();
+
+		try {
+			await app.start(ctx);
+			await app.command().handler("", ctx as ExtensionCommandContext);
+			await app.settle(ctx);
+			assert.deepEqual(app.notifications, [{
+				message: "Herdr workspace rename failed: herdr workspace get failed: workspace unavailable",
+				type: "warning",
+			}]);
+			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+
+			await app.tool({
+				toolName: "bash",
+				input: { command: "git push origin HEAD" },
+				isError: false,
+			}, ctx);
+			assert.equal(app.execCalls.length, 1, "an observed open PR consumes the rename after failure");
+			assert.equal(app.notifications.length, 1);
+		} finally {
+			await app.shutdown(ctx);
+		}
+	});
+});
+
+test("session replacement aborts Herdr labeling before stale rename or warning", async () => {
+	await withHerdrEnvironment("1", "workspace-7", async () => {
+		const workspaceGet = deferred<ExecResult>();
+		let loads = 0;
+		const app = harness({
+			async load() {
+				loads += 1;
+				return loads === 1 ? null : currentPullRequest();
+			},
+			async hasLocalCommit() {
+				return true;
+			},
+			async commandHandler() {
+				return "create";
+			},
+			async exec(_command, args) {
+				if (args[1] !== "get") throw new Error("stale workspace rename");
+				return workspaceGet.promise;
+			},
+		});
+		const firstSession = app.context();
+		const secondSession = app.context();
+
+		try {
+			await app.start(firstSession);
+			await app.command().handler("", firstSession as ExtensionCommandContext);
+			const settling = app.settle(firstSession);
+			await flush();
+
+			await app.start(secondSession);
+			assert.equal(app.execCalls[0]?.options?.signal?.aborted, true);
+			workspaceGet.resolve(execResult(JSON.stringify({
+				result: { workspace: { workspace_id: "workspace-7", label: "Feature · PR #7" } },
+			})));
+			await settling;
+
+			assert.equal(app.execCalls.length, 1);
+			assert.deepEqual(app.notifications, []);
+		} finally {
+			await app.shutdown(secondSession);
+		}
+	});
 });
 
 test("keeps a non-create hint hidden until its workflow settles", async () => {

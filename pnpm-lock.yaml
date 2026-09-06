@@ -225,6 +225,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: ^0.85.1
         version: 0.85.1
+      '@henryqw/pi-herdr':
+        specifier: ^0.4.5
+        version: link:../pi-herdr
 
   extensions/pi-prompt-creator:
     dependencies:
