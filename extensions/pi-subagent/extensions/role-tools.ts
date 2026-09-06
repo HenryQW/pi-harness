@@ -6,7 +6,7 @@ const WARNING_RATIO = 0.8;
 const WARNING_MESSAGE_TYPE = "pi-subagent-execution-budget";
 const FINAL_HANDOFF_MESSAGE = {
 	customType: "pi-subagent-final-handoff",
-	content: "**Final handoff required.** Tools are disabled. Reply only with:\n- **Status:** `completed`, `blocked`, or `incomplete`.\n- **Work attempted:** what you did.\n- **Evidence and changes:** relevant evidence and changes; include the commit and checks run when applicable.\n- **Remaining work and risks:** exact remaining work and risks.",
+	content: "**Final handoff required.** Tools are disabled. Reply only with this decision packet:\n\n**Status:** completed | blocked | incomplete\n**Outcome:** one sentence describing what is now true\n**Evidence:** up to three concrete findings, changes, or checks; include an attempted approach only when it prevents Main from repeating failed work\n**Blocker:** none or the exact blocker\n**Risk:** none or one material risk\n**Suggested next:** none or one concrete action",
 	display: true,
 };
 

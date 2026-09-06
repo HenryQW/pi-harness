@@ -148,7 +148,7 @@ Role launches made by `createRoleLaunch` reserve the final allowed turn for a re
 
 With `maxTurns > 1`, a continuing penultimate turn completes its tools, then Pi disables every active tool and queues one structured final handoff. The final allowed provider request has no tools. With `maxTurns: 1`, Pi validates the initial Role registry, disables tools at `session_start`, and injects the same handoff at `before_agent_start`. A terminal penultimate response gets no handoff.
 
-The handoff requests a `completed`, `blocked`, or `incomplete` status, work attempted, evidence and changes, commits and checks when applicable, and exact remaining work and risks. It reserves a turn inside the executor's existing hard limit. It never adds a model turn. A timeout, provider failure, or child-process failure can end a Role launch before handoff.
+The handoff requests a fixed Markdown decision packet with Status (`completed`, `blocked`, or `incomplete`), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. The child must reply only in that template. It reserves a turn inside the executor's existing hard limit. It never adds a model turn. A timeout, provider failure, or child-process failure can end a Role launch before handoff. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
 
 ## Public Role and executor API
 

@@ -270,10 +270,13 @@ test("child final handoff reserves a response-only final turn", () => {
 		assert.deepEqual(fiveTurns.toolSets, [["read"], []]);
 		assert.deepEqual(fiveTurns.sent[0]!.options, { deliverAs: "steer", triggerTurn: false });
 		assert.equal(fiveTurns.sent[0]!.message.customType, "pi-subagent-final-handoff");
-		assert.match(fiveTurns.sent[0]!.message.content, /Status:.*completed.*blocked.*incomplete/);
-		assert.match(fiveTurns.sent[0]!.message.content, /Work attempted/);
-		assert.match(fiveTurns.sent[0]!.message.content, /Evidence and changes.*commit and checks run when applicable/);
-		assert.match(fiveTurns.sent[0]!.message.content, /exact remaining work and risks/);
+		assert.match(fiveTurns.sent[0]!.message.content, /^\*\*Status:\*\* completed \| blocked \| incomplete$/m);
+		assert.match(fiveTurns.sent[0]!.message.content, /\*\*Outcome:\*\*.*one sentence/);
+		assert.match(fiveTurns.sent[0]!.message.content, /\*\*Evidence:\*\*.*up to three/);
+		assert.match(fiveTurns.sent[0]!.message.content, /\*\*Blocker:\*\*/);
+		assert.match(fiveTurns.sent[0]!.message.content, /\*\*Risk:\*\*/);
+		assert.match(fiveTurns.sent[0]!.message.content, /\*\*Suggested next:\*\*/);
+		assert.doesNotMatch(fiveTurns.sent[0]!.message.content, /Work attempted/);
 		fiveTurns.turnEnd(continuing);
 		assert.equal(fiveTurns.sent.length, 1);
 

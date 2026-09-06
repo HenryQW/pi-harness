@@ -112,7 +112,7 @@ Role launches reserve the final allowed turn for a response-only handoff. This i
 
 With multiple turns, Pi waits for the penultimate turn's tools, disables all tools, then requests a final report. With `maxTurns: 1`, Pi validates initial Role tools, disables them, and injects the request before the only response. A terminal penultimate response gets no handoff.
 
-The report asks for status, work attempted, evidence, changes, commits, checks when applicable, and exact remaining work and risks. This reserves a turn within the existing hard limit; it never adds a model turn.
+The handoff asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It reserves a turn within the existing hard limit; it never adds a model turn. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
 
 A raw `createEphemeralSubagentExecutor` launch does not guarantee this handoff. A timeout, provider failure, or child-process failure can end a Role launch before handoff.
 
