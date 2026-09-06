@@ -34,6 +34,7 @@ export default function pullRequestExtension(
 	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
 	let context: ExtensionContext | undefined;
+	let sessionGeneration = 0;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let active: AbortController | undefined;
 	let queued = false;
@@ -62,6 +63,7 @@ export default function pullRequestExtension(
 	};
 
 	const stop = (): void => {
+		sessionGeneration += 1;
 		context = undefined;
 		queued = false;
 		refreshFailureReported = false;
@@ -90,6 +92,7 @@ export default function pullRequestExtension(
 	const refresh = async (): Promise<void> => {
 		const ctx = context;
 		if (!ctx) return;
+		const generation = sessionGeneration;
 		if (active) {
 			queued = true;
 			return;
@@ -103,14 +106,14 @@ export default function pullRequestExtension(
 			let localCommit = false;
 			try {
 				pullRequest = await load(pi, loadContext);
-				if (controller.signal.aborted || context !== ctx) return;
+				if (controller.signal.aborted || sessionGeneration !== generation) return;
 				if (pullRequest === null) localCommit = await detectLocalCommit(pi, loadContext);
 			} catch (error) {
 				// Keep the last known display when lookup is unavailable.
-				if (!controller.signal.aborted && context === ctx) reportRefreshFailure(error);
+				if (!controller.signal.aborted && sessionGeneration === generation) reportRefreshFailure(error);
 				return;
 			}
-			if (controller.signal.aborted || context !== ctx) return;
+			if (controller.signal.aborted || sessionGeneration !== generation) return;
 			render(ctx, pullRequest, localCommit);
 			refreshFailureReported = false;
 		} finally {
@@ -135,16 +138,17 @@ export default function pullRequestExtension(
 
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
+		const generation = sessionGeneration;
 		if (!ctx.hasUI) return;
 		context = ctx;
 		await refresh();
-		if (context === ctx) timer = setInterval(refreshInBackground, POLL_INTERVAL_MS);
+		if (sessionGeneration === generation) timer = setInterval(refreshInBackground, POLL_INTERVAL_MS);
 	});
 
 	pi.on("session_shutdown", stop);
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!ctx.hasUI || !ctx.isIdle() || context !== ctx || !pendingCreations.size) return;
+		if (!ctx.hasUI || !ctx.isIdle() || !context || !pendingCreations.size) return;
 		cancelRefresh();
 		pendingCreations.clear();
 		await refresh().catch(reportRefreshFailure);
@@ -162,9 +166,10 @@ export default function pullRequestExtension(
 	pi.registerCommand("pr", {
 		description: "Run the current branch pull request next step",
 		handler: async (args, ctx) => {
-			if (!ctx.hasUI) return;
+			if (!ctx.hasUI || !context) return;
+			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
-			const displayedCreation = context === ctx && displayedNextStep === "create";
+			const displayedCreation = displayedNextStep === "create";
 			if (displayedCreation) {
 				pendingCreations.add(invocation);
 				ctx.ui.setWidget(UI_KEY, undefined);
@@ -173,7 +178,7 @@ export default function pullRequestExtension(
 			try {
 				nextStep = await commandHandler(args, ctx);
 			} catch (error) {
-				if (context === ctx) {
+				if (sessionGeneration === generation) {
 					cancelRefresh();
 					pendingCreations.delete(invocation);
 					if (!pendingCreations.size) {
@@ -185,7 +190,7 @@ export default function pullRequestExtension(
 				}
 				throw error;
 			}
-			if (context !== ctx) return;
+			if (sessionGeneration !== generation) return;
 			cancelRefresh();
 			if (nextStep === "create") {
 				pendingCreations.add(invocation);

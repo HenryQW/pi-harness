@@ -86,6 +86,12 @@ function harness(options: {
 	const statuses: Array<string | undefined> = [];
 	const widgets: Array<string[] | undefined> = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	const ui = {
+		setStatus(_key: string, value: string | undefined) { statuses.push(value); },
+		setWidget(_key: string, value: string[] | undefined) { widgets.push(value); },
+		notify(message: string, type?: string) { notifications.push({ message, type }); },
+		theme: { fg(color: string, text: string) { return options.theme?.(color, text) ?? text; } },
+	};
 
 	pullRequestExtension({
 		on(event: string, handler: unknown) {
@@ -112,13 +118,9 @@ function harness(options: {
 		cwd: "/repo",
 		signal: new AbortController().signal,
 		isIdle: () => true,
-		ui: {
-			setStatus(_key: string, value: string | undefined) { statuses.push(value); },
-			setWidget(_key: string, value: string[] | undefined) { widgets.push(value); },
-			notify(message: string, type?: string) { notifications.push({ message, type }); },
-			theme: { fg(color: string, text: string) { return options.theme?.(color, text) ?? text; } },
-		},
+		ui,
 	} as unknown as ExtensionContext);
+	const callbackContext = (ctx: ExtensionContext): ExtensionContext => ({ ...ctx });
 
 	return {
 		statuses,
@@ -126,19 +128,23 @@ function harness(options: {
 		notifications,
 		context,
 		async start(ctx: ExtensionContext): Promise<void> {
-			await handler(sessionStart, "session_start")({} as never, ctx);
+			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
 		},
 		async shutdown(ctx: ExtensionContext): Promise<void> {
-			await handler(sessionShutdown, "session_shutdown")({} as never, ctx);
+			await handler(sessionShutdown, "session_shutdown")({} as never, callbackContext(ctx));
 		},
 		async settle(ctx: ExtensionContext): Promise<void> {
-			await handler(agentSettled, "agent_settled")({} as never, ctx);
+			await handler(agentSettled, "agent_settled")({} as never, callbackContext(ctx));
 		},
 		async tool(event: unknown, ctx: ExtensionContext): Promise<void> {
-			await handler(toolResult, "tool_result")(event, ctx);
+			await handler(toolResult, "tool_result")(event, callbackContext(ctx));
 		},
 		command(): Command {
-			return handler(command, "pr command");
+			const registered = handler(command, "pr command");
+			return {
+				...registered,
+				handler: (args, ctx) => registered.handler(args, callbackContext(ctx) as ExtensionCommandContext),
+			};
 		},
 	};
 }
@@ -394,6 +400,43 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 
 	t.mock.timers.tick(60_000);
 	assert.equal(calls, callsAfterShutdown, "shutdown must stop later polling");
+});
+
+test("session context generation prevents stale /pr completion from mutating the current session", async () => {
+	const workflow = deferred<"create">();
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return loads === 1 ? null : currentPullRequest({ conditions: { ci: "failure" } });
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return workflow.promise;
+		},
+	});
+	const firstSession = app.context();
+	const secondSession = app.context();
+
+	await app.start(firstSession);
+	const staleCommand = app.command().handler("", firstSession as ExtensionCommandContext);
+	assert.equal(app.widgets.at(-1), undefined);
+
+	await app.shutdown(firstSession);
+	await app.start(secondSession);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
+	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+	const statusWrites = app.statuses.length;
+	const widgetWrites = app.widgets.length;
+
+	workflow.resolve("create");
+	await staleCommand;
+	assert.equal(app.statuses.length, statusWrites);
+	assert.equal(app.widgets.length, widgetWrites);
+
+	await app.shutdown(secondSession);
 });
 
 test("keeps the create hint cleared until a fresh post-workflow refresh", async () => {
