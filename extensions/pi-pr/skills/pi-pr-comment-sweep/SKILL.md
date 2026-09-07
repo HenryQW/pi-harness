@@ -30,6 +30,7 @@ Run standalone; never invoke, defer to, or modify Shipyard.
    Target verification requires authenticated `gh`, an open PR, exact local/PR
    head, and one matching configured push target. Inspect the base and full
    diff. Maintain the recovery reference's one-line checkpoint after each phase.
+
 2. Initial fetch prints a compact index of every feedback ID. Later fetches into
    a copied snapshot print compact indexes of additions, edits, and state changes.
    The snapshot remains complete. For each non-obvious item, inspect only that item:
@@ -38,11 +39,12 @@ Run standalone; never invoke, defer to, or modify Shipyard.
    node "<skill>/scripts/pr-feedback.mjs" show --snapshot "$SNAPSHOT" --id "$ID"
    ```
 
-   Always inspect every unresolved human feedback item before triage. Never
+   Always inspect every unresolved feedback item before triage. Never
    read or print the whole raw snapshot when `show` provides the bounded lookup.
    Follow [Thread triage](<skill>/references/thread-triage.md>) and ledger every item as
    `actionable`, `non-actionable`, or `blocked`, with terse evidence, smallest
    fix, and regression. Never reconstruct GraphQL pagination.
+
 3. Verify feedback against code, callers, tests, and PR intent. For SDK/framework
    claims, inspect installed types and runtime caller; missing public capability
    is `blocked`, never a private-API or cast workaround. Invocation authorizes
@@ -63,6 +65,7 @@ Run standalone; never invoke, defer to, or modify Shipyard.
    ```bash
    EXPECTED_HEAD=$(git rev-parse --verify 'HEAD^{commit}')
    ```
+
 6. Copy baseline before final fetch:
 
    ```bash
@@ -75,13 +78,14 @@ Run standalone; never invoke, defer to, or modify Shipyard.
    for each non-obvious delta item and every unresolved human feedback item.
    Then resolve all addressed IDs in one command, repeating the flag:
    `node "<skill>/scripts/pr-feedback.mjs" resolve --pr "$PR" --expected-head
-   "$EXPECTED_HEAD" --thread "$ID1" --thread "$ID2"`. Before each resolution,
+"$EXPECTED_HEAD" --thread "$ID1" --thread "$ID2"`. Before each resolution,
    the helper re-resolves the checkout's configured push target and exact open PR.
    Never resolve non-actionable or blocked threads. Re-fetch once into `FINAL_SNAPSHOT`, assess
    late delta, batch any newly addressed IDs, then run
    `node "<skill>/scripts/pr-feedback.mjs" checks --pr "$PR" --expected-head
-   "$EXPECTED_HEAD"` once. Read-only
+"$EXPECTED_HEAD"` once. Read-only
    transient retries are allowed; mutation retries and polling are not. Do not
    reply unless explicitly requested.
+
 7. Report `PR | actioned | resolved IDs | skipped IDs | pending IDs | checks |
-   commits | push | blockers`.
+commits | push | blockers`.
