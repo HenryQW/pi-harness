@@ -19,6 +19,7 @@ type App = {
 	statuses: (string | undefined)[];
 	notices: string[];
 	sessionEntries: any[];
+	selectModel: (next: ReturnType<typeof model>) => Promise<void>;
 };
 
 const model = (provider = "openai-codex") => ({
@@ -135,11 +136,28 @@ async function withApp(
 			registerProvider() {},
 			appendEntry(customType: string) { sessionEntries.push({ type: "custom", customType }); },
 			async setModel(next: ReturnType<typeof model>) {
+				const previousModel = activeModel;
 				setModels.push(next);
-				return setModel(next, () => { activeModel = next; });
+				const selected = await setModel(next, () => { activeModel = next; });
+				if (selected) await handlers.get("model_select")?.({ type: "model_select", model: next, previousModel, source: "set" }, ctx);
+				return selected;
 			},
 		} as unknown as ExtensionAPI);
-		await check({ agentDir, handlers, commands, ctx, setModels, statuses, notices, sessionEntries });
+		await check({
+			agentDir,
+			handlers,
+			commands,
+			ctx,
+			setModels,
+			statuses,
+			notices,
+			sessionEntries,
+			async selectModel(next) {
+				const previousModel = activeModel;
+				activeModel = next;
+				await handlers.get("model_select")?.({ type: "model_select", model: next, previousModel, source: "set" }, ctx);
+			},
+		});
 		handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 	} finally {
 		globalThis.fetch = priorFetch;
@@ -206,6 +224,22 @@ test("does not select a five-hour-limited slot until reset", async () => {
 	}
 });
 
+test("moves off the active slot when its five-hour limit is reached", async () => {
+	await withApp({ 1: 23, 2: 84 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
+
+		const cache = usagePath(agentDir);
+		const state = JSON.parse(await readFile(cache, "utf8"));
+		state.slots.find((snapshot: { slot: number }) => snapshot.slot === 2).limitedUntil = Date.now() + 60_000;
+		await writeFile(cache, JSON.stringify(state));
+
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		assert.deepEqual(setModels.map((selected) => selected.provider), ["openai-codex-2", "openai-codex"]);
+	});
+});
+
 test("keeps current slot when scope excludes fresher aliases", async () => {
 	await withApp({ 1: 40, 2: 90 }, [{ model: model("openai-codex") }], async ({ handlers, ctx, setModels, commands, notices }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
@@ -257,10 +291,15 @@ test("manual switch uses native selector and keeps active model id", async () =>
 	});
 });
 
-test("manual model selection before first turn closes automatic routing", async () => {
-	await withApp({ 1: 40, 2: 90 }, [], async ({ handlers, ctx, setModels }) => {
+test("manual model selection before first turn wins even when its slot is limited", async () => {
+	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, selectModel, setModels }) => {
+		const cache = usagePath(agentDir);
+		const state = JSON.parse(await readFile(cache, "utf8"));
+		state.slots.find((snapshot: { slot: number }) => snapshot.slot === 2).limitedUntil = Date.now() + 60_000;
+		await writeFile(cache, JSON.stringify(state));
+
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
-		handlers.get("model_select")?.({ model: model("openai-codex-2") }, ctx);
+		await selectModel(model("openai-codex-2"));
 		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
 		assert.equal(setModels.length, 0);
 	});

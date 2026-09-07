@@ -1,6 +1,6 @@
 # `@henryqw/pi-multi-codex`
 
-Add multiple ChatGPT Codex OAuth accounts and start new Pi work on the eligible slot with the most weekly quota. Optional automatic switching can retry an HTTP 429 on another eligible slot.
+Add multiple ChatGPT Codex OAuth accounts and start Pi work on the eligible slot with the most weekly quota. The extension switches away from active five-hour blocks and can retry an HTTP 429 on another eligible slot.
 
 ![Pi showing Codex account quotas and the active footer slot](./example.png)
 ![Flowchart separating fresh-quota startup ranking from broader HTTP 429 failover](./docs/codex-routing-flow.svg)
@@ -36,6 +36,8 @@ A numbered slot is one Codex account position in Pi.
 ## Flow
 
 - Before the first agent start, only fresh quota snapshots enter startup ranking. The slot with the most seven-day quota wins.
+- An explicit model selection always wins for the next agent start.
+- Before later agent starts, a known active five-hour block switches to the eligible fresh slot with the most seven-day quota.
 - After HTTP 429, failover can use authenticated, registered, scope-allowed, untried slots with stale or missing quota.
 - Failover skips known active five-hour blocks. It ranks fresh known quota first, then unranked slots by slot number.
 - Routing preserves the model ID.
