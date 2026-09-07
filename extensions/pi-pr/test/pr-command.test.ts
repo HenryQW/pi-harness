@@ -77,6 +77,32 @@ function pullRequest(overrides: PullRequestSpec = {}) {
 	};
 }
 
+function searchOutput(candidate: PullRequestSpec | null): string {
+	const head = candidate ? pullRequest(candidate) : null;
+	const edges = head ? [{
+		cursor: "cursor-1",
+		node: {
+			__typename: "PullRequest",
+			number: head.number,
+			url: head.url,
+			state: head.state,
+			baseRepository: { nameWithOwner: candidate?.baseRepository ?? "acme/project" },
+			headRepository: head.headRepository,
+			headRefName: head.headRefName,
+			headRefOid: head.headRefOid,
+		},
+	}] : [];
+	return JSON.stringify({ data: { search: {
+		issueCount: edges.length,
+		edges,
+		pageInfo: {
+			hasNextPage: false,
+			startCursor: edges[0]?.cursor ?? null,
+			endCursor: edges.at(-1)?.cursor ?? null,
+		},
+	} } });
+}
+
 function packageCommand(name: string): CommandSpec {
 	return { name, source: "skill", origin: "package" };
 }
@@ -111,9 +137,10 @@ function harness(options: HarnessOptions) {
 				if (args[1] === "--branch") return result(`${args[2]}\n`);
 				if (args[1]?.startsWith("refs/heads/")) return result();
 			}
-			if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
-				return result(`git@${nextHost()}:acme/project.git\n`);
-			}
+			if (
+				command === "git" &&
+				(args.join(" ") === "remote get-url --push --all fork" || args.join(" ") === "remote get-url --all fork")
+			) return result(`git@${nextHost()}:acme/project.git\n`);
 			if (
 				command === "gh" && args[0] === "repo" && args[1] === "view" &&
 				args[2] === `${nextHost()}/acme/project` && args[4] === "nameWithOwner,url"
@@ -123,18 +150,6 @@ function harness(options: HarnessOptions) {
 				return result(`${remoteHead}\t${args.at(-1)}\n`);
 			}
 			if (command === "git" && args[0] === "config") return result("", 1);
-			if (
-				command === "gh" &&
-				args.join(" ") === `api search/issues --hostname ${nextHost()} --paginate --slurp -X GET -f q=is:pr${options.pushReference === "" ? " is:open" : ""} head:acme:feature/pr -f per_page=100`
-			) {
-				events.push("load");
-				active = options.states[stateIndex++] ?? null;
-				return result(JSON.stringify([{
-					total_count: active ? 1 : 0,
-					incomplete_results: false,
-					items: active ? [{ html_url: `https://${active.host ?? DEFAULT_HOST}/${active.baseRepository ?? "acme/project"}/pull/42` }] : [],
-				}]));
-			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				return result(JSON.stringify(active ? pullRequest(active) : null));
 			}
@@ -144,6 +159,11 @@ function harness(options: HarnessOptions) {
 			) return result("[[]]");
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+				if (query.includes("search(query:")) {
+					events.push("load");
+					active = options.states[stateIndex++] ?? null;
+					return result(searchOutput(active));
+				}
 				if (query.includes("reviewThreads")) {
 					const unresolved = options.unresolvedThreads?.[stateIndex - 1] ?? 0;
 					return result(JSON.stringify([{
@@ -518,7 +538,9 @@ test("cancels when the base retargets or advances during final readiness evaluat
 		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 		const finalFetch = app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true);
-		const readiness = app.calls.map(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues").lastIndexOf(true);
+		const readiness = app.calls.map(({ command, args }) =>
+			command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+		).lastIndexOf(true);
 		assert.ok(finalFetch >= 0 && readiness > finalFetch, candidate.name);
 		assert.equal(app.calls.slice(readiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false, candidate.name);
 	}
@@ -562,7 +584,9 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 	assert.ok(fetches.every(({ args }) => args[4] === `git@${host}:acme/project.git`));
 	assert.equal(fetches.some(({ args }) => args.includes("fork") || args.includes("acme/project")), false);
 	assert.equal(fetches.some(({ args }) => !args.includes("--no-write-fetch-head") || !args.includes("--no-recurse-submodules")), false);
-	const finalReadiness = app.calls.map(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues").lastIndexOf(true);
+	const finalReadiness = app.calls.map(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+	).lastIndexOf(true);
 	assert.ok(finalReadiness > app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true));
 	assert.equal(app.calls.slice(finalReadiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 	const finalStatus = app.calls.map(({ command, args }) => command === "git" && args[0] === "status").lastIndexOf(true);

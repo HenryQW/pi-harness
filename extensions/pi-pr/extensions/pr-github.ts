@@ -2,6 +2,8 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { lstatSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
 import type {
 	CiStatus,
@@ -16,9 +18,11 @@ import type {
 } from "./pr-routing.ts";
 
 const EXEC_TIMEOUT_MS = 10_000;
-const PR_LIST_LIMIT = 100;
+const PR_SEARCH_PAGE_SIZE = 100;
 const PR_SEARCH_CAP = 1_000;
+const PR_SEARCH_MAX_PAGES = PR_SEARCH_CAP / PR_SEARCH_PAGE_SIZE;
 const PR_FIELDS = "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
+const PR_SEARCH_QUERY = "query($searchQuery:String!,$endCursor:String){search(query:$searchQuery,type:ISSUE,first:100,after:$endCursor){issueCount edges{cursor node{__typename ...on PullRequest{number url state baseRepository{nameWithOwner}headRepository{nameWithOwner}headRefName headRefOid}}}pageInfo{hasNextPage startCursor endCursor}}}";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
 const BASE_BRANCH_POLICY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name branchProtectionRule{requiresStrictStatusChecks}}}}";
@@ -136,6 +140,32 @@ type LinkConfiguration = {
 	pushDefaultRemote: string[];
 	pushRefspec: string[];
 	pushDefault: string[];
+	mirror: string[];
+};
+
+type SearchPullRequest = {
+	number: number;
+	url: URL;
+	lifecycle: PullRequestLifecycle;
+	baseRepository: string;
+	headRepository: string | null;
+	headRef: string;
+	headOid: string;
+};
+
+type SearchSelection =
+	| { kind: "candidate"; candidate: SearchPullRequest; pullRequest: ListedPullRequest | null }
+	| { kind: "none" }
+	| { kind: "ambiguous"; urls: URL[] }
+	| { kind: "oid-mismatch"; urls: URL[] }
+	| { kind: "target-invalid" };
+
+type SearchPage = {
+	issueCount: number;
+	candidates: SearchPullRequest[];
+	cursors: string[];
+	hasNextPage: boolean;
+	endCursor: string | null;
 };
 
 type RulesetBranchPolicy = {
@@ -238,6 +268,21 @@ function lines(output: string, action: string, field: string): string[] {
 	return result;
 }
 
+function hasRepositoryMarker(cwd: string): boolean {
+	for (let directory = resolve(cwd);; directory = dirname(directory)) {
+		try {
+			lstatSync(join(directory, ".git"));
+			return true;
+		} catch (error) {
+			if (
+				!isRecord(error) || typeof error.code !== "string" ||
+				(error.code !== "ENOENT" && error.code !== "ENOTDIR")
+			) return true;
+		}
+		if (dirname(directory) === directory) return false;
+	}
+}
+
 function parseCommandOutput(value: unknown, action: string): CommandOutput {
 	if (!isRecord(value)) fail(action, "invalid command result");
 	const { stdout, stderr, code, killed } = value;
@@ -294,14 +339,15 @@ function parsePushReference(value: string, remoteNames: string[]): { remote: str
 	return { remote, ref };
 }
 
-function parsePushUrl(value: string): PushUrl {
-	if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value)) return fail("Read push URL", "invalid push URL");
+function parseRemoteUrl(value: string, kind: "push" | "fetch"): PushUrl {
+	const action = `Read ${kind} URL`;
+	if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value)) return fail(action, `invalid ${kind} URL`);
 	const scp = /^(?:git@)?([a-z0-9.-]+):([a-z0-9_.-]+)\/([a-z0-9_.-]+)$/i.exec(value);
 	const rawUrl = scp
 		? null
 		: /^(https|ssh):\/\/(?:(git)@)?([a-z0-9.-]+)\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/?$/i.exec(value);
 	if (!scp && (!rawUrl || (rawUrl[1]!.toLowerCase() === "https" && rawUrl[2]))) {
-		return fail("Read push URL", "invalid push URL");
+		return fail(action, `invalid ${kind} URL`);
 	}
 	const host = (scp?.[1] ?? rawUrl![3])!;
 	const owner = (scp?.[2] ?? rawUrl![4])!;
@@ -312,14 +358,14 @@ function parsePushUrl(value: string): PushUrl {
 		normalizedHost.length > 253 || normalizedHost.split(".").some((label) =>
 			!label || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
 		)
-	) fail("Read push URL", "invalid push URL");
+	) fail(action, `invalid ${kind} URL`);
 	const normalizedName = normalizeRepository(`${owner}/${name}`);
 	if (rawUrl) {
 		let url: URL;
 		try {
 			url = new URL(value);
 		} catch {
-			return fail("Read push URL", "invalid push URL");
+			return fail(action, `invalid ${kind} URL`);
 		}
 		const path = /^\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/?$/i.exec(url.pathname);
 		if (
@@ -327,7 +373,7 @@ function parsePushUrl(value: string): PushUrl {
 			url.username !== (rawUrl[2] ?? "") || url.password || url.port || url.search || url.hash ||
 			url.hostname.toLowerCase() !== normalizedHost || !path ||
 			normalizeRepository(`${path[1]}/${path[2]!.replace(/\.git$/i, "")}`) !== normalizedName
-		) return fail("Read push URL", "invalid push URL");
+		) return fail(action, `invalid ${kind} URL`);
 	}
 	return {
 		fetchSource: value,
@@ -337,18 +383,19 @@ function parsePushUrl(value: string): PushUrl {
 	};
 }
 
-function parsePushRepository(output: string, pushUrl: PushUrl): PushRepository {
-	const value = parseJson(output, "Read push repository");
-	if (!isRecord(value)) fail("Read push repository", "invalid GitHub CLI output");
-	const nameWithOwner = repositoryName(value.nameWithOwner, "Read push repository", "nameWithOwner");
-	const url = parseHttpUrl(value.url, "Read push repository", "url");
+function parseRemoteRepository(output: string, remoteUrl: PushUrl, kind: "push" | "fetch"): PushRepository {
+	const action = `Read ${kind} repository`;
+	const value = parseJson(output, action);
+	if (!isRecord(value)) fail(action, "invalid GitHub CLI output");
+	const nameWithOwner = repositoryName(value.nameWithOwner, action, "nameWithOwner");
+	const url = parseHttpUrl(value.url, action, "url");
 	const path = url.pathname.split("/").filter(Boolean);
 	const normalizedName = normalizeRepository(nameWithOwner);
 	const host = url.hostname.toLowerCase();
 	if (
 		path.length !== 2 || normalizeRepository(path.join("/")) !== normalizedName ||
-		host !== pushUrl.host || normalizedName !== pushUrl.normalizedName
-	) fail("Read push repository", "response does not match push URL");
+		host !== remoteUrl.host || normalizedName !== remoteUrl.normalizedName
+	) fail(action, `response does not match ${kind} URL`);
 	return { nameWithOwner, normalizedName, host };
 }
 
@@ -479,46 +526,109 @@ function listedPullRequest(value: unknown): ListedPullRequest | null {
 	};
 }
 
-function parseCandidateUrls(output: string, host: string): URL[] {
-	const pages = parseJson(output, "Find pull requests");
-	if (!Array.isArray(pages) || !pages.length) fail("Find pull requests", "invalid GitHub CLI output");
-	let totalCount: number | null = null;
-	let incomplete = false;
-	const pageItems: unknown[][] = [];
-	for (const page of pages) {
-		if (
-			!isRecord(page) || typeof page.total_count !== "number" ||
-			!Number.isSafeInteger(page.total_count) || page.total_count < 0 ||
-			typeof page.incomplete_results !== "boolean" || !Array.isArray(page.items)
-		) fail("Find pull requests", "invalid GitHub CLI output");
-		if (totalCount !== null && page.total_count !== totalCount) {
-			fail("Find pull requests", "inconsistent search result pages");
-		}
-		totalCount = page.total_count;
-		incomplete ||= page.incomplete_results;
-		pageItems.push(page.items);
+function searchPullRequest(value: unknown, host: string): SearchPullRequest {
+	if (!isRecord(value) || value.__typename !== "PullRequest") {
+		fail("Find pull requests", "invalid GitHub CLI output");
 	}
-	if (totalCount === null) fail("Find pull requests", "invalid GitHub CLI output");
-	if (incomplete) fail("Find pull requests", "incomplete search results");
-	if (totalCount > PR_SEARCH_CAP) fail("Find pull requests", "GitHub search result cap reached");
-	const expectedPages = Math.max(1, Math.ceil(totalCount / PR_LIST_LIMIT));
-	if (pageItems.length !== expectedPages || pageItems.some((items, index) =>
-		items.length !== Math.min(PR_LIST_LIMIT, Math.max(0, totalCount - index * PR_LIST_LIMIT))
-	)) fail("Find pull requests", "incomplete search results");
-	const urls = pageItems.flat().map((candidate) => {
-		if (!isRecord(candidate)) fail("Find pull requests", "invalid GitHub CLI output");
-		const url = parseHttpUrl(candidate.html_url, "Find pull requests", "url");
-		const path = url.pathname.split("/").filter(Boolean);
-		if (
-			url.hostname.toLowerCase() !== host || path.length !== 4 || path[2] !== "pull" ||
-			!/^[1-9][0-9]*$/.test(path[3])
-		) fail("Find pull requests", "invalid url");
-		return url;
-	});
-	if (new Set(urls.map((url) => url.href.toLowerCase())).size !== urls.length) {
-		fail("Find pull requests", "duplicate candidate url");
+	const number = value.number;
+	if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) {
+		fail("Find pull requests", "invalid number");
 	}
-	return urls;
+	const parsedUrl = parsePullRequestUrl(value.url, number);
+	if (parsedUrl.url.hostname.toLowerCase() !== host) fail("Find pull requests", "invalid url");
+	if (!isRecord(value.baseRepository)) fail("Find pull requests", "invalid baseRepository");
+	const baseRepository = repositoryName(
+		value.baseRepository.nameWithOwner,
+		"Find pull requests",
+		"baseRepository.nameWithOwner",
+	);
+	if (normalizeRepository(baseRepository) !== normalizeRepository(parsedUrl.repository)) {
+		fail("Find pull requests", "base repository does not match url");
+	}
+	let headRepository: string | null;
+	if (value.headRepository === null) {
+		headRepository = null;
+	} else {
+		if (!isRecord(value.headRepository)) fail("Find pull requests", "invalid headRepository");
+		headRepository = repositoryName(
+			value.headRepository.nameWithOwner,
+			"Find pull requests",
+			"headRepository.nameWithOwner",
+		);
+	}
+	return {
+		number,
+		url: parsedUrl.url,
+		lifecycle: lifecycle(value.state),
+		baseRepository,
+		headRepository,
+		headRef: text(value.headRefName, "Find pull requests", "headRefName"),
+		headOid: oid(value.headRefOid, "Find pull requests", "headRefOid"),
+	};
+}
+
+function parseSearchPage(output: string, host: string): SearchPage {
+	const page = parseJson(output, "Find pull requests");
+	if (!isRecord(page)) fail("Find pull requests", "invalid GitHub CLI output");
+	if (page.errors !== undefined) {
+		if (!Array.isArray(page.errors)) fail("Find pull requests", "invalid GitHub CLI output");
+		if (page.errors.length) fail("Find pull requests", "GitHub GraphQL returned errors");
+	}
+	const search = isRecord(page.data) ? page.data.search : undefined;
+	if (
+		!isRecord(search) || typeof search.issueCount !== "number" ||
+		!Number.isSafeInteger(search.issueCount) || search.issueCount < 0 ||
+		!Array.isArray(search.edges) || search.edges.length > PR_SEARCH_PAGE_SIZE ||
+		!isRecord(search.pageInfo)
+	) fail("Find pull requests", "invalid GitHub CLI output");
+	const candidates: SearchPullRequest[] = [];
+	const cursors: string[] = [];
+	for (const edge of search.edges) {
+		if (!isRecord(edge)) fail("Find pull requests", "invalid GitHub CLI output");
+		cursors.push(text(edge.cursor, "Find pull requests", "cursor"));
+		candidates.push(searchPullRequest(edge.node, host));
+	}
+	if (new Set(cursors).size !== cursors.length) fail("Find pull requests", "duplicate candidate cursor");
+	const { hasNextPage, startCursor, endCursor } = search.pageInfo;
+	if (typeof hasNextPage !== "boolean") fail("Find pull requests", "invalid search pageInfo");
+	if (cursors.length === 0) {
+		if (startCursor !== null || endCursor !== null) fail("Find pull requests", "invalid search pageInfo");
+	} else if (startCursor !== cursors[0] || endCursor !== cursors.at(-1)) {
+		fail("Find pull requests", "invalid search pageInfo");
+	}
+	return {
+		issueCount: search.issueCount,
+		candidates,
+		cursors,
+		hasNextPage,
+		endCursor: endCursor === null ? null : text(endCursor, "Find pull requests", "endCursor"),
+	};
+}
+
+function matchingSearchPullRequests(candidates: SearchPullRequest[], pushTarget: PushTarget): SearchPullRequest[] {
+	return candidates.filter((candidate) =>
+		candidate.url.hostname.toLowerCase() === pushTarget.repository.host &&
+		candidate.headRepository !== null &&
+		normalizeRepository(candidate.headRepository) === pushTarget.repository.normalizedName &&
+		candidate.headRef === pushTarget.ref
+	);
+}
+
+function selectSearchPullRequest(candidates: SearchPullRequest[], pushTarget: PushTarget): SearchSelection {
+	const matching = matchingSearchPullRequests(candidates, pushTarget);
+	const open = matching.filter((candidate) => candidate.lifecycle === "open");
+	if (open.length > 1) return { kind: "ambiguous", urls: open.map(({ url }) => url) };
+	if (open.length === 1) {
+		if (pushTarget.remoteHeadOid === null) return { kind: "target-invalid" };
+		if (open[0].headOid !== pushTarget.remoteHeadOid) return { kind: "oid-mismatch", urls: [open[0].url] };
+		return { kind: "candidate", candidate: open[0], pullRequest: null };
+	}
+	if (pushTarget.provenance === "inferred" || pushTarget.remoteHeadOid === null) return { kind: "none" };
+	const historical = matching.filter((candidate) => candidate.headOid === pushTarget.remoteHeadOid);
+	if (historical.length > 1) return { kind: "ambiguous", urls: historical.map(({ url }) => url) };
+	return historical.length === 1
+		? { kind: "candidate", candidate: historical[0], pullRequest: null }
+		: { kind: "none" };
 }
 
 function parseLoadedPullRequest(output: string, expectedUrl: URL): ListedPullRequest | null {
@@ -777,32 +887,35 @@ async function readRemoteAuthority(
 	remote: string,
 	strict = false,
 ): Promise<{ fetchSource: string; repository: PushRepository } | null> {
-	const pushUrlsResult = await invoke(pi, context, "Read push URL", "git", [
-		"remote", "get-url", "--push", "--all", remote,
-	]);
-	if (pushUrlsResult.killed) commandFailure("Read push URL", pushUrlsResult);
-	if (pushUrlsResult.code !== 0) {
-		if (strict) commandFailure("Read push URL", pushUrlsResult);
-		return null;
-	}
 	try {
-		const pushUrls = lines(pushUrlsResult.stdout, "Read push URL", "push URL");
-		if (pushUrls.length !== 1) {
-			if (strict) fail("Read push URL", "multiple push URLs are configured");
-			return null;
-		}
-		const pushUrl = parsePushUrl(pushUrls[0]);
-		const repositoryResult = await execute(
-			pi,
-			context,
-			"Read push repository",
-			"gh",
-			["repo", "view", pushUrl.locator, "--json", "nameWithOwner,url"],
-		);
-		return {
-			fetchSource: pushUrl.fetchSource,
-			repository: parsePushRepository(repositoryResult.stdout, pushUrl),
+		const readUrl = async (kind: "push" | "fetch"): Promise<PushUrl> => {
+			const action = `Read ${kind} URL`;
+			const args = kind === "push"
+				? ["remote", "get-url", "--push", "--all", remote]
+				: ["remote", "get-url", "--all", remote];
+			const result = await invoke(pi, context, action, "git", args);
+			if (result.killed || result.code !== 0) commandFailure(action, result);
+			const urls = lines(result.stdout, action, `${kind} URL`);
+			if (urls.length !== 1) fail(action, `multiple ${kind} URLs are configured`);
+			return parseRemoteUrl(urls[0], kind);
 		};
+		const readRepository = async (remoteUrl: PushUrl, kind: "push" | "fetch"): Promise<PushRepository> => {
+			const action = `Read ${kind} repository`;
+			const result = await execute(pi, context, action, "gh", [
+				"repo", "view", remoteUrl.locator, "--json", "nameWithOwner,url",
+			]);
+			return parseRemoteRepository(result.stdout, remoteUrl, kind);
+		};
+
+		const pushUrl = await readUrl("push");
+		const pushRepository = await readRepository(pushUrl, "push");
+		const fetchUrl = await readUrl("fetch");
+		const fetchRepository = await readRepository(fetchUrl, "fetch");
+		if (
+			fetchRepository.host !== pushRepository.host ||
+			fetchRepository.normalizedName !== pushRepository.normalizedName
+		) fail("Read fetch repository", "fetch and push repositories do not match");
+		return { fetchSource: pushUrl.fetchSource, repository: pushRepository };
 	} catch (error) {
 		if (!strict && error instanceof PullRequestLoadError) return null;
 		throw error;
@@ -848,30 +961,62 @@ async function readConfigValues(
 	}
 }
 
+async function readBooleanConfigValues(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	key: string,
+): Promise<string[] | null> {
+	const result = await invoke(pi, context, "Read Git configuration", "git", [
+		"config", "--type=bool", "--get-all", key,
+	]);
+	if (result.killed) commandFailure("Read Git configuration", result);
+	if (result.code === 1 && result.stdout === "") return [];
+	if (result.code !== 0) return null;
+	try {
+		const values = lines(result.stdout, "Read Git configuration", "boolean value");
+		return values.every((value) => value === "true" || value === "false") ? values : null;
+	} catch (error) {
+		if (error instanceof PullRequestLoadError) return null;
+		throw error;
+	}
+}
+
 async function readLinkConfiguration(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: PushTarget,
 ): Promise<LinkConfiguration | null> {
-	const values = await Promise.all([
-		`branch.${target.branch}.remote`,
-		`branch.${target.branch}.merge`,
-		`branch.${target.branch}.pushRemote`,
-		"remote.pushDefault",
-		`remote.${target.remote}.push`,
-		"push.default",
-	].map((key) => readConfigValues(pi, context, key)));
-	if (values.some((value) => value === null)) return null;
-	const [upstreamRemote, upstreamMerge, pushRemote, pushDefaultRemote, pushRefspec, pushDefault] = values as string[][];
-	return { upstreamRemote, upstreamMerge, pushRemote, pushDefaultRemote, pushRefspec, pushDefault };
+	const [upstreamRemote, upstreamMerge, pushRemote, pushDefaultRemote, pushRefspec, pushDefault, mirror] =
+		await Promise.all([
+			`branch.${target.branch}.remote`,
+			`branch.${target.branch}.merge`,
+			`branch.${target.branch}.pushRemote`,
+			"remote.pushDefault",
+			`remote.${target.remote}.push`,
+			"push.default",
+		].map((key) => readConfigValues(pi, context, key)).concat([
+			readBooleanConfigValues(pi, context, `remote.${target.remote}.mirror`),
+		]));
+	if ([upstreamRemote, upstreamMerge, pushRemote, pushDefaultRemote, pushRefspec, pushDefault, mirror]
+		.some((value) => value === null)) return null;
+	return {
+		upstreamRemote: upstreamRemote!,
+		upstreamMerge: upstreamMerge!,
+		pushRemote: pushRemote!,
+		pushDefaultRemote: pushDefaultRemote!,
+		pushRefspec: pushRefspec!,
+		pushDefault: pushDefault!,
+		mirror: mirror!,
+	};
 }
 
 function canLinkTarget(configuration: LinkConfiguration | null, target: PushTarget): boolean {
 	if (!configuration) return false;
-	const { upstreamRemote, upstreamMerge, pushRemote, pushDefaultRemote, pushRefspec, pushDefault } = configuration;
+	const { upstreamRemote, upstreamMerge, pushRemote, pushDefaultRemote, pushRefspec, pushDefault, mirror } = configuration;
 	if (upstreamRemote.length || upstreamMerge.length || pushRefspec.length) return false;
 	if (pushRemote.length > 1 || (pushRemote[0] !== undefined && pushRemote[0] !== target.remote)) return false;
 	if (pushDefaultRemote.length > 1 || (pushDefaultRemote[0] !== undefined && pushDefaultRemote[0] !== target.remote)) return false;
+	if (mirror.length > 1 || mirror[0] === "true") return false;
 	return pushDefault.length === 0 || (pushDefault.length === 1 && pushDefault[0] === "simple");
 }
 
@@ -895,9 +1040,27 @@ async function readPushTarget(
 	const worktree = await invoke(pi, context, "Check Git worktree", "git", ["rev-parse", "--is-inside-work-tree"]);
 	if (worktree.killed) commandFailure("Check Git worktree", worktree);
 	const worktreeOutput = worktree.stdout.replace(/\r\n/g, "\n");
-	if ((worktree.code === 128 && worktreeOutput === "") || (worktree.code === 0 && worktreeOutput === "false\n")) {
-		return { kind: "inactive" };
+	if (worktree.code === 128 && worktreeOutput === "") {
+		const probe = await invoke(pi, context, "Classify Git worktree", "env", [
+			"LC_ALL=C",
+			"LANG=C",
+			"GIT_DISCOVERY_ACROSS_FILESYSTEM=1",
+			"git",
+			"-c",
+			"safe.directory=*",
+			"rev-parse",
+			"--is-inside-work-tree",
+		]);
+		if (probe.killed) commandFailure("Classify Git worktree", probe);
+		if (
+			probe.code === 128 && probe.stdout === "" &&
+			probe.stderr.replace(/\r\n/g, "\n") ===
+				"fatal: not a git repository (or any of the parent directories): .git\n" &&
+			!hasRepositoryMarker(context.cwd) && !process.env.GIT_DIR && !process.env.GIT_WORK_TREE
+		) return { kind: "inactive" };
+		commandFailure("Check Git worktree", worktree);
 	}
+	if (worktree.code === 0 && worktreeOutput === "false\n") return { kind: "inactive" };
 	if (worktree.code !== 0) commandFailure("Check Git worktree", worktree);
 	if (worktreeOutput !== "true\n") fail("Check Git worktree", "invalid response");
 
@@ -1173,36 +1336,63 @@ async function searchPullRequests(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	pushTarget: PushTarget,
-): Promise<{ candidates: ListedPullRequest[]; urls: URL[] }> {
+): Promise<SearchSelection> {
 	const owner = pushTarget.repository.nameWithOwner.split("/")[0];
-	const search = await execute(pi, context, "Find pull requests", "gh", [
-		"api",
-		"search/issues",
-		"--hostname",
-		pushTarget.repository.host,
-		"--paginate",
-		"--slurp",
-		"-X",
-		"GET",
-		"-f",
-		`q=is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${owner}:${pushTarget.ref}`,
-		"-f",
-		`per_page=${PR_LIST_LIMIT}`,
-	]);
-	const urls = parseCandidateUrls(search.stdout, pushTarget.repository.host);
-	const candidates: ListedPullRequest[] = [];
-	for (const url of urls) {
-		const loaded = await execute(pi, context, "Find pull requests", "gh", [
-			"pr",
-			"view",
-			url.href,
-			"--json",
-			PR_FIELDS,
-		]);
-		const candidate = parseLoadedPullRequest(loaded.stdout, url);
-		if (candidate !== null) candidates.push(candidate);
+	const searchQuery = `is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${owner}:${pushTarget.ref}`;
+	const candidates: SearchPullRequest[] = [];
+	const cursors = new Set<string>();
+	let issueCount: number | null = null;
+	let endCursor: string | null = null;
+	for (let pageIndex = 0; pageIndex < PR_SEARCH_MAX_PAGES; pageIndex += 1) {
+		const args = [
+			"api",
+			"graphql",
+			"--hostname",
+			pushTarget.repository.host,
+			"-f",
+			`query=${PR_SEARCH_QUERY}`,
+			"-F",
+			`searchQuery=${searchQuery}`,
+		];
+		if (endCursor !== null) args.push("-F", `endCursor=${endCursor}`);
+		const result = await execute(pi, context, "Find pull requests", "gh", args);
+		const page = parseSearchPage(result.stdout, pushTarget.repository.host);
+		if (issueCount !== null && page.issueCount !== issueCount) {
+			fail("Find pull requests", "inconsistent search result pages");
+		}
+		issueCount = page.issueCount;
+		if (issueCount > PR_SEARCH_CAP) fail("Find pull requests", "GitHub search result cap reached");
+		const expectedPageSize = Math.min(PR_SEARCH_PAGE_SIZE, Math.max(0, issueCount - candidates.length));
+		if (page.candidates.length !== expectedPageSize) fail("Find pull requests", "incomplete search results");
+		for (const cursor of page.cursors) {
+			if (cursors.has(cursor)) fail("Find pull requests", "duplicate candidate cursor");
+			cursors.add(cursor);
+		}
+		candidates.push(...page.candidates);
+		if (new Set(candidates.map(({ url }) => url.href.toLowerCase())).size !== candidates.length) {
+			fail("Find pull requests", "duplicate candidate url");
+		}
+		const hasMore = candidates.length < issueCount;
+		if (page.hasNextPage !== hasMore) fail("Find pull requests", "incomplete search results");
+		if (!hasMore) {
+			const selected = selectSearchPullRequest(candidates, pushTarget);
+			if (selected.kind !== "candidate") return selected;
+			const loaded = await execute(pi, context, "Find pull requests", "gh", [
+				"pr",
+				"view",
+				selected.candidate.url.href,
+				"--json",
+				PR_FIELDS,
+			]);
+			return {
+				...selected,
+				pullRequest: parseLoadedPullRequest(loaded.stdout, selected.candidate.url),
+			};
+		}
+		if (page.endCursor === null) fail("Find pull requests", "invalid search pageInfo");
+		endCursor = page.endCursor;
 	}
-	return { candidates, urls };
+	return fail("Find pull requests", "GitHub search result cap reached");
 }
 
 export async function loadCurrentPullRequest(
@@ -1239,7 +1429,30 @@ export async function loadCurrentPullRequest(
 		pushTarget = read.target;
 	}
 
-	const { candidates } = await searchPullRequests(pi, context, pushTarget);
+	const search = await searchPullRequests(pi, context, pushTarget);
+	if (search.kind === "ambiguous") {
+		return {
+			kind: "blocked",
+			issue: {
+				kind: "candidate-prs-ambiguous",
+				urls: search.urls.sort((a, b) => a.href.localeCompare(b.href)),
+			},
+		};
+	}
+	if (search.kind === "oid-mismatch") {
+		return {
+			kind: "blocked",
+			issue: {
+				kind: "candidate-oid-mismatch",
+				remote: pushTarget.remote,
+				urls: search.urls,
+			},
+		};
+	}
+	if (search.kind === "target-invalid") {
+		return { kind: "blocked", issue: { kind: "target-invalid" } };
+	}
+	const candidates = search.kind === "candidate" && search.pullRequest !== null ? [search.pullRequest] : [];
 	let candidate: ListedPullRequest | null;
 	if (pushTarget.provenance === "inferred") {
 		const matching = candidates.filter((item) =>
