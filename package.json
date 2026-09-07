@@ -16,6 +16,7 @@
       "./extensions/pi-ask-question/extensions/ask-question.ts",
       "./extensions/pi-add-dir/extensions/add-dir.ts",
       "./extensions/pi-auto-compact/extensions",
+      "./extensions/pi-auto-dag/extensions/auto-dag.ts",
       "./extensions/pi-session-recall/extensions/session-recall.ts",
       "./extensions/pi-prompt-creator/extensions/prompt-creator.ts",
       "./extensions/pi-deps/extensions/deps.ts",
