@@ -44,8 +44,8 @@ async function useRunner(t: import("node:test").TestContext, source: string): Pr
 	return cwd;
 }
 
-function executor(maxConcurrency = 1): EphemeralSubagentExecutor {
-	return createEphemeralSubagentExecutor({ maxConcurrency, timeout });
+function executor(maxConcurrency = 1, maxTokens?: number): EphemeralSubagentExecutor {
+	return createEphemeralSubagentExecutor({ maxConcurrency, maxTokens, timeout });
 }
 
 function prepared(cwd: string, task = "work", childLaunch = launch) {
@@ -155,7 +155,7 @@ test("executor merges env, owns its child budget, and launches active Pi without
 	});
 
 	const before = Date.now();
-	const result = await executor().run({ prepare: async () => prepared(cwd, "quoted task; echo unsafe", {
+	const result = await executor(1, 2_000).run({ prepare: async () => prepared(cwd, "quoted task; echo unsafe", {
 		env: { EPHEMERAL_OVERRIDE: "child", [EXECUTION_BUDGET_ENV]: "caller cannot override" },
 		args: ["--model", "test/model"],
 	}) });
@@ -168,7 +168,7 @@ test("executor merges env, owns its child budget, and launches active Pi without
 		cwd: await realpath(cwd),
 		inherited: "parent",
 		override: "child",
-		budget: { maxTurns: 50, maxMs: 2_000, startedAt: budget.startedAt },
+		budget: { maxTurns: 50, maxMs: 2_000, startedAt: budget.startedAt, maxTokens: 2_000 },
 	});
 	assert.ok(budget.startedAt >= before && budget.startedAt <= after);
 });
@@ -617,6 +617,60 @@ test("async token callback rejection is a typed executor failure", async (t) => 
 	});
 });
 
+test("a terminal turn that crosses the token budget succeeds", async (t) => {
+	const observedUsage = usage(1);
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "turn_start", turnIndex: 0 });
+event({ type: "message_update", usage: ${JSON.stringify(observedUsage)} });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], usage: ${JSON.stringify(observedUsage)}, stopReason: "stop" } });
+event({ type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
+`);
+	const result = await executor(1, 5).run({ prepare: async () => prepared(cwd) });
+	assert.equal(result.outcome, "success");
+	assert.equal(result.output, "done");
+	assert.deepEqual(result.usage, observedUsage);
+});
+
+test("a continuing token-budget crossing permits one final turn then rejects further continuation", async (t) => {
+	const crossingUsage = usage(1);
+	const finalUsage = usage(2);
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "turn_start", turnIndex: 0 });
+event({ type: "message_update", usage: ${JSON.stringify(crossingUsage)} });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "crossed" }, { type: "toolCall" }], usage: ${JSON.stringify(crossingUsage)}, stopReason: "toolUse" } });
+event({ type: "tool_execution_start", toolCallId: "crossing-tool", toolName: "read", args: {} });
+event({ type: "tool_execution_end", toolCallId: "crossing-tool", toolName: "read" });
+event({ type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+event({ type: "turn_start", turnIndex: 1 });
+event({ type: "message_update", usage: ${JSON.stringify(finalUsage)} });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "x".repeat(60 * 1024) }, { type: "toolCall" }], usage: ${JSON.stringify(finalUsage)}, stopReason: "toolUse" } });
+event({ type: "tool_execution_start", toolCallId: "final-tool", toolName: "read", args: {} });
+event({ type: "tool_execution_end", toolCallId: "final-tool", toolName: "read" });
+event({ type: "turn_end", turnIndex: 1, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+setInterval(() => {}, 1_000);
+`);
+	const activity: EphemeralSubagentActivityEvent[] = [];
+	await assert.rejects(executor(1, 5).run({
+		onActivity: (event) => activity.push(event),
+		prepare: async () => prepared(cwd),
+	}), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "token_limit");
+		assert.deepEqual(error.usage, usage(3));
+		assert.ok(error.output);
+		assert.ok(Buffer.byteLength(error.output, "utf8") <= 50 * 1024);
+		assert.match(error.output, /\[Output truncated: \d+ bytes omitted\]$/);
+		assert.match(error.message, /^Subagent reached its maximum token limit of 5\./);
+		return true;
+	});
+	assert.deepEqual(activity.filter(({ type }) => type !== "message_end"), [
+		{ type: "tool_execution_start", toolCallId: "crossing-tool", toolName: "read" },
+		{ type: "tool_execution_end", toolCallId: "crossing-tool", toolName: "read" },
+		{ type: "tool_execution_start", toolCallId: "final-tool", toolName: "read" },
+		{ type: "tool_execution_end", toolCallId: "final-tool", toolName: "read" },
+	]);
+});
+
 test("executor rejects attempted turn 51 with bounded turn-50 output and Usage", async (t) => {
 	const observedUsage = usage(1);
 	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
@@ -967,14 +1021,17 @@ test("executor uses stable prepare and spawn error codes with causes", async (t)
 	});
 });
 
-test("executor validates concurrency, turn limit, and timeout at construction", (t) => {
+test("executor validates concurrency, turn limit, token limit, and timeout at construction", (t) => {
 	simulateActivePi(t);
 	for (const maxConcurrency of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency, timeout }));
 	}
-	assert.doesNotThrow(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 1, timeout }));
+	assert.doesNotThrow(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 1, maxTokens: 1, timeout }));
 	for (const maxTurns of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns, timeout }), /maxTurns must be a safe integer >= 1/);
+	}
+	for (const maxTokens of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+		assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTokens, timeout }), /maxTokens must be a safe integer >= 1/);
 	}
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 0, maxMs: 2 } }));
 	assert.throws(() => createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 2, maxMs: 2 } }));

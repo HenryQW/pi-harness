@@ -11,6 +11,7 @@ export interface SubagentTimeoutConfig {
 export interface SubagentConfig {
 	maxSubagents?: number;
 	maxTurns?: number;
+	maxTokens?: number;
 	timeout?: SubagentTimeoutConfig;
 }
 
@@ -31,6 +32,7 @@ const positive = (value: unknown): value is number =>
 // every child immediately instead of applying the configured deadline.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 export const DEFAULT_TIMEOUT_CONFIG = { idleMinutes: 10, maxMinutes: 30 } as const;
+const INTEGER_FIELDS = ["maxSubagents", "maxTurns", "maxTokens"] as const;
 const TIMEOUT_FIELDS = ["idleMinutes", "maxMinutes"] as const;
 
 /** Return the canonical default JSON path for pi-subagent's config home. */
@@ -45,26 +47,18 @@ function parseSubagentConfig(parsed: unknown, path: string): ParsedSubagentConfi
 	const problems: string[] = [];
 	const config: SubagentConfig = {};
 	for (const key of Object.keys(record)) {
-		if (key !== "maxSubagents" && key !== "maxTurns" && key !== "timeout") {
-			problems.push(`unknown config key ${JSON.stringify(key)}; expected maxSubagents, maxTurns, timeout`);
+		if (![...INTEGER_FIELDS, "timeout"].includes(key as typeof INTEGER_FIELDS[number] | "timeout")) {
+			problems.push(`unknown config key ${JSON.stringify(key)}; expected ${INTEGER_FIELDS.join(", ")}, timeout`);
 		}
 	}
 
-	const maxSubagents = record.maxSubagents;
-	if (maxSubagents !== undefined) {
-		if (typeof maxSubagents === "number" && Number.isSafeInteger(maxSubagents) && maxSubagents >= 1) {
-			config.maxSubagents = maxSubagents;
+	for (const key of INTEGER_FIELDS) {
+		const value = record[key];
+		if (value === undefined) continue;
+		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1) {
+			config[key] = value;
 		} else {
-			problems.push(`maxSubagents must be a safe integer >= 1, got ${JSON.stringify(maxSubagents)}`);
-		}
-	}
-
-	const maxTurns = record.maxTurns;
-	if (maxTurns !== undefined) {
-		if (typeof maxTurns === "number" && Number.isSafeInteger(maxTurns) && maxTurns >= 1) {
-			config.maxTurns = maxTurns;
-		} else {
-			problems.push(`maxTurns must be a safe integer >= 1, got ${JSON.stringify(maxTurns)}`);
+			problems.push(`${key} must be a safe integer >= 1, got ${JSON.stringify(value)}`);
 		}
 	}
 

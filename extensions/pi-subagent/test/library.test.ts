@@ -140,14 +140,16 @@ test("child budget payload requires the executor runtime origin", () => {
 	}
 });
 
-test("child budget requires maxTurns to be a safe integer >= 1", () => {
+test("child budget requires maxTurns and optional maxTokens to be safe integers >= 1", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	try {
-		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0 });
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0, maxTokens: 1 });
 		assert.doesNotThrow(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI));
-		for (const maxTurns of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-			process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: 0 });
-			assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+		for (const field of ["maxTurns", "maxTokens"] as const) {
+			for (const value of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+				process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0, [field]: value });
+				assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+			}
 		}
 	} finally {
 		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
@@ -284,13 +286,13 @@ test("one-turn Role starts with exactly one response-only handoff", () => {
 
 test("child final handoff preserves exact-output contracts and reserves the final turn", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
-	const policy = (maxTurns: number) => {
+	const policy = (maxTurns: number, maxTokens?: number) => {
 		const handlers = new Map<string, (event: any) => any>();
 		const events: string[] = [];
 		const sent: Array<{ message: any; options: any }> = [];
 		const toolSets: string[][] = [];
 		let activeTools = ["read", "bash"];
-		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: Date.now() });
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: Date.now(), ...(maxTokens === undefined ? {} : { maxTokens }) });
 		childToolPolicy({
 			registerFlag() {},
 			getFlag: () => JSON.stringify(["read"]),
@@ -357,6 +359,21 @@ test("child final handoff preserves exact-output contracts and reserves the fina
 		terminalPenultimate.turnEnd({ ...continuing, message: { role: "assistant", content: [] } });
 		assert.deepEqual(terminalPenultimate.activeTools(), ["read"]);
 		assert.deepEqual(terminalPenultimate.sent.map(({ message }) => message.customType), ["pi-subagent-execution-budget"]);
+
+		const tokenBudget = policy(50, 100);
+		tokenBudget.start();
+		tokenBudget.turnEnd({ ...continuing, message: { ...continuing.message, usage: { totalTokens: 80 } } });
+		assert.match(tokenBudget.sent[0]!.message.content, /20 of 100 tokens/);
+		tokenBudget.turnEnd({ ...continuing, message: { ...continuing.message, usage: { totalTokens: 10 } } });
+		assert.equal(tokenBudget.sent.length, 1);
+		tokenBudget.turnEnd({ ...continuing, message: { ...continuing.message, usage: { totalTokens: 11 } } });
+		assert.deepEqual(tokenBudget.activeTools(), []);
+		assert.deepEqual(tokenBudget.sent.map(({ message }) => message.customType), [
+			"pi-subagent-execution-budget",
+			"pi-subagent-final-handoff",
+		]);
+		tokenBudget.turnEnd(continuing);
+		assert.equal(tokenBudget.sent.length, 2);
 	} finally {
 		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
 		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
