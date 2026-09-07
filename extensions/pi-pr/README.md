@@ -71,11 +71,11 @@ Multiple candidate remotes, multiple matching PRs, OID mismatches, and unsafe Gi
 
 The creation workflow repeats destination, remote OID, PR, and configuration checks immediately before pushing. It pushes to the saved validated URL, not a mutable remote name. Every push uses the saved remote OID as an exact lease. Existing refs must also be ancestors of the captured local OID. A missing ref uses an empty lease as a create-only compare-and-swap.
 
-After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then ends the Herdr workspace label with one ` · PR #<number>` suffix.
+After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then prefixes the Herdr workspace label with `#<number> • `.
 
 Failed or empty discovery leaves one rename pending for a later refresh. Closed or merged historical matches do not trigger it.
 
-It removes every stale trailing PR suffix before adding the current one. This requires `HERDR_ENV=1` and a non-empty, trimmed `HERDR_WORKSPACE_ID`.
+It removes repeated leading `#<number> • ` prefixes and legacy trailing ` · PR #<number>` suffixes before adding one current prefix. The remaining workspace name must be non-empty. This requires `HERDR_ENV=1` and a non-empty, trimmed `HERDR_WORKSPACE_ID`.
 
 It renames only the workspace. Outside Herdr, it does nothing.
 
@@ -125,6 +125,8 @@ Presentation uses route priority, so draft appears before running CI. `/pr` read
 - A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
 - A branch update resolves the base repository ref directly. It stops if that ref moves before merge or push.
 - Before a comment-sweep push, it revalidates the configured destination, full PR identity, and local HEAD. It pushes the captured OID.
+- CI repair captures the failed-step log tail and runs one narrow local reproducer before editing.
 - An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
+- After a successful merge, the create widget stays hidden until a new local commit.
 - Only authenticated GitHub.com and GitHub Enterprise repositories are supported.

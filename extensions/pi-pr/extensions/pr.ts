@@ -70,7 +70,11 @@ export default function pullRequestExtension(
 		});
 		signal.throwIfAborted();
 		const label = parseWorkspaceLabel(current, workspaceId);
-		const normalized = `${label.replace(/(?: · PR #[1-9][0-9]*)+$/, "")} · PR #${pullRequestNumber}`;
+		const workspaceName = label
+			.replace(/^(?:#[1-9][0-9]* • )+/, "")
+			.replace(/(?: · PR #[1-9][0-9]*)+$/, "");
+		if (!workspaceName.trim()) throw new Error("workspace label has no name after removing PR labels");
+		const normalized = `#${pullRequestNumber} • ${workspaceName}`;
 		if (normalized === label) return;
 
 		signal.throwIfAborted();
@@ -96,6 +100,7 @@ export default function pullRequestExtension(
 	let lastBlockedIssueKey: string | undefined;
 	let delegatedWorkPending = false;
 	let pendingWorkspaceRename = false;
+	let mergeCompleted = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
 	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
@@ -166,6 +171,7 @@ export default function pullRequestExtension(
 		lastBlockedIssueKey = undefined;
 		delegatedWorkPending = false;
 		pendingWorkspaceRename = false;
+		mergeCompleted = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
 		activeInvocations.clear();
@@ -213,7 +219,9 @@ export default function pullRequestExtension(
 			try {
 				discovery = await load(pi, loadContext);
 				if (controller.signal.aborted || sessionGeneration !== generation) return;
-				if (discovery.kind === "none") localCommit = await detectLocalCommit(pi, loadContext);
+				if (discovery.kind === "none") {
+					localCommit = !mergeCompleted && await detectLocalCommit(pi, loadContext);
+				}
 			} catch {
 				// Keep an established display. A cold Git-worktree failure gets a sanitized placeholder.
 				if (!controller.signal.aborted && sessionGeneration === generation) {
@@ -305,6 +313,7 @@ export default function pullRequestExtension(
 		if (!isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
+			if (GIT_COMMIT.test(command)) mergeCompleted = false;
 			await refresh().catch(reportRefreshFailure);
 		}
 	});
@@ -339,6 +348,7 @@ export default function pullRequestExtension(
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
 				setWidget(ctx, undefined);
 			} else {
+				if (nextStep === "merge") mergeCompleted = true;
 				activeInvocations.delete(invocation);
 				refreshInBackground();
 			}

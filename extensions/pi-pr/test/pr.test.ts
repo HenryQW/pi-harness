@@ -779,7 +779,7 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 	}
 });
 
-test("labels the Herdr workspace with direct arguments after a create workflow settles", async () => {
+test("normalizes the Herdr workspace label after a create workflow settles", async () => {
 	await withHerdrEnvironment("1", "workspace-7", async () => {
 		let loads = 0;
 		const app = harness({
@@ -796,7 +796,7 @@ test("labels the Herdr workspace with direct arguments after a create workflow s
 			async exec(_command, args) {
 				return args[1] === "get"
 					? execResult(JSON.stringify({
-						result: { workspace: { workspace_id: "workspace-7", label: "Feature · PR #7 · PR #8" } },
+						result: { workspace: { workspace_id: "workspace-7", label: "#7 • #8 • Feature · PR #7 · PR #8" } },
 					}))
 					: execResult();
 			},
@@ -823,7 +823,7 @@ test("labels the Herdr workspace with direct arguments after a create workflow s
 				},
 				{
 					command: "herdr",
-					args: ["workspace", "rename", "workspace-7", "Feature · PR #42"],
+					args: ["workspace", "rename", "workspace-7", "#42 • Feature"],
 					cwd: "/repo",
 					timeout: 10_000,
 				},
@@ -1301,4 +1301,40 @@ test("/pr restores its hint after a command error and schedules a refresh", asyn
 	assert.equal(loads, 2);
 
 	await app.shutdown(ctx);
+});
+
+test("does not offer PR creation after a successful merge when discovery returns null", async () => {
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return loads === 1 ? currentPullRequest() : null;
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return "merge";
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await flush();
+		assert.equal(app.statuses.at(-1), undefined);
+		assert.equal(app.widgets.at(-1), undefined);
+
+		await app.tool({
+			toolName: "bash",
+			input: { command: "git commit -m change" },
+			isError: false,
+		}, ctx);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+	} finally {
+		await app.shutdown(ctx);
+	}
 });

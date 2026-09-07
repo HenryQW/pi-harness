@@ -96,14 +96,14 @@ async function mergePullRequest(
 	ctx: ExtensionCommandContext,
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
-): Promise<void> {
+): Promise<boolean> {
 	if (!current.merge) throw new Error(`PR #${current.number} merge failed: merge capabilities are unavailable`);
 	const method = selectMergeMethod(current.merge);
 	const confirmed = await ctx.ui.confirm(
 		`Merge PR #${current.number} with ${method}?`,
 		`Merge PR #${current.number} using ${method}.`,
 	);
-	if (!confirmed) return;
+	if (!confirmed) return false;
 
 	await executeGitHubMerge({
 		exec: (command, args, options) => pi.exec(command, args, {
@@ -138,6 +138,7 @@ async function mergePullRequest(
 			}
 		},
 	});
+	return true;
 }
 
 async function linkPullRequest(
@@ -192,8 +193,7 @@ export function createPrCommandHandler(
 		}
 		if (nextStep === "merge") {
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
-			await mergePullRequest(pi, ctx, discovery.pullRequest, load);
-			return nextStep;
+			return await mergePullRequest(pi, ctx, discovery.pullRequest, load) ? "merge" : "none";
 		}
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
