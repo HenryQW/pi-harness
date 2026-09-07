@@ -292,6 +292,8 @@ async function linkHarness(failures: {
 	concurrentTrackingOid?: string;
 	concurrentConfigValue?: string;
 	closeBeforeFinalVerification?: boolean;
+	initialTrackingOid?: string;
+	moveRemoteBeforeFetchTo?: string;
 } = {}) {
 	const candidate = pullRequest({ headRefName: "feature/local" });
 	const app = harness({
@@ -308,8 +310,9 @@ async function linkHarness(failures: {
 	const originalExec = app.pi.exec.bind(app.pi);
 	const trackingRef = "refs/remotes/fork/feature/local";
 	const config = new Map<string, string[]>();
-	let trackingOid: string | null = null;
+	let trackingOid: string | null = failures.initialTrackingOid ?? null;
 	let trackingReads = 0;
+	let movedRemoteHead: string | null = null;
 	let linked = false;
 	let rollbackStarted = false;
 	let concurrentConfigInjected = false;
@@ -357,10 +360,16 @@ async function linkHarness(failures: {
 			if (failures.concurrentTrackingOid && trackingReads === 2) trackingOid = failures.concurrentTrackingOid;
 			return trackingOid === null ? result("", 1) : result(`${trackingOid}\n`);
 		}
-		if (command === "git" && args[0] === "fetch" && args.at(-1) === `refs/heads/feature/local:${trackingRef}`) {
+		if (command === "git" && args[0] === "fetch" && args.at(-1)?.endsWith(`:${trackingRef}`)) {
 			record();
+			assert.equal(args.at(-1), `${REMOTE_HEAD}:${trackingRef}`);
+			movedRemoteHead = failures.moveRemoteBeforeFetchTo ?? null;
 			trackingOid = REMOTE_HEAD;
 			return result();
+		}
+		if (movedRemoteHead && command === "git" && args[0] === "ls-remote") {
+			record();
+			return result(`${movedRemoteHead}\t${args.at(-1)}\n`);
 		}
 		if (command === "git" && args.join(" ") === "branch --set-upstream-to=fork/feature/local -- feature/local") {
 			record();
@@ -371,6 +380,7 @@ async function linkHarness(failures: {
 		}
 		if (command === "git" && args[0] === "update-ref") {
 			record();
+			if (args[3] !== trackingOid) return result("", 128);
 			trackingOid = args[1] === "-d" ? null : args[2] ?? null;
 			return result();
 		}
@@ -667,7 +677,44 @@ test("infers one exact open pull request from a published same-name branch", asy
 	assert.equal(discovery.pullRequest.target.remote, "fork");
 	assert.equal(discovery.pullRequest.target.ref, "feature/local");
 	const search = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues");
-	assert.ok(search?.args.includes("q=is:pr head:acme:feature/local"));
+	assert.ok(search?.args.includes("q=is:pr is:open head:acme:feature/local"));
+});
+
+test("ignores historical PRs when selecting an inferred open PR", async () => {
+	const historical = pullRequest({
+		number: 41,
+		url: "https://github.com/acme/project/pull/41",
+		state: "CLOSED",
+		headRefName: "feature/local",
+	});
+	const open = pullRequest({ headRefName: "feature/local" });
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [historical, open],
+	});
+
+	const discovery = await discoverCurrentPullRequest(pi, context);
+	assert.equal(discovery.kind, "current");
+	if (discovery.kind !== "current") return;
+	assert.equal(discovery.pullRequest.number, 42);
+	assert.equal(discovery.pullRequest.lifecycle, "open");
+});
+
+test("blocks inferred discovery when a search candidate closes before view", async () => {
+	const searched = pullRequest({ headRefName: "feature/local" });
+	const closed = { ...searched, state: "CLOSED" };
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidateUrls: [{ html_url: searched.url }],
+		candidates: [closed],
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
+		kind: "blocked",
+		issue: { kind: "published-without-pr", remote: "fork" },
+	});
 });
 
 test("blocks ambiguous candidate remotes before searching GitHub", async () => {
@@ -768,6 +815,34 @@ test("links an inferred target only after fresh verification", async () => {
 	assert.equal(app.calls.some(({ command, args }) =>
 		command === "git" && args.join(" ") === "branch --set-upstream-to=fork/feature/local -- feature/local"
 	), true);
+	const fetch = app.calls.find(({ command, args }) =>
+		command === "git" && args.at(-1)?.endsWith(":refs/remotes/fork/feature/local")
+	);
+	assert.deepEqual(fetch?.args, [
+		"fetch",
+		"--no-write-fetch-head",
+		"--no-tags",
+		"--no-recurse-submodules",
+		"git@github.com:acme/fork.git",
+		`${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
+	]);
+	assert.equal(fetch?.args.includes("--force"), false);
+});
+
+test("cancels and rolls back when the remote moves between precheck and fetch", async () => {
+	const originalTrackingOid = "f".repeat(40);
+	const movedRemoteOid = "e".repeat(40);
+	const app = await linkHarness({
+		initialTrackingOid: originalTrackingOid,
+		moveRemoteBeforeFetchTo: movedRemoteOid,
+	});
+
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed: configured pull request does not match inferred target/,
+	);
+	assert.equal(app.getTrackingOid(), originalTrackingOid);
+	assert.equal(app.config.size, 0);
 });
 
 test("rolls back upstream and tracking state when final link verification fails", async () => {

@@ -1185,7 +1185,7 @@ async function searchPullRequests(
 		"-X",
 		"GET",
 		"-f",
-		`q=is:pr head:${owner}:${pushTarget.ref}`,
+		`q=is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${owner}:${pushTarget.ref}`,
 		"-f",
 		`per_page=${PR_LIST_LIMIT}`,
 	]);
@@ -1243,6 +1243,7 @@ export async function loadCurrentPullRequest(
 	let candidate: ListedPullRequest | null;
 	if (pushTarget.provenance === "inferred") {
 		const matching = candidates.filter((item) =>
+			item.lifecycle === "open" &&
 			item.url.hostname.toLowerCase() === pushTarget.repository.host &&
 			normalizeRepository(item.head.repository) === pushTarget.repository.normalizedName &&
 			item.head.ref === pushTarget.ref
@@ -1467,7 +1468,7 @@ export async function linkInferredPullRequest(
 			"--no-tags",
 			"--no-recurse-submodules",
 			target.fetchSource,
-			`refs/heads/${target.ref}:${trackingRef}`,
+			`${target.remoteHeadOid}:${trackingRef}`,
 		]);
 		fetchedOid = target.remoteHeadOid;
 		const verifiedFetchedOid = (await readTrackingOid(pi, context, trackingRef)) ?? undefined;
