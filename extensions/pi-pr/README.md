@@ -63,11 +63,11 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 `pi-pr-create` honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
 
-After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then ends the Herdr workspace label with one ` · PR #<number>` suffix.
+After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then prefixes the Herdr workspace label with `#<number> • `.
 
 Failed or empty discovery leaves one rename pending for a later refresh. Closed or merged historical matches do not trigger it.
 
-It removes every stale trailing PR suffix before adding the current one. This requires `HERDR_ENV=1` and a non-empty, trimmed `HERDR_WORKSPACE_ID`.
+It removes repeated leading `#<number> • ` prefixes and legacy trailing ` · PR #<number>` suffixes before adding one current prefix. The remaining workspace name must be non-empty. This requires `HERDR_ENV=1` and a non-empty, trimmed `HERDR_WORKSPACE_ID`.
 
 It renames only the workspace. Outside Herdr, it does nothing.
 

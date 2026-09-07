@@ -65,7 +65,11 @@ export default function pullRequestExtension(
 		});
 		signal.throwIfAborted();
 		const label = parseWorkspaceLabel(current, workspaceId);
-		const normalized = `${label.replace(/(?: · PR #[1-9][0-9]*)+$/, "")} · PR #${pullRequestNumber}`;
+		const workspaceName = label
+			.replace(/^(?:#[1-9][0-9]* • )+/, "")
+			.replace(/(?: · PR #[1-9][0-9]*)+$/, "");
+		if (!workspaceName.trim()) throw new Error("workspace label has no name after removing PR labels");
+		const normalized = `#${pullRequestNumber} • ${workspaceName}`;
 		if (normalized === label) return;
 
 		signal.throwIfAborted();

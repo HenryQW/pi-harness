@@ -634,7 +634,7 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 	}
 });
 
-test("labels the Herdr workspace with direct arguments after a create workflow settles", async () => {
+test("normalizes the Herdr workspace label after a create workflow settles", async () => {
 	await withHerdrEnvironment("1", "workspace-7", async () => {
 		let loads = 0;
 		const app = harness({
@@ -651,7 +651,7 @@ test("labels the Herdr workspace with direct arguments after a create workflow s
 			async exec(_command, args) {
 				return args[1] === "get"
 					? execResult(JSON.stringify({
-						result: { workspace: { workspace_id: "workspace-7", label: "Feature · PR #7 · PR #8" } },
+						result: { workspace: { workspace_id: "workspace-7", label: "#7 • #8 • Feature · PR #7 · PR #8" } },
 					}))
 					: execResult();
 			},
@@ -678,7 +678,7 @@ test("labels the Herdr workspace with direct arguments after a create workflow s
 				},
 				{
 					command: "herdr",
-					args: ["workspace", "rename", "workspace-7", "Feature · PR #42"],
+					args: ["workspace", "rename", "workspace-7", "#42 • Feature"],
 					cwd: "/repo",
 					timeout: 10_000,
 				},

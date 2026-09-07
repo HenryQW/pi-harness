@@ -46,11 +46,12 @@ Create current branch GitHub pull request.
    (`node:fs` and `JSON.parse`), not `jq`. Require
    `result.workspace.workspace_id` to exactly equal `<workspace-id>` and
    `result.workspace.label` to be a non-empty string.
-   Remove every trailing suffix with `/(?: · PR #[1-9][0-9]*)+$/` from the
-   label, then append exactly one ` · PR #<number>` suffix. Run `herdr workspace
-   rename "<workspace-id>" "<normalized-label>"` only when the normalized label
-   differs from the current label. Rename only the workspace, never a pane, tab,
-   Pi session, or Git branch.
+   Remove repeated leading prefixes with `/^(?:#[1-9][0-9]* • )+/`, then every
+   trailing legacy suffix with `/(?: · PR #[1-9][0-9]*)+$/`. Require the
+   remaining workspace name to be non-empty after trimming, then prepend exactly
+   one `#<number> • `. Run `herdr workspace rename "<workspace-id>"
+   "<normalized-label>"` only when the normalized label differs from the current
+   label. Rename only the workspace, never a pane, tab, Pi session, or Git branch.
 
    Otherwise, including outside Herdr, skip labeling silently. If any
    workspace-label step fails after PR success, do not undo the PR; reply with
