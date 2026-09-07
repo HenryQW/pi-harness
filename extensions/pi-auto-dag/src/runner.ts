@@ -1,8 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
 	addUsage,
 	EphemeralSubagentError,
@@ -178,8 +181,24 @@ function finalReviewPacket(state: RunState): string {
 }
 
 export class FileRunStore {
+	private readonly agentDir?: string;
+
+	constructor(agentDir?: string) {
+		this.agentDir = agentDir;
+	}
+
 	stateDirectory(root: string): string {
-		return join(root, ".context", "pi-auto-dag");
+		const canonicalRoot = realpathSync.native(root);
+		const directory = join(
+			extensionConfigDir("pi-auto-dag", this.agentDir),
+			"state",
+			createHash("sha256").update(canonicalRoot).digest("hex"),
+		);
+		const fromRoot = relative(canonicalRoot, resolve(directory));
+		if (fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))) {
+			throw new Error("Auto DAG state directory must be outside the Git workspace.");
+		}
+		return directory;
 	}
 
 	statePath(root: string, id: string): string {
@@ -483,6 +502,7 @@ export class AutoDagRunner {
 			await this.store.save(state);
 			return this.response(state, meter);
 		}
+		if (manualTask) manualTask.status = "running";
 		const timer = setTimeout(() => controller.abort(new BudgetExpired()), remaining);
 		timer.unref();
 		this.active.set(state.root, { id: state.request.id, controller, state });
@@ -500,6 +520,7 @@ export class AutoDagRunner {
 					return this.response(state, meter);
 				}
 				manualTask.status = "completed";
+				manualTask.output = "Manually verified by Main; declared checks and any explicit review passed.";
 				manualTask.failure = undefined;
 				manualTask.verifiedWorkspace = state.workspace;
 				await this.store.save(state);
@@ -877,6 +898,10 @@ export async function resolveGitRoot(exec: ExecCommand, cwd: string, signal?: Ab
 }
 
 export async function assertCleanGitWorkspace(exec: ExecCommand, root: string, signal?: AbortSignal): Promise<void> {
+	const index = await requireCommand(exec, "git", ["ls-files", "--stage"], root, signal);
+	if (index.split("\n").some((line) => line.startsWith("160000 "))) {
+		throw new Error("Auto DAG does not support Git repositories containing submodules.");
+	}
 	await requireCommand(exec, "git", ["update-index", "--really-refresh"], root, signal).catch((error) => {
 		if (!String(error).includes("exit 1")) throw error;
 	});
@@ -886,6 +911,23 @@ export async function assertCleanGitWorkspace(exec: ExecCommand, root: string, s
 	if (flags.split("\n").some((line) => /^[a-zS]/.test(line))) {
 		throw new Error("Auto DAG requires a Git index without assume-unchanged or skip-worktree entries.");
 	}
+}
+
+async function requireGitWithIndex(args: string[], root: string, index: string, signal?: AbortSignal): Promise<string> {
+	return await new Promise<string>((resolveOutput, reject) => {
+		execFile("git", args, {
+			cwd: root,
+			env: { ...process.env, GIT_INDEX_FILE: index },
+			signal,
+			timeout: GIT_TIMEOUT_MS,
+			maxBuffer: EVIDENCE_MAX_BYTES,
+			encoding: "utf8",
+		}, (error, stdout, stderr) => {
+			if (!error) return resolveOutput(stdout.trim());
+			if (signal?.aborted) return reject(signal.reason);
+			reject(new Error(`git ${args.join(" ")} failed: ${bounded(stderr || stdout || error.message)}`));
+		});
+	});
 }
 
 export async function identifyGitWorkspace(exec: ExecCommand, root: string, signal?: AbortSignal): Promise<WorkspaceIdentity> {
@@ -899,11 +941,10 @@ export async function identifyGitWorkspace(exec: ExecCommand, root: string, sign
 	const workspaceIndex = join(directory, "workspace-index");
 	try {
 		await copyFile(resolve(root, indexPath), indexCopy);
-		const index = oid(await requireCommand(exec, "env", [`GIT_INDEX_FILE=${indexCopy}`, "git", "write-tree"], root, signal), "index tree");
-		const env = `GIT_INDEX_FILE=${workspaceIndex}`;
-		await requireCommand(exec, "env", [env, "git", "read-tree", "HEAD"], root, signal);
-		await requireCommand(exec, "env", [env, "git", "add", "-A", "--", "."], root, signal);
-		const tree = oid(await requireCommand(exec, "env", [env, "git", "write-tree"], root, signal), "workspace tree");
+		const index = oid(await requireGitWithIndex(["write-tree"], root, indexCopy, signal), "index tree");
+		await requireGitWithIndex(["read-tree", "HEAD"], root, workspaceIndex, signal);
+		await requireGitWithIndex(["add", "-A", "--", "."], root, workspaceIndex, signal);
+		const tree = oid(await requireGitWithIndex(["write-tree"], root, workspaceIndex, signal), "workspace tree");
 		return { branch, head, index, tree };
 	} finally {
 		await rm(directory, { recursive: true, force: true });

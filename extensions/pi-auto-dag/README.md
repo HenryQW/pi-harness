@@ -1,35 +1,39 @@
 # `@henryqw/pi-auto-dag`
 
-Run checked, dependent Pi tasks in one Git workspace.
-
-Auto DAG uses one child at a time. It keeps durable state under `.context/pi-auto-dag/`.
+Run checked, dependent Pi tasks serially in one Git workspace. Auto DAG persists progress outside the repository for deliberate recovery.
 
 ## Install
 
+Install and activate the required task-model companion with Auto DAG:
+
 ```bash
+pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-dag
 ```
 
-The package needs Git and an active Pi session. Configure task-model routes with `/task-models` before use.
+Start a new Pi session after installation. Run `/task-models` and configure usable `fast` and `balanced` routes before the first request.
 
-## When to use it
+## Works with
 
-Use Auto DAG for non-trivial work with dependent tasks and explicit checks.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Required | Provides Roles and bounded child execution. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Routes each task's `fast` or `balanced` model class. |
 
-Run small requests directly in Main. Auto DAG adds persistence and child launches that trivial work does not need.
+## Use
 
-## Tools
+Use Auto DAG for non-trivial work with dependent tasks and explicit checks. Run small requests directly in Main.
 
-| Tool | Purpose |
-| --- | --- |
-| `auto_dag_execute` | Validate and start one new durable request. |
-| `auto_dag_status` | Read state and report workspace drift. |
-| `auto_dag_resume` | Deliberately retry, replace, verify, finalize, or approve unfinished work. |
-| `auto_dag_abort` | Stop active work or mark inactive work for attention. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `auto_dag_execute` | tool | Validates and starts one new durable request. |
+| `auto_dag_status` | tool | Reads state and reports workspace drift. |
+| `auto_dag_resume` | tool | Retries, replaces, verifies, finalizes, or approves unfinished work. |
+| `auto_dag_abort` | tool | Stops active work or marks inactive work for attention. |
 
 `auto_dag_execute` requires:
 
-- a clean Git workspace;
+- a clean Git workspace without submodules;
 - one or more tasks in supplied order;
 - explicit Role names from `@henryqw/pi-subagent`;
 - a `fast` or `balanced` model class for every launch;
@@ -65,9 +69,11 @@ Run small requests directly in Main. Auto DAG adds persistence and child launche
 
 Commands run directly. Auto DAG does not pass them through a shell.
 
-## Acceptance
+### Acceptance
 
-Worker text never proves completion. A task completes only when its declared checks pass on an identified workspace state. This identity includes staging changes and non-ignored untracked files.
+Worker text never proves completion. A task completes only when its checks pass on an identified workspace state.
+
+The identity includes staging changes and non-ignored untracked files. A successful manual verification replaces stale worker output with an explicit manual-verification summary.
 
 Add `judgment` only when direct checks cannot decide a clear criterion:
 
@@ -83,13 +89,48 @@ Without that object, Auto DAG does not launch a Reviewer. A review must leave th
 
 After all tasks, Auto DAG runs `finalChecks` against the combined workspace. A failed final check leaves the request unaccepted.
 
-An optional `finalJudgment` uses the same shape. An unverifiable judgment stays explicit until Main reruns final verification or deliberately approves the unchanged checked state.
+An optional `finalJudgment` uses the same shape. An unverifiable judgment remains explicit until Main reruns verification or approves the unchanged checked state.
 
-## Recovery and limits
+## Flow
 
-Auto DAG stores only `pending`, `running`, `completed`, and `needs_attention` lifecycle states.
+Auto DAG accepts only evidence from the checked workspace. It persists each important transition before continuing.
 
-Interrupted `running` work becomes `needs_attention`. Auto DAG never replays it automatically.
+```mermaid
+flowchart TD
+    A[Validate request and workspace] --> B[Select next serial eligible task]
+    B --> C[Launch pi-subagent Role child]
+    C --> D[Run direct task checks]
+    D --> E{Explicit judgment?}
+    E -- Yes --> F[Run read-only Reviewer]
+    E -- No --> G[Persist task result]
+    F --> G
+    G --> H{Retry needed and available?}
+    H -- Yes --> B
+    H -- No --> I[Run final checks and optional judgment]
+    I --> J[Accept unchanged checked workspace]
+```
+
+## State and storage
+
+Auto DAG owns generated state under:
+
+```text
+~/.pi/agent/config/pi-auto-dag/state/<workspace-root-sha256>/<request-id>.json
+```
+
+The actual prefix follows Pi's active agent directory. The canonical workspace root hash separates repositories, and the request ID separates runs.
+
+State never lives in the Git workspace, so Auto DAG's own writes cannot cause workspace drift. Only Auto DAG writes this directory.
+
+Deleting one request file discards its recovery record. Delete it only when that run no longer matters.
+
+## Limits and recovery
+
+Auto DAG rejects repositories containing Git submodules because workspace identity does not cover dirty submodule contents. Remove the submodules or use another workflow.
+
+A normalized `auto_dag_execute` request may use at most 262144 UTF-8 bytes. Durable state may use at most 2 MiB. Reduce request text, task count, command arguments, or captured failure evidence when a bound fails.
+
+Auto DAG stores only `pending`, `running`, `completed`, and `needs_attention` lifecycle states. Interrupted `running` work becomes `needs_attention` and never replays automatically.
 
 Each task gets at most two launched worker attempts. A correction receives the original task, direct dependency outputs, prior failure evidence, and current workspace identity.
 
@@ -99,7 +140,7 @@ Use `auto_dag_resume` with one deliberate action:
 - `replace` replaces one unfinished task definition when an attempt remains.
 - `verify` checks work that Main repaired manually.
 - `finalize` reruns final verification after every task completes.
-- `approve_final_judgment` records approval only for the unchanged final checked state.
+- `approve_final_judgment` approves only the unchanged final checked state.
 
 The total elapsed budget continues across retries and resumes. Usage and manual interventions also accumulate in durable state.
 

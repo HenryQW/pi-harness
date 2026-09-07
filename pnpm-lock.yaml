@@ -59,6 +59,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: ^0.85.1
         version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
+      '@henryqw/pi-config-store':
+        specifier: ^1.0.4
+        version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
         specifier: ^15.0.2
         version: link:../pi-subagent

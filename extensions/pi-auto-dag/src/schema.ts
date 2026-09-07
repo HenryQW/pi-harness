@@ -4,6 +4,7 @@ import { Check } from "typebox/value";
 
 export const ID_PATTERN = "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$";
 export const MAX_TASKS = 32;
+export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 export const RUN_STATE_VERSION = 9;
 
 const IdSchema = Type.String({ minLength: 1, maxLength: 80, pattern: ID_PATTERN });
@@ -263,6 +264,9 @@ export function parseExecuteRequest(value: unknown): ExecuteRequest {
 		finalChecks: value.finalChecks.map((check, index) => normalizeCheck(check, `finalChecks[${index}]`)),
 		...(value.finalJudgment === undefined ? {} : { finalJudgment: normalizeJudgment(value.finalJudgment, "finalJudgment")! }),
 	};
+	if (Buffer.byteLength(JSON.stringify(request), "utf8") > MAX_EXECUTE_REQUEST_BYTES) {
+		throw new Error(`auto_dag_execute normalized request exceeds ${MAX_EXECUTE_REQUEST_BYTES} bytes.`);
+	}
 	validateGraph(request.tasks);
 	return request;
 }

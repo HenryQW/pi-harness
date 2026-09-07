@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { registerModelTask } from "@henryqw/pi-task-models";
 import {
 	createEphemeralSubagentExecutor,
+	EXECUTION_BUDGET_ENV,
 	loadRoles,
 	resolveRoleLaunch,
 } from "@henryqw/pi-subagent";
@@ -41,6 +42,7 @@ function toolResult(response: Awaited<ReturnType<AutoDagRunner["execute"]>>) {
 }
 
 export default function autoDagExtension(pi: ExtensionAPI): void {
+	if (process.env[EXECUTION_BUDGET_ENV]) return;
 	registerModelTask(pi, AUTO_DAG_TASK);
 	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: 1,

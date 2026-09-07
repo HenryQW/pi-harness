@@ -2,21 +2,33 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { Usage } from "@earendil-works/pi-ai";
-import { EphemeralSubagentError } from "@henryqw/pi-subagent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { EphemeralSubagentError, EXECUTION_BUDGET_ENV } from "@henryqw/pi-subagent";
+import autoDagExtension from "../extensions/auto-dag.ts";
 import {
 	AutoDagRunner,
 	FileRunStore,
 	PrelaunchFailure,
+	assertCleanGitWorkspace,
 	identifyGitWorkspace,
 	type ChildRunInput,
 	type CommandResult,
+	type ExecCommand,
 	type RunnerRuntime,
 } from "../src/runner.ts";
-import { RUN_STATE_VERSION, type ExecuteRequest, type RunState, type WorkspaceIdentity } from "../src/schema.ts";
+import {
+	MAX_EXECUTE_REQUEST_BYTES,
+	RUN_STATE_VERSION,
+	parseExecuteRequest,
+	type ExecuteRequest,
+	type RunState,
+	type WorkspaceIdentity,
+} from "../src/schema.ts";
 
 const execFileAsync = promisify(execFile);
 const OID_A = "a".repeat(40);
@@ -78,6 +90,7 @@ type CheckPlan = CommandResult & { mutate?: boolean; advanceMs?: number };
 
 class FakeRuntime implements RunnerRuntime {
 	clock = 1_000;
+	rootCalls = 0;
 	workspace: WorkspaceIdentity = { branch: "refs/heads/main", head: OID_A, index: OID_A, tree: OID_A };
 	children: ChildPlan[] = [];
 	checks = new Map<string, CheckPlan[]>();
@@ -92,7 +105,10 @@ class FakeRuntime implements RunnerRuntime {
 	}
 
 	now() { return this.clock; }
-	async resolveRoot() { return this.root; }
+	async resolveRoot() {
+		this.rootCalls += 1;
+		return this.root;
+	}
 	async assertClean() {}
 	async identifyWorkspace() { return { ...this.workspace }; }
 	async runChild(input: ChildRunInput) {
@@ -121,11 +137,63 @@ class FakeRuntime implements RunnerRuntime {
 	}
 }
 
-async function harness(store = new FileRunStore()) {
-	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-test-"));
+async function harness(createStore?: (agentDir: string) => FileRunStore) {
+	const directory = await mkdtemp(join(tmpdir(), "pi-auto-dag-test-"));
+	const root = join(directory, "workspace");
+	const agentDir = join(directory, "agent");
+	await mkdir(root);
+	const store = createStore?.(agentDir) ?? new FileRunStore(agentDir);
 	const runtime = new FakeRuntime(root);
-	return { root, runtime, runner: new AutoDagRunner(runtime, store) };
+	return { root, agentDir, runtime, store, runner: new AutoDagRunner(runtime, store) };
 }
+
+const realExec: ExecCommand = async (command, args, options) => {
+	try {
+		const result = await execFileAsync(command, args, {
+			cwd: options?.cwd,
+			signal: options?.signal,
+			timeout: options?.timeout,
+		});
+		return { code: 0, stdout: result.stdout, stderr: result.stderr, killed: false };
+	} catch (error) {
+		const failure = error as { code?: number; stdout?: string; stderr?: string; killed?: boolean };
+		return {
+			code: typeof failure.code === "number" ? failure.code : -1,
+			stdout: failure.stdout ?? "",
+			stderr: failure.stderr ?? "",
+			killed: failure.killed ?? options?.signal?.aborted ?? false,
+		};
+	}
+};
+
+async function initRepository(root: string): Promise<void> {
+	await mkdir(root, { recursive: true });
+	await execFileAsync("git", ["init", "-q"], { cwd: root });
+	await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+	await execFileAsync("git", ["config", "user.name", "Test"], { cwd: root });
+	await writeFile(join(root, "tracked.txt"), "tracked\n");
+	await execFileAsync("git", ["add", "tracked.txt"], { cwd: root });
+	await execFileAsync("git", ["commit", "-qm", "base"], { cwd: root });
+}
+
+test("oversized normalized requests fail before workspace or worker activity", async () => {
+	const exact = request();
+	exact.finalChecks[0]!.args = Array.from({ length: 15 }, () => "x".repeat(16_000));
+	const remaining = MAX_EXECUTE_REQUEST_BYTES - Buffer.byteLength(JSON.stringify(exact), "utf8");
+	assert.ok(remaining > 0 && exact.goal.length + remaining <= 32_000);
+	exact.goal += "x".repeat(remaining);
+	assert.equal(Buffer.byteLength(JSON.stringify(exact), "utf8"), MAX_EXECUTE_REQUEST_BYTES);
+	assert.equal(parseExecuteRequest(exact).goal, exact.goal);
+
+	const oversized = { ...exact, goal: `${exact.goal}x` };
+	const { runner, runtime } = await harness();
+	await assert.rejects(
+		runner.execute(oversized, runtime.root),
+		new RegExp(`normalized request exceeds ${MAX_EXECUTE_REQUEST_BYTES} bytes`),
+	);
+	assert.equal(runtime.rootCalls, 0);
+	assert.equal(runtime.calls.length, 0);
+});
 
 test("unknown, duplicate, self, and cyclic dependencies launch no child", async () => {
 	for (const tasks of [
@@ -223,8 +291,63 @@ test("usage and total elapsed budget persist across deliberate resume", async ()
 	assert.equal(resumed.state.manualInterventions, 1);
 });
 
-test("interrupted running state becomes needs_attention without replay", async () => {
+test("manual verification persists the selected task as running before checks", async () => {
+	class InterruptingStore extends FileRunStore {
+		interruptNextRunningSave = false;
+
+		override async save(state: RunState): Promise<void> {
+			await super.save(JSON.parse(JSON.stringify(state)) as RunState);
+			if (this.interruptNextRunningSave && state.status === "running" && state.tasks[0]!.status === "running") {
+				this.interruptNextRunningSave = false;
+				throw new Error("simulated interruption");
+			}
+		}
+	}
+
+	const { root, runtime, store, runner } = await harness((agentDir) => new InterruptingStore(agentDir));
+	runtime.checks.set("check-task-a", [
+		{ code: 1, stdout: "", stderr: "first" },
+		{ code: 1, stdout: "", stderr: "second" },
+	]);
+	const first = await runner.execute(request({ tasks: [task("task-a"), task("task-b")] }), root);
+	assert.equal(first.state.tasks[0]!.status, "needs_attention");
+	assert.equal(first.state.tasks[1]!.status, "pending");
+
+	(store as InterruptingStore).interruptNextRunningSave = true;
+	await assert.rejects(
+		runner.resume({ id: "test-run", action: "verify", taskId: "task-a" }, root),
+		/simulated interruption/,
+	);
+	const recovered = await new AutoDagRunner(runtime, store).status({ id: "test-run" }, root);
+	assert.equal(recovered.state.tasks[0]!.status, "needs_attention");
+	assert.match(recovered.state.tasks[0]!.failure!, /interrupted while this task/);
+	assert.equal(recovered.state.tasks[1]!.status, "pending");
+});
+
+test("manual verification replaces stale worker output before a dependent task", async () => {
 	const { root, runtime, runner } = await harness();
+	runtime.children.push(
+		{ output: "STALE_FIRST_OUTPUT" },
+		{ output: "STALE_SECOND_OUTPUT" },
+		{ output: "dependent complete" },
+	);
+	runtime.checks.set("check-task-a", [
+		{ code: 1, stdout: "", stderr: "first" },
+		{ code: 1, stdout: "", stderr: "second" },
+	]);
+	await runner.execute(request({ tasks: [task("task-a"), task("task-b", ["task-a"])] }), root);
+	runtime.checks.set("check-task-a", [{ code: 0, stdout: "ok", stderr: "" }]);
+
+	const resumed = await runner.resume({ id: "test-run", action: "verify", taskId: "task-a" }, root);
+	const dependentPacket = runtime.calls.filter(({ kind }) => kind === "worker").at(-1)!.task;
+	assert.equal(resumed.state.accepted, true);
+	assert.match(resumed.state.tasks[0]!.output!, /Manually verified by Main/);
+	assert.match(dependentPacket, /Manually verified by Main/);
+	assert.doesNotMatch(dependentPacket, /STALE_(?:FIRST|SECOND)_OUTPUT/);
+});
+
+test("interrupted running state becomes needs_attention without replay", async () => {
+	const { root, runtime, store, runner } = await harness();
 	const definition = request();
 	const state: RunState = {
 		version: RUN_STATE_VERSION,
@@ -243,7 +366,7 @@ test("interrupted running state becomes needs_attention without replay", async (
 		createdAt: 100,
 		updatedAt: 500,
 	};
-	await new FileRunStore().save(state);
+	await store.save(state);
 	const result = await runner.status({ id: "test-run" }, root);
 	assert.equal(result.state.tasks[0]!.status, "needs_attention");
 	assert.match(result.state.tasks[0]!.failure!, /will not replay automatically/);
@@ -269,8 +392,7 @@ test("active abort leaves terminal state persistence to the lifecycle owner", as
 		}
 	}
 
-	const store = new ReorderingStore();
-	const { root, runtime, runner } = await harness(store);
+	const { root, runtime, store, runner } = await harness((agentDir) => new ReorderingStore(agentDir));
 	runtime.children.push({ usage: usage(2) });
 	let checkStarted!: () => void;
 	const checking = new Promise<void>((resolve) => {
@@ -331,6 +453,23 @@ test("missing Role or route pauses before any launch", async () => {
 	assert.equal(result.state.tasks[0]!.attempts, 0);
 	assert.equal(result.state.tasks[0]!.status, "needs_attention");
 	assert.match(result.state.tasks[0]!.failure!, /Prelaunch failure/);
+});
+
+test("Auto DAG registers no orchestration tools inside an ephemeral subagent child", () => {
+	const previous = process.env[EXECUTION_BUDGET_ENV];
+	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 50, maxMs: 30 * 60_000, startedAt: Date.now() });
+	const tools: string[] = [];
+	try {
+		autoDagExtension({
+			registerTool(tool: { name: string }) {
+				tools.push(tool.name);
+			},
+		} as unknown as ExtensionAPI);
+	} finally {
+		if (previous === undefined) delete process.env[EXECUTION_BUDGET_ENV];
+		else process.env[EXECUTION_BUDGET_ENV] = previous;
+	}
+	assert.deepEqual(tools, []);
 });
 
 test("Reviewer is not launched without an explicit judgment criterion", async () => {
@@ -397,22 +536,74 @@ test("unverified final judgment stays explicit until deliberate approval on the 
 	assert.equal(approved.state.manualInterventions, 1);
 });
 
-test("Git identity includes staging and untracked content without changing the real index", async () => {
+test("durable state stays in Auto DAG's config home without workspace drift", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-auto-dag-state-"));
+	const root = join(directory, "workspace");
+	const agentDir = join(directory, "agent");
+	await initRepository(root);
+	const store = new FileRunStore(agentDir);
+	let clock = 1_000;
+	const runtime: RunnerRuntime = {
+		now: () => clock++,
+		async resolveRoot() { return root; },
+		assertClean: (workspace, signal) => assertCleanGitWorkspace(realExec, workspace, signal),
+		identifyWorkspace: (workspace, signal) => identifyGitWorkspace(realExec, workspace, signal),
+		async runChild(input) {
+			await input.onLaunch?.();
+			return { outcome: "success", exitCode: 0, output: "done", stderr: "" };
+		},
+		async exec() { return { code: 0, stdout: "", stderr: "", killed: false }; },
+	};
+	const result = await new AutoDagRunner(runtime, store).execute(request(), root);
+	const statePath = store.statePath(root, "test-run");
+	const ownedPath = relative(extensionConfigDir("pi-auto-dag", agentDir), statePath);
+	assert.equal(result.state.accepted, true);
+	assert.match(ownedPath, /^state[\\/][0-9a-f]{64}[\\/]test-run\.json$/);
+	assert.equal(JSON.parse(await readFile(statePath, "utf8")).request.id, "test-run");
+	assert.equal((await execFileAsync("git", ["status", "--porcelain"], { cwd: root })).stdout, "");
+});
+
+test("repositories containing submodules fail at the workspace boundary", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-auto-dag-submodule-"));
+	const root = join(directory, "workspace");
+	const child = join(directory, "child");
+	await initRepository(root);
+	await initRepository(child);
+	await execFileAsync("git", ["-c", "protocol.file.allow=always", "submodule", "add", "../child", "vendor/child"], { cwd: root });
+	await execFileAsync("git", ["commit", "-qam", "add submodule"], { cwd: root });
+	const store = new FileRunStore(join(directory, "agent"));
+	let workspaceIdentified = false;
+	let childLaunched = false;
+	const runtime: RunnerRuntime = {
+		now: () => 1_000,
+		async resolveRoot() { return root; },
+		assertClean: (workspace, signal) => assertCleanGitWorkspace(realExec, workspace, signal),
+		async identifyWorkspace() {
+			workspaceIdentified = true;
+			return { branch: "refs/heads/main", head: OID_A, index: OID_A, tree: OID_A };
+		},
+		async runChild() {
+			childLaunched = true;
+			return { outcome: "success", exitCode: 0, output: "done", stderr: "" };
+		},
+		async exec() { return { code: 0, stdout: "", stderr: "", killed: false }; },
+	};
+	await assert.rejects(
+		new AutoDagRunner(runtime, store).execute(request(), root),
+		/does not support Git repositories containing submodules/,
+	);
+	assert.equal(workspaceIdentified, false);
+	assert.equal(childLaunched, false);
+	assert.equal(await store.loadIfPresent(root, "test-run"), undefined);
+});
+
+test("Git identity uses a non-shell temporary index and preserves the real index", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-git-"));
-	await execFileAsync("git", ["init", "-q"], { cwd: root });
-	await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: root });
-	await execFileAsync("git", ["config", "user.name", "Test"], { cwd: root });
-	await writeFile(join(root, "tracked.txt"), "tracked\n");
-	await execFileAsync("git", ["add", "tracked.txt"], { cwd: root });
-	await execFileAsync("git", ["commit", "-qm", "base"], { cwd: root });
-	const exec = async (command: string, args: string[], options?: { cwd?: string }) => {
-		try {
-			const result = await execFileAsync(command, args, { cwd: options?.cwd });
-			return { code: 0, stdout: result.stdout, stderr: result.stderr };
-		} catch (error) {
-			const failure = error as { code?: number; stdout?: string; stderr?: string };
-			return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
-		}
+	await initRepository(root);
+	const commands: string[] = [];
+	const exec: ExecCommand = async (command, args, options) => {
+		commands.push(command);
+		return await realExec(command, args, options);
 	};
 	const before = await identifyGitWorkspace(exec, root);
 	await writeFile(join(root, "tracked.txt"), "changed\n");
@@ -429,6 +620,7 @@ test("Git identity includes staging and untracked content without changing the r
 	const after = await identifyGitWorkspace(exec, root);
 	assert.equal(after.head, before.head);
 	assert.notEqual(after.tree, before.tree);
+	assert.equal(commands.includes("env"), false);
 	const cached = await execFileAsync("git", ["diff", "--cached", "--name-only"], { cwd: root });
 	assert.equal(cached.stdout, "");
 	assert.equal(await readFile(join(root, "new", "untracked.txt"), "utf8"), "untracked\n");
