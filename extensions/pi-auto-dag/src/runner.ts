@@ -258,6 +258,12 @@ class BudgetExpired extends Error {
 	}
 }
 
+class AbortRequested extends Error {
+	constructor() {
+		super("Auto DAG abort requested by Main.");
+	}
+}
+
 type UsageMeter = { usage?: Usage };
 type ActiveRun = { id: string; controller: AbortController; state: RunState };
 type VerificationFailure = { message: string; correctable: boolean };
@@ -399,10 +405,7 @@ export class AutoDagRunner {
 		const root = await this.runtime.resolveRoot(cwd);
 		const active = this.active.get(root);
 		if (active?.id === id) {
-			active.state.manualInterventions += 1;
-			active.state.updatedAt = this.runtime.now();
-			active.controller.abort(new Error("Auto DAG abort requested by Main."));
-			await this.store.save(active.state);
+			active.controller.abort(new AbortRequested());
 			return { text: `Abort requested for Auto DAG ${id}.`, state: active.state };
 		}
 		return await this.store.withLock(root, async () => {
@@ -568,6 +571,21 @@ export class AutoDagRunner {
 			if (state.activeSince !== undefined) {
 				state.elapsedMs += Math.max(0, this.runtime.now() - state.activeSince);
 				state.activeSince = undefined;
+			}
+			if (controller.signal.reason instanceof AbortRequested) {
+				state.manualInterventions += 1;
+				if (state.status !== "needs_attention") {
+					const task = state.tasks.find(({ status }) => status === "running");
+					if (task) {
+						task.status = "needs_attention";
+						task.failure = "Execution stopped: Auto DAG abort requested by Main.";
+					} else {
+						state.final.status = "needs_attention";
+						state.final.failure = "Execution stopped: Auto DAG abort requested by Main.";
+					}
+					state.status = "needs_attention";
+					state.accepted = false;
+				}
 			}
 			state.updatedAt = this.runtime.now();
 			this.active.delete(state.root);

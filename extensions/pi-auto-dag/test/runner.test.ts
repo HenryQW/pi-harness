@@ -111,7 +111,7 @@ class FakeRuntime implements RunnerRuntime {
 			...(plan.usage === undefined ? {} : { usage: plan.usage }),
 		};
 	}
-	async exec(command: string, _args: string[], options: { timeout: number }): Promise<CommandResult> {
+	async exec(command: string, _args: string[], options: { cwd: string; signal: AbortSignal; timeout: number }): Promise<CommandResult> {
 		this.checkCalls.push(command);
 		this.checkTimeouts.push(options.timeout);
 		const plan = this.checks.get(command)?.shift() ?? { code: 0, stdout: "", stderr: "" };
@@ -121,10 +121,10 @@ class FakeRuntime implements RunnerRuntime {
 	}
 }
 
-async function harness() {
+async function harness(store = new FileRunStore()) {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-test-"));
 	const runtime = new FakeRuntime(root);
-	return { root, runtime, runner: new AutoDagRunner(runtime) };
+	return { root, runtime, runner: new AutoDagRunner(runtime, store) };
 }
 
 test("unknown, duplicate, self, and cyclic dependencies launch no child", async () => {
@@ -250,6 +250,53 @@ test("interrupted running state becomes needs_attention without replay", async (
 	assert.equal(result.state.elapsedMs, 700);
 	assert.equal(result.state.usage?.totalTokens, 8);
 	assert.equal(runtime.calls.length, 0);
+});
+
+test("active abort leaves terminal state persistence to the lifecycle owner", async () => {
+	let releaseTerminalSave!: () => void;
+	const terminalSave = new Promise<void>((resolve) => {
+		releaseTerminalSave = resolve;
+	});
+	class ReorderingStore extends FileRunStore {
+		override async save(state: RunState): Promise<void> {
+			const snapshot = JSON.parse(JSON.stringify(state)) as RunState;
+			const staleAbortWrite = snapshot.status === "running"
+				&& snapshot.manualInterventions === 1
+				&& snapshot.tasks[0]!.checks.length === 0;
+			if (staleAbortWrite) await terminalSave;
+			await super.save(snapshot);
+			if (snapshot.status === "needs_attention" && snapshot.manualInterventions === 1) releaseTerminalSave();
+		}
+	}
+
+	const store = new ReorderingStore();
+	const { root, runtime, runner } = await harness(store);
+	runtime.children.push({ usage: usage(2) });
+	let checkStarted!: () => void;
+	const checking = new Promise<void>((resolve) => {
+		checkStarted = resolve;
+	});
+	runtime.exec = async (_command, _args, { signal }) => await new Promise<CommandResult>((_resolve, reject) => {
+		signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+		checkStarted();
+	});
+
+	const running = runner.execute(request(), root);
+	await checking;
+	const aborting = runner.abort({ id: "test-run" }, root);
+	const result = await running;
+	await aborting;
+	const persisted = await store.load(root, "test-run");
+
+	assert.equal(result.state.status, "needs_attention");
+	assert.equal(persisted.status, "needs_attention");
+	assert.equal(persisted.accepted, false);
+	assert.equal(persisted.manualInterventions, 1);
+	assert.equal(persisted.usage?.totalTokens, 4);
+	assert.equal(persisted.tasks[0]!.status, "needs_attention");
+	assert.equal(persisted.tasks[0]!.checks.length, 1);
+	assert.equal(persisted.tasks[0]!.checks[0]!.command, "check-a");
+	assert.equal(persisted.tasks[0]!.checks[0]!.passed, false);
 });
 
 test("launched child error usage persists and is returned once per invocation", async () => {
