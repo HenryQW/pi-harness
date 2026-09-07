@@ -110,8 +110,8 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A
 | --- | --- | --- | --- |
 | `maxSubagents` | Sets the maximum number of active child processes. | Safe integer of at least 1. | `5` |
 | `maxTurns` | Sets the hard provider-turn limit for each child. | Safe integer of at least 1. | `50` |
-| `timeout.idleMinutes` | Sets the idle timeout for a child. | Positive minutes where minutes × 60,000 is at most 2,147,483,647 ms. | `10` |
-| `timeout.maxMinutes` | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`, where minutes × 60,000 is at most 2,147,483,647 ms. | `30` |
+| `timeout.idleMinutes` | Sets the idle timeout for a child. | Positive minutes. | `10` |
+| `timeout.maxMinutes` | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`. | `30` |
 
 Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
 
