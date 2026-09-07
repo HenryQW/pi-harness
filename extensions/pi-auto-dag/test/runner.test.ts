@@ -597,6 +597,36 @@ test("repositories containing submodules fail at the workspace boundary", async 
 	assert.equal(await store.loadIfPresent(root, "test-run"), undefined);
 });
 
+test("post-worker identity rejects a newly added submodule", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-auto-dag-submodule-worker-"));
+	const root = join(directory, "workspace");
+	const child = join(directory, "child");
+	await initRepository(root);
+	await initRepository(child);
+	let checksRun = false;
+	const runtime: RunnerRuntime = {
+		now: () => 1_000,
+		async resolveRoot() { return root; },
+		assertClean: (workspace, signal) => assertCleanGitWorkspace(realExec, workspace, signal),
+		identifyWorkspace: (workspace, signal) => identifyGitWorkspace(realExec, workspace, signal),
+		async runChild(input) {
+			await input.onLaunch?.();
+			await execFileAsync("git", ["-c", "protocol.file.allow=always", "submodule", "add", "../child", "vendor/child"], { cwd: root });
+			return { outcome: "success", exitCode: 0, output: "done", stderr: "" };
+		},
+		async exec() {
+			checksRun = true;
+			return { code: 0, stdout: "", stderr: "", killed: false };
+		},
+	};
+
+	const result = await new AutoDagRunner(runtime, new FileRunStore(join(directory, "agent"))).execute(request(), root);
+	assert.equal(result.state.status, "needs_attention");
+	assert.equal(result.state.accepted, false);
+	assert.match(result.state.tasks[0]!.failure!, /does not support Git repositories containing submodules/);
+	assert.equal(checksRun, false);
+});
+
 test("Git identity uses a non-shell temporary index and preserves the real index", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-git-"));
 	await initRepository(root);

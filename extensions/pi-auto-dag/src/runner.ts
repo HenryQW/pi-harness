@@ -944,6 +944,10 @@ export async function identifyGitWorkspace(exec: ExecCommand, root: string, sign
 		const index = oid(await requireGitWithIndex(["write-tree"], root, indexCopy, signal), "index tree");
 		await requireGitWithIndex(["read-tree", "HEAD"], root, workspaceIndex, signal);
 		await requireGitWithIndex(["add", "-A", "--", "."], root, workspaceIndex, signal);
+		const workspace = await requireGitWithIndex(["ls-files", "--stage"], root, workspaceIndex, signal);
+		if (workspace.split("\n").some((line) => line.startsWith("160000 "))) {
+			throw new Error("Auto DAG does not support Git repositories containing submodules.");
+		}
 		const tree = oid(await requireGitWithIndex(["write-tree"], root, workspaceIndex, signal), "workspace tree");
 		return { branch, head, index, tree };
 	} finally {
