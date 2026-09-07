@@ -3,10 +3,12 @@
 Agents release packages by bumping workspace versions and pushing `main`.
 
 ```bash
-pnpm --filter ./extensions/<package> version patch --no-git-tag-version
+pnpm --filter ./<root>/<package> version patch --no-git-tag-version
 git commit -am "chore: release <package>"
 git push origin main
 ```
+
+Use `extensions` as the root for Pi extensions and `packages` for support libraries.
 
 `.github/workflows/publish.yml` runs checks, compares every public workspace version with npm, and publishes only new versions. No tags needed. Private workspaces are skipped.
 

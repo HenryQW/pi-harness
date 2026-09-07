@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { defineConfig } from "blume";
 import type { ContentSource } from "blume/sources/types.ts";
 
-import { extensions, repoRoot } from "./extension-catalog.ts";
+import { catalog, extensions, repoRoot, supportLibraries } from "./extension-catalog.ts";
 import { licenseBadgeUrl, npmBadgeUrl, versionBadgeUrl } from "./npm-badge.ts";
 import {
   inlineRelativeSvgImages,
@@ -26,14 +26,18 @@ const docs = [
     ref: "index.md",
     slug: "overview",
   },
-  ...extensions.map(({ description, directory, name, version }) => ({
-    data: { seo: { description }, title: name },
-    editPath: `extensions/${directory}/README.md`,
-    npm: { name, version },
-    path: join(repoRoot, "extensions", directory, "README.md"),
-    ref: `extensions/${directory}/index.md`,
-    slug: `extensions/${directory}`,
-  })),
+  ...catalog.map((item) => {
+    const { description, directory, name, version } = item;
+    const root = Object.hasOwn(item, "pi") ? "extensions" : "packages";
+    return {
+      data: { seo: { description }, title: name },
+      editPath: `${root}/${directory}/README.md`,
+      npm: { name, version },
+      path: join(repoRoot, root, directory, "README.md"),
+      ref: `${root}/${directory}/index.md`,
+      slug: `${root}/${directory}`,
+    };
+  }),
 ];
 const docsByRef = new Map(docs.map((doc) => [doc.ref, doc]));
 const readDoc = async ({ editPath, npm, path }: (typeof docs)[number]) => {
@@ -62,8 +66,8 @@ const readDoc = async ({ editPath, npm, path }: (typeof docs)[number]) => {
   const linkedText = linkRelativeMarkdownToGitHub(text, editPath);
   return `${stats}\n\n${linkedText}`;
 };
-const extensionDocs: ContentSource = {
-  name: "extensions",
+const packageDocs: ContentSource = {
+  name: "packages",
   staged: true,
   load: async () => ({
     diagnostics: [],
@@ -96,7 +100,7 @@ export default defineConfig({
   logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
     root: ".",
-    sources: [{ type: "custom", source: extensionDocs }],
+    sources: [{ type: "custom", source: packageDocs }],
   },
   deployment: {
     output: "static",
@@ -115,9 +119,22 @@ export default defineConfig({
         collapsed: false,
         items: extensions.map(({ directory }) => `/extensions/${directory}`),
       },
+      {
+        label: "Support libraries",
+        collapsed: false,
+        items: supportLibraries.map(({ directory }) => `/packages/${directory}`),
+      },
     ],
   },
   redirects: [
+    {
+      from: "/extensions/pi-config-store",
+      to: "/packages/pi-config-store",
+    },
+    {
+      from: "/extensions/pi-herdr",
+      to: "/packages/pi-herdr",
+    },
     {
       from: "/deprecated",
       to: "https://github.com/HenryQW/pi-harness/tree/main/deprecated",

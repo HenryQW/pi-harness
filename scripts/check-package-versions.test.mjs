@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -12,12 +12,14 @@ function run(cwd, command, args) {
   return spawnSync(command, args, { cwd, encoding: "utf8" });
 }
 
-test("no-arg mode checks uncommitted published changes against origin/main", () => {
+test("no-arg mode checks packages moved between workspace roots", () => {
   const repo = mkdtempSync(join(tmpdir(), "package-version-gate-"));
 
   try {
     const packageDir = join(repo, "extensions", "example");
     mkdirSync(packageDir, { recursive: true });
+    mkdirSync(join(repo, "packages"));
+    mkdirSync(join(repo, "extensions", "stale-package", "dist"), { recursive: true });
     writeFileSync(join(packageDir, "index.js"), "export const value = 1;\n");
     writeFileSync(join(packageDir, "package.json"), `${JSON.stringify({ name: "@test/example", version: "1.0.0", files: ["index.js"] }, null, 2)}\n`);
 
@@ -36,13 +38,17 @@ test("no-arg mode checks uncommitted published changes against origin/main", () 
     const explicitRevisions = run(repo, process.execPath, [checkerPath, "--", "origin/main", "HEAD"]);
     assert.equal(explicitRevisions.status, 0, explicitRevisions.stderr);
 
-    writeFileSync(join(packageDir, "index.js"), "export const value = 2;\n");
+    const movedPackageDir = join(repo, "packages", "example");
+    renameSync(packageDir, movedPackageDir);
+    writeFileSync(join(movedPackageDir, "index.js"), "export const value = 2;\n");
+    assert.equal(run(repo, "git", ["add", "-A"]).status, 0);
 
     const unchangedVersion = run(repo, process.execPath, [checkerPath]);
     assert.equal(unchangedVersion.status, 1);
     assert.match(unchangedVersion.stderr, /@test\/example: version remains 1\.0\.0/);
+    assert.doesNotMatch(unchangedVersion.stderr, /fatal:/);
 
-    writeFileSync(join(packageDir, "package.json"), `${JSON.stringify({ name: "@test/example", version: "1.0.1", files: ["index.js"] }, null, 2)}\n`);
+    writeFileSync(join(movedPackageDir, "package.json"), `${JSON.stringify({ name: "@test/example", version: "1.0.1", files: ["index.js"] }, null, 2)}\n`);
 
     const bumpedVersion = run(repo, process.execPath, [checkerPath]);
     assert.equal(bumpedVersion.status, 0, bumpedVersion.stderr);

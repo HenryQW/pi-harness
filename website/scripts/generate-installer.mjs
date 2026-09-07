@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,11 +12,11 @@ const packageName = /^@henryqw\/[a-z0-9][a-z0-9-]*$/;
 export function collectInstallablePackages(root = repoRoot) {
   const extensionsDir = join(root, "extensions");
   const names = readdirSync(extensionsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && existsSync(join(extensionsDir, entry.name, "package.json")))
     .map((entry) => {
       const manifestPath = join(extensionsDir, entry.name, "package.json");
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      if (manifest.private || !manifest.pi) return null;
+      if (manifest.private || !Object.hasOwn(manifest, "pi")) return null;
       if (typeof manifest.name !== "string" || !packageName.test(manifest.name)) {
         throw new Error(`Invalid installable package name in ${manifestPath}`);
       }

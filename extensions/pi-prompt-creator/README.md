@@ -11,11 +11,13 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-prompt-creator
 ```
 
-Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`.
+Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`. Open `/task-models` again and verify the saved route or task assignment.
 
 ## Works with
 
-**Required.** [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) provides the isolated draft model route.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides the isolated draft model route. |
 
 ## Use
 
@@ -33,7 +35,7 @@ The menu adapts to the current state:
 | Item | Action |
 | --- | --- |
 | `Analyze now` or `Analyze again` | Start one visible background analysis. |
-| `Automatic On` or `Automatic Off` | Save the automatic setting. |
+| `Automatic On` or `Automatic Off` | Turn automatic analysis on or off. |
 | `Show candidate` | Add the candidate to the conversation for review. |
 | `Dismiss candidate` | Forget the pending candidate. |
 | `Save latest Main draft` | Save Main's newest completed review reply after you show a candidate. |
@@ -53,6 +55,12 @@ A manual analysis consumes that opportunity.
 Branch changes reset the input counter. Automatic analysis and candidate widgets require the interactive TUI.
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
+
+Automatic analysis sends the current conversation to the child model configured through `/task-models`.
+
+Its payload includes the active compaction or branch summary, user text, successfully completed assistant text, and effective prompt names and descriptions.
+
+Project context files and prompt templates are disabled for the child. Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
 
 Analysis asks a tool-free child for one JSON response. It has no user extensions, Skills, or saved session. The extension does not retry failed analysis.
 
@@ -88,12 +96,12 @@ Use `/task-models` to select the model and thinking level. The extension owns no
 
 ## Config
 
-`~/.pi/agent/config/pi-prompt-creator/config.json`
+Package-owned: `~/.pi/agent/config/pi-prompt-creator/config.json`
 
-| Field | Required | Possible values | Default |
+| Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `automatic` | No | `true` or `false` | `true` |
-| `inputThreshold` | No | Positive integer | `3` |
+| `automatic` | Runs automatic analysis after enough user inputs. | Boolean. | `true` |
+| `inputThreshold` | Sets the number of non-empty user inputs before automatic analysis. | Positive integer. | `3` |
 
 Edit either field, then run `/reload` to apply the change. Omitted fields use their defaults.
 
@@ -109,59 +117,7 @@ A pending candidate stays in memory only. Automatic mode persists, but counters 
 
 Saved prompts live at `~/.pi/agent/prompts/<name>.md`. Saving never replaces an existing file.
 
-## Data, cost, and privacy
-
-Automatic analysis is on by default. It sends the current conversation to the child model configured through `/task-models`.
-
-Disable automatic analysis through `/promptor`.
-
-The payload includes the active compaction or branch summary, user text, and successfully completed assistant text. It also includes effective prompt names and descriptions.
-
-Project context files and prompt templates are disabled for the child.
-
-Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
-
-## Automatic mode
-
-Automatic mode waits for the configured number of non-empty user inputs. The default is three.
-
-It starts at the next idle `agent_settled` event. It starts at most once per extension runtime.
-
-A manual analysis consumes that opportunity. Automatic mode persists, but counters and candidates do not.
-
-Branch changes reset the input counter. Automatic analysis and candidate widgets require the interactive TUI.
-
-## Review and save
-
-A completed candidate stays in memory. The widget shows `Prompt ready — /promptor` until you show or dismiss it.
-
-The extension never injects a candidate automatically. `Show candidate` adds one visible message and marks its contents as untrusted.
-
-Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving.
-
-The save item appears only after you show a candidate and Main then completes a valid Markdown review reply.
-
-Saving uses that latest retained Main reply as the entire file. Replies before the active compaction or branch summary cannot be saved.
-
-An interrupted, failed, empty, or tool-use reply cannot be saved. The extension never falls back to an older reply.
-
-A successful save ends that review. Show another candidate and complete another Main review reply before saving again.
-
-The menu asks for a lowercase kebab-case name. A candidate name appears only as a hint.
-
-Names start with a letter and contain at most 64 ASCII characters. Existing command names and prompt files are rejected.
-
-Prompts are created at `~/.pi/agent/prompts/<name>.md`. Creation never replaces a file.
-
-A successful save reloads Pi resources. If reload fails, the prompt remains saved and `/reload` can load it.
-
-## Model routing
-
-The extension registers `pi-prompt-creator/draft`. Its default task profile is `fast`.
-
-Use `/task-models` to select the model and thinking level. The extension owns no model configuration.
-
-## Limits and failures
+## Limits and recovery
 
 The child payload stays within 30,000 characters, including its JSON envelope and prompt metadata.
 

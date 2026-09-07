@@ -29,7 +29,11 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /Never claim a validation command matches unknown CI/i);
 	assert.match(skill, /Order declared validation from the cheapest focused check to broader required checks/i);
 	assert.match(skill, /Add non-empty `review` only for an explicit judgment/i);
-	assert.doesNotMatch(skill, /acceptance criteria/i);
+	assert.match(skill, /caller-managed loop.*caller or repository policy.*explicitly requires judgment review.*not required for every ordinary implementation/is);
+	assert.match(skill, /`delegate_task` with `role: "reviewer"`.*effective `reviewer` Role.*same-named user Role remains effective/is);
+	assert.match(skill, /Do not launch the Reviewer unless it can see the actual candidate.*isolated implementation candidate.*use `delegate_flow`/is);
+	assert.match(skill, /initial review returns findings.*repair.*focused validation.*before one focused re-review/is);
+	assert.match(skill, /Empty Reviewer output.*failure.*Retry only when explicit caller policy.*otherwise.*block completion.*retry.*also empty.*block completion.*Only `PASS` completes.*re-review findings.*block completion.*Do not start another repair\/review round/is);
 	assert.match(skill, /without `review`.*exact validated tip/is);
 	assert.match(skill, /with `review`.*exact `\{base, tip, patchPath\}` protocol.*exactly `PASS`/is);
 	assert.match(skill, /delegate_flow_continue\(\{ guidance:/);
@@ -38,7 +42,7 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /terminal failure.*retained path/is);
 	assert.match(skill, /Report a cleanup warning from a successful Flow as-is.*Do not investigate it unless the user asks or cleanup is part of acceptance/is);
 	assert.match(skill, /Dependent work remains outside Flow/i);
-	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|candidate|advisory|reconsideration|public review/i);
+	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|advisory|reconsideration|public review/i);
 });
 
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {

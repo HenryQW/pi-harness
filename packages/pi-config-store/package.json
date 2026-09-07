@@ -1,12 +1,12 @@
 {
-  "name": "@henryqw/pi-herdr",
-  "version": "0.4.5",
-  "description": "Shared client for interacting with Herdr from Node.js tools and Pi packages.",
+  "name": "@henryqw/pi-config-store",
+  "version": "1.0.4",
+  "description": "Safe JSON configuration storage for Pi extensions.",
   "keywords": [
     "pi-package",
     "pi",
-    "herdr",
-    "cli"
+    "config",
+    "storage"
   ],
   "type": "module",
   "engines": {
@@ -28,20 +28,23 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "test": "npm run build && node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts test/*.test.ts",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
-  },
-  "devDependencies": {
-    "@types/proper-lockfile": "^4.1.4"
   },
   "dependencies": {
     "proper-lockfile": "^4.1.2"
   },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-harness.git",
-    "directory": "extensions/pi-herdr"
+    "directory": "packages/pi-config-store"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-harness/issues"

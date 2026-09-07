@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 
 const packageManagerExecPath = process.env.npm_execpath;
 if (!packageManagerExecPath) throw new Error("Package manager executable is required to run workspace tests.");
 
 const concurrency = 2;
 const testArgs = process.argv.slice(2);
-const workspaces = readdirSync("extensions", { withFileTypes: true })
-	.filter((entry) => entry.isDirectory())
-	.map((entry) => JSON.parse(readFileSync(`extensions/${entry.name}/package.json`, "utf8")))
+const workspaces = ["extensions", "packages"]
+	.flatMap((root) => readdirSync(root, { withFileTypes: true })
+		.filter((entry) => entry.isDirectory() && existsSync(`${root}/${entry.name}/package.json`))
+		.map((entry) => JSON.parse(readFileSync(`${root}/${entry.name}/package.json`, "utf8"))))
 	.filter((manifest) => manifest.scripts?.test)
 	.map((manifest) => manifest.name);
 

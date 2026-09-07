@@ -4,14 +4,12 @@ Compact long Pi sessions early through a shared model route, then continue the i
 
 ## Install
 
-Install the required Task Models extension first:
-
 ```bash
 pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-Run `/task-models` and configure the `fast` profile. Open `/task-models` again to verify that `fast` no longer says `not configured`.
+Install `@henryqw/pi-task-models` first. Run `/task-models` and configure the `fast` profile. Open `/task-models` again to verify that `fast` no longer says `not configured`.
 
 Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 
@@ -25,17 +23,17 @@ Disable Pi's built-in auto-compaction in `~/.pi/agent/settings.json`:
 
 Restart Pi after install or settings changes. Trusted `.pi/settings.json` files must not set `compaction.enabled` back to `true`.
 
-Run `/auto-compact`, enter a threshold, and expect `Auto-compact threshold set to <value>%.`
-
 ## Works with
 
-**Required.** [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) provides shared compaction routes.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared compaction routes. |
 
 Its `~/.pi/agent/config/pi-task-models/config.json` file is shared and owned by Task Models. The local `pi-auto-compact/autoCompact` declaration defaults to `fast`. A task entry is an explicit user override.
 
 ## Use
 
-Use `/auto-compact` to set the compaction threshold.
+Run `/auto-compact` and enter a threshold. Pi confirms it as `Auto-compact threshold set to <value>%.`
 
 ## Flow
 
@@ -50,13 +48,9 @@ Malformed shared task-model config is reported and left unchanged. Compaction th
 
 Package-owned: `~/.pi/agent/config/pi-auto-compact/config.json`
 
-```json
-{
-  "autoCompactThreshold": 70
-}
-```
-
-`autoCompactThreshold` is optional. It must be a number that is at least 25 and below 100. The default is `70`.
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `autoCompactThreshold` | Sets the context-use percentage that triggers compaction. | Number from 25 inclusive to below 100. | `70` |
 
 Unknown fields are ignored. Legacy model fields are obsolete. `/auto-compact` writes this file.
 
