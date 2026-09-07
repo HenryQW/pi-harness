@@ -118,22 +118,29 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A
 | --- | --- | --- | --- |
 | `maxSubagents` | Sets the maximum number of active child processes. | Safe integer of at least 1. | `5` |
 | `maxTurns` | Sets the hard provider-turn limit for each child. | Safe integer of at least 1. | `50` |
-| `timeout.idleMinutes` | Sets the idle timeout for a child. | Positive minutes. | `10` |
-| `timeout.maxMinutes` | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`. | `30` |
+| `maxTokens` | Sets the token limit for each child. | Safe integer of at least 1. | Unlimited |
+| `timeout.idleMinutes` | Sets the idle timeout for a child. | Positive minutes; minutes × 60,000 ≤ 2,147,483,647 ms | `10` |
+| `timeout.maxMinutes` | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`; minutes × 60,000 ≤ 2,147,483,647 ms | `30` |
+
+`maxTokens` applies separately to every child. This includes `delegate_task` and each Flow Implementer, Reviewer, and repair launch. It is not a shared pool or per-call option. Set it only in this file.
+
+Pi adds each completed assistant response's `Usage.totalTokens` once. This matches the executor's aggregate `Usage`. At 80%, a Role receives one convergence warning.
+
+A terminal response that crosses `maxTokens` succeeds. A continuing crossing turn completes its tools. Pi then disables tools and allows one response-only handoff. That handoff can overshoot the limit, so `maxTokens` is not an exact cap. Further continuation rejects with `token_limit`, aggregate `Usage`, and bounded last output.
 
 Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
 
 ### Final response handoff
 
-When a Role launch reaches a continuing penultimate turn, Pi reserves the final allowed turn for a response-only handoff. This includes `delegate_task` and every Implementer or Reviewer launch within `delegate_flow`.
+Role launches reserve a response-only handoff at a continuing `maxTokens` crossing or the penultimate `maxTurns` turn. This includes `delegate_task` and every Implementer or Reviewer launch within `delegate_flow`.
 
 With `maxTurns` set to 1, Pi disables tools at startup. The sole provider turn is the response-only handoff.
 
-Pi waits for the penultimate turn's tools. It then disables all tools and requests a final report. The final allowed provider request has no tools. A terminal penultimate response gets no handoff.
+Pi waits for the current turn's tools. It then disables all tools and requests a final report. A terminal boundary response gets no handoff.
 
-The fixed decision packet asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence. The child returns only that output, such as a Flow Reviewer's exact `PASS` or caller-required structured output. It reserves a turn within the existing hard limit; it never adds a model turn. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
+The fixed decision packet asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence. The child returns only that output, such as a Flow Reviewer's exact `PASS` or caller-required structured output. The handoff stays within `maxTurns`, but it is the one allowed turn after a token crossing. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
 
-A raw `createEphemeralSubagentExecutor` launch does not guarantee this handoff. A timeout, provider failure, or child-process failure can end a Role launch before handoff.
+A raw `createEphemeralSubagentExecutor` launch can enforce the extra-turn window. It cannot guarantee disabled tools or the final handoff. A timeout, provider failure, or child-process failure can also end a Role launch before handoff.
 
 Malformed or unreadable JSON, a non-object root, unknown keys, and invalid values produce one warning. Invalid settings use defaults while valid settings still apply. If the effective maximum is not greater than the idle timeout, both timeout settings use defaults. The file is never rewritten.
 

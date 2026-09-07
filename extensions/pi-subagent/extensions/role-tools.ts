@@ -1,5 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_EXCLUDED_TOOL_NAMES, EXECUTION_BUDGET_ENV, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import {
+	CHILD_EXCLUDED_TOOL_NAMES,
+	EXECUTION_BUDGET_ENV,
+	ROLE_TOOL_POLICY_FLAG,
+	type EphemeralSubagentExecutionBudget,
+} from "@henryqw/pi-subagent";
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
@@ -24,7 +29,7 @@ function configuredTools(value: unknown): string[] {
 	return [...new Set(parsed.map((name) => name.trim()))];
 }
 
-function executionBudget(value: string | undefined): { maxTurns: number; maxMs: number; startedAt: number } | undefined {
+function executionBudget(value: string | undefined): EphemeralSubagentExecutionBudget | undefined {
 	if (value === undefined) return;
 	let parsed: unknown;
 	try {
@@ -36,13 +41,22 @@ function executionBudget(value: string | undefined): { maxTurns: number; maxMs: 
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
 	}
 	const budget = parsed as Record<string, unknown>;
-	if (Object.keys(budget).length !== 3 || !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
+	const maxTokensValid = budget.maxTokens === undefined
+		|| Number.isSafeInteger(budget.maxTokens) && (budget.maxTokens as number) >= 1;
+	if (Object.keys(budget).some((key) => !["maxTurns", "maxMs", "startedAt", "maxTokens"].includes(key))
+		|| !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
 		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < 1
 		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0
-		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0) {
+		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0
+		|| !maxTokensValid) {
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
 	}
-	return { maxTurns: budget.maxTurns as number, maxMs: budget.maxMs, startedAt: budget.startedAt as number };
+	return {
+		maxTurns: budget.maxTurns as number,
+		maxMs: budget.maxMs,
+		startedAt: budget.startedAt as number,
+		...(budget.maxTokens === undefined ? {} : { maxTokens: budget.maxTokens as number }),
+	};
 }
 
 function expectsAnotherTurn(message: unknown): boolean {
@@ -51,6 +65,18 @@ function expectsAnotherTurn(message: unknown): boolean {
 	return record.role === "assistant" && Array.isArray(record.content)
 		&& record.content.some((part) => part && typeof part === "object" && !Array.isArray(part)
 			&& (part as Record<string, unknown>).type === "toolCall");
+}
+
+function messageTokens(message: unknown): number {
+	if (!message || typeof message !== "object" || Array.isArray(message)) return 0;
+	const usage = (message as Record<string, unknown>).usage;
+	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return 0;
+	const totalTokens = (usage as Record<string, unknown>).totalTokens;
+	return typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens >= 0 ? totalTokens : 0;
+}
+
+function joinBudgetParts(parts: string[]): string {
+	return `${parts.slice(0, -1).join(", ")}${parts.length > 2 ? "," : ""} and ${parts.at(-1)}`;
 }
 
 export default function roleTools(pi: ExtensionAPI): void {
@@ -82,13 +108,18 @@ export default function roleTools(pi: ExtensionAPI): void {
 
 	if (!budget) return;
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
+	const warningTokens = budget.maxTokens === undefined ? undefined : Math.ceil(budget.maxTokens * WARNING_RATIO);
 	let completedTurns = 0;
+	let completedTokens = 0;
 	let turnWarningSent = false;
+	let tokenWarningSent = false;
 	let runtimeWarningSent = false;
 	pi.on("turn_end", (event) => {
 		completedTurns += 1;
+		completedTokens += messageTokens(event.message);
 		if (!expectsAnotherTurn(event.message) || handoffSent) return;
-		if (completedTurns === budget.maxTurns - 1) {
+		if (completedTurns === budget.maxTurns - 1
+			|| budget.maxTokens !== undefined && completedTokens >= budget.maxTokens) {
 			pi.setActiveTools([]);
 			pi.sendMessage(FINAL_HANDOFF_MESSAGE, { deliverAs: "steer", triggerTurn: false });
 			handoffSent = true;
@@ -96,16 +127,23 @@ export default function roleTools(pi: ExtensionAPI): void {
 		}
 		const elapsedMs = Math.max(0, Date.now() - budget.startedAt);
 		const turnWarningDue = !turnWarningSent && completedTurns >= warningTurn;
+		const tokenWarningDue = warningTokens !== undefined && !tokenWarningSent && completedTokens >= warningTokens;
 		const runtimeWarningDue = !runtimeWarningSent && elapsedMs >= budget.maxMs * WARNING_RATIO;
-		if (!turnWarningDue && !runtimeWarningDue) return;
+		if (!turnWarningDue && !tokenWarningDue && !runtimeWarningDue) return;
 		if (turnWarningDue) turnWarningSent = true;
+		if (tokenWarningDue) tokenWarningSent = true;
 		if (runtimeWarningDue) runtimeWarningSent = true;
 		const remainingTurns = Math.max(0, budget.maxTurns - completedTurns);
 		const remainingMinutes = Math.max(0, Math.ceil((budget.maxMs - elapsedMs) / 60_000));
 		const maxMinutes = budget.maxMs / 60_000;
+		const parts = [
+			`${remainingTurns} of ${budget.maxTurns} turns`,
+			...(budget.maxTokens === undefined ? [] : [`${Math.max(0, budget.maxTokens - completedTokens)} of ${budget.maxTokens} tokens`]),
+			`approximately ${remainingMinutes} of ${maxMinutes} minutes`,
+		];
 		pi.sendMessage({
 			customType: WARNING_MESSAGE_TYPE,
-			content: `**Execution budget warning:** ${remainingTurns} of ${budget.maxTurns} turns and approximately ${remainingMinutes} of ${maxMinutes} minutes remain before forced termination.\nConverge now: stop expanding scope, complete the highest-priority required work, perform only essential validation, and return a concise final result. If completion is impossible, follow your role’s recovery requirements and report the blocker and exact remaining work. This warning does not change your role, scope, or permissions.`,
+			content: `**Execution budget warning:** ${joinBudgetParts(parts)} remain before forced termination.\nConverge now: stop expanding scope, complete the highest-priority required work, perform only essential validation, and return a concise final result. If completion is impossible, follow your role’s recovery requirements and report the blocker and exact remaining work. This warning does not change your role, scope, or permissions.`,
 			display: true,
 		}, { deliverAs: "steer", triggerTurn: false });
 	});
