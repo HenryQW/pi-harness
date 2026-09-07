@@ -36,3 +36,11 @@ A cleanup warning does not undo successful integration. Report a cleanup warning
 ## Ordinary delegation
 
 Use `delegate_task` for a single bounded task, independent parallel tasks, or dependent chain work that is not a Flow. Give each entry its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and focused validation. Choose `modelClass` according to the delegation tool's guidance. A direct `model` replaces only the selected route's model. The route keeps its thinking level. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.
+
+### Evidence loop for implementation
+
+After ordinary implementation and validation, launch one complete built-in `reviewer` task. Supply the exact changed files, implementation and validation evidence, acceptance criteria, and the required verdict: exact `PASS` or findings only.
+
+Repair all findings together, then launch one focused re-review of those repairs. Never launch verdict-only reviews or duplicate full reviews. Treat empty Reviewer output as a tool failure and retry once with the identical packet: the initial review packet stays complete and the re-review packet stays focused. Surface a second empty result.
+
+Do not layer this caller-managed loop onto `delegate_flow`. Flow already owns exact review, one repair continuation, validation replay, and exact `PASS` approval.

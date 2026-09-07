@@ -76,7 +76,9 @@ See the [orchestration guide](./docs/orchestration.md) for full delegation, tran
 
 ### Skills
 
-The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill guides Main's planning and orchestration. It adds no runtime code, config, or Role installation. `delegate_flow` owns its Git mechanics and validation authority.
+The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill guides Main's planning and orchestration. It adds no runtime code, config, or Role installation.
+
+For ordinary implementation work, validate first. Send exact files, evidence, and acceptance criteria to one reviewer. Require `PASS` or findings. Fix all findings together, then request one focused re-review. Retry empty Reviewer output once with the same packet. Do not add this loop to `delegate_flow`; Flow owns exact review, one repair continuation, validation replay, and exact `PASS` approval.
 
 ## Flow
 
