@@ -2247,6 +2247,26 @@ const timer = setInterval(() => {
 	});
 });
 
+test("global maxTokens config reaches each child through the shared executor", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxTokens: 2_000 }));
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `const task = process.argv.at(-1).replace(/^Task: /, "");
+const budget = JSON.parse(process.env.PI_SUBAGENT_EXECUTION_BUDGET);
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: task + ":" + budget.maxTokens }], stopReason: "stop" } }));
+`);
+		process.argv[1] = runner;
+		const app = harness();
+		const result = await app.tool.execute("token-budget", { tasks: [
+			{ role: "worker", name: "First budget", task: "first" },
+			{ role: "worker", name: "Second budget", task: "second" },
+		] }, undefined, undefined, app.ctx);
+		assert.match(result.content[0].text, /first:2000/);
+		assert.match(result.content[0].text, /second:2000/);
+	});
+});
+
 test("config file timeout applies when no explicit policy is passed", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);

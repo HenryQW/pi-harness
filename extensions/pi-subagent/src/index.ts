@@ -29,6 +29,7 @@ export {
 	formatDuration,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentErrorCode,
+	type EphemeralSubagentExecutionBudget,
 	type EphemeralSubagentExecutor,
 	type EphemeralSubagentExecutorOptions,
 	type EphemeralSubagentResult,

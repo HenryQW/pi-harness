@@ -1,11 +1,11 @@
 ---
 name: pi-subagent-delegated-development
-description: Run bounded independent implementation through the runtime-managed Delegate Flow.
+description: Use Delegate Flow, or coordinate explicitly required judgment review for ordinary delegated implementation.
 ---
 
 # Delegated Development
 
-You are Main, the planner/orchestrator: slice work and call `delegate_flow`. Do not implement child work yourself or use external model tools, push, publish, or release.
+You are Main, the planner/orchestrator: slice work and choose `delegate_flow` or `delegate_task` as described below. Do not implement child work yourself or use external model tools, push, publish, or release.
 
 ## Slice
 
@@ -36,3 +36,24 @@ A cleanup warning does not undo successful integration. Report a cleanup warning
 ## Ordinary delegation
 
 Use `delegate_task` for a single bounded task, independent parallel tasks, or dependent chain work that is not a Flow. Give each entry its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and focused validation. Choose `modelClass` according to the delegation tool's guidance. A direct `model` replaces only the selected route's model. The route keeps its thinking level. Keep integration and cross-cutting decisions in Main, and use the minimum number of Subagents needed.
+
+### Optional evidence loop for implementation
+
+Use this caller-managed loop only when the caller or repository policy explicitly requires judgment review. It is not required for every ordinary implementation.
+
+After implementation and focused validation, launch `delegate_task` with `role: "reviewer"` to select the effective `reviewer` Role. A same-named user Role remains effective. The task packet must state:
+
+- the read-only scope;
+- the exact acceptance criteria;
+- exact candidate evidence visible from the Reviewer's working directory and the supplied validation evidence;
+- the exact output contract: return `PASS` alone on approval, or findings only.
+
+Do not launch the Reviewer unless it can see the actual candidate. For an isolated implementation candidate, use `delegate_flow` instead of composing an ordinary review against Main's unchanged checkout.
+
+Empty Reviewer output is a failure. Retry only when explicit caller policy requires one; otherwise surface the failure and block completion. If that retry is also empty, surface the second empty result and block completion.
+
+If the initial review returns findings, repair them together. Run one focused validation of the repaired inputs before one focused re-review. Its task packet must restate the read-only scope, exact output contract, original findings, original acceptance criteria, exact repaired-candidate evidence, and validation evidence.
+
+Only `PASS` completes the loop. Focused re-review findings block completion and must be surfaced. Do not start another repair/review round.
+
+Do not layer this loop onto `delegate_flow`. Flow already owns exact review evidence, exact `PASS` approval, validation replay, one repair continuation, and no automatic retry.

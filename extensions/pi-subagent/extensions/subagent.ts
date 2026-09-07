@@ -301,6 +301,7 @@ export default function subagentExtension(
 	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: maxActiveSubagents,
 		maxTurns: loadedConfig.config.maxTurns ?? DEFAULT_MAX_TURNS,
+		maxTokens: loadedConfig.config.maxTokens,
 		timeout: timeoutPolicy,
 	});
 	// Background children outlive the launching tool call, so they get their own

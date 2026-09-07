@@ -5,8 +5,20 @@ Pi PR observes the current-branch pull request and routes the user to its single
 ## Language
 
 **Current-branch pull request**:
-The GitHub pull request associated with the Pi session's current branch and configured push target, if one exists. Discovery matches the exact head repository and ref, including a fork head with an upstream base.
+The one GitHub pull request proven to match the Pi session's current branch. A configured target proves it directly. A unique inferred target proves it from a validated remote ref, repository, and exact OID.
 _Avoid_: Repository PR list, PR dashboard
+
+**Configured PR target**:
+The current branch's explicit Git push destination. It names one validated remote, repository, host, ref, and remote OID.
+_Avoid_: Upstream guess, default remote
+
+**Inferred PR target**:
+One exact PR target discovered when the branch has no configured push destination. It must be the only validated remote publishing the same branch ref, and its PR head must match the remote OID. It has presentation authority but no mutation authority until the user confirms linking.
+_Avoid_: Guessed upstream, automatic link
+
+**PR discovery blocker**:
+A deterministic reason that PR discovery cannot safely select creation, linking, or another workflow. Examples include ambiguous remotes or PRs, an OID mismatch, a published branch without a PR, and unsafe Git configuration.
+_Avoid_: No PR, transient lookup failure
 
 **PR footer status**:
 One linked pull request number and one plain-language lifecycle or condition shown through Pi's extension status line. It uses the same priority as PR workflow routing.
@@ -37,16 +49,16 @@ A compact one-line action hint tells the user which highest-priority workflow `/
 _Avoid_: `/pr` arguments, workflow menu, multiple actions
 
 **PR workflow routing**:
-Argument-free `/pr` derives one next step from fresh remote and local state. A branch without an upstream push target has no current-branch pull request for routing and selects creation. For an existing pull request, lifecycle and draft no-action states come first, followed by required base update or conflict, CI failure, PR feedback, waiting or local blockers, and merge readiness. Branch update, comment sweep, and CI fix run only with a clean tree and local HEAD equal to the PR head. A failed local prerequisite stops routing instead of falling through. Direct merge keeps its clean equal-or-behind rule. `/pr` does not open a browser, invoke `/done` or `/sweep`, or continue automatically into another workflow.
+Argument-free `/pr` derives one next step from fresh remote and local state. A unique open inferred target selects confirmed branch linking. A true absence selects creation only after validating `origin` and proving that no remote publishes the same ref. A discovery blocker selects no mutation. For a configured pull request, lifecycle and draft no-action states come first, followed by required base update or conflict, CI failure, PR feedback, waiting or local blockers, and merge readiness. Branch update, comment sweep, and CI fix run only with a clean tree and local HEAD equal to the PR head. A failed local prerequisite stops routing instead of falling through. Direct merge keeps its clean equal-or-behind rule. `/pr` does not open a browser, invoke `/done` or `/sweep`, or continue automatically into another workflow.
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
-The footer and widget load at session start, refresh after local commits, PR creation, pushes, and dispatched workflow settlement, and poll every 30 seconds. Any displayed widget clears when `/pr` starts. A dispatched workflow keeps it hidden until agent settlement; direct and no-action routes refresh it after the handler finishes. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
+The footer and widget load at session start, refresh after local commits, PR creation, pushes, dispatched workflow settlement, and successful delegated-task settlement, and poll every 30 seconds. A session outside a Git worktree stays silent and does not poll. Any displayed widget clears when `/pr` starts. A dispatched workflow keeps it hidden until agent settlement; direct and no-action routes refresh it after the handler finishes. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Polling is presentation only and may be stale. `/pr` reads fresh state and is authoritative for actions.
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:
-When the current branch has no pull request, `/pr` dispatches bundled `pi-pr-create`. The workflow resolves the base, scopes and commits pending changes, and validates. It pushes a captured OID to the branch's configured push target. Without one, it uses `origin` and the local branch ref, then sets upstream. It creates or updates the PR for that exact head owner and ref.
-_Avoid_: Configured-target fallback, symbolic push source, duplicated shell workflow, unscoped automatic commit
+When discovery proves that the current branch has no pull request, no published same-name ref, and safe push configuration, `/pr` dispatches bundled `pi-pr-create`. The workflow resolves the base, scopes and commits pending changes, and validates. It repeats PR absence, remote OID, authority, and configuration checks before mutation. It pushes a captured OID to the saved validated URL with an exact remote-OID lease and requires existing refs to be ancestors. Without a target, it uses the validated `origin` and local branch ref with an atomic create-only lease, then sets upstream. It creates or updates the PR for that exact head owner and ref.
+_Avoid_: Creation after ambiguous discovery, configured-target fallback, symbolic push source, duplicated shell workflow, unscoped automatic commit
 
 **PR branch-update workflow**:
 When the current pull request needs a base update or has a merge conflict, `/pr` dispatches bundled `pi-pr-update-branch` only when local HEAD equals the PR head and the worktree is clean. It derives the exact base host and repository from the validated public PR URL. It resolves the current target of the base repository ref, pins that OID, and stops if the ref moves before merge or push. It merges without rewriting history, resolves clear conflicts, validates, and pushes. It stops when resolution requires a product decision.
