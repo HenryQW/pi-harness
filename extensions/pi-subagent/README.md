@@ -80,7 +80,15 @@ See the [orchestration guide](./docs/orchestration.md) for full delegation, tran
 
 The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill guides Main's planning and orchestration. It adds no runtime code, config, or Role installation.
 
-For ordinary implementation work, validate first. Send exact files, evidence, and acceptance criteria to one reviewer. Require `PASS` or findings. Fix all findings together, then request one focused re-review. Retry empty Reviewer output once with the same packet. Do not add this loop to `delegate_flow`; Flow owns exact review, one repair continuation, validation replay, and exact `PASS` approval.
+Its ordinary review loop is optional. Use it only when the caller or repository policy explicitly requires judgment review.
+
+- Call `delegate_task` with `role: "reviewer"` to select the effective `reviewer` Role.
+- Its task packet must state the read-only scope and exact `PASS` or findings contract. Include exact acceptance criteria and validation evidence.
+- The Reviewer must see exact candidate evidence from its working directory. Use `delegate_flow` for an isolated candidate, not an ordinary review from Main's unchanged checkout.
+- Fix initial findings together. Validate repaired inputs once before focused re-review. Include the original findings and acceptance criteria, exact repaired-candidate evidence, and validation evidence.
+- Only `PASS` completes the loop. Surface and block on re-review findings or empty output. Retry empty output only when explicit caller policy requires one. A second empty result blocks. Do not add another round.
+
+Flow is separate. It owns exact review evidence, exact `PASS` approval, validation replay, one repair continuation, and no automatic retry.
 
 ## Flow
 
