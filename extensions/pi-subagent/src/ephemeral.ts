@@ -74,6 +74,8 @@ interface ValidatedExecutorOptions {
 	timeout: EphemeralSubagentTimeout;
 }
 
+type TokenBudgetState = "within" | "crossed" | "final_turn" | "limited";
+
 export type EphemeralSubagentActivityEvent =
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; path?: string }
 	| { type: "tool_execution_end"; toolCallId: string; toolName: string }
@@ -495,9 +497,8 @@ async function runPi(
 		let protocolError: Error | undefined;
 		let aborted = false;
 		let turnLimited = false;
-		let tokenLimited = false;
-		let tokenBudgetCrossed = false;
-		let tokenFinalTurnStarted = false;
+		let tokenBudget: TokenBudgetState = "within";
+		const tokenLimited = () => tokenBudget === "limited";
 		let startedTurns = 0;
 		let lastEventAt = startedAt;
 		let deadline = Math.min(startedAt + timeoutPolicy.idleMs, maxDeadline);
@@ -570,7 +571,7 @@ async function runPi(
 				const summary = `Subagent reached its maximum turn limit of ${budget.maxTurns}.`;
 				const message = output ? capEphemeralSubagentOutput(`${summary}\n\nLast assistant output:\n${output}`) : summary;
 				reject(new EphemeralSubagentError("turn_limit", message, new Error(message), accumulatedUsage(), output));
-			} else if (tokenLimited) {
+			} else if (tokenLimited()) {
 				const summary = `Subagent reached its maximum token limit of ${budget.maxTokens}.`;
 				const message = output ? capEphemeralSubagentOutput(`${summary}\n\nLast assistant output:\n${output}`) : summary;
 				reject(new EphemeralSubagentError("token_limit", message, new Error(message), accumulatedUsage(), output));
@@ -638,7 +639,7 @@ async function runPi(
 		};
 
 		const observeEvent = () => {
-			if (callbackFailure || aborted || timedOutAfterMs !== undefined || turnLimited || tokenLimited || childExited) return;
+			if (callbackFailure || aborted || timedOutAfterMs !== undefined || turnLimited || tokenLimited() || childExited) return;
 			const now = Date.now();
 			if (now >= deadline) {
 				timeout(deadline - startedAt, deadline === maxDeadline ? "maximum" : "idle");
@@ -648,8 +649,29 @@ async function runPi(
 			scheduleDeadline();
 		};
 
+		const advanceTokenBudget = (event: "turn_start" | "turn_end") => {
+			switch (tokenBudget) {
+				case "within":
+					if (event === "turn_end" && budget.maxTokens !== undefined && completedTokens >= budget.maxTokens) {
+						tokenBudget = "crossed";
+					}
+					return false;
+				case "crossed":
+					if (event === "turn_start") tokenBudget = "final_turn";
+					return false;
+				case "final_turn":
+					if (event === "turn_start") {
+						if (!callbackFailure && !aborted && timedOutAfterMs === undefined) tokenBudget = "limited";
+						stop(true);
+						return true;
+					}
+					return false;
+				case "limited":
+					return true;
+			}
+		};
 		const processLine = (line: string) => {
-			if (turnLimited || tokenLimited || !line.trim()) return;
+			if (turnLimited || tokenLimited() || !line.trim()) return;
 			let event: unknown;
 			try {
 				event = JSON.parse(line);
@@ -666,19 +688,9 @@ async function runPi(
 					stop(true);
 					return;
 				}
-				if (tokenBudgetCrossed) {
-					if (tokenFinalTurnStarted) {
-						if (!callbackFailure && !aborted && timedOutAfterMs === undefined) tokenLimited = true;
-						stop(true);
-						return;
-					}
-					tokenFinalTurnStarted = true;
-				}
+				if (advanceTokenBudget("turn_start")) return;
 			}
-			if (record.type === "turn_end" && !tokenBudgetCrossed
-				&& budget.maxTokens !== undefined && completedTokens >= budget.maxTokens) {
-				tokenBudgetCrossed = true;
-			}
+			if (record.type === "turn_end") advanceTokenBudget("turn_end");
 			if (record.type === "message_start") {
 				partial.prefix = "";
 				partial.totalBytes = 0;
@@ -792,7 +804,7 @@ async function runPi(
 
 		onStdoutData = (data: string) => {
 			armPostExitIdleDeadline();
-			if (callbackFailure || protocolError || turnLimited || tokenLimited) return;
+			if (callbackFailure || protocolError || turnLimited || tokenLimited()) return;
 			let offset = 0;
 			while (offset < data.length) {
 				const newline = data.indexOf("\n", offset);
@@ -825,7 +837,7 @@ async function runPi(
 						invokeCallback("onActivity", input.onActivity, activity);
 					}
 				}
-				if (callbackFailure || turnLimited || tokenLimited) return;
+				if (callbackFailure || turnLimited || tokenLimited()) return;
 				lineParts = [];
 				lineBytes = 0;
 				linePrefix = "";
@@ -868,12 +880,12 @@ async function runPi(
 			killTimer.unref();
 		}
 		const abort = () => {
-			if (timedOutAfterMs !== undefined || turnLimited || tokenLimited || childExited) return;
+			if (timedOutAfterMs !== undefined || turnLimited || tokenLimited() || childExited) return;
 			aborted = true;
 			stop();
 		};
 		function timeout(afterMs: number, reason: "idle" | "maximum") {
-			if (timedOutAfterMs !== undefined || turnLimited || tokenLimited || childExited) return;
+			if (timedOutAfterMs !== undefined || turnLimited || tokenLimited() || childExited) return;
 			if (reason === "maximum") {
 				if (!aborted) {
 					timedOutAfterMs = afterMs;
