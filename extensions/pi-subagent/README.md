@@ -12,11 +12,13 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
-Run `/task-models` and configure the `fast` profile before delegating.
+Run `/task-models` and configure the `fast` profile before delegating. Open `/task-models` again and verify that `fast` no longer says `not configured`.
 
 ## Works with
 
-**Required.** [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) supplies `fast`, `balanced`, `frontier`, and `fav` model routes.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
 
 Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. Missing shared model config warns once because delegation needs a route.
 
@@ -94,6 +96,12 @@ A Flow has 1–8 units with unique non-empty IDs and allows one active Flow. It 
 - Without `review`, Flow fast-forwards the exact validated tip.
 - With `review`, the Reviewer receives the exact `{base, tip, patchPath}` packet and must return exactly `PASS` before the same integration path. Use `review` only for stated judgment that validation cannot decide.
 
+A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
+
+Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
+
+Parent-only delegation tools and `ask_question` are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
+
 An explicit unit `modelClass` overrides both frozen Roles. Without one, each Role uses its own `modelClass`, configured `pi-subagent/delegateTask` assignment, or declared default.
 
 One `delegate_flow_continue` can repair an Implementer, validation, or review block in the same worktree. Omitting its class keeps the unit's explicit class and frozen Role defaults. Supplying one replaces both Role defaults for that repair and its later Reviewer launch.
@@ -106,14 +114,12 @@ Flow has no dependency graph, saved recovery, automatic retry, aggregate review,
 
 pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A missing file uses these defaults without a warning.
 
-| Field | Valid value | Default |
-| --- | --- | --- |
-| `maxSubagents` | Safe integer ≥ 1 | `5` |
-| `maxTurns` | Safe integer ≥ 1 | `50` |
-| `timeout.idleMinutes` | Positive minutes; minutes × 60,000 ≤ 2,147,483,647 ms | `10` |
-| `timeout.maxMinutes` | Positive minutes greater than `idleMinutes`; minutes × 60,000 ≤ 2,147,483,647 ms | `30` |
-
-`maxTurns` defaults to 50.
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `maxSubagents` | Sets the maximum number of active child processes. | Safe integer of at least 1. | `5` |
+| `maxTurns` | Sets the hard provider-turn limit for each child. | Safe integer of at least 1. | `50` |
+| `timeout.idleMinutes` | Sets the idle timeout for a child. | Positive minutes. | `10` |
+| `timeout.maxMinutes` | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`. | `30` |
 
 Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
 
@@ -164,7 +170,16 @@ Flow uses the effective Implementer and, only when requested, Reviewer. The Scou
 
 ## API
 
-The package root exports `loadRoles`, `resolveRoleSkills`, `resolveRoleLaunch`, `createRoleLaunch`, `createEphemeralSubagentExecutor`, and worktree helpers.
+The package root includes these main exports:
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `loadRoles` | function | Loads built-in and user Role definitions. |
+| `resolveRoleSkills` | function | Resolves a Role's named Skills from Pi's effective registry. |
+| `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
+| `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
+| `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
+| Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
 
 The executor works only inside the active Pi process. It does not discover or start a standalone Node.js Pi installation.
 
@@ -172,21 +187,9 @@ The executor works only inside the active Pi process. It does not discover or st
 
 See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default.
 
-## State and storage
-
-Flow state is memory-only.
-
-## Data, cost, and privacy
-
-A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
-
-Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
+## Limits and recovery
 
 An explicitly selected extension is trusted, not sandboxed. Its tools, Skills, and executable behavior load together. Select fewer trusted extensions to reduce scope. pi-subagent does not guess or remove undocumented dependencies.
-
-Parent-only delegation tools and `ask_question` are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
-
-## Limits and recovery
 
 Flow never force-deletes recoverable work. Failed or uncertain units, and cleanup refusals after integration, retain their worktree path or branch for recovery.
 

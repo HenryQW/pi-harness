@@ -11,14 +11,14 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-btw
 ```
 
-Requires Herdr 0.7.4+ and a Herdr-managed pane. Run `/task-models` and configure the `fast` profile before opening a side thread.
+Requires Herdr 0.7.4+ and a Herdr-managed pane. Run `/task-models` and configure the `fast` profile before opening a side thread. Open `/task-models` again and verify that `fast` no longer says `not configured`.
 
 ## Works with
 
-| Package | Why |
-| --- | --- |
-| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves. Marks side-thread children, suppressing parent-only memory injection and dream advice. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required. Provides shared model profiles for side-thread routes. |
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves | Marks side-thread children, suppressing parent-only memory injection and dream advice. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared model profiles for side-thread routes. |
 
 ## Use
 
@@ -43,7 +43,7 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 - `ask`, `config`, `merge`, and `help` route only when they are exact first words. Other input is a question.
 - A provided question is an editable draft by default.
-- `/btw` snapshots Main's compaction-aware context and inherits its working directory.
+- `/btw` gives the side pane a static snapshot of Main's compaction-aware context and shares Main's working directory.
 - The consumer-owned `pi-herdr-btw/btw` task defaults to `fast`.
 - Before pane launch, it selects the first authenticated viable effective profile route.
 
@@ -64,19 +64,11 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 
-```json
-{
-  "autoSubmit": false,
-  "tools": "inherit",
-  "split": "right"
-}
-```
-
-| Field | Required | Possible values | Default |
+| Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `autoSubmit` | No | `true`, `false` — submit the draft question automatically instead of leaving it editable in the side pane | `false` |
-| `tools` | No | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), `none` | `inherit` |
-| `split` | No | `right`, `down` — side-pane placement | `right` |
+| `autoSubmit` | Submits the draft question instead of leaving it editable in the side pane. | Boolean. | `false` |
+| `tools` | Selects the tools available in the side pane. | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
+| `split` | Sets the side-pane placement. | `right` or `down`. | `right` |
 
 - All fields are optional.
 - Unknown keys and non-object files are rejected.
@@ -85,12 +77,8 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 - The config file is optional. Missing config uses defaults.
 - Malformed config fails visibly and remains unchanged.
 
-## Data, cost, and privacy
-
-The side pane gets static parent context and shares Main's working directory. Enabled tools can change parent-visible files.
-
-Launch data stays in a private temporary directory.
-
 ## Limits and recovery
+
+Enabled tools can change parent-visible files.
 
 Large parent contexts can exceed child context limits.

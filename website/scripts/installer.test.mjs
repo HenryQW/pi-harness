@@ -56,6 +56,23 @@ function withInstaller(piSource, herdrSource, callback) {
 const compatiblePi = `#!/bin/sh\nprintf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nprintf 'pi 0.85.1\\n'\n`;
 const compatibleHerdr = `#!/bin/sh\nprintf 'herdr %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nprintf 'herdr 0.7.4\\n'\n`;
 
+test("installer package discovery ignores directories without manifests", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-harness-packages-"));
+
+  try {
+    mkdirSync(join(root, "extensions", "stale-package", "dist"), { recursive: true });
+    mkdirSync(join(root, "extensions", "example"));
+    writeFileSync(join(root, "extensions", "example", "package.json"), JSON.stringify({
+      name: "@henryqw/example",
+      pi: {},
+    }));
+
+    assert.deepEqual(collectInstallablePackages(root), ["@henryqw/example"]);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("installer stays synchronized with every public Pi package", () => {
   const source = readFileSync(installerPath, "utf8");
   const names = collectInstallablePackages(repoRoot);

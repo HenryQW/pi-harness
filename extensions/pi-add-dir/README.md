@@ -30,10 +30,6 @@ Added directories give Pi these resources:
 
 `/dir-add` reloads when it finds skills. `add_directory` reports when a reload is needed.
 
-## State and storage
-
-Pi session entry `add-dir:state` stores added directories. It is package-managed; do not edit it. Tree navigation restores the active branch's directories and reloads resources when that set changes.
-
 ## Limits and recovery
 
 Search supports basename and relative-path globs. It skips `.git` and `node_modules`. It uses Node filesystem traversal and returns at most 1,000 results per call.

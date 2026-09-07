@@ -51,7 +51,7 @@ Stop if the target is unpublished or the published artifact does not contain the
 
 ## 2. Inventory and assess
 
-Enumerate `extensions/*/package.json`. A package is an extension when `pi.extensions` is non-empty. Do not hardcode the package count. Shared libraries without extension entry points are outside the blanket upgrade unless the release requires a direct change.
+Enumerate `extensions/*/package.json`. Every package there must define non-empty `pi.extensions`; do not hardcode the package count. Support libraries under `packages/*` are outside the blanket upgrade unless the release requires a direct change.
 
 For each changelog item, record one decision:
 
@@ -112,7 +112,7 @@ Using the final merged main SHA as the base, identify public packages with publi
 Bump each package in the final release set exactly once and only now:
 
 ```bash
-pnpm --filter ./extensions/<package> version patch --no-git-tag-version
+pnpm --filter ./<root>/<package> version patch --no-git-tag-version
 ```
 
 Choose minor or major only when the actual package change requires it. After all workspace versions and direct consumer ranges are updated, run `pnpm install --lockfile-only --ignore-scripts` to regenerate `pnpm-lock.yaml`, before the final install or any release validation.

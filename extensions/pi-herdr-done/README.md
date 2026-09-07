@@ -12,7 +12,9 @@ Requires the Herdr CLI and a Pi session running inside a Herdr-managed linked wo
 
 ## Works with
 
-**Improves.** [`@henryqw/pi-herdr-clone`](https://pi.henry.wang/extensions/pi-herdr-clone) creates the worktree workspace that `/done` later removes.
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-herdr-clone`](https://pi.henry.wang/extensions/pi-herdr-clone) | Improves | Creates the worktree workspace that `/done` later removes. |
 
 ## Use
 
