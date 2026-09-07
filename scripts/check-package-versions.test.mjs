@@ -45,6 +45,7 @@ test("no-arg mode checks packages moved between workspace roots", () => {
     const unchangedVersion = run(repo, process.execPath, [checkerPath]);
     assert.equal(unchangedVersion.status, 1);
     assert.match(unchangedVersion.stderr, /@test\/example: version remains 1\.0\.0/);
+    assert.doesNotMatch(unchangedVersion.stderr, /fatal:/);
 
     writeFileSync(join(movedPackageDir, "package.json"), `${JSON.stringify({ name: "@test/example", version: "1.0.1", files: ["index.js"] }, null, 2)}\n`);
 

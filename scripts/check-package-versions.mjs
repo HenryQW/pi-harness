@@ -39,7 +39,10 @@ const source = /^src\//
 
 function packageJsonAt(commit, manifest) {
   try {
-    return JSON.parse(execFileSync('git', ['show', `${commit}:${manifest}`], { encoding: 'utf8' }))
+    return JSON.parse(execFileSync('git', ['show', `${commit}:${manifest}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }))
   } catch {
     return null
   }
