@@ -43,7 +43,7 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 - `ask`, `config`, `merge`, and `help` route only when they are exact first words. Other input is a question.
 - A provided question is an editable draft by default.
-- `/btw` snapshots Main's compaction-aware context and inherits its working directory.
+- `/btw` gives the side pane a static snapshot of Main's compaction-aware context and shares Main's working directory.
 - The consumer-owned `pi-herdr-btw/btw` task defaults to `fast`.
 - Before pane launch, it selects the first authenticated viable effective profile route.
 
@@ -77,12 +77,12 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 - The config file is optional. Missing config uses defaults.
 - Malformed config fails visibly and remains unchanged.
 
-## Data, cost, and privacy
-
-The side pane gets static parent context and shares Main's working directory. Enabled tools can change parent-visible files.
+## State and storage
 
 Launch data stays in a private temporary directory.
 
 ## Limits and recovery
+
+Enabled tools can change parent-visible files.
 
 Large parent contexts can exceed child context limits.

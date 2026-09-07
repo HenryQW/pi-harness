@@ -3,7 +3,7 @@ README contract:
 - Copy this file to extensions/<package>/README.md. Replace placeholders and delete optional sections that do not apply.
 - Use the exact package H1 format shown below. Follow it with one to three short sentences about the user outcome.
 - Install and Use are required.
-- Keep H2 headings in this order: Install, Works with, Use, Flow, Config, API, State and storage, Data, cost, and privacy, Limits and recovery.
+- Keep H2 headings in this order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.
 - Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
 - Limits and recovery, when present, must be last.
 - Keep simple packages short. Use simple English. Preserve exact commands, paths, errors, safety advice, and recovery steps.
@@ -74,11 +74,6 @@ Package-owned: `~/.pi/agent/config/<package>/config.json`
 ## State and storage
 
 <Describe owned state. Do not call generated state config.>
-
-<!-- Optional: disclose only what leaves the machine, recipients, possible cost, sync, and trust boundaries. -->
-## Data, cost, and privacy
-
-<Describe external data flow and its consequences.>
 
 <!-- Optional and always last: document actionable constraints, failure meaning, and recovery. Use this heading instead of variants such as Safety limits or Limits and failures. -->
 ## Limits and recovery

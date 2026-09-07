@@ -44,7 +44,7 @@ Every single `add` and every batch containing an `add` is independently reviewed
 
 ![pi-memory architecture showing reviewed writes and frozen session snapshots](./docs/memory-architecture.svg)
 
-The tool snapshots live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. An initially missing `SYSTEM.md` is empty. Unreadable, oversized, or over-cap sources fail closed.
+Candidate review gives the configured model live snapshots of agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md`. An initially missing `SYSTEM.md` is empty. Unreadable, oversized, or over-cap sources fail closed.
 
 A SYSTEM file proven present during review cannot disappear later in that session. Restore it before the next add.
 
@@ -70,7 +70,7 @@ It recommends `/dream` when either store is at least 70% full and the last dream
 
 `/dream` shows a compact tool block. It hides its internal instructions and live entries.
 
-It records its completed run time in `~/.pi/agent/config/pi-memory/dream.json`. It validates live state first and reuses unchanged memory snapshots. It always requires the model to read and edit only the agent-global `~/.pi/agent/SYSTEM.md`, never a project `.pi/SYSTEM.md`.
+It records its completed run time in `~/.pi/agent/config/pi-memory/dream.json`. It validates live state first and reuses unchanged memory snapshots. It gives the current session agent live memory entries and instructions to edit only the agent-global `~/.pi/agent/SYSTEM.md`, never a project `.pi/SYSTEM.md`.
 
 That global file must already exist and be readable. Establish it deliberately and completely, because a partial SYSTEM replaces Pi's default prompt.
 
@@ -88,7 +88,7 @@ Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `directory` | Sets the folder for both memory stores. | Non-empty absolute path without control characters, such as an iCloud- or Obsidian-synced folder. | `~/.pi/agent/config/pi-memory/memory` |
+| `directory` | Sets the folder for both memory stores. | Non-empty absolute path without control characters. | `~/.pi/agent/config/pi-memory/memory` |
 | `memoryCharLimit` | Caps `MEMORY.md` by character count. | Safe integer from 1 to 100000. | `8800` |
 | `userCharLimit` | Caps `USER.md` by character count. | Safe integer from 1 to 100000. | `5500` |
 
@@ -111,15 +111,11 @@ Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect live state.
 
 Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi-memory/backups/`.
 
-## Data, cost, and privacy
-
-Candidate review gives the configured model live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md` snapshots. `/dream` gives the current session agent live memory entries and instructions to edit the global SYSTEM file.
-
 Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault only carries files. pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
 
-A configured cloud-synced directory can be read outside Pi. Review [`ADR 006 — pi-memory global store threat model`](https://github.com/HenryQW/pi-harness/blob/main/docs/adr/006-pi-memory-global-store-threat-model.md) before pointing it at a shared or cloud-synced path.
-
 ## Limits and recovery
+
+A configured cloud-synced directory can be read outside Pi. Review [`ADR 006 — pi-memory global store threat model`](https://github.com/HenryQW/pi-harness/blob/main/docs/adr/006-pi-memory-global-store-threat-model.md) before pointing it at a shared or cloud-synced path.
 
 When a write would exceed a store's cap, the tool rejects it and reports current usage.
 

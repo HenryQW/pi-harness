@@ -35,7 +35,7 @@ The menu adapts to the current state:
 | Item | Action |
 | --- | --- |
 | `Analyze now` or `Analyze again` | Start one visible background analysis. |
-| `Automatic On` or `Automatic Off` | Save the automatic setting. |
+| `Automatic On` or `Automatic Off` | Turn automatic analysis on or off. |
 | `Show candidate` | Add the candidate to the conversation for review. |
 | `Dismiss candidate` | Forget the pending candidate. |
 | `Save latest Main draft` | Save Main's newest completed review reply after you show a candidate. |
@@ -55,6 +55,12 @@ A manual analysis consumes that opportunity.
 Branch changes reset the input counter. Automatic analysis and candidate widgets require the interactive TUI.
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
+
+Automatic analysis sends the current conversation to the child model configured through `/task-models`.
+
+Its payload includes the active compaction or branch summary, user text, successfully completed assistant text, and effective prompt names and descriptions.
+
+Project context files and prompt templates are disabled for the child. Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
 
 Analysis asks a tool-free child for one JSON response. It has no user extensions, Skills, or saved session. The extension does not retry failed analysis.
 
@@ -110,18 +116,6 @@ Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the
 A pending candidate stays in memory only. Automatic mode persists, but counters and candidates do not.
 
 Saved prompts live at `~/.pi/agent/prompts/<name>.md`. Saving never replaces an existing file.
-
-## Data, cost, and privacy
-
-Automatic analysis is on by default. It sends the current conversation to the child model configured through `/task-models`.
-
-Disable automatic analysis through `/promptor`.
-
-The payload includes the active compaction or branch summary, user text, and successfully completed assistant text. It also includes effective prompt names and descriptions.
-
-Project context files and prompt templates are disabled for the child.
-
-Tool traffic, thinking, images, custom messages, and inactive branches are excluded.
 
 ## Limits and recovery
 

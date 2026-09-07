@@ -94,6 +94,12 @@ A Flow has 1–8 units with unique non-empty IDs and allows one active Flow. It 
 - Without `review`, Flow fast-forwards the exact validated tip.
 - With `review`, the Reviewer receives the exact `{base, tip, patchPath}` packet and must return exactly `PASS` before the same integration path. Use `review` only for stated judgment that validation cannot decide.
 
+A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
+
+Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
+
+Parent-only delegation tools and `ask_question` are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
+
 An explicit unit `modelClass` overrides both frozen Roles. Without one, each Role uses its own `modelClass`, configured `pi-subagent/delegateTask` assignment, or declared default.
 
 One `delegate_flow_continue` can repair an Implementer, validation, or review block in the same worktree. Omitting its class keeps the unit's explicit class and frozen Role defaults. Supplying one replaces both Role defaults for that repair and its later Reviewer launch.
@@ -183,17 +189,9 @@ See the [public Role and executor API](./docs/orchestration.md#public-role-and-e
 
 Flow state is memory-only.
 
-## Data, cost, and privacy
-
-A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
-
-Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
+## Limits and recovery
 
 An explicitly selected extension is trusted, not sandboxed. Its tools, Skills, and executable behavior load together. Select fewer trusted extensions to reduce scope. pi-subagent does not guess or remove undocumented dependencies.
-
-Parent-only delegation tools and `ask_question` are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
-
-## Limits and recovery
 
 Flow never force-deletes recoverable work. Failed or uncertain units, and cleanup refusals after integration, retain their worktree path or branch for recovery.
 

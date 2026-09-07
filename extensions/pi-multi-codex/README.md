@@ -57,10 +57,8 @@ Set `autoSwitchOn429` to `false` to disable automatic switching. The config must
 
 The extension maintains a generated, credential-free quota cache at `~/.pi/agent/config/pi-multi-codex/usage.json`.
 
-## Data, cost, and privacy
+## Limits and recovery
 
 The extension reads `auth.json`. It never writes or refreshes credentials.
-
-## Limits and recovery
 
 Scoped sessions can switch only to exact scoped aliases.
