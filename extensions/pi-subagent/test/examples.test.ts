@@ -24,6 +24,10 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /independent units expected to commute/i);
 	assert.match(skill, /runtime owns.*worktrees.*Git identity.*rebasing.*committed-state inspection.*declared validation.*conditional exact read-only review.*fast-forward integration.*cleanup/is);
 	assert.match(skill, /validation is the authority for objective verification/i);
+	assert.match(skill, /task packet.*neighboring behavior.*stay unchanged/is);
+	assert.match(skill, /exact test name or error.*known CI evidence/is);
+	assert.match(skill, /Never claim a validation command matches unknown CI/i);
+	assert.match(skill, /Order declared validation from the cheapest focused check to broader required checks/i);
 	assert.match(skill, /Add non-empty `review` only for an explicit judgment/i);
 	assert.doesNotMatch(skill, /acceptance criteria/i);
 	assert.match(skill, /without `review`.*exact validated tip/is);
@@ -32,6 +36,7 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /one explicit continuation and no more/i);
 	assert.match(skill, /direct `model` replaces only the selected route's model.*route keeps its thinking level/is);
 	assert.match(skill, /terminal failure.*retained path/is);
+	assert.match(skill, /Report a cleanup warning from a successful Flow as-is.*Do not investigate it unless the user asks or cleanup is part of acceptance/is);
 	assert.match(skill, /Dependent work remains outside Flow/i);
 	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|candidate|advisory|reconsideration|public review/i);
 });

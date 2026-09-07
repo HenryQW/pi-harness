@@ -251,9 +251,9 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 		command: "skill:pi-pr-update-branch",
 	},
 	{
-		name: "review sweep outranks CI",
+		name: "CI repair outranks review sweep",
 		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
-		command: "skill:pi-pr-comment-sweep",
+		command: "skill:pi-pr-fix-ci",
 	},
 	{
 		name: "CI repair outranks waiting",

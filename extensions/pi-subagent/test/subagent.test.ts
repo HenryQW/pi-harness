@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -114,6 +114,7 @@ function harness(options: {
 	sendMessageError?: Error;
 } = {}) {
 	let tool: Tool | undefined;
+	const tools = new Map<string, Tool>();
 	let widget: { render: (width: number) => string[] } | undefined;
 	let messageRenderer: ((...args: any[]) => { render: (width: number) => string[] }) | undefined;
 	let renders = 0;
@@ -126,7 +127,20 @@ function harness(options: {
 	const api = {
 		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
-		registerTool(candidate: Tool) { tool = candidate; },
+		exec(command: string, args: string[], options?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
+			return new Promise((resolve) => {
+				execFile(command, args, options, (error, stdout, stderr) => resolve({
+					stdout: String(stdout),
+					stderr: String(stderr),
+					code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
+					killed: Boolean(error && "killed" in error && error.killed),
+				}));
+			});
+		},
+		registerTool(candidate: Tool) {
+			tools.set(candidate.name, candidate);
+			if (candidate.name === "delegate_task") tool = candidate;
+		},
 		registerMessageRenderer(customType: string, renderer: typeof messageRenderer) {
 			if (customType === "subagent-background-result") messageRenderer = renderer;
 		},
@@ -162,6 +176,7 @@ function harness(options: {
 	} as unknown as ExtensionContext;
 	return {
 		get tool() { return tool!; },
+		tools,
 		get widget() { return widget; },
 		get renders() { return renders; },
 		renderMessage(message: any, expanded = false) {
@@ -184,8 +199,17 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 	}
 }
 
-function workingWidgetHeaders(lines: string[]): string[] {
-	return lines.filter((line) => /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /.test(line));
+const WIDGET_STATUS_ROW = /^  (?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|[✓✗■]) /;
+
+function workingWidgetRows(lines: string[]): string[] {
+	return lines.filter((line) => /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /.test(line));
+}
+
+function assertWidgetHierarchy(lines: string[]): void {
+	for (const [index, line] of lines.entries()) {
+		if (line.startsWith("… ") || WIDGET_STATUS_ROW.test(line)) continue;
+		assert.match(lines[index + 1] ?? "", WIDGET_STATUS_ROW);
+	}
 }
 
 async function writeWorkerRole(agentDir: string, isolation = false): Promise<void> {
@@ -384,7 +408,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.ok(worktree && worktree.outcome === "recovery");
 		assert.match(worktree.note, /HEAD is detached/);
 		assert.match(error.message, /HEAD is detached/);
-		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
+		assert.ok(app.widget!.render(80).some((line) => line.startsWith("  ✗")));
 		assert.ok(error.message.indexOf(worktree.path) < error.message.indexOf("Results:"));
 		assert.equal(existsSync(worktree.path), true);
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
@@ -702,7 +726,7 @@ Return concise findings.
 	});
 });
 
-test("widget renders one truncated line, retains terminal entries, and clears them on user input", async () => {
+test("widget renders task headings with indented status rows and clears terminal rows on input", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 		for (const [name, description] of [["scout", "Finds code"], ["worker", "Does work"]]) {
@@ -727,39 +751,200 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 		const completed = app.tool.execute("call-1", { role: "scout", name: "Normalize worktree paths", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
 		await waitFor(() => app.widget?.render(160).join("\n").includes("1.1k tok") ?? false);
 		const wide = app.widget!.render(160);
-		assert.equal(wide.length, 1);
+		assert.equal(wide.length, 2);
 		assert.ok(wide.every((line) => visibleWidth(line) <= 160));
-		assert.match(wide[0]!, /\[S\] Normalize worktree paths · thinking… · text-model·low · 1\.1k tok ·/);
-		assert.doesNotMatch(wide[0]!, /working|registered-worktree/);
+		assert.equal(wide[0], "Normalize worktree paths");
+		assert.match(wide[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking… · text-model·low · 1\.1k tok ·/);
+		assert.doesNotMatch(wide[1]!, /Normalize worktree paths|working|registered-worktree/);
 		assert.doesNotMatch(wide.join("\n"), /test\//);
 		const narrow = app.widget!.render(24);
-		assert.equal(narrow.length, 1);
+		assert.equal(narrow.length, 2);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-		assert.match(narrow[0]!, /\[S\] Normalize/);
+		assert.match(narrow[0]!, /^Normalize worktree/);
+		assert.match(narrow[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\]/);
+		assertWidgetHierarchy(narrow);
 		const tiny = app.widget!.render(1);
-		assert.equal(tiny.length, 1);
+		assert.equal(tiny.length, 2);
 		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
 		await completed;
 		await new Promise((resolve) => setTimeout(resolve, 1_100));
 		const terminal = app.widget!.render(160);
-		assert.equal(terminal.length, 1);
-		assert.match(terminal[0]!, /\[S\] Normalize worktree paths · Done · 1 turn/);
-		assert.doesNotMatch(terminal[0]!, /complete|registered-worktree/);
+		assert.equal(terminal.length, 2);
+		assert.equal(terminal[0], "Normalize worktree paths");
+		assert.match(terminal[1]!, /^  ✓ \[S\] Done · 1 turn/);
+		assert.doesNotMatch(terminal[1]!, /complete|registered-worktree|Normalize worktree paths/);
 
 		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
 		const running = app.tool.execute("call-2", { role: "worker", name: "Keep worker active", task: "keep working" }, undefined, undefined, app.ctx);
-		await waitFor(() => app.widget?.render(100).join("\n").includes("[W] Keep worker active") ?? false);
+		await waitFor(() => app.widget?.render(100).join("\n").includes("[W]") ?? false);
 		const activeFirst = app.widget!.render(160);
-		assert.match(activeFirst[0]!, /\[W\] Keep worker active/);
-		assert.match(activeFirst[1]!, /\[S\] Normalize worktree paths · Done/);
+		assert.equal(activeFirst[0], "Keep worker active");
+		assert.match(activeFirst[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\] thinking…/);
+		assert.equal(activeFirst[2], "Normalize worktree paths");
+		assert.match(activeFirst[3]!, /^  ✓ \[S\] Done/);
 		await app.handlers.get("input")?.({ source: "extension", text: "injected" }, app.ctx);
-		assert.match(app.widget!.render(100).join("\n"), /\[S\] Normalize worktree paths · Done/);
+		assert.match(app.widget!.render(100).join("\n"), /Normalize worktree paths\n  ✓ \[S\] Done/);
 		await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
 		const afterInput = app.widget!.render(100).join("\n");
-		assert.doesNotMatch(afterInput, /\[S\] Normalize worktree paths · Done/);
-		assert.match(afterInput, /\[W\] Keep worker active/);
+		assert.doesNotMatch(afterInput, /Normalize worktree paths/);
+		assert.match(afterInput, /Keep worker active\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\]/);
 		await running;
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
+	});
+});
+
+test("widget preserves blocked Flow rows through input and prioritizes active task groups", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		const reviewCount = join(agentDir, "flow-review-count");
+		const repairStarted = join(agentDir, "flow-repair-started");
+		const repairRelease = join(agentDir, "flow-repair-release");
+		const rereviewStarted = join(agentDir, "flow-rereview-started");
+		const rereviewRelease = join(agentDir, "flow-rereview-release");
+		const activeStarted = join(agentDir, "flow-active-started");
+		const activeRelease = join(agentDir, "flow-active-release");
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { execFileSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const task = process.argv.at(-1)?.replace(/^Task: /, "");
+const event = (text = "done") => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end" } }));
+const waitForRelease = (path, next) => {
+	const timer = setInterval(() => {
+		if (!existsSync(path)) return;
+		clearInterval(timer);
+		next();
+	}, 5);
+};
+if (task === "ordinary terminal") event();
+else if (task?.startsWith("Flow Unit")) {
+	writeFileSync("initial.txt", "initial\\n");
+	execFileSync("git", ["add", "initial.txt"]);
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"]);
+	event();
+} else if (task?.startsWith("Repair Flow Unit")) {
+	writeFileSync(${JSON.stringify(repairStarted)}, "");
+	waitForRelease(${JSON.stringify(repairRelease)}, () => {
+		writeFileSync("repair.txt", "repair\\n");
+		execFileSync("git", ["add", "repair.txt"]);
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "repair"]);
+		event();
+	});
+} else if (task?.startsWith("Review Flow Unit")) {
+	if (!existsSync(${JSON.stringify(reviewCount)})) {
+		writeFileSync(${JSON.stringify(reviewCount)}, "1");
+		event("repair needed");
+	} else {
+		writeFileSync(${JSON.stringify(rereviewStarted)}, "");
+		waitForRelease(${JSON.stringify(rereviewRelease)}, () => event("PASS"));
+	}
+} else if (task === "other active task") {
+	writeFileSync(${JSON.stringify(activeStarted)}, "");
+	waitForRelease(${JSON.stringify(activeRelease)}, () => event("active done"));
+} else throw new Error("Unexpected task: " + task);
+`);
+		process.argv[1] = runner;
+		const app = harness({ cwd: repo, ui: true });
+		const flow = app.tools.get("delegate_flow")!;
+		const continuation = app.tools.get("delegate_flow_continue")!;
+		let active: Promise<any> | undefined;
+		let resumed: Promise<any> | undefined;
+		try {
+			await app.tool.execute("ordinary", { role: "scout", name: "Ordinary terminal", task: "ordinary terminal" }, undefined, undefined, app.ctx);
+			const blocked = await flow.execute("widget-flow", { units: [{
+				id: "widget",
+				name: "Repair feedback widget",
+				task: "Repair the widget.",
+				validation: [{ command: process.execPath, args: ["-e", "process.exit(0)"] }],
+				review: "Require exact approval.",
+			}] }, undefined, undefined, app.ctx);
+			assert.equal(blocked.details.outcome, "blocked");
+
+			await app.handlers.get("input")?.({ source: "interactive", text: "continue" }, app.ctx);
+			const afterInput = app.widget!.render(160);
+			assert.doesNotMatch(afterInput.join("\n"), /Ordinary terminal/);
+			assert.equal(afterInput[0], "Repair feedback widget");
+			assert.deepEqual(afterInput.filter((line) => WIDGET_STATUS_ROW.test(line)).map((line) => /\[[IR]\]/.exec(line)?.[0]), ["[I]", "[R]"]);
+			assertWidgetHierarchy(afterInput);
+
+			resumed = continuation.execute("widget-flow-continue", { guidance: "Repair the widget." }, undefined, undefined, app.ctx);
+			await waitFor(() => existsSync(repairStarted));
+			const continuing = app.widget!.render(160);
+			assert.equal(continuing.length, 4);
+			assert.equal(continuing[0], "Repair feedback widget");
+			assert.match(continuing[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[I\] thinking…/);
+			assert.match(continuing[2]!, /^  ✓ \[I\] Done/);
+			assert.match(continuing[3]!, /^  ✓ \[R\] Done/);
+			assertWidgetHierarchy(continuing);
+			await writeFile(repairRelease, "");
+			await waitFor(() => existsSync(rereviewStarted));
+			const capped = app.widget!.render(160);
+			const cappedRows = capped.filter((line) => WIDGET_STATUS_ROW.test(line));
+			assert.equal(capped.length, 5);
+			assert.equal(capped[0], "Repair feedback widget");
+			assert.equal(cappedRows.length, 3);
+			assert.deepEqual(cappedRows.map((line) => /\[[IR]\]/.exec(line)?.[0]), ["[R]", "[I]", "[R]"]);
+			assert.equal(capped[4], "… 1 more · 1 complete");
+			assertWidgetHierarchy(capped);
+			active = app.tool.execute("other-active", { role: "scout", name: "Other active task", task: "other active task" }, undefined, undefined, app.ctx);
+			await waitFor(() => existsSync(activeStarted));
+			const rows = app.widget!.render(160);
+			assert.equal(rows.length, 6);
+			assert.equal(rows[0], "Repair feedback widget");
+			assert.match(rows[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
+			assert.match(rows[2]!, /^  ✓ \[I\] Done/);
+			assert.equal(rows[3], "Other active task");
+			assert.match(rows[4]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking…/);
+			assert.equal(rows[5], "… 2 more · 2 complete");
+			assertWidgetHierarchy(rows);
+			for (const width of [160, 24, 1]) {
+				const rendered = app.widget!.render(width);
+				assert.equal(rendered.length, 6);
+				assert.ok(rendered.every((line) => visibleWidth(line) <= width));
+				if (width > 1) assertWidgetHierarchy(rendered);
+			}
+
+			await Promise.all([writeFile(rereviewRelease, ""), writeFile(activeRelease, "")]);
+			const [completed] = await Promise.all([resumed, active]);
+			assert.equal(completed.details.outcome, "completed");
+			await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
+			assert.deepEqual(app.widget!.render(160), []);
+		} finally {
+			await Promise.all([writeFile(repairRelease, ""), writeFile(rereviewRelease, ""), writeFile(activeRelease, "")]);
+			await Promise.allSettled([resumed, active].filter((task): task is Promise<unknown> => task !== undefined));
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
+	});
+});
+
+test("widget keeps same-named tasks separate with indented status rows", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const tasks = ["alpha", "beta"];
+		const name = "Inspect matching names";
+		const runner = await blockedPiRunner(agentDir, tasks);
+		const app = harness({ ui: true });
+		const running = app.tool.execute("same-name", { tasks: [
+			{ role: "scout", name, task: tasks[0]! },
+			{ role: "worker", name, task: tasks[1]! },
+		] }, undefined, undefined, app.ctx);
+		try {
+			await waitFor(() => runner.started().length === 2);
+			const wide = app.widget!.render(160);
+			assert.equal(wide.length, 4);
+			assert.deepEqual(wide.filter((line) => line === name), [name, name]);
+			assertWidgetHierarchy(wide);
+			const childRows = wide.filter((line) => WIDGET_STATUS_ROW.test(line));
+			assert.deepEqual(childRows.map((line) => /\[[SW]\]/.exec(line)?.[0]), ["[S]", "[W]"]);
+			assert.ok(childRows.every((line) => !line.includes(name)));
+			const narrow = app.widget!.render(24);
+			assert.equal(narrow.length, 4);
+			assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
+			assertWidgetHierarchy(narrow);
+		} finally {
+			await Promise.all(tasks.map((task) => runner.release(task)));
+			await Promise.allSettled([running]);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+		}
 	});
 });
 
@@ -802,7 +987,7 @@ waitFor("read", () => {
 		const renderRows = () => {
 			for (const width of [100, 24, 1]) {
 				const lines = app.widget!.render(width);
-				assert.equal(lines.length, 1);
+				assert.equal(lines.length, 2);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			}
 			return app.widget!.render(100).join("\n");
@@ -811,7 +996,7 @@ waitFor("read", () => {
 		try {
 			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
 			let widget = renderRows();
-			assert.match(widget, /\[W\] Test delegated task/);
+			assert.match(widget, /^Test delegated task\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\] thinking…/);
 			assert.doesNotMatch(widget, /trace deterministic widget activity/);
 			assert.match(widget, /thinking…/);
 			assert.doesNotMatch(widget, /\b(?:turn|tool)s?\b/);
@@ -951,14 +1136,109 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 		await waitFor(() => runner.started().includes("active ninth"));
 		try {
 			const widget = app.widget!.render(160);
-			assert.equal(widget.length, 6);
-			assert.match(widget[0]!, /\[W\] Active ninth/);
+			assert.equal(widget.length, 5);
+			assert.equal(widget[0], "Active ninth");
+			assert.match(widget[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\] thinking…/);
+			assert.equal(widget[2], "completed 2");
+			assert.match(widget[3]!, /^  ✓ \[W\] Done/);
 			assert.doesNotMatch(widget.join("\n"), /completed 1/);
-			for (let index = 2; index <= 5; index++) assert.match(widget[index - 1]!, new RegExp(`completed ${index}`));
-			assert.equal(widget[5], "… 3 more · 3 complete");
+			assertWidgetHierarchy(widget);
+			assert.equal(widget[4], "… 6 more · 6 complete");
 		} finally {
 			runner.release("active ninth");
 			await active;
+		}
+	});
+});
+
+test("widget keeps current Flow stages grouped when all unrelated stored rows are working", async (t) => {
+	const repo = await initializedRepository(t);
+	await environment(async (agentDir) => {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "8";
+		const validationStarted = join(agentDir, "validation-started");
+		const validationRelease = join(agentDir, "validation-release");
+		const reviewerStarted = join(agentDir, "reviewer-started");
+		const reviewerRelease = join(agentDir, "reviewer-release");
+		const workersRelease = join(agentDir, "workers-release");
+		const workerStarted = join(agentDir, "worker-started-");
+		const validation = join(agentDir, "validation.mjs");
+		await writeFile(validation, `import { existsSync, writeFileSync } from "node:fs";
+const [started, release] = process.argv.slice(2);
+writeFileSync(started, "");
+const timer = setInterval(() => {
+	if (!existsSync(release)) return;
+	clearInterval(timer);
+	process.exit(0);
+}, 5);
+`);
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { execFileSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const task = process.argv.at(-1)?.replace(/^Task: /, "");
+const event = (text) => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end" } }));
+const waitForRelease = (path, next) => {
+	const timer = setInterval(() => {
+		if (!existsSync(path)) return;
+		clearInterval(timer);
+		next();
+	}, 5);
+};
+const worker = /^working (\\d+)$/.exec(task ?? "");
+if (task?.startsWith("Flow Unit")) {
+	writeFileSync("flow.txt", "done\\n");
+	execFileSync("git", ["add", "flow.txt"]);
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "flow"]);
+	event("done");
+} else if (task?.startsWith("Review Flow Unit")) {
+	writeFileSync(${JSON.stringify(reviewerStarted)}, "");
+	waitForRelease(${JSON.stringify(reviewerRelease)}, () => event("PASS"));
+} else if (worker) {
+	writeFileSync(${JSON.stringify(workerStarted)} + worker[1], "");
+	waitForRelease(${JSON.stringify(workersRelease)}, () => event("done"));
+} else throw new Error("Unexpected task: " + task);
+`);
+		process.argv[1] = runner;
+		const app = harness({ cwd: repo, ui: true });
+		const flow = app.tools.get("delegate_flow")!;
+		const running = flow.execute("widget-capacity", { units: [{
+			id: "flow",
+			name: "Keep Flow stages together",
+			task: "Keep terminal stages grouped.",
+			validation: [{ command: process.execPath, args: [validation, validationStarted, validationRelease] }],
+			review: "Return PASS only.",
+		}] }, undefined, undefined, app.ctx);
+		const workers = Array.from({ length: 7 }, (_, index) => `working ${index + 1}`);
+		const workerCalls: Promise<unknown>[] = [];
+		try {
+			await waitFor(() => existsSync(validationStarted));
+			workerCalls.push(...workers.map((task, index) =>
+				app.tool.execute(`working-${index + 1}`, { role: "scout", name: task, task }, undefined, undefined, app.ctx)));
+			await waitFor(() => workers.every((_, index) => existsSync(`${workerStarted}${index + 1}`)));
+
+			await writeFile(validationRelease, "");
+			await waitFor(() => existsSync(reviewerStarted));
+			assert.equal(app.widget!.render(160).at(-1), "… 7 more · 6 working · 1 complete");
+			await writeFile(workersRelease, "");
+			await Promise.all(workerCalls);
+
+			const widget = app.widget!.render(160);
+			assert.equal(widget.length, 6);
+			assert.equal(widget[0], "Keep Flow stages together");
+			assert.match(widget[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
+			assert.match(widget[2]!, /^  ✓ \[I\] Done/);
+			assert.match(widget[3]!, /^working \d+$/);
+			assert.match(widget[4]!, /^  ✓ \[S\] Done/);
+			assert.equal(widget[5], "… 6 more · 6 complete");
+			assertWidgetHierarchy(widget);
+			for (const width of [160, 24, 1]) assert.ok(app.widget!.render(width).every((line) => visibleWidth(line) <= width));
+
+			await writeFile(reviewerRelease, "");
+			assert.equal((await running).details.outcome, "completed");
+		} finally {
+			await Promise.all([writeFile(validationRelease, ""), writeFile(reviewerRelease, ""), writeFile(workersRelease, "")]);
+			await Promise.allSettled([running, ...workerCalls]);
+			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
 	});
 });
@@ -979,28 +1259,32 @@ test("widget summarizes overflow while evicting terminal rows for new active wor
 			await waitFor(() => fake.started().length === 9);
 			for (const width of [160, 24, 1]) {
 				const rows = app.widget!.render(width);
-				assert.equal(rows.length, 6);
+				assert.equal(rows.length, 5);
 				assert.ok(rows.every((line) => visibleWidth(line) <= width));
 			}
 			let widget = app.widget!.render(160);
-			assert.equal(widget.length, 6);
-			assert.equal(workingWidgetHeaders(widget).length, 5);
-			assert.equal(widget[5], "… 4 more · 4 working");
+			assert.equal(widget.length, 5);
+			assert.equal(workingWidgetRows(widget).length, 2);
+			assertWidgetHierarchy(widget);
+			assert.equal(widget[4], "… 7 more · 7 working");
+			assertWidgetHierarchy(app.widget!.render(24));
 
 			for (const task of tasks.slice(0, 2)) fake.release(task);
 			await Promise.all(calls.slice(0, 2));
 			widget = app.widget!.render(160);
-			assert.equal(widget.length, 6);
-			assert.equal(widget[5], "… 4 more · 2 working · 2 complete");
+			assert.equal(widget.length, 5);
+			assert.equal(widget[4], "… 7 more · 5 working · 2 complete");
 			const tenthCall = app.tool.execute("call-10", { role: "worker", name: tenth, task: tenth }, undefined, undefined, app.ctx);
 			calls.push(tenthCall);
 			await waitFor(() => fake.started().includes(tenth));
 
 			widget = app.widget!.render(160);
 			assert.doesNotMatch(widget.join("\n"), /blocked-01|blocked-02/);
-			for (const task of tasks.slice(2, 7)) assert.match(widget.join("\n"), new RegExp(task));
-			assert.equal(workingWidgetHeaders(widget).length, 5);
-			assert.equal(widget[5], "… 3 more · 3 working");
+			assert.match(widget.join("\n"), /blocked-03/);
+			assert.match(widget.join("\n"), /blocked-04/);
+			assert.equal(workingWidgetRows(widget).length, 2);
+			assertWidgetHierarchy(widget);
+			assert.equal(widget[4], "… 6 more · 6 working");
 		} finally {
 			await releaseAll();
 			await Promise.allSettled(calls);
@@ -1559,10 +1843,11 @@ const timer = setInterval(() => {
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf("--extension") + 1], "/user/reviewer.ts");
 		assert.equal(launches[0]!.args[launches[0]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["read"]));
 		assert.equal(launches[1]!.args[launches[1]!.args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["grep"]));
-		const widget = workingWidgetHeaders(app.widget!.render(120));
-		assert.equal(widget.length, 2);
-		assert.match(widget.join("\n"), /\[S\] Inspect auth files/);
-		assert.match(widget.join("\n"), /\[R\] Review auth findings/);
+		const widget = app.widget!.render(120);
+		assert.equal(workingWidgetRows(widget).length, 2);
+		const widgetText = widget.join("\n");
+		assert.match(widgetText, /Inspect auth files\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking…/);
+		assert.match(widgetText, /Review auth findings\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
 		await Promise.all([writeFile(join(release, "alpha"), ""), writeFile(join(release, "beta"), "")]);
 		await waitFor(() => app.sentMessages.length === 1);
 
@@ -1685,9 +1970,10 @@ async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
 			app.ctx,
 		));
 		try {
-			await waitFor(() => workingWidgetHeaders(app.widget?.render(80) ?? []).length >= 4);
-			assert.equal(workingWidgetHeaders(app.widget!.render(80)).length, 4);
 			await waitFor(() => runner.started().length === 4);
+			const widget = app.widget!.render(80);
+			assert.equal(workingWidgetRows(widget).length, 2);
+			assertWidgetHierarchy(widget);
 			assert.deepEqual(runner.started(), tasks.slice(0, 4));
 			await runner.release(tasks[0]!);
 			await waitFor(() => runner.started().includes(tasks[4]!));
@@ -1756,7 +2042,7 @@ test("PI_SUBAGENT_MAX_SUBAGENTS overrides the default child cap", async () => {
 			try {
 				await waitFor(() => runner.started().length === 1);
 				assert.deepEqual(runner.started(), ["task-1"]);
-				assert.equal(workingWidgetHeaders(app.widget!.render(80)).length, 1);
+				assert.equal(workingWidgetRows(app.widget!.render(80)).length, 1);
 				await runner.release("task-1");
 				await waitFor(() => runner.started().includes("task-2"));
 				for (const task of tasks) await runner.release(task);
@@ -1908,7 +2194,9 @@ test("drops an aborted queued delegation and transfers its permit", async () => 
 			calls.push(fifth, sixth);
 			abort.abort();
 			await fifthAborted;
-			assert.equal(workingWidgetHeaders(app.widget!.render(80)).length, 4);
+			const widget = app.widget!.render(80);
+			assert.equal(workingWidgetRows(widget).length, 2);
+			assertWidgetHierarchy(widget);
 			await runner.release(tasks[0]!);
 			await waitFor(() => runner.started().includes(tasks[5]!));
 			assert.deepEqual(runner.started(), [...tasks.slice(0, 4), tasks[5]!]);
@@ -2054,7 +2342,7 @@ setInterval(() => {}, 1_000);
 		await waitFor(() => existsSync(cleanupStarted));
 		abort.abort();
 		await assert.rejects(running, (error: unknown) => error instanceof Error && error.name === "AbortError");
-		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
+		assert.ok(app.widget!.render(80).some((line) => line.startsWith("  ✗")));
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
 });
@@ -2082,7 +2370,7 @@ Do bounded work.
 		assert.ok(error instanceof WorkflowFailureError);
 		assertTruncated(singleEvidence(error.message, error.details, "failure"), capOutput("e".repeat(60 * 1024)));
 		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
-		assert.ok(app.widget!.render(80)[0].startsWith("✗"));
+		assert.ok(app.widget!.render(80).some((line) => line.startsWith("  ✗")));
 		await app.handlers.get("session_shutdown")?.({}, app.ctx);
 	});
 });

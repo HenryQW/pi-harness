@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import type {
+	ExecOptions,
+	ExecResult,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
 import type {
 	CurrentPullRequest,
@@ -24,8 +26,30 @@ type Deferred<T> = {
 	resolve(value: T): void;
 	reject(reason?: unknown): void;
 };
+type Exec = (
+	command: string,
+	args: string[],
+	options?: ExecOptions,
+) => Promise<ExecResult> | ExecResult;
 
 const plain = (text: string) => text.replace(/\x1b\]8;;.*?\x1b\\/g, "");
+const widgetLine = (text: string): string[] => [text];
+const inheritedHerdrEnvironment = {
+	HERDR_ENV: process.env.HERDR_ENV,
+	HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
+};
+
+before(() => {
+	delete process.env.HERDR_ENV;
+	delete process.env.HERDR_WORKSPACE_ID;
+});
+
+after(() => {
+	for (const [key, value] of Object.entries(inheritedHerdrEnvironment)) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+});
 
 function deferred<T>(): Deferred<T> {
 	let resolve!: (value: T) => void;
@@ -72,11 +96,39 @@ function flush(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
+function execResult(stdout = "", code = 0, stderr = "", killed = false): ExecResult {
+	return { stdout, stderr, code, killed };
+}
+
+async function withHerdrEnvironment(
+	herdrEnv: string | undefined,
+	workspaceId: string | undefined,
+	run: () => Promise<void>,
+): Promise<void> {
+	const previous = {
+		HERDR_ENV: process.env.HERDR_ENV,
+		HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
+	};
+	if (herdrEnv === undefined) delete process.env.HERDR_ENV;
+	else process.env.HERDR_ENV = herdrEnv;
+	if (workspaceId === undefined) delete process.env.HERDR_WORKSPACE_ID;
+	else process.env.HERDR_WORKSPACE_ID = workspaceId;
+	try {
+		await run();
+	} finally {
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+}
+
 function harness(options: {
 	load: Loader;
 	hasLocalCommit?: () => Promise<boolean>;
 	commandHandler?: PrCommandHandler;
 	theme?: (color: string, text: string) => string;
+	exec?: Exec;
 }) {
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
@@ -84,13 +136,16 @@ function harness(options: {
 	let toolResult: EventHandler | undefined;
 	let command: Command | undefined;
 	const statuses: Array<string | undefined> = [];
-	const widgets: Array<string[] | undefined> = [];
+	const widgets: unknown[] = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	const execCalls: Array<{ command: string; args: string[]; options?: ExecOptions }> = [];
 	const ui = {
 		setStatus(_key: string, value: string | undefined) { statuses.push(value); },
-		setWidget(_key: string, value: string[] | undefined) { widgets.push(value); },
+		setWidget(_key: string, value: unknown) { widgets.push(value); },
 		notify(message: string, type?: string) { notifications.push({ message, type }); },
-		theme: { fg(color: string, text: string) { return options.theme?.(color, text) ?? text; } },
+		theme: {
+			fg(color: string, text: string) { return options.theme?.(color, text) ?? text; },
+		},
 	};
 
 	pullRequestExtension({
@@ -103,6 +158,11 @@ function harness(options: {
 		registerCommand(name: string, registered: Command) {
 			if (name === "pr") command = registered;
 		},
+		async exec(command: string, args: string[], execOptions?: ExecOptions) {
+			execCalls.push({ command, args: [...args], options: execOptions });
+			if (!options.exec) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+			return options.exec(command, args, execOptions);
+		},
 	} as unknown as ExtensionAPI, {
 		loadCurrentPullRequest: options.load,
 		hasLocalCommit: options.hasLocalCommit,
@@ -113,8 +173,9 @@ function harness(options: {
 		if (value === undefined) throw new Error(`Missing ${name} handler`);
 		return value;
 	};
-	const context = (): ExtensionContext => ({
+	const context = (mode: "tui" | "rpc" = "rpc"): ExtensionContext => ({
 		hasUI: true,
+		mode,
 		cwd: "/repo",
 		signal: new AbortController().signal,
 		isIdle: () => true,
@@ -126,6 +187,7 @@ function harness(options: {
 		statuses,
 		widgets,
 		notifications,
+		execCalls,
 		context,
 		async start(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
@@ -177,7 +239,7 @@ test("renders the shared projection and refreshes after successful create or pus
 	await app.start(ctx);
 	assert.equal(signals.length, 1);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
-	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 
 	await app.tool({
 		toolName: "bash",
@@ -191,9 +253,83 @@ test("renders the shared projection and refreshes after successful create or pus
 	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(signals.length, 3);
 	assert.equal(app.statuses.at(-1), undefined);
-	assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+	assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 
 	await app.shutdown(ctx);
+});
+
+test("failed CI replaces review feedback in the footer on refresh", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const results = [
+		currentPullRequest({ conditions: { unresolvedThreads: 1 } }),
+		currentPullRequest({ conditions: { unresolvedThreads: 1, ci: "failure" } }),
+	];
+	const app = harness({
+		async load() {
+			const result = results.shift();
+			if (result === undefined) throw new Error("Unexpected pull request refresh");
+			return result;
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · 1 unresolved");
+	assert.deepEqual(app.widgets.at(-1), widgetLine("! Run /pr to address review feedback"));
+
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
+	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
+
+	await app.shutdown(ctx);
+});
+
+test("keeps the RPC widget as a plain icon-prefixed action despite a terminal theme", async () => {
+	const app = harness({
+		async load() {
+			return currentPullRequest({ conditions: { ci: "failure" } });
+		},
+		theme(color, text) {
+			return `<${color}>${text}</${color}>`;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		assert.notEqual(typeof app.widgets.at(-1), "function");
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
+		assert.doesNotMatch((app.widgets.at(-1) as string[])[0] ?? "", /\x1b/);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("uses a width-aware single-line widget component in TUI", async () => {
+	const app = harness({
+		async load() {
+			return currentPullRequest({ conditions: { unresolvedThreads: 123_456_789 } });
+		},
+	});
+	const ctx = app.context("tui");
+
+	try {
+		await app.start(ctx);
+		const widget = app.widgets.at(-1);
+		assert.equal(typeof widget, "function");
+		const component = (widget as (tui: unknown, theme: {
+			fg(color: string, text: string): string;
+		}) => { render(width: number): string[] })({} as never, {
+			fg(_color, text) { return `\x1b[36m${text}\x1b[0m`; },
+		});
+		assert.deepEqual(component.render(0), []);
+		const lines = component.render(8);
+		assert.equal(lines.length, 1);
+		assert.ok(lines.every((line) => visibleWidth(line) <= 8));
+	} finally {
+		await app.shutdown(ctx);
+	}
 });
 
 test("shows the create widget only after a local commit", async () => {
@@ -215,7 +351,7 @@ test("shows the create widget only after a local commit", async () => {
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.tool({ toolName: "bash", input: { command: "git commit -m change" }, isError: false }, ctx);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -325,7 +461,7 @@ test("reports lookup failures once, retains display, and resets after recovery",
 	t.mock.timers.tick(30_000);
 	await flush();
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
-	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 	const statusWrites = app.statuses.length;
 	const widgetWrites = app.widgets.length;
 
@@ -427,7 +563,7 @@ test("session context generation prevents stale /pr completion from mutating the
 	await app.shutdown(firstSession);
 	await app.start(secondSession);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
-	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 	const statusWrites = app.statuses.length;
 	const widgetWrites = app.widgets.length;
 
@@ -466,7 +602,7 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 
 	try {
 		await app.start(ctx);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
 		assert.equal(app.widgets.at(-1), undefined, "the hint clears before the workflow completes");
@@ -486,7 +622,7 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 		assert.equal(loads, 3);
 		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 		assert.match(app.statuses.at(-1) ?? "", /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to merge pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
 
 		staleRefresh.resolve(null);
 		await polling;
@@ -496,6 +632,250 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 		setCapabilities(previousCapabilities);
 		await app.shutdown(ctx);
 	}
+});
+
+test("labels the Herdr workspace with direct arguments after a create workflow settles", async () => {
+	await withHerdrEnvironment("1", "workspace-7", async () => {
+		let loads = 0;
+		const app = harness({
+			async load() {
+				loads += 1;
+				return loads === 1 ? null : currentPullRequest();
+			},
+			async hasLocalCommit() {
+				return true;
+			},
+			async commandHandler() {
+				return "create";
+			},
+			async exec(_command, args) {
+				return args[1] === "get"
+					? execResult(JSON.stringify({
+						result: { workspace: { workspace_id: "workspace-7", label: "Feature · PR #7 · PR #8" } },
+					}))
+					: execResult();
+			},
+		});
+		const ctx = app.context();
+
+		try {
+			await app.start(ctx);
+			await app.command().handler("", ctx as ExtensionCommandContext);
+			assert.equal(app.execCalls.length, 0);
+
+			await app.settle(ctx);
+			assert.deepEqual(app.execCalls.map(({ command, args, options }) => ({
+				command,
+				args,
+				cwd: options?.cwd,
+				timeout: options?.timeout,
+			})), [
+				{
+					command: "herdr",
+					args: ["workspace", "get", "workspace-7"],
+					cwd: "/repo",
+					timeout: 10_000,
+				},
+				{
+					command: "herdr",
+					args: ["workspace", "rename", "workspace-7", "Feature · PR #42"],
+					cwd: "/repo",
+					timeout: 10_000,
+				},
+			]);
+			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+		} finally {
+			await app.shutdown(ctx);
+		}
+	});
+});
+
+test("keeps one Herdr rename pending through delayed PR discovery", async () => {
+	for (const scenario of [
+		{ name: "missing", delayed: null },
+		{ name: "failed", delayed: new Error("GitHub unavailable") },
+	]) {
+		await withHerdrEnvironment("1", "workspace-7", async () => {
+			let loads = 0;
+			const app = harness({
+				async load() {
+					loads += 1;
+					if (loads === 1) return null;
+					if (loads === 2) {
+						if (scenario.delayed instanceof Error) throw scenario.delayed;
+						return scenario.delayed;
+					}
+					return currentPullRequest();
+				},
+				async hasLocalCommit() {
+					return true;
+				},
+				async commandHandler() {
+					return "create";
+				},
+				async exec(_command, args) {
+					return args[1] === "get"
+						? execResult(JSON.stringify({
+							result: { workspace: { workspace_id: "workspace-7", label: "Feature" } },
+						}))
+						: execResult();
+				},
+			});
+			const ctx = app.context();
+
+			try {
+				await app.start(ctx);
+				await app.command().handler("", ctx as ExtensionCommandContext);
+				await app.settle(ctx);
+				assert.equal(app.execCalls.length, 0, scenario.name);
+
+				await app.tool({
+					toolName: "bash",
+					input: { command: "git push origin HEAD" },
+					isError: false,
+				}, ctx);
+				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], scenario.name);
+			} finally {
+				await app.shutdown(ctx);
+			}
+		});
+	}
+});
+
+test("waits for an open PR instead of renaming from a historical match", async () => {
+	for (const lifecycle of ["closed", "merged"] as const) {
+		await withHerdrEnvironment("1", "workspace-7", async () => {
+			let loads = 0;
+			const app = harness({
+				async load() {
+					loads += 1;
+					if (loads === 1) return null;
+					if (loads === 2) return currentPullRequest({ lifecycle });
+					return currentPullRequest();
+				},
+				async hasLocalCommit() {
+					return true;
+				},
+				async commandHandler() {
+					return "create";
+				},
+				async exec(_command, args) {
+					return args[1] === "get"
+						? execResult(JSON.stringify({
+							result: { workspace: { workspace_id: "workspace-7", label: "Feature" } },
+						}))
+						: execResult();
+				},
+			});
+			const ctx = app.context();
+
+			try {
+				await app.start(ctx);
+				await app.command().handler("", ctx as ExtensionCommandContext);
+				await app.settle(ctx);
+				assert.equal(plain(app.statuses.at(-1) ?? ""), `PR #42 · ${lifecycle}`);
+				assert.equal(app.execCalls.length, 0, lifecycle);
+
+				await app.tool({
+					toolName: "bash",
+					input: { command: "git push origin HEAD" },
+					isError: false,
+				}, ctx);
+				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], lifecycle);
+			} finally {
+				await app.shutdown(ctx);
+			}
+		});
+	}
+});
+
+test("warns without hiding the refreshed PR when Herdr labeling fails", async () => {
+	await withHerdrEnvironment("1", "workspace-7", async () => {
+		let loads = 0;
+		const app = harness({
+			async load() {
+				loads += 1;
+				return loads === 1 ? null : currentPullRequest();
+			},
+			async hasLocalCommit() {
+				return true;
+			},
+			async commandHandler() {
+				return "create";
+			},
+			async exec() {
+				return execResult("", 7, "workspace unavailable");
+			},
+		});
+		const ctx = app.context();
+
+		try {
+			await app.start(ctx);
+			await app.command().handler("", ctx as ExtensionCommandContext);
+			await app.settle(ctx);
+			assert.deepEqual(app.notifications, [{
+				message: "Herdr workspace rename failed: herdr workspace get failed: workspace unavailable",
+				type: "warning",
+			}]);
+			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+
+			await app.tool({
+				toolName: "bash",
+				input: { command: "git push origin HEAD" },
+				isError: false,
+			}, ctx);
+			assert.equal(app.execCalls.length, 1, "an observed open PR consumes the rename after failure");
+			assert.equal(app.notifications.length, 1);
+		} finally {
+			await app.shutdown(ctx);
+		}
+	});
+});
+
+test("session replacement aborts Herdr labeling before stale rename or warning", async () => {
+	await withHerdrEnvironment("1", "workspace-7", async () => {
+		const workspaceGet = deferred<ExecResult>();
+		let loads = 0;
+		const app = harness({
+			async load() {
+				loads += 1;
+				return loads === 1 ? null : currentPullRequest();
+			},
+			async hasLocalCommit() {
+				return true;
+			},
+			async commandHandler() {
+				return "create";
+			},
+			async exec(_command, args) {
+				if (args[1] !== "get") throw new Error("stale workspace rename");
+				return workspaceGet.promise;
+			},
+		});
+		const firstSession = app.context();
+		const secondSession = app.context();
+
+		try {
+			await app.start(firstSession);
+			await app.command().handler("", firstSession as ExtensionCommandContext);
+			const settling = app.settle(firstSession);
+			await flush();
+
+			await app.start(secondSession);
+			assert.equal(app.execCalls[0]?.options?.signal?.aborted, true);
+			workspaceGet.resolve(execResult(JSON.stringify({
+				result: { workspace: { workspace_id: "workspace-7", label: "Feature · PR #7" } },
+			})));
+			await settling;
+
+			assert.equal(app.execCalls.length, 1);
+			assert.deepEqual(app.notifications, []);
+		} finally {
+			await app.shutdown(secondSession);
+		}
+	});
 });
 
 test("keeps a non-create hint hidden until its workflow settles", async () => {
@@ -516,7 +896,7 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 
 	try {
 		await app.start(ctx);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 		const statusWrites = app.statuses.length;
 
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
@@ -537,7 +917,7 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 
 		await app.settle(ctx);
 		assert.equal(loads, 3);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to merge pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -563,7 +943,7 @@ test("restores the create hint when the dispatched workflow settles without a pu
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.settle(ctx);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -643,7 +1023,7 @@ test("tracks creation from the fresh command route instead of stale presentation
 		assert.equal(stalePullRequest.widgets.at(-1), undefined);
 
 		await stalePullRequest.settle(stalePullRequestContext);
-		assert.deepEqual(stalePullRequest.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(stalePullRequest.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 	} finally {
 		await stalePullRequest.shutdown(stalePullRequestContext);
 	}
@@ -669,9 +1049,9 @@ test("restores the create hint immediately when /pr cannot dispatch creation", a
 	try {
 		await app.start(ctx);
 		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /dispatch failed/);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 		await flush();
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -708,7 +1088,7 @@ test("out-of-order /pr results keep every active creation workflow pending", asy
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.settle(ctx);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -739,7 +1119,7 @@ test("a failed second /pr keeps the active creation workflow pending", async () 
 		assert.equal(app.widgets.at(-1), undefined);
 
 		await app.settle(ctx);
-		assert.deepEqual(app.widgets.at(-1), ["Run /pr to create pull request"]);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -770,7 +1150,7 @@ test("/pr restores its hint after a command error and schedules a refresh", asyn
 	const command = app.command().handler("", ctx as ExtensionCommandContext);
 	assert.equal(app.widgets.at(-1), undefined);
 	await assert.rejects(command, /route failed/);
-	assert.deepEqual(app.widgets.at(-1), ["Run /pr to fix CI"]);
+	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 	await flush();
 	assert.equal(commandCalls, 1);
 	assert.equal(loads, 2);

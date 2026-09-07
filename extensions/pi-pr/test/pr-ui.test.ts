@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	formatPrFooter,
 	formatPrWidget,
@@ -27,8 +27,13 @@ const conditions: PullRequestConditions = {
 };
 const local: LocalMergeSafety = { worktree: "clean", head: "equal" };
 const theme: PrTheme = {
-	fg(color: PrStatusColor, text: string) {
+	fg(color: PrStatusColor | "text", text: string) {
 		return `<${color}>${text}</${color}>`;
+	},
+};
+const ansiTheme: PrTheme = {
+	fg(_color, text) {
+		return `\x1b[36m${text}\x1b[0m`;
 	},
 };
 
@@ -168,7 +173,7 @@ test("projects normal runnable, merge, and no-action states", () => {
 		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);
-		assert.equal(formatPrWidget(display), widget, `${name} widget`);
+		assert.equal(display.widget, widget, `${name} widget`);
 	}
 });
 
@@ -222,11 +227,10 @@ test("uses visible-condition priority for combined states", () => {
 			widget: "Run /pr to update branch",
 		},
 		{
-			name: "unresolved feedback before changes requested and CI",
+			name: "unresolved feedback before changes requested",
 			input: pullRequest({ conditions: {
 				changesRequested: true,
 				unresolvedThreads: 3,
-				ci: "failure",
 			} }),
 			nextStep: "sweep",
 			footer: "3 unresolved",
@@ -234,12 +238,12 @@ test("uses visible-condition priority for combined states", () => {
 			widget: "Run /pr to address review feedback",
 		},
 		{
-			name: "changes requested before CI",
-			input: pullRequest({ conditions: { changesRequested: true, ci: "failure" } }),
-			nextStep: "sweep",
-			footer: "changes requested",
+			name: "CI failure before feedback",
+			input: pullRequest({ conditions: { changesRequested: true, unresolvedThreads: 3, ci: "failure" } }),
+			nextStep: "fix-ci",
+			footer: "CI failed",
 			color: "error",
-			widget: "Run /pr to address review feedback",
+			widget: "Run /pr to fix CI",
 		},
 		{
 			name: "CI failure before waiting",
@@ -263,7 +267,7 @@ test("uses visible-condition priority for combined states", () => {
 		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);
-		assert.equal(formatPrWidget(display), widget, `${name} widget`);
+		assert.equal(display.widget, widget, `${name} widget`);
 	}
 });
 
@@ -285,6 +289,57 @@ test("formats themed footer text with OSC-8 only when supported", () => {
 		assert.doesNotMatch(footer, /\x1b\]8;;/);
 		assert.equal(plain(footer), "PR #42 · open");
 	});
+});
+
+test("prefixes plain actions with themed semantic icons", () => {
+	const cases = [
+		{
+			name: "error",
+			display: projectPrDisplay(pullRequest({ conditions: { conflict: true } })),
+			color: "error",
+			icon: "✗",
+			text: "Run /pr to resolve merge conflict",
+		},
+		{
+			name: "warning",
+			display: projectPrDisplay(pullRequest({ conditions: { baseUpdateRequired: true } })),
+			color: "warning",
+			icon: "!",
+			text: "Run /pr to update branch",
+		},
+		{
+			name: "success",
+			display: projectPrDisplay(pullRequest({ conditions: { ci: "success" } })),
+			color: "success",
+			icon: "✓",
+			text: "Run /pr to merge pull request",
+		},
+		{
+			name: "accent",
+			display: projectPrDisplay(null, true),
+			color: "accent",
+			icon: "●",
+			text: "Run /pr to create pull request",
+		},
+	];
+
+	for (const { name, display, color, icon, text } of cases) {
+		const plainWidget = formatPrWidget(display);
+		assert.deepEqual(plainWidget, [`${icon} ${text}`], `${name} plain`);
+		assert.doesNotMatch(plainWidget?.[0] ?? "", /\x1b/, `${name} plain ANSI`);
+		assert.deepEqual(formatPrWidget(display, theme), [`<${color}>${icon}</${color}> ${text}`], name);
+	}
+});
+
+test("truncates the themed action line to narrow TUI widths", () => {
+	const display = projectPrDisplay(pullRequest({ conditions: { unresolvedThreads: 123_456_789 } }));
+	assert.equal(display.footer?.text, "123456789 unresolved");
+	assert.equal(display.widget, "Run /pr to address review feedback");
+
+	for (const width of [-1, 0]) assert.deepEqual(formatPrWidget(display, ansiTheme, width), []);
+	const widget = formatPrWidget(display, ansiTheme, 8);
+	assert.equal(widget?.length, 1);
+	assert.ok(widget?.every((line) => visibleWidth(line) <= 8));
 });
 
 test("keeps blocked mutating conditions in the footer without a widget", () => {
@@ -317,14 +372,14 @@ test("keeps blocked mutating conditions in the footer without a widget", () => {
 			assert.equal(display.nextStep, "none", `${name} route`);
 			assert.equal(display.footer?.text, action.footer, `${name} footer`);
 			assert.equal(display.footer?.color, action.color, `${name} color`);
-			assert.equal(formatPrWidget(display), undefined, `${name} widget`);
+			assert.equal(display.widget, undefined, `${name} widget`);
 		}
 	}
 });
 
 test("clears widget for non-actionable projections", () => {
 	const actionable = projectPrDisplay(pullRequest({ conditions: { ci: "failure" } }));
-	assert.equal(formatPrWidget(actionable), "Run /pr to fix CI");
+	assert.equal(actionable.widget, "Run /pr to fix CI");
 
 	const cleared = [
 		projectPrDisplay(pullRequest({ conditions: { ci: "running" } })),
@@ -333,5 +388,6 @@ test("clears widget for non-actionable projections", () => {
 		projectPrDisplay(pullRequest({ lifecycle: "merged" })),
 		projectPrDisplay(pullRequest({ lifecycle: "closed" })),
 	];
-	for (const display of cleared) assert.equal(formatPrWidget(display), undefined);
+	for (const display of cleared) assert.equal(display.widget, undefined);
+	assert.equal(formatPrWidget(cleared[0], undefined, 0), undefined);
 });

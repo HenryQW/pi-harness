@@ -1,4 +1,4 @@
-import { getCapabilities, hyperlink } from "@earendil-works/pi-tui";
+import { getCapabilities, hyperlink, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	deriveNextStep,
 	type NextStep,
@@ -38,9 +38,9 @@ function footerStatus(input: PrDisplayInput, nextStep: NextStep): Pick<PrFooter,
 	if (conditions.draft) return { text: "draft", color: "warning" };
 	if (conditions.conflict) return { text: "merge conflict", color: "error" };
 	if (conditions.baseUpdateRequired) return { text: "base update required", color: "warning" };
+	if (conditions.ci === "failure") return { text: "CI failed", color: "error" };
 	if (conditions.unresolvedThreads > 0) return { text: `${conditions.unresolvedThreads} unresolved`, color: "warning" };
 	if (conditions.changesRequested) return { text: "changes requested", color: "error" };
-	if (conditions.ci === "failure") return { text: "CI failed", color: "error" };
 	if (conditions.ci === "running") return { text: "CI running", color: "warning" };
 	if (nextStep === "merge") return { text: "merge-ready", color: "success" };
 	if (input.approved) return { text: "approved", color: "success" };
@@ -93,6 +93,11 @@ export function formatPrFooter(display: PrDisplay, theme: PrTheme): string | und
 	return `${link} · ${theme.fg(display.footer.color, display.footer.text)}`;
 }
 
-export function formatPrWidget(display: PrDisplay): string | undefined {
-	return display.widget;
+export function formatPrWidget(display: PrDisplay, theme?: PrTheme, width?: number): string[] | undefined {
+	if (display.widget === undefined) return undefined;
+	if (width !== undefined && width <= 0) return [];
+	const color = display.footer?.color ?? "accent";
+	const icon = color === "error" ? "✗" : color === "warning" ? "!" : color === "success" ? "✓" : "●";
+	const line = `${theme ? theme.fg(color, icon) : icon} ${display.widget}`;
+	return [width === undefined ? line : truncateToWidth(line, Math.max(1, width))];
 }

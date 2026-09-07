@@ -10,11 +10,27 @@ pi install npm:@henryqw/pi-pr
 
 Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on GitHub.com or GitHub Enterprise. Run `gh auth status` to verify authentication.
 
+## Feedback snapshots
+
+`pr-feedback.mjs fetch --out FILE` prints a compact feedback index. The index
+includes IDs, kinds, states, authors, locations, and parent IDs as needed. It
+does not print comment or review bodies.
+
+The saved snapshot still contains the complete feedback. `fetch --json` also
+keeps the complete JSON output. Read one item with
+`pr-feedback.mjs show --snapshot FILE --id ID`.
+
+`show` prints one JSON record with its exact stored body and fields. A thread
+record includes child IDs without child bodies. A nested comment includes only
+its parent thread's ID, state, and location. Missing, unknown, duplicate, or
+ambiguous IDs fail. `show` does not run Git, call GitHub, use the network, or
+write files.
+
 ## Works with
 
-| Package | Relationship | Purpose |
-| --- | --- | --- |
-| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows current-branch pull-request status in the footer. |
+**Requires.** [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) is the shared Herdr CLI client. It installs with this package.
+
+**Improves.** [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) shows current-branch pull-request status in the footer.
 
 ## Use
 
@@ -24,7 +40,9 @@ Run `/pr` without arguments in a GitHub checkout. It reads the current branch pu
 | --- | --- | --- |
 | `/pr` | command | Run the current pull request's next safe route. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
-| Widget hint | ui | Show at most one hint for the next `/pr` step. |
+| Widget | ui | Show one actionable icon-prefixed `Run /pr to …` hint. |
+
+The footer already shows the pull request and status. Actionable widgets omit duplicate identity and status. Each uses one semantic status icon, a space, and a plain `Run /pr to …` route. `✗` marks errors, `!` warnings, `✓` success, and `●` accent or neutral routes. In TUI, only the icon uses a theme color. RPC and non-TUI output use the same plain text without ANSI.
 
 ## Flow
 
@@ -38,18 +56,22 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | --- | --- |
 | No current-branch pull request, including no upstream push target | Start pull-request creation. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
-| Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | CI failed | Run the CI fix workflow when the same local prerequisite holds. |
+| Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
 `pi-pr-create` honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
 
-After it creates or reuses a PR in Herdr, it ends the workspace label with one ` · PR #<number>` suffix. It removes all trailing ` · PR #<number>` suffixes first. The number comes from the validated PR URL.
+After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then ends the Herdr workspace label with one ` · PR #<number>` suffix.
 
-It runs only when `HERDR_ENV=1` and trimmed `HERDR_WORKSPACE_ID` is non-empty. It does not rename panes, tabs, Pi sessions, or Git branches. Outside Herdr, it does nothing.
+Failed or empty discovery leaves one rename pending for a later refresh. Closed or merged historical matches do not trigger it.
 
-If labeling fails, it reports the PR URL and `Herdr workspace rename failed: <error>`.
+It removes every stale trailing PR suffix before adding the current one. This requires `HERDR_ENV=1` and a non-empty, trimmed `HERDR_WORKSPACE_ID`.
+
+It renames only the workspace. Outside Herdr, it does nothing.
+
+If Herdr lookup, JSON validation, or rename fails, the PR and normal UI refresh remain available. Each Herdr command has a 10-second timeout. The extension warns with `Herdr workspace rename failed: <error>`.
 
 Current-branch discovery matches the exact push repository and ref. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 
@@ -61,8 +83,8 @@ A missing pull request uses creation. For an existing pull request, the first ma
 
 1. Merged, closed, or draft: no action.
 2. Base update required or merge conflict. Run only with a clean tree and equal local and PR heads.
-3. Changes requested or unresolved review threads. Apply the same local prerequisite.
-4. CI failure. Apply the same local prerequisite.
+3. CI failure. Apply the same local prerequisite.
+4. Changes requested or unresolved review threads. Apply the same local prerequisite.
 5. Waiting or local safety block: no action.
 6. Merge-ready: allow clean local HEAD equal to or behind the PR head. Confirm, then merge directly.
 
@@ -74,7 +96,7 @@ The comment sweep resolves its bundled helper and references from the installed 
 
 The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also poll every 30 seconds. Polling updates presentation only and may be stale.
 
-The create hint stays hidden until the local branch has a commit beyond its creation point. Any displayed hint clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the hint when the handler finishes.
+The create widget stays hidden until the local branch has a commit beyond its creation point. Any displayed widget clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the widget when the handler finishes.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
