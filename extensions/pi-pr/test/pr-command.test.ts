@@ -125,7 +125,7 @@ function harness(options: HarnessOptions) {
 			if (command === "git" && args[0] === "config") return result("", 1);
 			if (
 				command === "gh" &&
-				args.join(" ") === `api search/issues --hostname ${nextHost()} --paginate --slurp -X GET -f q=is:pr head:acme:feature/pr -f per_page=100`
+				args.join(" ") === `api search/issues --hostname ${nextHost()} --paginate --slurp -X GET -f q=is:pr${options.pushReference === "" ? " is:open" : ""} head:acme:feature/pr -f per_page=100`
 			) {
 				events.push("load");
 				active = options.states[stateIndex++] ?? null;
