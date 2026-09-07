@@ -389,4 +389,5 @@ test("clears widget for non-actionable projections", () => {
 		projectPrDisplay(pullRequest({ lifecycle: "closed" })),
 	];
 	for (const display of cleared) assert.equal(display.widget, undefined);
+	assert.equal(formatPrWidget(cleared[0], undefined, 0), undefined);
 });
