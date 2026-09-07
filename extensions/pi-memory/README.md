@@ -86,11 +86,11 @@ Use the memory tool immediately only when something qualifies. Save inferred hab
 
 Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional. A missing file uses defaults. Startup never creates or rewrites the file.
 
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `directory` | No | Sets the folder for both memory stores. | Non-empty absolute path without control characters, such as an iCloud- or Obsidian-synced folder. | `~/.pi/agent/config/pi-memory/memory` |
-| `memoryCharLimit` | No | Caps `MEMORY.md` by character count. | Safe integer from 1 to 100000. | `8800` |
-| `userCharLimit` | No | Caps `USER.md` by character count. | Safe integer from 1 to 100000. | `5500` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `directory` | Sets the folder for both memory stores. | Non-empty absolute path without control characters, such as an iCloud- or Obsidian-synced folder. | `~/.pi/agent/config/pi-memory/memory` |
+| `memoryCharLimit` | Caps `MEMORY.md` by character count. | Safe integer from 1 to 100000. | `8800` |
+| `userCharLimit` | Caps `USER.md` by character count. | Safe integer from 1 to 100000. | `5500` |
 
 Any other invalid configuration fails fast. Malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values throw an error naming the problem. The file is never rewritten.
 

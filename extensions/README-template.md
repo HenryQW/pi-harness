@@ -50,15 +50,15 @@ pi install npm:@henryqw/<package>
 
 <Describe the user-visible sequence and important transitions.>
 
-<!-- Optional: include only for package-owned user-editable configuration. Start with the exact path or an ownership sentence. Do not present shared config or generated state as this package's config. A JSON example may follow the path. Every Config section must include the exact five-column primary table below. Required must be Yes, No, or a concise condition. Keep explanation in Description and type, range, or enum details in Values. Use — when a required field has no default and Omitted when omission is the default. -->
+<!-- Optional: include only for package-owned user-editable configuration. Start with the exact path or an ownership sentence. Do not present shared config or generated state as this package's config. Do not repeat a flat config table as JSON; a nested JSON example may explain structure. Every Config section must include the exact four-column primary table below: Name, Description, Values, and Default. Put genuinely conditional requirements briefly in Description. Keep explanation in Description and type, range, enum, or structural constraints in Values. State effective omitted behavior in Default. Use — when no default exists. -->
 ## Config
 
 Package-owned: `~/.pi/agent/config/<package>/config.json`
 
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `<setting-a>` | Yes | <What it controls.> | <Type, range, or enum.> | — |
-| `<setting-b>` | No | <What it controls.> | <Type, range, or enum.> | Omitted |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `<setting-a>` | <What it controls. Required when <condition>.> | <Type, range, enum, or structural constraint.> | — |
+| `<setting-b>` | <What it controls.> | <Type, range, enum, or structural constraint.> | <Effective behavior when omitted.> |
 
 <After the table, explain invalid or missing config, who writes it, when changes reload, and recovery.>
 

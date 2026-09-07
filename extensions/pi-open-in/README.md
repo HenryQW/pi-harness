@@ -23,15 +23,9 @@ Run `/set-open-in` when you want another command.
 
 Package-owned: `~/.pi/agent/config/pi-open-in/config.json`
 
-```json
-{
-  "command": "code"
-}
-```
-
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `command` | When the file exists | Sets the command used by `/open`. | Non-empty string. | `"code"` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `command` | Sets the command used by `/open`. Required when the file exists. | Non-empty string. | `"code"` |
 
 - A missing file silently uses the default command, `"code"`.
 - Reads do not create or write the config home.

@@ -64,19 +64,11 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 
-```json
-{
-  "autoSubmit": false,
-  "tools": "inherit",
-  "split": "right"
-}
-```
-
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `autoSubmit` | No | Submits the draft question instead of leaving it editable in the side pane. | Boolean. | `false` |
-| `tools` | No | Selects the tools available in the side pane. | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
-| `split` | No | Sets the side-pane placement. | `right` or `down`. | `right` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `autoSubmit` | Submits the draft question instead of leaving it editable in the side pane. | Boolean. | `false` |
+| `tools` | Selects the tools available in the side pane. | `inherit` (parent's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
+| `split` | Sets the side-pane placement. | `right` or `down`. | `right` |
 
 - All fields are optional.
 - Unknown keys and non-object files are rejected.

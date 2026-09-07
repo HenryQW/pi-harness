@@ -48,15 +48,9 @@ Malformed shared task-model config is reported and left unchanged. Compaction th
 
 Package-owned: `~/.pi/agent/config/pi-auto-compact/config.json`
 
-```json
-{
-  "autoCompactThreshold": 70
-}
-```
-
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `autoCompactThreshold` | No | Sets the context-use percentage that triggers compaction. | Number from 25 inclusive to below 100. | `70` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `autoCompactThreshold` | Sets the context-use percentage that triggers compaction. | Number from 25 inclusive to below 100. | `70` |
 
 Unknown fields are ignored. Legacy model fields are obsolete. `/auto-compact` writes this file.
 

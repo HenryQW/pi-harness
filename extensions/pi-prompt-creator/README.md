@@ -92,10 +92,10 @@ Use `/task-models` to select the model and thinking level. The extension owns no
 
 Package-owned: `~/.pi/agent/config/pi-prompt-creator/config.json`
 
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `automatic` | No | Runs automatic analysis after enough user inputs. | Boolean. | `true` |
-| `inputThreshold` | No | Sets the number of non-empty user inputs before automatic analysis. | Positive integer. | `3` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `automatic` | Runs automatic analysis after enough user inputs. | Boolean. | `true` |
+| `inputThreshold` | Sets the number of non-empty user inputs before automatic analysis. | Positive integer. | `3` |
 
 Edit either field, then run `/reload` to apply the change. Omitted fields use their defaults.
 

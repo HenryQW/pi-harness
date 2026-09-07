@@ -79,14 +79,14 @@ The following JSON shows structure only. Every model ID is a placeholder and mus
 
 Use exact model IDs offered by `/task-models`. Pi's registry, not this example, defines available models.
 
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `profiles` | No | Stores configured shared routes by profile name. | Object keyed by `fast`, `balanced`, `frontier`, or `fav`; unknown profile names are rejected. | `{}` (no profiles configured) |
-| `profiles.<profile>.primary.model` | Within a configured `primary` | Selects the primary model. | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry or session-scoped models. | — |
-| `profiles.<profile>.primary.thinkingLevel` | Within a configured `primary` | Sets the primary model's thinking level. | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the model must support the level when the route resolves. | — |
-| `profiles.<profile>.fallback` | No | Sets the route to try when the primary route is unavailable. | Object requiring `model` and `thinkingLevel` under the same rules as `primary`; not allowed for `fav`. | Omitted |
-| `tasks` | No | Stores explicit profile overrides by task ID. | Object mapping task IDs (`<package>/<task>`) to profiles. | `{}` |
-| `tasks.<taskId>` | When the key is present | Overrides that task's declared profile. | `fast`, `balanced`, `frontier`, or `fav`. | That task declaration's `defaultProfile` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `profiles` | Stores configured shared routes by profile name. | Object keyed by `fast`, `balanced`, `frontier`, or `fav`; unknown profile names are rejected. | `{}` (no profiles configured) |
+| `profiles.<profile>.primary.model` | Selects the primary model. Required within a configured `primary` route. | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry or session-scoped models. | — |
+| `profiles.<profile>.primary.thinkingLevel` | Sets the primary model's thinking level. Required within a configured `primary` route. | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the model must support the level when the route resolves. | — |
+| `profiles.<profile>.fallback` | Sets the route to try when the primary route is unavailable. | Object requiring `model` and `thinkingLevel` under the same rules as `primary`; not allowed for `fav`. | No fallback route. |
+| `tasks` | Stores explicit profile overrides by task ID. | Object mapping task IDs (`<package>/<task>`) to profiles. | `{}` |
+| `tasks.<taskId>` | Overrides that task's declared profile. | `fast`, `balanced`, `frontier`, or `fav`. | That task declaration's `defaultProfile` |
 
 Pi's model registry, including session-scoped models, is the source of available models. This file does not contain a model catalog.
 

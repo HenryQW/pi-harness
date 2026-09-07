@@ -47,15 +47,9 @@ A numbered slot is one Codex account position in Pi.
 
 Package-owned: `~/.pi/agent/config/pi-multi-codex/config.json`
 
-```json
-{
-  "autoSwitchOn429": false
-}
-```
-
-| Name | Required | Description | Values | Default |
-| --- | --- | --- | --- | --- |
-| `autoSwitchOn429` | No | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `autoSwitchOn429` | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` |
 
 Set `autoSwitchOn429` to `false` to disable automatic switching. The config must contain only this field as a boolean. Invalid config is preserved and disables automatic switching.
 
