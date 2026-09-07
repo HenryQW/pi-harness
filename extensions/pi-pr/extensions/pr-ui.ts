@@ -38,9 +38,9 @@ function footerStatus(input: PrDisplayInput, nextStep: NextStep): Pick<PrFooter,
 	if (conditions.draft) return { text: "draft", color: "warning" };
 	if (conditions.conflict) return { text: "merge conflict", color: "error" };
 	if (conditions.baseUpdateRequired) return { text: "base update required", color: "warning" };
+	if (conditions.ci === "failure") return { text: "CI failed", color: "error" };
 	if (conditions.unresolvedThreads > 0) return { text: `${conditions.unresolvedThreads} unresolved`, color: "warning" };
 	if (conditions.changesRequested) return { text: "changes requested", color: "error" };
-	if (conditions.ci === "failure") return { text: "CI failed", color: "error" };
 	if (conditions.ci === "running") return { text: "CI running", color: "warning" };
 	if (nextStep === "merge") return { text: "merge-ready", color: "success" };
 	if (input.approved) return { text: "approved", color: "success" };

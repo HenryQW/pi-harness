@@ -57,8 +57,8 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | --- | --- |
 | No current-branch pull request, including no upstream push target | Start pull-request creation. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
-| Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | CI failed | Run the CI fix workflow when the same local prerequisite holds. |
+| Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
@@ -84,8 +84,8 @@ A missing pull request uses creation. For an existing pull request, the first ma
 
 1. Merged, closed, or draft: no action.
 2. Base update required or merge conflict. Run only with a clean tree and equal local and PR heads.
-3. Changes requested or unresolved review threads. Apply the same local prerequisite.
-4. CI failure. Apply the same local prerequisite.
+3. CI failure. Apply the same local prerequisite.
+4. Changes requested or unresolved review threads. Apply the same local prerequisite.
 5. Waiting or local safety block: no action.
 6. Merge-ready: allow clean local HEAD equal to or behind the PR head. Confirm, then merge directly.
 
