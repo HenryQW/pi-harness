@@ -627,6 +627,20 @@ test("post-worker identity rejects a newly added submodule", async () => {
 	assert.equal(checksRun, false);
 });
 
+test("Git identity streams ordinary temporary indexes beyond 8 KiB", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-large-index-"));
+	await initRepository(root);
+	const entries = join(root, "entries");
+	await mkdir(entries);
+	await Promise.all(Array.from({ length: 200 }, async (_, index) => {
+		await writeFile(join(entries, `ordinary-${String(index).padStart(4, "0")}-${"x".repeat(40)}.txt`), "tracked\n");
+	}));
+	await execFileAsync("git", ["add", "entries"], { cwd: root });
+	const listing = await execFileAsync("git", ["ls-files", "--stage"], { cwd: root, encoding: "utf8" });
+	assert.ok(Buffer.byteLength(listing.stdout, "utf8") > 8 * 1024);
+	assert.match((await identifyGitWorkspace(realExec, root)).tree, /^[0-9a-f]{40}$/);
+});
+
 test("Git identity uses a non-shell temporary index and preserves the real index", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-git-"));
 	await initRepository(root);

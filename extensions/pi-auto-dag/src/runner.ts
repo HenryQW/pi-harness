@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, open, readFile, readdir, rename, rm } from "node:fs/promises";
@@ -930,6 +930,65 @@ async function requireGitWithIndex(args: string[], root: string, index: string, 
 	});
 }
 
+async function assertNoGitlinksWithIndex(root: string, index: string, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	const args = ["ls-files", "--stage", "-z"];
+	const child = spawn("git", args, {
+		cwd: root,
+		env: { ...process.env, GIT_INDEX_FILE: index },
+		signal,
+		timeout: GIT_TIMEOUT_MS,
+		shell: false,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let stderr = Buffer.alloc(0);
+	child.stderr.on("data", (chunk: Buffer) => {
+		if (stderr.length < EVIDENCE_MAX_BYTES) {
+			const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			stderr = Buffer.concat([stderr, data.subarray(0, EVIDENCE_MAX_BYTES - stderr.length)]);
+		}
+	});
+	let childError: Error | undefined;
+	child.once("error", (error) => { childError = error; });
+	const closed = new Promise<number | null>((resolveOutput) => child.once("close", resolveOutput));
+	let mode = "";
+	let atRecordStart = true;
+	let gitlink = false;
+	let outputError: unknown;
+	try {
+		for await (const chunk of child.stdout) {
+			const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			for (const byte of data) {
+				if (atRecordStart) {
+					mode += String.fromCharCode(byte);
+					if ("160000 ".startsWith(mode)) {
+						if (mode === "160000 ") {
+							gitlink = true;
+							child.kill();
+							break;
+						}
+					} else {
+						atRecordStart = false;
+					}
+				} else if (byte === 0) {
+					atRecordStart = true;
+					mode = "";
+				}
+			}
+			if (gitlink) break;
+		}
+	} catch (error) {
+		outputError = error;
+		child.kill();
+	}
+	const code = await closed;
+	signal?.throwIfAborted();
+	if (gitlink) throw new Error("Auto DAG does not support Git repositories containing submodules.");
+	if (outputError) throw new Error(`git ${args.join(" ")} failed: ${errorText(outputError)}`);
+	if (childError) throw new Error(`git ${args.join(" ")} failed: ${bounded(childError.message)}`);
+	if (code !== 0) throw new Error(`git ${args.join(" ")} failed: ${bounded(stderr.toString() || `exit ${code}`)}`);
+}
+
 export async function identifyGitWorkspace(exec: ExecCommand, root: string, signal?: AbortSignal): Promise<WorkspaceIdentity> {
 	const branch = await requireCommand(exec, "git", ["symbolic-ref", "--quiet", "HEAD"], root, signal);
 	if (!branch || /[\r\n\0]/.test(branch)) throw new Error("Git returned an invalid branch reference.");
@@ -944,10 +1003,7 @@ export async function identifyGitWorkspace(exec: ExecCommand, root: string, sign
 		const index = oid(await requireGitWithIndex(["write-tree"], root, indexCopy, signal), "index tree");
 		await requireGitWithIndex(["read-tree", "HEAD"], root, workspaceIndex, signal);
 		await requireGitWithIndex(["add", "-A", "--", "."], root, workspaceIndex, signal);
-		const workspace = await requireGitWithIndex(["ls-files", "--stage"], root, workspaceIndex, signal);
-		if (workspace.split("\n").some((line) => line.startsWith("160000 "))) {
-			throw new Error("Auto DAG does not support Git repositories containing submodules.");
-		}
+		await assertNoGitlinksWithIndex(root, workspaceIndex, signal);
 		const tree = oid(await requireGitWithIndex(["write-tree"], root, workspaceIndex, signal), "workspace tree");
 		return { branch, head, index, tree };
 	} finally {
