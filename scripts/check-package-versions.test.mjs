@@ -19,6 +19,7 @@ test("no-arg mode checks packages moved between workspace roots", () => {
     const packageDir = join(repo, "extensions", "example");
     mkdirSync(packageDir, { recursive: true });
     mkdirSync(join(repo, "packages"));
+    mkdirSync(join(repo, "extensions", "stale-package", "dist"), { recursive: true });
     writeFileSync(join(packageDir, "index.js"), "export const value = 1;\n");
     writeFileSync(join(packageDir, "package.json"), `${JSON.stringify({ name: "@test/example", version: "1.0.0", files: ["index.js"] }, null, 2)}\n`);
 

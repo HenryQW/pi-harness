@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 const revisions = process.argv.slice(2)
@@ -28,7 +28,7 @@ const changedFiles = execFileSync('git', diffArgs, { encoding: 'utf8' }).trim().
 
 const workspaceRoots = ['extensions', 'packages']
 const packageDirs = workspaceRoots.flatMap(root => readdirSync(root, { withFileTypes: true })
-  .filter(entry => entry.isDirectory())
+  .filter(entry => entry.isDirectory() && existsSync(path.join(root, entry.name, 'package.json')))
   .map(entry => path.posix.join(root, entry.name)))
 
 const alwaysPublished = /^(?:README(?:\..*)?|LICENSE|LICENCE)(?:\..*)?$/i
