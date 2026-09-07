@@ -671,6 +671,32 @@ setInterval(() => {}, 1_000);
 	]);
 });
 
+test("a continuing token-only usage crossing permits one final turn then rejects further continuation", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "turn_start", turnIndex: 0 });
+event({ type: "message_update", usage: { totalTokens: 6 } });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "crossed" }, { type: "toolCall" }], stopReason: "toolUse" } });
+event({ type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+event({ type: "turn_start", turnIndex: 1 });
+event({ type: "message_update", usage: { totalTokens: 2 } });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "final" }, { type: "toolCall" }], stopReason: "toolUse" } });
+event({ type: "turn_end", turnIndex: 1, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+setInterval(() => {}, 1_000);
+`);
+	const tokens: number[] = [];
+	await assert.rejects(executor(1, 5).run({
+		onTokens: (value) => tokens.push(value),
+		prepare: async () => prepared(cwd),
+	}), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "token_limit");
+		assert.equal(error.usage, undefined);
+		assert.equal(error.output, "final");
+		return true;
+	});
+	assert.deepEqual(tokens, [6, 6, 8, 8]);
+});
+
 test("executor rejects attempted turn 51 with bounded turn-50 output and Usage", async (t) => {
 	const observedUsage = usage(1);
 	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));

@@ -678,7 +678,7 @@ async function runPi(
 					stop(true);
 					return;
 				}
-				if (budget.maxTokens !== undefined && (completedUsage?.totalTokens ?? 0) >= budget.maxTokens) {
+				if (budget.maxTokens !== undefined && completedTokens >= budget.maxTokens) {
 					tokenFinalTurn = true;
 				}
 			}
