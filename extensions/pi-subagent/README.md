@@ -185,10 +185,6 @@ The executor works only inside the active Pi process. It does not discover or st
 
 See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default.
 
-## State and storage
-
-Flow state is memory-only.
-
 ## Limits and recovery
 
 An explicitly selected extension is trusted, not sandboxed. Its tools, Skills, and executable behavior load together. Select fewer trusted extensions to reduce scope. pi-subagent does not guess or remove undocumented dependencies.

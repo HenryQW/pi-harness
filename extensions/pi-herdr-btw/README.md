@@ -77,10 +77,6 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 - The config file is optional. Missing config uses defaults.
 - Malformed config fails visibly and remains unchanged.
 
-## State and storage
-
-Launch data stays in a private temporary directory.
-
 ## Limits and recovery
 
 Enabled tools can change parent-visible files.
