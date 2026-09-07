@@ -835,6 +835,8 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	let sessionContext: ExtensionContext | undefined;
 	let automaticOpen = false;
 	let automaticCandidate: Model<any> | undefined;
+	let preserveModelChoice = false;
+	let selectingAutomatically = false;
 	let autoSwitchOn429 = true;
 	let configWarned = false;
 	let providerRequest: { provider?: string; status?: number } | undefined;
@@ -921,8 +923,17 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		if (ctx) ctx.ui.setStatus?.("pi-multi-codex", footerText(ctx));
 	};
 
+	const setModelAutomatically = async (model: Model<any>): Promise<boolean> => {
+		selectingAutomatically = true;
+		try {
+			return await pi.setModel(model);
+		} finally {
+			selectingAutomatically = false;
+		}
+	};
+
 	const updatePendingCandidate = (ctx: ExtensionContext): void => {
-		if (!automaticOpen || !ctx.model || !isManagedProvider(ctx.model.provider)) return;
+		if (!ctx.model || !isManagedProvider(ctx.model.provider)) return;
 		const slot = selectFreshSlot(ctx, ctx.model);
 		automaticCandidate = slot ? { ...ctx.model, provider: providerForSlot(slot) } : ctx.model;
 	};
@@ -941,6 +952,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		sessionContext = ctx;
 		triedSlots.clear();
 		providerRequest = undefined;
+		preserveModelChoice = false;
 		try {
 			autoSwitchOn429 = configStore.loadSync().value.autoSwitchOn429;
 		} catch {
@@ -962,14 +974,17 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (_event, ctx) => {
 		triedSlots.clear();
 		providerRequest = undefined;
-		if (!automaticOpen) return;
 		const model = ctx.model;
+		const slot = slotForProvider(model?.provider ?? "");
+		const identity = slot ? currentIdentity(slot) : undefined;
+		const snapshot = slot ? quota.snapshot(slot) : undefined;
+		if (!automaticOpen && (preserveModelChoice || !identity || snapshot?.accountHash !== identity.accountHash || !isFiveHourLimited(snapshot, Date.now()))) return;
 		updatePendingCandidate(ctx);
 		// Close before await: no timer, refresh, queued turn, or provider event can route later.
 		automaticOpen = false;
 		const candidate = automaticCandidate;
 		if (!model || !candidate || !isManagedProvider(model.provider) || candidate.id !== model.id || candidate.provider === model.provider) return;
-		await pi.setModel(candidate);
+		await setModelAutomatically(candidate);
 		updateFooter(ctx);
 	});
 
@@ -1002,7 +1017,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		syncSlots();
 		for (const slot of failoverSlots(ctx, model)) {
 			const provider = providerForSlot(slot);
-			if (!await pi.setModel({ ...model, provider })) continue;
+			if (!await setModelAutomatically({ ...model, provider })) continue;
 			ctx.ui.notify(`Codex #${failedSlot} returned HTTP 429. Retrying with Codex #${slot}.`, "warning");
 			updateFooter(ctx);
 			return { message: { ...event.message, errorMessage: `HTTP 429: ${event.message.errorMessage ?? "Codex request was rate limited."}` } };
@@ -1018,6 +1033,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", (_event, ctx) => {
 		automaticOpen = false;
+		preserveModelChoice = false;
 		if (!sessionHasAgentWork(ctx)) pi.appendEntry(AGENT_STARTED_ENTRY);
 	});
 	pi.on("agent_settled", () => {
@@ -1032,8 +1048,9 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		quota.stop();
 	});
 	pi.on("model_select", (_event, ctx) => {
-		// Explicit selector choice wins over startup routing.
+		// Explicit selector choice wins over routing at the next agent boundary.
 		automaticOpen = false;
+		if (!selectingAutomatically) preserveModelChoice = true;
 		syncSlots();
 		quota.requestRefresh();
 		updateFooter(ctx);
