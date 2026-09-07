@@ -1,9 +1,10 @@
 <!--
 README contract:
-- Copy this file to extensions/<package>/README.md. Replace placeholders and delete optional sections that do not apply.
+- Copy this file to extensions/<package>/README.md. Replace placeholders.
 - Use the exact package H1 format shown below. Follow it with one to three short sentences about the user outcome.
-- Install and Use are required.
-- Keep H2 headings in this order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.
+- Every H2 section is optional. Include a section only when it contains package-specific user information.
+- Delete an inapplicable or empty heading instead of writing `None`, `N/A`, `Not applicable`, placeholder filler, or generic information.
+- Keep retained H2 headings in this canonical order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.
 - Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
 - Limits and recovery, when present, must be last.
 - Keep simple packages short. Use simple English. Preserve exact commands, paths, errors, safety advice, and recovery steps.
@@ -17,6 +18,7 @@ README contract:
 
 <!-- Optional: add a product screenshot here. Keep a meaningful explanatory diagram near the relevant prose. Do not add decorative diagrams. Image paths must begin with `./` or `../`. -->
 
+<!-- Optional: include only when installation has package-specific user information. -->
 ## Install
 
 ```bash
@@ -33,7 +35,7 @@ pi install npm:@henryqw/<package>
 | [`@henryqw/<companion-a>`](https://pi.henry.wang/extensions/<companion-a>) | Required | <What the package provides.> |
 | [`@henryqw/<companion-b>`](https://pi.henry.wang/extensions/<companion-b>) | Improves | <What becomes better.> |
 
-<!-- Start with the shortest successful workflow and its expected result. For two or more comparable user surfaces, use exactly this table with lowercase types such as command, tool, skill, or ui. Use H3 headings only when a surface needs more detail. -->
+<!-- Optional: include only when users need package-specific usage information. Start with the shortest successful workflow and its expected result. For two or more comparable user surfaces, use exactly this table with lowercase types such as command, tool, skill, or ui. Use H3 headings only when a surface needs more detail. -->
 ## Use
 
 <First successful workflow and expected result. Delete this paragraph only when a trivial command makes the result obvious.>

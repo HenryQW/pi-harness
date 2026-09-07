@@ -14,6 +14,6 @@ Use `store.update(mutator)` for read-modify-write when an extension supports mul
 
 ## README
 
-Every package `README.md` must use [README-template.md](README-template.md). Copy it, replace placeholders, delete inapplicable optional sections, and keep remaining sections in order.
+Every package `README.md` must use [README-template.md](README-template.md). Copy it and replace placeholders. All H2 sections are optional. Include a section only when it contains package-specific user information. Delete an inapplicable or empty heading instead of writing `None`, `N/A`, `Not applicable`, placeholder filler, or generic information. Keep retained sections in canonical order.
 
 Each extension `README.md` must contain one diagram when the extension has enough features or interactions to explain visually. Skip the diagram for lightweight extensions with no meaningful flow or relationship to show. Do not add a decorative diagram only to satisfy this rule.
