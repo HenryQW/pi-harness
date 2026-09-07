@@ -323,11 +323,10 @@ test("uses a width-aware single-line widget component in TUI", async () => {
 		}) => { render(width: number): string[] })({} as never, {
 			fg(_color, text) { return `\x1b[36m${text}\x1b[0m`; },
 		});
-		for (const width of [0, 8]) {
-			const lines = component.render(width);
-			assert.equal(lines.length, 1);
-			assert.ok(lines.every((line) => visibleWidth(line) <= Math.max(1, width)));
-		}
+		assert.deepEqual(component.render(0), []);
+		const lines = component.render(8);
+		assert.equal(lines.length, 1);
+		assert.ok(lines.every((line) => visibleWidth(line) <= 8));
 	} finally {
 		await app.shutdown(ctx);
 	}

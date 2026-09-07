@@ -630,31 +630,35 @@ function printPrStatus(metadata, log = console.log) {
 }
 
 function printComments(label, comments, log) {
-  log(`${label}=comment\tauthor\tbody`);
+  log(`${label}=kind\tid\tauthor`);
   for (const comment of comments) {
     if (!isRecord(comment)) throw new FeedbackError("invalid conversation comment");
-    log([requiredText(comment.id, "conversation comment ID"), login(comment.author), JSON.stringify(text(comment.body, "conversation comment body"))].join("\t"));
+    text(comment.body, "conversation comment body");
+    log(["conversation_comment", requiredText(comment.id, "conversation comment ID"), login(comment.author)].join("\t"));
   }
 }
 
 function printReviews(label, reviews, log) {
-  log(`${label}=review\tstate\tauthor\tbody`);
+  log(`${label}=kind\tid\tstate\tauthor`);
   for (const review of reviews) {
     if (!isRecord(review)) throw new FeedbackError("invalid review");
-    log([requiredText(review.id, "review ID"), requiredText(review.state, "review state"), login(review.author), JSON.stringify(text(review.body, "review body"))].join("\t"));
+    text(review.body, "review body");
+    log(["review", requiredText(review.id, "review ID"), requiredText(review.state, "review state"), login(review.author)].join("\t"));
   }
 }
 
-function printThreads(label, threads, log) {
-  log(`${label}=thread\tstate\tlocation\tcomment\tauthor\tbody`);
+function printThreads(label, threads, log, commentsOnly = false) {
+  log(`${label}=kind\tid\tstate\tauthor\tlocation\tparent`);
   for (const thread of threads) {
+    if (!isRecord(thread)) throw new FeedbackError("invalid review thread");
     const threadId = requiredText(thread.id, "review thread ID");
-    const prefix = [threadId, threadState(thread), location(thread)];
-    const comments = list(thread.comments, `replies for ${threadId}`);
-    if (!comments.length) log([...prefix, "-", "-", "-"].join("\t"));
-    for (const comment of comments) {
+    const state = threadState(thread);
+    const threadLocation = location(thread);
+    if (!commentsOnly) log(["thread", threadId, state, "-", threadLocation, "-"].join("\t"));
+    for (const comment of list(thread.comments, `replies for ${threadId}`)) {
       if (!isRecord(comment)) throw new FeedbackError(`invalid comment in ${threadId}`);
-      log([...prefix, requiredText(comment.id, "comment ID"), login(comment.author), JSON.stringify(text(comment.body, "comment body"))].join("\t"));
+      text(comment.body, "comment body");
+      log(["thread_comment", requiredText(comment.id, "comment ID"), state, login(comment.author), threadLocation, threadId].join("\t"));
     }
   }
 }
@@ -662,6 +666,74 @@ function printThreads(label, threads, log) {
 function threadState(thread) {
   if (bool(thread.isResolved, "review thread isResolved")) return "resolved";
   return bool(thread.isOutdated, "review thread isOutdated") ? "outdated" : "current";
+}
+
+function feedbackEntries(data) {
+  const entries = [];
+  for (const node of list(data.conversationComments, "conversation comments")) {
+    if (!isRecord(node)) throw new FeedbackError("invalid conversation comment");
+    text(node.body, "conversation comment body");
+    login(node.author);
+    entries.push({ id: requiredText(node.id, "conversation comment ID"), kind: "conversation_comment", node });
+  }
+  for (const node of list(data.reviews, "reviews")) {
+    if (!isRecord(node)) throw new FeedbackError("invalid review");
+    requiredText(node.state, "review state");
+    text(node.body, "review body");
+    login(node.author);
+    entries.push({ id: requiredText(node.id, "review ID"), kind: "review", node });
+  }
+  for (const thread of list(data.reviewThreads, "review threads")) {
+    if (!isRecord(thread)) throw new FeedbackError("invalid review thread");
+    const threadId = requiredText(thread.id, "review thread ID");
+    threadState(thread);
+    location(thread);
+    entries.push({ id: threadId, kind: "thread", node: thread });
+    for (const node of list(thread.comments, `replies for ${threadId}`)) {
+      if (!isRecord(node)) throw new FeedbackError(`invalid comment in ${threadId}`);
+      text(node.body, "comment body");
+      login(node.author);
+      entries.push({ id: requiredText(node.id, "comment ID"), kind: "thread_comment", node, thread });
+    }
+  }
+
+  const byId = new Map();
+  for (const entry of entries) {
+    const matches = byId.get(entry.id) ?? [];
+    matches.push(entry);
+    byId.set(entry.id, matches);
+  }
+  for (const [id, matches] of byId) {
+    if (matches.length < 2) continue;
+    if (new Set(matches.map(({ kind }) => kind)).size > 1) throw new FeedbackError(`ambiguous feedback ID: ${id}`);
+    throw new FeedbackError(`duplicate feedback ID: ${id}`);
+  }
+  return byId;
+}
+
+function showFeedback(options, log = console.log) {
+  const data = snapshot(resolve(options.snapshot));
+  const matches = feedbackEntries(data).get(options.id);
+  if (!matches) throw new FeedbackError(`feedback ID not found: ${options.id}`);
+  const [{ kind, node, thread }] = matches;
+  let record;
+  if (kind === "thread") {
+    const { comments, ...metadata } = node;
+    record = { ...metadata, kind, childIds: nodeIds(comments, `replies for ${node.id}`) };
+  } else if (kind === "thread_comment") {
+    record = {
+      ...node,
+      kind,
+      parentThread: {
+        id: requiredText(thread.id, "review thread ID"),
+        state: threadState(thread),
+        location: location(thread),
+      },
+    };
+  } else {
+    record = { ...node, kind };
+  }
+  log(JSON.stringify(record));
 }
 
 function printFeedbackDelta(data, previous, log) {
@@ -689,7 +761,7 @@ function printFeedbackDelta(data, previous, log) {
     if (updated.length) updatedReplies.push({ ...thread, comments: updated });
     const before = threadState(oldThread);
     const after = threadState(thread);
-    if (before !== after) stateChanges.push([thread.id, before, after]);
+    if (before !== after) stateChanges.push([thread, before, after]);
   }
 
   if (newComments.length) printComments("new_conversation_comments", newComments, log);
@@ -697,17 +769,19 @@ function printFeedbackDelta(data, previous, log) {
   if (newReviews.length) printReviews("new_reviews", newReviews, log);
   if (updatedReviews.length) printReviews("updated_reviews", updatedReviews, log);
   if (newThreads.length) printThreads("new_threads", newThreads, log);
-  if (newReplies.length) printThreads("new_replies", newReplies, log);
-  if (updatedReplies.length) printThreads("updated_replies", updatedReplies, log);
+  if (newReplies.length) printThreads("new_replies", newReplies, log, true);
+  if (updatedReplies.length) printThreads("updated_replies", updatedReplies, log, true);
   if (stateChanges.length) {
-    log("thread_state_changes=thread\tbefore\tafter");
-    for (const change of stateChanges) log(change.join("\t"));
+    log("thread_state_changes=kind\tid\tbefore\tafter\tlocation");
+    for (const [thread, before, after] of stateChanges) {
+      log(["thread", requiredText(thread.id, "review thread ID"), before, after, location(thread)].join("\t"));
+    }
   }
   if (![newComments, updatedComments, newReviews, updatedReviews, newThreads, newReplies, updatedReplies, stateChanges].some((items) => items.length)) log("feedback_delta=none");
 }
 
 function printFetchSummary(data, previous, out, log = console.log) {
-  const { resolved, outdated, openCurrent } = threadBuckets(data.reviewThreads);
+  const { outdated, openCurrent } = threadBuckets(data.reviewThreads);
   log(`snapshot=${out}`);
   log(`counts comments=${data.conversationComments.length} reviews=${data.reviews.length} threads=${data.reviewThreads.length} open_current=${openCurrent.length} outdated=${outdated.length}`);
   printPrStatus(data.pullRequest, log);
@@ -717,9 +791,7 @@ function printFetchSummary(data, previous, out, log = console.log) {
   }
   printComments("conversation_comments", data.conversationComments, log);
   printReviews("reviews", data.reviews, log);
-  printThreads("open_current_threads", openCurrent, log);
-  printThreads("outdated_threads", outdated, log);
-  log(`resolved_thread_ids=${nodeIds(resolved, "resolved review thread").join(",") || "-"}`);
+  printThreads("review_threads", data.reviewThreads, log);
 }
 
 function writeSnapshot(path, data) {
@@ -1365,6 +1437,7 @@ exit 1
       { id: "resolved", isResolved: false, isOutdated: false, path: "src/c.js", line: 5, comments: [] },
     ],
   };
+  const botBody = "<details>verbose bot HTML</details>";
   const feedback = {
     pullRequest: {
       mergeStateStatus: "BLOCKED",
@@ -1376,7 +1449,7 @@ exit 1
       ],
     },
     conversationComments: [{ ...previousFeedback.conversationComments[0], body: "edited conversation" }, { id: "conversation-2", author: { login: "octocat" }, body: "new conversation" }],
-    reviews: [{ ...previousFeedback.reviews[0], state: "DISMISSED", body: "edited review" }, { id: "review-2", state: "COMMENTED", author: { login: "reviewer" }, body: "new review" }],
+    reviews: [{ ...previousFeedback.reviews[0], state: "DISMISSED", body: "edited review" }, { id: "review-2", state: "COMMENTED", author: { login: "review-bot[bot]" }, body: botBody }],
     reviewThreads: [
       { ...previousFeedback.reviewThreads[0], comments: [{ ...previousFeedback.reviewThreads[0].comments[0], body: "edited reply" }, { id: "new-reply", author: { login: "reviewer" }, body: "new reply" }] },
       { ...previousFeedback.reviewThreads[1], isOutdated: true },
@@ -1395,8 +1468,8 @@ exit 1
     comments: [],
   }], (line) => maliciousPathLines.push(line));
   assert.deepEqual(maliciousPathLines, [
-    "threads=thread\tstate\tlocation\tcomment\tauthor\tbody",
-    "thread\tcurrent\tsrc/forged\\nrow\\t\\u001b[31m\\u009b31m.js:7\t-\t-\t-",
+    "threads=kind\tid\tstate\tauthor\tlocation\tparent",
+    "thread\tthread\tcurrent\t-\tsrc/forged\\nrow\\t\\u001b[31m\\u009b31m.js:7\t-",
   ]);
 
   assert.equal(checkBucket({ conclusion: "STALE" }), "failing");
@@ -1405,27 +1478,95 @@ exit 1
   assert.throws(() => checkBucket({ status: "IN_PROGRESS", conclusion: "SUCCESS" }), /invalid PR status check/);
   assert.throws(() => checkBucket({ status: "", state: "", conclusion: "" }), /invalid PR status check/);
   assert.deepEqual(checkSummary(feedback.pullRequest), { passing: 1, pending: 1, failing: 2 });
+  const bodies = ["edited conversation", "edited review", "edited reply", "new conversation", botBody, "new reply", "new thread"];
   const initialLines = [];
   printFetchSummary(feedback, null, "/tmp/snapshot", (line) => initialLines.push(line));
-  for (const body of ["edited conversation", "edited review", "edited reply", "new conversation", "new review", "new reply", "new thread"]) {
-    assert(initialLines.some((line) => line.includes(body)));
-  }
+  assert.deepEqual(initialLines.slice(0, 3), [
+    "snapshot=/tmp/snapshot",
+    "counts comments=2 reviews=2 threads=4 open_current=2 outdated=1",
+    "merge_state=BLOCKED checks_total=4 passing=1 pending=1 failing=2",
+  ]);
+  const initial = initialLines.join("\n");
+  for (const body of bodies) assert(!initial.includes(body));
+  for (const id of [
+    "conversation-1", "conversation-2", "review-1", "review-2", "current", "current-comment", "new-reply",
+    "outdated", "resolved", "new-thread", "new-thread-comment",
+  ]) assert(initial.includes(id), id);
+  assert(initial.includes("thread_comment\tnew-reply\tcurrent\treviewer\tsrc/a.js:3\tcurrent"));
+  assert(initial.includes("thread\tresolved\tresolved\t-\tsrc/c.js:5\t-"));
 
-  const savedFeedback = { ...feedback, pullRequest: { ...feedback.pullRequest, url: "https://github.com/owner/repo/pull/1" } };
+  const savedFeedback = {
+    ...feedback,
+    pullRequest: { ...feedback.pullRequest, url: "https://github.com/owner/repo/pull/1" },
+    openCurrentThreads: threadBuckets(feedback.reviewThreads).openCurrent,
+  };
   const savedPrevious = { ...previousFeedback, pullRequest: savedFeedback.pullRequest };
   const deltaSnapshot = join(temporary, "delta.json");
   writeSnapshot(deltaSnapshot, savedPrevious);
   const deltaLines = [];
   printFetchSummary(feedback, previousSnapshot(deltaSnapshot), deltaSnapshot, (line) => deltaLines.push(line));
   writeSnapshot(deltaSnapshot, savedFeedback);
-  assert.equal(snapshot(deltaSnapshot).reviewThreads.length, feedback.reviewThreads.length);
+  assert.deepEqual(snapshot(deltaSnapshot), savedFeedback);
   const delta = deltaLines.join("\n");
+  assert(delta.includes(`snapshot=${deltaSnapshot}`));
+  assert(delta.includes("counts comments=2 reviews=2 threads=4 open_current=2 outdated=1"));
   assert(delta.includes("merge_state=BLOCKED checks_total=4 passing=1 pending=1 failing=2"));
-  for (const body of ["edited conversation", "edited review", "edited reply", "new conversation", "new review", "new reply", "new thread"]) assert(delta.includes(body));
-  for (const old of ["old conversation", "old review", "old reply"]) assert(!delta.includes(old));
-  assert(delta.includes("new-thread\tcurrent"));
-  assert(delta.includes("outdated\tcurrent\toutdated"));
-  assert(delta.includes("resolved\tcurrent\tresolved"));
+  for (const body of [...bodies, "old conversation", "old review", "old reply"]) assert(!delta.includes(body));
+  for (const id of ["conversation-1", "conversation-2", "review-1", "review-2", "current-comment", "new-reply", "new-thread", "new-thread-comment"]) {
+    assert(delta.includes(id), id);
+  }
+  assert(delta.includes("new_replies=kind\tid\tstate\tauthor\tlocation\tparent"));
+  assert(delta.includes("thread_comment\tnew-reply\tcurrent\treviewer\tsrc/a.js:3\tcurrent"));
+  assert(!delta.includes("new_replies=kind\tid\tstate\tauthor\tlocation\tparent\nthread\tcurrent"));
+  assert(delta.includes("thread\toutdated\tcurrent\toutdated\tsrc/b.js:4"));
+  assert(delta.includes("thread\tresolved\tcurrent\tresolved\tsrc/c.js:5"));
+
+  const show = (id) => {
+    const lines = [];
+    showFeedback({ snapshot: deltaSnapshot, id }, (line) => lines.push(line));
+    assert.equal(lines.length, 1);
+    return { raw: lines[0], record: JSON.parse(lines[0]) };
+  };
+  const shownComment = show("conversation-2");
+  assert.deepEqual(shownComment.record, { ...feedback.conversationComments[1], kind: "conversation_comment" });
+  const shownReview = show("review-2");
+  assert.deepEqual(shownReview.record, { ...feedback.reviews[1], kind: "review" });
+  const shownReply = show("current-comment");
+  assert.deepEqual(shownReply.record, {
+    ...feedback.reviewThreads[0].comments[0],
+    kind: "thread_comment",
+    parentThread: { id: "current", state: "current", location: "src/a.js:3" },
+  });
+  const { comments: _comments, ...currentThread } = feedback.reviewThreads[0];
+  const shownThread = show("current");
+  assert.deepEqual(shownThread.record, { ...currentThread, kind: "thread", childIds: ["current-comment", "new-reply"] });
+  for (const [shown, selectedBody] of [
+    [shownComment.raw, "new conversation"],
+    [shownReview.raw, botBody],
+    [shownReply.raw, "edited reply"],
+    [shownThread.raw, null],
+  ]) {
+    for (const body of bodies) assert.equal(shown.includes(body), body === selectedBody, `${body} in ${shown}`);
+  }
+
+  assert.throws(() => showFeedback({ snapshot: deltaSnapshot, id: "unknown" }, () => {}), /feedback ID not found/);
+  const invalidSnapshot = join(temporary, "invalid.json");
+  writeSnapshot(invalidSnapshot, { ...savedFeedback, conversationComments: [{ author: null, body: "invalid" }] });
+  assert.throws(() => showFeedback({ snapshot: invalidSnapshot, id: "anything" }, () => {}), /conversation comment ID must be a string/);
+  const duplicateSnapshot = join(temporary, "duplicate.json");
+  writeSnapshot(duplicateSnapshot, { ...savedFeedback, conversationComments: [feedback.conversationComments[0], feedback.conversationComments[0]] });
+  assert.throws(() => showFeedback({ snapshot: duplicateSnapshot, id: "conversation-1" }, () => {}), /duplicate feedback ID/);
+  const ambiguousSnapshot = join(temporary, "ambiguous.json");
+  writeSnapshot(ambiguousSnapshot, {
+    ...savedFeedback,
+    conversationComments: [{ ...feedback.conversationComments[0], id: "review-1" }],
+  });
+  assert.throws(() => showFeedback({ snapshot: ambiguousSnapshot, id: "review-1" }, () => {}), /ambiguous feedback ID/);
+  assert.throws(() => parse("show", ["--snapshot", deltaSnapshot]), /show needs --id/);
+  assert.throws(() => parse("show", ["--snapshot", deltaSnapshot, "--id", ""]), /--id must not be empty/);
+  assert.throws(() => parse("show", ["--snapshot", deltaSnapshot, "--id", "current", "--unknown"]), /unsupported --unknown/);
+  assert.throws(() => parse("show", ["--snapshot", deltaSnapshot, "--id", "current", "--id", "current"]), /--id was supplied twice/);
+
   const unchangedLines = [];
   printFetchSummary(feedback, savedFeedback, deltaSnapshot, (line) => unchangedLines.push(line));
   assert(unchangedLines.includes("feedback_delta=none"));
@@ -1587,6 +1728,7 @@ function usage() {
   ${command} fetch [--pr PR] (--out FILE | --json)
   ${command} target [--pr PR]
   ${command} checks [--pr PR] --expected-head SHA
+  ${command} show --snapshot FILE --id ID
   ${command} snapshot-url --snapshot FILE
   ${command} push --snapshot FILE
   ${command} resolve [--pr PR] --expected-head SHA --thread ID [--thread ID ...]
@@ -1598,6 +1740,7 @@ function parse(command, args) {
     fetch: new Set(["--pr", "--out", "--json"]),
     target: new Set(["--pr"]),
     checks: new Set(["--pr", "--expected-head"]),
+    show: new Set(["--snapshot", "--id"]),
     "snapshot-url": new Set(["--snapshot"]),
     push: new Set(["--snapshot"]),
     resolve: new Set(["--pr", "--expected-head", "--thread"]),
@@ -1626,9 +1769,11 @@ function parse(command, args) {
   validatePrRef(values.pr);
   if (command === "fetch" && values.out === undefined && !values.json) throw new UsageError("fetch needs --out or --json");
   if (command === "fetch" && values.out !== undefined && values.json) throw new UsageError("fetch accepts --out or --json, not both");
-  if ((command === "push" || command === "snapshot-url") && values.snapshot === undefined) {
+  if (["push", "show", "snapshot-url"].includes(command) && values.snapshot === undefined) {
     throw new UsageError(`${command} needs --snapshot`);
   }
+  if (command === "show" && values.id === undefined) throw new UsageError("show needs --id");
+  if (command === "show" && !values.id) throw new UsageError("--id must not be empty");
   if (command === "checks" && values.expectedHead === undefined) throw new UsageError("checks needs --expected-head");
   if ((command === "checks" || command === "resolve") && values.expectedHead !== undefined) {
     if (!OID.test(values.expectedHead)) throw new UsageError("--expected-head must be a full OID");
@@ -1657,6 +1802,7 @@ function main(argv) {
   if (command === "fetch") fetchFeedback(options);
   if (command === "target") verifyTarget(options);
   if (command === "checks") checkPr(options);
+  if (command === "show") showFeedback(options);
   if (command === "snapshot-url") printSnapshotPrUrl(options);
   if (command === "push") pushHead(options);
   if (command === "resolve") resolveFeedback(options);

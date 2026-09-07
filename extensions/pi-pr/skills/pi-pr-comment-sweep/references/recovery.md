@@ -12,8 +12,9 @@ line under `## PR comment sweep`; never stage it:
 ```
 
 Use phases `triage`, `editing`, `validated`, `committed`, `pushed`, or `resolved`.
-Update after each phase; keep repository-relative owned paths, thread verdicts in
-`ledger`, exact validation results, commit SHA, push state, and resolved IDs.
+Update after each phase. Keep ledger evidence and validation results terse. Edit
+only fields changed by that phase; do not replace the whole JSON line. Keep
+repository-relative owned paths, commit SHA, push state, and resolved IDs.
 
 Resume only when workflow and PR match, snapshot exists and names that PR, local
 `HEAD` equals `head`, and tracked dirty paths equal `owned`. Skip completed

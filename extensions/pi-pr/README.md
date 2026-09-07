@@ -12,6 +12,22 @@ Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on
 
 The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
 
+## Feedback snapshots
+
+`pr-feedback.mjs fetch --out FILE` prints a compact feedback index. The index
+includes IDs, kinds, states, authors, locations, and parent IDs as needed. It
+does not print comment or review bodies.
+
+The saved snapshot still contains the complete feedback. `fetch --json` also
+keeps the complete JSON output. Read one item with
+`pr-feedback.mjs show --snapshot FILE --id ID`.
+
+`show` prints one JSON record with its exact stored body and fields. A thread
+record includes child IDs without child bodies. A nested comment includes only
+its parent thread's ID, state, and location. Missing, unknown, duplicate, or
+ambiguous IDs fail. `show` does not run Git, call GitHub, use the network, or
+write files.
+
 ## Works with
 
 **Requires.** [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) is the shared Herdr CLI client. It installs with this package.
