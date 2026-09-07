@@ -1151,13 +1151,16 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 	});
 });
 
-test("widget keeps terminal Flow stages grouped when capacity evicts another task", async (t) => {
+test("widget keeps current Flow stages grouped when all unrelated stored rows are working", async (t) => {
 	const repo = await initializedRepository(t);
 	await environment(async (agentDir) => {
+		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "8";
 		const validationStarted = join(agentDir, "validation-started");
 		const validationRelease = join(agentDir, "validation-release");
 		const reviewerStarted = join(agentDir, "reviewer-started");
 		const reviewerRelease = join(agentDir, "reviewer-release");
+		const workersRelease = join(agentDir, "workers-release");
+		const workerStarted = join(agentDir, "worker-started-");
 		const validation = join(agentDir, "validation.mjs");
 		await writeFile(validation, `import { existsSync, writeFileSync } from "node:fs";
 const [started, release] = process.argv.slice(2);
@@ -1180,6 +1183,7 @@ const waitForRelease = (path, next) => {
 		next();
 	}, 5);
 };
+const worker = /^working (\\d+)$/.exec(task ?? "");
 if (task?.startsWith("Flow Unit")) {
 	writeFileSync("flow.txt", "done\\n");
 	execFileSync("git", ["add", "flow.txt"]);
@@ -1188,8 +1192,10 @@ if (task?.startsWith("Flow Unit")) {
 } else if (task?.startsWith("Review Flow Unit")) {
 	writeFileSync(${JSON.stringify(reviewerStarted)}, "");
 	waitForRelease(${JSON.stringify(reviewerRelease)}, () => event("PASS"));
-} else if (/^terminal \\d+$/.test(task ?? "")) event("done");
-else throw new Error("Unexpected task: " + task);
+} else if (worker) {
+	writeFileSync(${JSON.stringify(workerStarted)} + worker[1], "");
+	waitForRelease(${JSON.stringify(workersRelease)}, () => event("done"));
+} else throw new Error("Unexpected task: " + task);
 `);
 		process.argv[1] = runner;
 		const app = harness({ cwd: repo, ui: true });
@@ -1201,36 +1207,38 @@ else throw new Error("Unexpected task: " + task);
 			validation: [{ command: process.execPath, args: [validation, validationStarted, validationRelease] }],
 			review: "Return PASS only.",
 		}] }, undefined, undefined, app.ctx);
+		const workers = Array.from({ length: 7 }, (_, index) => `working ${index + 1}`);
+		const workerCalls: Promise<unknown>[] = [];
 		try {
 			await waitFor(() => existsSync(validationStarted));
-			for (let index = 1; index <= 7; index++) {
-				const task = `terminal ${index}`;
-				await app.tool.execute(`terminal-${index}`, { role: "scout", name: task, task }, undefined, undefined, app.ctx);
-			}
-			const filled = app.widget!.render(160);
-			assert.equal(filled[2], "terminal 1");
-			assert.equal(filled.at(-1), "… 6 more · 6 complete");
+			workerCalls.push(...workers.map((task, index) =>
+				app.tool.execute(`working-${index + 1}`, { role: "scout", name: task, task }, undefined, undefined, app.ctx)));
+			await waitFor(() => workers.every((_, index) => existsSync(`${workerStarted}${index + 1}`)));
 
 			await writeFile(validationRelease, "");
 			await waitFor(() => existsSync(reviewerStarted));
+			assert.equal(app.widget!.render(160).at(-1), "… 7 more · 6 working · 1 complete");
+			await writeFile(workersRelease, "");
+			await Promise.all(workerCalls);
+
 			const widget = app.widget!.render(160);
 			assert.equal(widget.length, 6);
 			assert.equal(widget[0], "Keep Flow stages together");
 			assert.match(widget[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
 			assert.match(widget[2]!, /^  ✓ \[I\] Done/);
-			assert.equal(widget[3], "terminal 2");
+			assert.match(widget[3]!, /^working \d+$/);
 			assert.match(widget[4]!, /^  ✓ \[S\] Done/);
-			assert.equal(widget[5], "… 5 more · 5 complete");
-			assert.doesNotMatch(widget.join("\n"), /terminal 1/);
+			assert.equal(widget[5], "… 6 more · 6 complete");
 			assertWidgetHierarchy(widget);
 			for (const width of [160, 24, 1]) assert.ok(app.widget!.render(width).every((line) => visibleWidth(line) <= width));
 
 			await writeFile(reviewerRelease, "");
 			assert.equal((await running).details.outcome, "completed");
 		} finally {
-			await Promise.all([writeFile(validationRelease, ""), writeFile(reviewerRelease, "")]);
-			await Promise.allSettled([running]);
+			await Promise.all([writeFile(validationRelease, ""), writeFile(reviewerRelease, ""), writeFile(workersRelease, "")]);
+			await Promise.allSettled([running, ...workerCalls]);
 			await app.handlers.get("session_shutdown")?.({}, app.ctx);
+			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
 	});
 });

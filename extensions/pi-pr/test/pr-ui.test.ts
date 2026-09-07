@@ -336,11 +336,10 @@ test("truncates the themed action line to narrow TUI widths", () => {
 	assert.equal(display.footer?.text, "123456789 unresolved");
 	assert.equal(display.widget, "Run /pr to address review feedback");
 
-	for (const width of [0, 8]) {
-		const widget = formatPrWidget(display, ansiTheme, width);
-		assert.equal(widget?.length, 1);
-		assert.ok(widget?.every((line) => visibleWidth(line) <= Math.max(1, width)));
-	}
+	for (const width of [-1, 0]) assert.deepEqual(formatPrWidget(display, ansiTheme, width), []);
+	const widget = formatPrWidget(display, ansiTheme, 8);
+	assert.equal(widget?.length, 1);
+	assert.ok(widget?.every((line) => visibleWidth(line) <= 8));
 });
 
 test("keeps blocked mutating conditions in the footer without a widget", () => {

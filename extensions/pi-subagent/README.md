@@ -93,9 +93,6 @@ A Flow has 1–8 units with unique non-empty IDs and allows one active Flow. It 
 - Flow runs each declared command with its arguments. That validation is authoritative for objective checks.
 - Without `review`, Flow fast-forwards the exact validated tip.
 - With `review`, the Reviewer receives the exact `{base, tip, patchPath}` packet and must return exactly `PASS` before the same integration path. Use `review` only for stated judgment that validation cannot decide.
-- Flow records ignored files and symlinks created by a fully successful validation attempt. After approval or integration, it removes only candidates that are still ignored and unchanged.
-
-Flow preserves ignored work that existed before validation or came from a failed attempt. It preserves all other untracked, tracked, directory, submodule, Reviewer-created, changed, and uncertain work. Preserved work causes the existing cleanup warning and retains the Unit Worktree when Git reports it dirty.
 
 An explicit unit `modelClass` overrides both frozen Roles. Without one, each Role uses its own `modelClass`, configured `pi-subagent/delegateTask` assignment, or declared default.
 
@@ -191,6 +188,6 @@ Parent-only delegation tools and `ask_question` are always excluded. Requested R
 
 ## Limits and recovery
 
-Flow never force-deletes recoverable work. Its selective validation-artifact cleanup uses non-recursive file unlinking only. Failed or uncertain units, and cleanup refusals after integration, retain their worktree path or branch for recovery.
+Flow never force-deletes recoverable work. Failed or uncertain units, and cleanup refusals after integration, retain their worktree path or branch for recovery.
 
 See [Flow mechanics and recovery](./docs/orchestration.md#delegate_flow) for retained-work recovery.

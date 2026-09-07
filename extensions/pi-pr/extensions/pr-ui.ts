@@ -94,6 +94,7 @@ export function formatPrFooter(display: PrDisplay, theme: PrTheme): string | und
 }
 
 export function formatPrWidget(display: PrDisplay, theme?: PrTheme, width?: number): string[] | undefined {
+	if (width !== undefined && width <= 0) return [];
 	if (display.widget === undefined) return undefined;
 	const color = display.footer?.color ?? "accent";
 	const icon = color === "error" ? "✗" : color === "warning" ? "!" : color === "success" ? "✓" : "●";

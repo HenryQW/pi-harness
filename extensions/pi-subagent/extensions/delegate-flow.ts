@@ -1,7 +1,3 @@
-import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
-import { lstat, open, readlink, unlink } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
 import { StringEnum, type Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PROFILE_NAMES } from "@henryqw/pi-task-models";
@@ -66,25 +62,6 @@ type ChildSettlement =
 	| { result: EphemeralSubagentResult }
 	| { error: unknown };
 
-type ArtifactStat = {
-	dev: bigint;
-	ino: bigint;
-	mode: bigint;
-	nlink: bigint;
-	uid: bigint;
-	gid: bigint;
-	size: bigint;
-	mtimeNs: bigint;
-	ctimeNs: bigint;
-};
-
-type ValidationArtifact = {
-	path: string;
-	type: "file" | "symlink";
-	digest: string;
-	stat: ArtifactStat;
-};
-
 type UnitState = {
 	request: FlowUnitRequest;
 	modelClass: FlowModelClass;
@@ -92,7 +69,6 @@ type UnitState = {
 	worktree: WorktreeInfo;
 	base: string;
 	implementation?: ChildSettlement;
-	validationArtifacts?: ValidationArtifact[];
 	repairUsed: boolean;
 	worktreeRetained: boolean;
 	branchRetained: boolean;
@@ -221,91 +197,6 @@ function commandFailure(label: string, result: CommandResult): string {
 	].filter(Boolean).join("\n"));
 }
 
-function artifactStat(stat: BigIntStats): ArtifactStat {
-	return {
-		dev: stat.dev,
-		ino: stat.ino,
-		mode: stat.mode,
-		nlink: stat.nlink,
-		uid: stat.uid,
-		gid: stat.gid,
-		size: stat.size,
-		mtimeNs: stat.mtimeNs,
-		ctimeNs: stat.ctimeNs,
-	};
-}
-
-function sameArtifactStat(left: ArtifactStat, right: ArtifactStat): boolean {
-	return Object.keys(left).every((key) => left[key as keyof ArtifactStat] === right[key as keyof ArtifactStat]);
-}
-
-function validationArtifactPath(root: string, path: string): string | undefined {
-	if (!path || path.endsWith("/") || isAbsolute(path)) return;
-	const parts = path.split("/");
-	if (parts.some((part) => !part || part === "." || part === "..")) return;
-	const worktree = resolve(root);
-	const target = resolve(worktree, ...parts);
-	const fromRoot = relative(worktree, target);
-	if (!fromRoot || fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) return;
-	return target;
-}
-
-async function fingerprintValidationArtifact(
-	root: string,
-	path: string,
-	signal?: AbortSignal,
-): Promise<ValidationArtifact | undefined> {
-	const target = validationArtifactPath(root, path);
-	if (!target) return;
-	try {
-		let parent = resolve(root);
-		for (const part of path.split("/").slice(0, -1)) {
-			parent = resolve(parent, part);
-			if (!(await lstat(parent, { bigint: true })).isDirectory()) return;
-		}
-		signal?.throwIfAborted();
-		const before = await lstat(target, { bigint: true });
-		if (before.isSymbolicLink()) {
-			const link = await readlink(target, { encoding: "buffer" });
-			const after = await lstat(target, { bigint: true });
-			signal?.throwIfAborted();
-			const stat = artifactStat(before);
-			if (!after.isSymbolicLink() || !sameArtifactStat(stat, artifactStat(after))) return;
-			return { path, type: "symlink", digest: createHash("sha256").update(link).digest("hex"), stat };
-		}
-		if (!before.isFile() || constants.O_NOFOLLOW === undefined) return;
-		const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-		try {
-			const opened = await handle.stat({ bigint: true });
-			const stat = artifactStat(opened);
-			if (!opened.isFile() || !sameArtifactStat(artifactStat(before), stat)) return;
-			const hash = createHash("sha256");
-			for await (const chunk of handle.createReadStream({ autoClose: false, ...(signal === undefined ? {} : { signal }) })) {
-				hash.update(chunk);
-			}
-			const after = await handle.stat({ bigint: true });
-			const pathAfter = await lstat(target, { bigint: true });
-			signal?.throwIfAborted();
-			if (!after.isFile() || !pathAfter.isFile()
-				|| !sameArtifactStat(stat, artifactStat(after))
-				|| !sameArtifactStat(stat, artifactStat(pathAfter))) return;
-			return { path, type: "file", digest: hash.digest("hex"), stat };
-		} finally {
-			await handle.close();
-		}
-	} catch {
-		if (signal?.aborted) signal.throwIfAborted();
-		return;
-	}
-}
-
-function sameValidationArtifact(left: ValidationArtifact, right: ValidationArtifact): boolean {
-	return left.path === right.path
-		&& left.type === right.type
-		&& left.digest === right.digest
-		&& sameArtifactStat(left.stat, right.stat);
-}
-
 function implementerTask(unit: FlowUnitRequest): string {
 	return [
 		`Flow Unit ${JSON.stringify(unit.id)} requirements:`,
@@ -398,59 +289,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		if (signal?.aborted) signal.throwIfAborted();
 		if (result.code !== 0 || result.killed) throw new Error(commandFailure(`git ${args.join(" ")}`, result));
 		return result.stdout;
-	};
-
-	const ignoredLeaves = async (unit: UnitState, signal?: AbortSignal): Promise<Set<string> | undefined> => {
-		const result = await git(
-			["ls-files", "--full-name", "--others", "--ignored", "--exclude-standard", "-z", "--"],
-			unit.worktree.path,
-			signal,
-		);
-		if (signal?.aborted) signal.throwIfAborted();
-		if (result.code !== 0 || result.killed || result.stderr.trim() || result.stdout.includes("\uFFFD")) return;
-		if (!result.stdout) return new Set();
-		if (!result.stdout.endsWith("\0")) return;
-		const paths = result.stdout.slice(0, -1).split("\0");
-		for (const path of paths) {
-			const leaf = path.endsWith("/") ? path.slice(0, -1) : path;
-			if (!validationArtifactPath(unit.worktree.path, leaf)) return;
-		}
-		return new Set(paths);
-	};
-
-	const recordValidationArtifacts = async (
-		unit: UnitState,
-		baseline: Set<string> | undefined,
-		signal?: AbortSignal,
-	): Promise<ValidationArtifact[]> => {
-		if (!baseline) return [];
-		const current = await ignoredLeaves(unit, signal);
-		if (!current) return [];
-		const artifacts: ValidationArtifact[] = [];
-		for (const path of current) {
-			if (baseline.has(path)) continue;
-			const artifact = await fingerprintValidationArtifact(unit.worktree.path, path, signal);
-			if (artifact) artifacts.push(artifact);
-		}
-		return artifacts;
-	};
-
-	const removeValidationArtifacts = async (unit: UnitState, signal?: AbortSignal): Promise<void> => {
-		if (!unit.validationArtifacts?.length) return;
-		for (const artifact of unit.validationArtifacts) {
-			const current = await ignoredLeaves(unit, signal);
-			if (!current?.has(artifact.path)) continue;
-			const fingerprint = await fingerprintValidationArtifact(unit.worktree.path, artifact.path, signal);
-			if (!fingerprint || !sameValidationArtifact(artifact, fingerprint)) continue;
-			const target = validationArtifactPath(unit.worktree.path, artifact.path);
-			if (!target) continue;
-			try {
-				signal?.throwIfAborted();
-				await unlink(target);
-			} catch {
-				if (signal?.aborted) signal.throwIfAborted();
-			}
-		}
 	};
 
 	const oneLine = (value: string, field: string): string => {
@@ -585,7 +423,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 			if (branch !== `refs/heads/${unit.worktree.branch}` || tip !== expectedTip) {
 				return `Unit Worktree no longer matches approved state: expected branch=${JSON.stringify(`refs/heads/${unit.worktree.branch}`)} HEAD=${expectedTip}; actual branch=${JSON.stringify(branch)} HEAD=${tip}.`;
 			}
-			await removeValidationArtifacts(unit, signal);
 			const inspection = await inspectWorktreeDirty(unit.worktree.path, async (args, cwd) => git(args, cwd, signal));
 			if (inspection.failure) return `Worktree cleanup inspection failed: ${inspection.failure}`;
 			if (inspection.dirty) return "Unit Worktree contains uncommitted or ignored work.";
@@ -734,8 +571,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		tip: string,
 		signal?: AbortSignal,
 	): Promise<string | undefined> => {
-		unit.validationArtifacts = undefined;
-		const ignoredBaseline = await ignoredLeaves(unit, signal);
 		for (const [index, validation] of unit.request.validation.entries()) {
 			const result = await execute(validation.command, validation.args, unit.worktree.cwd, signal, runtime.maxRuntimeMs);
 			if (signal?.aborted) signal.throwIfAborted();
@@ -749,7 +584,6 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 				inspected.block ?? `Actual HEAD=${inspected.tip}.`,
 			].join("\n"));
 		}
-		unit.validationArtifacts = await recordValidationArtifacts(unit, ignoredBaseline, signal);
 		return;
 	};
 
