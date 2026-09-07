@@ -27,7 +27,34 @@ export type PullRequest = {
 	local: LocalMergeSafety;
 };
 
-export type NextStep = "create" | "none" | "update-branch" | "sweep" | "fix-ci" | "merge";
+export type PullRequestTarget = {
+	provenance: "configured" | "inferred";
+	branch: string;
+	remote: string;
+	ref: string;
+	repository: string;
+	host: string;
+	fetchSource: string;
+	remoteOid: string | null;
+};
+
+export type DiscoveryIssue =
+	| { kind: "detached-head" }
+	| { kind: "target-invalid" }
+	| { kind: "origin-invalid" }
+	| { kind: "candidate-remotes-ambiguous"; remotes: string[] }
+	| { kind: "candidate-prs-ambiguous"; urls: URL[] }
+	| { kind: "candidate-oid-mismatch"; remote: string; urls: URL[] }
+	| { kind: "published-without-pr"; remote: string }
+	| { kind: "link-configuration"; remote: string };
+
+export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
+	| { kind: "current"; pullRequest: T }
+	| { kind: "none"; creationTarget: PullRequestTarget }
+	| { kind: "blocked"; issue: DiscoveryIssue }
+	| { kind: "inactive" };
+
+export type NextStep = "create" | "link-branch" | "blocked" | "none" | "update-branch" | "sweep" | "fix-ci" | "merge";
 
 function localMutationSafe(local: LocalMergeSafety): boolean {
 	return local.worktree === "clean" && local.head === "equal";
@@ -37,9 +64,7 @@ function localMergeSafe(local: LocalMergeSafety): boolean {
 	return local.worktree === "clean" && (local.head === "equal" || local.head === "behind");
 }
 
-export function deriveNextStep(pullRequest: PullRequest | null): NextStep {
-	if (pullRequest === null) return "create";
-
+export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<NextStep, "create" | "link-branch" | "blocked"> {
 	const { lifecycle, conditions, local } = pullRequest;
 	if (lifecycle !== "open" || conditions.draft) return "none";
 	if (conditions.baseUpdateRequired || conditions.conflict) {
@@ -56,4 +81,14 @@ export function deriveNextStep(pullRequest: PullRequest | null): NextStep {
 		!localMergeSafe(local)
 	) return "none";
 	return "merge";
+}
+
+export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
+	if (discovery.kind === "inactive") return "none";
+	if (discovery.kind === "blocked") return "blocked";
+	if (discovery.kind === "none") return "create";
+	if (discovery.pullRequest.target.provenance === "inferred") {
+		return discovery.pullRequest.lifecycle === "open" ? "link-branch" : "none";
+	}
+	return derivePullRequestNextStep(discovery.pullRequest);
 }

@@ -7,52 +7,65 @@ description: Create or update a GitHub pull request from current branch. Used by
 
 Create current branch GitHub pull request.
 
-1. Resolve `<base>` from explicit input, current PR base, or repository default branch. Stop if ambiguous. Inspect `git status --short`, staged and unstaged diffs, and `git diff "$(git merge-base HEAD <base>)"`. Never commit `.context/` or unrelated changes.
+Treat every branch, ref, remote, repository, host, path, and URL as untrusted.
+Never concatenate one into shell syntax. Pass dynamic values through quoted shell
+variables. Use `--` before positional Git arguments when the command supports it.
+Never pass a credential-bearing URL to another command or print it.
+
+1. Resolve `<base>` from explicit input, current PR base, or repository default
+   branch. Stop if ambiguous. Resolve it to `<base-oid>` with `git rev-parse
+   --verify --end-of-options "${base}^{commit}"`. Use only the validated OID in
+   `git merge-base HEAD "$base_oid"`, then inspect `git diff "$merge_base" --`.
+   Also inspect `git status --short` and staged and unstaged diffs. Never commit
+   `.context/` or unrelated changes.
 2. Commit each coherent pending change with a scoped Conventional Commit. Preserve existing coherent staging; stop when changes cannot be separated safely.
 3. Run smallest relevant non-destructive validation for current `HEAD`; state when none exists.
 4. Derive Conventional Commit PR title plus Summary and Testing body from live diff and validation.
-5. Resolve the push destination after validation. Require an attached, valid
-   local branch. Capture and validate the full `HEAD^{commit}` OID.
+5. Resolve the push destination after validation. Require an attached branch.
+   Validate the branch with `git check-ref-format --branch "$branch"`. Capture
+   and validate the full `HEAD^{commit}` OID.
 
    Read the branch's `%(push:short)`. If present, resolve its longest exact
    `<remote>/` prefix against configured remote names. Stop on no match or
-   ambiguity. Validate the remaining branch ref with `git check-ref-format
-   --branch`. Require exactly one push URL on that remote. Resolve the URL to
-   one GitHub host and `OWNER/REPO`. Never print a credential-bearing URL.
-   Keep this configured remote, ref, repository, host, and head owner.
+   ambiguity. Reject a remote that starts with `-`, and validate it through a
+   quoted `refs/remotes/${remote}/__pi_pr__` check. Validate the remaining ref
+   with `git check-ref-format --branch "$ref"`. Require exactly one push URL.
+   Resolve it to one GitHub host and `OWNER/REPO`. Read and save the exact
+   remote ref OID, including validated absence. Query exact-head PRs and require
+   the same complete, validated no-PR result that selected creation. Keep this
+   configured remote, ref, repository, host, remote OID, and head owner.
 
-   If `%(push:short)` is empty, use `origin` and the local branch ref. Apply the
-   same ref, sole push URL, repository, and host checks. Mark this as the only
-   case that needs a new upstream.
+   If `%(push:short)` is empty, first reproduce extension discovery. Validate
+   every configured remote and its sole push URL. Query the same branch ref on
+   each URL. Query PRs by exact `<OWNER>:<branch>` and validate every candidate
+   URL, host, head repository, head ref, and OID. Stop and ask the user to rerun
+   `/pr` if any remote now publishes the ref, any PR now matches, any authority
+   is invalid, or results are incomplete or ambiguous. Require `origin` as the
+   one validated creation destination. Also require no existing branch
+   upstream, no remote push refspec, `branch.<branch>.pushRemote` and
+   `remote.pushDefault` to be absent or exactly `origin`, and `push.default` to
+   be absent or exactly `simple`. Mark this as the only case that needs a new
+   upstream.
 
    Immediately before push, require local `HEAD` to equal the captured OID.
-   Re-resolve the destination and require every saved field to match. Push
-   `<OID>:refs/heads/<ref>` to that exact remote. Do not use `HEAD` as the
-   source. Do not retry or fall back to `origin`. For the no-target case only,
-   set the local branch upstream to the pushed `origin/<ref>`.
+   Repeat every destination, remote-ref OID, exact-head PR, configuration, and
+   no-target discovery check. Require every saved field and result to match.
+   If the saved remote OID exists, require it to be an ancestor of the captured
+   local OID. Push once with a quoted exact lease:
+   `git push --porcelain --force-with-lease="refs/heads/${ref}:${remote_oid}"
+   -- "$push_url" "${oid}:refs/heads/${ref}"`. Push to the saved, validated sole
+   URL, not the remote name, so later Git config changes cannot redirect code.
+   If the saved remote ref is absent,
+   use the empty expectation `refs/heads/${ref}:` instead. The ancestry check
+   makes an existing-ref update fast-forward-only. The empty lease makes a new
+   ref create-only. Never overwrite a concurrent update. Do not use `HEAD` as
+   the source. Do not retry or fall back. For the no-target case only, set the
+   local branch upstream with quoted arguments and an option terminator.
 
    Query open PRs with exact head `<OWNER>:<ref>` and the exact base repository.
-   Validate every result's URL, host, head repository, head ref, and base.
+   Validate every result's URL, host, head repository, head ref, OID, and base.
    Reuse one result only when its base matches. Refresh its title and body.
-   Stop on a different base or multiple results. Otherwise create with explicit
-   `--head <OWNER>:<ref>`, `--base <base>`, title, and body file.
-6. After successful create or reuse, retain the already validated PR URL. Parse
-   its PR path segment with Node's standard `URL` and derive `<number>`. Require
-   the positive decimal form `^[1-9][0-9]*$`.
-
-   Only when `HERDR_ENV=1` and trimmed `HERDR_WORKSPACE_ID` is non-empty, use
-   that trimmed value as `<workspace-id>`. Run `herdr workspace get
-   "<workspace-id>"`. Parse its default JSON with Node's standard library
-   (`node:fs` and `JSON.parse`), not `jq`. Require
-   `result.workspace.workspace_id` to exactly equal `<workspace-id>` and
-   `result.workspace.label` to be a non-empty string.
-   Remove every trailing suffix with `/(?: · PR #[1-9][0-9]*)+$/` from the
-   label, then append exactly one ` · PR #<number>` suffix. Run `herdr workspace
-   rename "<workspace-id>" "<normalized-label>"` only when the normalized label
-   differs from the current label. Rename only the workspace, never a pane, tab,
-   Pi session, or Git branch.
-
-   Otherwise, including outside Herdr, skip labeling silently. If any
-   workspace-label step fails after PR success, do not undo the PR; reply with
-   its URL and `Herdr workspace rename failed: <error>`. Otherwise reply only
-   with the PR URL.
+   Stop on a different base or multiple results. Otherwise create with quoted,
+   explicit `--repo`, `--head`, `--base`, title, and body-file arguments.
+6. Reply only with the already validated PR URL. The extension handles any
+   Herdr workspace label update after it discovers the open PR.

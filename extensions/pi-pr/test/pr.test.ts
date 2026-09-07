@@ -11,6 +11,7 @@ import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
 import type {
 	CurrentPullRequest,
+	CurrentPullRequestDiscovery,
 	PullRequestLoadContext,
 } from "../extensions/pr-github.ts";
 import pullRequestExtension from "../extensions/pr.ts";
@@ -18,7 +19,7 @@ import pullRequestExtension from "../extensions/pr.ts";
 type Loader = (
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-) => Promise<CurrentPullRequest | null>;
+) => Promise<CurrentPullRequest | CurrentPullRequestDiscovery | null>;
 type EventHandler = (event: unknown, context: ExtensionContext) => Promise<void> | void;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 type Deferred<T> = {
@@ -65,6 +66,7 @@ function currentPullRequest(overrides: {
 	conditions?: Partial<CurrentPullRequest["conditions"]>;
 	lifecycle?: CurrentPullRequest["lifecycle"];
 	approved?: boolean;
+	provenance?: CurrentPullRequest["target"]["provenance"];
 } = {}): CurrentPullRequest {
 	return {
 		id: "PR_kwDOExample",
@@ -88,6 +90,16 @@ function currentPullRequest(overrides: {
 		base: { repository: "acme/project", ref: "main", oid: "a".repeat(40) },
 		head: { repository: "acme/project", ref: "feature/pr", oid: "b".repeat(40) },
 		headFetchSource: "git@github.com:acme/project.git",
+		target: {
+			provenance: overrides.provenance ?? "configured",
+			branch: "feature/pr",
+			remote: "origin",
+			ref: "feature/pr",
+			repository: "acme/project",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: "b".repeat(40),
+		},
 		merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 	};
 }
@@ -164,7 +176,24 @@ function harness(options: {
 			return options.exec(command, args, execOptions);
 		},
 	} as unknown as ExtensionAPI, {
-		loadCurrentPullRequest: options.load,
+		loadCurrentPullRequest: async (pi, context) => {
+			const loaded = await options.load(pi, context);
+			if (loaded && "kind" in loaded) return loaded;
+			if (loaded) return { kind: "current", pullRequest: loaded };
+			return {
+				kind: "none",
+				creationTarget: {
+					provenance: "inferred",
+					branch: "feature/pr",
+					remote: "origin",
+					ref: "feature/pr",
+					repository: "acme/project",
+					host: "github.com",
+					fetchSource: "git@github.com:acme/project.git",
+					remoteOid: null,
+				},
+			};
+		},
 		hasLocalCommit: options.hasLocalCommit,
 		createPrCommandHandler: () => options.commandHandler ?? (async () => "none"),
 	});
@@ -210,6 +239,122 @@ function harness(options: {
 		},
 	};
 }
+
+test("stays silent and does not poll outside a Git worktree", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return { kind: "inactive" };
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	assert.deepEqual(app.statuses, [undefined]);
+	assert.deepEqual(app.widgets, [undefined]);
+	assert.deepEqual(app.notifications, []);
+	t.mock.timers.tick(60_000);
+	await flush();
+	assert.equal(loads, 1);
+
+	await app.shutdown(ctx);
+});
+
+test("stops polling when an active worktree becomes inactive", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery> = [
+		currentPullRequest(),
+		{ kind: "inactive" },
+	];
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			const result = results.shift();
+			if (!result) throw new Error("Unexpected pull request refresh");
+			return result;
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.deepEqual(app.statuses.at(-1), undefined);
+	t.mock.timers.tick(60_000);
+	await flush();
+	assert.equal(loads, 2);
+
+	await app.shutdown(ctx);
+});
+
+test("refreshes a configured PR after successful delegated work settles", async () => {
+	const results = [
+		currentPullRequest(),
+		currentPullRequest({ conditions: { ci: "failure" } }),
+	];
+	const app = harness({
+		async load() {
+			const result = results.shift();
+			if (!result) throw new Error("Unexpected pull request refresh");
+			return result;
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	await app.tool({ toolName: "delegate_task", isError: false, input: {} }, ctx);
+	await app.settle(ctx);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
+
+	await app.shutdown(ctx);
+});
+
+test("warns once for one blocked issue and warns again after recovery", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const blocked: CurrentPullRequestDiscovery = {
+		kind: "blocked",
+		issue: {
+			kind: "candidate-prs-ambiguous",
+			urls: [
+				new URL("https://github.com/acme/project/pull/43"),
+				new URL("https://github.com/acme/project/pull/42"),
+			],
+		},
+	};
+	const results: Array<CurrentPullRequestDiscovery | CurrentPullRequest> = [
+		blocked,
+		blocked,
+		currentPullRequest(),
+		blocked,
+	];
+	const app = harness({
+		async load() {
+			const result = results.shift();
+			if (!result) throw new Error("Unexpected pull request refresh");
+			return result;
+		},
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(app.notifications.length, 1);
+	assert.equal(app.notifications[0]?.type, "warning");
+	assert.match(app.notifications[0]?.message ?? "", /pull\/42, https:\/\/github\.com\/acme\/project\/pull\/43/);
+
+	t.mock.timers.tick(30_000);
+	await flush();
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(app.notifications.length, 2);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR · target ambiguous");
+
+	await app.shutdown(ctx);
+});
 
 test("renders the shared projection and refreshes after successful create or push", async () => {
 	const results: Array<CurrentPullRequest | null> = [
@@ -395,7 +540,7 @@ test("reports detached render failures once and resumes after recovery", async (
 	t.mock.timers.tick(30_000);
 	await flush();
 	assert.deepEqual(app.notifications, [{
-		message: "PR status refresh failed: timer render failed",
+		message: "PR status refresh failed: status unavailable",
 		type: "error",
 	}]);
 	assert.equal(app.statuses.length, statusWritesBeforeFailure);
@@ -410,7 +555,7 @@ test("reports detached render failures once and resumes after recovery", async (
 	failure = "tool render failed";
 	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.deepEqual(app.notifications.at(-1), {
-		message: "PR status refresh failed: tool render failed",
+		message: "PR status refresh failed: status unavailable",
 		type: "error",
 	});
 
@@ -420,7 +565,7 @@ test("reports detached render failures once and resumes after recovery", async (
 	await app.command().handler("", ctx as ExtensionCommandContext);
 	await flush();
 	assert.deepEqual(app.notifications.at(-1), {
-		message: "PR status refresh failed: command refresh failed",
+		message: "PR status refresh failed: status unavailable",
 		type: "error",
 	});
 	assert.equal(app.notifications.length, 3);
@@ -448,11 +593,11 @@ test("reports lookup failures once, retains display, and resets after recovery",
 
 	await app.start(ctx);
 	assert.deepEqual(app.notifications, [{
-		message: "PR status refresh failed: initial lookup failed",
+		message: "PR status refresh failed: status unavailable",
 		type: "error",
 	}]);
-	assert.deepEqual(app.statuses, []);
-	assert.deepEqual(app.widgets, []);
+	assert.deepEqual(app.statuses.map((status) => plain(status ?? "")), ["PR · status unavailable"]);
+	assert.deepEqual(app.widgets, [undefined]);
 
 	t.mock.timers.tick(30_000);
 	await flush();
@@ -468,7 +613,7 @@ test("reports lookup failures once, retains display, and resets after recovery",
 	t.mock.timers.tick(30_000);
 	await flush();
 	assert.deepEqual(app.notifications.at(-1), {
-		message: "PR status refresh failed: later lookup failed",
+		message: "PR status refresh failed: status unavailable",
 		type: "error",
 	});
 	assert.equal(app.notifications.length, 2);
@@ -512,7 +657,7 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI running");
 	assert.equal(app.widgets.at(-1), undefined);
 	assert.deepEqual(app.notifications, [{
-		message: "PR status refresh failed: temporary GitHub failure",
+		message: "PR status refresh failed: status unavailable",
 		type: "error",
 	}]);
 

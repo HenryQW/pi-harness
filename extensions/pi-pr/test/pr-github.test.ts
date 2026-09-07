@@ -6,10 +6,20 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	hasLocalCommit,
-	loadCurrentPullRequest,
+	linkInferredPullRequest,
+	loadCurrentPullRequest as discoverCurrentPullRequest,
 	PullRequestLoadError,
 } from "../extensions/pr-github.ts";
-import { deriveNextStep } from "../extensions/pr-routing.ts";
+
+async function loadCurrentPullRequest(
+	...args: Parameters<typeof discoverCurrentPullRequest>
+) {
+	const discovery = await discoverCurrentPullRequest(...args);
+	if (discovery.kind === "current") return discovery.pullRequest;
+	if (discovery.kind === "none" || discovery.kind === "inactive") return null;
+	throw new PullRequestLoadError(`Discovery blocked: ${discovery.issue.kind}`);
+}
+import { derivePullRequestNextStep } from "../extensions/pr-routing.ts";
 
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
@@ -25,8 +35,9 @@ type CommandCall = {
 type HarnessOptions = {
 	branchResult?: ReturnType<typeof result>;
 	candidates?: Record<string, unknown>[];
-	candidateUrls?: unknown[];
+	searchCandidates?: Record<string, unknown>[];
 	listResult?: ReturnType<typeof result>;
+	listResults?: ReturnType<typeof result>[];
 	localHead?: string;
 	localHeadAfterRulesetRead?: string;
 	pushResult?: ReturnType<typeof result>;
@@ -35,8 +46,14 @@ type HarnessOptions = {
 	remote?: string;
 	remoteNames?: string[];
 	pushUrl?: string;
+	pushUrls?: Record<string, string>;
+	fetchUrl?: string;
+	fetchUrls?: Record<string, string>;
+	fetchUrlResult?: ReturnType<typeof result>;
 	pushRepositoryResult?: ReturnType<typeof result>;
 	remoteHead?: string | null;
+	remoteHeads?: Record<string, string | null>;
+	configValues?: Record<string, string[]>;
 	remoteHeadResult?: ReturnType<typeof result>;
 	threads?: string;
 	baseRefResult?: ReturnType<typeof result>;
@@ -126,8 +143,50 @@ function rulesetPolicyOutput(...pages: boolean[]): string {
 		: []));
 }
 
-function searchOutput(...pages: Array<{ total_count: number; incomplete_results: boolean; items: unknown[] }>): string {
-	return JSON.stringify(pages);
+function searchIdentity(candidate: Record<string, unknown>): Record<string, unknown> {
+	const url = new URL(String(candidate.url));
+	const baseRepository = url.pathname.split("/").filter(Boolean).slice(0, 2).join("/");
+	return {
+		__typename: "PullRequest",
+		number: candidate.number,
+		url: candidate.url,
+		state: candidate.state,
+		baseRepository: { nameWithOwner: baseRepository },
+		headRepository: candidate.headRepository,
+		headRefName: candidate.headRefName,
+		headRefOid: candidate.headRefOid,
+	};
+}
+
+function searchPage(issueCount: number, nodes: unknown[], offset = 0, hasNextPage = false): unknown {
+	const edges = nodes.map((node, index) => ({ cursor: `cursor-${offset + index + 1}`, node }));
+	return {
+		data: {
+			search: {
+				issueCount,
+				edges,
+				pageInfo: {
+					hasNextPage,
+					startCursor: edges[0]?.cursor ?? null,
+					endCursor: edges.at(-1)?.cursor ?? null,
+				},
+			},
+		},
+	};
+}
+
+function searchOutput(page: unknown): string {
+	return JSON.stringify(page);
+}
+
+function candidateSearchOutput(candidates: Record<string, unknown>[], offset: number): string {
+	const identities = candidates.map(searchIdentity);
+	return searchOutput(searchPage(
+		identities.length,
+		identities.slice(offset, offset + 100),
+		offset,
+		offset + 100 < identities.length,
+	));
 }
 
 function pullRequest(overrides: Record<string, unknown> = {}) {
@@ -154,12 +213,14 @@ function harness(options: HarnessOptions = {}) {
 	const calls: CommandCall[] = [];
 	const candidates = options.candidates ?? [pullRequest()];
 	let localHead = options.localHead ?? LOCAL_HEAD;
+	let searchPageIndex = 0;
 	const ancestry = options.ancestry ?? "behind";
 	const remote = options.remote ?? "fork";
 	const pushUrl = options.pushUrl ?? "git@github.com:acme/fork.git";
 	const pi = {
 		exec: async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
 			calls.push({ command, args, options: commandOptions });
+			if (command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") return result("true\n");
 			if (command === "git" && args.join(" ") === "branch --show-current") {
 				return options.branchResult ?? result("feature/local\n");
 			}
@@ -171,29 +232,50 @@ function harness(options: HarnessOptions = {}) {
 				return result(`${(options.remoteNames ?? [remote, "origin"]).join("\n")}\n`);
 			}
 			if (command === "git" && args[0] === "check-ref-format") {
+				if (args[1] === "--branch" && args[2] === "feature/local") return result("feature/local\n");
 				if (args[1] === "--branch") return options.refCheckResult ?? result(`${args[2]}\n`);
 				if (args[1] === "refs/heads/main") return result();
 			}
-			if (command === "git" && args.join(" ") === `remote get-url --push --all ${remote}`) {
-				return result(`${pushUrl}\n`);
+			if (command === "git" && args[0] === "remote" && args[1] === "get-url") {
+				const requestedRemote = args.at(-1) ?? "";
+				if (!args.includes("--push") && options.fetchUrlResult) return options.fetchUrlResult;
+				const defaultUrl = options.pushUrls?.[requestedRemote] ??
+					(requestedRemote === remote ? pushUrl : `git@github.com:acme/${requestedRemote}.git`);
+				const requestedUrl = args.includes("--push")
+					? defaultUrl
+					: options.fetchUrls?.[requestedRemote] ?? (requestedRemote === remote ? options.fetchUrl : undefined) ?? defaultUrl;
+				return result(`${requestedUrl}\n`);
 			}
-			if (command === "gh" && args.join(" ") === "repo view github.com/acme/fork --json nameWithOwner,url") {
-				return options.pushRepositoryResult ?? result(JSON.stringify({ nameWithOwner: "acme/fork", url: "https://github.com/acme/fork" }));
+			if (command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "nameWithOwner,url") {
+				if (options.pushRepositoryResult) return options.pushRepositoryResult;
+				const [host, owner, name, ...rest] = (args[2] ?? "").split("/");
+				if (!host || !owner || !name || rest.length) throw new Error(`Unexpected repository locator: ${args[2]}`);
+				return result(JSON.stringify({ nameWithOwner: `${owner}/${name}`, url: `https://${host}/${owner}/${name}` }));
 			}
 			if (command === "git" && args[0] === "ls-remote") {
 				if (options.remoteHeadResult) return options.remoteHeadResult;
-				const remoteHead = options.remoteHead === undefined ? REMOTE_HEAD : options.remoteHead;
+				const fetchSource = args.at(-2) ?? "";
+				const remoteHead = options.remoteHeads && fetchSource in options.remoteHeads
+					? options.remoteHeads[fetchSource]
+					: options.remoteHead === undefined ? REMOTE_HEAD : options.remoteHead;
+				const requestedRef = args.at(-1) ?? "";
 				return remoteHead === null
 					? result("", 2)
-					: result(`${remoteHead}\trefs/heads/feature/pr\n`);
+					: result(`${remoteHead}\t${requestedRef}\n`);
 			}
-			if (command === "gh" && args[0] === "api" && args[1] === "search/issues") {
-				const items = options.candidateUrls ?? candidates.map((candidate) => ({ html_url: candidate.url }));
-				return options.listResult ?? result(searchOutput({
-					total_count: items.length,
-					incomplete_results: false,
-					items,
-				}));
+			if (command === "git" && args[0] === "config") {
+				const key = args.at(-1) ?? "";
+				const values = options.configValues?.[key] ?? [];
+				if (values.length === 0) return result("", 1);
+				if (args.includes("--type=bool")) {
+					const normalized = values.map((value) => {
+						if (["true", "yes", "on", "1"].includes(value.toLowerCase())) return "true";
+						if (["false", "no", "off", "0"].includes(value.toLowerCase())) return "false";
+						return null;
+					});
+					return normalized.includes(null) ? result("", 128) : result(`${normalized.join("\n")}\n`);
+				}
+				return result(`${values.join("\n")}\n`);
 			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				const candidate = candidates.find((value) => value.url === args[2]);
@@ -201,6 +283,13 @@ function harness(options: HarnessOptions = {}) {
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+				if (query.includes("search(query:")) {
+					if (options.listResults) return options.listResults[searchPageIndex++] ?? result("", 1);
+					if (options.listResult) return options.listResult;
+					const endCursor = args.find((arg) => arg.startsWith("endCursor="))?.slice("endCursor=".length);
+					const offset = endCursor ? Number(endCursor.replace("cursor-", "")) : 0;
+					return result(candidateSearchOutput(options.searchCandidates ?? candidates, offset));
+				}
 				if (query.includes("reviewThreads")) {
 					return result(options.threads ?? reviewThreadOutput(reviewThreadPage([])));
 				}
@@ -253,6 +342,121 @@ function harness(options: HarnessOptions = {}) {
 		signal: new AbortController().signal,
 	} as Parameters<typeof loadCurrentPullRequest>[1];
 	return { pi, context, calls };
+}
+
+async function linkHarness(failures: {
+	failFinalLookup?: boolean;
+	failPostFetchRead?: boolean;
+	concurrentTrackingOid?: string;
+	concurrentConfigValue?: string;
+	closeBeforeFinalVerification?: boolean;
+	initialTrackingOid?: string;
+	moveRemoteBeforeFetchTo?: string;
+} = {}) {
+	const candidate = pullRequest({ headRefName: "feature/local" });
+	const app = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [candidate],
+	});
+	const initial = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(initial.kind, "current");
+	if (initial.kind !== "current") throw new Error("Expected inferred pull request");
+	assert.equal(initial.pullRequest.target.provenance, "inferred");
+	app.calls.length = 0;
+
+	const originalExec = app.pi.exec.bind(app.pi);
+	const trackingRef = "refs/remotes/fork/feature/local";
+	const config = new Map<string, string[]>();
+	let trackingOid: string | null = failures.initialTrackingOid ?? null;
+	let trackingReads = 0;
+	let movedRemoteHead: string | null = null;
+	let linked = false;
+	let rollbackStarted = false;
+	let concurrentConfigInjected = false;
+	app.pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+		const record = () => app.calls.push({ command, args, options: commandOptions });
+		if (command === "git" && args.join(" ") === "for-each-ref --format=%(push:short) refs/heads/feature/local") {
+			record();
+			return result(linked ? "fork/feature/local\n" : "\n");
+		}
+		if (command === "git" && args[0] === "config") {
+			record();
+			if (args[1] === "--get-all" || args[1] === "--type=bool") {
+				const key = args.at(-1) ?? "";
+				const values = config.get(key) ?? [];
+				if (
+					rollbackStarted && failures.concurrentConfigValue && !concurrentConfigInjected &&
+					key === "branch.feature/local.remote"
+				) {
+					config.set(key, [failures.concurrentConfigValue]);
+					concurrentConfigInjected = true;
+				}
+				return values.length === 0 ? result("", 1) : result(`${values.join("\n")}\n`);
+			}
+			if (args[1] === "--get") return result("", 1);
+			if (args[1] === "--fixed-value" && args[2] === "--unset-all") {
+				const key = args[3] ?? "";
+				const expected = args[4] ?? "";
+				const values = config.get(key) ?? [];
+				const remaining = values.filter((value) => value !== expected);
+				if (remaining.length === values.length) return result("", 5);
+				if (remaining.length === 0) config.delete(key);
+				else config.set(key, remaining);
+				return result();
+			}
+			if (args[1] === "--add") {
+				const key = args[2] ?? "";
+				config.set(key, [...(config.get(key) ?? []), args[3] ?? ""]);
+				return result();
+			}
+		}
+		if (command === "git" && args.join(" ") === `rev-parse --verify --quiet ${trackingRef}^{commit}`) {
+			record();
+			trackingReads += 1;
+			if (failures.failPostFetchRead && trackingReads === 2) return result("", 128);
+			if (failures.concurrentTrackingOid && trackingReads === 2) trackingOid = failures.concurrentTrackingOid;
+			return trackingOid === null ? result("", 1) : result(`${trackingOid}\n`);
+		}
+		if (command === "git" && args[0] === "fetch" && args.at(-1)?.endsWith(`:${trackingRef}`)) {
+			record();
+			assert.equal(args.at(-1), `${REMOTE_HEAD}:${trackingRef}`);
+			movedRemoteHead = failures.moveRemoteBeforeFetchTo ?? null;
+			trackingOid = REMOTE_HEAD;
+			return result();
+		}
+		if (movedRemoteHead && command === "git" && args[0] === "ls-remote") {
+			record();
+			return result(`${movedRemoteHead}\t${args.at(-1)}\n`);
+		}
+		if (command === "git" && args.join(" ") === "branch --set-upstream-to=fork/feature/local -- feature/local") {
+			record();
+			config.set("branch.feature/local.remote", ["fork"]);
+			config.set("branch.feature/local.merge", ["refs/heads/feature/local"]);
+			linked = true;
+			return result();
+		}
+		if (command === "git" && args[0] === "update-ref") {
+			record();
+			if (args[3] !== trackingOid) return result("", 128);
+			trackingOid = args[1] === "-d" ? null : args[2] ?? null;
+			return result();
+		}
+		if (
+			failures.failFinalLookup && linked && command === "gh" && args[0] === "api" && args[1] === "graphql" &&
+			args.some((arg) => arg.includes("search(query:"))
+		) {
+			record();
+			rollbackStarted = true;
+			return result("", 1);
+		}
+		if (failures.closeBeforeFinalVerification && linked && command === "gh" && args[0] === "pr" && args[1] === "view") {
+			record();
+			return result(JSON.stringify({ ...candidate, state: "CLOSED" }));
+		}
+		return originalExec(command, args, commandOptions);
+	};
+	return { ...app, inferred: initial.pullRequest, config, getTrackingOid: () => trackingOid };
 }
 
 test("detects commits added after local branch creation", async (t) => {
@@ -327,34 +531,47 @@ test("discovers an upstream PR for a slash-containing fork branch with a branch-
 		base: { repository: "acme/project", ref: "main", oid: BASE_HEAD },
 		head: { repository: "acme/fork", ref: "feature/pr", oid: REMOTE_HEAD },
 		headFetchSource: "git@github.com:acme/fork.git",
+		target: {
+			provenance: "configured",
+			branch: "feature/local",
+			remote: "publish",
+			ref: "feature/pr",
+			repository: "acme/fork",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/fork.git",
+			remoteOid: REMOTE_HEAD,
+		},
 		merge: {
 			allowedMergeMethods: ["merge", "rebase", "squash"],
 			viewerDefaultMergeMethod: "squash",
 		},
 	});
 
-	const search = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues");
-	assert.deepEqual(search?.args, [
-		"api",
-		"search/issues",
-		"--hostname",
-		"github.com",
-		"--paginate",
-		"--slurp",
-		"-X",
-		"GET",
-		"-f",
-		`q=is:pr head:feature/pr ${REMOTE_HEAD}`,
-		"-f",
-		"per_page=100",
-	]);
+	const search = calls.find(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+	);
+	assert.ok(search?.args.includes("--hostname"));
+	assert.ok(search?.args.includes("github.com"));
+	assert.equal(search?.args.includes("--paginate"), false);
+	assert.equal(search?.args.includes("--slurp"), false);
+	assert.ok(search?.args.includes("searchQuery=is:pr head:acme:feature/pr"));
+	for (const field of [
+		"issueCount",
+		"__typename",
+		"number url state",
+		"baseRepository{nameWithOwner}",
+		"headRepository{nameWithOwner}",
+		"headRefName headRefOid",
+		"pageInfo{hasNextPage startCursor endCursor}",
+	]) assert.match(search?.args.join(" ") ?? "", new RegExp(field.replace(/[{}]/g, "\\$&")));
 	assert.equal(search?.args.includes("-R"), false);
 	const views = calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view");
 	assert.deepEqual(views.map(({ args }) => args), [
-		["pr", "view", "https://github.com/acme/unrelated/pull/41", "--json", "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"],
 		["pr", "view", "https://github.com/acme/project/pull/42", "--json", "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"],
 	]);
-	const threads = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "graphql");
+	const threads = calls.find(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("reviewThreads"))
+	);
 	assert.ok(threads?.args.includes("--paginate"));
 	assert.ok(threads?.args.includes("--slurp"));
 	assert.equal(threads?.args.includes("--jq"), false);
@@ -416,13 +633,13 @@ test("routes from the local HEAD sampled after remote policy reads", async () =>
 	const loaded = await loadCurrentPullRequest(pi, context);
 	assert.ok(loaded);
 	assert.equal(loaded.local.head, "ahead");
-	assert.equal(deriveNextStep(loaded), "none");
+	assert.equal(derivePullRequestNextStep(loaded), "none");
 	const policyRead = calls.findIndex(({ command, args }) => command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main");
 	const headRead = calls.findIndex(({ command, args }) => command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}");
 	assert.ok(policyRead >= 0 && headRead > policyRead);
 });
 
-test("accepts complete paginated pull request search results beyond 100", async () => {
+test("batches complete pull request search results beyond 100 and loads only the exact candidate", async () => {
 	const candidates = Array.from({ length: 100 }, (_, index) => pullRequest({
 		id: `PR_unrelated_${index + 1}`,
 		number: index + 1,
@@ -430,85 +647,450 @@ test("accepts complete paginated pull request search results beyond 100", async 
 		headRepository: { nameWithOwner: `acme/unrelated-${index + 1}` },
 	}));
 	candidates.push(pullRequest());
-	const items = candidates.map((candidate) => ({ html_url: candidate.url }));
+	const identities = candidates.map(searchIdentity);
 	const { pi, context, calls } = harness({
 		candidates,
-		listResult: result(searchOutput(
-			{ total_count: 101, incomplete_results: false, items: items.slice(0, 100) },
-			{ total_count: 101, incomplete_results: false, items: items.slice(100) },
-		)),
+		listResults: [
+			result(searchOutput(searchPage(101, identities.slice(0, 100), 0, true))),
+			result(searchOutput(searchPage(101, identities.slice(100), 100))),
+		],
 	});
 
 	const loaded = await loadCurrentPullRequest(pi, context);
 	assert.ok(loaded);
 	assert.equal(loaded.number, 42);
-	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 101);
+	const searches = calls.filter(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+	);
+	assert.equal(searches.length, 2);
+	assert.equal(searches.some(({ args }) => args.includes("--paginate") || args.includes("--slurp")), false);
+	assert.ok(searches[1]?.args.includes("endCursor=cursor-100"));
+	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 1);
 });
 
 test("rejects incomplete, capped, inconsistent, malformed, and duplicate search pages", async () => {
-	const url = "https://github.com/acme/project/pull/42";
-	const repeated = Array.from({ length: 100 }, (_, index) => ({ html_url: `https://github.com/acme/project-${index + 1}/pull/${index + 1}` }));
-	const cases: Array<{ name: string; value: unknown; error: RegExp }> = [
+	const identity = searchIdentity(pullRequest());
+	const repeated = Array.from({ length: 100 }, (_, index) => searchIdentity(pullRequest({
+		number: index + 1,
+		url: `https://github.com/acme/project-${index + 1}/pull/${index + 1}`,
+		headRepository: { nameWithOwner: `acme/unrelated-${index + 1}` },
+	})));
+	const duplicateCursor = searchPage(2, [identity, searchIdentity(pullRequest({
+		number: 43,
+		url: "https://github.com/acme/project/pull/43",
+	}))]) as { data: { search: { edges: Array<{ cursor: string }> } } };
+	duplicateCursor.data.search.edges[1]!.cursor = duplicateCursor.data.search.edges[0]!.cursor;
+	const cases: Array<{ name: string; values: unknown[]; error: RegExp }> = [
 		{
 			name: "GitHub cap",
-			value: [{ total_count: 1001, incomplete_results: false, items: repeated }],
+			values: [searchPage(1001, repeated, 0, true)],
 			error: /GitHub search result cap reached/,
 		},
 		{
-			name: "incomplete",
-			value: [{ total_count: 1, incomplete_results: true, items: [{ html_url: url }] }],
-			error: /incomplete search results/,
-		},
-		{
 			name: "count mismatch",
-			value: [{ total_count: 1, incomplete_results: false, items: [] }],
+			values: [searchPage(1, [])],
 			error: /incomplete search results/,
 		},
 		{
 			name: "page total mismatch",
-			value: [
-				{ total_count: 101, incomplete_results: false, items: repeated },
-				{ total_count: 102, incomplete_results: false, items: [{ html_url: url }] },
-			],
+			values: [searchPage(101, repeated, 0, true), searchPage(102, [identity], 100)],
 			error: /inconsistent search result pages/,
 		},
 		{
 			name: "malformed page",
-			value: [{ total_count: 0, incomplete_results: false, items: [] }, null],
+			values: [searchPage(101, repeated, 0, true), null],
 			error: /invalid GitHub CLI output/,
 		},
 		{
-			name: "malformed item",
-			value: [{ total_count: 1, incomplete_results: false, items: [{}] }],
-			error: /invalid url/,
+			name: "malformed node",
+			values: [searchPage(1, [{}])],
+			error: /invalid GitHub CLI output/,
 		},
 		{
-			name: "duplicate",
-			value: [{ total_count: 2, incomplete_results: false, items: [{ html_url: url }, { html_url: url }] }],
+			name: "GraphQL errors",
+			values: [{ ...(searchPage(1, [identity]) as object), errors: [{ type: "FORBIDDEN" }] }],
+			error: /GitHub GraphQL returned errors/,
+		},
+		{
+			name: "cursor does not progress",
+			values: [duplicateCursor],
+			error: /duplicate candidate cursor/,
+		},
+		{
+			name: "pagination is truncated",
+			values: [searchPage(101, repeated, 0, false)],
+			error: /incomplete search results/,
+		},
+		{
+			name: "duplicate URL",
+			values: [searchPage(2, [identity, identity])],
 			error: /duplicate candidate url/,
 		},
 	];
 	for (const candidate of cases) {
-		const { pi, context, calls } = harness({ listResult: result(JSON.stringify(candidate.value)) });
+		const { pi, context, calls } = harness({
+			listResults: candidate.values.map((value) => result(JSON.stringify(value))),
+		});
 		await assert.rejects(loadCurrentPullRequest(pi, context), candidate.error, candidate.name);
 		assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view"), false, candidate.name);
 	}
 });
 
-test("returns null for an attached branch whose push target is specifically absent", async () => {
-	const { pi, context, calls } = harness({ pushResult: result("\n") });
+test("stays inactive only after a C-locale safe-directory probe confirms no repository", async () => {
+	const { pi, context, calls } = harness();
+	pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+		calls.push({ command, args, options: commandOptions });
+		if (command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") {
+			return result("", 128, "fatal: kein Git-Repository");
+		}
+		if (command === "env") {
+			assert.deepEqual(args, [
+				"LC_ALL=C",
+				"LANG=C",
+				"GIT_DISCOVERY_ACROSS_FILESYSTEM=1",
+				"git",
+				"-c",
+				"safe.directory=*",
+				"rev-parse",
+				"--is-inside-work-tree",
+			]);
+			return result("", 128, "fatal: not a git repository (or any of the parent directories): .git\n");
+		}
+		throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+	};
 
-	assert.equal(await loadCurrentPullRequest(pi, context), null);
-	assert.equal(calls.some(({ command }) => command === "gh"), false);
-	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "remote"), false);
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), { kind: "inactive" });
+	assert.equal(calls.some(({ args }) => args[0] === "branch"), false);
+});
+
+test("surfaces repository errors and a later read recovers after the error is fixed", async () => {
+	for (const repositoryError of [
+		{
+			name: "unsafe repository",
+			stderr: "fatal: detected dubious ownership in repository at '/repo'\n",
+			probe: result("true\n"),
+		},
+		{
+			name: "malformed repository",
+			stderr: "fatal: invalid gitfile format: /repo/.git\n",
+			probe: result("", 128, "fatal: invalid gitfile format: /repo/.git\n"),
+		},
+	]) {
+		const app = harness();
+		const originalExec = app.pi.exec.bind(app.pi);
+		let fixed = false;
+		app.pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+			if (!fixed && command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") {
+				app.calls.push({ command, args, options: commandOptions });
+				return result("", 128, repositoryError.stderr);
+			}
+			if (!fixed && command === "env") {
+				app.calls.push({ command, args, options: commandOptions });
+				return repositoryError.probe;
+			}
+			return originalExec(command, args, commandOptions);
+		};
+
+		await assert.rejects(
+			discoverCurrentPullRequest(app.pi, app.context),
+			/Check Git worktree failed: exit code 128/,
+			repositoryError.name,
+		);
+		fixed = true;
+		const recovered = await discoverCurrentPullRequest(app.pi, app.context);
+		assert.equal(recovered.kind, "current", repositoryError.name);
+	}
+});
+
+test("infers one exact open pull request from a published same-name branch", async () => {
+	const inferred = pullRequest({ headRefName: "feature/local" });
+	const { pi, context, calls } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [inferred],
+	});
+
+	const discovery = await discoverCurrentPullRequest(pi, context);
+	assert.equal(discovery.kind, "current");
+	if (discovery.kind !== "current") return;
+	assert.equal(discovery.pullRequest.target.provenance, "inferred");
+	assert.equal(discovery.pullRequest.target.remote, "fork");
+	assert.equal(discovery.pullRequest.target.ref, "feature/local");
+	const search = calls.find(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+	);
+	assert.ok(search?.args.includes("searchQuery=is:pr is:open head:acme:feature/local"));
+});
+
+test("rejects true, malformed, and repeated remote mirror settings but allows normalized false", async () => {
+	const inferred = pullRequest({ headRefName: "feature/local" });
+	for (const candidate of [
+		{ name: "true spelling", values: ["yes"] },
+		{ name: "malformed", values: ["sometimes"] },
+		{ name: "multiple", values: ["false", "false"] },
+	]) {
+		const blocked = harness({
+			pushResult: result("\n"),
+			remoteNames: ["fork"],
+			candidates: [inferred],
+			configValues: { "remote.fork.mirror": candidate.values },
+		});
+		assert.deepEqual(await discoverCurrentPullRequest(blocked.pi, blocked.context), {
+			kind: "blocked",
+			issue: { kind: "link-configuration", remote: "fork" },
+		}, candidate.name);
+	}
+
+	const allowed = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [inferred],
+		configValues: { "remote.fork.mirror": ["off"] },
+	});
+	const discovery = await discoverCurrentPullRequest(allowed.pi, allowed.context);
+	assert.equal(discovery.kind, "current");
+	assert.ok(allowed.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --type=bool --get-all remote.fork.mirror"
+	));
+});
+
+test("ignores historical PRs when selecting an inferred open PR", async () => {
+	const historical = pullRequest({
+		number: 41,
+		url: "https://github.com/acme/project/pull/41",
+		state: "CLOSED",
+		headRefName: "feature/local",
+	});
+	const open = pullRequest({ headRefName: "feature/local" });
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [historical, open],
+	});
+
+	const discovery = await discoverCurrentPullRequest(pi, context);
+	assert.equal(discovery.kind, "current");
+	if (discovery.kind !== "current") return;
+	assert.equal(discovery.pullRequest.number, 42);
+	assert.equal(discovery.pullRequest.lifecycle, "open");
+});
+
+test("blocks inferred discovery when a search candidate closes before view", async () => {
+	const searched = pullRequest({ headRefName: "feature/local" });
+	const closed = { ...searched, state: "CLOSED" };
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		searchCandidates: [searched],
+		candidates: [closed],
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
+		kind: "blocked",
+		issue: { kind: "published-without-pr", remote: "fork" },
+	});
+});
+
+test("blocks ambiguous candidate remotes before searching GitHub", async () => {
+	const { pi, context, calls } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork", "origin"],
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
+		kind: "blocked",
+		issue: { kind: "candidate-remotes-ambiguous", remotes: ["fork", "origin"] },
+	});
+	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
+});
+
+test("blocks a published ref without a PR and an inferred OID mismatch", async () => {
+	const published = harness({ pushResult: result("\n"), remoteNames: ["fork"], searchCandidates: [] });
+	assert.deepEqual(await discoverCurrentPullRequest(published.pi, published.context), {
+		kind: "blocked",
+		issue: { kind: "published-without-pr", remote: "fork" },
+	});
+
+	const mismatch = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [pullRequest({ headRefName: "feature/local", headRefOid: LOCAL_HEAD })],
+	});
+	const mismatchDiscovery = await discoverCurrentPullRequest(mismatch.pi, mismatch.context);
+	assert.equal(mismatchDiscovery.kind, "blocked");
+	if (mismatchDiscovery.kind !== "blocked") return;
+	assert.equal(mismatchDiscovery.issue.kind, "candidate-oid-mismatch");
+});
+
+test("offers creation only after validating origin and finding no published ref", async () => {
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
+		kind: "none",
+		creationTarget: {
+			provenance: "inferred",
+			branch: "feature/local",
+			remote: "origin",
+			ref: "feature/local",
+			repository: "acme/project",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+	});
+
+	const invalid = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "https://user:secret@github.com/acme/project.git",
+		remoteHead: null,
+	});
+	assert.deepEqual(await discoverCurrentPullRequest(invalid.pi, invalid.context), {
+		kind: "blocked",
+		issue: { kind: "origin-invalid" },
+	});
+
+	const unsafeConfigurations: Array<Record<string, string[]>> = [
+		{ "push.default": ["nothing"] },
+		{ "branch.feature/local.remote": ["origin"] },
+		{ "remote.origin.push": ["refs/heads/*:refs/heads/*"] },
+	];
+	for (const configValues of unsafeConfigurations) {
+		const unsafe = harness({
+			pushResult: result("\n"),
+			remote: "origin",
+			remoteNames: ["origin"],
+			pushUrl: "git@github.com:acme/project.git",
+			remoteHead: null,
+			configValues,
+		});
+		assert.deepEqual(await discoverCurrentPullRequest(unsafe.pi, unsafe.context), {
+			kind: "blocked",
+			issue: { kind: "link-configuration", remote: "origin" },
+		});
+	}
+});
+
+test("links an inferred target only after fresh verification", async () => {
+	const app = await linkHarness();
+	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred);
+
+	assert.equal(linked.target.provenance, "configured");
+	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["fork"]);
+	assert.deepEqual(app.config.get("branch.feature/local.merge"), ["refs/heads/feature/local"]);
+	assert.equal(app.getTrackingOid(), REMOTE_HEAD);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "branch --set-upstream-to=fork/feature/local -- feature/local"
+	), true);
+	const fetch = app.calls.find(({ command, args }) =>
+		command === "git" && args.at(-1)?.endsWith(":refs/remotes/fork/feature/local")
+	);
+	assert.deepEqual(fetch?.args, [
+		"fetch",
+		"--no-write-fetch-head",
+		"--no-tags",
+		"--no-recurse-submodules",
+		"git@github.com:acme/fork.git",
+		`${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
+	]);
+	assert.equal(fetch?.args.includes("--force"), false);
+});
+
+test("cancels linking when the remote becomes a mirror after discovery", async () => {
+	const app = await linkHarness();
+	app.config.set("remote.fork.mirror", ["true"]);
+
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch cancelled: inferred pull request context changed/,
+	);
+	assert.equal(app.config.has("branch.feature/local.remote"), false);
+	assert.equal(app.getTrackingOid(), null);
+});
+
+test("cancels and rolls back when the remote moves between precheck and fetch", async () => {
+	const originalTrackingOid = "f".repeat(40);
+	const movedRemoteOid = "e".repeat(40);
+	const app = await linkHarness({
+		initialTrackingOid: originalTrackingOid,
+		moveRemoteBeforeFetchTo: movedRemoteOid,
+	});
+
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed: configured pull request does not match inferred target/,
+	);
+	assert.equal(app.getTrackingOid(), originalTrackingOid);
+	assert.equal(app.config.size, 0);
+});
+
+test("rolls back upstream and tracking state when final link verification fails", async () => {
+	const app = await linkHarness({ failFinalLookup: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Find pull requests failed: exit code 1/,
+	);
+
+	assert.equal(app.config.has("branch.feature/local.remote"), false);
+	assert.equal(app.config.has("branch.feature/local.merge"), false);
+	assert.equal(app.getTrackingOid(), null);
+});
+
+test("removes its fetched tracking ref when post-fetch verification errors", async () => {
+	const app = await linkHarness({ failPostFetchRead: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Read remote-tracking ref failed: exit code 128/,
+	);
+	assert.equal(app.getTrackingOid(), null);
+	assert.equal(app.config.size, 0);
+});
+
+test("does not overwrite a concurrent tracking-ref update during rollback", async () => {
+	const concurrentOid = "e".repeat(40);
+	const app = await linkHarness({ concurrentTrackingOid: concurrentOid });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed and rollback was incomplete/,
+	);
+	assert.equal(app.getTrackingOid(), concurrentOid);
+	assert.equal(app.config.size, 0);
+});
+
+test("does not erase a concurrent branch-config update during rollback", async () => {
+	const app = await linkHarness({ failFinalLookup: true, concurrentConfigValue: "other" });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed and rollback was incomplete/,
+	);
+	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["other"]);
+	assert.equal(app.config.has("branch.feature/local.merge"), false);
+	assert.equal(app.getTrackingOid(), null);
+});
+
+test("rolls back when the inferred pull request closes before final verification", async () => {
+	const app = await linkHarness({ closeBeforeFinalVerification: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed: configured pull request does not match inferred target/,
+	);
+	assert.equal(app.config.size, 0);
+	assert.equal(app.getTrackingOid(), null);
 });
 
 test("keeps detached HEAD, malformed push refs, and push lookup failures distinct from no upstream", async () => {
 	const detached = harness({ branchResult: result("") });
-	await assert.rejects(
-		loadCurrentPullRequest(detached.pi, detached.context),
-		/Read current branch failed: invalid branch/,
-	);
+	assert.deepEqual(await discoverCurrentPullRequest(detached.pi, detached.context), {
+		kind: "blocked",
+		issue: { kind: "detached-head" },
+	});
 	assert.equal(detached.calls.some(({ args }) => args[0] === "for-each-ref"), false);
 
 	const malformed = harness({ pushResult: result("fork/feature/pr\norigin/feature/pr\n") });
@@ -558,6 +1140,63 @@ test("requires the credential-free locator and GitHub response to identify the s
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "ls-remote"), false);
 });
 
+test("requires one matching credential-free fetch URL for the named remote", async () => {
+	const cases: Array<{ name: string; options: Partial<HarnessOptions>; error: RegExp }> = [
+		{
+			name: "different repository",
+			options: { fetchUrl: "git@github.com:acme/other.git" },
+			error: /fetch and push repositories do not match/,
+		},
+		{
+			name: "multiple fetch URLs",
+			options: { fetchUrlResult: result("git@github.com:acme/fork.git\nhttps:\/\/github.com\/acme\/fork.git\n") },
+			error: /multiple fetch URLs are configured/,
+		},
+		{
+			name: "credential-bearing fetch URL",
+			options: { fetchUrl: "https://user:secret@github.com/acme/fork.git" },
+			error: /Read fetch URL failed: invalid fetch URL/,
+		},
+	];
+	for (const candidate of cases) {
+		const app = harness(candidate.options);
+		await assert.rejects(loadCurrentPullRequest(app.pi, app.context), candidate.error, candidate.name);
+		assert.equal(app.calls.some(({ command, args }) => command === "git" && args[0] === "ls-remote"), false, candidate.name);
+	}
+
+	const inferred = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		fetchUrl: "git@github.com:acme/other.git",
+	});
+	assert.deepEqual(await discoverCurrentPullRequest(inferred.pi, inferred.context), {
+		kind: "blocked",
+		issue: { kind: "target-invalid" },
+	});
+	assert.equal(inferred.calls.some(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args.some((arg) => arg.includes("search(query:"))
+	), false);
+});
+
+test("accepts a matching fetch URL over another protocol while retaining the push URL as fetch authority", async () => {
+	const pushUrl = "git@github.com:acme/fork.git";
+	const { pi, context, calls } = harness({
+		pushUrl,
+		fetchUrl: "https://github.com/acme/fork.git",
+	});
+
+	const loaded = await loadCurrentPullRequest(pi, context);
+	assert.ok(loaded);
+	assert.equal(loaded.headFetchSource, pushUrl);
+	assert.equal(calls.filter(({ command, args }) =>
+		command === "gh" && args.join(" ") === "repo view github.com/acme/fork --json nameWithOwner,url"
+	).length, 2);
+	assert.ok(calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "remote get-url --all fork"
+	));
+	assert.ok(calls.some(({ command, args }) => command === "git" && args[0] === "ls-remote" && args[3] === pushUrl));
+});
+
 test("uses a credential-free locator for GitHub and retains each supported fetch URL", async () => {
 	for (const pushUrl of [
 		"https://github.com/acme/fork.git",
@@ -588,7 +1227,7 @@ test("ignores the same head ref in an unrelated repository", async () => {
 	const { pi, context, calls } = harness({ candidates: [unrelated] });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
-	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 1);
+	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 0);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
@@ -645,7 +1284,9 @@ test("retains a just-merged PR by its exact remote push-ref OID when local HEAD 
 	assert.equal(loaded.local.head, "behind");
 	assert.equal(loaded.conditions.unresolvedThreads, 0);
 	assert.equal(loaded.merge, null);
-	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "graphql"), false);
+	assert.equal(calls.some(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && !args.some((arg) => arg.includes("search(query:"))
+	), false);
 	assert.equal(calls.some(({ command, args }) => command === "gh" && args[2] === "github.com/acme/project"), false);
 	assert.ok(calls.some(({ command, args }) => command === "git" && args[0] === "fetch"));
 });
@@ -677,7 +1318,7 @@ test("fails for ambiguous historical PRs matching the remote push ref", async ()
 
 	await assert.rejects(
 		loadCurrentPullRequest(pi, context),
-		/multiple historical pull requests match remote push ref/,
+		/Discovery blocked: candidate-prs-ambiguous/,
 	);
 });
 
@@ -686,8 +1327,10 @@ test("does not fall back to local HEAD when the remote push ref is absent", asyn
 	const { pi, context, calls } = harness({ candidates: [historical], remoteHead: null });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
-	const search = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues");
-	assert.ok(search?.args.includes("q=is:pr head:feature/pr"));
+	const search = calls.find(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+	);
+	assert.ok(search?.args.includes("searchQuery=is:pr head:acme:feature/pr"));
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
@@ -707,7 +1350,9 @@ test("returns null only when no current-branch PR matches", async () => {
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
-	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "graphql"), false);
+	assert.equal(calls.some(({ command, args }) =>
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && !args.some((arg) => arg.includes("search(query:"))
+	), false);
 });
 
 test("fails rather than treating command errors, malformed data, or ambiguity as no PR", async () => {
@@ -725,7 +1370,7 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(ambiguous.pi, ambiguous.context),
-		/multiple open pull requests match current push target/,
+		/Discovery blocked: candidate-prs-ambiguous/,
 	);
 
 	const malformed = harness({
@@ -1100,7 +1745,7 @@ test("rejects a remote push ref that moved from the advertised pull request OID"
 	const { pi, context, calls } = harness({ remoteHead: "d".repeat(40) });
 	await assert.rejects(
 		loadCurrentPullRequest(pi, context),
-		/Find pull requests failed: open pull request head does not match remote push ref/,
+		/Discovery blocked: candidate-oid-mismatch/,
 	);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 });

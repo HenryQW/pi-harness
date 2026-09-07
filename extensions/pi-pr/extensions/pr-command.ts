@@ -7,7 +7,9 @@ import {
 	selectMergeMethod,
 } from "./pr-merge.ts";
 import {
+	linkInferredPullRequest,
 	loadCurrentPullRequest,
+	samePullRequestSnapshot,
 	type CurrentPullRequest,
 } from "./pr-github.ts";
 import {
@@ -15,7 +17,7 @@ import {
 	type NextStep,
 } from "./pr-routing.ts";
 
-type WorkflowNextStep = Exclude<NextStep, "none" | "merge">;
+type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
 
 const WORKFLOWS: Record<WorkflowNextStep, string> = {
 	create: "skill:pi-pr-create",
@@ -27,11 +29,16 @@ const WORKFLOWS: Record<WorkflowNextStep, string> = {
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
 export type PrCommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<NextStep>;
 
+type PrCommandDependencies = {
+	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
+	linkInferredPullRequest?: typeof linkInferredPullRequest;
+};
+
 function dispatchWorkflow(pi: PrCommandPi, ctx: ExtensionCommandContext, commandName: string): void {
 	const command = pi.getCommands().find((candidate) =>
 		candidate.name === commandName &&
 		candidate.source === "skill" &&
-		candidate.sourceInfo.origin === "package",
+		candidate.sourceInfo.origin === "package"
 	);
 	if (!command) throw new Error(`${commandName} failed: bundled workflow is unavailable`);
 
@@ -88,6 +95,7 @@ async function mergePullRequest(
 	pi: PrCommandPi,
 	ctx: ExtensionCommandContext,
 	current: CurrentPullRequest,
+	load: typeof loadCurrentPullRequest,
 ): Promise<void> {
 	if (!current.merge) throw new Error(`PR #${current.number} merge failed: merge capabilities are unavailable`);
 	const method = selectMergeMethod(current.merge);
@@ -112,12 +120,15 @@ async function mergePullRequest(
 		allowedMergeMethods: current.merge.allowedMergeMethods,
 		viewerDefaultMergeMethod: current.merge.viewerDefaultMergeMethod,
 		revalidateReadiness: async (local) => {
-			const fresh = await loadCurrentPullRequest(pi, ctx, local);
-			if (!fresh) throw new Error(`PR #${current.number} merge cancelled: pull request is no longer current`);
+			const discovery = await load(pi, ctx, local);
+			if (discovery.kind !== "current") {
+				throw new Error(`PR #${current.number} merge cancelled: pull request is no longer current`);
+			}
+			const fresh = discovery.pullRequest;
 			if (!isSameConfirmedMerge(current, fresh)) {
 				throw new Error(`PR #${current.number} merge cancelled: confirmed pull request context changed`);
 			}
-			if (deriveNextStep(fresh) !== "merge") {
+			if (deriveNextStep(discovery) !== "merge") {
 				throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
 			}
 			if (!fresh.merge) throw new Error(`PR #${fresh.number} merge failed: merge capabilities are unavailable`);
@@ -129,26 +140,64 @@ async function mergePullRequest(
 	});
 }
 
-export function createPrCommandHandler(pi: PrCommandPi): PrCommandHandler {
+async function linkPullRequest(
+	pi: PrCommandPi,
+	ctx: ExtensionCommandContext,
+	current: CurrentPullRequest,
+	load: typeof loadCurrentPullRequest,
+	link: typeof linkInferredPullRequest,
+): Promise<void> {
+	const targetName = `${current.target.remote}/${current.target.ref}`;
+	const confirmed = await ctx.ui.confirm(
+		`Link pull request branch to ${targetName}?`,
+		`Set ${targetName} as the push target for this branch.`,
+	);
+	if (!confirmed) return;
+
+	const discovery = await load(pi, ctx);
+	if (
+		discovery.kind !== "current" ||
+		discovery.pullRequest.target.provenance !== "inferred" ||
+		!samePullRequestSnapshot(current, discovery.pullRequest)
+	) throw new Error("Link branch cancelled: inferred pull request context changed");
+	await link(pi, ctx, discovery.pullRequest);
+}
+
+export function createPrCommandHandler(
+	pi: PrCommandPi,
+	dependencies: PrCommandDependencies = {},
+): PrCommandHandler {
+	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
+	const link = dependencies.linkInferredPullRequest ?? linkInferredPullRequest;
 	return async (args, ctx) => {
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 
-		const current = await loadCurrentPullRequest(pi, ctx);
-		const nextStep = deriveNextStep(current);
+		const discovery = await load(pi, ctx);
+		const nextStep = deriveNextStep(discovery);
+		if (discovery.kind === "inactive") return nextStep;
+		if (discovery.kind === "blocked") {
+			return nextStep;
+		}
 		if (nextStep === "none") {
-			if (current) {
-				const notification = noActionNotification(current);
+			if (discovery.kind === "current") {
+				const notification = noActionNotification(discovery.pullRequest);
 				ctx.ui.notify(notification.message, notification.type);
 			}
 			return nextStep;
 		}
+		if (nextStep === "link-branch") {
+			if (discovery.kind !== "current") throw new Error("/pr link failed: pull request is unavailable");
+			await linkPullRequest(pi, ctx, discovery.pullRequest, load, link);
+			return nextStep;
+		}
 		if (nextStep === "merge") {
-			if (!current) throw new Error("/pr merge failed: pull request is unavailable");
-			await mergePullRequest(pi, ctx, current);
+			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
+			await mergePullRequest(pi, ctx, discovery.pullRequest, load);
 			return nextStep;
 		}
 
-		dispatchWorkflow(pi, ctx, WORKFLOWS[nextStep]);
+		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
+		dispatchWorkflow(pi, ctx, WORKFLOWS[nextStep as WorkflowNextStep]);
 		return nextStep;
 	};
 }
