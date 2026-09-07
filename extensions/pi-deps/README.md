@@ -38,11 +38,9 @@ The installer stores its result in `<worktree gitdir>/pi-deps/status.json`. Comm
 
 The status file is removed once a Pi session reports it. Other tools that create worktrees get the same background install. They must consume the status file themselves.
 
-## Data, cost, and privacy
+## Limits and recovery
 
 Dependency installation may execute repository-controlled build and install scripts. Enable only repositories you trust.
-
-## Limits and recovery
 
 - A configured `core.hooksPath` replaces the shared hooks directory. `/deps` refuses instead of installing where Git would ignore or share the hook.
 - Only Git-root lockfiles are inspected.

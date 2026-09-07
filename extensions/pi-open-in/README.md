@@ -21,17 +21,14 @@ Run `/set-open-in` when you want another command.
 
 ## Config
 
-`~/.pi/agent/config/pi-open-in/config.json`
+Package-owned: `~/.pi/agent/config/pi-open-in/config.json`
 
-```json
-{
-  "command": "code"
-}
-```
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `command` | Sets the command used by `/open`. Required when the file exists. | Non-empty string. | `"code"` |
 
 - A missing file silently uses the default command, `"code"`.
 - Reads do not create or write the config home.
-- When the file exists, `command` is required. It must be a non-empty string.
 - Only `/set-open-in` writes the file. Its write is atomic.
 
 ## API
@@ -44,9 +41,14 @@ import { loadOpenInConfig } from "@henryqw/pi-open-in/open-uri";
 const { source, value } = loadOpenInConfig();
 ```
 
-`source` is `"missing"` or `"file"`. `value.command` is validated. Pass an agent directory to `loadOpenInConfig(agentDir)` when needed.
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `loadOpenInConfig(agentDir?)` | function | Reads and validates the owner config. |
+| `configuredOpenUri(path)` | function | Returns a safe VS Code URI for a supported command. |
 
-`configuredOpenUri(path)` returns a VS Code URI when the executable is `code`. For `code -n` and `code --new-window`, it adds `windowId=_blank` so the link opens a new window. It returns `undefined` for other commands or invalid config.
+`loadOpenInConfig` returns `source` as `"missing"` or `"file"`. Its `value.command` is validated. Pass an agent directory when needed.
+
+`configuredOpenUri(path)` works when the executable is `code`. For `code -n` and `code --new-window`, it adds `windowId=_blank` so the link opens a new window. It returns `undefined` for other commands or invalid config.
 
 This extension owns command validation. `@henryqw/pi-config-store` owns the config home and storage.
 

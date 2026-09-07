@@ -27,7 +27,7 @@ These extensions are highly opinionated tools built for the maintainer's daily w
 
 ## Package release policy
 
-This repository is a pnpm workspace monorepo. Each public package under `extensions/*` releases independently.
+This repository is a pnpm workspace monorepo. Each public package under `extensions/*` or `packages/*` releases independently.
 
 - Bump package version when change affects published files, runtime behavior, public API, package metadata, or runtime dependencies.
 - Bump every affected package when one change touches multiple packages.
@@ -37,8 +37,10 @@ This repository is a pnpm workspace monorepo. Each public package under `extensi
 - Bump with pnpm; do not edit versions by hand:
 
   ```bash
-  pnpm --filter ./extensions/<package> version patch --no-git-tag-version
+  pnpm --filter ./<root>/<package> version patch --no-git-tag-version
   ```
+
+  Use `extensions` as the root for Pi extensions and `packages` for support libraries.
 
 - Regenerate `pnpm-lock.yaml` after manifest edits. Commit it when it changes. Do not create release tags.
 - After the final base sync, run `pnpm run check:package-versions` before committing or pushing.

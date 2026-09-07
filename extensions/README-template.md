@@ -1,74 +1,83 @@
-<!-- Copy to extensions/<package>/README.md. Replace placeholders and delete optional sections that do not apply. Install and Use are required. Keep the remaining sections in the order shown. Keep trivial packages short. -->
+<!--
+README contract:
+- Copy this file to extensions/<package>/README.md. Replace placeholders.
+- Use the exact package H1 format shown below. Follow it with one to three short sentences about the user outcome.
+- Every H2 section is optional. Include a section only when it contains package-specific user information.
+- Delete an inapplicable or empty heading instead of writing `None`, `N/A`, `Not applicable`, placeholder filler, or generic information.
+- Keep retained H2 headings in this canonical order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.
+- Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
+- Limits and recovery, when present, must be last.
+- Keep simple packages short. Use simple English. Preserve exact commands, paths, errors, safety advice, and recovery steps.
+-->
 
 # `@henryqw/<package>`
 
-<Describe the concrete outcome users can achieve. Name the user or problem and the main benefit without adding a separate Why section.>
+<State the user outcome in one to three short sentences. Attribution and meaningful images may follow the introduction.>
 
 <!-- Optional: when the package was learned from or adapted from another project, add an "Inspired by" sentence here. -->
 
-<!-- Optional: add a product screenshot here. If this README also has a non-decorative explanatory diagram, put it immediately after the screenshot. Without a screenshot, keep the diagram near relevant prose. Image paths must begin with `./` or `../`. -->
+<!-- Optional: add a product screenshot here. Keep a meaningful explanatory diagram near the relevant prose. Do not add decorative diagrams. Image paths must begin with `./` or `../`. -->
 
+<!-- Optional: include only when installation has package-specific user information. -->
 ## Install
 
 ```bash
 pi install npm:@henryqw/<package>
 ```
 
-<Put prerequisites and required post-install actions here. For non-trivial setup, say how users can verify success. Do not repeat generic Pi version requirements enforced by peerDependencies.>
+<After the command, include only prerequisites and required setup. Add a concrete verification step when setup is not trivial. Do not repeat generic Pi version requirements enforced by peerDependencies.>
 
-<!-- Optional: include only when another package is required, improves this package, or consumes it. Use a table only for multiple comparable packages. Use a sentence or list for one package. Link companion extension docs with https://pi.henry.wang/extensions/<directory>. Alphabetize table rows. Reasons begin Required., Improves., or Consumer. -->
+<!-- Optional: include only when another package is required, improves this package, or consumes it. Always use this exact table. Add one alphabetized row per package. Relationship must be Required, Improves, or Consumer. Purpose must not repeat the relationship word. Link companion docs with https://pi.henry.wang/extensions/<directory>. -->
 ## Works with
 
-| Package | Why |
-| --- | --- |
-| [`@henryqw/<companion-a>`](https://pi.henry.wang/extensions/<companion-a>) | Required. <Why.> |
-| [`@henryqw/<companion-b>`](https://pi.henry.wang/extensions/<companion-b>) | Improves. <Why.> |
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/<companion-a>`](https://pi.henry.wang/extensions/<companion-a>) | Required | <What the package provides.> |
+| [`@henryqw/<companion-b>`](https://pi.henry.wang/extensions/<companion-b>) | Improves | <What becomes better.> |
 
-<!-- Start with the shortest successful workflow. State the expected result before deep reference. Use a compact surface table for comparable commands, tools, skills, prompts, or roles. Use matching H3 headings only when a surface needs narrative detail. -->
+<!-- Optional: include only when users need package-specific usage information. Start with the shortest successful workflow and its expected result. For two or more comparable user surfaces, use exactly this table with lowercase types such as command, tool, skill, or ui. Use H3 headings only when a surface needs more detail. -->
 ## Use
 
-<First successful workflow and expected result. Delete this paragraph for a trivial command whose result is obvious.>
+<First successful workflow and expected result. Delete this paragraph only when a trivial command makes the result obvious.>
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/<command>` | command | <What it does.> |
 | `<tool>` | tool | <What it does.> |
 
-<Explain normal behavior without repeating the introduction.>
+<Add normal-use detail without repeating the introduction.>
 
-<!-- Optional: explain a multi-step product workflow. Preserve useful existing diagrams, but do not add a decorative diagram. -->
+<!-- Optional: include only for user-visible multi-step behavior and important transitions. H3 subsections are allowed. Preserve useful existing diagrams. -->
 ## Flow
 
 <Describe the user-visible sequence and important transitions.>
 
-<!-- Optional: include only when the package owns user-editable config. Put companion or shared config guidance in Works with or Use. Do not present generated state as config. -->
+<!-- Optional: include only for package-owned user-editable configuration. Start with the exact path or an ownership sentence. Do not present shared config or generated state as this package's config. Do not repeat a flat config table as JSON; a nested JSON example may explain structure. Every Config section must include the exact four-column primary table below: Name, Description, Values, and Default. Put genuinely conditional requirements briefly in Description. Keep explanation in Description and type, range, enum, or structural constraints in Values. State effective omitted behavior in Default. Use — when no default exists. -->
 ## Config
 
-`~/.pi/agent/config/<package>/config.json`
+Package-owned: `~/.pi/agent/config/<package>/config.json`
 
-| Field | Required | Possible values | Default |
+| Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `<setting-a>` | Yes or no | <Valid values> | <Default> |
-| `<setting-b>` | Yes or no | <Valid values> | <Default> |
+| `<setting-a>` | <What it controls. Required when <condition>.> | <Type, range, enum, or structural constraint.> | — |
+| `<setting-b>` | <What it controls.> | <Type, range, enum, or structural constraint.> | <Effective behavior when omitted.> |
 
-<Explain invalid-config behavior and recovery.>
+<After the table, explain invalid or missing config, who writes it, when changes reload, and recovery.>
 
-<!-- Optional: document a public library or owner API. -->
+<!-- Optional: document public library or owner APIs only. For two or more comparable exports, use exactly this table. A single API may use concise prose or code. -->
 ## API
 
-<Describe public exports, inputs, results, and failures.>
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `<export-a>` | function | <What it does.> |
+| `<export-b>` | type | <What it represents.> |
 
-<!-- Optional: document generated files, session entries, caches, indexes, or storage behavior. -->
+<!-- Optional: document package-owned generated files, session entries, caches, indexes, or storage. Include paths, lifecycle, safe deletion, and recovery when they matter. -->
 ## State and storage
 
-<Describe owned state, its lifecycle, and safe deletion or recovery.>
+<Describe owned state. Do not call generated state config.>
 
-<!-- Optional: disclose data sent to models or services, model calls and possible cost, sync, trust, and privacy. -->
-## Data, cost, and privacy
-
-<Describe what leaves the machine, which models or services receive it, possible cost, and trust boundaries.>
-
-<!-- Optional: document compatibility, supported managers, constraints, failure semantics, and recovery. -->
+<!-- Optional and always last: document actionable constraints, failure meaning, and recovery. Use this heading instead of variants such as Safety limits or Limits and failures. -->
 ## Limits and recovery
 
 <Make limits actionable and explain recovery.>

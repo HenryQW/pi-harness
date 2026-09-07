@@ -15,10 +15,11 @@ If files don't exist, proceed silently. Don't suggest creating them upfront. `/d
 /
 ├── CONTEXT-MAP.md
 ├── docs/adr/                         ← repository-wide and package-prefixed decisions
-└── extensions/
-    ├── pi-auto-compact/
-    │   └── CONTEXT.md
-    └── <future-package>/
+├── extensions/
+│   └── pi-auto-compact/
+│       └── CONTEXT.md
+└── packages/
+    └── pi-herdr/
         └── CONTEXT.md
 ```
 

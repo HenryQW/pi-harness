@@ -8,10 +8,10 @@
     "generate:installer": "node scripts/generate-installer.mjs",
     "check:installer": "node scripts/generate-installer.mjs --check",
     "build": "pnpm run generate:installer && blume build",
-    "test": "node --test repository-markdown.test.ts scripts/installer.test.mjs",
+    "test": "node --test extension-catalog.test.ts repository-markdown.test.ts scripts/installer.test.mjs",
     "validate": "pnpm run check:installer && pnpm test && blume validate --strict"
   },
   "devDependencies": {
-    "blume": "1.5.3"
+    "blume": "1.6.0"
   }
 }

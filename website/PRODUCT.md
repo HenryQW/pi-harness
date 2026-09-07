@@ -25,7 +25,7 @@ Users browse static documentation at `pi.henry.wang` and install extensions from
 ## Capabilities and Constraints
 
 - The website uses Blume, Astro, and TypeScript with static output.
-- Root and extension READMEs remain the documentation source of truth.
+- Root and package READMEs remain the documentation source of truth.
 - Public extension manifests with Pi metadata define the installer package list. Deprecated packages and non-extension support libraries are excluded.
 - Package names, descriptions, and relationship language must remain canonical and traceable to repository sources.
 - Discovery focuses on end-user extensions. Author infrastructure remains outside the primary discovery flow.
@@ -39,8 +39,8 @@ Users browse static documentation at `pi.henry.wang` and install extensions from
 
 ## Evidence on Hand
 
-- Root repository README and extension READMEs.
-- Package manifests under `extensions/`.
+- Root repository README and package READMEs.
+- Package manifests under `extensions/` and `packages/`.
 - Website implementation in `website/pages/`, `website/components/`, and `website/blume.config.ts`.
 - No independent user research, testimonials, or measured outcome claims are available for publication.
 
