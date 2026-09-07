@@ -6,9 +6,10 @@ if (!packageManagerExecPath) throw new Error("Package manager executable is requ
 
 const concurrency = 2;
 const testArgs = process.argv.slice(2);
-const workspaces = readdirSync("extensions", { withFileTypes: true })
-	.filter((entry) => entry.isDirectory())
-	.map((entry) => JSON.parse(readFileSync(`extensions/${entry.name}/package.json`, "utf8")))
+const workspaces = ["extensions", "packages"]
+	.flatMap((root) => readdirSync(root, { withFileTypes: true })
+		.filter((entry) => entry.isDirectory())
+		.map((entry) => JSON.parse(readFileSync(`${root}/${entry.name}/package.json`, "utf8"))))
 	.filter((manifest) => manifest.scripts?.test)
 	.map((manifest) => manifest.name);
 

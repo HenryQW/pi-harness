@@ -29,7 +29,7 @@ trust_field() {
 }
 
 mismatches=0
-for manifest in extensions/*/package.json; do
+for manifest in extensions/*/package.json packages/*/package.json; do
   [[ "$(node -p "Boolean(require('./$manifest').private)")" == true ]] && continue
 
   package="$(node -p "require('./$manifest').name")"

@@ -1,4 +1,4 @@
-name: Publish extensions
+name: Publish packages
 
 on:
   workflow_run:
@@ -39,13 +39,9 @@ jobs:
           declare -A seen=()
 
           # Prerequisites must exist before their consumers release.
-          for manifest in extensions/pi-herdr/package.json extensions/pi-multi-codex/package.json extensions/pi-task-models/package.json extensions/pi-subagent/package.json extensions/*/package.json; do
-            case "$manifest" in
-              extensions/pi-herdr/package.json|extensions/pi-multi-codex/package.json|extensions/pi-task-models/package.json|extensions/pi-subagent/package.json)
-                [ "${seen[$manifest]:-0}" = 1 ] && continue
-                seen[$manifest]=1
-                ;;
-            esac
+          for manifest in packages/pi-config-store/package.json packages/pi-herdr/package.json extensions/pi-multi-codex/package.json extensions/pi-task-models/package.json extensions/pi-subagent/package.json extensions/*/package.json packages/*/package.json; do
+            [ "${seen[$manifest]:-0}" = 1 ] && continue
+            seen[$manifest]=1
             name="$(node -p "require('./$manifest').name")"
             if [ "$(node -p "Boolean(require('./$manifest').private)")" = true ]; then
               continue

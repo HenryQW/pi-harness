@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-config-store",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Safe JSON configuration storage for Pi extensions.",
   "keywords": [
     "pi-package",
@@ -44,7 +44,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-harness.git",
-    "directory": "extensions/pi-config-store"
+    "directory": "packages/pi-config-store"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-harness/issues"

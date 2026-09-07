@@ -16,7 +16,7 @@ export function collectInstallablePackages(root = repoRoot) {
     .map((entry) => {
       const manifestPath = join(extensionsDir, entry.name, "package.json");
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      if (manifest.private || !manifest.pi) return null;
+      if (manifest.private || !Object.hasOwn(manifest, "pi")) return null;
       if (typeof manifest.name !== "string" || !packageName.test(manifest.name)) {
         throw new Error(`Invalid installable package name in ${manifestPath}`);
       }
