@@ -67,12 +67,12 @@ function expectsAnotherTurn(message: unknown): boolean {
 			&& (part as Record<string, unknown>).type === "toolCall");
 }
 
-function messageTokens(message: unknown): number {
-	if (!message || typeof message !== "object" || Array.isArray(message)) return 0;
+function messageTokens(message: unknown): number | undefined {
+	if (!message || typeof message !== "object" || Array.isArray(message)) return;
 	const usage = (message as Record<string, unknown>).usage;
-	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return 0;
+	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
 	const totalTokens = (usage as Record<string, unknown>).totalTokens;
-	return typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens >= 0 ? totalTokens : 0;
+	return typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens >= 0 ? totalTokens : undefined;
 }
 
 function joinBudgetParts(parts: string[]): string {
@@ -111,20 +111,26 @@ export default function roleTools(pi: ExtensionAPI): void {
 	const warningTokens = budget.maxTokens === undefined ? undefined : Math.ceil(budget.maxTokens * WARNING_RATIO);
 	let completedTurns = 0;
 	let completedTokens = 0;
+	let currentTokens = 0;
 	let turnWarningSent = false;
 	let tokenWarningSent = false;
 	let runtimeWarningSent = false;
+	pi.on("message_update", (event) => {
+		currentTokens = messageTokens(event.message) ?? currentTokens;
+	});
 	pi.on("turn_end", (event) => {
 		completedTurns += 1;
-		completedTokens += messageTokens(event.message);
-		if (!expectsAnotherTurn(event.message) || handoffSent) return;
-		if (completedTurns === budget.maxTurns - 1
-			|| budget.maxTokens !== undefined && completedTokens >= budget.maxTokens) {
+		completedTokens += messageTokens(event.message) ?? currentTokens;
+		currentTokens = 0;
+		const continuing = expectsAnotherTurn(event.message);
+		const tokenBudgetCrossed = budget.maxTokens !== undefined && completedTokens >= budget.maxTokens;
+		if (!handoffSent && (continuing && completedTurns === budget.maxTurns - 1 || tokenBudgetCrossed)) {
 			pi.setActiveTools([]);
 			pi.sendMessage(FINAL_HANDOFF_MESSAGE, { deliverAs: "steer", triggerTurn: false });
 			handoffSent = true;
 			return;
 		}
+		if (!continuing || handoffSent) return;
 		const elapsedMs = Math.max(0, Date.now() - budget.startedAt);
 		const turnWarningDue = !turnWarningSent && completedTurns >= warningTurn;
 		const tokenWarningDue = warningTokens !== undefined && !tokenWarningSent && completedTokens >= warningTokens;

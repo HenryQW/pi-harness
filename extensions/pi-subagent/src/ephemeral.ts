@@ -321,14 +321,6 @@ function assistantText(message: unknown): string | undefined {
 	return text || undefined;
 }
 
-function expectsAnotherTurn(message: unknown): boolean {
-	if (!message || typeof message !== "object" || Array.isArray(message)) return false;
-	const record = message as Record<string, unknown>;
-	return record.role === "assistant" && Array.isArray(record.content)
-		&& record.content.some((part) => part && typeof part === "object" && !Array.isArray(part)
-			&& (part as Record<string, unknown>).type === "toolCall");
-}
-
 function activityTooLong(value: unknown): boolean {
 	return typeof value === "string" && Buffer.byteLength(value, "utf8") > MAX_ACTIVITY_TEXT_BYTES;
 }
@@ -504,7 +496,8 @@ async function runPi(
 		let aborted = false;
 		let turnLimited = false;
 		let tokenLimited = false;
-		let tokenFinalTurn = false;
+		let tokenBudgetCrossed = false;
+		let tokenFinalTurnStarted = false;
 		let startedTurns = 0;
 		let lastEventAt = startedAt;
 		let deadline = Math.min(startedAt + timeoutPolicy.idleMs, maxDeadline);
@@ -667,20 +660,24 @@ async function runPi(
 			const record = event as Record<string, unknown>;
 			if (typeof record.type !== "string" || !Object.hasOwn(PI_JSON_EVENTS, record.type)) return;
 			observeEvent();
-			if (record.type === "turn_start" && ++startedTurns > budget.maxTurns) {
-				if (!callbackFailure && !aborted && timedOutAfterMs === undefined) turnLimited = true;
-				stop(true);
-				return;
-			}
-			if (record.type === "turn_end" && expectsAnotherTurn(record.message)) {
-				if (tokenFinalTurn) {
-					if (!callbackFailure && !aborted && timedOutAfterMs === undefined && !turnLimited) tokenLimited = true;
+			if (record.type === "turn_start") {
+				if (++startedTurns > budget.maxTurns) {
+					if (!callbackFailure && !aborted && timedOutAfterMs === undefined) turnLimited = true;
 					stop(true);
 					return;
 				}
-				if (budget.maxTokens !== undefined && completedTokens >= budget.maxTokens) {
-					tokenFinalTurn = true;
+				if (tokenBudgetCrossed) {
+					if (tokenFinalTurnStarted) {
+						if (!callbackFailure && !aborted && timedOutAfterMs === undefined) tokenLimited = true;
+						stop(true);
+						return;
+					}
+					tokenFinalTurnStarted = true;
 				}
+			}
+			if (record.type === "turn_end" && !tokenBudgetCrossed
+				&& budget.maxTokens !== undefined && completedTokens >= budget.maxTokens) {
+				tokenBudgetCrossed = true;
 			}
 			if (record.type === "message_start") {
 				partial.prefix = "";

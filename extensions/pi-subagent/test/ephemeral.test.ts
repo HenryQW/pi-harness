@@ -647,6 +647,7 @@ event({ type: "message_end", message: { role: "assistant", content: [{ type: "te
 event({ type: "tool_execution_start", toolCallId: "final-tool", toolName: "read", args: {} });
 event({ type: "tool_execution_end", toolCallId: "final-tool", toolName: "read" });
 event({ type: "turn_end", turnIndex: 1, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+event({ type: "turn_start", turnIndex: 2 });
 setInterval(() => {}, 1_000);
 `);
 	const activity: EphemeralSubagentActivityEvent[] = [];
@@ -671,16 +672,19 @@ setInterval(() => {}, 1_000);
 	]);
 });
 
-test("a continuing token-only usage crossing permits one final turn then rejects further continuation", async (t) => {
+test("a no-tool token crossing permits one extension-triggered turn then rejects the next attempt", async (t) => {
 	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
 event({ type: "turn_start", turnIndex: 0 });
 event({ type: "message_update", usage: { totalTokens: 6 } });
-event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "crossed" }, { type: "toolCall" }], stopReason: "toolUse" } });
-event({ type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "crossed" }], stopReason: "stop" } });
+event({ type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
+event({ type: "queue_update", steering: ["extension continuation"], followUp: [] });
 event({ type: "turn_start", turnIndex: 1 });
 event({ type: "message_update", usage: { totalTokens: 2 } });
-event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "final" }, { type: "toolCall" }], stopReason: "toolUse" } });
-event({ type: "turn_end", turnIndex: 1, message: { role: "assistant", content: [{ type: "toolCall" }] }, toolResults: [] });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "final" }], stopReason: "stop" } });
+event({ type: "turn_end", turnIndex: 1, message: { role: "assistant", content: [] }, toolResults: [] });
+event({ type: "queue_update", steering: ["second extension continuation"], followUp: [] });
+event({ type: "turn_start", turnIndex: 2 });
 setInterval(() => {}, 1_000);
 `);
 	const tokens: number[] = [];

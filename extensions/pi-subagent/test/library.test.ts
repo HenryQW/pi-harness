@@ -321,6 +321,13 @@ test("child final handoff preserves exact-output contracts and reserves the fina
 			toolSets,
 			activeTools: () => activeTools,
 			start() { handlers.get("session_start")?.({}); },
+			messageUpdate(totalTokens: number) {
+				handlers.get("message_update")?.({
+					type: "message_update",
+					message: { role: "assistant", content: [], usage: { totalTokens } },
+					assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+				});
+			},
 			turnEnd(event: any) { handlers.get("turn_end")?.(event); },
 		};
 	};
@@ -362,16 +369,22 @@ test("child final handoff preserves exact-output contracts and reserves the fina
 
 		const tokenBudget = policy(50, 100);
 		tokenBudget.start();
-		tokenBudget.turnEnd({ ...continuing, message: { ...continuing.message, usage: { totalTokens: 80 } } });
+		tokenBudget.messageUpdate(60);
+		tokenBudget.messageUpdate(80);
+		tokenBudget.turnEnd({ ...continuing, message: { ...continuing.message, usage: { totalTokens: 40 } } });
+		assert.equal(tokenBudget.sent.length, 0);
+		tokenBudget.messageUpdate(40);
+		tokenBudget.turnEnd(continuing);
 		assert.match(tokenBudget.sent[0]!.message.content, /20 of 100 tokens/);
-		tokenBudget.turnEnd({ ...continuing, message: { ...continuing.message, usage: { totalTokens: 10 } } });
-		assert.equal(tokenBudget.sent.length, 1);
-		tokenBudget.turnEnd({ ...continuing, message: { ...continuing.message, usage: { totalTokens: 11 } } });
+		tokenBudget.messageUpdate(21);
+		tokenBudget.turnEnd({ ...continuing, message: { role: "assistant", content: [] } });
 		assert.deepEqual(tokenBudget.activeTools(), []);
 		assert.deepEqual(tokenBudget.sent.map(({ message }) => message.customType), [
 			"pi-subagent-execution-budget",
 			"pi-subagent-final-handoff",
 		]);
+		assert.deepEqual(tokenBudget.sent[1]!.options, { deliverAs: "steer", triggerTurn: false });
+		tokenBudget.messageUpdate(100);
 		tokenBudget.turnEnd(continuing);
 		assert.equal(tokenBudget.sent.length, 2);
 	} finally {
