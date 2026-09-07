@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	deriveNextStep,
+	deriveNextStep as deriveDiscoveryNextStep,
+	derivePullRequestNextStep,
 	type LocalMergeSafety,
 	type NextStep,
 	type PullRequest,
@@ -20,6 +21,23 @@ const conditions: PullRequestConditions = {
 	policy: "ready",
 };
 const local: LocalMergeSafety = { worktree: "clean", head: "equal" };
+
+function deriveNextStep(pullRequest: PullRequest | null): NextStep {
+	if (pullRequest) return derivePullRequestNextStep(pullRequest);
+	return deriveDiscoveryNextStep({
+		kind: "none",
+		creationTarget: {
+			provenance: "inferred",
+			branch: "feature",
+			remote: "origin",
+			ref: "feature",
+			repository: "acme/project",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+	});
+}
 
 function pullRequest(overrides: {
 	lifecycle?: PullRequestLifecycle;
@@ -54,6 +72,32 @@ test("routes exactly one highest-priority next step", () => {
 	for (const { name, pullRequest: candidate, expected } of cases) {
 		assert.equal(deriveNextStep(candidate), expected, name);
 	}
+});
+
+test("routes discovery states without mutating ambiguous targets", () => {
+	const target = {
+		provenance: "inferred" as const,
+		branch: "feature",
+		remote: "fork",
+		ref: "feature",
+		repository: "acme/fork",
+		host: "github.com",
+		fetchSource: "git@github.com:acme/fork.git",
+		remoteOid: "a".repeat(40),
+	};
+	assert.equal(deriveDiscoveryNextStep({
+		kind: "current",
+		pullRequest: { ...pullRequest(), target },
+	}), "link-branch");
+	assert.equal(deriveDiscoveryNextStep({
+		kind: "current",
+		pullRequest: { ...pullRequest({ lifecycle: "merged" }), target },
+	}), "none");
+	assert.equal(deriveDiscoveryNextStep({
+		kind: "blocked",
+		issue: { kind: "candidate-remotes-ambiguous", remotes: ["fork", "origin"] },
+	}), "blocked");
+	assert.equal(deriveDiscoveryNextStep({ kind: "inactive" }), "none");
 });
 
 test("ordinary conversation comments do not route", () => {

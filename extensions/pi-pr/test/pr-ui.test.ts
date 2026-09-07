@@ -4,7 +4,7 @@ import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/
 import {
 	formatPrFooter,
 	formatPrWidget,
-	projectPrDisplay,
+	projectPrDisplay as projectDiscoveryDisplay,
 	type PrDisplayInput,
 	type PrStatusColor,
 	type PrTheme,
@@ -26,6 +26,22 @@ const conditions: PullRequestConditions = {
 	policy: "ready",
 };
 const local: LocalMergeSafety = { worktree: "clean", head: "equal" };
+const target = {
+	provenance: "configured" as const,
+	branch: "feature/pr",
+	remote: "origin",
+	ref: "feature/pr",
+	repository: "acme/project",
+	host: "github.com",
+	fetchSource: "git@github.com:acme/project.git",
+	remoteOid: "b".repeat(40),
+};
+
+function projectPrDisplay(input: PrDisplayInput | null, hasLocalCommit = false) {
+	return input
+		? projectDiscoveryDisplay({ kind: "current", pullRequest: input }, hasLocalCommit)
+		: projectDiscoveryDisplay({ kind: "none", creationTarget: target }, hasLocalCommit);
+}
 const theme: PrTheme = {
 	fg(color: PrStatusColor | "text", text: string) {
 		return `<${color}>${text}</${color}>`;
@@ -50,6 +66,7 @@ function pullRequest(overrides: {
 		lifecycle: overrides.lifecycle ?? "open",
 		conditions: { ...conditions, ...overrides.conditions },
 		local: { ...local, ...overrides.local },
+		target,
 	};
 }
 

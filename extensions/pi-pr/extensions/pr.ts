@@ -10,9 +10,12 @@ import {
 	loadCurrentPullRequest,
 } from "./pr-github.ts";
 import {
+	discoveryIssueKey,
+	discoveryIssueMessage,
 	formatPrFooter,
 	formatPrWidget,
 	projectPrDisplay,
+	unavailablePrDisplay,
 	type PrDisplay,
 } from "./pr-ui.ts";
 
@@ -22,6 +25,8 @@ const UI_KEY = "pi-pr";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
 const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
+const WORKFLOW_ROUTES = new Set(["create", "update-branch", "sweep", "fix-ci"]);
+const DELEGATED_TOOLS = new Set(["delegate_task", "delegate_flow", "delegate_flow_continue"]);
 
 type PullRequestExtensionDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
@@ -86,6 +91,10 @@ export default function pullRequestExtension(
 	let active: AbortController | undefined;
 	let queued = false;
 	let refreshFailureReported = false;
+	let displayEstablished = false;
+	let lastDiscovery: "configured" | "inferred" | "absent" | "blocked" | "inactive" | undefined;
+	let lastBlockedIssueKey: string | undefined;
+	let delegatedWorkPending = false;
 	let pendingWorkspaceRename = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
@@ -108,18 +117,43 @@ export default function pullRequestExtension(
 
 	const render = (
 		ctx: ExtensionContext,
-		pullRequest: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
+		discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
 		localCommit: boolean,
 	): void => {
-		const display = projectPrDisplay(pullRequest, localCommit);
-		const footer = pullRequest === null ? undefined : formatPrFooter(display, ctx.ui.theme);
-		if (pullRequest !== null && footer === undefined) {
-			throw new Error("Current pull request display is missing a footer");
+		if (discovery.kind === "inactive") {
+			if (timer !== undefined) clearInterval(timer);
+			timer = undefined;
+			displayEstablished = true;
+			lastDiscovery = "inactive";
+			displayedWidget = undefined;
+			ctx.ui.setStatus(UI_KEY, undefined);
+			setWidget(ctx, undefined);
+			return;
+		}
+		const display = projectPrDisplay(discovery, localCommit);
+		const footer = formatPrFooter(display, ctx.ui.theme);
+		if ((discovery.kind === "current" || discovery.kind === "blocked") && footer === undefined) {
+			throw new Error("Pull request display is missing a footer");
 		}
 		displayedWidget = display.widget === undefined ? undefined : display;
 		const widget = activeInvocations.size > 0 ? undefined : displayedWidget;
 		ctx.ui.setStatus(UI_KEY, footer);
 		setWidget(ctx, widget);
+		if (discovery.kind === "blocked") {
+			const key = discoveryIssueKey(discovery.issue);
+			if (lastBlockedIssueKey !== key) {
+				ctx.ui.notify(discoveryIssueMessage(discovery.issue), "warning");
+				lastBlockedIssueKey = key;
+			}
+		} else {
+			lastBlockedIssueKey = undefined;
+		}
+		displayEstablished = true;
+		lastDiscovery = discovery.kind === "current"
+			? discovery.pullRequest.target.provenance
+			: discovery.kind === "none"
+			? "absent"
+			: discovery.kind;
 	};
 
 	const stop = (): void => {
@@ -127,6 +161,10 @@ export default function pullRequestExtension(
 		context = undefined;
 		queued = false;
 		refreshFailureReported = false;
+		displayEstablished = false;
+		lastDiscovery = undefined;
+		lastBlockedIssueKey = undefined;
+		delegatedWorkPending = false;
 		pendingWorkspaceRename = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
@@ -137,15 +175,14 @@ export default function pullRequestExtension(
 		active = undefined;
 	};
 
-	const reportRefreshFailure = (error: unknown): void => {
+	const reportRefreshFailure = (): void => {
 		const ctx = context;
 		if (!ctx || refreshFailureReported) return;
 		refreshFailureReported = true;
 		try {
-			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`PR status refresh failed: ${message.slice(0, 500)}`, "error");
-		} catch (reportError) {
-			console.error("PR status refresh failed and could not be reported", error, reportError);
+			ctx.ui.notify("PR status refresh failed: status unavailable", "error");
+		} catch {
+			console.error("PR status refresh failed and could not be reported");
 		}
 	};
 
@@ -171,22 +208,34 @@ export default function pullRequestExtension(
 		const loadContext = { cwd: ctx.cwd, signal: controller.signal };
 		active = controller;
 		try {
-			let pullRequest: Awaited<ReturnType<typeof loadCurrentPullRequest>>;
+			let discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>;
 			let localCommit = false;
 			try {
-				pullRequest = await load(pi, loadContext);
+				discovery = await load(pi, loadContext);
 				if (controller.signal.aborted || sessionGeneration !== generation) return;
-				if (pullRequest === null) localCommit = await detectLocalCommit(pi, loadContext);
-			} catch (error) {
-				// Keep the last known display when lookup is unavailable.
-				if (!controller.signal.aborted && sessionGeneration === generation) reportRefreshFailure(error);
+				if (discovery.kind === "none") localCommit = await detectLocalCommit(pi, loadContext);
+			} catch {
+				// Keep an established display. A cold Git-worktree failure gets a sanitized placeholder.
+				if (!controller.signal.aborted && sessionGeneration === generation) {
+					if (!displayEstablished) {
+						const unavailable = unavailablePrDisplay();
+						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
+						setWidget(ctx, undefined);
+						displayEstablished = true;
+					}
+					reportRefreshFailure();
+				}
 				return;
 			}
 			if (controller.signal.aborted || sessionGeneration !== generation) return;
-			render(ctx, pullRequest, localCommit);
+			render(ctx, discovery, localCommit);
 			refreshFailureReported = false;
 
-			if (pendingWorkspaceRename && pullRequest?.lifecycle === "open") {
+			const pullRequest = discovery.kind === "current" ? discovery.pullRequest : undefined;
+			if (
+				pendingWorkspaceRename && pullRequest?.lifecycle === "open" &&
+				pullRequest.target.provenance === "configured"
+			) {
 				pendingWorkspaceRename = false;
 				const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
 				if (process.env.HERDR_ENV === "1" && workspaceId) {
@@ -225,7 +274,9 @@ export default function pullRequestExtension(
 		if (!ctx.hasUI) return;
 		context = ctx;
 		await refresh();
-		if (sessionGeneration === generation) timer = setInterval(refreshInBackground, POLL_INTERVAL_MS);
+		if (sessionGeneration === generation && lastDiscovery !== "inactive") {
+			timer = setInterval(refreshInBackground, POLL_INTERVAL_MS);
+		}
 	});
 
 	pi.on("session_shutdown", stop);
@@ -240,14 +291,18 @@ export default function pullRequestExtension(
 			workflowSettled = true;
 			if (phase === "create-workflow") createWorkflowSettled = true;
 		}
-		if (!workflowSettled) return;
+		const delegatedRefresh = delegatedWorkPending && lastDiscovery !== "inactive";
+		delegatedWorkPending = false;
+		if (!workflowSettled && !delegatedRefresh) return;
 		cancelRefresh();
 		if (createWorkflowSettled) pendingWorkspaceRename = true;
 		await refresh().catch(reportRefreshFailure);
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		if (!ctx.hasUI || event.isError || !isBashToolResult(event)) return;
+		if (!ctx.hasUI || event.isError || lastDiscovery === "inactive") return;
+		if (DELEGATED_TOOLS.has(event.toolName)) delegatedWorkPending = true;
+		if (!isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
 			await refresh().catch(reportRefreshFailure);
@@ -279,7 +334,7 @@ export default function pullRequestExtension(
 			}
 			if (sessionGeneration !== generation) return;
 			cancelRefresh();
-			if (nextStep !== "none" && nextStep !== "merge") {
+			if (WORKFLOW_ROUTES.has(nextStep)) {
 				activeInvocations.set(invocation, nextStep === "create" ? "create-workflow" : "workflow");
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
 				setWidget(ctx, undefined);

@@ -55,7 +55,9 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 | Current condition | `/pr` route |
 | --- | --- |
-| No current-branch pull request, including no upstream push target | Start pull-request creation. |
+| No current-branch pull request, no published matching ref, and safe Git push configuration | Start pull-request creation. |
+| One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
+| Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
 | CI failed | Run the CI fix workflow when the same local prerequisite holds. |
 | Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
@@ -63,6 +65,12 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
 `pi-pr-create` honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
+
+Without a configured push target, discovery checks validated remotes for the same branch ref. One exact open PR becomes an inferred target. `/pr` names the exact `remote/ref` and asks before linking it. The extension revalidates the branch, PR, remote OID, and Git configuration before mutation. It rolls back its upstream and remote-tracking changes if final verification fails.
+
+Multiple candidate remotes, multiple matching PRs, OID mismatches, and unsafe Git push configuration block routing. A published ref with no PR also blocks creation. If no candidate ref exists, creation uses only a validated `origin` destination.
+
+The creation workflow repeats destination, remote OID, PR, and configuration checks immediately before pushing. It pushes to the saved validated URL, not a mutable remote name. Every push uses the saved remote OID as an exact lease. Existing refs must also be ancestors of the captured local OID. A missing ref uses an empty lease as a create-only compare-and-swap.
 
 After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then ends the Herdr workspace label with one ` · PR #<number>` suffix.
 
@@ -93,7 +101,9 @@ Ordinary conversation comments do not trigger a route or block a merge. Changes 
 
 ## Refresh
 
-The footer and widget load at session start. They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also poll every 30 seconds. Polling updates presentation only and may be stale.
+The footer and widget load at session start. A directory outside a Git worktree stays silent and does not start polling. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
+
+They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also refresh after any successful delegated task settles. Active Git worktrees poll every 30 seconds. Polling updates presentation only and may be stale.
 
 The create widget stays hidden until the local branch has a commit beyond its creation point. Any displayed widget clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the widget when the handler finishes.
 
@@ -105,7 +115,7 @@ Presentation uses route priority, so draft appears before running CI. `/pr` read
 - It does not run `/done` or `/sweep`.
 - Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
-- It does not rebase the local branch, force-push, delete branches, or clean up worktrees.
+- It does not rebase the local branch, overwrite concurrent remote updates, delete branches, or clean up worktrees. Creation uses exact leases plus ancestry checks; an empty lease is only an atomic absence check.
 - Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.
 - Presentation fetches use that exact push URL and exact advertised OID. They do not use shared fetch state.
 - Strict status checks in legacy branch protection or applicable repository rulesets require a base update.

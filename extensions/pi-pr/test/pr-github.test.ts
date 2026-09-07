@@ -6,10 +6,20 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	hasLocalCommit,
-	loadCurrentPullRequest,
+	linkInferredPullRequest,
+	loadCurrentPullRequest as discoverCurrentPullRequest,
 	PullRequestLoadError,
 } from "../extensions/pr-github.ts";
-import { deriveNextStep } from "../extensions/pr-routing.ts";
+
+async function loadCurrentPullRequest(
+	...args: Parameters<typeof discoverCurrentPullRequest>
+) {
+	const discovery = await discoverCurrentPullRequest(...args);
+	if (discovery.kind === "current") return discovery.pullRequest;
+	if (discovery.kind === "none" || discovery.kind === "inactive") return null;
+	throw new PullRequestLoadError(`Discovery blocked: ${discovery.issue.kind}`);
+}
+import { derivePullRequestNextStep } from "../extensions/pr-routing.ts";
 
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
@@ -35,8 +45,11 @@ type HarnessOptions = {
 	remote?: string;
 	remoteNames?: string[];
 	pushUrl?: string;
+	pushUrls?: Record<string, string>;
 	pushRepositoryResult?: ReturnType<typeof result>;
 	remoteHead?: string | null;
+	remoteHeads?: Record<string, string | null>;
+	configValues?: Record<string, string[]>;
 	remoteHeadResult?: ReturnType<typeof result>;
 	threads?: string;
 	baseRefResult?: ReturnType<typeof result>;
@@ -160,6 +173,7 @@ function harness(options: HarnessOptions = {}) {
 	const pi = {
 		exec: async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
 			calls.push({ command, args, options: commandOptions });
+			if (command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") return result("true\n");
 			if (command === "git" && args.join(" ") === "branch --show-current") {
 				return options.branchResult ?? result("feature/local\n");
 			}
@@ -171,21 +185,38 @@ function harness(options: HarnessOptions = {}) {
 				return result(`${(options.remoteNames ?? [remote, "origin"]).join("\n")}\n`);
 			}
 			if (command === "git" && args[0] === "check-ref-format") {
+				if (args[1] === "--branch" && args[2] === "feature/local") return result("feature/local\n");
 				if (args[1] === "--branch") return options.refCheckResult ?? result(`${args[2]}\n`);
 				if (args[1] === "refs/heads/main") return result();
 			}
-			if (command === "git" && args.join(" ") === `remote get-url --push --all ${remote}`) {
-				return result(`${pushUrl}\n`);
+			if (command === "git" && args[0] === "remote" && args[1] === "get-url") {
+				const requestedRemote = args.at(-1) ?? "";
+				const requestedUrl = options.pushUrls?.[requestedRemote] ??
+					(requestedRemote === remote ? pushUrl : `git@github.com:acme/${requestedRemote}.git`);
+				return result(`${requestedUrl}\n`);
 			}
-			if (command === "gh" && args.join(" ") === "repo view github.com/acme/fork --json nameWithOwner,url") {
-				return options.pushRepositoryResult ?? result(JSON.stringify({ nameWithOwner: "acme/fork", url: "https://github.com/acme/fork" }));
+			if (command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "nameWithOwner,url") {
+				if (options.pushRepositoryResult) return options.pushRepositoryResult;
+				const locator = args[2] ?? "";
+				const match = /^(?:[^/]+\/)?([^/]+\/[^/]+)$/.exec(locator);
+				if (!match) throw new Error(`Unexpected repository locator: ${locator}`);
+				return result(JSON.stringify({ nameWithOwner: match[1], url: `https://github.com/${match[1]}` }));
 			}
 			if (command === "git" && args[0] === "ls-remote") {
 				if (options.remoteHeadResult) return options.remoteHeadResult;
-				const remoteHead = options.remoteHead === undefined ? REMOTE_HEAD : options.remoteHead;
+				const fetchSource = args.at(-2) ?? "";
+				const remoteHead = options.remoteHeads && fetchSource in options.remoteHeads
+					? options.remoteHeads[fetchSource]
+					: options.remoteHead === undefined ? REMOTE_HEAD : options.remoteHead;
+				const requestedRef = args.at(-1) ?? "";
 				return remoteHead === null
 					? result("", 2)
-					: result(`${remoteHead}\trefs/heads/feature/pr\n`);
+					: result(`${remoteHead}\t${requestedRef}\n`);
+			}
+			if (command === "git" && args[0] === "config") {
+				const key = args.at(-1) ?? "";
+				const values = options.configValues?.[key] ?? [];
+				return values.length === 0 ? result("", 1) : result(`${values.join("\n")}\n`);
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "search/issues") {
 				const items = options.candidateUrls ?? candidates.map((candidate) => ({ html_url: candidate.url }));
@@ -253,6 +284,108 @@ function harness(options: HarnessOptions = {}) {
 		signal: new AbortController().signal,
 	} as Parameters<typeof loadCurrentPullRequest>[1];
 	return { pi, context, calls };
+}
+
+async function linkHarness(failures: {
+	failFinalLookup?: boolean;
+	failPostFetchRead?: boolean;
+	concurrentTrackingOid?: string;
+	concurrentConfigValue?: string;
+	closeBeforeFinalVerification?: boolean;
+} = {}) {
+	const candidate = pullRequest({ headRefName: "feature/local" });
+	const app = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [candidate],
+	});
+	const initial = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(initial.kind, "current");
+	if (initial.kind !== "current") throw new Error("Expected inferred pull request");
+	assert.equal(initial.pullRequest.target.provenance, "inferred");
+	app.calls.length = 0;
+
+	const originalExec = app.pi.exec.bind(app.pi);
+	const trackingRef = "refs/remotes/fork/feature/local";
+	const config = new Map<string, string[]>();
+	let trackingOid: string | null = null;
+	let trackingReads = 0;
+	let linked = false;
+	let rollbackStarted = false;
+	let concurrentConfigInjected = false;
+	app.pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+		const record = () => app.calls.push({ command, args, options: commandOptions });
+		if (command === "git" && args.join(" ") === "for-each-ref --format=%(push:short) refs/heads/feature/local") {
+			record();
+			return result(linked ? "fork/feature/local\n" : "\n");
+		}
+		if (command === "git" && args[0] === "config") {
+			record();
+			if (args[1] === "--get-all") {
+				const key = args[2] ?? "";
+				const values = config.get(key) ?? [];
+				if (
+					rollbackStarted && failures.concurrentConfigValue && !concurrentConfigInjected &&
+					key === "branch.feature/local.remote"
+				) {
+					config.set(key, [failures.concurrentConfigValue]);
+					concurrentConfigInjected = true;
+				}
+				return values.length === 0 ? result("", 1) : result(`${values.join("\n")}\n`);
+			}
+			if (args[1] === "--get") return result("", 1);
+			if (args[1] === "--fixed-value" && args[2] === "--unset-all") {
+				const key = args[3] ?? "";
+				const expected = args[4] ?? "";
+				const values = config.get(key) ?? [];
+				const remaining = values.filter((value) => value !== expected);
+				if (remaining.length === values.length) return result("", 5);
+				if (remaining.length === 0) config.delete(key);
+				else config.set(key, remaining);
+				return result();
+			}
+			if (args[1] === "--add") {
+				const key = args[2] ?? "";
+				config.set(key, [...(config.get(key) ?? []), args[3] ?? ""]);
+				return result();
+			}
+		}
+		if (command === "git" && args.join(" ") === `rev-parse --verify --quiet ${trackingRef}^{commit}`) {
+			record();
+			trackingReads += 1;
+			if (failures.failPostFetchRead && trackingReads === 2) return result("", 128);
+			if (failures.concurrentTrackingOid && trackingReads === 2) trackingOid = failures.concurrentTrackingOid;
+			return trackingOid === null ? result("", 1) : result(`${trackingOid}\n`);
+		}
+		if (command === "git" && args[0] === "fetch" && args.at(-1) === `refs/heads/feature/local:${trackingRef}`) {
+			record();
+			trackingOid = REMOTE_HEAD;
+			return result();
+		}
+		if (command === "git" && args.join(" ") === "branch --set-upstream-to=fork/feature/local -- feature/local") {
+			record();
+			config.set("branch.feature/local.remote", ["fork"]);
+			config.set("branch.feature/local.merge", ["refs/heads/feature/local"]);
+			linked = true;
+			return result();
+		}
+		if (command === "git" && args[0] === "update-ref") {
+			record();
+			trackingOid = args[1] === "-d" ? null : args[2] ?? null;
+			return result();
+		}
+		if (failures.failFinalLookup && linked && command === "gh" && args[0] === "api" && args[1] === "search/issues") {
+			record();
+			rollbackStarted = true;
+			return result("", 1);
+		}
+		if (failures.closeBeforeFinalVerification && linked && command === "gh" && args[0] === "pr" && args[1] === "view") {
+			record();
+			return result(JSON.stringify({ ...candidate, state: "CLOSED" }));
+		}
+		return originalExec(command, args, commandOptions);
+	};
+	return { ...app, inferred: initial.pullRequest, config, getTrackingOid: () => trackingOid };
 }
 
 test("detects commits added after local branch creation", async (t) => {
@@ -327,6 +460,16 @@ test("discovers an upstream PR for a slash-containing fork branch with a branch-
 		base: { repository: "acme/project", ref: "main", oid: BASE_HEAD },
 		head: { repository: "acme/fork", ref: "feature/pr", oid: REMOTE_HEAD },
 		headFetchSource: "git@github.com:acme/fork.git",
+		target: {
+			provenance: "configured",
+			branch: "feature/local",
+			remote: "publish",
+			ref: "feature/pr",
+			repository: "acme/fork",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/fork.git",
+			remoteOid: REMOTE_HEAD,
+		},
 		merge: {
 			allowedMergeMethods: ["merge", "rebase", "squash"],
 			viewerDefaultMergeMethod: "squash",
@@ -344,7 +487,7 @@ test("discovers an upstream PR for a slash-containing fork branch with a branch-
 		"-X",
 		"GET",
 		"-f",
-		`q=is:pr head:feature/pr ${REMOTE_HEAD}`,
+		"q=is:pr head:acme:feature/pr",
 		"-f",
 		"per_page=100",
 	]);
@@ -416,7 +559,7 @@ test("routes from the local HEAD sampled after remote policy reads", async () =>
 	const loaded = await loadCurrentPullRequest(pi, context);
 	assert.ok(loaded);
 	assert.equal(loaded.local.head, "ahead");
-	assert.equal(deriveNextStep(loaded), "none");
+	assert.equal(derivePullRequestNextStep(loaded), "none");
 	const policyRead = calls.findIndex(({ command, args }) => command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main");
 	const headRead = calls.findIndex(({ command, args }) => command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}");
 	assert.ok(policyRead >= 0 && headRead > policyRead);
@@ -495,20 +638,198 @@ test("rejects incomplete, capped, inconsistent, malformed, and duplicate search 
 	}
 });
 
-test("returns null for an attached branch whose push target is specifically absent", async () => {
-	const { pi, context, calls } = harness({ pushResult: result("\n") });
+test("stays inactive outside a Git worktree without reading branch state", async () => {
+	const { pi, context, calls } = harness();
+	pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+		calls.push({ command, args, options: commandOptions });
+		if (command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") {
+			return result("", 128, "fatal: not a git repository");
+		}
+		throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+	};
 
-	assert.equal(await loadCurrentPullRequest(pi, context), null);
-	assert.equal(calls.some(({ command }) => command === "gh"), false);
-	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "remote"), false);
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), { kind: "inactive" });
+	assert.equal(calls.some(({ args }) => args[0] === "branch"), false);
+});
+
+test("infers one exact open pull request from a published same-name branch", async () => {
+	const inferred = pullRequest({ headRefName: "feature/local" });
+	const { pi, context, calls } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [inferred],
+	});
+
+	const discovery = await discoverCurrentPullRequest(pi, context);
+	assert.equal(discovery.kind, "current");
+	if (discovery.kind !== "current") return;
+	assert.equal(discovery.pullRequest.target.provenance, "inferred");
+	assert.equal(discovery.pullRequest.target.remote, "fork");
+	assert.equal(discovery.pullRequest.target.ref, "feature/local");
+	const search = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues");
+	assert.ok(search?.args.includes("q=is:pr head:acme:feature/local"));
+});
+
+test("blocks ambiguous candidate remotes before searching GitHub", async () => {
+	const { pi, context, calls } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork", "origin"],
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
+		kind: "blocked",
+		issue: { kind: "candidate-remotes-ambiguous", remotes: ["fork", "origin"] },
+	});
+	assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
+});
+
+test("blocks a published ref without a PR and an inferred OID mismatch", async () => {
+	const published = harness({ pushResult: result("\n"), remoteNames: ["fork"], candidateUrls: [] });
+	assert.deepEqual(await discoverCurrentPullRequest(published.pi, published.context), {
+		kind: "blocked",
+		issue: { kind: "published-without-pr", remote: "fork" },
+	});
+
+	const mismatch = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		candidates: [pullRequest({ headRefName: "feature/local", headRefOid: LOCAL_HEAD })],
+	});
+	const mismatchDiscovery = await discoverCurrentPullRequest(mismatch.pi, mismatch.context);
+	assert.equal(mismatchDiscovery.kind, "blocked");
+	if (mismatchDiscovery.kind !== "blocked") return;
+	assert.equal(mismatchDiscovery.issue.kind, "candidate-oid-mismatch");
+});
+
+test("offers creation only after validating origin and finding no published ref", async () => {
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
+		kind: "none",
+		creationTarget: {
+			provenance: "inferred",
+			branch: "feature/local",
+			remote: "origin",
+			ref: "feature/local",
+			repository: "acme/project",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+	});
+
+	const invalid = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "https://user:secret@github.com/acme/project.git",
+		remoteHead: null,
+	});
+	assert.deepEqual(await discoverCurrentPullRequest(invalid.pi, invalid.context), {
+		kind: "blocked",
+		issue: { kind: "origin-invalid" },
+	});
+
+	const unsafeConfigurations: Array<Record<string, string[]>> = [
+		{ "push.default": ["nothing"] },
+		{ "branch.feature/local.remote": ["origin"] },
+		{ "remote.origin.push": ["refs/heads/*:refs/heads/*"] },
+	];
+	for (const configValues of unsafeConfigurations) {
+		const unsafe = harness({
+			pushResult: result("\n"),
+			remote: "origin",
+			remoteNames: ["origin"],
+			pushUrl: "git@github.com:acme/project.git",
+			remoteHead: null,
+			configValues,
+		});
+		assert.deepEqual(await discoverCurrentPullRequest(unsafe.pi, unsafe.context), {
+			kind: "blocked",
+			issue: { kind: "link-configuration", remote: "origin" },
+		});
+	}
+});
+
+test("links an inferred target only after fresh verification", async () => {
+	const app = await linkHarness();
+	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred);
+
+	assert.equal(linked.target.provenance, "configured");
+	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["fork"]);
+	assert.deepEqual(app.config.get("branch.feature/local.merge"), ["refs/heads/feature/local"]);
+	assert.equal(app.getTrackingOid(), REMOTE_HEAD);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "branch --set-upstream-to=fork/feature/local -- feature/local"
+	), true);
+});
+
+test("rolls back upstream and tracking state when final link verification fails", async () => {
+	const app = await linkHarness({ failFinalLookup: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Find pull requests failed: exit code 1/,
+	);
+
+	assert.equal(app.config.has("branch.feature/local.remote"), false);
+	assert.equal(app.config.has("branch.feature/local.merge"), false);
+	assert.equal(app.getTrackingOid(), null);
+});
+
+test("removes its fetched tracking ref when post-fetch verification errors", async () => {
+	const app = await linkHarness({ failPostFetchRead: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Read remote-tracking ref failed: exit code 128/,
+	);
+	assert.equal(app.getTrackingOid(), null);
+	assert.equal(app.config.size, 0);
+});
+
+test("does not overwrite a concurrent tracking-ref update during rollback", async () => {
+	const concurrentOid = "e".repeat(40);
+	const app = await linkHarness({ concurrentTrackingOid: concurrentOid });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed and rollback was incomplete/,
+	);
+	assert.equal(app.getTrackingOid(), concurrentOid);
+	assert.equal(app.config.size, 0);
+});
+
+test("does not erase a concurrent branch-config update during rollback", async () => {
+	const app = await linkHarness({ failFinalLookup: true, concurrentConfigValue: "other" });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed and rollback was incomplete/,
+	);
+	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["other"]);
+	assert.equal(app.config.has("branch.feature/local.merge"), false);
+	assert.equal(app.getTrackingOid(), null);
+});
+
+test("rolls back when the inferred pull request closes before final verification", async () => {
+	const app = await linkHarness({ closeBeforeFinalVerification: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		/Link branch failed: configured pull request does not match inferred target/,
+	);
+	assert.equal(app.config.size, 0);
+	assert.equal(app.getTrackingOid(), null);
 });
 
 test("keeps detached HEAD, malformed push refs, and push lookup failures distinct from no upstream", async () => {
 	const detached = harness({ branchResult: result("") });
-	await assert.rejects(
-		loadCurrentPullRequest(detached.pi, detached.context),
-		/Read current branch failed: invalid branch/,
-	);
+	assert.deepEqual(await discoverCurrentPullRequest(detached.pi, detached.context), {
+		kind: "blocked",
+		issue: { kind: "detached-head" },
+	});
 	assert.equal(detached.calls.some(({ args }) => args[0] === "for-each-ref"), false);
 
 	const malformed = harness({ pushResult: result("fork/feature/pr\norigin/feature/pr\n") });
@@ -677,7 +998,7 @@ test("fails for ambiguous historical PRs matching the remote push ref", async ()
 
 	await assert.rejects(
 		loadCurrentPullRequest(pi, context),
-		/multiple historical pull requests match remote push ref/,
+		/Discovery blocked: candidate-prs-ambiguous/,
 	);
 });
 
@@ -687,7 +1008,7 @@ test("does not fall back to local HEAD when the remote push ref is absent", asyn
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	const search = calls.find(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "search/issues");
-	assert.ok(search?.args.includes("q=is:pr head:feature/pr"));
+	assert.ok(search?.args.includes("q=is:pr head:acme:feature/pr"));
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
@@ -725,7 +1046,7 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(ambiguous.pi, ambiguous.context),
-		/multiple open pull requests match current push target/,
+		/Discovery blocked: candidate-prs-ambiguous/,
 	);
 
 	const malformed = harness({
@@ -1100,7 +1421,7 @@ test("rejects a remote push ref that moved from the advertised pull request OID"
 	const { pi, context, calls } = harness({ remoteHead: "d".repeat(40) });
 	await assert.rejects(
 		loadCurrentPullRequest(pi, context),
-		/Find pull requests failed: open pull request head does not match remote push ref/,
+		/Discovery blocked: candidate-oid-mismatch/,
 	);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 });
