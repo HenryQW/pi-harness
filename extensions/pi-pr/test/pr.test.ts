@@ -1157,3 +1157,39 @@ test("/pr restores its hint after a command error and schedules a refresh", asyn
 
 	await app.shutdown(ctx);
 });
+
+test("does not offer PR creation after a successful merge when discovery returns null", async () => {
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return loads === 1 ? currentPullRequest() : null;
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return "merge";
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await flush();
+		assert.equal(app.statuses.at(-1), undefined);
+		assert.equal(app.widgets.at(-1), undefined);
+
+		await app.tool({
+			toolName: "bash",
+			input: { command: "git commit -m change" },
+			isError: false,
+		}, ctx);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+	} finally {
+		await app.shutdown(ctx);
+	}
+});

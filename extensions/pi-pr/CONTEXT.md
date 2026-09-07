@@ -41,7 +41,7 @@ Argument-free `/pr` derives one next step from fresh remote and local state. A b
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
-The footer and widget load at session start, refresh after local commits, PR creation, pushes, and dispatched workflow settlement, and poll every 30 seconds. Any displayed widget clears when `/pr` starts. A dispatched workflow keeps it hidden until agent settlement; direct and no-action routes refresh it after the handler finishes. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
+The footer and widget load at session start, refresh after local commits, PR creation, pushes, and dispatched workflow settlement, and poll every 30 seconds. Any displayed widget clears when `/pr` starts. A dispatched workflow keeps it hidden until agent settlement; direct and no-action routes refresh it after the handler finishes. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Polling is presentation only and may be stale. It fetches the exact advertised PR head OID from the sole validated push URL without shared fetch state. `/pr` reads fresh state and is authoritative for actions.
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:

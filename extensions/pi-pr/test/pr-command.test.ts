@@ -364,7 +364,7 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 
 test("stops before refetching or mutating when merge confirmation is declined", async () => {
 	const app = harness({ states: [{}], confirmed: false });
-	await app.handler("", app.context);
+	assert.equal(await app.handler("", app.context), "none");
 
 	assert.equal(app.confirmations.length, 1);
 	assert.deepEqual(app.events, ["load", "confirm"]);
@@ -512,7 +512,7 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 			},
 		],
 	});
-	await app.handler("", app.context);
+	assert.equal(await app.handler("", app.context), "merge");
 
 	assert.deepEqual(app.confirmations, [{
 		title: "Merge PR #42 with merge?",

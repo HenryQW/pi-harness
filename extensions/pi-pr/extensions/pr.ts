@@ -91,6 +91,7 @@ export default function pullRequestExtension(
 	let queued = false;
 	let refreshFailureReported = false;
 	let pendingWorkspaceRename = false;
+	let mergeCompleted = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
 	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
@@ -132,6 +133,7 @@ export default function pullRequestExtension(
 		queued = false;
 		refreshFailureReported = false;
 		pendingWorkspaceRename = false;
+		mergeCompleted = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
 		activeInvocations.clear();
@@ -180,7 +182,9 @@ export default function pullRequestExtension(
 			try {
 				pullRequest = await load(pi, loadContext);
 				if (controller.signal.aborted || sessionGeneration !== generation) return;
-				if (pullRequest === null) localCommit = await detectLocalCommit(pi, loadContext);
+				if (pullRequest === null) {
+					localCommit = !mergeCompleted && await detectLocalCommit(pi, loadContext);
+				}
 			} catch (error) {
 				// Keep the last known display when lookup is unavailable.
 				if (!controller.signal.aborted && sessionGeneration === generation) reportRefreshFailure(error);
@@ -254,6 +258,7 @@ export default function pullRequestExtension(
 		if (!ctx.hasUI || event.isError || !isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
+			if (GIT_COMMIT.test(command)) mergeCompleted = false;
 			await refresh().catch(reportRefreshFailure);
 		}
 	});
@@ -288,6 +293,7 @@ export default function pullRequestExtension(
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
 				setWidget(ctx, undefined);
 			} else {
+				if (nextStep === "merge") mergeCompleted = true;
 				activeInvocations.delete(invocation);
 				refreshInBackground();
 			}

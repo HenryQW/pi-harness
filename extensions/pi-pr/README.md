@@ -118,4 +118,5 @@ Presentation uses route priority, so draft appears before running CI. `/pr` read
 - CI repair captures the failed-step log tail and runs one narrow local reproducer before editing.
 - An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
+- After a successful merge, the create widget stays hidden until a new local commit.
 - Only authenticated GitHub.com and GitHub Enterprise repositories are supported.
