@@ -1,12 +1,14 @@
 # `@henryqw/pi-config-store`
 
-Give extension authors one safe home for user-editable Pi extension JSON. Shared paths, validation, locking, and atomic writes avoid rebuilding storage behavior.
-
-This package is an extension-author library. End users do not install it directly in Pi.
+Give extension authors one safe home for user-editable Pi extension JSON. Shared paths, validation, locking, and atomic writes avoid rebuilding storage behavior. End users do not install it directly in Pi.
 
 ## Install
 
-Add it to an extension package with your package manager. Do not run `pi install` for this library.
+```bash
+npm install @henryqw/pi-config-store
+```
+
+Use your extension package's package manager. Do not run `pi install` for this library.
 
 ## Use
 

@@ -6,7 +6,7 @@
 | `pi-ask-question` | [`extensions/pi-ask-question/CONTEXT.md`](extensions/pi-ask-question/CONTEXT.md) | Interactive user questions with predefined or custom answers |
 | `pi-auto-compact` | [`extensions/pi-auto-compact/CONTEXT.md`](extensions/pi-auto-compact/CONTEXT.md) | Proactive Pi context compaction and task resumption |
 | `pi-deps` | [`extensions/pi-deps/CONTEXT.md`](extensions/pi-deps/CONTEXT.md) | Opt-in dependency preparation for new Git worktrees |
-| `pi-herdr` | [`extensions/pi-herdr/CONTEXT.md`](extensions/pi-herdr/CONTEXT.md) | Shared Herdr CLI execution for Pi packages |
+| `pi-herdr` | [`packages/pi-herdr/CONTEXT.md`](packages/pi-herdr/CONTEXT.md) | Shared Herdr CLI execution for Pi packages |
 | `pi-herdr-btw` | [`extensions/pi-herdr-btw/CONTEXT.md`](extensions/pi-herdr-btw/CONTEXT.md) | Pi side threads opened and merged through Herdr |
 | `pi-herdr-clone` | [`extensions/pi-herdr-clone/CONTEXT.md`](extensions/pi-herdr-clone/CONTEXT.md) | Active-path Pi session clones launched in new Herdr tabs |
 | `pi-herdr-done` | [`extensions/pi-herdr-done/CONTEXT.md`](extensions/pi-herdr-done/CONTEXT.md) | Clean completion and removal of the current Herdr worktree tab and checkout |

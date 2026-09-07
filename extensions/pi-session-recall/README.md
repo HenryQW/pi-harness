@@ -1,6 +1,6 @@
 # `@henryqw/pi-session-recall`
 
-Find decisions and context in past Pi sessions through a local FTS5 index with no model calls. Local search recalls earlier work without carrying every transcript in current context or adding standing prompt cost.
+Find decisions and context in past Pi sessions through a local FTS5 index. Local search recalls earlier work without carrying every transcript in current context or adding standing prompt cost.
 
 The bundled `pi-session-pattern-miner` skill finds repeated work that may deserve automation.
 
@@ -54,6 +54,8 @@ Run `/skill:pi-session-pattern-miner` to find repeated workflows in past session
 
 ## Flow
 
+Search makes no model calls.
+
 ### Query and index
 
 - Prefer distinctive identifiers, package names, issue numbers, or uncommon terms. Use quoted phrases only when exact wording is known.
@@ -74,9 +76,7 @@ The extension maintains the derived SQLite search index at `~/.pi/agent/config/p
 
 This is derived state. Delete it and it rebuilds from your session files.
 
-## Data, cost, and privacy
-
-Everything stays local. Transcripts are read in place, and nothing leaves the machine beyond what tool results already show the model. Search makes no model calls.
+Everything stays local. Transcripts are read in place. Nothing leaves the machine beyond what tool results already show the model.
 
 ## Limits and recovery
 

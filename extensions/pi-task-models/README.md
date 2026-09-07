@@ -15,15 +15,15 @@ Run `/task-models` after installation. Configure each profile that your installe
 
 ## Works with
 
-| Package | Why |
-| --- | --- |
-| [`@henryqw/pi-auto-compact`](https://pi.henry.wang/extensions/pi-auto-compact) | Consumer. Its local compaction task defaults to `fast`. |
-| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Consumer. Its local side-thread task defaults to `fast`. |
-| [`@henryqw/pi-herdr-rename`](https://pi.henry.wang/extensions/pi-herdr-rename) | Consumer. Its local rename task defaults to `fast`. |
-| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Consumer. Its local candidate-review task defaults to `balanced`. |
-| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves. Numbered Codex slots dedupe to one route. |
-| [`@henryqw/pi-prompt-creator`](https://pi.henry.wang/extensions/pi-prompt-creator) | Consumer. Its local prompt-drafting task defaults to `fast`. |
-| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Consumer. Its local delegation task defaults to `fast`; callers can declare their own task. |
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-auto-compact`](https://pi.henry.wang/extensions/pi-auto-compact) | Consumer | Its local compaction task defaults to `fast`. |
+| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Consumer | Its local side-thread task defaults to `fast`. |
+| [`@henryqw/pi-herdr-rename`](https://pi.henry.wang/extensions/pi-herdr-rename) | Consumer | Its local rename task defaults to `fast`. |
+| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Consumer | Its local candidate-review task defaults to `balanced`. |
+| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Numbered Codex slots dedupe to one route. |
+| [`@henryqw/pi-prompt-creator`](https://pi.henry.wang/extensions/pi-prompt-creator) | Consumer | Its local prompt-drafting task defaults to `fast`. |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Consumer | Its local delegation task defaults to `fast`; callers can declare their own task. |
 
 ## Use
 
@@ -79,14 +79,14 @@ The following JSON shows structure only. Every model ID is a placeholder and mus
 
 Use exact model IDs offered by `/task-models`. Pi's registry, not this example, defines available models.
 
-| Field | Required | Possible values | Default |
+| Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `profiles` | No | Object keyed by `fast`, `balanced`, `frontier`, `fav`; unknown profile names are rejected | `{}` (no profiles configured) |
-| `profiles.<profile>.primary.model` | Yes within a configured profile's `primary` | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry or session-scoped models | — |
-| `profiles.<profile>.primary.thinkingLevel` | Yes within a configured profile's `primary` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; the model must support the level when the route resolves | — |
-| `profiles.<profile>.fallback` | No | When present, requires both `model` and `thinkingLevel` with the corresponding `primary.*` values; not allowed for `fav` | Omitted |
-| `tasks` | No | Object mapping task IDs (`<package>/<task>`) to explicit user profile overrides | `{}` |
-| `tasks.<taskId>` | Value required if the key is present | `fast`, `balanced`, `frontier`, `fav` | That task declaration's `defaultProfile` |
+| `profiles` | Stores configured shared routes by profile name. | Object keyed by `fast`, `balanced`, `frontier`, or `fav`; unknown profile names are rejected. | `{}` (no profiles configured) |
+| `profiles.<profile>.primary.model` | Selects the primary model. Required within a configured `primary` route. | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry or session-scoped models. | — |
+| `profiles.<profile>.primary.thinkingLevel` | Sets the primary model's thinking level. Required within a configured `primary` route. | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the model must support the level when the route resolves. | — |
+| `profiles.<profile>.fallback` | Sets the route to try when the primary route is unavailable. | Object requiring `model` and `thinkingLevel` under the same rules as `primary`; not allowed for `fav`. | No fallback route. |
+| `tasks` | Stores explicit profile overrides by task ID. | Object mapping task IDs (`<package>/<task>`) to profiles. | `{}` |
+| `tasks.<taskId>` | Overrides that task's declared profile. | `fast`, `balanced`, `frontier`, or `fav`. | That task declaration's `defaultProfile` |
 
 Pi's model registry, including session-scoped models, is the source of available models. This file does not contain a model catalog.
 
@@ -96,11 +96,17 @@ Model references use canonical `provider/model`. Numbered Codex account aliases 
 
 ## API
 
-A `ModelTask` is a consumer-owned independently executed model operation. Consumers define a `ModelTask` and call `registerModelTask(pi, task)` at extension load.
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `ModelTask` | type | Describes a consumer-owned independently executed model operation. |
+| `registerModelTask(pi, task)` | function | Registers a consumer's task declaration at extension load. |
+| `loadTaskModelsConfig()` | function | Reads and validates the owner config file when present. |
+| `resolveConfiguredTaskRoute(ctx, task)` | function | Resolves the first usable route for a task. |
+| `resolveConfiguredTaskRoutes(ctx, task)` | function | Resolves the task's configured route candidates. |
 
-Use `loadTaskModelsConfig()` to read and validate the owner config file when present. Consumers do not access the file directly. Its `source` is `"file"` or `"missing"`, so consumers can warn when defaults are in use.
+Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
-Use `resolveConfiguredTaskRoute(ctx, task)` or `resolveConfiguredTaskRoutes(ctx, task)` to resolve routes. Profile thinking is authoritative. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+Profile thinking is authoritative. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
 
 Consumers never read or write the shared file directly.
 

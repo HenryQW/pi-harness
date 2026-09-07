@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 const revisions = process.argv.slice(2)
@@ -26,19 +26,23 @@ if (!workingTree) diffArgs.push(head)
 diffArgs.push('--')
 const changedFiles = execFileSync('git', diffArgs, { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
 
-const packageDirs = readdirSync('extensions', { withFileTypes: true })
-  .filter(entry => entry.isDirectory())
-  .map(entry => path.posix.join('extensions', entry.name))
+const workspaceRoots = ['extensions', 'packages']
+const packageDirs = workspaceRoots.flatMap(root => readdirSync(root, { withFileTypes: true })
+  .filter(entry => entry.isDirectory() && existsSync(path.join(root, entry.name, 'package.json')))
+  .map(entry => path.posix.join(root, entry.name)))
 
 const alwaysPublished = /^(?:README(?:\..*)?|LICENSE|LICENCE)(?:\..*)?$/i
 const testPath = /^(?:test|tests|__tests__)\//
-// dist/** is generated at prepack (untracked); src/** compiles into dist for build extensions.
+// dist/** is generated at prepack (untracked); src/** compiles into dist for build packages.
 const generated = /^dist\//
 const source = /^src\//
 
 function packageJsonAt(commit, manifest) {
   try {
-    return JSON.parse(execFileSync('git', ['show', `${commit}:${manifest}`], { encoding: 'utf8' }))
+    return JSON.parse(execFileSync('git', ['show', `${commit}:${manifest}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }))
   } catch {
     return null
   }
@@ -86,7 +90,9 @@ for (const packageDir of packageDirs) {
   const packageChanged = changedFiles.some(file => file.startsWith(`${packageDir}/`))
   if (!packageChanged || !changedFiles.some(file => file.startsWith(`${packageDir}/`) && publishedChange(file, packageDir, current))) continue
 
-  const previous = packageJsonAt(mergeBase, manifest)
+  const previous = packageJsonAt(mergeBase, manifest) ?? workspaceRoots
+    .map(root => packageJsonAt(mergeBase, path.posix.join(root, path.posix.basename(packageDir), 'package.json')))
+    .find(candidate => candidate?.name === current.name)
   if (previous) {
     const prev = parseSemver(previous.version)
     const curr = parseSemver(current.version)
