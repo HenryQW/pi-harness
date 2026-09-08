@@ -51,7 +51,7 @@ export const MEMORY_REVIEW_TASK = {
 	purpose: "Review a proposed memory mutation for semantic overlap or contradiction.",
 	defaultProfile: "balanced",
 } as const satisfies ModelTask;
-const MEMORY_REVIEW_NOTICE = "For adds, the memory tool independently reviews the complete mutation against live agent-global SYSTEM.md, MEMORY.md, and USER.md through its configured pi-memory/reviewCandidate task route; it may ask the user to resolve an overlap or contradiction before writing. Do not perform or claim this review yourself.";
+const MEMORY_REVIEW_NOTICE = "For adds, the memory tool independently reviews the complete mutation against live agent-global SYSTEM.md, MEMORY.md, and USER.md through its configured pi-memory/reviewCandidate task route. Exact duplicate single adds and duplicate-only add batches whose normalized entries already exist in the selected target are deterministic exceptions that skip the model call. The review may ask the user to resolve an overlap or contradiction before writing. Do not perform or claim this review yourself.";
 const MEMORY_CHECK = `MEMORY CHECK: Before the final response, check whether the conversation contains qualifying durable facts. Save explicit user identity, preferences, style, or corrections immediately to target=user; save stable cross-project environment facts, conventions, workflow lessons, or tool quirks useful later to target=memory. Use the memory tool immediately only when something qualifies. Save an inferred habit only after two independent signals from the conversation and/or existing profile. Skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences. ${MEMORY_REVIEW_NOTICE}`;
 const REMEMBER_USAGE = "Usage: /remember <instruction>";
 const DREAM_MESSAGE_TYPE = "pi-memory-dream";
@@ -941,17 +941,21 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			let snapshot: ReviewSnapshot | undefined;
 			const duplicate = await withMemoryLock(state.config, target, async () => {
 				snapshot = await loadReviewSnapshot(state.config!, state.stores!, state);
-				const content = normalizeEntry(mutation.content ?? "");
-				if (mutation.operations !== undefined || mutation.action !== "add" || !snapshot.stores[target].entries.includes(content)) return;
+				const entries = snapshot.stores[target].entries;
+				const duplicateEntries = mutation.operations === undefined
+					? mutation.action === "add" ? [normalizeEntry(mutation.content ?? "")] : undefined
+					: mutation.operations.every((operation) => operation.action === "add")
+						? mutation.operations.map((operation) => normalizeEntry(operation.content ?? ""))
+						: undefined;
+				if (!duplicateEntries || !duplicateEntries.every((content) => entries.includes(content))) return;
 				throwIfAborted(signal);
 				store.resetOnSuccess();
-				const entries = snapshot.stores[target].entries;
 				const limit = target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit;
 				return successResult({
 					usage: usage(entries.join(ENTRY_DELIMITER).length, limit),
 					entryCount: entries.length,
 					message: "Entry already exists (no duplicate added).",
-					writtenEntries: [content],
+					writtenEntries: [...new Set(duplicateEntries)],
 				});
 			});
 			if (duplicate) return duplicate;

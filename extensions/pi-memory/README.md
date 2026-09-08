@@ -40,7 +40,7 @@ Read `~/.pi/agent/config/pi-memory/memory/USER.md` to verify the default store. 
 
 ### Candidate review
 
-Every single `add` and every batch containing an `add` is independently reviewed by the local `pi-memory/reviewCandidate` Model Task. It defaults to the shared `balanced` profile.
+Exact duplicate single adds and duplicate-only add batches are deterministic exceptions when every normalized entry already exists in the selected target. They skip the model call. All other single adds and batches containing an `add` are independently reviewed by the local `pi-memory/reviewCandidate` Model Task. It defaults to the shared `balanced` profile.
 
 ![pi-memory architecture showing reviewed writes and frozen session snapshots](./docs/memory-architecture.svg)
 
@@ -54,7 +54,7 @@ A missing shared task-model config warns once at session start. Configure `pi-me
 
 An overlap or contradiction pauses through `ask_question`. MEMORY/USER conflicts recommend merge or replacement. SYSTEM conflicts recommend keeping SYSTEM because pi-memory never edits it.
 
-Exact duplicate single adds remain idempotent without a model call. Merge, replacement, cancellation, custom answers, and non-interactive UI leave the add unwritten. Only explicit `Add separately` or `Add anyway` writes the original add after a conflict.
+Exact duplicate single adds and duplicate-only add batches remain deterministic and idempotent without a model call. Merge, replacement, cancellation, custom answers, and non-interactive UI leave the add unwritten. Only explicit `Add separately` or `Add anyway` writes the original add after a conflict.
 
 ### `/remember`
 
