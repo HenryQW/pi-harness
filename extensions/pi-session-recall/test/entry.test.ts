@@ -3,6 +3,7 @@
  * pointed at a temp dir so getAgentDir() resolves tmp config/db/sessions.
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -42,7 +43,7 @@ interface CapturedTool {
 	) => { render(width: number): string[] };
 }
 
-function makePi(): {
+function makePi(commands: object[] = []): {
 	on: (event: string, callback: (...args: unknown[]) => void) => void;
 	registerTool: (t: CapturedTool) => void;
 	sessionStart?: (...args: unknown[]) => void;
@@ -55,6 +56,16 @@ function makePi(): {
 		registerTool: (t: CapturedTool) => {
 			captured.tool = t;
 		},
+		async exec(command: string, args: string[], options?: { cwd?: string }) {
+			const result = spawnSync(command, args, { cwd: options?.cwd, encoding: "utf8" });
+			return {
+				stdout: result.stdout ?? "",
+				stderr: result.stderr ?? "",
+				code: result.status ?? 1,
+				killed: result.signal !== null,
+			};
+		},
+		getCommands: () => commands,
 		get tool() {
 			return captured.tool!;
 		},
@@ -69,6 +80,49 @@ function writeSession(relName: string, lines: object[]): string {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
 	return file;
+}
+
+function clearRecallState(): void {
+	fs.rmSync(path.join(agentDir, "sessions"), { recursive: true, force: true });
+	fs.rmSync(path.join(agentDir, "config", "pi-session-recall"), { recursive: true, force: true });
+}
+
+function makeRepository(): string {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-entry-repo-"));
+	const result = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	return fs.realpathSync(root);
+}
+
+function writeRepositoryFile(root: string, relativePath: string, content: string, mode?: number): string {
+	const file = path.join(root, relativePath);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, content);
+	if (mode !== undefined) fs.chmodSync(file, mode);
+	return file;
+}
+
+function writeSimpleSession(
+	relName: string,
+	options: { id: string; cwd: string; timestamp: string; text?: string; parentSession?: string },
+): string {
+	return writeSession(relName, [
+		{
+			type: "session",
+			version: 3,
+			id: options.id,
+			timestamp: options.timestamp,
+			cwd: options.cwd,
+			...(options.parentSession ? { parentSession: options.parentSession } : {}),
+		},
+		...(options.text === undefined ? [] : [{
+			type: "message",
+			id: "m1",
+			parentId: null,
+			timestamp: options.timestamp,
+			message: { role: "user", content: [{ type: "text", text: options.text }] },
+		}]),
+	]);
 }
 
 function msg(parentId: string | null, role: string, text: string): object {
@@ -657,5 +711,293 @@ describe("session_search entry point", () => {
 		// The direct capped pass indexes at most one file; lazy sync drains the rest.
 		assert.ok(after.hits.length > 0 || before > 0);
 		assert.ok(before + after.hits.length >= 1);
+	});
+
+	it("prepares a stable repository corpus with scoped lineage, safe hydration, and inventory", async () => {
+		clearRecallState();
+		const root = makeRepository();
+		try {
+			writeRepositoryFile(root, "package.json", JSON.stringify({ scripts: { test: "node --test", build: "tsc" } }));
+			writeRepositoryFile(root, "scripts/run.sh", "#!/bin/sh\necho run\n", 0o755);
+			writeRepositoryFile(root, "skills/local/SKILL.md", "local skill\n");
+			writeRepositoryFile(root, "AGENTS.md", "instructions\n");
+			assert.equal(spawnSync("git", ["add", "."], { cwd: root }).status, 0);
+
+			const current = writeSimpleSession("prep/current.jsonl", {
+				id: "current", cwd: root, timestamp: "2026-03-01T00:10:00.000Z", text: "current request",
+			});
+			const currentChild = writeSimpleSession("prep/current-child-new.jsonl", {
+				id: "current-child-new", cwd: root, parentSession: current, timestamp: "2026-03-01T00:09:00.000Z", text: "current child",
+			});
+			writeSimpleSession("prep/current-child-old.jsonl", {
+				id: "current-child-old", cwd: root, parentSession: current, timestamp: "2026-03-01T00:08:00.000Z", text: "older current child",
+			});
+			const outsideParent = writeSimpleSession("prep/outside-parent.jsonl", {
+				id: "outside-parent", cwd: path.join(root, "..", "outside"), timestamp: "2026-03-01T00:11:00.000Z", text: "outside parent",
+			});
+			const outsideChild = writeSimpleSession("prep/outside-child-new.jsonl", {
+				id: "outside-child-new", cwd: root, parentSession: outsideParent, timestamp: "2026-03-01T00:07:00.000Z", text: "external parent child",
+			});
+			writeSimpleSession("prep/outside-child-old.jsonl", {
+				id: "outside-child-old", cwd: root, parentSession: outsideParent, timestamp: "2026-03-01T00:06:30.000Z", text: "older external parent child",
+			});
+			const exact = writeSession("prep/exact.jsonl", [
+				{ type: "session", version: 3, id: "exact", timestamp: "2026-03-01T00:06:00.000Z", cwd: root },
+				{ type: "session_info", name: "exact session" },
+				{ type: "message", id: "u", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "text", text: "visible user episode" }] } },
+				{ type: "message", id: "thinking", parentId: "u", timestamp: "t2", message: { role: "assistant", content: [{ type: "thinking", thinking: "hidden-thought-secret" }] } },
+				{ type: "message", id: "tool", parentId: "thinking", timestamp: "t3", message: { role: "toolResult", content: [{ type: "text", text: "raw-tool-secret" }] } },
+				{ type: "message", id: "a", parentId: "tool", timestamp: "t4", message: { role: "assistant", content: [{ type: "thinking", thinking: "second-hidden-secret" }, { type: "text", text: "visible assistant result" }] } },
+				{ type: "model_change", id: "tip-exact", parentId: "a", timestamp: "t5" },
+			]);
+			const parent = writeSimpleSession("prep/parent.jsonl", {
+				id: "parent", cwd: root, timestamp: "2026-03-01T00:05:00.000Z", text: "parent episode",
+			});
+			writeSimpleSession("prep/child.jsonl", {
+				id: "child", cwd: root, parentSession: parent, timestamp: "2026-03-01T00:14:00.000Z", text: "newer child episode",
+			});
+			const descendant = writeSimpleSession("prep/descendant.jsonl", {
+				id: "descendant", cwd: path.join(root, "packages", "app"), timestamp: "2026-03-01T00:04:00.000Z", text: "descendant episode",
+			});
+			writeSimpleSession("prep/sibling-prefix.jsonl", {
+				id: "sibling-prefix", cwd: `${root}-sibling`, timestamp: "2026-03-01T00:13:00.000Z", text: "must stay outside",
+			});
+			writeSimpleSession("prep/unrelated.jsonl", {
+				id: "unrelated", cwd: path.join(root, "..", "unrelated"), timestamp: "2026-03-01T00:12:00.000Z", text: "unrelated",
+			});
+
+			const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-prepare-operation`);
+			syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+			const skillPath = path.join(root, "skills", "local", "SKILL.md");
+			const pi = makePi([{
+				name: "skill:local",
+				description: "Local repository skill",
+				source: "skill",
+				sourceInfo: { path: skillPath, source: "skill", scope: "project", origin: "top-level" },
+			}]);
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-operation`);
+			register(pi as never);
+			const tool = (pi as any).tool as CapturedTool;
+			const context = {
+				cwd: root,
+				sessionManager: { getSessionFile: () => current },
+			};
+			const first = await tool.execute("prepare", { operation: "prepare-pattern-miner", scope: "repository", limit: 5 }, undefined, undefined, context);
+			const second = await tool.execute("prepare-again", { operation: "prepare-pattern-miner", scope: "repository", limit: 5 }, undefined, undefined, context);
+			assert.equal(first.content[0].text, second.content[0].text, "repeated preparation must serialize identically");
+			const prepared = JSON.parse(first.content[0].text);
+
+			assert.deepEqual(prepared.scope, { kind: "repository", gitRoot: fs.realpathSync(root), requestedLimit: 5, sampledCount: 5 });
+			assert.deepEqual(prepared.sync, { walkComplete: true, backlogRemaining: 0, complete: true });
+			assert.deepEqual(prepared.sessions.map((session: { path: string }) => session.path), [currentChild, outsideChild, exact, parent, descendant]);
+			assert.ok(prepared.sessions.every((session: { cwd: string }) => session.cwd === root || session.cwd.startsWith(`${root}${path.sep}`)));
+			assert.equal(prepared.sessions.some((session: { path: string }) => session.path === current), false);
+			assert.equal(new Set(prepared.sessions.map((session: { lineageId: string }) => session.lineageId)).size, prepared.sessions.length);
+			assert.deepEqual(prepared.sessions.map((session: { lineageId: string }) => session.lineageId), [current, outsideParent, exact, parent, descendant]);
+			const exactResult = prepared.sessions.find((session: { path: string }) => session.path === exact);
+			assert.deepEqual(
+				{ name: exactResult.name, startedAt: exactResult.startedAt, branchTip: exactResult.branchTip, totalMessages: exactResult.totalMessages },
+				{ name: "exact session", startedAt: "2026-03-01T00:06:00.000Z", branchTip: "tip-exact", totalMessages: 2 },
+			);
+			assert.deepEqual(exactResult.messages.map((message: { entryId: string; role: string }) => [message.entryId, message.role]), [["u", "user"], ["a", "assistant"]]);
+			assert.doesNotMatch(first.content[0].text, /hidden-thought-secret|second-hidden-secret|raw-tool-secret/);
+			assert.deepEqual(prepared.inventory.packageScripts, [
+				{ path: "package.json", name: "build", command: "tsc" },
+				{ path: "package.json", name: "test", command: "node --test" },
+			]);
+			assert.deepEqual(prepared.inventory.executableScripts, ["scripts/run.sh"]);
+			assert.deepEqual(prepared.inventory.skills, [{ name: "skill:local", description: "Local repository skill", sourcePath: "skills/local/SKILL.md" }]);
+			assert.deepEqual(prepared.inventory.agentInstructions, ["AGENTS.md"]);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects preparation parameter conflicts and handles both scopes outside Git", async () => {
+		clearRecallState();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-entry-not-git-"));
+		try {
+			writeSimpleSession("prepare-all/session.jsonl", {
+				id: "all", cwd: "/some/project", timestamp: "2026-03-02T00:00:00.000Z", text: "global corpus",
+			});
+			const pi = makePi();
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-invalid`);
+			register(pi as never);
+			const tool = (pi as any).tool as CapturedTool;
+			const context = { cwd, sessionManager: { getSessionFile: () => undefined } };
+
+			const global = JSON.parse((await tool.execute("all", { operation: "prepare-pattern-miner", scope: "all" }, undefined, undefined, context)).content[0].text);
+			assert.equal(global.mode, "prepare-pattern-miner");
+			assert.deepEqual(global.scope, { kind: "all", gitRoot: null, requestedLimit: 10, sampledCount: 1 });
+			assert.equal(global.inventory.available, false);
+			assert.equal(global.inventory.reason, "not-a-git-repository");
+			assert.equal(global.sessions.length, 1);
+
+			const repository = JSON.parse((await tool.execute("repository", { operation: "prepare-pattern-miner", scope: "repository" }, undefined, undefined, context)).content[0].text);
+			assert.equal(repository.success, false);
+			assert.match(repository.error, /requires a Git repository/);
+
+			const conflicts = [
+				{ query: "x" },
+				{ sessionId: "x" },
+				{ aroundMessageId: "x" },
+				{ branchTip: "x" },
+				{ window: 2 },
+				{ detail: "full" },
+			];
+			for (const conflict of conflicts) {
+				const parsed = JSON.parse((await tool.execute("invalid", { operation: "prepare-pattern-miner", scope: "all", ...conflict }, undefined, undefined, context)).content[0].text);
+				assert.equal(parsed.success, false);
+				assert.match(parsed.error, /does not accept/);
+			}
+			for (const params of [{ scope: "all" }, { operation: "prepare-pattern-miner" }]) {
+				const parsed = JSON.parse((await tool.execute("invalid-shape", params, undefined, undefined, context)).content[0].text);
+				assert.equal(parsed.success, false);
+			}
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("bounds preparation fairly and trims inventory deterministically without dropping session metadata", async () => {
+		clearRecallState();
+		const root = makeRepository();
+		try {
+			const scripts = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [
+				`script-${String(index).padStart(3, "0")}`,
+				`echo ${String(index).padStart(3, "0")} ${"x".repeat(500)}`,
+			]));
+			writeRepositoryFile(root, "package.json", JSON.stringify({ scripts }));
+			writeRepositoryFile(root, "bin/run", "#!/bin/sh\n", 0o755);
+			const skillPath = writeRepositoryFile(root, "skills/large/SKILL.md", "large skill\n");
+			writeRepositoryFile(root, "AGENTS.md", "instructions\n");
+			assert.equal(spawnSync("git", ["add", "."], { cwd: root }).status, 0);
+			for (let index = 0; index < 3; index++) {
+				writeSimpleSession(`prepare-budget/big-${index}.jsonl`, {
+					id: `big-${index}`,
+					cwd: root,
+					timestamp: `2026-03-03T00:0${index}:00.000Z`,
+					text: `fair-${index} ${"y".repeat(40_000)}`,
+				});
+			}
+			const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-prepare-budget`);
+			syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+			const pi = makePi([{
+				name: "skill:large",
+				description: "Large fixture skill",
+				source: "skill",
+				sourceInfo: { path: skillPath, source: "skill", scope: "project", origin: "top-level" },
+			}]);
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-budget`);
+			register(pi as never);
+			const tool = (pi as any).tool as CapturedTool;
+			const context = { cwd: root, sessionManager: { getSessionFile: () => undefined } };
+			const first = await tool.execute("budget", { operation: "prepare-pattern-miner", scope: "repository", limit: 3 }, undefined, undefined, context);
+			const second = await tool.execute("budget-again", { operation: "prepare-pattern-miner", scope: "repository", limit: 3 }, undefined, undefined, context);
+			assert.equal(first.content[0].text, second.content[0].text);
+			assert.ok(first.content[0].text.length <= 50_000);
+			const prepared = JSON.parse(first.content[0].text);
+			assert.equal(prepared.sessions.length, 3);
+			assert.ok(prepared.sessions.every((session: { path: string; lineageId: string; messages: unknown[]; contentTruncated: boolean }) =>
+				typeof session.path === "string" && typeof session.lineageId === "string" && session.messages.length === 1 && session.contentTruncated));
+			assert.equal(new Set(prepared.sessions.map((session: { messages: { content: string }[] }) => session.messages[0].content.length)).size, 1, "equal sessions receive equal transcript space");
+			assert.ok(JSON.stringify(prepared.inventory).length <= 10_000);
+			assert.equal(prepared.inventory.truncated, true);
+			assert.ok(prepared.inventory.omittedCounts.packageScripts > 0);
+			assert.ok(prepared.inventory.packageScripts.length > 0);
+			assert.deepEqual(prepared.inventory.executableScripts, ["bin/run"]);
+			assert.equal(prepared.inventory.skills.length, 1);
+			assert.deepEqual(prepared.inventory.agentInstructions, ["AGENTS.md"]);
+			assert.equal(prepared.contentTruncated, true);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("isolates missing and oversized hydration failures while preserving a valid empty session", async () => {
+		clearRecallState();
+		const root = makeRepository();
+		try {
+			const empty = writeSimpleSession("prepare-errors/empty.jsonl", {
+				id: "empty", cwd: root, timestamp: "2026-03-04T00:03:00.000Z",
+			});
+			const missing = writeSimpleSession("prepare-errors/missing.jsonl", {
+				id: "missing", cwd: root, timestamp: "2026-03-04T00:02:00.000Z", text: "will disappear",
+			});
+			const oversized = writeSimpleSession("prepare-errors/oversized.jsonl", {
+				id: "oversized", cwd: root, timestamp: "2026-03-04T00:01:00.000Z", text: "will grow",
+			});
+			const dbFile = path.join(agentDir, "config", "pi-session-recall", "index.db");
+			const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-prepare-errors`);
+			syncSessions(path.join(agentDir, "sessions"), dbFile);
+			const pi = makePi();
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-errors`);
+			register(pi as never);
+			const tool = (pi as any).tool as CapturedTool;
+			const realOpenSync = fs.openSync.bind(fs) as typeof fs.openSync;
+			let dbOpens = 0;
+			fs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+				if (args[0] === dbFile && ++dbOpens === 2) {
+					fs.rmSync(missing);
+					fs.truncateSync(oversized, MAX_SESSION_FILE_BYTES + 1);
+				}
+				return realOpenSync(...args);
+			}) as typeof fs.openSync;
+			let prepared: any;
+			try {
+				const response = await tool.execute("errors", { operation: "prepare-pattern-miner", scope: "repository", limit: 3 }, undefined, undefined, {
+					cwd: root,
+					sessionManager: { getSessionFile: () => undefined },
+				});
+				prepared = JSON.parse(response.content[0].text);
+			} finally {
+				fs.openSync = realOpenSync;
+			}
+			assert.equal(prepared.sessions.length, 3);
+			const emptyResult = prepared.sessions.find((session: { path: string }) => session.path === empty);
+			assert.deepEqual(
+				{ branchTip: emptyResult.branchTip, totalMessages: emptyResult.totalMessages, truncated: emptyResult.truncated, contentTruncated: emptyResult.contentTruncated, messages: emptyResult.messages, error: emptyResult.error },
+				{ branchTip: null, totalMessages: 0, truncated: false, contentTruncated: false, messages: [], error: undefined },
+			);
+			for (const [sessionPath, kind] of [[missing, "missing"], [oversized, "oversized"]]) {
+				const failed = prepared.sessions.find((session: { path: string }) => session.path === sessionPath);
+				assert.deepEqual(
+					{ branchTip: failed.branchTip, totalMessages: failed.totalMessages, truncated: failed.truncated, contentTruncated: failed.contentTruncated, messages: failed.messages },
+					{ branchTip: null, totalMessages: null, truncated: false, contentTruncated: false, messages: [] },
+				);
+				assert.equal(failed.error.kind, kind);
+				assert.ok(failed.error.message.length <= 512);
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("reports a positive one-pass preparation backlog as incomplete", async () => {
+		clearRecallState();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-entry-backlog-"));
+		try {
+			for (let index = 0; index < 51; index++) {
+				writeSimpleSession(`prepare-backlog/session-${String(index).padStart(2, "0")}.jsonl`, {
+					id: `backlog-${index}`,
+					cwd: "/global/project",
+					timestamp: `2026-03-05T00:00:${String(index).padStart(2, "0")}.000Z`,
+					text: `backlog item ${index}`,
+				});
+			}
+			const pi = makePi();
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-backlog`);
+			register(pi as never);
+			const tool = (pi as any).tool as CapturedTool;
+			const prepared = JSON.parse((await tool.execute("backlog", { operation: "prepare-pattern-miner", scope: "all", limit: 99 }, undefined, undefined, {
+				cwd,
+				sessionManager: { getSessionFile: () => undefined },
+			})).content[0].text);
+			assert.deepEqual(prepared.sync, { walkComplete: true, backlogRemaining: 1, complete: false });
+			assert.equal(prepared.scope.requestedLimit, 10);
+			assert.equal(prepared.scope.sampledCount, 10);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
