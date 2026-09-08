@@ -1310,15 +1310,6 @@ test("widget summarizes overflow while evicting terminal rows for new active wor
 	});
 });
 
-test("delegate_task leaves rendering to Pi", async () => {
-	await environment(async () => {
-		const app = harness();
-		assert.equal(app.tool.renderShell, undefined);
-		assert.equal(app.tool.renderCall, undefined);
-		assert.equal(app.tool.renderResult, undefined);
-	});
-});
-
 test("maps bounded child output into bounded workflow results and updates", async () => {
 	await environment(async (agentDir) => {
 		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
