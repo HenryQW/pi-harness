@@ -1,6 +1,8 @@
 # `@henryqw/pi-session-recall`
 
-Find decisions and context in past Pi sessions through a local FTS5 index. Local search recalls earlier work without carrying every transcript in current context or adding standing prompt cost.
+Find decisions and context in past Pi sessions through a local FTS5 index.
+
+Saved transcripts are not injected on every turn. The active tool registration still adds standing prompt cost through its schema, descriptions, and guideline. Returned content enters active model context.
 
 The bundled `pi-session-pattern-miner` skill finds repeated work that may deserve automation.
 
@@ -41,9 +43,9 @@ BM25 is a text-ranking method. Hydrated results include messages read from saved
 
 | Mode | Call | Result |
 | --- | --- | --- |
-| Discovery | `query` | BM25-ranked top sessions. The top hit is hydrated with a ±5 message window and first/last-3 bookends. Lower hits include the matched anchor message and metadata. `detail:"full"` hydrates all. |
-| Scroll | `sessionId` + `aroundMessageId` | ±`window` messages ([1,20]) around the anchor on its branch. Re-anchor on the last or first message ID to scroll. Across forks, pass the previous response's `branchTip`; `aroundMessageId` only centers the window and must lie on that branch. |
-| Read | `sessionId` | The whole session. Large sessions return head 20 + tail 10. Oversized content is bounded to 50k characters and marked with `contentTruncated`. |
+| Discovery | `query` | BM25-ranked top sessions. Adaptive retrieval uses user and assistant text for windows, bookends, anchors, and counts. It omits tool-result messages and sets `toolResultsOmitted:true` when it removes one. Lower hits still include their indexed anchor. Use `detail:"full"` to hydrate every hit with tool-result messages included. |
+| Scroll | `sessionId` + `aroundMessageId` | Raw message roles, including tool results, within ±`window` ([1,20]) of the anchor. Re-anchor on the last or first message ID to scroll. Across forks, pass the previous response's `branchTip`; `aroundMessageId` only centers the window and must lie on that branch. |
+| Read | `sessionId` | Raw message roles, including tool results, from the session. Large sessions return head 20 + tail 10. Oversized content is bounded to 50k characters and marked with `contentTruncated`. |
 | Browse | no args | Recent sessions with path, name, cwd, started date, and preview. |
 
 In the interactive TUI, the collapsed tool block shows the last five visual lines and the earlier-line count. Press `Ctrl+O` to expand the full bounded response. The model always receives the complete tool result.
@@ -70,13 +72,29 @@ Hits inside the current session's live context are suppressed. Compacted-away or
 
 Before browse or discovery, the extension lazily syncs the index from the session tree.
 
+### Retrieval safety
+
+Adaptive discovery leaves tool-result messages out of returned context. Use `detail:"full"`, READ, or SCROLL when you explicitly need them.
+
+Historical tool output may contain secrets or other sensitive data. Raw retrieval places that output in active model context.
+
 ## State and storage
 
 The extension maintains the derived SQLite search index at `~/.pi/agent/config/pi-session-recall/index.db`.
 
 This is derived state. Delete it and it rebuilds from your session files.
 
-Everything stays local. Transcripts are read in place. Nothing leaves the machine beyond what tool results already show the model.
+The index and transcript reads stay local. Transcripts are read in place. Returned content follows the data path of your configured model provider.
+
+## Roll back
+
+Pin the previous release:
+
+```bash
+pi install npm:@henryqw/pi-session-recall@1.0.3
+```
+
+No index migration or cleanup is needed.
 
 ## Limits and recovery
 
