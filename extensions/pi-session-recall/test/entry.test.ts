@@ -894,6 +894,40 @@ describe("session_search entry point", () => {
 		}
 	});
 
+	it("keeps the all-scope corpus when repository inventory fails", async () => {
+		clearRecallState();
+		const root = makeRepository();
+		try {
+			writeRepositoryFile(root, "package.json", "{");
+			assert.equal(spawnSync("git", ["add", "package.json"], { cwd: root }).status, 0);
+			writeSimpleSession("prepare-inventory-failure/session.jsonl", {
+				id: "inventory-failure",
+				cwd: root,
+				timestamp: "2026-03-02T01:00:00.000Z",
+				text: "corpus survives inventory failure",
+			});
+			const pi = makePi();
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-inventory-failure`);
+			register(pi as never);
+			const prepared = JSON.parse((await (pi as any).tool.execute(
+				"all-inventory-failure",
+				{ operation: "prepare-pattern-miner", scope: "all" },
+				undefined,
+				undefined,
+				{ cwd: root, sessionManager: { getSessionFile: () => undefined } },
+			)).content[0].text);
+			assert.equal(prepared.mode, "prepare-pattern-miner");
+			assert.equal(prepared.inventory.available, false);
+			assert.equal(prepared.inventory.reason, "inventory-failed");
+			assert.equal(prepared.inventory.worktreeVerified, false);
+			assert.deepEqual(prepared.sessions.map((session: { messages: { content: string }[] }) => session.messages[0]?.content), [
+				"corpus survives inventory failure",
+			]);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("bounds preparation fairly and trims inventory deterministically without dropping session metadata", async () => {
 		clearRecallState();
 		const root = makeRepository();

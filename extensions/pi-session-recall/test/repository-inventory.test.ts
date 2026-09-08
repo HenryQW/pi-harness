@@ -8,6 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	MAX_MANIFEST_BYTES,
 	MAX_PACKAGE_MANIFESTS,
+	REPOSITORY_INVENTORY_FAILED_REASON,
 	REPOSITORY_UNAVAILABLE_REASON,
 	inventoryRepository,
 } from "../extensions/repository-inventory.ts";
@@ -82,13 +83,34 @@ function indexRecord(mode: string, oid: string, stage: string, relativePath: str
 	]);
 }
 
-function indexShim(index: Buffer, options: { size?: string | Buffer; blob?: string | Buffer } = {}): string {
-	const size = options.size ?? "2\n";
-	const blob = options.blob ?? "{}";
+function packageOids(index: Buffer): string[] {
+	return index.toString("utf8").split("\0").flatMap((record) => {
+		const match = /^(?:100644|100755) ([0-9a-fA-F]{40}|[0-9a-fA-F]{64}) 0\t(.+\/)?package\.json$/.exec(record);
+		return match ? [match[1]!] : [];
+	});
+}
+
+function batchRecord(oid: string, content: string | Buffer, options: { type?: string; size?: string } = {}): Buffer {
+	const body = Buffer.from(content);
+	return Buffer.concat([
+		Buffer.from(`${oid} ${options.type ?? "blob"} ${options.size ?? body.length}\n`, "ascii"),
+		body,
+		Buffer.from("\n"),
+	]);
+}
+
+function indexShim(index: Buffer, options: { batchCheck?: string | Buffer; batch?: string | Buffer } = {}): string {
+	const oids = packageOids(index);
+	const batchCheck = options.batchCheck ?? oids.map((oid) => `${oid} blob 2\n`).join("");
+	const batch = options.batch ?? Buffer.concat(oids.map((oid) => batchRecord(oid, "{}")));
 	return `${rootSuccess()}
 if (args[0] === "--no-replace-objects" && args[1] === "ls-files") { process.stdout.write(Buffer.from("${index.toString("base64")}", "base64")); process.exit(0); }
-if (args[0] === "--no-replace-objects" && args[2] === "-s") { process.stdout.write(Buffer.from("${Buffer.from(size).toString("base64")}", "base64")); process.exit(0); }
-if (args[0] === "--no-replace-objects" && args[2] === "blob") { process.stdout.write(Buffer.from("${Buffer.from(blob).toString("base64")}", "base64")); process.exit(0); }
+if (args[0] === "--no-replace-objects" && args[1] === "cat-file") {
+  const fs = require("node:fs");
+  fs.readFileSync(0);
+  if (args[2]?.startsWith("--batch-check=")) { fs.writeFileSync(1, Buffer.from("${Buffer.from(batchCheck).toString("base64")}", "base64")); process.exit(0); }
+  if (args[2] === "--batch") { fs.writeFileSync(1, Buffer.from("${Buffer.from(batch).toString("base64")}", "base64")); process.exit(0); }
+}
 process.exit(9);`;
 }
 
@@ -179,6 +201,90 @@ describe("repository inventory", { concurrency: false }, () => {
 		}
 	});
 
+	it("fails required inventory but safely degrades optional inventory after root resolution", async () => {
+		await withGitShim(`${rootSuccess()}\nprocess.exit(7);`, async (cwd) => {
+			const context = { cwd, signal: new AbortController().signal };
+			await assert.rejects(inventoryRepository(makePi(), context), /Git command failed/);
+			assert.deepEqual(await inventoryRepository(makePi(), context, "optional"), {
+				available: false,
+				reason: REPOSITORY_INVENTORY_FAILED_REASON,
+				packageScripts: [],
+				executableScripts: [],
+				skills: [],
+				agentInstructions: [],
+				worktreeVerified: false,
+			});
+		});
+	});
+
+	it("never turns optional inventory cancellation into an unavailable result", async (t) => {
+		await t.test("already aborted", async () => {
+			const controller = new AbortController();
+			controller.abort();
+			await assert.rejects(
+				inventoryRepository(makePi(), { cwd: process.cwd(), signal: controller.signal }, "optional"),
+				/cancelled/,
+			);
+		});
+		await t.test("aborted after root resolution", async () => {
+			await withGitShim(`${rootSuccess()}\nif (args[1] === "ls-files") setInterval(() => {}, 1000);`, async (cwd) => {
+				const controller = new AbortController();
+				setTimeout(() => controller.abort(), 30);
+				await assert.rejects(inventoryRepository(makePi(), { cwd, signal: controller.signal }, "optional"), /cancelled/);
+			});
+		});
+	});
+
+	it("forces local object reads and uses one ordered check batch plus one content batch", async () => {
+		const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-git-log-"));
+		const log = path.join(logDir, "commands.jsonl");
+		const listing = Buffer.concat([
+			indexRecord("100644", OID40, "0", "a/package.json"),
+			indexRecord("100644", OID40, "0", "b/package.json"),
+		]);
+		const manifest = JSON.stringify({ scripts: { test: "node --test" } });
+		const stdin = `${OID40}\n${OID40}\n`;
+		const body = `const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, noLazyFetch: process.env.GIT_NO_LAZY_FETCH }) + "\\n");
+${rootSuccess()}
+if (args[0] === "--no-replace-objects" && args[1] === "ls-files") { process.stdout.write(Buffer.from("${listing.toString("base64")}", "base64")); process.exit(0); }
+if (args[0] === "--no-replace-objects" && args[1] === "cat-file") {
+  const input = fs.readFileSync(0, "utf8");
+  if (input !== ${JSON.stringify(stdin)}) process.exit(8);
+  if (args[2] === "--batch-check=%(objectname) %(objecttype) %(objectsize)") {
+    process.stdout.write(${JSON.stringify(`${OID40} blob ${Buffer.byteLength(manifest)}\n${OID40} blob ${Buffer.byteLength(manifest)}\n`)});
+    process.exit(0);
+  }
+  if (args[2] === "--batch") {
+    process.stdout.write(Buffer.from("${Buffer.concat([batchRecord(OID40, manifest), batchRecord(OID40, manifest)]).toString("base64")}", "base64"));
+    process.exit(0);
+  }
+}
+process.exit(9);`;
+		const previous = process.env.GIT_NO_LAZY_FETCH;
+		process.env.GIT_NO_LAZY_FETCH = "parent-value";
+		try {
+			await withGitShim(body, async (cwd) => {
+				assert.deepEqual((await inventoryRepository(makePi(), { cwd, signal: new AbortController().signal })).packageScripts, [
+					{ path: "a/package.json", name: "test", command: "node --test" },
+					{ path: "b/package.json", name: "test", command: "node --test" },
+				]);
+			});
+			const commands = fs.readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			assert.ok(commands.every((command) => command.noLazyFetch === "1"));
+			assert.deepEqual(commands.map((command) => command.args), [
+				["rev-parse", "--show-toplevel"],
+				["--no-replace-objects", "ls-files", "--stage", "-z"],
+				["--no-replace-objects", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+				["--no-replace-objects", "cat-file", "--batch"],
+			]);
+		} finally {
+			if (previous === undefined) delete process.env.GIT_NO_LAZY_FETCH;
+			else process.env.GIT_NO_LAZY_FETCH = previous;
+			fs.rmSync(logDir, { recursive: true, force: true });
+		}
+	});
+
 	it("fails closed for spawn, cancellation, exit, stderr, and stream overflow without leaking output", async (t) => {
 		await t.test("spawn error", async () => {
 			const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-session-recall-no-git-")));
@@ -262,24 +368,55 @@ describe("repository inventory", { concurrency: false }, () => {
 		});
 	});
 
-	it("accepts exact 64-hex object IDs and rejects invalid blob encoding, byte counts, and JSON", async (t) => {
-		await t.test("64-hex object id", async () => {
+	it("strictly parses ordered batch checks before reading content", async (t) => {
+		await t.test("accepts an exact 64-hex object id", async () => {
 			await withGitShim(indexShim(indexRecord("100644", OID64, "0", "package.json")), async (cwd) => {
 				const inventory = await inventoryRepository(makePi(), { cwd, signal: new AbortController().signal });
 				assert.deepEqual(inventory.packageScripts, []);
 			});
 		});
 
+		const otherOid = "c".repeat(40);
 		const failures = [
-			["invalid UTF-8 blob", { size: "1\n", blob: Buffer.from([0xff]) }, /Malformed repository manifest/],
-			["literal replacement character", { size: "3\n", blob: "�" }, /Malformed repository manifest/],
-			["short blob", { size: "3\n", blob: "{}" }, /incorrect Git blob size/],
-			["malformed JSON", { size: "1\n", blob: "{" }, /Malformed repository manifest/],
-			["malformed size", { size: "2x\n", blob: "{}" }, /invalid Git object size/],
+			["missing object", `${OID40} missing\n`, /missing an indexed Git object/],
+			["missing final newline", `${OID40} blob 2`, /invalid Git batch output/],
+			["reordered object", `${otherOid} blob 2\n`, /objects out of order/],
+			["wrong object type", `${OID40} tree 2\n`, /expected an indexed Git blob/],
+			["ambiguous size", `${OID40} blob 02\n`, /invalid Git batch output/],
+			["extra record", `${OID40} blob 2\n${OID40} blob 2\n`, /invalid Git batch output/],
+			["stdout overflow", Buffer.alloc(64 * 1024 + 1, 0x78), /stdout exceeded its limit/],
 		] as const;
-		for (const [name, options, expected] of failures) {
+		for (const [name, batchCheck, expected] of failures) {
 			await t.test(name, async () => {
-				await withGitShim(indexShim(indexRecord("100644", OID40, "0", "package.json"), options), async (cwd) => {
+				await withGitShim(indexShim(indexRecord("100644", OID40, "0", "package.json"), { batchCheck }), async (cwd) => {
+					await assert.rejects(inventoryRepository(makePi(), { cwd, signal: new AbortController().signal }), expected);
+				});
+			});
+		}
+	});
+
+	it("strictly parses each raw content batch record and exact exhaustion", async (t) => {
+		const otherOid = "c".repeat(40);
+		const failures: readonly [string, Buffer, RegExp][] = [
+			["missing object", Buffer.from(`${OID40} missing\n`), /missing an indexed Git object/],
+			["reordered object", batchRecord(otherOid, "{}"), /objects out of order/],
+			["wrong object type", batchRecord(OID40, "{}", { type: "tree" }), /expected an indexed Git blob/],
+			["changed declared size", batchRecord(OID40, "{}", { size: "1" }), /incorrect Git blob size/],
+			["truncated content", Buffer.from(`${OID40} blob 2\n{`), /invalid Git batch output/],
+			["missing content delimiter", Buffer.from(`${OID40} blob 2\n{}`), /invalid Git batch output/],
+			["extra output", Buffer.concat([batchRecord(OID40, "{}"), Buffer.from("extra")]), /invalid Git batch output/],
+			["invalid UTF-8 blob", batchRecord(OID40, Buffer.from([0xff]), { size: "1" }), /Malformed repository manifest/],
+			["literal replacement character", batchRecord(OID40, "�"), /Malformed repository manifest/],
+			["malformed JSON", batchRecord(OID40, "{"), /Malformed repository manifest/],
+			["stdout overflow", Buffer.alloc(17 * 1024 * 1024, 0x78), /stdout exceeded its limit/],
+		];
+		for (const [name, batch, expected] of failures) {
+			await t.test(name, async () => {
+				const size = name === "invalid UTF-8 blob" || name === "malformed JSON" ? 1 : name === "literal replacement character" ? 3 : 2;
+				await withGitShim(indexShim(indexRecord("100644", OID40, "0", "package.json"), {
+					batchCheck: `${OID40} blob ${size}\n`,
+					batch,
+				}), async (cwd) => {
 					await assert.rejects(inventoryRepository(makePi(), { cwd, signal: new AbortController().signal }), expected);
 				});
 			});
@@ -341,6 +478,26 @@ describe("repository inventory", { concurrency: false }, () => {
 				fs.rmSync(root, { recursive: true, force: true });
 			}
 		});
+	});
+
+	it("fails locally when an indexed package object is missing", async () => {
+		const root = makeRepository();
+		try {
+			write(root, "package.json", "{}");
+			runGit(root, ["add", "package.json"]);
+			const oid = runGit(root, ["rev-parse", ":package.json"]).trim();
+			fs.rmSync(path.join(root, ".git", "objects", oid.slice(0, 2), oid.slice(2)));
+			await assert.rejects(
+				inventoryRepository(makePi(), { cwd: root, signal: new AbortController().signal }),
+				/missing an indexed Git object/,
+			);
+			assert.equal(
+				(await inventoryRepository(makePi(), { cwd: root, signal: new AbortController().signal }, "optional")).reason,
+				REPOSITORY_INVENTORY_FAILED_REASON,
+			);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("ignores replacement refs when reading indexed package objects", async () => {

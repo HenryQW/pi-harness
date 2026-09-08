@@ -32,7 +32,7 @@ Prepare a repository-scoped pattern-mining sample with one call:
 }
 ```
 
-Use `scope:"all"` for cross-repository work. Outside Git, `scope:"all"` still returns the corpus but marks inventory unavailable.
+Use `scope:"all"` for cross-repository work. It still returns the corpus when repository inventory is unavailable.
 
 Use IDs from a discovery result to ask for more context:
 
@@ -75,7 +75,7 @@ After clustering, the skill always checks current candidate-relevant package man
 
 Repository inventory contains discovery hints. It is never proof that a file owns a workflow. It does not verify the current worktree.
 
-Package scripts, executable paths, and instruction paths come from stage-0 entries in the Git index. Package content comes from indexed blobs, with replacement refs disabled. Inventory never opens working-tree package paths.
+Package scripts, executable paths, and instruction paths come from stage-0 entries in the Git index. Package content comes from indexed blobs. Git reads the objects locally in one check batch and one content batch. Lazy object fetching and replacement refs are disabled. Inventory never opens working-tree package paths.
 
 Executables need index mode `100755`. Instructions need a recognized name and a regular-file index mode.
 
@@ -158,7 +158,9 @@ READ and SCROLL return an explicit size error. A stale discovery hit from before
 
 Pattern preparation runs one sync pass. A positive backlog or incomplete walk limits the sample and sets `sync.complete:false`. A total sync or required repository-inventory failure returns an explicit tool error.
 
-Repository scope fails outside Git. All scope outside Git returns `inventory.available:false` with `reason:"not-a-git-repository"`.
+Repository scope fails outside Git or when repository inventory fails. All scope still returns its corpus in both cases.
+
+Outside Git, all scope sets `inventory.available:false` with `reason:"not-a-git-repository"`. On a repository inventory error, it uses `reason:"inventory-failed"`. Cancellation always aborts the call instead of returning unavailable inventory.
 
 Preparation rejects `query`, session cursors, `window`, or `detail` in the same call. It also rejects `scope` without the operation.
 
@@ -166,6 +168,6 @@ Preparation output stays within 50,000 serialized characters. Inventory uses at 
 
 Inventory fails if the Git root output exceeds 4 KiB or the raw index listing exceeds 8 MiB. It also fails on malformed index data, invalid UTF-8, conflict entries, unsupported package modes, Git errors, unexpected Git stderr, or bounded stream overflow.
 
-Inventory accepts at most 512 package manifests. Each indexed manifest can be at most 1 MiB, and their declared sizes can total at most 16 MiB. Blob sizes and UTF-8 are checked before manifest data is parsed.
+Inventory accepts at most 512 package manifests. Each indexed manifest can be at most 1 MiB, and their declared sizes can total at most 16 MiB. One bounded batch checks all blob sizes before one bounded batch reads their content. Blob order, type, size, UTF-8, and exact output framing are checked before manifest data is parsed.
 
 Session and top-level `contentTruncated` report transcript budget trimming only. Session `truncated` reports omitted middle messages.
