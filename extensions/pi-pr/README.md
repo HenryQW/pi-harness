@@ -68,7 +68,11 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
-`pi-pr-create` honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
+`pi-pr-create` fetches branches from `origin` and finds the current branch's parent. The parent can be a feature branch. It uses an explicit base when provided. Otherwise, it accepts only a uniquely identifiable parent from reflog and commit history.
+
+It merges the parent's captured commit before validation and push. It resolves clear conflicts and stops when the base or conflict intent is ambiguous.
+
+It honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
 
 Without a configured push target, discovery checks validated remotes for the same branch ref. One exact open PR becomes an inferred target. `/pr` names the exact `remote/ref` and asks before linking it. The extension revalidates the branch, PR, remote OID, and Git configuration before mutation. It rolls back its upstream and remote-tracking changes if final verification fails.
 
