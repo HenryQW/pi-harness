@@ -17,7 +17,7 @@ Creation is selected only when no validated remote publishes the same ref, `orig
 
 Ordinary conversation comments neither select a route nor block merging. Only changes requested and unresolved review threads count as blocking PR feedback. Draft presentation outranks running CI.
 
-Current-branch discovery searches the exact head owner and ref without filtering the search by OID. It then validates every candidate URL, repository, ref, and OID. This makes a moved or mismatched PR head visible as a blocker instead of incorrectly appearing absent. It preserves the sole validated push URL as fetch authority, separate from repository identity. Without an open PR, one historical candidate must match the remote OID. Discovery never falls back to local HEAD when the remote ref is absent.
+Current-branch discovery searches the head ref without filtering the search by owner or OID. It then validates every candidate URL, repository, ref, and OID. This makes a moved or mismatched PR head visible as a blocker instead of incorrectly appearing absent. It preserves the sole validated push URL as fetch authority, separate from repository identity. Without an open PR, one historical candidate must match the remote OID. Discovery never falls back to local HEAD when the remote ref is absent.
 
 Confirmed linking snapshots existing upstream configuration and the remote-tracking ref. It fetches the exact inferred ref, sets upstream, and verifies that configured discovery resolves the same PR identity and OID. Any final failure rolls back only state still matching the extension's own writes; a concurrent change causes a visible incomplete-rollback failure instead of being overwritten.
 
