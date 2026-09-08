@@ -32,6 +32,7 @@ interface CapturedTool {
 	name: string;
 	description: string;
 	promptSnippet?: string;
+	promptGuidelines?: string[];
 	execute: (...args: unknown[]) => Promise<{ content: { type: string; text: string }[]; details: unknown }>;
 	renderResult: (
 		result: { content: { type: string; text: string }[]; details: unknown },
@@ -111,6 +112,9 @@ describe("session_search entry point", () => {
 		const tool = (pi as any).tool as CapturedTool;
 		assert.equal(tool.name, "session_search");
 		assert.equal(tool.promptSnippet, "Search past Pi sessions for prior decisions and context");
+		assert.deepEqual(tool.promptGuidelines, [
+			"Use session_search only when the user explicitly asks about past Pi sessions, historical decisions, or repeated work not available in the current conversation. Do not use it for current-session continuation or ordinary repository inspection.",
+		]);
 
 		// Fixture sessions with proper parentId chain.
 		msgCount = 1;
@@ -157,6 +161,7 @@ describe("session_search entry point", () => {
 		assert.ok(top.messages.some((m: { anchor?: boolean }) => m.anchor));
 		assert.equal(top.bookends.start[0]?.role, "user");
 		assert.equal(typeof top.messagesBefore, "number");
+		assert.equal(top.toolResultsOmitted, undefined);
 
 		// Read mode via sessionId.
 		const read = await tool.execute("t3", { sessionId: s1 }, undefined, undefined, ctx);
@@ -177,6 +182,78 @@ describe("session_search entry point", () => {
 		assert.equal(scrollResult.messages.at(-1).entryId, "e04"); // window extends past the anchor
 		assert.equal(scrollResult.messages.find((m: { entryId: string }) => m.entryId === "e03").anchor, true);
 		assert.equal(scrollResult.messagesBefore, 2);
+	});
+
+	it("adaptive discovery filters tool results while explicit retrieval stays raw", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-adaptive-filter`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+
+		const lines: object[] = [
+			{ type: "session", version: 3, id: "adaptive-filter", timestamp: "2026-02-01T00:00:00.000Z", cwd: "/tmp" },
+		];
+		let parentId: string | null = null;
+		for (let i = 1; i <= 13; i++) {
+			if (i === 7) {
+				lines.push({
+					type: "message",
+					id: "tool-large",
+					parentId,
+					timestamp: "2026-02-01T00:06:30.000Z",
+					message: { role: "toolResult", content: [{ type: "text", text: "sensitive raw output " + "x".repeat(12_000) }] },
+				});
+				parentId = "tool-large";
+			}
+			const id = `v${String(i).padStart(2, "0")}`;
+			lines.push({
+				type: "message",
+				id,
+				parentId,
+				timestamp: `2026-02-01T00:${String(i).padStart(2, "0")}:00.000Z`,
+				message: {
+					role: i % 2 ? "user" : "assistant",
+					content: [{ type: "text", text: i === 7 ? "adaptive visible anchor narwhal" : `visible message ${i}` }],
+				},
+			});
+			parentId = id;
+		}
+		const session = writeSession("adaptive-filter/session.jsonl", lines);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-adaptive-filter`);
+		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+
+		for (const params of [
+			{ query: "adaptive visible anchor narwhal" },
+			{ query: "adaptive visible anchor narwhal", detail: "adaptive" },
+		]) {
+			const response = await tool.execute("adaptive", params, undefined, undefined, { sessionManager: {} });
+			const parsed = JSON.parse(response.content[0].text);
+			const hit = parsed.results[0];
+			assert.equal(hit.path, session);
+			assert.equal(hit.toolResultsOmitted, true);
+			assert.deepEqual(hit.messages.map((m: { entryId: string }) => m.entryId), ["v02", "v03", "v04", "v05", "v06", "v07", "v08", "v09", "v10", "v11", "v12"]);
+			assert.deepEqual(hit.messages.filter((m: { anchor?: boolean }) => m.anchor).map((m: { entryId: string }) => m.entryId), ["v07"]);
+			assert.deepEqual(hit.bookends.start.map((m: { entryId: string }) => m.entryId), ["v01", "v02", "v03"]);
+			assert.deepEqual(hit.bookends.end.map((m: { entryId: string }) => m.entryId), ["v11", "v12", "v13"]);
+			assert.equal(hit.messagesBefore, 6);
+			assert.equal(hit.messagesAfter, 6);
+			assert.ok(hit.messages.every((m: { role: string }) => m.role === "user" || m.role === "assistant"));
+		}
+
+		const full = JSON.parse((await tool.execute("full", { query: "adaptive visible anchor narwhal", detail: "full" }, undefined, undefined, { sessionManager: {} })).content[0].text).results[0];
+		assert.equal(full.toolResultsOmitted, undefined);
+		assert.equal(full.messages.find((m: { entryId: string }) => m.entryId === "tool-large").content.length, 12_021);
+		assert.equal(full.messagesBefore, 7);
+		assert.equal(full.messagesAfter, 6);
+
+		const read = JSON.parse((await tool.execute("read", { sessionId: session }, undefined, undefined, { sessionManager: {} })).content[0].text);
+		assert.equal(read.totalMessages, 14);
+		assert.equal(read.messages.find((m: { entryId: string }) => m.entryId === "tool-large").content.length, 12_021);
+
+		const scroll = JSON.parse((await tool.execute("scroll", { sessionId: session, aroundMessageId: "v07", window: 5 }, undefined, undefined, { sessionManager: {} })).content[0].text);
+		assert.equal(scroll.messages.find((m: { entryId: string }) => m.entryId === "tool-large").content.length, 12_021);
+		assert.equal(scroll.messagesBefore, 7);
+		assert.equal(scroll.messagesAfter, 6);
 	});
 
 	it("SCROLL keeps position and branch as separate cursors", async () => {

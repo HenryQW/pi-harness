@@ -2,7 +2,7 @@
 
 ## Domain
 
-Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the corpus of Pi session JSONL trees under `~/.pi/agent/sessions/`, exposed as one LLM tool with four arg-inferred modes (discovery / scroll / read / browse). Zero LLM calls inside the tool; responses are raw messages hydrated from disk. The bundled `pi-session-pattern-miner` skill uses that tool to find independently repeated work and prefer deterministic scripts over model-authored procedures.
+Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the corpus of Pi session JSONL trees under `~/.pi/agent/sessions/`, exposed as one LLM tool with four arg-inferred modes (discovery / scroll / read / browse). Zero LLM calls inside the tool; responses hydrate selected messages directly from disk. The bundled `pi-session-pattern-miner` skill uses that tool to find independently repeated work and prefer deterministic scripts over model-authored procedures.
 
 ## Boundary
 
@@ -12,7 +12,7 @@ Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the
 | Current-session context assembly / compaction | pi core (`buildContextEntries`, compaction entries) |
 | This extension | pull-based recall over past transcripts |
 
-Complementary to pi-memory: memory keeps high-signal distillations in-context at standing cost; search reaches everything that was never distilled, at zero standing cost.
+Complementary to pi-memory: memory keeps high-signal distillations in context. Session recall leaves transcripts out of every-turn context, but its active tool registration has standing prompt cost. Adaptive discovery returns only user and assistant text. Explicit full discovery, READ, and SCROLL preserve tool-result access, and returned content enters active model context.
 
 ## Key decisions
 

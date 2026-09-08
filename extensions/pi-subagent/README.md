@@ -105,6 +105,8 @@ Flow requires a clean Main worktree on an attached branch with a committed `HEAD
 
 Keep work together or run it in order when a split divides an invariant or adds coordination. Do not split units with overlapping mutable ownership. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
+One Implementer launch must plausibly finish before the configured maximum runtime. Cohesion is not enough when work has several preservable, separately verifiable milestones. Split oversized dependent work into serial one-unit Flows after each milestone integrates. Units in one Flow stay independent and commuting.
+
 ```text
 delegate_flow({ units: [{ id, name, task, modelClass?, validation: [{ command, args }], review? }] })
 delegate_flow_continue({ guidance, modelClass? })

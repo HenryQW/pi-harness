@@ -720,20 +720,55 @@ test("session context generation prevents stale /pr completion from mutating the
 	await app.shutdown(secondSession);
 });
 
-test("keeps the create hint cleared until a fresh post-workflow refresh", async () => {
-	const staleRefresh = deferred<CurrentPullRequest | null>();
+test("does not warn for the expected published ref during PR creation", async () => {
+	let published = false;
+	let created = false;
+	const app = harness({
+		async load() {
+			if (created) return currentPullRequest();
+			if (published) {
+				return { kind: "blocked", issue: { kind: "published-without-pr", remote: "origin" } };
+			}
+			return null;
+		},
+		async hasLocalCommit() {
+			return true;
+		},
+		async commandHandler() {
+			return "create";
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		published = true;
+		await app.tool({
+			toolName: "bash",
+			input: { command: "git push origin HEAD" },
+			isError: false,
+		}, ctx);
+
+		assert.deepEqual(app.notifications, []);
+		assert.equal(plain(app.statuses.at(-1) ?? ""), "");
+		created = true;
+		await app.settle(ctx);
+		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("keeps the create hint cleared until the workflow settles", async () => {
 	const workflow = deferred<void>();
 	let loads = 0;
-	let localCommitChecks = 0;
 	const app = harness({
 		async load() {
 			loads += 1;
-			if (loads === 1) return null;
-			if (loads === 2) return staleRefresh.promise;
-			return currentPullRequest();
+			return loads === 1 ? null : currentPullRequest();
 		},
 		async hasLocalCommit() {
-			localCommitChecks += 1;
 			return true;
 		},
 		async commandHandler() {
@@ -754,25 +789,20 @@ test("keeps the create hint cleared until a fresh post-workflow refresh", async 
 		workflow.resolve(undefined);
 		await command;
 
-		const polling = app.tool({
+		await app.tool({
 			toolName: "bash",
 			input: { command: "git push origin HEAD" },
 			isError: false,
 		}, ctx);
-		await flush();
-		assert.equal(loads, 2);
-		assert.equal(app.widgets.at(-1), undefined, "an in-flight stale refresh must not restore the hint");
+		assert.equal(loads, 1);
+		assert.equal(app.widgets.at(-1), undefined, "a create-workflow refresh must not restore the hint");
 
 		await app.settle(ctx);
-		assert.equal(loads, 3);
+		assert.equal(loads, 2);
 		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 		assert.match(app.statuses.at(-1) ?? "", /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
 		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
 
-		staleRefresh.resolve(null);
-		await polling;
-		assert.equal(localCommitChecks, 1, "an aborted stale lookup must not inspect local commits");
-		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 	} finally {
 		setCapabilities(previousCapabilities);
 		await app.shutdown(ctx);

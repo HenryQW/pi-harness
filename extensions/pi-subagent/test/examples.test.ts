@@ -39,9 +39,14 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /delegate_flow_continue\(\{ guidance:/);
 	assert.match(skill, /one explicit continuation and no more/i);
 	assert.match(skill, /direct `model` replaces only the selected route's model.*route keeps its thinking level/is);
-	assert.match(skill, /terminal failure.*retained path/is);
+	assert.match(skill, /terminal failure.*inspect each exact retained path reported by the runtime directly/is);
+	assert.match(skill, /Do not run `git worktree list` merely to rediscover a retained path/i);
 	assert.match(skill, /Report a cleanup warning from a successful Flow as-is.*Do not investigate it unless the user asks or cleanup is part of acceptance/is);
+	assert.match(skill, /Before selecting a Flow unit.*one Implementer launch can plausibly finish before the configured maximum runtime/is);
+	assert.match(skill, /Cohesion alone is not enough when work has multiple preservable, separately verifiable milestones/i);
+	assert.match(skill, /Units inside one Flow remain independent and commuting/i);
 	assert.match(skill, /Dependent work remains outside Flow/i);
+	assert.match(skill, /Split oversized dependent work into serial one-unit Flows after each milestone integrates/i);
 	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|advisory|reconsideration|public review/i);
 });
 

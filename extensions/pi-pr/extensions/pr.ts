@@ -203,7 +203,7 @@ export default function pullRequestExtension(
 
 	const refresh = async (): Promise<void> => {
 		const ctx = context;
-		if (!ctx) return;
+		if (!ctx || [...activeInvocations.values()].includes("create-workflow")) return;
 		const generation = sessionGeneration;
 		if (active) {
 			queued = true;
@@ -320,7 +320,7 @@ export default function pullRequestExtension(
 
 	const commandHandler = createCommandHandler(pi);
 	pi.registerCommand("pr", {
-		description: "Run the current branch pull request next step",
+		description: "[instructions] — Run the current branch pull request next step",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
 			const generation = sessionGeneration;
