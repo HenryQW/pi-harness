@@ -103,6 +103,7 @@ Model references use canonical `provider/model`. Numbered Codex account aliases 
 | `loadTaskModelsConfig()` | function | Reads and validates the owner config file when present. |
 | `resolveConfiguredTaskRoute(ctx, task)` | function | Resolves the first usable route for a task. |
 | `resolveConfiguredTaskRoutes(ctx, task)` | function | Resolves the task's configured route candidates. |
+| `executeTaskRoutes(routes, attempt, { shouldFallback, signal? })` | function | Tries supplied resolved routes in order and returns the first success. |
 
 Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
@@ -128,3 +129,9 @@ Resolution errors are `TaskRouteError` values. Check `taskRouteCode`:
 | `no-route` | The selected profile has no available route. |
 
 Every error directs users to `/task-models`. A consumer may silence only `config-missing` when it has a safe current-session fallback.
+
+`executeTaskRoutes()` uses only caller-supplied resolved routes. It does not resolve routes, authenticate, inspect providers, log, wait, or retry a route.
+
+It rejects empty route lists and checks its optional abort signal before every attempt. It stops on cancellation or when `shouldFallback(error)` returns false.
+
+After allowed failures, it rethrows the final route error unchanged. Each attempt must be atomic and safe to repeat.

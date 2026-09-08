@@ -846,6 +846,8 @@ test("injects the memory check without claiming the current agent performs revie
 		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
 		assert.match(injected.systemPrompt, /^base\n\nMEMORY CHECK:/);
 		assert.match(injected.systemPrompt, /memory tool independently reviews the complete mutation/);
+		assert.match(injected.systemPrompt, /Exact duplicate single adds and duplicate-only add batches/);
+		assert.match(injected.systemPrompt, /deterministic exceptions that skip the model call/);
 		assert.match(injected.systemPrompt, /configured pi-memory\/reviewCandidate task route/);
 		assert.match(injected.systemPrompt, /may ask the user to resolve an overlap or contradiction/);
 		assert.match(injected.systemPrompt, /Do not perform or claim this review yourself/);
@@ -1069,6 +1071,131 @@ test("exact duplicate single add bypasses mutation, preserves cancellation, and 
 			() => tool.execute("failure-after-reset", { action: "remove", old_text: "missing" }, undefined, undefined, ctx),
 			/No entry matched/,
 		);
+		assert.deepEqual(await readFile(path), original);
+	});
+});
+
+test("duplicate-only batches bypass review and storage mutation only for exact selected-target duplicates", async () => {
+	const entries = ["first existing", "second existing", "third existing"];
+	const duplicateOperations = [
+		{ action: "add", content: "\uFEFFfirst existing\r\n" },
+		{ action: "add", content: "\nsecond existing\n" },
+		{ action: "add", content: "\r\nsecond existing\r\n" },
+		{ action: "add", content: "third existing" },
+		{ action: "add", content: "\uFEFFfirst existing" },
+	];
+
+	await withReviewFixture({ memory: entries.join(ENTRY_DELIMITER) }, async ({ memoryDir, tool, ctx, calls }) => {
+		const path = join(memoryDir, "MEMORY.md");
+		const original = await readFile(path);
+		const originalApplyBatch = MemoryStore.prototype.applyBatch;
+		let applyBatchCalls = 0;
+		MemoryStore.prototype.applyBatch = async function (target, operations) {
+			applyBatchCalls++;
+			return originalApplyBatch.call(this, target, operations);
+		};
+		try {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				await assert.rejects(
+					() => tool.execute(`failure-${attempt}`, { action: "remove", old_text: "missing" }, undefined, undefined, ctx),
+					/No entry matched/,
+				);
+			}
+
+			const controller = new AbortController();
+			controller.abort(new Error("duplicate batch cancelled"));
+			await assert.rejects(
+				() => tool.execute("cancelled-duplicate-batch", { target: "memory", operations: duplicateOperations }, controller.signal, undefined, ctx),
+				/duplicate batch cancelled/,
+			);
+			assert.deepEqual(await readFile(path), original);
+
+			const result = await tool.execute("duplicate-batch", { target: "memory", operations: duplicateOperations }, undefined, undefined, ctx);
+			assert.deepEqual(JSON.parse(result.content[0]!.text), {
+				success: true,
+				done: true,
+				usage: "0% — 49/8,800 chars",
+				entryCount: 3,
+				message: "Write saved. This update is complete — do not repeat it.",
+			});
+			assert.deepEqual(result.details, {
+				status: "Entry already exists (no duplicate added).",
+				entries,
+			});
+		} finally {
+			MemoryStore.prototype.applyBatch = originalApplyBatch;
+		}
+
+		assert.equal(applyBatchCalls, 0);
+		assert.equal(calls.length, 0);
+		assert.deepEqual(await readFile(path), original);
+		await assert.rejects(
+			() => tool.execute("failure-after-reset", { action: "remove", old_text: "missing" }, undefined, undefined, ctx),
+			/No entry matched/,
+		);
+		assert.deepEqual(await readFile(path), original);
+	});
+
+	const duplicateAndNovel = [
+		{ action: "add", content: "\nalready there\n" },
+		{ action: "add", content: "novel fact" },
+	];
+	await withReviewFixture({ memory: "already there" }, async ({ memoryDir, tool, ctx, calls }) => {
+		await tool.execute("duplicate-and-novel", { target: "memory", operations: duplicateAndNovel }, undefined, undefined, ctx);
+		assert.equal(calls.length, 1);
+		assert.deepEqual(JSON.parse(calls[0]!.context.messages[0]!.content).mutation, {
+			target: "memory",
+			operations: duplicateAndNovel,
+		});
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "already there\n§\nnovel fact");
+	});
+
+	await withReviewFixture({ memory: "existing detailed fact" }, async ({ tool, ctx, calls }) => {
+		await tool.execute("substring", { target: "memory", operations: [{ action: "add", content: "detailed" }] }, undefined, undefined, ctx);
+		assert.equal(calls.length, 1);
+	});
+
+	await withReviewFixture({ memory: "I prefer tea in the afternoon" }, async ({ tool, ctx, calls }) => {
+		await tool.execute("paraphrase", { target: "memory", operations: [{ action: "add", content: "Afternoon tea is my preference" }] }, undefined, undefined, ctx);
+		assert.equal(calls.length, 1);
+	});
+
+	await withReviewFixture({ memory: "memory fact", user: "shared profile fact" }, async ({ tool, ctx, calls }) => {
+		await tool.execute("cross-target", { target: "memory", operations: [{ action: "add", content: "shared profile fact" }] }, undefined, undefined, ctx);
+		assert.equal(calls.length, 1);
+	});
+
+	await withReviewFixture({ memory: "duplicate add\n§\nreplace me" }, async ({ tool, ctx, calls }) => {
+		await tool.execute("duplicate-and-replace", {
+			target: "memory",
+			operations: [
+				{ action: "add", content: "duplicate add" },
+				{ action: "replace", old_text: "replace me", content: "replacement" },
+			],
+		}, undefined, undefined, ctx);
+		assert.equal(calls.length, 1);
+	});
+
+	await withReviewFixture({ memory: "duplicate add\n§\nremove me" }, async ({ tool, ctx, calls }) => {
+		await tool.execute("duplicate-and-remove", {
+			target: "memory",
+			operations: [
+				{ action: "add", content: "duplicate add" },
+				{ action: "remove", old_text: "remove me" },
+			],
+		}, undefined, undefined, ctx);
+		assert.equal(calls.length, 1);
+	});
+
+	await withReviewFixture({ memory: entries.join(ENTRY_DELIMITER), user: "secondary source" }, async ({ memoryDir, tool, ctx, calls }) => {
+		const path = join(memoryDir, "MEMORY.md");
+		const original = await readFile(path);
+		await writeFile(join(memoryDir, "USER.md"), Buffer.from([0xff, 0xfe]));
+		await assert.rejects(
+			() => tool.execute("malformed-secondary", { target: "memory", operations: duplicateOperations }, undefined, undefined, ctx),
+			/live user store is unreadable/,
+		);
+		assert.equal(calls.length, 0);
 		assert.deepEqual(await readFile(path), original);
 	});
 });

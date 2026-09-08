@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	availableTaskModels,
+	executeTaskRoutes,
 	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoute,
@@ -23,6 +24,10 @@ const EXAMPLE_TASK = {
 } as const satisfies ModelTask;
 const MODEL_TASK_REQUEST_EVENT = "@henryqw/pi-task-models:model-task-request";
 const MODEL_TASK_RESPONSE_EVENT = "@henryqw/pi-task-models:model-task-response";
+const EXECUTION_ROUTES = [
+	{ model: { provider: "test", id: "primary" }, thinkingLevel: "off" },
+	{ model: { provider: "test", id: "fallback" }, thinkingLevel: "off" },
+] as any;
 
 function tempDir(): string {
 	return mkdtempSync(join(tmpdir(), "pi-task-models-"));
@@ -215,6 +220,112 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("returns the first successful route", async () => {
+	const attempts: string[] = [];
+	const result = await executeTaskRoutes(
+		EXECUTION_ROUTES,
+		async (route) => {
+			attempts.push(route.model.id);
+			return route.model.id;
+		},
+		{ shouldFallback: () => true },
+	);
+	assert.equal(result, "primary");
+	assert.deepEqual(attempts, ["primary"]);
+});
+
+test("executes approved fallback routes serially and returns first success", async () => {
+	const primaryFailure = new Error("primary failed");
+	const attempts: string[] = [];
+	let releasePrimary = () => {};
+	const primaryPending = new Promise<void>((resolve) => { releasePrimary = () => resolve(); });
+	const result = executeTaskRoutes(
+		EXECUTION_ROUTES,
+		async (route) => {
+			attempts.push(route.model.id);
+			if (route.model.id === "primary") {
+				await primaryPending;
+				throw primaryFailure;
+			}
+			return route.model.id;
+		},
+		{ shouldFallback: (error) => error === primaryFailure },
+	);
+	assert.deepEqual(attempts, ["primary"]);
+	releasePrimary();
+	assert.equal(await result, "fallback");
+	assert.deepEqual(attempts, ["primary", "fallback"]);
+});
+
+test("rethrows the exact final route error", async () => {
+	const firstFailure = new Error("first failed");
+	const finalFailure = new Error("final failed");
+	let attempt = 0;
+	await assert.rejects(
+		executeTaskRoutes(
+			EXECUTION_ROUTES,
+			async () => { throw [firstFailure, finalFailure][attempt++]; },
+			{ shouldFallback: () => true },
+		),
+		(error) => error === finalFailure,
+	);
+	assert.equal(attempt, 2);
+});
+
+test("rejects an empty route list", async () => {
+	let attempted = false;
+	await assert.rejects(
+		executeTaskRoutes([], async () => {
+			attempted = true;
+			return undefined;
+		}, { shouldFallback: () => true }),
+		/Task route list must not be empty/,
+	);
+	assert.equal(attempted, false);
+});
+
+test("stops before or after cancellation and on non-fallback errors", async () => {
+	const beforeAttempt = new AbortController();
+	const beforeAttemptError = new Error("cancelled before attempt");
+	beforeAttempt.abort(beforeAttemptError);
+	let beforeAttemptCalls = 0;
+	await assert.rejects(
+		executeTaskRoutes(EXECUTION_ROUTES, async () => {
+			beforeAttemptCalls++;
+			return "unexpected";
+		}, { shouldFallback: () => true, signal: beforeAttempt.signal }),
+		(error) => error === beforeAttemptError,
+	);
+	assert.equal(beforeAttemptCalls, 0);
+
+	const afterFailure = new AbortController();
+	const afterFailureError = new Error("cancelled after failure");
+	let afterFailureCalls = 0;
+	await assert.rejects(
+		executeTaskRoutes(EXECUTION_ROUTES, async () => {
+			afterFailureCalls++;
+			afterFailure.abort();
+			throw afterFailureError;
+		}, {
+			shouldFallback: () => { throw new Error("should not evaluate fallback after cancellation"); },
+			signal: afterFailure.signal,
+		}),
+		(error) => error === afterFailureError,
+	);
+	assert.equal(afterFailureCalls, 1);
+
+	const nonFallbackError = new Error("do not fall back");
+	let nonFallbackCalls = 0;
+	await assert.rejects(
+		executeTaskRoutes(EXECUTION_ROUTES, async () => {
+			nonFallbackCalls++;
+			throw nonFallbackError;
+		}, { shouldFallback: () => false }),
+		(error) => error === nonFallbackError,
+	);
+	assert.equal(nonFallbackCalls, 1);
 });
 
 test("registers model tasks idempotently and discovers them in either load order", async () => {
