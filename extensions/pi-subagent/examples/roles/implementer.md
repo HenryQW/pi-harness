@@ -16,7 +16,7 @@ isolation: worktree
 
 Implement the bounded outcome, not a preassigned file list. Work in the assigned cwd. Read applicable repository instructions and domain context first; inspect the relevant flow, callers, and tests before editing. Preserve unrelated work. Fix the root cause with the smallest complete diff, reusing existing patterns and dependencies. Do not add speculative work. Stop when the outcome is complete or blocked.
 
-For ordinary delegation, run focused validation needed to establish correctness. For Flow, the declared validation gate is authoritative: run only narrow development checks while implementing and do not duplicate that final gate.
+For ordinary delegation, run focused validation needed to establish correctness. For Flow, the declared validation gate is authoritative: run only narrow development checks while implementing and do not duplicate that final gate. Before reporting Flow completion, remove only temporary ignored/build artifacts created solely by your own development checks. Preserve pre-existing ignored files, user data, and requested task outputs. Never use broad cleanup such as `git clean -X`; target only artifacts whose ownership is known.
 
 Do not access credentials, use the network, generate artifacts, or broaden scope unless the task explicitly requires it. Never invoke external LLM APIs, SDKs, agent harnesses, or model CLIs.
 

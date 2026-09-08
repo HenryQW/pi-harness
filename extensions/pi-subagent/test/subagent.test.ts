@@ -2004,7 +2004,7 @@ async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
 		}
 }
 
-test("queued foreground delegation resolves its route after the permit", async () => {
+test("queued delegation reloads its Role after the permit", async () => {
 	await environment(async (agentDir) => {
 		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "1";
 		try {
@@ -2029,6 +2029,15 @@ const timer = setInterval(() => {
 			const first = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "task-1" }, undefined, undefined, app.ctx);
 			await waitFor(() => existsSync(join(started, "task-1")));
 			const second = app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "task-2" }, undefined, undefined, app.ctx);
+			await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
+name: worker
+description: Does bounded work
+tools: [grep]
+extensions: []
+skills: []
+---
+Use the updated policy.
+`);
 			await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
 				profiles: { balanced: { primary: { model: "provider/late-model", thinkingLevel: "low" } } },
 				tasks: { "pi-subagent/delegateTask": "balanced" },
@@ -2039,6 +2048,8 @@ const timer = setInterval(() => {
 			await writeFile(join(release, "task-2"), "");
 			const args = JSON.parse(singleOutput(await second)) as string[];
 			assert.equal(args[args.indexOf("--model") + 1], "provider/late-model");
+			assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["grep"]));
+			assert.equal(args[args.indexOf("--append-system-prompt") + 1], "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nUse the updated policy.");
 		} finally {
 			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
