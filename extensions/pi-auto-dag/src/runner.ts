@@ -1,11 +1,11 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, open, readdir, realpath, rename, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
-import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import {
 	addUsage,
 	EphemeralSubagentError,
@@ -285,20 +285,14 @@ export class FileRunStore {
 	}
 
 	async load(root: string, id: string): Promise<RunState> {
-		const handle = await open(this.statePath(root, id), "r");
-		const raw = Buffer.allocUnsafe(STATE_MAX_BYTES + 1);
-		let offset = 0;
-		try {
-			while (offset < raw.length) {
-				const { bytesRead } = await handle.read(raw, offset, raw.length - offset, offset);
-				if (!bytesRead) break;
-				offset += bytesRead;
+		const path = this.statePath(root, id);
+		const raw = await readTextFileBounded(path, STATE_MAX_BYTES).catch((error: unknown) => {
+			if (error instanceof Error && error.message === `Text file exceeds ${STATE_MAX_BYTES} bytes: ${path}`) {
+				throw new Error(`pi-auto-dag state exceeds ${STATE_MAX_BYTES} bytes.`);
 			}
-		} finally {
-			await handle.close();
-		}
-		if (offset > STATE_MAX_BYTES) throw new Error(`pi-auto-dag state exceeds ${STATE_MAX_BYTES} bytes.`);
-		const state = parseRunState(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw.subarray(0, offset))));
+			throw error;
+		});
+		const state = parseRunState(JSON.parse(raw));
 		if (state.root !== root || state.request.id !== id) throw new Error("pi-auto-dag state identity does not match its workspace and filename.");
 		return state;
 	}
@@ -339,20 +333,7 @@ export class FileRunStore {
 		compactStateEvidence(state);
 		const contents = `${JSON.stringify(state, null, 2)}\n`;
 		if (Buffer.byteLength(contents, "utf8") > STATE_MAX_BYTES) throw new Error(`pi-auto-dag state exceeds ${STATE_MAX_BYTES} bytes.`);
-		await mkdir(directory, { recursive: true, mode: 0o700 });
-		const temporary = `${this.statePath(state.root, state.request.id)}.${process.pid}.${randomUUID()}.tmp`;
-		let handle: import("node:fs/promises").FileHandle | undefined;
-		try {
-			handle = await open(temporary, "wx", 0o600);
-			await handle.writeFile(contents, "utf8");
-			await handle.sync();
-			await handle.close();
-			handle = undefined;
-			await rename(temporary, this.statePath(state.root, state.request.id));
-		} finally {
-			await handle?.close();
-			await rm(temporary, { force: true });
-		}
+		await writePrivateTextFileAtomically(this.statePath(state.root, state.request.id), contents);
 	}
 }
 
