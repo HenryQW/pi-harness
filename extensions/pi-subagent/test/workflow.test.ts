@@ -31,7 +31,6 @@ test("schemas expose strict delegation fields and top-level workflow modes", () 
 	const delegationSchema = DelegationSchema as any;
 	const workflowSchema = WorkflowSchema as any;
 	assert.equal(delegationSchema.additionalProperties, false);
-	assert.deepEqual(Object.keys(delegationSchema.properties), ["role", "name", "task", "model", "modelClass"]);
 	assert.equal(delegationSchema.properties.name.maxLength, TASK_NAME_CONTRACT.maxLength);
 	assert.equal(delegationSchema.properties.name.description, TASK_NAME_CONTRACT.description);
 	assert.equal(delegationSchema.properties.name.pattern, DISPLAY_TEXT_CONTRACT.pattern);

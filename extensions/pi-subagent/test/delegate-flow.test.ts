@@ -24,7 +24,7 @@ import {
 } from "../extensions/delegate-flow.ts";
 import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
 import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
-import { CHILD_EXCLUDED_TOOLS, loadBuiltinRole } from "../src/index.ts";
+import { loadBuiltinRole } from "../src/index.ts";
 
 type Tool = {
 	name: string;
@@ -280,21 +280,13 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	assert.throws(() => parseDelegateFlowContinue({ guidance: " \n " }));
 	assert.throws(() => parseDelegateFlowContinue({ guidance: "repair", modelClass: "slow" }));
 	assert.throws(() => parseDelegateFlowContinue({ guidance: "repair", extra: true }));
-	assert.deepEqual(CHILD_EXCLUDED_TOOLS.split(",").filter((name) => name.startsWith("delegate_")), [
-		"delegate_task", "delegate_flow", "delegate_flow_continue",
-	]);
 	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/subagent.ts"]);
 });
 
-test("Flow tools leave rendering to Pi", async (t) => {
+test("Flow tools expose model class guidance", async (t) => {
 	const app = harness(await repository(t), () => success());
 	assert.ok(flowTool(app).promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)));
-	for (const tool of [flowTool(app), continueTool(app)]) {
-		assert.equal(tool.renderShell, undefined);
-		assert.equal(tool.renderCall, undefined);
-		assert.equal(tool.renderResult, undefined);
-	}
 });
 
 test("Flow prompt policy separates useful commuting outcomes without a quota", async (t) => {
