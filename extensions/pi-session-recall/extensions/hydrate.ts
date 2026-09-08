@@ -14,6 +14,8 @@ export interface WindowResult {
 	branchMessages: WindowMessage[];
 	messagesBefore: number;
 	messagesAfter: number;
+	/** Present only when discovery filtering removed at least one tool result. */
+	toolResultsOmitted?: true;
 	/** Tip of the branch the window was resolved on — pass back as branchTip to
 	 *  keep scrolling on this branch across forks. May be a non-message entry id. */
 	branchTip: string;
@@ -198,7 +200,7 @@ export function getWindow(
 	sessionPath: string,
 	anchorEntryId: string,
 	windowN: number,
-	opts?: { branchTip?: string },
+	opts?: { branchTip?: string; userAssistantTextOnly?: boolean },
 ): WindowResult {
 	const n = Math.max(0, Math.min(50, windowN));
 	const entries = parseSessionEntries(sessionPath);
@@ -220,8 +222,15 @@ export function getWindow(
 	} else {
 		tip = deepestDescendant(entriesById, entries, anchorEntryId);
 	}
-	const msgs = branchMessages(entriesById, tip);
+	const rawMessages = branchMessages(entriesById, tip);
+	const toolResultsOmitted = opts?.userAssistantTextOnly && rawMessages.some((m) => m.role === "toolResult")
+		? true
+		: undefined;
+	const msgs = opts?.userAssistantTextOnly
+		? rawMessages.filter((m) => (m.role === "user" || m.role === "assistant") && m.content.length > 0)
+		: rawMessages;
 	const idx = msgs.findIndex((m) => m.entryId === anchorEntryIdMsg);
+	if (idx < 0) throw new Error(`anchor entry ${anchorEntryId} is not a user/assistant text message`);
 	const start = Math.max(0, idx - n);
 	const end = Math.min(msgs.length - 1, idx + n);
 	return {
@@ -231,6 +240,7 @@ export function getWindow(
 		),
 		messagesBefore: idx,
 		messagesAfter: msgs.length - 1 - idx,
+		...(toolResultsOmitted ? { toolResultsOmitted } : {}),
 		branchTip: tip,
 	};
 }
