@@ -320,13 +320,32 @@ choose_extensions() {
 
 install_extensions() {
   installed=0
+  total=0
   for extension in $selected_extensions; do
-    info "Installing $extension..."
-    "$pi_bin" install "npm:$extension"
-    installed=$((installed + 1))
-    success "Installed $extension"
+    total=$((total + 1))
   done
-  printf '\n'
+
+  info "Installing extensions..."
+  for extension in $selected_extensions; do
+    "$pi_bin" install "npm:$extension" >/dev/null
+    installed=$((installed + 1))
+
+    if [ -t 1 ] && [ "${TERM:-}" != "dumb" ]; then
+      filled=$((installed * 20 / total))
+      bar=
+      position=1
+      while [ "$position" -le 20 ]; do
+        if [ "$position" -le "$filled" ]; then
+          bar="${bar}#"
+        else
+          bar="${bar}-"
+        fi
+        position=$((position + 1))
+      done
+      printf '\r  [%s] %s/%s' "$bar" "$installed" "$total"
+    fi
+  done
+  [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || printf '\n'
   success "Installed $installed extension(s)."
   info "Start Pi with: $pi_bin"
 }

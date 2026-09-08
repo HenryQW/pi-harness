@@ -1,12 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { extensionConfigDir, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const MAX_NOTES = 4;
@@ -138,15 +138,7 @@ async function loadNotes(identity: WorktreeIdentity): Promise<LoadedNotes> {
 }
 
 async function persist(identity: WorktreeIdentity, notes: string[]): Promise<void> {
-	const path = notesPath(identity.worktree);
-	const temp = `${path}.${randomUUID()}.tmp`;
-	await mkdir(configDir(), { recursive: true });
-	try {
-		await writeFile(temp, `${JSON.stringify({ ...identity, notes }, null, "\t")}\n`, { mode: 0o600 });
-		await rename(temp, path);
-	} finally {
-		await rm(temp, { force: true }).catch(() => {});
-	}
+	await writePrivateTextFileAtomically(notesPath(identity.worktree), `${JSON.stringify({ ...identity, notes }, null, "\t")}\n`);
 }
 
 function issueMessage(issue: LoadedNotes["issue"]): string | undefined {

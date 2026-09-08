@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-compact",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "description": "Proactively compact Pi context at a configurable threshold and resume the current task.",
   "keywords": [
     "pi-package",
@@ -45,6 +45,6 @@
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^1.0.0",
-    "@henryqw/pi-task-models": "^5.0.0"
+    "@henryqw/pi-task-models": "^5.1.0"
   }
 }

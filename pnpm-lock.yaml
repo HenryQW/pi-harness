@@ -48,7 +48,7 @@ importers:
         specifier: ^1.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-task-models':
-        specifier: ^5.0.0
+        specifier: ^5.1.0
         version: link:../pi-task-models
 
   extensions/pi-auto-dag:
@@ -60,7 +60,7 @@ importers:
         specifier: ^0.85.1
         version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
       '@henryqw/pi-config-store':
-        specifier: ^1.0.4
+        specifier: ^1.1.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
         specifier: ^15.0.2
@@ -148,7 +148,7 @@ importers:
         specifier: ^0.4.1
         version: link:../../packages/pi-herdr
       '@henryqw/pi-task-models':
-        specifier: ^5.0.0
+        specifier: ^5.1.0
         version: link:../pi-task-models
 
   extensions/pi-memory:
@@ -169,7 +169,7 @@ importers:
         specifier: ^1.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-task-models':
-        specifier: ^5.0.0
+        specifier: ^5.1.0
         version: link:../pi-task-models
       proper-lockfile:
         specifier: ^4.1.2
@@ -191,7 +191,7 @@ importers:
         specifier: ^0.85.1
         version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
       '@henryqw/pi-config-store':
-        specifier: ^1.0.0
+        specifier: ^1.1.0
         version: link:../../packages/pi-config-store
       proper-lockfile:
         specifier: ^4.1.2
@@ -210,7 +210,7 @@ importers:
         specifier: ^0.85.1
         version: 0.85.1
       '@henryqw/pi-config-store':
-        specifier: ^1.0.0
+        specifier: ^1.1.0
         version: link:../../packages/pi-config-store
 
   extensions/pi-open-in:
