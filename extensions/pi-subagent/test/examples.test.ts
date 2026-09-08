@@ -17,42 +17,30 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 		join(packageDir, "skills", "pi-subagent-delegated-development", "SKILL.md"),
 		"utf8",
 	);
-	assert.match(skill, /^name: pi-subagent-delegated-development$/m);
-	assert.match(skill, /^description: .+/m);
-	assert.match(skill, /Main, the planner\/orchestrator/i);
-	assert.match(skill, /call `delegate_flow`/i);
-	assert.match(skill, /independent units expected to commute/i);
-	assert.match(skill, /runtime owns.*worktrees.*Git identity.*rebasing.*committed-state inspection.*declared validation.*conditional exact read-only review.*fast-forward integration.*cleanup/is);
-	assert.match(skill, /validation is the authority for objective verification/i);
-	assert.match(skill, /task packet.*neighboring behavior.*stay unchanged/is);
-	assert.match(skill, /exact test name or error.*known CI evidence/is);
-	assert.match(skill, /Never claim a validation command matches unknown CI/i);
-	assert.match(skill, /When a known regression exists and the runner supports test-name filtering, require its exact test-name filter for that unit/i);
-	assert.match(skill, /node --test --test-name-pattern "exact test name" test\/example\.test\.ts/);
-	assert.match(skill, /each unit's declared validation focused on that unit's outcome.*do not include a broad package or workspace suite/is);
-	assert.match(skill, /declared Flow validation remains authoritative for that outcome/i);
-	assert.match(skill, /Reserve required broad package or cross-unit checks for one distinct caller-owned final integration validation after relevant units integrate/i);
-	assert.match(skill, /Do not duplicate checks against the same state/i);
-	assert.match(skill, /Flow itself has no post-merge validation/i);
-	assert.match(skill, /Add non-empty `review` only for an explicit judgment/i);
-	assert.match(skill, /caller-managed loop.*caller or repository policy.*explicitly requires judgment review.*not required for every ordinary implementation/is);
-	assert.match(skill, /`delegate_task` with `role: "reviewer"`.*effective `reviewer` Role.*same-named user Role remains effective/is);
-	assert.match(skill, /Do not launch the Reviewer unless it can see the actual candidate.*isolated implementation candidate.*use `delegate_flow`/is);
-	assert.match(skill, /initial review returns findings.*repair.*focused validation.*before one focused re-review/is);
-	assert.match(skill, /Empty Reviewer output.*failure.*Retry only when explicit caller policy.*otherwise.*block completion.*retry.*also empty.*block completion.*Only `PASS` completes.*re-review findings.*block completion.*Do not start another repair\/review round/is);
-	assert.match(skill, /without `review`.*exact validated tip/is);
-	assert.match(skill, /with `review`.*exact `\{base, tip, patchPath\}` protocol.*exactly `PASS`/is);
-	assert.match(skill, /delegate_flow_continue\(\{ guidance:/);
-	assert.match(skill, /one explicit continuation and no more/i);
-	assert.match(skill, /direct `model` replaces only the selected route's model.*route keeps its thinking level/is);
-	assert.match(skill, /terminal failure.*inspect each exact retained path reported by the runtime directly/is);
-	assert.match(skill, /Do not run `git worktree list` merely to rediscover a retained path/i);
-	assert.match(skill, /Report a cleanup warning from a successful Flow as-is.*Do not investigate it unless the user asks or cleanup is part of acceptance/is);
-	assert.match(skill, /Before selecting a Flow unit.*one Implementer launch can plausibly finish before the configured maximum runtime/is);
-	assert.match(skill, /Cohesion alone is not enough when work has multiple preservable, separately verifiable milestones/i);
-	assert.match(skill, /Units inside one Flow remain independent and commuting/i);
-	assert.match(skill, /Dependent work remains outside Flow/i);
-	assert.match(skill, /Split oversized dependent work into serial one-unit Flows after each milestone integrates/i);
+	for (const contract of [
+		/^name: pi-subagent-delegated-development$/m,
+		/^description: .+/m,
+		/trivial, single-owner, mechanically verifiable edit in Main/i,
+		/literal UI or copy defect.*search the exact quoted text first.*producer and nearby regression assertions/is,
+		/repository policy overrides.*compatibility is disallowed.*forbid legacy readers.*fallbacks/is,
+		/neighboring behavior.*stay unchanged.*exact test name or error.*known CI evidence/is,
+		/FLOW unit must fit one Implementer launch.*cohesion does not justify combining separately verifiable milestones/is,
+		/known regression.*exact test-name filter.*node --test --test-name-pattern "exact test name"/is,
+		/broad or cross-unit check once in Main.*Do not duplicate checks.*no post-merge validation/is,
+		/runtime owns.*worktrees.*Git identity.*rebasing.*declared validation.*exact read-only review.*fast-forward integration.*cleanup/is,
+		/without `review`.*exact validated tip.*with `review`.*`PASS`/is,
+		/Trust the structured Flow outcome.*Never edit child worktrees.*Do not repeat Flow validation/is,
+		/do not re-read implementation, tests, manifests, or commit stats/i,
+		/delegate_flow_continue` once.*guidance specific to the failure/is,
+		/Omit `modelClass`.*supply it only to replace both defaults/is,
+		/terminal failure.*exact retained paths.*Do not retry Flow.*`git worktree list`/is,
+		/cleanup warning from a successful Flow as-is/i,
+		/caller-managed review only when the caller or repository policy explicitly requires judgment/is,
+		/role: "reviewer".*same-named user Role remains effective/is,
+		/Reviewer cannot see an isolated candidate.*use Flow/is,
+		/Empty output fails.*second empty result blocks/is,
+		/findings.*repair them together.*validate once.*re-review once.*Only `PASS` completes/is,
+	]) assert.match(skill, contract);
 	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|advisory|reconsideration|public review/i);
 });
 
@@ -98,47 +86,34 @@ test("missing config directory still returns validated built-in implementer, rev
 
 	assert.deepEqual(roles.map(({ modelClass }) => modelClass), [undefined, undefined, undefined]);
 
-	assert.match(implementer!.systemPrompt, /bounded outcome, not a preassigned file list/i);
-	assert.match(implementer!.systemPrompt, /assigned cwd/i);
-	assert.match(implementer!.systemPrompt, /repository instructions and domain context/i);
-	assert.match(implementer!.systemPrompt, /relevant flow, callers, and tests/i);
-	assert.match(implementer!.systemPrompt, /preserve unrelated work/i);
-	assert.match(implementer!.systemPrompt, /root cause with the smallest complete diff/i);
-	assert.match(implementer!.systemPrompt, /speculative work/i);
-	assert.match(implementer!.systemPrompt, /Stop when the outcome is complete or blocked/i);
-	assert.match(implementer!.systemPrompt, /ordinary delegation, run focused validation.*establish correctness/i);
-	assert.match(implementer!.systemPrompt, /Flow, the declared validation gate is authoritative/i);
-	assert.match(implementer!.systemPrompt, /narrow development checks.*do not duplicate that final gate/i);
-	assert.match(implementer!.systemPrompt, /Before reporting ordinary or Flow completion, remove only task-created non-deliverable temporary, generated, or ignored artifacts/i);
-	assert.match(implementer!.systemPrompt, /Preserve required deliverables, unrelated files, pre-existing files, and user data/i);
-	assert.match(implementer!.systemPrompt, /Never use `git clean` or blanket deletion/i);
-	assert.match(implementer!.systemPrompt, /If a path's ownership or necessity is uncertain, report its exact path as a blocker/i);
-	assert.match(implementer!.systemPrompt, /credentials.*network.*generate artifacts.*broaden scope/i);
-	assert.match(implementer!.systemPrompt, /external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i);
-	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
-	assert.match(implementer!.systemPrompt, /assigned worktree and branch intact/i);
-	assert.match(implementer!.systemPrompt, /Never push or open a pull request without explicit authorization/i);
-	assert.match(implementer!.systemPrompt, /outcome, commit, checks run, and remaining risks/i);
-	assert.match(implementer!.systemPrompt, /Do not repeat Flow's Git-derived evidence/i);
+	for (const contract of [
+		/bounded outcome, not a preassigned file list.*assigned cwd/is,
+		/repository instructions and domain context.*relevant flow, callers, and tests/is,
+		/root cause with the smallest complete diff.*no speculative work.*complete or blocked/is,
+		/Run focused checks required by the task/i,
+		/remove only task-created, non-deliverable temporary, generated, or ignored files/is,
+		/Preserve required deliverables, unrelated and pre-existing files, and user data/i,
+		/Never use `git clean` or blanket deletion.*exact path as a blocker/is,
+		/credentials or the network.*extra artifacts.*broaden scope only when the task requires/is,
+		/external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i,
+		/Commit completed scoped changes.*Do not create or manage another worktree/is,
+		/assigned worktree and branch intact.*Never push or open a pull request/is,
+		/outcome, commit, checks, and remaining risks/i,
+	]) assert.match(implementer!.systemPrompt, contract);
 
-	assert.match(reviewer!.systemPrompt, /exactly two modes/i);
-	assert.match(reviewer!.systemPrompt, /ordinary delegation: use supplied requirements and named files\/evidence only/i);
-	assert.match(reviewer!.systemPrompt, /Do not prepare Git.*require a commit\/Review Packet.*broaden discovery/i);
-	assert.match(reviewer!.systemPrompt, /If evidence is insufficient, say so and stop/i);
-	assert.match(reviewer!.systemPrompt, /Flow exact review: only with an explicit judgment criterion.*same assigned Unit Worktree.*exact Review Packet `\{base, tip, patchPath\}`/i);
-	assert.match(reviewer!.systemPrompt, /exact patch at `patchPath` as authoritative.*read only referenced files\/context/i);
-	assert.match(reviewer!.systemPrompt, /Declared validation is authoritative for objective verification/i);
-	assert.match(reviewer!.systemPrompt, /Judge only the explicit criterion/i);
-	assert.match(reviewer!.systemPrompt, /actionable correctness risks introduced by the change/i);
-	assert.match(reviewer!.systemPrompt, /style preferences.*speculative hypotheticals.*unrelated pre-existing issues/i);
-	assert.match(reviewer!.systemPrompt, /Use only `read`, `grep`, `find`, and `ls`/i);
+	for (const contract of [
+		/Review the supplied candidate read-only/i,
+		/supplied requirements and named files or evidence.*do not prepare Git or broaden discovery/is,
+		/evidence is insufficient, say so and stop/i,
+		/actionable correctness risks introduced by the change.*not style preferences.*unrelated pre-existing issues/is,
+		/Run no commands or tests.*Never edit, write, commit, push, manage Git or worktrees/is,
+		/external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i,
+		/Output exactly `PASS` when there are no findings/i,
+		/findings only, ordered by severity.*file:line evidence.*smallest valid fix/is,
+		/Any finding blocks approval.*never combine `PASS` with findings/is,
+		/Stop when the supplied evidence is covered/i,
+	]) assert.match(reviewer!.systemPrompt, contract);
 	assert.doesNotMatch(reviewer!.systemPrompt, /\bbash\b/i);
-	assert.match(reviewer!.systemPrompt, /run no commands\/tests and never edit, write, commit, push, or manage Git\/worktrees/i);
-	assert.match(reviewer!.systemPrompt, /Never invoke external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i);
-	assert.match(reviewer!.systemPrompt, /Output exactly `PASS` when there are no findings/i);
-	assert.match(reviewer!.systemPrompt, /Otherwise output findings only, ordered by severity, with file:line evidence, impact, and smallest valid fix/i);
-	assert.match(reviewer!.systemPrompt, /Any finding blocks approval.*never combine `PASS` with findings/i);
-	assert.match(reviewer!.systemPrompt, /Stop when supplied evidence is covered.*in Flow, stop after its criterion/i);
 
 	assert.match(scout!.systemPrompt, /Answer only the bounded discovery questions/i);
 	assert.match(scout!.systemPrompt, /Read applicable repository instructions and domain context first/i);

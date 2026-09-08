@@ -54,8 +54,6 @@ import {
 	type ParsedWorkflow,
 	type WorkflowEntry,
 } from "./workflow.ts";
-import { TASK_NAME_CONTRACT } from "./task-name.ts";
-
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
@@ -596,11 +594,10 @@ export default function subagentExtension(
 		description: `Delegate one selected single, parallel, or chain workflow of bounded tasks to isolated Pi Subagents. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
 		promptGuidelines: [
-			"Call delegate_task with exactly one mode: role+name+task in single mode for one atomic task, tasks for 1–8 independent parallel tasks, or chain for 1–8 dependent sequential tasks using {previous} for the immediately preceding assistant output; prefer parallel mode whenever at least two independent outcomes exist and each is independently deliverable and independently verifiable; do not combine independent outcomes merely to reduce child count. Sequence dependent work in chain entries, and never divide one invariant across multiple entries.",
-			`${TASK_NAME_CONTRACT.promptGuidance} Every delegate_task entry must own one concrete outcome with one focused validation story: state its objective, exact scope and exclusions, relevant context and constraints, expected deliverable, and validation; if the affected flow or scope is not yet known, perform bounded read-only discovery first; never pass the parent request unchanged. For naturally multi-part delegate_task work, you may look for roughly 3–5 useful entries, but do not manufacture entries or enforce a quota.`,
-			`For each delegate_task entry, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
-			"Parallel mutating delegate_task entries must own non-overlapping files and changes. Read-only delegate_task entries may inspect overlapping sources when their questions and deliverables differ. Keep integration and cross-cutting decisions in Main.",
-			"delegate_task background applies to the whole selected workflow and returns before results exist; use it only when the user explicitly asks for non-blocking work.",
+			"Use delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent tasks, or chain for 1–8 dependent tasks using {previous}. Prefer parallel whenever at least two outcomes are independently deliverable and verifiable; never split one invariant.",
+			"Each delegate_task entry needs one bounded outcome, scope and exclusions, context and constraints, deliverable, and focused validation. Discover unclear scope first; never pass the parent request unchanged. Parallel mutations need non-overlapping ownership; read-only tasks may overlap only for distinct questions. Keep integration and cross-cutting decisions in Main.",
+			`For delegate_task, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
+			"Use delegate_task background only when the user explicitly requests non-blocking work.",
 		],
 		parameters: WorkflowSchema,
 		prepareArguments(args) {
