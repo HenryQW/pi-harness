@@ -22,6 +22,12 @@ export interface SessionRow {
 	preview?: string;
 }
 
+/** Indexed metadata selected for pattern-miner preparation. */
+export interface PreparationSessionRow extends SessionRow {
+	/** Stable one-hop fork identity used to avoid duplicate evidence. */
+	lineageId: string;
+}
+
 /** One FTS discovery hit before hydration. */
 export interface SearchHit {
 	path: string;

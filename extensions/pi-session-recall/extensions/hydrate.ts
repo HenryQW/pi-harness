@@ -25,6 +25,13 @@ export interface ReadResult {
 	messages: WindowMessage[];
 	totalMessages: number;
 	truncated: boolean;
+	/** Resolved leaf branch, or null when no selected message can be hydrated. */
+	branchTip: string | null;
+}
+
+export interface ReadOptions {
+	/** Preparation view: retain only non-empty user/assistant text. */
+	userAssistantTextOnly?: boolean;
 }
 
 interface Entry {
@@ -249,18 +256,24 @@ export function readSession(
 	sessionPath: string,
 	head = 20,
 	tail = 10,
+	opts?: ReadOptions,
 ): ReadResult {
 	const entries = parseSessionEntries(sessionPath);
 	const entriesById = new Map(entries.map((e) => [e.id, e]));
 	const leaf = leafId(entriesById, entries);
-	if (!leaf) return { messages: [], totalMessages: 0, truncated: false };
-	const msgs = branchMessages(entriesById, leaf);
+	if (!leaf) return { messages: [], totalMessages: 0, truncated: false, branchTip: null };
+	const rawMessages = branchMessages(entriesById, leaf);
+	const msgs = opts?.userAssistantTextOnly
+		? rawMessages.filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim().length > 0)
+		: rawMessages;
+	const branchTip = msgs.length > 0 ? leaf : null;
 	if (msgs.length > head + tail) {
 		return {
 			messages: [...msgs.slice(0, head), ...msgs.slice(-tail)],
 			totalMessages: msgs.length,
 			truncated: true,
+			branchTip,
 		};
 	}
-	return { messages: msgs, totalMessages: msgs.length, truncated: false };
+	return { messages: msgs, totalMessages: msgs.length, truncated: false, branchTip };
 }

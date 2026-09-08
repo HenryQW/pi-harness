@@ -4,7 +4,7 @@ Find decisions and context in past Pi sessions through a local FTS5 index.
 
 Saved transcripts are not injected on every turn. The active tool registration still adds standing prompt cost through its schema, descriptions, and guideline. Returned content enters active model context.
 
-The bundled `pi-session-pattern-miner` skill finds repeated work that may deserve automation.
+The bundled `pi-session-pattern-miner` skill prepares one bounded sample. The model then finds repeated work that may deserve automation.
 
 ## Install
 
@@ -22,7 +22,19 @@ Start discovery with a distinctive query:
 
 `session_search` returns ranked sessions. The top result includes nearby messages and session bookends.
 
-Use IDs from that result to ask for more context:
+Prepare a repository-scoped pattern-mining sample with one call:
+
+```json
+{
+  "operation": "prepare-pattern-miner",
+  "scope": "repository",
+  "limit": 10
+}
+```
+
+Use `scope:"all"` for cross-repository work. It still returns the corpus when repository inventory is unavailable.
+
+Use IDs from a discovery result to ask for more context:
 
 ```json
 {
@@ -36,13 +48,14 @@ The follow-up returns up to ten messages before and after that anchor on the sel
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `session_search` | tool | Search past sessions or inspect one. |
+| `session_search` | tool | Search, inspect, or prepare a bounded mining corpus from past sessions. |
 | `pi-session-pattern-miner` | skill | Find repeated work and choose the smallest useful automation. |
 
 BM25 is a text-ranking method. Hydrated results include messages read from saved session files.
 
 | Mode | Call | Result |
 | --- | --- | --- |
+| Pattern preparation | `operation:"prepare-pattern-miner"` + `scope:"repository"` or `scope:"all"` | Up to ten recent lineage-unique sessions plus repository inventory. The default limit is 10. Repository scope includes exact and descendant `cwd` values, filters before the limit, and excludes the current session file. |
 | Discovery | `query` | BM25-ranked top sessions. Adaptive retrieval uses user and assistant text for windows, bookends, anchors, and counts. It omits tool-result messages and sets `toolResultsOmitted:true` when it removes one. Lower hits still include their indexed anchor. Use `detail:"full"` to hydrate every hit with tool-result messages included. |
 | Scroll | `sessionId` + `aroundMessageId` | Raw message roles, including tool results, within ±`window` ([1,20]) of the anchor. Re-anchor on the last or first message ID to scroll. Across forks, pass the previous response's `branchTip`; `aroundMessageId` only centers the window and must lie on that branch. |
 | Read | `sessionId` | Raw message roles, including tool results, from the session. Large sessions return head 20 + tail 10. Oversized content is bounded to 50k characters and marked with `contentTruncated`. |
@@ -52,7 +65,36 @@ In the interactive TUI, the collapsed tool block shows the last five visual line
 
 ### Skills
 
-Run `/skill:pi-session-pattern-miner` to find repeated workflows in past sessions. It requires evidence from two independent sessions and checks for existing automation. It prefers a fixed script when model judgment is not needed.
+Run `/skill:pi-session-pattern-miner` to find repeated workflows in past sessions. The skill makes one preparation call before interpretation.
+
+It treats one lineage as one source. It requires two independent examples before recommending automation. A requested topic gets a focused confirmation search even when the prepared sample does not contain it.
+
+After clustering, the skill always checks current candidate-relevant package manifests, scripts, skills, and instructions. It abstains if it cannot check them safely.
+
+### Repository inventory
+
+Repository inventory contains discovery hints. It is never proof that a file owns a workflow. It does not verify the current worktree.
+
+Package scripts, executable paths, and instruction paths come from stage-0 entries in the Git index. Package content comes from indexed blobs. Git reads the objects locally in one check batch and one content batch. Lazy object fetching and replacement refs are disabled. Inventory never opens working-tree package paths.
+
+Executables need index mode `100755`. Instructions need a recognized name and a regular-file index mode.
+
+Skills come from Pi's effective command registry. Their canonical source paths must stay inside the repository.
+
+Available inventory includes this provenance:
+
+```json
+{
+  "packageScripts": "git-index",
+  "executableScripts": "git-index",
+  "agentInstructions": "git-index",
+  "skills": "pi-effective-registry"
+}
+```
+
+It also sets `worktreeVerified:false`. Staged adds, changes, and deletes affect the snapshot. Unstaged changes, deletions, mode changes, symlinks, and untracked files do not.
+
+Inspect the current candidate files before assigning ownership. Abstain if targeted current-file checks cannot be done safely.
 
 ## Flow
 
@@ -70,11 +112,15 @@ Search makes no model calls.
 
 Hits inside the current session's live context are suppressed. Compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
 
-Before browse or discovery, the extension lazily syncs the index from the session tree.
+Before browse, discovery, or pattern preparation, the extension lazily syncs the index from the session tree.
+
+Pattern preparation reports `sync.walkComplete`, `sync.backlogRemaining`, and `sync.complete`. `sync.complete` is true only after a complete walk with no backlog.
 
 ### Retrieval safety
 
 Adaptive discovery leaves tool-result messages out of returned context. Use `detail:"full"`, READ, or SCROLL when you explicitly need them.
+
+Pattern preparation returns only non-empty user and assistant text. It never returns thinking blocks or tool-result content. Each session keeps citation and lineage metadata even when its hydration fails.
 
 Historical tool output may contain secrets or other sensitive data. Raw retrieval places that output in active model context.
 
@@ -91,7 +137,7 @@ The index and transcript reads stay local. Transcripts are read in place. Return
 Pin the previous release:
 
 ```bash
-pi install npm:@henryqw/pi-session-recall@1.0.3
+pi install npm:@henryqw/pi-session-recall@2.0.0
 ```
 
 No index migration or cleanup is needed.
@@ -109,3 +155,19 @@ Session directories whose encoded path starts with `--tmp-` or `--private-tmp-` 
 Session files over 32 MiB are excluded from indexing and hydration. Discovery cannot newly find them.
 
 READ and SCROLL return an explicit size error. A stale discovery hit from before a file grew returns metadata with empty messages and that error.
+
+Pattern preparation runs one sync pass. A positive backlog or incomplete walk limits the sample and sets `sync.complete:false`. A total sync or required repository-inventory failure returns an explicit tool error.
+
+Repository scope fails outside Git or when repository inventory fails. All scope still returns its corpus in both cases.
+
+Outside Git, all scope sets `inventory.available:false` with `reason:"not-a-git-repository"`. On a repository inventory error, it uses `reason:"inventory-failed"`. Cancellation always aborts the call instead of returning unavailable inventory.
+
+Preparation rejects `query`, session cursors, `window`, or `detail` in the same call. It also rejects `scope` without the operation.
+
+Preparation output stays within 50,000 serialized characters. Inventory uses at most 10,000 characters. Its `omittedCounts` report only omitted collection entries, and `inventory.truncated` reports those omissions.
+
+Inventory fails if the Git root output exceeds 4 KiB or the raw index listing exceeds 8 MiB. It also fails on malformed index data, invalid UTF-8, conflict entries, unsupported package modes, Git errors, unexpected Git stderr, or bounded stream overflow.
+
+Inventory accepts at most 512 package manifests. Each indexed manifest can be at most 1 MiB, and their declared sizes can total at most 16 MiB. One bounded batch checks all blob sizes before one bounded batch reads their content. Blob order, type, size, UTF-8, and exact output framing are checked before manifest data is parsed.
+
+Session and top-level `contentTruncated` report transcript budget trimming only. Session `truncated` reports omitted middle messages.
