@@ -33,6 +33,7 @@ type CommandCall = {
 };
 
 type HarnessOptions = {
+	branch?: string;
 	branchResult?: ReturnType<typeof result>;
 	candidates?: Record<string, unknown>[];
 	searchCandidates?: Record<string, unknown>[];
@@ -226,6 +227,7 @@ function observation(overrides: Record<string, unknown> = {}) {
 function harness(options: HarnessOptions = {}) {
 	const calls: CommandCall[] = [];
 	const candidates = options.candidates ?? [pullRequest()];
+	const branch = options.branch ?? "feature/local";
 	let localHead = options.localHead ?? LOCAL_HEAD;
 	let searchPageIndex = 0;
 	const ancestry = options.ancestry ?? "behind";
@@ -236,10 +238,10 @@ function harness(options: HarnessOptions = {}) {
 			calls.push({ command, args, options: commandOptions });
 			if (command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") return result("true\n");
 			if (command === "git" && args.join(" ") === "branch --show-current") {
-				return options.branchResult ?? result("feature/local\n");
+				return options.branchResult ?? result(`${branch}\n`);
 			}
 			if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}") return result(`${localHead}\n`);
-			if (command === "git" && args.join(" ") === "for-each-ref --format=%(push:short) refs/heads/feature/local") {
+			if (command === "git" && args.join(" ") === `for-each-ref --format=%(push:short) refs/heads/${branch}`) {
 				return options.pushResult ?? result(`${options.pushReference ?? `${remote}/feature/pr`}\n`);
 			}
 			if (command === "git" && args.join(" ") === "remote") {
@@ -502,7 +504,7 @@ test("detects commits added after local branch creation", async (t) => {
 	assert.equal(await hasLocalCommit(pi, context), true);
 });
 
-test("discovers an upstream PR for a slash-containing fork branch with a branch-only head search", async () => {
+test("discovers an upstream PR for a slash-containing fork branch with an owner-scoped head search", async () => {
 	const foreign = pullRequest({
 		number: 41,
 		url: "https://github.com/acme/unrelated/pull/41",
@@ -569,7 +571,7 @@ test("discovers an upstream PR for a slash-containing fork branch with a branch-
 	assert.ok(search?.args.includes("github.com"));
 	assert.equal(search?.args.includes("--paginate"), false);
 	assert.equal(search?.args.includes("--slurp"), false);
-	assert.ok(search?.args.includes("searchQuery=is:pr head:feature/pr"));
+	assert.ok(search?.args.includes("searchQuery=is:pr head:acme:feature/pr"));
 	for (const field of [
 		"issueCount",
 		"__typename",
@@ -834,7 +836,50 @@ test("infers one exact open pull request from a published same-name branch", asy
 	const search = calls.find(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
 	);
-	assert.ok(search?.args.includes("searchQuery=is:pr is:open head:feature/local"));
+	assert.ok(search?.args.includes("searchQuery=is:pr is:open head:acme:feature/local"));
+});
+
+test("scopes a main search to its push owner so an empty repository remains a normal no-PR result", async () => {
+	const app = harness({
+		branch: "main",
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushReference: "origin/main",
+		pushUrl: "git@github.com:HenryQW/pi-harness.git",
+		pushRepositoryResult: result(JSON.stringify({
+			nameWithOwner: "HenryQW/pi-harness",
+			url: "https://github.com/HenryQW/pi-harness",
+		})),
+	});
+	const originalExec = app.pi.exec.bind(app.pi);
+	app.pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+		if (command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))) {
+			app.calls.push({ command, args, options: commandOptions });
+			const searchQuery = args.find((arg) => arg.startsWith("searchQuery="));
+			if (searchQuery === "searchQuery=is:pr head:HenryQW:main") {
+				return result(searchOutput(searchPage(0, [])));
+			}
+			if (searchQuery === "searchQuery=is:pr head:main") {
+				return result(searchOutput(searchPage(20_619_331, [])));
+			}
+			throw new Error(`Unexpected search query: ${searchQuery}`);
+		}
+		return originalExec(command, args, commandOptions);
+	};
+
+	assert.deepEqual(await discoverCurrentPullRequest(app.pi, app.context), {
+		kind: "none",
+		creationTarget: {
+			provenance: "configured",
+			branch: "main",
+			remote: "origin",
+			ref: "main",
+			repository: "HenryQW/pi-harness",
+			host: "github.com",
+			fetchSource: "git@github.com:HenryQW/pi-harness.git",
+			remoteOid: REMOTE_HEAD,
+		},
+	});
 });
 
 test("rejects true, malformed, and repeated remote mirror settings but allows normalized false", async () => {
@@ -1345,7 +1390,7 @@ test("does not fall back to local HEAD when the remote push ref is absent", asyn
 	const search = calls.find(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
 	);
-	assert.ok(search?.args.includes("searchQuery=is:pr head:feature/pr"));
+	assert.ok(search?.args.includes("searchQuery=is:pr head:acme:feature/pr"));
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
