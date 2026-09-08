@@ -619,10 +619,9 @@ export default function subagentExtension(
 			};
 			throwIfAborted();
 			let workflow: ParsedWorkflow;
-			let roles: Role[];
 			try {
 				workflow = parseWorkflow(params);
-				roles = loadRoles();
+				const roles = loadRoles();
 				const knownRoles = new Set(roles.map(({ name }) => name));
 				for (const { role } of workflow.delegations) {
 					if (!knownRoles.has(role)) {
@@ -633,7 +632,22 @@ export default function subagentExtension(
 				throw boundedError(error);
 			}
 			throwIfAborted();
-			const rolesByName = new Map(roles.map((role) => [role.name, role]));
+			const reloadRole = (name: string): Role => {
+				let freshRoles: Role[];
+				try {
+					freshRoles = loadRoles();
+				} catch (error) {
+					throw boundedError(new Error(
+						`Couldn't reload Subagent role ${JSON.stringify(name)} after it waited for an executor permit. Fix the Role configuration and retry: ${error instanceof Error ? error.message : String(error)}`,
+						{ cause: error },
+					));
+				}
+				const role = freshRoles.find((candidate) => candidate.name === name);
+				if (role) return role;
+				throw boundedError(new Error(
+					`Subagent role ${JSON.stringify(name)} disappeared while waiting for an executor permit. Restore it and retry. Available roles: ${freshRoles.map(({ name: available }) => available).join(", ") || "none"}.`,
+				));
+			};
 
 			// Resolve against the latest known session context after each FIFO permit.
 			const launchCtx = () => latestCtx ?? ctx;
@@ -681,7 +695,6 @@ export default function subagentExtension(
 			const runWorkflow = async (workflowSignal: AbortSignal | undefined, emitToolUpdates: boolean) => {
 				try {
 					return await runForegroundWorkflow<EphemeralSubagentResult>(toolCallId, foregroundWorkflow, async (entry: WorkflowEntry) => {
-					const role = rolesByName.get(entry.delegation.role)!;
 					let model: string | undefined;
 					let thinkingLevel: string | undefined;
 					let worktree: WorktreeInfo | undefined;
@@ -701,7 +714,7 @@ export default function subagentExtension(
 							id: entry.id,
 							index: entry.index,
 							name: entry.delegation.name,
-							role: role.name,
+							role: entry.delegation.role,
 							...(model === undefined ? {} : { model }),
 							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 							...(worktreePayload === undefined ? {} : { worktreePayload }),
@@ -723,6 +736,7 @@ export default function subagentExtension(
 							prepare: async () => {
 								// Route and effective Role resources resolve only after this entry's
 								// shared executor permit, before isolated state is created.
+								const role = reloadRole(entry.delegation.role);
 								const launch = resolveLaunch(role, entry.delegation);
 								notifyMissingSkills(role, launch);
 								model = modelReference(launch.model);

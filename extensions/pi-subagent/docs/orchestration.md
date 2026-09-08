@@ -110,12 +110,12 @@ Flow has no dependency graph, saved state, automatic retry, aggregate review, or
 
 ## Per-delegation resources and isolation
 
-For `delegate_task`, every single entry, parallel sibling, and chain step independently:
+`delegate_task` first preflights every requested Role name, so an initially unknown Role starts no sibling. Then, after receiving an executor permit, every single entry, parallel sibling, and chain step independently:
 
-1. loads its selected Role;
-2. resolves its route and named Skills from the latest effective Pi context after receiving an executor permit;
+1. reloads its effective Role by requested name;
+2. resolves its route and named Skills from the latest effective Pi context;
 3. creates its Role launch policy; and
-4. when the Role requests `isolation: worktree`, creates a worktree identified by the tool call, mode, and input index.
+4. when the reloaded Role requests `isolation: worktree`, creates a worktree identified by the tool call, mode, and input index.
 
 Separate deterministic identities produce separate worktree paths and branches. Parallel siblings cannot collide, and a chain does not base one step's worktree on the preceding step's branch. `{previous}` passes text only. There is no implicit shared worktree or hidden workflow state.
 
