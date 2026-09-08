@@ -21,10 +21,13 @@ keeps the complete JSON output. Read one item with
 `pr-feedback.mjs show --snapshot FILE --id ID`.
 
 `show` prints one JSON record with its exact stored body and fields. A thread
-record includes child IDs without child bodies. A nested comment includes only
-its parent thread's ID, state, and location. Missing, unknown, duplicate, or
-ambiguous IDs fail. `show` does not run Git, call GitHub, use the network, or
-write files.
+record includes child IDs without child bodies. Treat that record as a container.
+Inspect the `thread_comment` IDs directly. Do not call `show` on the parent only
+to find children. Show the parent only when it has no child, or when you need
+parent-level metadata. Issue independent `show` lookups in one tool-call round.
+A nested comment includes only its parent thread's ID, state, and location.
+Missing, unknown, duplicate, or ambiguous IDs fail. `show` does not run Git, call
+GitHub, use the network, or write files.
 
 ## Works with
 

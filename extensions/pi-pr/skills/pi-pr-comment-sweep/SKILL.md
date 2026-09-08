@@ -33,13 +33,17 @@ Run standalone; never invoke, defer to, or modify Shipyard.
 
 2. Initial fetch prints a compact index of every feedback ID. Later fetches into
    a copied snapshot print compact indexes of additions, edits, and state changes.
-   The snapshot remains complete. For each non-obvious item, inspect only that item:
+   The snapshot remains complete. A thread record with child IDs is a container:
+   inspect `thread_comment` IDs directly. Do not call `show` on the parent solely
+   to discover its children. Show the parent only if it has no child or parent-level
+   metadata is actually needed. For each non-obvious item, inspect only that item:
 
    ```bash
    node "<skill>/scripts/pr-feedback.mjs" show --snapshot "$SNAPSHOT" --id "$ID"
    ```
 
-   Always inspect every unresolved feedback item before triage. Never
+   Issue independent `show` lookups in one tool-call round. Always inspect every
+   unresolved feedback item before triage. Never
    read or print the whole raw snapshot when `show` provides the bounded lookup.
    Follow [Thread triage](<skill>/references/thread-triage.md>) and ledger every item as
    `actionable`, `non-actionable`, or `blocked`, with terse evidence, smallest
