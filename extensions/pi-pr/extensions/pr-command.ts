@@ -105,8 +105,8 @@ async function mergePullRequest(
 	if (!current.merge) throw new Error(`PR #${current.number} merge failed: merge capabilities are unavailable`);
 	const method = selectMergeMethod(current.merge);
 	const confirmed = await ctx.ui.confirm(
-		`Merge PR #${current.number} with ${method}?`,
-		`Merge PR #${current.number} using ${method}.`,
+		`Merge PR #${current.number}?`,
+		`Method: ${method}.`,
 	);
 	if (!confirmed) return false;
 
