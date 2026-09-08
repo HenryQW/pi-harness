@@ -320,7 +320,7 @@ export default function pullRequestExtension(
 
 	const commandHandler = createCommandHandler(pi);
 	pi.registerCommand("pr", {
-		description: "Run the current branch pull request next step",
+		description: "[instructions] — Run the current branch pull request next step",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
 			const generation = sessionGeneration;
