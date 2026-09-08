@@ -86,7 +86,7 @@ function indexShim(index: Buffer, options: { size?: string | Buffer; blob?: stri
 	const size = options.size ?? "2\n";
 	const blob = options.blob ?? "{}";
 	return `${rootSuccess()}
-if (args[0] === "ls-files") { process.stdout.write(Buffer.from("${index.toString("base64")}", "base64")); process.exit(0); }
+if (args[0] === "--no-replace-objects" && args[1] === "ls-files") { process.stdout.write(Buffer.from("${index.toString("base64")}", "base64")); process.exit(0); }
 if (args[0] === "--no-replace-objects" && args[2] === "-s") { process.stdout.write(Buffer.from("${Buffer.from(size).toString("base64")}", "base64")); process.exit(0); }
 if (args[0] === "--no-replace-objects" && args[2] === "blob") { process.stdout.write(Buffer.from("${Buffer.from(blob).toString("base64")}", "base64")); process.exit(0); }
 process.exit(9);`;
@@ -355,6 +355,35 @@ describe("repository inventory", { concurrency: false }, () => {
 
 			assert.deepEqual((await inventoryRepository(makePi(), { cwd: root, signal: new AbortController().signal })).packageScripts, [
 				{ path: "package.json", name: "original", command: "echo original" },
+			]);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("ignores replacement trees while expanding a sparse index", async () => {
+		const root = makeRepository();
+		try {
+			write(root, "included/keep.txt", "keep\n");
+			write(root, "excluded/package.json", JSON.stringify({ scripts: { original: "echo original" } }));
+			runGit(root, ["add", "."]);
+			runGit(root, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"]);
+			runGit(root, ["sparse-checkout", "set", "--sparse-index", "included"]);
+			runGit(root, ["config", "advice.sparseIndexExpanded", "false"]);
+			assert.match(runGit(root, ["ls-files", "--sparse", "--stage"]), /^040000 (?:[0-9a-f]{40}|[0-9a-f]{64}) 0\texcluded\/$/m);
+
+			const originalTree = runGit(root, ["rev-parse", "HEAD:excluded"]).trim();
+			const spoofedManifest = JSON.stringify({ scripts: { spoofed: "echo spoofed" } });
+			const spoofedBlob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: root, encoding: "utf8", input: spoofedManifest }).trim();
+			const replacementTree = execFileSync("git", ["mktree"], {
+				cwd: root,
+				encoding: "utf8",
+				input: `100644 blob ${spoofedBlob}\tpackage.json\n`,
+			}).trim();
+			runGit(root, ["replace", originalTree, replacementTree]);
+
+			assert.deepEqual((await inventoryRepository(makePi(), { cwd: root, signal: new AbortController().signal })).packageScripts, [
+				{ path: "excluded/package.json", name: "original", command: "echo original" },
 			]);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });

@@ -408,7 +408,7 @@ export async function inventoryRepository(
 		throw new Error("Repository inventory requires a Git repository.");
 	}
 
-	const index = parseIndex((await runGit(gitRoot, ["ls-files", "--stage", "-z"], ctx.signal, INDEX_STDOUT_BYTES)).stdout);
+	const index = parseIndex((await runGit(gitRoot, ["--no-replace-objects", "ls-files", "--stage", "-z"], ctx.signal, INDEX_STDOUT_BYTES)).stdout);
 	return {
 		available: true,
 		gitRoot,
