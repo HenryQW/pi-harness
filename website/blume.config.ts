@@ -30,7 +30,7 @@ const docs = [
     const { description, directory, name, version } = item;
     const root = Object.hasOwn(item, "pi") ? "extensions" : "packages";
     return {
-      data: { seo: { description }, title: name },
+      data: { ai: { exclude: root !== "extensions" }, description, seo: { description }, title: name },
       editPath: `${root}/${directory}/README.md`,
       npm: { name, version },
       path: join(repoRoot, root, directory, "README.md"),
@@ -95,7 +95,7 @@ const packageDocs: ContentSource = {
 
 export default defineConfig({
   title: "Henry Pi Harness",
-  description: "Focused Pi extensions for memory, subagents, Git workflows, model routing, and better interaction.",
+  description: "Opinionated Pi extensions for memory, delegation, Git, model routing, and interaction.",
   feedback: false,
   logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
