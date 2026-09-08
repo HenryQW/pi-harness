@@ -3,8 +3,8 @@
 ## Language
 
 **Footer identity**:
-Concise repository and branch label identifying current checkout. A non-empty `pi-pr` status follows its checkout link, while non-empty statuses from `@henryqw` extensions occupy the right side. Generated `worktree/` branch prefix is display noise. When the open command executable is `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI. The `-n` and `--new-window` flags make that link open a new window; otherwise unsupported executables render as plain text.
-_Avoid_: Working-directory path, worktree path
+Concise repository and branch label identifying current checkout. Actionable local Git state follows the branch in brackets and stays hidden when clean and synchronized. It shows active operations, conflicts, staged, unstaged, and untracked path counts, upstream divergence, and detached HEAD. A non-empty `pi-pr` status follows, while non-empty statuses from `@henryqw` extensions occupy the right side. Generated `worktree/` branch prefix is display noise. When the open command executable is `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI. The `-n` and `--new-window` flags make that link open a new window; otherwise unsupported executables render as plain text.
+_Avoid_: Working-directory path, worktree path, clean badge, remote fetch
 
 **Usage line**:
 Cumulative session input, output, and estimated cost, including reported tool usage and finished `pi-subagent` background workflows, plus latest cache-hit rate and current context usage. Right-aligned active model and thinking level follow. `off` matches dim model text, active levels follow a distinct green-to-red gradient ending with red `max`, and `ultra` is rainbow when runtime supports it.

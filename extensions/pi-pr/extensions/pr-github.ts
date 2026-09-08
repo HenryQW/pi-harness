@@ -1443,8 +1443,7 @@ async function searchPullRequests(
 	context: PullRequestLoadContext,
 	pushTarget: PushTarget,
 ): Promise<SearchSelection> {
-	const owner = pushTarget.repository.nameWithOwner.split("/")[0];
-	const searchQuery = `is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${owner}:${pushTarget.ref}`;
+	const searchQuery = `is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${pushTarget.ref}`;
 	const candidates: SearchPullRequest[] = [];
 	const cursors = new Set<string>();
 	let issueCount: number | null = null;
