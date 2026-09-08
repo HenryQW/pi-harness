@@ -352,6 +352,7 @@ describe("session_search entry point", () => {
 		const parsed = JSON.parse(res.content[0].text); // valid JSON
 		assert.equal(parsed.mode, "read");
 		assert.equal(parsed.totalMessages, 8);
+		assert.equal(parsed.branchTip, "e08", "branch tip survives character truncation");
 		assert.equal(parsed.truncated, false, "message-count truncation untouched");
 		assert.equal(parsed.contentTruncated, true, "character-level truncation signaled");
 		assert.ok(parsed.messages.every((m: { content: string }) => m.content.length < 10_000));
@@ -816,6 +817,32 @@ describe("session_search entry point", () => {
 			});
 			assert.equal(prepared.inventory.worktreeVerified, false);
 			assert.equal(prepared.inventory.truncated, false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("cancels preparation inventory from the execute-call AbortSignal", async () => {
+		clearRecallState();
+		const root = makeRepository();
+		try {
+			const pi = makePi();
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-cancel`);
+			register(pi as never);
+			const call = new AbortController();
+			call.abort();
+			const context = new AbortController();
+			const response = await (pi as any).tool.execute(
+				"prepare-cancel",
+				{ operation: "prepare-pattern-miner", scope: "repository" },
+				call.signal,
+				undefined,
+				{ cwd: root, signal: context.signal, sessionManager: { getSessionFile: () => undefined } },
+			);
+			const result = JSON.parse(response.content[0].text);
+			assert.equal(context.signal.aborted, false, "context signal remains live");
+			assert.equal(result.success, false);
+			assert.match(result.error, /Repository inventory cancelled/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

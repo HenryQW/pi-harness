@@ -324,7 +324,7 @@ export default function (pi: ExtensionAPI): void {
 				invalidate() {},
 			};
 		},
-		async execute(_toolCallId, rawParams: ToolParams, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, rawParams: ToolParams, signal, _onUpdate, ctx) {
 			try {
 				if (rawParams.operation !== undefined && rawParams.operation !== "prepare-pattern-miner") {
 					throw new Error("Unsupported session_search operation.");
@@ -344,7 +344,7 @@ export default function (pi: ExtensionAPI): void {
 					const limit = clamp(rawParams.limit, 1, 10, 10);
 					const inventory = await inventoryRepository(
 						pi,
-						ctx,
+						{ cwd: ctx.cwd, signal },
 						rawParams.scope === "repository" ? "required" : "optional",
 					);
 					const sync = syncSessions(sessionsDir(), dbPath());
@@ -414,6 +414,7 @@ export default function (pi: ExtensionAPI): void {
 							(cap) => ({
 								mode: "read",
 								sessionId,
+								branchTip: r.branchTip,
 								totalMessages: r.totalMessages,
 								truncated: r.truncated,
 								messages: cap === null ? [] : truncateContent(r.messages, cap),
