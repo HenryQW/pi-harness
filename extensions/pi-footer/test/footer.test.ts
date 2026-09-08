@@ -244,6 +244,48 @@ test("shows deterministic Git status and refreshes after an agent run", async (t
 	footer.dispose();
 });
 
+test("keeps the newest overlapping Git refresh", async (t) => {
+	const gitDir = await mkdtemp(join(tmpdir(), "pi-footer-git-"));
+	t.after(() => rm(gitDir, { recursive: true, force: true }));
+
+	const statusResolvers: Array<(stdout: string) => void> = [];
+	let statusCalls = 0;
+	const { handlers, start } = setupFooter({
+		exec: async (_command, args) => {
+			if (args[0] === "rev-parse") {
+				return { stdout: `/repo\n${gitDir}\n${gitDir}\n`, stderr: "", code: 0, killed: false };
+			}
+			if (statusCalls++ === 0) return { stdout: "", stderr: "", code: 0, killed: false };
+			return new Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>((resolve) => {
+				statusResolvers.push((stdout) => resolve({ stdout, stderr: "", code: 0, killed: false }));
+			});
+		},
+	});
+	const footerFactory = await start({
+		mode: "tui",
+		cwd: "/repo",
+		sessionManager: { getEntries: () => [] },
+		getContextUsage: () => undefined,
+	});
+	const footer = footerFactory(
+		{ requestRender() {} },
+		{ fg: (_c: string, text: string) => text },
+		{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
+	);
+
+	const idleCtx = { isIdle: () => true } as unknown as ExtensionContext;
+	const firstRefresh = handlers.get("agent_settled")!(undefined, idleCtx);
+	const secondRefresh = handlers.get("agent_settled")!(undefined, idleCtx);
+	assert.equal(statusResolvers.length, 2);
+	statusResolvers[1]!("? newest-one\n? newest-two\n");
+	await secondRefresh;
+	assert.equal(stripTerminalSequences(footer.render(100)[0]!), "repo · main [?2]");
+	statusResolvers[0]!("? stale\n");
+	await firstRefresh;
+	assert.equal(stripTerminalSequences(footer.render(100)[0]!), "repo · main [?2]");
+	footer.dispose();
+});
+
 test("shows TPS and active session time", async () => {
 	const { handlers, start } = setupFooter();
 	const footerFactory = await start({

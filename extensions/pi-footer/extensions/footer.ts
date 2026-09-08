@@ -257,12 +257,15 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		const commonName = commonDir && basename(commonDir) === ".git" ? basename(dirname(commonDir)) : undefined;
 		const repo = git.code === 0 ? commonName && commonName !== rootName ? commonName : rootName : basename(ctx.cwd);
 		let gitSummary = EMPTY_GIT_SUMMARY;
+		let gitRefreshGeneration = 0;
 		if (git.code === 0 && gitDir) {
 			refreshGitStatus = async () => {
+				const generation = ++gitRefreshGeneration;
 				const [status, operation] = await Promise.all([
 					pi.exec("git", ["status", "--porcelain=v2", "--branch", "--untracked-files=normal"], { cwd: ctx.cwd }),
 					readGitOperation(gitDir),
 				]);
+				if (generation !== gitRefreshGeneration) return;
 				gitSummary = status.code === 0 ? summarizeGitStatus(status.stdout, operation) : EMPTY_GIT_SUMMARY;
 				requestRuntimeRender?.();
 			};

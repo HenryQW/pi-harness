@@ -38,14 +38,16 @@ Git badges appear only when action is needed:
 | --- | --- |
 | `+2` | Two staged paths |
 | `~3` | Three unstaged tracked paths |
-| `?1` | One untracked path |
+| `?N` | `N` untracked porcelain status entries |
 | `!1` | One unresolved path |
 | `↑2` | Two commits ahead of the upstream branch |
 | `↓1` | One commit behind the upstream branch |
 
+`?N` counts porcelain status entries. In `--untracked-files=normal` mode, Git may collapse a whole untracked directory to one entry.
+
 Active operations appear first, such as `REBASE 3/7`, `MERGING`, or `CHERRY-PICKING`. Detached HEAD uses the short commit form `@a1b2c3d`.
 
-The extension reads local Git data with `git status --porcelain=v2 --branch`. It refreshes after each agent run and branch change. It does not make an LLM call or fetch a remote. Ahead and behind counts use the last fetched upstream state.
+The extension reads local Git data with `git status --porcelain=v2 --branch --untracked-files=normal`. It refreshes after each agent run and branch change. It does not make an LLM call or fetch a remote. Ahead and behind counts use the last fetched upstream state.
 
 Unavailable values render as `—` without a misleading percent sign.
 
