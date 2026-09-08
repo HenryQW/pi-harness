@@ -53,7 +53,7 @@ _Avoid_: Workflow menu, multiple actions
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
-The footer and widget load at session start, refresh after local commits, PR creation, pushes, dispatched workflow settlement, and successful delegated-task settlement, and poll every 30 seconds. A session outside a Git worktree stays silent and does not poll. Any displayed widget clears when `/pr` starts. A dispatched workflow keeps it hidden until agent settlement; direct and no-action routes refresh it after the handler finishes. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Polling is presentation only and may be stale. `/pr` reads fresh state and is authoritative for actions.
+The footer and widget load at session start, refresh after local commits, PR creation, pushes, dispatched workflow settlement, and successful delegated-task settlement, and poll every 30 seconds. A session outside a Git worktree stays silent and does not poll. Any displayed widget clears when `/pr` starts. A creation workflow defers intermediate refreshes until agent settlement, so its push-before-PR transition stays hidden. Other dispatched workflows keep the widget hidden until settlement; direct and no-action routes refresh it after the handler finishes. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Polling is presentation only and may be stale. `/pr` reads fresh state and is authoritative for actions.
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:
