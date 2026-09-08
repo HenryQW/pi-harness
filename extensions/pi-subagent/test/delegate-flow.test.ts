@@ -293,19 +293,15 @@ test("Flow prompt policy separates useful commuting outcomes without a quota", a
 	const unitPolicy = flowTool(harness(await repository(t), () => success())).promptGuidelines?.[0];
 	assert.ok(unitPolicy);
 	for (const fragment of [
-		/independent commuting outcomes/i,
-		/separate units/i,
-		/reduce Implementer count/i,
-		/naturally multi-part work/i,
-		/roughly 3–5 useful units/i,
+		/independent commuting units/i,
+		/sequence dependent work elsewhere/i,
+		/independently useful outcomes/i,
 		/never manufacture units/i,
-		/split one invariant/i,
-		/overlapping mutable ownership/i,
-		/use a quota/i,
-		/sequence dependent work outside delegate_flow/i,
+		/split an invariant/i,
+		/overlap mutable ownership/i,
 		/overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants/i,
 	]) assert.match(unitPolicy, fragment);
-	assert.doesNotMatch(unitPolicy, /\b(?:at least|minimum(?:\s+of)?)\s+(?:3|three)(?:\s+useful)?\s+units?\b/i);
+	assert.doesNotMatch(unitPolicy, /3–5|minimum number|quota/i);
 });
 
 test("successful Flow reports aggregate progress", async (t) => {
@@ -332,7 +328,12 @@ test("successful Flow reports aggregate progress", async (t) => {
 test("reviewed Flow reports review after declared-order verification", async (t) => {
 	const repo = await repository(t);
 	const app = harness(repo, async (prepared) => {
-		if (childRole(prepared) === "reviewer") return success("PASS");
+		if (childRole(prepared) === "reviewer") {
+			assert.match(prepared.task, /explicit judgment criterion.*Declared validation already passed.*Review Packet:/is);
+			assert.match(prepared.task, /assigned Unit Worktree.*exact patch at patchPath as authoritative.*judge only the criterion/is);
+			return success("PASS");
+		}
+		assert.match(prepared.task, /Authoritative Flow validation \(do not duplicate this final gate\)/);
 		await commit(prepared.cwd, "reviewed.txt", "done\n");
 		return success();
 	});

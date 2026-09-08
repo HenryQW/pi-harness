@@ -3,13 +3,11 @@ import { Type, type Static } from "typebox";
 
 const TASK_NAME_MAX_LENGTH = 29 as const;
 const TASK_NAME_LIMIT_WORDING = `about five words and fewer than ${TASK_NAME_MAX_LENGTH + 1} characters`;
-const TASK_NAME_WORDING = `short descriptive name of ${TASK_NAME_LIMIT_WORDING}`;
 
 export const TASK_NAME_CONTRACT = {
 	minLength: 1,
 	maxLength: TASK_NAME_MAX_LENGTH,
 	description: `Short descriptive task name, ${TASK_NAME_LIMIT_WORDING}; C0/C1 control characters are rejected.`,
-	promptGuidance: `Use a ${TASK_NAME_WORDING} without C0/C1 control characters.`,
 	controlRanges: DISPLAY_TEXT_CONTRACT.controlRanges,
 	pattern: DISPLAY_TEXT_CONTRACT.pattern,
 } as const;

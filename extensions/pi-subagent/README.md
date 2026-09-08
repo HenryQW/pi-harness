@@ -86,12 +86,13 @@ For known regressions with a runner that supports test-name filtering, use a tes
 
 Before delegating:
 
+- Keep trivial, single-owner, mechanically verifiable edits in Main.
+- For literal UI or copy defects, search the exact text first. Read only its producer and nearby assertions unless ownership remains unclear.
 - Find concrete outcomes that can ship on their own.
 - Split only those outcomes. Give each one owner and a focused check.
 - Run independent work in parallel.
 - Prefer parallel delegation when at least two outcomes are independent.
-- For naturally multi-part work, roughly three to five useful units can help.
-- This is a guide, not a quota. Never create units just to reach it.
+- Use only as many units as independent outcomes require. Never create units to reach a count.
 
 Its ordinary review loop is optional. Use it only when the caller or repository policy explicitly requires judgment review.
 
@@ -122,6 +123,7 @@ A Flow has 1–8 units with unique non-empty IDs and allows one active Flow. It 
 - Flow runs each declared command with its arguments. That validation is authoritative for objective checks.
 - Without `review`, Flow fast-forwards the exact validated tip.
 - With `review`, the Reviewer receives the exact `{base, tip, patchPath}` packet and must return exactly `PASS` before the same integration path. Use `review` only for stated judgment that validation cannot decide.
+- Trust a successful Flow result. Do not re-read integrated files or repeat its validation merely to confirm it.
 
 A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
 

@@ -282,17 +282,15 @@ test("delegate_task description exposes built-in roles with an empty user config
 test("delegate_task prompt favors safe parallelism at outcome boundaries", async () => {
 	await environment(async () => {
 		const guidance = harness().tool.promptGuidelines?.join("\n") ?? "";
-		assert.match(guidance, /single mode for one atomic task/);
-		assert.match(guidance, /prefer parallel mode whenever at least two independent outcomes exist/i);
-		assert.match(guidance, /independently deliverable and independently verifiable/);
-		assert.match(guidance, /do not combine independent outcomes merely to reduce child count/i);
-		assert.match(guidance, /roughly 3–5 useful entries/);
-		assert.match(guidance, /do not manufacture entries or enforce a quota/i);
-		assert.match(guidance, /one concrete outcome with one focused validation story/);
-		assert.match(guidance, /Parallel mutating delegate_task entries must own non-overlapping files and changes/);
-		assert.match(guidance, /Read-only delegate_task entries may inspect overlapping sources when their questions and deliverables differ/);
+		assert.match(guidance, /exactly one mode.*role\+name\+task.*tasks for 1–8 independent tasks.*chain for 1–8 dependent tasks/is);
+		assert.match(guidance, /Prefer parallel whenever at least two outcomes are independently deliverable and verifiable/i);
+		assert.match(guidance, /never split one invariant/i);
+		assert.match(guidance, /one bounded outcome.*scope and exclusions.*focused validation/is);
+		assert.match(guidance, /Discover unclear scope first.*never pass the parent request unchanged/is);
+		assert.match(guidance, /Parallel mutations need non-overlapping ownership/i);
+		assert.match(guidance, /read-only tasks may overlap only for distinct questions/i);
 		assert.match(guidance, /Keep integration and cross-cutting decisions in Main/);
-		assert.doesNotMatch(guidance, /minimum number of Subagents/i);
+		assert.doesNotMatch(guidance, /3–5|minimum number|quota/i);
 	});
 });
 

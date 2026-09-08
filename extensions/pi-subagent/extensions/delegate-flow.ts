@@ -20,7 +20,7 @@ import {
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
-import { TASK_NAME_CONTRACT, TaskNameSchema, normalizeTaskName } from "./task-name.ts";
+import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
 const MAX_UNITS = 8;
 const GIT_TIMEOUT_MS = 30_000;
@@ -247,7 +247,7 @@ function reviewerTask(unit: FlowUnitRequest, review: string, packet: { base: str
 		...unit.validation.map((validation) => `- ${JSON.stringify(validation)}`),
 		"",
 		`Review Packet: ${JSON.stringify(packet)}`,
-		"Review only the criterion above. Read the exact patch as authoritative and emit exactly PASS only when there are zero findings.",
+		"In the assigned Unit Worktree, treat the exact patch at patchPath as authoritative. Read only referenced context, judge only the criterion above, and never infer a diff from another branch or worktree.",
 	].join("\n");
 }
 
@@ -770,10 +770,10 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		description: "Run 1–8 independent Implementers in isolated Unit Worktrees, validate and serially fast-forward each tip, with exact review only for units that declare a judgment criterion.",
 		promptSnippet: "Run a deterministic parallel-implementation, serial-verification Flow",
 		promptGuidelines: [
-			"Use delegate_flow only for cohesive units expected to commute: make independent commuting outcomes separate units rather than combining them merely to reduce Implementer count; sequence dependent work outside delegate_flow. On naturally multi-part work, actively look for roughly 3–5 useful units, but never manufacture units, split one invariant across multiple units, assign overlapping mutable ownership, or use a quota. Combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
-			`${TASK_NAME_CONTRACT.promptGuidance} Each delegate_flow unit must own one concrete outcome with one focused validation story: include explicit bounded requirements and its authoritative direct command/argument validation gate. If the affected flow or scope is not yet known, perform bounded read-only discovery first. Add review only for an explicit judgment that validation cannot establish.`,
-			`For each delegate_flow unit, ${MODEL_CLASS_GUIDANCE}`,
-			"If a Flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that one repair's current class.",
+			"Use delegate_flow only for independent commuting units; sequence dependent work elsewhere. Separate independently useful outcomes, but never manufacture units, split an invariant, or overlap mutable ownership. Combine work that overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.",
+			"Each delegate_flow unit needs one bounded outcome, explicit requirements, and an authoritative command/argument validation gate. Discover unclear scope first. Add review only for judgment validation cannot establish.",
+			`For delegate_flow, ${MODEL_CLASS_GUIDANCE}`,
+			"If delegate_flow blocks, inspect its classification and call delegate_flow_continue once with explicit repair guidance; modelClass may replace that repair's current class.",
 		],
 		parameters: DelegateFlowSchema,
 		prepareArguments: parseDelegateFlow,
