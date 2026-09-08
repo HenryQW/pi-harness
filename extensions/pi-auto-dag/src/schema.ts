@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { Usage } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -286,8 +287,13 @@ export function parseRunState(value: unknown): RunState {
 	if (!Check(RunStateSchema, value)) throw new Error("Unsupported or malformed pi-auto-dag v9 state.");
 	const request = parseExecuteRequest(value.request);
 	if (value.tasks.length !== request.tasks.length) throw new Error("Malformed pi-auto-dag v9 state task count.");
-	for (const [index, task] of value.tasks.entries()) {
-		if (task.request.id !== request.tasks[index]!.id) throw new Error("Malformed pi-auto-dag v9 state task order.");
-	}
-	return { ...value, request } as RunState;
+	const tasks = value.tasks.map((task, index) => {
+		const canonical = request.tasks[index]!;
+		if (task.request.id !== canonical.id) throw new Error("Malformed pi-auto-dag v9 state task order.");
+		if (!isDeepStrictEqual(normalizeTask(task.request, index), canonical)) {
+			throw new Error(`Malformed pi-auto-dag v9 state task definition for ${canonical.id}.`);
+		}
+		return { ...task, request: canonical };
+	});
+	return { ...value, request, tasks } as RunState;
 }
