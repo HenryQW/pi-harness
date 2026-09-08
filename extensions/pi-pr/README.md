@@ -34,11 +34,13 @@ write files.
 
 ## Use
 
-Run `/pr` without arguments in a GitHub checkout. It reads the current branch pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
+Run `/pr` in a GitHub checkout. It reads the current branch pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
+
+Add optional instructions to guide a creation, branch-update, CI-fix, or feedback workflow. For example, run `/pr keep the title under 50 characters`. Direct routes, such as linking or merging, reject instructions instead of ignoring them.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/pr` | command | Run the current pull request's next safe route. |
+| `/pr [instructions]` | command | Run the current pull request's next safe route. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
 | Widget | ui | Show one actionable icon-prefixed `Run /pr to …` hint. |
 

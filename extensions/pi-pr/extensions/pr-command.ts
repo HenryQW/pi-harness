@@ -34,7 +34,12 @@ type PrCommandDependencies = {
 	linkInferredPullRequest?: typeof linkInferredPullRequest;
 };
 
-function dispatchWorkflow(pi: PrCommandPi, ctx: ExtensionCommandContext, commandName: string): void {
+function dispatchWorkflow(
+	pi: PrCommandPi,
+	ctx: ExtensionCommandContext,
+	commandName: string,
+	instructions: string,
+): void {
 	const command = pi.getCommands().find((candidate) =>
 		candidate.name === commandName &&
 		candidate.source === "skill" &&
@@ -45,7 +50,7 @@ function dispatchWorkflow(pi: PrCommandPi, ctx: ExtensionCommandContext, command
 	const options = ctx.isIdle()
 		? { expandPromptTemplates: true }
 		: { deliverAs: "followUp" as const, expandPromptTemplates: true };
-	pi.sendUserMessage(`/${command.name}`, options);
+	pi.sendUserMessage(`/${command.name}${instructions ? ` ${instructions}` : ""}`, options);
 }
 
 function noActionNotification(pullRequest: CurrentPullRequest): { message: string; type: "info" | "warning" } {
@@ -171,10 +176,12 @@ export function createPrCommandHandler(
 	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
 	const link = dependencies.linkInferredPullRequest ?? linkInferredPullRequest;
 	return async (args, ctx) => {
-		if (args.trim()) throw new Error("/pr does not accept arguments");
-
+		const instructions = args.trim();
 		const discovery = await load(pi, ctx);
 		const nextStep = deriveNextStep(discovery);
+		if (instructions && !(nextStep in WORKFLOWS)) {
+			throw new Error("The current /pr route does not accept instructions");
+		}
 		if (discovery.kind === "inactive") return nextStep;
 		if (discovery.kind === "blocked") {
 			return nextStep;
@@ -197,7 +204,7 @@ export function createPrCommandHandler(
 		}
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
-		dispatchWorkflow(pi, ctx, WORKFLOWS[nextStep as WorkflowNextStep]);
+		dispatchWorkflow(pi, ctx, WORKFLOWS[nextStep as WorkflowNextStep], instructions);
 		return nextStep;
 	};
 }

@@ -368,11 +368,22 @@ test("dispatches a workflow as a follow-up only while the agent is busy", async 
 	}]);
 });
 
-test("rejects arguments before reading pull request state", async () => {
-	const app = harness({ states: [null] });
+test("forwards trimmed instructions to the selected workflow", async () => {
+	const app = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
 
-	await assert.rejects(app.handler(" --unsupported ", app.context), /\/pr does not accept arguments/);
-	assert.equal(app.calls.length, 0);
+	await app.handler("  keep the title under 50 characters  ", app.context);
+	assert.deepEqual(app.messages, [{
+		content: "/skill:pi-pr-create keep the title under 50 characters",
+		options: { expandPromptTemplates: true },
+	}]);
+});
+
+test("rejects instructions when the current route handles the action directly", async () => {
+	const app = harness({ states: [{}] });
+
+	await assert.rejects(app.handler("use squash", app.context), /current \/pr route does not accept instructions/);
+	assert.deepEqual(app.confirmations, []);
+	assert.equal(mutationCalls(app.calls).length, 0);
 });
 
 test("requires the effective package-owned skill", async () => {
