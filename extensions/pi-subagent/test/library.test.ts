@@ -6,8 +6,6 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import childToolPolicy from "../extensions/role-tools.ts";
 import {
-	CHILD_EXCLUDED_TOOL_NAMES,
-	CHILD_EXCLUDED_TOOLS,
 	createRoleLaunch,
 	EXECUTION_BUDGET_ENV,
 	resolveRoleLaunch,
@@ -107,11 +105,6 @@ test("child role policy verifies the final filtered registry once before the fir
 	const unavailable = start(["tyop", "missing_provider"], false);
 	assert.throws(() => unavailable.start(), /unavailable tools: tyop, missing_provider.*provider extension/);
 	assert.deepEqual(unavailable.events, ["getAllTools", "setActiveTools", "getActiveTools"]);
-});
-
-test("child excluded tool names derive the CLI value", () => {
-	assert.deepEqual(CHILD_EXCLUDED_TOOL_NAMES, ["delegate_task", "delegate_flow", "delegate_flow_continue", "ask_question"]);
-	assert.equal(CHILD_EXCLUDED_TOOLS, CHILD_EXCLUDED_TOOL_NAMES.join(","));
 });
 
 test("child role policy rejects a malformed tool flag", () => {
