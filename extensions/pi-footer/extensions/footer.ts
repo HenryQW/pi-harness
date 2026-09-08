@@ -1,4 +1,5 @@
-import { basename, dirname } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
@@ -16,6 +17,9 @@ const AGENT_TIME_ENTRY = "pi-footer:agent-work";
 const SUBAGENT_BACKGROUND_RESULT = "subagent-background-result";
 
 type CountedUsage = { input: number; output: number; cost: { total: number } };
+type GitSummary = { badges: string; detachedOid?: string };
+
+const EMPTY_GIT_SUMMARY: GitSummary = { badges: "" };
 
 function isNonNegativeNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -51,6 +55,95 @@ function sanitizeStatus(text: string): string {
 	return text.replace(/[\r\n]+/g, " ").trim();
 }
 
+function summarizeGitStatus(output: string, operation?: string): GitSummary {
+	let staged = 0;
+	let unstaged = 0;
+	let untracked = 0;
+	let conflicts = 0;
+	let ahead = 0;
+	let behind = 0;
+	let detachedOid: string | undefined;
+
+	for (const line of output.split(/\r?\n/)) {
+		if (line.startsWith("# branch.oid ")) {
+			const oid = line.slice(13).trim();
+			if (oid !== "(initial)") detachedOid = oid.slice(0, 7);
+		} else if (line.startsWith("# branch.ab ")) {
+			const match = /^# branch\.ab \+(\d+) -(\d+)$/.exec(line);
+			if (match) {
+				ahead = Number(match[1]);
+				behind = Number(match[2]);
+			}
+		} else if (line.startsWith("? ")) {
+			untracked++;
+		} else if (line.startsWith("u ")) {
+			conflicts++;
+		} else if (line.startsWith("1 ") || line.startsWith("2 ")) {
+			const xy = line.slice(2, 4);
+			if (xy[0] !== ".") staged++;
+			if (xy[1] !== ".") unstaged++;
+		}
+	}
+
+	const badges = [
+		operation,
+		conflicts ? `!${conflicts}` : undefined,
+		staged ? `+${staged}` : undefined,
+		unstaged ? `~${unstaged}` : undefined,
+		untracked ? `?${untracked}` : undefined,
+		ahead ? `↑${ahead}` : undefined,
+		behind ? `↓${behind}` : undefined,
+	].filter(Boolean).join(" ");
+	return { badges: badges ? `[${badges}]` : "", detachedOid };
+}
+
+async function readOptional(path: string): Promise<string | undefined> {
+	try {
+		return await readFile(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+}
+
+function operationProgress(current: string | undefined, total: string | undefined): string {
+	const currentStep = Number.parseInt(current ?? "", 10);
+	const totalSteps = Number.parseInt(total ?? "", 10);
+	return currentStep > 0 && totalSteps > 0 ? ` ${currentStep}/${totalSteps}` : "";
+}
+
+async function readGitOperation(gitDir: string): Promise<string | undefined> {
+	const [
+		rebaseMergeCurrent,
+		rebaseMergeTotal,
+		rebaseApplyCurrent,
+		rebaseApplyTotal,
+		applying,
+		mergeHead,
+		cherryPickHead,
+		revertHead,
+		bisectLog,
+	] = await Promise.all([
+		readOptional(join(gitDir, "rebase-merge", "msgnum")),
+		readOptional(join(gitDir, "rebase-merge", "end")),
+		readOptional(join(gitDir, "rebase-apply", "next")),
+		readOptional(join(gitDir, "rebase-apply", "last")),
+		readOptional(join(gitDir, "rebase-apply", "applying")),
+		readOptional(join(gitDir, "MERGE_HEAD")),
+		readOptional(join(gitDir, "CHERRY_PICK_HEAD")),
+		readOptional(join(gitDir, "REVERT_HEAD")),
+		readOptional(join(gitDir, "BISECT_LOG")),
+	]);
+	if (rebaseMergeCurrent !== undefined) return `REBASE${operationProgress(rebaseMergeCurrent, rebaseMergeTotal)}`;
+	if (rebaseApplyCurrent !== undefined) {
+		return `${applying === undefined ? "REBASE" : "AM"}${operationProgress(rebaseApplyCurrent, rebaseApplyTotal)}`;
+	}
+	if (mergeHead !== undefined) return "MERGING";
+	if (cherryPickHead !== undefined) return "CHERRY-PICKING";
+	if (revertHead !== undefined) return "REVERTING";
+	if (bisectLog !== undefined) return "BISECTING";
+}
+
 function align(left: string, right: string, width: number, ellipsis: string): string {
 	const available = width - visibleWidth(left) - 2;
 	if (available <= 0) return truncateToWidth(left, width, ellipsis);
@@ -80,6 +173,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	let promptPaused = false;
 	let runtimeTimer: ReturnType<typeof setInterval> | undefined;
 	let requestRuntimeRender: (() => void) | undefined;
+	let refreshGitStatus: (() => Promise<void>) | undefined;
 	const stopRuntimeTimer = () => {
 		if (runtimeTimer === undefined) return;
 		clearInterval(runtimeTimer);
@@ -126,13 +220,16 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	pi.on("ui_prompt_end", () => {
 		resumeActive();
 	});
-	pi.on("agent_settled", (_event, ctx) => {
-		if (ctx.isIdle() && finalizeActive()) pi.appendEntry(AGENT_TIME_ENTRY, activeMilliseconds);
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (!ctx.isIdle()) return;
+		if (finalizeActive()) pi.appendEntry(AGENT_TIME_ENTRY, activeMilliseconds);
+		await refreshGitStatus?.();
 	});
 	pi.on("session_shutdown", () => {
 		stopRuntimeTimer();
 		activeStartedAt = undefined;
 		promptPaused = false;
+		refreshGitStatus = undefined;
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -140,6 +237,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		activeStartedAt = undefined;
 		promptPaused = false;
 		requestRuntimeRender = undefined;
+		refreshGitStatus = undefined;
 		// Latest valid entry wins; stored data is untrusted.
 		activeMilliseconds = 0;
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -151,13 +249,28 @@ export default function footerExtension(pi: ExtensionAPI): void {
 
 		const git = await pi.exec(
 			"git",
-			["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+			["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"],
 			{ cwd: ctx.cwd },
 		);
-		const [root, commonDir] = git.stdout.trim().split(/\r?\n/);
+		const [root, commonDir, gitDir] = git.stdout.trim().split(/\r?\n/);
 		const rootName = basename(root || ctx.cwd);
 		const commonName = commonDir && basename(commonDir) === ".git" ? basename(dirname(commonDir)) : undefined;
 		const repo = git.code === 0 ? commonName && commonName !== rootName ? commonName : rootName : basename(ctx.cwd);
+		let gitSummary = EMPTY_GIT_SUMMARY;
+		let gitRefreshGeneration = 0;
+		if (git.code === 0 && gitDir) {
+			refreshGitStatus = async () => {
+				const generation = ++gitRefreshGeneration;
+				const [status, operation] = await Promise.all([
+					pi.exec("git", ["status", "--porcelain=v2", "--branch", "--untracked-files=normal"], { cwd: ctx.cwd }),
+					readGitOperation(gitDir),
+				]);
+				if (generation !== gitRefreshGeneration) return;
+				gitSummary = status.code === 0 ? summarizeGitStatus(status.stdout, operation) : EMPTY_GIT_SUMMARY;
+				requestRuntimeRender?.();
+			};
+			await refreshGitStatus();
+		}
 
 		let tps: number | undefined;
 		let assistantStartedAt: number | undefined;
@@ -208,7 +321,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 
 		ctx.ui.setFooter((tui, theme, data) => {
 			requestRuntimeRender = () => tui.requestRender();
-			const unsubscribe = data.onBranchChange(requestRuntimeRender);
+			const unsubscribe = data.onBranchChange(() => {
+				void refreshGitStatus?.();
+				requestRuntimeRender?.();
+			});
 			return {
 				dispose() {
 					unsubscribe();
@@ -224,7 +340,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						computeUsage();
 					}
 
-					const branch = data.getGitBranch()?.replace(/^worktree\//, "");
+					const reportedBranch = data.getGitBranch()?.replace(/^worktree\//, "");
+					const branch = reportedBranch === "detached" && gitSummary.detachedOid ? `@${gitSummary.detachedOid}` : reportedBranch;
 					const context = ctx.getContextUsage()?.percent;
 					const openUri = configuredOpenUri(ctx.cwd);
 					const extensionStatuses = data.getExtensionStatuses();
@@ -262,7 +379,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const checkoutLink = openUri && getCapabilities().hyperlinks
 						? hyperlink(theme.fg("accent", checkout), openUri)
 						: theme.fg("dim", checkout);
-					const identityLine = prStatus ? `${identity}${checkoutLink} · ${prStatus}` : `${identity}${checkoutLink}`;
+					const checkoutStatus = gitSummary.badges ? `${checkoutLink} ${theme.fg("dim", gitSummary.badges)}` : checkoutLink;
+					const identityLine = prStatus ? `${identity}${checkoutStatus} · ${prStatus}` : `${identity}${checkoutStatus}`;
 					const firstLine = henryStatuses.length ? align(identityLine, henryStatuses.join(" "), width, ellipsis) : identityLine;
 					const lines = [
 						firstLine,

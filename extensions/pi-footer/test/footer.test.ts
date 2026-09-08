@@ -29,7 +29,7 @@ function setupFooter(
 		notify = () => {},
 	}: {
 		appendEntry?: (customType: string, data: unknown) => void;
-		exec?: () => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
+		exec?: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
 		notify?: (message: string, type: string) => void;
 	} = {},
 ) {
@@ -195,6 +195,95 @@ test("renders family status on the first line and external statuses beside runti
 	);
 	assert.equal(stripTerminalSequences(submoduleFooter.render(100)[0]!), "child · main");
 	submoduleFooter.dispose();
+});
+
+test("shows deterministic Git status and refreshes after an agent run", async (t) => {
+	const gitDir = await mkdtemp(join(tmpdir(), "pi-footer-git-"));
+	await mkdir(join(gitDir, "rebase-merge"));
+	await writeFile(join(gitDir, "rebase-merge", "msgnum"), "3\n");
+	await writeFile(join(gitDir, "rebase-merge", "end"), "7\n");
+	t.after(() => rm(gitDir, { recursive: true, force: true }));
+
+	let statusOutput = [
+		"# branch.oid abcdef1234567890",
+		"# branch.head main",
+		"# branch.upstream origin/main",
+		"# branch.ab +2 -1",
+		"1 M. N... staged.txt",
+		"1 .M N... modified.txt",
+		"u UU N... conflicted.txt",
+		"? untracked.txt",
+	].join("\n");
+	const { handlers, start } = setupFooter({
+		exec: async (_command, args) => ({
+			stdout: args[0] === "rev-parse" ? `/repo\n${gitDir}\n${gitDir}\n` : statusOutput,
+			stderr: "",
+			code: 0,
+			killed: false,
+		}),
+	});
+	const footerFactory = await start({
+		mode: "tui",
+		cwd: "/repo",
+		sessionManager: { getEntries: () => [] },
+		getContextUsage: () => undefined,
+	});
+	let branch = "main";
+	const footer = footerFactory(
+		{ requestRender() {} },
+		{ fg: (_c: string, text: string) => text },
+		{ getGitBranch: () => branch, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
+	);
+	assert.equal(stripTerminalSequences(footer.render(100)[0]!), "repo · main [REBASE 3/7 !1 +1 ~1 ?1 ↑2 ↓1]");
+
+	await rm(join(gitDir, "rebase-merge"), { recursive: true });
+	statusOutput = "# branch.oid 1234567890abcdef\n# branch.head (detached)\n";
+	branch = "detached";
+	await handlers.get("agent_settled")!(undefined, { isIdle: () => true } as unknown as ExtensionContext);
+	assert.equal(stripTerminalSequences(footer.render(100)[0]!), "repo · @1234567");
+	footer.dispose();
+});
+
+test("keeps the newest overlapping Git refresh", async (t) => {
+	const gitDir = await mkdtemp(join(tmpdir(), "pi-footer-git-"));
+	t.after(() => rm(gitDir, { recursive: true, force: true }));
+
+	const statusResolvers: Array<(stdout: string) => void> = [];
+	let statusCalls = 0;
+	const { handlers, start } = setupFooter({
+		exec: async (_command, args) => {
+			if (args[0] === "rev-parse") {
+				return { stdout: `/repo\n${gitDir}\n${gitDir}\n`, stderr: "", code: 0, killed: false };
+			}
+			if (statusCalls++ === 0) return { stdout: "", stderr: "", code: 0, killed: false };
+			return new Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>((resolve) => {
+				statusResolvers.push((stdout) => resolve({ stdout, stderr: "", code: 0, killed: false }));
+			});
+		},
+	});
+	const footerFactory = await start({
+		mode: "tui",
+		cwd: "/repo",
+		sessionManager: { getEntries: () => [] },
+		getContextUsage: () => undefined,
+	});
+	const footer = footerFactory(
+		{ requestRender() {} },
+		{ fg: (_c: string, text: string) => text },
+		{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
+	);
+
+	const idleCtx = { isIdle: () => true } as unknown as ExtensionContext;
+	const firstRefresh = handlers.get("agent_settled")!(undefined, idleCtx);
+	const secondRefresh = handlers.get("agent_settled")!(undefined, idleCtx);
+	assert.equal(statusResolvers.length, 2);
+	statusResolvers[1]!("? newest-one\n? newest-two\n");
+	await secondRefresh;
+	assert.equal(stripTerminalSequences(footer.render(100)[0]!), "repo · main [?2]");
+	statusResolvers[0]!("? stale\n");
+	await firstRefresh;
+	assert.equal(stripTerminalSequences(footer.render(100)[0]!), "repo · main [?2]");
+	footer.dispose();
 });
 
 test("shows TPS and active session time", async () => {
