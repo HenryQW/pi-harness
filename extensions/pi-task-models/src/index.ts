@@ -326,6 +326,25 @@ export function resolveConfiguredTaskRoute(
 	return resolveConfiguredTaskRoutes(ctx, task, agentDir, thinking)[0];
 }
 
+export async function executeTaskRoutes<T>(
+	routes: readonly ResolvedTaskRoute[],
+	attempt: (route: ResolvedTaskRoute) => Promise<T>,
+	{ signal, shouldFallback }: { signal?: AbortSignal; shouldFallback: (error: unknown) => boolean },
+): Promise<T> {
+	if (!routes.length) throw new Error("Task route list must not be empty.");
+	let finalError: unknown;
+	for (const [index, route] of routes.entries()) {
+		signal?.throwIfAborted();
+		try {
+			return await attempt(route);
+		} catch (error) {
+			if (signal?.aborted || index === routes.length - 1 || !shouldFallback(error)) throw error;
+			finalError = error;
+		}
+	}
+	throw finalError;
+}
+
 export function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[] {
 	return profile.fallback ? [profile.primary, profile.fallback] : [profile.primary];
 }
