@@ -15,7 +15,9 @@ The repository needs one ownership boundary that works for user-edited JSON, gen
 
 **Default config.** User-edited JSON defaults to `<home>/config.json`. An extension may own other files and formats anywhere inside its home. Missing generated state and missing optional config with usable defaults are normal. A missing config warns only when the user must act before the extension can work.
 
-**Shared mechanics.** `@henryqw/pi-config-store` owns the canonical directory and default-config path helpers plus safe JSON load, save, locked update, and removal. Extensions continue to own schemas, validation, defaults, and user-facing errors. Custom formats use the directory helper and their native library.
+**Shared mechanics.** `@henryqw/pi-config-store` owns the canonical path helpers, bounded strict UTF-8 reads, and private atomic text writes. These text helpers do not choose a format, parse data, interpret missing files, or expose locks. Each extension owns its formats, schemas, recovery rules, and lock policy.
+
+The package also keeps the default JSON store. It provides safe load, save, locked update, and removal for `config.json`. Extensions still supply validation and defaults. Custom files may use the shared text mechanics, but their format and locking stay owner-local.
 
 **Ownership.** Only an extension writes its home. Consumers obtain validated effective values through an owner package API or a namespaced Pi event protocol. They do not read or write the owner's files directly.
 
@@ -27,7 +29,7 @@ The repository needs one ownership boundary that works for user-edited JSON, gen
 - Single-file extensions move from `config/<extension>.json` to `config/<extension>/config.json`.
 - Existing extension-named homes retain custom state in place; some nonstandard config filenames move to `config.json`.
 - Missing required config becomes visible without destructive startup writes; optional defaults stay quiet.
-- Shared storage mechanics can improve once without centralizing domain policy.
+- Shared file safety can improve once without centralizing formats, schemas, or locking policy.
 - The one-time migration must coordinate owners, consumers, tests, documentation, versions, and local user files.
 
 ## Rejected Alternatives

@@ -18,21 +18,66 @@ function isMissing(error: unknown): boolean {
 	return !!error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-function readBounded(path: string): Buffer {
+function assertMaxBytes(maxBytes: number): void {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+		throw new TypeError("maxBytes must be a positive safe integer");
+	}
+}
+
+function readBufferSize(maxBytes: number, bytesRead: number): number {
+	return Math.min(64 * 1024, maxBytes - bytesRead + 1);
+}
+
+function decodeBounded(chunks: Buffer[], bytesRead: number, path: string, maxBytes: number): string {
+	if (bytesRead > maxBytes) throw new Error(`Text file exceeds ${maxBytes} bytes: ${path}`);
+	return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytesRead));
+}
+
+/** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes synchronously. */
+export function readTextFileBoundedSync(path: string, maxBytes: number): string {
+	assertMaxBytes(maxBytes);
 	let file: number | undefined;
+	const chunks: Buffer[] = [];
+	let bytesRead = 0;
 	try {
 		file = openSync(path, "r");
-		const bytes = Buffer.allocUnsafe(MAX_CONFIG_BYTES + 1);
-		let offset = 0;
-		while (offset < bytes.length) {
-			const bytesRead = readSync(file, bytes, offset, bytes.length - offset, null);
-			if (bytesRead === 0) break;
-			offset += bytesRead;
+		while (bytesRead <= maxBytes) {
+			const chunk = Buffer.allocUnsafe(readBufferSize(maxBytes, bytesRead));
+			const count = readSync(file, chunk, 0, chunk.length, null);
+			if (count === 0) break;
+			chunks.push(chunk.subarray(0, count));
+			bytesRead += count;
 		}
-		if (offset > MAX_CONFIG_BYTES) throw new Error(`Config exceeds ${MAX_CONFIG_BYTES} bytes: ${path}`);
-		return bytes.subarray(0, offset);
+		return decodeBounded(chunks, bytesRead, path, maxBytes);
 	} finally {
 		if (file !== undefined) closeSync(file);
+	}
+}
+
+/** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes. */
+export async function readTextFileBounded(
+	path: string,
+	maxBytes: number,
+	options: { signal?: AbortSignal } = {},
+): Promise<string> {
+	assertMaxBytes(maxBytes);
+	options.signal?.throwIfAborted();
+	const file = await open(path, "r");
+	const chunks: Buffer[] = [];
+	let bytesRead = 0;
+	try {
+		while (bytesRead <= maxBytes) {
+			options.signal?.throwIfAborted();
+			const chunk = Buffer.allocUnsafe(readBufferSize(maxBytes, bytesRead));
+			const result = await file.read(chunk, 0, chunk.length, null);
+			options.signal?.throwIfAborted();
+			if (result.bytesRead === 0) break;
+			chunks.push(chunk.subarray(0, result.bytesRead));
+			bytesRead += result.bytesRead;
+		}
+		return decodeBounded(chunks, bytesRead, path, maxBytes);
+	} finally {
+		await file.close();
 	}
 }
 
@@ -46,10 +91,16 @@ function serialize(value: unknown): string {
 	return contents;
 }
 
-async function withLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
-	const directory = dirname(path);
+async function ensurePrivateDirectory(directory: string, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
 	await mkdir(directory, { recursive: true, mode: 0o700 });
+	signal?.throwIfAborted();
 	if (process.platform !== "win32") await chmod(directory, 0o700);
+	signal?.throwIfAborted();
+}
+
+async function withLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	await ensurePrivateDirectory(dirname(path));
 
 	const release = await lock(path, {
 		lockfilePath: `${path}.lock`,
@@ -65,16 +116,27 @@ async function withLock<T>(path: string, operation: () => Promise<T>): Promise<T
 	}
 }
 
-async function writeAtomically(path: string, contents: string): Promise<void> {
+/** Atomically replace a UTF-8 text file using private directory and file modes. */
+export async function writePrivateTextFileAtomically(
+	path: string,
+	contents: string,
+	options: { signal?: AbortSignal } = {},
+): Promise<void> {
+	await ensurePrivateDirectory(dirname(path), options.signal);
 	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	let file: import("node:fs/promises").FileHandle | undefined;
 	let created = false;
 	try {
 		file = await open(temporaryPath, "wx", 0o600);
 		created = true;
-		await file.writeFile(contents, { encoding: "utf8" });
+		options.signal?.throwIfAborted();
+		await file.writeFile(contents, { encoding: "utf8", signal: options.signal });
+		options.signal?.throwIfAborted();
+		await file.sync();
+		options.signal?.throwIfAborted();
 		await file.close();
 		file = undefined;
+		options.signal?.throwIfAborted();
 		await rename(temporaryPath, path);
 	} catch (error) {
 		try {
@@ -98,30 +160,27 @@ class ConfigStore<T> {
 	}
 
 	loadSync(): { source: "file" | "missing"; value: T } {
-		let bytes: Buffer;
+		let contents: string;
 		try {
-			bytes = readBounded(this.path);
+			contents = readTextFileBoundedSync(this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
 			if (isMissing(error)) return { source: "missing", value: this.parse(this.defaults()) };
 			throw error;
 		}
-		return {
-			source: "file",
-			value: this.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))),
-		};
+		return { source: "file", value: this.parse(JSON.parse(contents)) };
 	}
 
 	async save(value: T): Promise<void> {
 		const contents = serialize(this.parse(value));
 		await withLock(this.path, async () => {
-			await writeAtomically(this.path, contents);
+			await writePrivateTextFileAtomically(this.path, contents);
 		});
 	}
 
 	async update(mutator: (value: T) => T): Promise<T> {
 		return await withLock(this.path, async () => {
 			const next = this.parse(mutator(this.loadSync().value));
-			await writeAtomically(this.path, serialize(next));
+			await writePrivateTextFileAtomically(this.path, serialize(next));
 			return next;
 		});
 	}
