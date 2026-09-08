@@ -38,6 +38,7 @@ type HarnessOptions = {
 	searchCandidates?: Record<string, unknown>[];
 	listResult?: ReturnType<typeof result>;
 	listResults?: ReturnType<typeof result>[];
+	pullRequestResult?: ReturnType<typeof result>;
 	localHead?: string;
 	localHeadAfterRulesetRead?: string;
 	pushResult?: ReturnType<typeof result>;
@@ -209,6 +210,19 @@ function pullRequest(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function observation(overrides: Record<string, unknown> = {}) {
+	return {
+		pullRequest: {
+			url: "https://github.com/acme/project/pull/42",
+			number: 42,
+			host: "github.com",
+		},
+		head: { repository: "acme/fork", ref: "feature/pr", oid: REMOTE_HEAD },
+		target: { repository: "acme/fork", branch: "feature/local", remote: "fork", ref: "feature/pr" },
+		...overrides,
+	};
+}
+
 function harness(options: HarnessOptions = {}) {
 	const calls: CommandCall[] = [];
 	const candidates = options.candidates ?? [pullRequest()];
@@ -278,6 +292,7 @@ function harness(options: HarnessOptions = {}) {
 				return result(`${values.join("\n")}\n`);
 			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+				if (options.pullRequestResult) return options.pullRequestResult;
 				const candidate = candidates.find((value) => value.url === args[2]);
 				if (candidate) return result(JSON.stringify(candidate));
 			}
@@ -1332,6 +1347,72 @@ test("does not fall back to local HEAD when the remote push ref is absent", asyn
 	);
 	assert.ok(search?.args.includes("searchQuery=is:pr head:acme:feature/pr"));
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
+});
+
+test("rehydrates a merged PR from its exact observed enterprise URL after its configured ref is deleted", async () => {
+	const host = "github.example.test";
+	const url = `https://${host}/acme/project/pull/42`;
+	const merged = pullRequest({ url, state: "MERGED" });
+	const { pi, context, calls } = harness({
+		candidates: [merged],
+		localHead: REMOTE_HEAD,
+		pushUrl: `git@${host}:acme/fork.git`,
+		remoteHead: null,
+	});
+	const observed = observation({
+		pullRequest: { url, number: 42, host },
+		head: { repository: "ACME/FORK", ref: "feature/pr", oid: REMOTE_HEAD },
+		target: { repository: "ACME/FORK", branch: "feature/local", remote: "fork", ref: "feature/pr" },
+	});
+
+	const discovery = await discoverCurrentPullRequest(pi, context, undefined, observed);
+	assert.equal(discovery.kind, "current");
+	if (discovery.kind !== "current") return;
+	assert.equal(discovery.pullRequest.number, 42);
+	assert.equal(discovery.pullRequest.lifecycle, "merged");
+	assert.equal(discovery.pullRequest.host, host);
+	assert.ok(calls.some(({ command, args }) =>
+		command === "gh" && args.join(" ") === `pr view ${url} --json id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`
+	));
+});
+
+test("ignores stale observations when configured target or local HEAD identity differs", async () => {
+	const mismatches = [
+		{ name: "branch", value: observation({ target: { repository: "acme/fork", branch: "other", remote: "fork", ref: "feature/pr" } }) },
+		{ name: "repository", value: observation({ target: { repository: "acme/other", branch: "feature/local", remote: "fork", ref: "feature/pr" } }) },
+		{ name: "ref", value: observation({ target: { repository: "acme/fork", branch: "feature/local", remote: "fork", ref: "other" } }) },
+		{ name: "remote", value: observation({ target: { repository: "acme/fork", branch: "feature/local", remote: "origin", ref: "feature/pr" } }) },
+		{
+			name: "host",
+			value: observation({
+				pullRequest: { url: "https://github.example.test/acme/project/pull/42", number: 42, host: "github.example.test" },
+			}),
+		},
+		{ name: "head OID", value: observation({ head: { repository: "acme/fork", ref: "feature/pr", oid: "e".repeat(40) } }) },
+	];
+	for (const mismatch of mismatches) {
+		const merged = pullRequest({ state: "MERGED" });
+		const { pi, context, calls } = harness({ candidates: [merged], localHead: REMOTE_HEAD, remoteHead: null });
+		const discovery = await discoverCurrentPullRequest(pi, context, undefined, mismatch.value);
+		assert.equal(discovery.kind, "none", mismatch.name);
+		assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 0, mismatch.name);
+	}
+});
+
+test("fails closed when the exact observed PR lookup fails", async () => {
+	const merged = pullRequest({ state: "MERGED" });
+	const { pi, context } = harness({
+		searchCandidates: [merged],
+		candidates: [],
+		localHead: REMOTE_HEAD,
+		remoteHead: null,
+		pullRequestResult: result("", 1),
+	});
+
+	await assert.rejects(
+		discoverCurrentPullRequest(pi, context, undefined, observation()),
+		/Load observed pull request failed: exit code 1/,
+	);
 });
 
 test("fails visibly when remote push-ref authority errors or is malformed", async () => {

@@ -73,9 +73,9 @@ Multiple candidate remotes, multiple matching PRs, OID mismatches, and unsafe Gi
 
 The creation workflow repeats destination, remote OID, PR, and configuration checks immediately before pushing. It pushes to the saved validated URL, not a mutable remote name. Every push uses the saved remote OID as an exact lease. Existing refs must also be ancestors of the captured local OID. A missing ref uses an empty lease as a create-only compare-and-swap.
 
-After a `/pr` create workflow settles, the extension waits for a refresh that finds an open current PR. It then prefixes the Herdr workspace label with `#<number> • `.
+After a `/pr` create workflow settles, the extension waits for a refresh that finds a configured current PR. It then prefixes the Herdr workspace label with `#<number> • `.
 
-Failed or empty discovery leaves one rename pending for a later refresh. Closed or merged historical matches do not trigger it.
+Failed or empty discovery leaves one rename pending for a later refresh. A restored configured PR completes the rename even when GitHub reports it as merged or closed.
 
 It removes repeated leading `#<number> • ` prefixes and legacy trailing ` · PR #<number>` suffixes before adding one current prefix. The remaining workspace name must be non-empty. This requires `HERDR_ENV=1` and a non-empty, trimmed `HERDR_WORKSPACE_ID`.
 
@@ -111,6 +111,14 @@ They refresh after local commits, PR creation, pushes, and each dispatched workf
 The create widget stays hidden until the local branch has a commit beyond its creation point. Any displayed widget clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the widget when the handler finishes.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
+
+### Session identity
+
+The extension records one configured PR identity in the Pi session. It stores only the PR URL, number, host, head identity, and configured target identity. It does not store lifecycle, CI, review, readiness, or base state. Repeated polling does not add duplicate entries, and no repository cache file is created.
+
+Normal discovery always runs first. If the configured remote ref was deleted, the footer and `/pr` may reload the exact observed PR URL. The current host, repository, branch, remote, ref, and local HEAD must still match the observation. Repository names use case-insensitive GitHub matching.
+
+The GitHub response must match the observed URL, host, repository, head ref, head OID, and PR number. GitHub supplies fresh mutable state. Invalid session data is ignored. A failed GitHub lookup stops routing and cannot start PR creation.
 
 ## Limits and recovery
 

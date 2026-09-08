@@ -95,6 +95,12 @@ export type CurrentPullRequest = PullRequest & {
 
 export type CurrentPullRequestDiscovery = PullRequestDiscovery<CurrentPullRequest>;
 
+export type PullRequestObservation = {
+	pullRequest: { url: string; number: number; host: string };
+	head: PullRequestRef;
+	target: { repository: string; branch: string; remote: string; ref: string };
+};
+
 export type PullRequestLoadContext = Pick<ExtensionContext, "cwd" | "signal">;
 
 type CommandOutput = {
@@ -421,6 +427,67 @@ function parsePullRequestUrl(value: unknown, number: number): { url: URL; reposi
 		url,
 		repository: repositoryName(`${path[0]}/${path[1]}`, "Find pull requests", "base repository"),
 	};
+}
+
+export function parsePullRequestObservation(value: unknown): PullRequestObservation | null {
+	try {
+		if (!isRecord(value) || !isRecord(value.pullRequest) || !isRecord(value.head) || !isRecord(value.target)) {
+			return null;
+		}
+		const number = value.pullRequest.number;
+		if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) return null;
+		const parsedUrl = parsePullRequestUrl(value.pullRequest.url, number).url;
+		const host = text(value.pullRequest.host, "Read pull request observation", "host").toLowerCase();
+		if (parsedUrl.hostname.toLowerCase() !== host) return null;
+		return {
+			pullRequest: { url: parsedUrl.href, number, host },
+			head: {
+				repository: repositoryName(value.head.repository, "Read pull request observation", "head repository"),
+				ref: text(value.head.ref, "Read pull request observation", "head ref"),
+				oid: oid(value.head.oid, "Read pull request observation", "head OID"),
+			},
+			target: {
+				repository: repositoryName(value.target.repository, "Read pull request observation", "target repository"),
+				branch: text(value.target.branch, "Read pull request observation", "target branch"),
+				remote: text(value.target.remote, "Read pull request observation", "target remote"),
+				ref: text(value.target.ref, "Read pull request observation", "target ref"),
+			},
+		};
+	} catch (error) {
+		if (error instanceof PullRequestLoadError) return null;
+		throw error;
+	}
+}
+
+export function pullRequestObservation(pullRequest: CurrentPullRequest): PullRequestObservation | null {
+	if (pullRequest.target.provenance !== "configured") return null;
+	return {
+		pullRequest: {
+			url: pullRequest.url.href,
+			number: pullRequest.number,
+			host: pullRequest.host,
+		},
+		head: { ...pullRequest.head },
+		target: {
+			repository: pullRequest.target.repository,
+			branch: pullRequest.target.branch,
+			remote: pullRequest.target.remote,
+			ref: pullRequest.target.ref,
+		},
+	};
+}
+
+export function samePullRequestObservation(
+	left: PullRequestObservation | undefined,
+	right: PullRequestObservation,
+): boolean {
+	return left !== undefined && left.pullRequest.url === right.pullRequest.url &&
+		left.pullRequest.number === right.pullRequest.number && left.pullRequest.host === right.pullRequest.host &&
+		normalizeRepository(left.head.repository) === normalizeRepository(right.head.repository) &&
+		left.head.ref === right.head.ref && left.head.oid === right.head.oid &&
+		normalizeRepository(left.target.repository) === normalizeRepository(right.target.repository) &&
+		left.target.branch === right.target.branch && left.target.remote === right.target.remote &&
+		left.target.ref === right.target.ref;
 }
 
 function lifecycle(value: unknown): PullRequestLifecycle {
@@ -1332,6 +1399,45 @@ async function loadPullRequestDetails(
 	};
 }
 
+async function loadObservedPullRequest(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	pushTarget: PushTarget,
+	observation: PullRequestObservation | null,
+	inspectedLocal?: LocalMergeSafety,
+): Promise<CurrentPullRequest | null> {
+	if (
+		observation === null || observation.pullRequest.host !== pushTarget.repository.host ||
+		normalizeRepository(observation.target.repository) !== pushTarget.repository.normalizedName ||
+		observation.target.branch !== pushTarget.branch || observation.target.remote !== pushTarget.remote ||
+		observation.target.ref !== pushTarget.ref
+	) return null;
+
+	const localHead = oid(singleLine((await execute(pi, context, "Read local HEAD", "git", [
+		"rev-parse", "--verify", "HEAD^{commit}",
+	])).stdout, "Read local HEAD", "OID"), "Read local HEAD", "OID");
+	if (localHead !== observation.head.oid) return null;
+
+	const loaded = await execute(pi, context, "Load observed pull request", "gh", [
+		"pr",
+		"view",
+		observation.pullRequest.url,
+		"--json",
+		PR_FIELDS,
+	]);
+	const candidate = parseLoadedPullRequest(loaded.stdout, new URL(observation.pullRequest.url));
+	if (candidate === null) fail("Load observed pull request", "pull request head repository is unavailable");
+	if (
+		candidate.number !== observation.pullRequest.number ||
+		candidate.url.hostname.toLowerCase() !== observation.pullRequest.host ||
+		normalizeRepository(candidate.head.repository) !== normalizeRepository(observation.head.repository) ||
+		normalizeRepository(candidate.head.repository) !== pushTarget.repository.normalizedName ||
+		candidate.head.ref !== observation.head.ref || candidate.head.ref !== pushTarget.ref ||
+		candidate.head.oid !== observation.head.oid
+	) return null;
+	return loadPullRequestDetails(pi, context, candidate, pushTarget, inspectedLocal);
+}
+
 async function searchPullRequests(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1399,6 +1505,7 @@ export async function loadCurrentPullRequest(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	inspectedLocal?: LocalMergeSafety,
+	observed?: unknown,
 ): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
 	if (read.kind === "inactive") return { kind: "inactive" };
@@ -1430,6 +1537,19 @@ export async function loadCurrentPullRequest(
 	}
 
 	const search = await searchPullRequests(pi, context, pushTarget);
+	if (
+		pushTarget.provenance === "configured" && pushTarget.remoteHeadOid === null &&
+		(search.kind === "none" || search.kind === "target-invalid")
+	) {
+		const restored = await loadObservedPullRequest(
+			pi,
+			context,
+			pushTarget,
+			parsePullRequestObservation(observed),
+			inspectedLocal,
+		);
+		if (restored !== null) return { kind: "current", pullRequest: restored };
+	}
 	if (search.kind === "ambiguous") {
 		return {
 			kind: "blocked",

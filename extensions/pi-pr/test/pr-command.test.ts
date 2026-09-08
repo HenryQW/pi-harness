@@ -332,6 +332,18 @@ test("returns silently outside a Git worktree", async () => {
 	assert.deepEqual(app.messages, []);
 });
 
+test("does not route an observed GitHub lookup failure to PR creation", async () => {
+	const app = harness({ states: [], commands: [packageCommand("skill:pi-pr-create")] });
+	const handler = createPrCommandHandler(app.pi, {
+		loadCurrentPullRequest: async () => {
+			throw new Error("Load observed pull request failed: exit code 1");
+		},
+	});
+
+	await assert.rejects(handler("", app.context), /Load observed pull request failed/);
+	assert.deepEqual(app.messages, []);
+});
+
 test("does not dispatch mutating workflows when the worktree is dirty or local HEAD is behind", async () => {
 	const conditions: Array<{ name: string; state: PullRequestSpec }> = [
 		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } },
