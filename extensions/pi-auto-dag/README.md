@@ -95,22 +95,9 @@ An optional `finalJudgment` uses the same shape. An unverifiable judgment remain
 
 ## Flow
 
-Auto DAG accepts only evidence from the checked workspace. It persists each important transition before continuing.
+Auto DAG accepts only evidence from the checked workspace. Worker text is context, not acceptance evidence. It persists each important transition before continuing.
 
-```mermaid
-flowchart TD
-    A[Validate request and workspace] --> B[Select next serial eligible task]
-    B --> C[Launch pi-subagent Role child]
-    C --> D[Run direct task checks]
-    D --> E{Explicit judgment?}
-    E -- Yes --> F[Run read-only Reviewer]
-    E -- No --> G[Persist task result]
-    F --> G
-    G --> H{Retry needed and available?}
-    H -- Yes --> B
-    H -- No --> I[Run final checks and optional judgment]
-    I --> J[Accept unchanged checked workspace]
-```
+![Checked serial execution: request and workspace validation persist state, then one eligible Role runs through pi-subagent in the shared workspace. Direct checks and an optional read-only judgment verify work, correction is bounded, and acceptance requires the unchanged checked workspace.](./assets/checked-serial-execution.svg)
 
 ## State and storage
 
@@ -141,6 +128,8 @@ Auto DAG stores only `pending`, `running`, `completed`, and `needs_attention` li
 Recovery handles valid requests even when other state files are invalid. It preserves invalid files and reports their request IDs.
 
 Each task gets at most two launched worker attempts. A correction receives the original task, direct dependency outputs, prior failure evidence, and current workspace identity.
+
+![Recovery state machine: only pending, running, needs_attention, and completed persist. Interruptions, aborts, drift, budget exhaustion, and failures enter deliberate attention. Main can retry, replace, verify, finalize, or approve the unchanged final checked workspace.](./assets/recovery-state-machine.svg)
 
 Use `auto_dag_resume` with one deliberate action:
 
