@@ -8,6 +8,7 @@
 
 ## GitHub authority
 
+- Discover current pull requests through the validated repository ref's GraphQL `associatedPullRequests` connection. Do not use global issue search: branch-only `head:<branch>` is unbounded, while `head:<owner>:<branch>` is not valid there. Validate every candidate repository, ref, and OID.
 - Paginate every GitHub endpoint that may return multiple pages. Validate every page before flattening results or deriving repository policy.
 
 ## Command tests

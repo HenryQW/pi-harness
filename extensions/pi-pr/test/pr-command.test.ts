@@ -92,13 +92,19 @@ function searchOutput(candidate: PullRequestSpec | null): string {
 			headRefOid: head.headRefOid,
 		},
 	}] : [];
-	return JSON.stringify({ data: { search: {
-		issueCount: edges.length,
-		edges,
-		pageInfo: {
-			hasNextPage: false,
-			startCursor: edges[0]?.cursor ?? null,
-			endCursor: edges.at(-1)?.cursor ?? null,
+	return JSON.stringify({ data: { repository: {
+		nameWithOwner: "acme/project",
+		ref: {
+			name: "feature/pr",
+			associatedPullRequests: {
+				totalCount: edges.length,
+				edges,
+				pageInfo: {
+					hasNextPage: false,
+					startCursor: edges[0]?.cursor ?? null,
+					endCursor: edges.at(-1)?.cursor ?? null,
+				},
+			},
 		},
 	} } });
 }
@@ -159,7 +165,7 @@ function harness(options: HarnessOptions) {
 			) return result("[[]]");
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-				if (query.includes("search(query:")) {
+				if (query.includes("associatedPullRequests(")) {
 					events.push("load");
 					active = options.states[stateIndex++] ?? null;
 					return result(searchOutput(active));
@@ -562,7 +568,7 @@ test("cancels when the base retargets or advances during final readiness evaluat
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 		const finalFetch = app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true);
 		const readiness = app.calls.map(({ command, args }) =>
-			command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+			command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("associatedPullRequests("))
 		).lastIndexOf(true);
 		assert.ok(finalFetch >= 0 && readiness > finalFetch, candidate.name);
 		assert.equal(app.calls.slice(readiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false, candidate.name);
@@ -608,7 +614,7 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 	assert.equal(fetches.some(({ args }) => args.includes("fork") || args.includes("acme/project")), false);
 	assert.equal(fetches.some(({ args }) => !args.includes("--no-write-fetch-head") || !args.includes("--no-recurse-submodules")), false);
 	const finalReadiness = app.calls.map(({ command, args }) =>
-		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
+		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("associatedPullRequests("))
 	).lastIndexOf(true);
 	assert.ok(finalReadiness > app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true));
 	assert.equal(app.calls.slice(finalReadiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
