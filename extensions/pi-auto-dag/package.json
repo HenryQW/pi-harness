@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-dag",
-  "version": "9.0.1",
+  "version": "9.0.2",
   "description": "Run durable dependent Pi tasks serially in one Git workspace.",
   "keywords": [
     "pi-package",
@@ -14,6 +14,7 @@
   },
   "license": "MIT",
   "files": [
+    "assets",
     "extensions",
     "src",
     "README.md",

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="checked-serial-execution-title checked-serial-execution-desc">
+      <title id="checked-serial-execution-title">Checked serial execution</title>
+      <desc id="checked-serial-execution-desc">Auto DAG validates a request and workspace, persists state, runs one eligible Role at a time through pi-subagent, verifies direct checks and any explicit read-only judgment, bounds corrections, then accepts only the unchanged checked workspace.</desc>
+      <defs><style>@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap");</style>
+        <marker id="checked-serial-execution-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="checked-serial-execution-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="checked-serial-execution-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f5f5f5"/>
+
+      <!-- Checked execution and correction connectors. Drawn before nodes. -->
+      <line x1="224" y1="220" x2="272" y2="220" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+      <line x1="448" y1="220" x2="496" y2="220" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+      <line x1="712" y1="220" x2="760" y2="220" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+      <line x1="992" y1="220" x2="1048" y2="220" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+      <path d="M 900 268 V 328 Q 900 336 892 336 H 632 Q 624 336 624 328 V 268" fill="none" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#checked-serial-execution-arrow)"/>
+      <path d="M 1112 164 V 156 Q 1112 148 1104 148 H 612 Q 604 148 604 156 V 172" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+      <line x1="1112" y1="276" x2="1112" y2="356" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+      <line x1="1112" y1="444" x2="1112" y2="496" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+
+      <!-- Connector labels keep an opaque gap above or beside their stroke. -->
+      <rect x="808" y="128" width="96" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="856" y="137" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.06em">NO · NEXT TASK</text>
+      <rect x="720" y="316" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="760" y="325" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.06em">CORRECTABLE</text>
+      <rect x="1140" y="312" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="1164" y="321" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.06em">YES</text>
+      <rect x="1140" y="464" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="1160" y="473" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.06em">PASS</text>
+
+      <!-- Validation -->
+      <rect x="48" y="172" width="176" height="96" rx="6" fill="#f5f5f5"/>
+      <rect x="48" y="172" width="176" height="96" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="56" y="180" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="84" y="189" fill="#2d3142" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.08em">VALIDATE</text>
+      <text x="136" y="212" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Request and</text>
+      <text x="136" y="228" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">workspace</text>
+      <text x="136" y="252" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">clean Git · schema</text>
+
+      <!-- Durable state -->
+      <rect x="272" y="172" width="176" height="96" rx="6" fill="#f5f5f5"/>
+      <rect x="272" y="172" width="176" height="96" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="280" y="180" width="44" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
+      <text x="302" y="189" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+      <text x="360" y="212" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Persist durable state</text>
+      <text x="360" y="244" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">v9 · important transitions</text>
+
+      <!-- Serial worker -->
+      <rect x="496" y="172" width="216" height="96" rx="6" fill="#f5f5f5"/>
+      <rect x="496" y="172" width="216" height="96" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="504" y="180" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="524" y="189" fill="#2d3142" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.08em">ROLE</text>
+      <text x="604" y="208" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Launch eligible Role</text>
+      <text x="604" y="228" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">pi-subagent · shared workspace</text>
+      <text x="604" y="244" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">serial · one child at a time</text>
+      <text x="604" y="260" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">report = context, not evidence</text>
+
+      <!-- Task verification -->
+      <rect x="760" y="172" width="232" height="96" rx="6" fill="#f5f5f5"/>
+      <rect x="760" y="172" width="232" height="96" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="768" y="180" width="48" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="792" y="189" fill="#2d3142" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.08em">CHECKS</text>
+      <text x="876" y="212" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Direct task checks</text>
+      <text x="876" y="232" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">+ optional judgment</text>
+      <text x="876" y="252" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">direct {command, args} · explicit · read-only</text>
+
+      <!-- Completion decision -->
+      <polygon points="1112,164 1176,220 1112,276 1048,220" fill="#f5f5f5"/>
+      <polygon points="1112,164 1176,220 1112,276 1048,220" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="1112" y="212" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">All tasks</text>
+      <text x="1112" y="232" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">complete?</text>
+
+      <!-- Correction annotation -->
+      <text x="760" y="360" fill="#2d3142" font-family="'Instrument Serif', serif" font-size="16" font-style="italic" text-anchor="middle">Fresh correction; two launched attempts at most.</text>
+
+      <!-- Final verification -->
+      <rect x="984" y="356" width="256" height="88" rx="6" fill="#f5f5f5"/>
+      <rect x="984" y="356" width="256" height="88" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="992" y="364" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="1012" y="373" fill="#2d3142" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.08em">FINAL</text>
+      <text x="1112" y="400" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Final checks</text>
+      <text x="1112" y="420" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">+ optional final judgment</text>
+      <text x="1112" y="436" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">explicit · combined workspace · read-only</text>
+
+      <!-- Acceptance -->
+      <rect x="984" y="496" width="256" height="96" rx="6" fill="#f5f5f5"/>
+      <rect x="984" y="496" width="256" height="96" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="992" y="504" width="56" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="1020" y="513" fill="#eb6c36" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle" letter-spacing="0.08em">ACCEPT</text>
+      <text x="1112" y="540" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Accept only on the</text>
+      <text x="1112" y="560" fill="#2d3142" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">unchanged checked workspace</text>
+      <text x="1112" y="580" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">final evidence identifies this state</text>
+
+      <!-- Visual heading -->
+      <text x="40" y="40" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" font-weight="500" letter-spacing="0.18em">PROCESS · AUTO DAG V9</text>
+      <text x="40" y="80" fill="#2d3142" font-family="'Instrument Serif', serif" font-size="28">Checked serial execution</text>
+
+      <!-- Legend -->
+      <line x1="40" y1="640" x2="1240" y2="640" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <text x="40" y="672" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.14em">KEY</text>
+      <line x1="136" y1="668" x2="184" y2="668" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#checked-serial-execution-arrow)"/>
+      <text x="200" y="672" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8">checked execution</text>
+      <line x1="392" y1="668" x2="440" y2="668" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#checked-serial-execution-arrow)"/>
+      <text x="456" y="672" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8">bounded correction</text>
+      <rect x="680" y="660" width="20" height="12" rx="4" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="716" y="672" fill="#4f5d75" font-family="'Geist Mono', monospace" font-size="8">acceptance gate</text>
+    </svg>
