@@ -612,6 +612,31 @@ test("unverified final judgment stays explicit until deliberate approval on the 
 	assert.equal(approved.state.manualInterventions, 1);
 });
 
+test("restarted final verification reuses earlier passes on the current workspace", async () => {
+	const { runner, runtime } = await harness();
+	runtime.children.push({ output: "done" }, { output: "finding" }, { output: "PASS" });
+	const definition = request({
+		finalChecks: [{ command: "check-early", args: [] }, { command: "check-late", args: [] }],
+		finalJudgment: { criterion: "The combined behavior is coherent.", role: "reviewer", modelClass: "balanced" },
+	});
+	const first = await runner.execute(definition, runtime.root);
+	assert.deepEqual(first.state.final.verifiedWorkspace, runtime.workspace);
+
+	runtime.workspace = { ...runtime.workspace, tree: OID_B };
+	runtime.checks.set("check-late", [
+		{ code: 1, stdout: "", stderr: "failed" },
+		{ code: 0, stdout: "", stderr: "" },
+	]);
+	const failed = await runner.resume({ id: "test-run", action: "finalize" }, runtime.root);
+	assert.equal(failed.state.final.status, "needs_attention");
+	assert.ok(failed.state.final.checks.some((check) => check.command === "check-early" && check.passed && check.workspace.tree === OID_B));
+
+	const completed = await runner.resume({ id: "test-run", action: "finalize" }, runtime.root);
+	assert.equal(completed.state.accepted, true);
+	assert.equal(runtime.checkCalls.filter((command) => command === "check-early").length, 2);
+	assert.equal(runtime.checkCalls.filter((command) => command === "check-late").length, 3);
+});
+
 test("durable evidence keeps reusable passes and only the latest actionable failure", async () => {
 	const { root, store } = await harness();
 	const definition = request({

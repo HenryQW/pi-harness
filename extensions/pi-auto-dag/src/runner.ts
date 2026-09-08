@@ -846,6 +846,7 @@ export class AutoDagRunner {
 		meter: UsageMeter,
 	): Promise<string | undefined> {
 		state.final.status = "running";
+		state.final.verifiedWorkspace = undefined;
 		await this.store.save(state);
 		const drift = await this.runtime.identifyWorkspace(state.root, signal);
 		if (!sameWorkspace(drift, state.workspace)) return `Workspace drift before final checks. Expected ${JSON.stringify(state.workspace)}; actual ${JSON.stringify(drift)}.`;
