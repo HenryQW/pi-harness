@@ -297,6 +297,25 @@ test("Flow tools leave rendering to Pi", async (t) => {
 	}
 });
 
+test("Flow prompt policy separates useful commuting outcomes without a quota", async (t) => {
+	const unitPolicy = flowTool(harness(await repository(t), () => success())).promptGuidelines?.[0];
+	assert.ok(unitPolicy);
+	for (const fragment of [
+		/independent commuting outcomes/i,
+		/separate units/i,
+		/reduce Implementer count/i,
+		/naturally multi-part work/i,
+		/roughly 3–5 useful units/i,
+		/never manufacture units/i,
+		/split one invariant/i,
+		/overlapping mutable ownership/i,
+		/use a quota/i,
+		/sequence dependent work outside delegate_flow/i,
+		/overlaps files, APIs, schemas, generated output, package metadata, lockfiles, or invariants/i,
+	]) assert.match(unitPolicy, fragment);
+	assert.doesNotMatch(unitPolicy, /\b(?:at least|minimum(?:\s+of)?)\s+(?:3|three)(?:\s+useful)?\s+units?\b/i);
+});
+
 test("successful Flow reports aggregate progress", async (t) => {
 	const repo = await repository(t);
 	const request = { units: [unit("one"), unit("two")] };

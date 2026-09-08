@@ -73,7 +73,9 @@ Commands run directly. Auto DAG does not pass them through a shell.
 
 Worker text never proves completion. A task completes only when its checks pass on an identified workspace state.
 
-The identity includes staging changes and non-ignored untracked files. A successful manual verification replaces stale worker output with an explicit manual-verification summary.
+The identity includes staging changes and non-ignored untracked files. Temporary identity objects never enter the repository's object database.
+
+A successful manual verification replaces stale worker output with an explicit manual-verification summary.
 
 Add `judgment` only when direct checks cannot decide a clear criterion:
 
@@ -122,6 +124,8 @@ The actual prefix follows Pi's active agent directory. The canonical workspace r
 
 State never lives in the Git workspace, so Auto DAG's own writes cannot cause workspace drift. Only Auto DAG writes this directory.
 
+Auto DAG resolves existing symlinks before it creates or writes state. It rejects any destination inside the Git workspace.
+
 Deleting one request file discards its recovery record. Delete it only when that run no longer matters.
 
 ## Limits and recovery
@@ -130,14 +134,18 @@ Auto DAG rejects repositories containing Git submodules because workspace identi
 
 A normalized `auto_dag_execute` request may use at most 262144 UTF-8 bytes. Durable state may use at most 2 MiB. Reduce request text, task count, command arguments, or captured failure evidence when a bound fails.
 
+Passing evidence keeps its command and exact workspace, but drops stdout and stderr. Only the latest actionable check failure remains.
+
 Auto DAG stores only `pending`, `running`, `completed`, and `needs_attention` lifecycle states. Interrupted `running` work becomes `needs_attention` and never replays automatically.
+
+Recovery handles valid requests even when other state files are invalid. It preserves invalid files and reports their request IDs.
 
 Each task gets at most two launched worker attempts. A correction receives the original task, direct dependency outputs, prior failure evidence, and current workspace identity.
 
 Use `auto_dag_resume` with one deliberate action:
 
 - `retry` retries an unfinished task when an attempt remains.
-- `replace` replaces one unfinished task definition when an attempt remains.
+- `replace` replaces one unfinished task definition when an attempt remains. The rebuilt request must stay within the execute size limit.
 - `verify` checks work that Main repaired manually.
 - `finalize` reruns final verification after every task completes.
 - `approve_final_judgment` approves only the unchanged final checked state.

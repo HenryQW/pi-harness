@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -25,6 +25,8 @@ import {
 	MAX_EXECUTE_REQUEST_BYTES,
 	RUN_STATE_VERSION,
 	parseExecuteRequest,
+	parseRunState,
+	type CheckEvidence,
 	type ExecuteRequest,
 	type RunState,
 	type WorkspaceIdentity,
@@ -75,6 +77,40 @@ function task(id: string, dependsOn: string[] = []) {
 		deliverable: `${id} is available.`,
 		dependsOn,
 		checks: [{ command: `check-${id}`, args: [] }],
+	};
+}
+
+function runState(root: string, definition = request(), overrides: Partial<RunState> = {}): RunState {
+	const workspace = { branch: "refs/heads/main", head: OID_A, index: OID_A, tree: OID_A };
+	return {
+		version: RUN_STATE_VERSION,
+		request: definition,
+		root,
+		baseHead: OID_A,
+		status: "pending",
+		tasks: definition.tasks.map((taskRequest) => ({ request: taskRequest, status: "pending", attempts: 0, checks: [] })),
+		final: { status: "pending", checks: [] },
+		workspace,
+		elapsedMs: 0,
+		manualInterventions: 0,
+		accepted: false,
+		createdAt: 100,
+		updatedAt: 100,
+		...overrides,
+	};
+}
+
+function checkEvidence(command: string, passed: boolean, at: number, overrides: Partial<CheckEvidence> = {}): CheckEvidence {
+	return {
+		command,
+		args: [],
+		workspace: { branch: "refs/heads/main", head: OID_A, index: OID_A, tree: OID_A },
+		code: passed ? 0 : 1,
+		stdout: "",
+		stderr: "",
+		passed,
+		at,
+		...overrides,
 	};
 }
 
@@ -195,6 +231,17 @@ test("oversized normalized requests fail before workspace or worker activity", a
 	assert.equal(runtime.calls.length, 0);
 });
 
+test("persisted task definitions must match their canonical top-level definitions", () => {
+	const state = runState("/workspace");
+	state.tasks[0]!.request = { ...state.tasks[0]!.request, role: " implementer " };
+	const parsed = parseRunState(state);
+	assert.strictEqual(parsed.tasks[0]!.request, parsed.request.tasks[0]);
+
+	const malformed = structuredClone(state);
+	malformed.tasks[0]!.request.requirements = "Different requirements.";
+	assert.throws(() => parseRunState(malformed), /task definition for task-a/);
+});
+
 test("unknown, duplicate, self, and cyclic dependencies launch no child", async () => {
 	for (const tasks of [
 		[task("task-a", ["missing"])],
@@ -289,6 +336,34 @@ test("usage and total elapsed budget persist across deliberate resume", async ()
 	assert.ok(resumed.state.elapsedMs > firstElapsed);
 	assert.deepEqual(runtime.checkTimeouts.slice(-2), [1_000, 600]);
 	assert.equal(resumed.state.manualInterventions, 1);
+});
+
+test("oversized replacement leaves the prior request usable", async () => {
+	const definition = request();
+	definition.finalChecks[0]!.args = Array.from({ length: 15 }, () => "x".repeat(16_000));
+	const padding = MAX_EXECUTE_REQUEST_BYTES - Buffer.byteLength(JSON.stringify(definition), "utf8") - 100;
+	assert.ok(padding > 0 && definition.goal.length + padding <= 32_000);
+	definition.goal += "x".repeat(padding);
+
+	const { root, runtime, store, runner } = await harness();
+	runtime.children.push({ error: new Error("pause") });
+	await runner.execute(definition, root);
+	const before = await readFile(store.statePath(root, definition.id));
+	await assert.rejects(
+		runner.resume({
+			id: definition.id,
+			action: "replace",
+			task: { ...definition.tasks[0]!, requirements: "r".repeat(32_000) },
+		}, root),
+		new RegExp(`normalized request exceeds ${MAX_EXECUTE_REQUEST_BYTES} bytes`),
+	);
+	assert.deepEqual(await readFile(store.statePath(root, definition.id)), before);
+
+	const replacement = { ...definition.tasks[0]!, requirements: "Use the smaller replacement." };
+	const resumed = await runner.resume({ id: definition.id, action: "replace", task: replacement }, root);
+	assert.equal(resumed.state.accepted, true);
+	assert.equal(resumed.state.request.tasks[0]!.requirements, replacement.requirements);
+	assert.strictEqual(resumed.state.tasks[0]!.request, resumed.state.request.tasks[0]);
 });
 
 test("manual verification persists the selected task as running before checks", async () => {
@@ -519,6 +594,7 @@ test("successful checks are not duplicated against an unchanged workspace", asyn
 	assert.equal(result.state.accepted, true);
 	assert.equal(runtime.checkCalls.filter((command) => command === "check-one").length, 1);
 	assert.equal(runtime.checkCalls.filter((command) => command === "check-two").length, 2);
+	assert.deepEqual(result.state.tasks[0]!.checks.map(({ command }) => command), ["check-one", "check-two"]);
 	assert.equal(result.state.final.checks[0]!.passed, true);
 });
 
@@ -534,6 +610,104 @@ test("unverified final judgment stays explicit until deliberate approval on the 
 	const approved = await runner.resume({ id: "test-run", action: "approve_final_judgment" }, runtime.root);
 	assert.equal(approved.state.accepted, true);
 	assert.equal(approved.state.manualInterventions, 1);
+});
+
+test("restarted final verification reuses earlier passes on the current workspace", async () => {
+	const { runner, runtime } = await harness();
+	runtime.children.push({ output: "done" }, { output: "finding" }, { output: "PASS" });
+	const definition = request({
+		finalChecks: [{ command: "check-early", args: [] }, { command: "check-late", args: [] }],
+		finalJudgment: { criterion: "The combined behavior is coherent.", role: "reviewer", modelClass: "balanced" },
+	});
+	const first = await runner.execute(definition, runtime.root);
+	assert.deepEqual(first.state.final.verifiedWorkspace, runtime.workspace);
+
+	runtime.workspace = { ...runtime.workspace, tree: OID_B };
+	runtime.checks.set("check-late", [
+		{ code: 1, stdout: "", stderr: "failed" },
+		{ code: 0, stdout: "", stderr: "" },
+	]);
+	const failed = await runner.resume({ id: "test-run", action: "finalize" }, runtime.root);
+	assert.equal(failed.state.final.status, "needs_attention");
+	assert.ok(failed.state.final.checks.some((check) => check.command === "check-early" && check.passed && check.workspace.tree === OID_B));
+
+	const completed = await runner.resume({ id: "test-run", action: "finalize" }, runtime.root);
+	assert.equal(completed.state.accepted, true);
+	assert.equal(runtime.checkCalls.filter((command) => command === "check-early").length, 2);
+	assert.equal(runtime.checkCalls.filter((command) => command === "check-late").length, 3);
+});
+
+test("durable evidence keeps reusable passes and only the latest actionable failure", async () => {
+	const { root, store } = await harness();
+	const definition = request({
+		tasks: [{ ...task("task-a"), checks: [{ command: "check-pass", args: [] }, { command: "check-fail", args: [] }] }],
+	});
+	const large = "x".repeat(8 * 1024);
+	const currentPass = checkEvidence("check-pass", true, 1, { stdout: large, stderr: large });
+	const obsoletePass = checkEvidence("check-pass", true, 2, {
+		stdout: large,
+		workspace: { branch: "refs/heads/main", head: OID_B, index: OID_B, tree: OID_B },
+	});
+	const failures = Array.from({ length: 150 }, (_, index) => checkEvidence("check-fail", false, 10 + index, {
+		stdout: large,
+		stderr: large,
+	}));
+	const state = runState(root, definition, {
+		status: "needs_attention",
+		tasks: [{
+			request: definition.tasks[0]!,
+			status: "needs_attention",
+			attempts: 2,
+			checks: [currentPass, { ...currentPass }, obsoletePass, ...failures],
+			failure: "The latest check failed.",
+		}],
+	});
+	assert.ok(Buffer.byteLength(JSON.stringify(state), "utf8") > 2 * 1024 * 1024);
+
+	await store.save(state);
+	const persisted = await store.load(root, definition.id);
+	assert.equal(persisted.tasks[0]!.checks.length, 2);
+	const pass = persisted.tasks[0]!.checks.find(({ passed }) => passed)!;
+	assert.equal(pass.stdout, "");
+	assert.equal(pass.stderr, "");
+	assert.equal(persisted.tasks[0]!.checks.find(({ passed }) => !passed)!.at, 159);
+});
+
+test("recovery isolates oversized peers and reports them after saving valid work", async () => {
+	const { root, runtime, store, runner } = await harness();
+	const definition = request({ id: "valid-run" });
+	await store.save(runState(root, definition, {
+		status: "running",
+		tasks: [{ request: definition.tasks[0]!, status: "running", attempts: 1, checks: [] }],
+		activeSince: 500,
+		updatedAt: 500,
+	}));
+	const badPath = store.statePath(root, "bad-peer");
+	const badContents = Buffer.alloc(2 * 1024 * 1024 + 1, 0x78);
+	await writeFile(badPath, badContents);
+
+	await assert.rejects(runner.recover(root), /request IDs: "bad-peer"/);
+	const recovered = await store.load(root, definition.id);
+	assert.equal(recovered.status, "needs_attention");
+	assert.match(recovered.tasks[0]!.failure!, /will not replay automatically/);
+	assert.equal(recovered.elapsedMs, 500);
+	assert.deepEqual(await readFile(badPath), badContents);
+	assert.equal(runtime.calls.length, 0);
+});
+
+test("symlinked config paths cannot route state writes into the workspace", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-auto-dag-symlink-state-"));
+	const root = join(directory, "workspace");
+	const agentDir = join(directory, "agent");
+	await mkdir(root);
+	await mkdir(agentDir);
+	await symlink(root, join(agentDir, "config"), "dir");
+	const runtime = new FakeRuntime(root);
+	const runner = new AutoDagRunner(runtime, new FileRunStore(agentDir));
+
+	await assert.rejects(runner.execute(request(), root), /state directory must be outside the Git workspace/);
+	assert.deepEqual(await readdir(root), []);
+	assert.equal(runtime.calls.length, 0);
 });
 
 test("durable state stays in Auto DAG's config home without workspace drift", async () => {
@@ -641,7 +815,7 @@ test("Git identity streams ordinary temporary indexes beyond 8 KiB", async () =>
 	assert.match((await identifyGitWorkspace(realExec, root)).tree, /^[0-9a-f]{40}$/);
 });
 
-test("Git identity uses a non-shell temporary index and preserves the real index", async () => {
+test("Git identity isolates temporary objects and preserves the real index and worktree", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-auto-dag-git-"));
 	await initRepository(root);
 	const commands: string[] = [];
@@ -660,12 +834,16 @@ test("Git identity uses a non-shell temporary index and preserves the real index
 	await writeFile(join(root, "tracked.txt"), "tracked\n");
 	assert.deepEqual(await identifyGitWorkspace(exec, root), before);
 	await mkdir(join(root, "new"));
-	await writeFile(join(root, "new", "untracked.txt"), "untracked\n");
+	await writeFile(join(root, "new", "untracked.txt"), "unique untracked auto-dag content\n");
+	const blob = (await execFileAsync("git", ["hash-object", "new/untracked.txt"], { cwd: root })).stdout.trim();
+	await assert.rejects(execFileAsync("git", ["cat-file", "-e", `${blob}^{blob}`], { cwd: root }));
 	const after = await identifyGitWorkspace(exec, root);
 	assert.equal(after.head, before.head);
 	assert.notEqual(after.tree, before.tree);
+	await assert.rejects(execFileAsync("git", ["cat-file", "-e", `${blob}^{blob}`], { cwd: root }));
+	await assert.rejects(execFileAsync("git", ["cat-file", "-e", `${after.tree}^{tree}`], { cwd: root }));
 	assert.equal(commands.includes("env"), false);
 	const cached = await execFileAsync("git", ["diff", "--cached", "--name-only"], { cwd: root });
 	assert.equal(cached.stdout, "");
-	assert.equal(await readFile(join(root, "new", "untracked.txt"), "utf8"), "untracked\n");
+	assert.equal(await readFile(join(root, "new", "untracked.txt"), "utf8"), "unique untracked auto-dag content\n");
 });
