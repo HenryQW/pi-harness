@@ -80,6 +80,15 @@ See the [orchestration guide](./docs/orchestration.md) for full delegation, tran
 
 The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill guides Main's planning and orchestration. It adds no runtime code, config, or Role installation.
 
+Before delegating:
+
+- Find concrete outcomes that can ship on their own.
+- Split only those outcomes. Give each one owner and a focused check.
+- Run independent work in parallel.
+- Prefer parallel delegation when at least two outcomes are independent.
+- For naturally multi-part work, roughly three to five useful units can help.
+- This is a guide, not a quota. Never create units just to reach it.
+
 Its ordinary review loop is optional. Use it only when the caller or repository policy explicitly requires judgment review.
 
 - Call `delegate_task` with `role: "reviewer"` to select the effective `reviewer` Role.
@@ -92,7 +101,9 @@ Flow is separate. It owns exact review evidence, exact `PASS` approval, validati
 
 ## Flow
 
-Flow requires a clean Main worktree on an attached branch with a committed `HEAD`. Use it only for independent Git changes that can merge in any order. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
+Flow requires a clean Main worktree on an attached branch with a committed `HEAD`. Use it only for independent Git changes that can merge in any order.
+
+Keep work together or run it in order when a split divides an invariant or adds coordination. Do not split units with overlapping mutable ownership. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
 
 One Implementer launch must plausibly finish before the configured maximum runtime. Cohesion is not enough when work has several preservable, separately verifiable milestones. Split oversized dependent work into serial one-unit Flows after each milestone integrates. Units in one Flow stay independent and commuting.
 
