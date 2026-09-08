@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { DEFAULT_SYNC_CAP, getSessionRows, searchIndex, syncSessions } from "../extensions/search-core.ts";
+import { DEFAULT_SYNC_CAP, getPreparationRows, getSessionRows, searchIndex, syncSessions } from "../extensions/search-core.ts";
 import { buildFtsQueryPlan, MAX_QUERY_CHARS } from "../extensions/query.ts";
 import { readBoundedSnapshot } from "../extensions/transcript.ts";
 import { getWindow } from "../extensions/hydrate.ts";
@@ -1034,7 +1034,7 @@ describe("sanitize ladder regression", () => {
 
 	it("untrusted header metadata is capped at parse time (qIqk)", () => {
 		writeFixture("--huge-meta--", "meta.jsonl", [
-			JSON.stringify({ type: "session", version: 3, id: "hm", timestamp: "2".repeat(100_000), cwd: "/".repeat(100_000) }),
+			JSON.stringify({ type: "session", version: 3, id: "hm", timestamp: "2".repeat(100_000), cwd: "/".repeat(100_000), parentSession: "p".repeat(100_000) }),
 			JSON.stringify({ type: "session_info", name: "n".repeat(100_000) }),
 			msg("hm1", "user", "metadata cap fixture text"),
 		], 59000);
@@ -1046,6 +1046,8 @@ describe("sanitize ladder regression", () => {
 		if (named) assert.ok(named.name!.length <= 500, "name must be capped");
 		const huge = rows.find((r) => r.path.endsWith("meta.jsonl"));
 		assert.ok((huge?.startedAt?.length ?? 0) <= 128, "session timestamp must be capped");
+		const prepared = getPreparationRows(dbPath, { limit: 10 }).find((r) => r.path.endsWith("meta.jsonl"));
+		assert.equal(prepared?.lineageId.length, 1024, "preparation lineage metadata inherits the parse-time cap");
 	});
 
 	it("truncated indexed text contains no synthetic searchable text", () => {
@@ -1196,6 +1198,134 @@ describe("transaction atomicity", () => {
 		const second = syncSessions(sessionsDir, dbPath);
 		assert.equal(second.filesProcessed, 1);
 		assert.equal(searchIndex(dbPath, "rollback newcomer").hits.length, 1);
+	});
+});
+
+describe("preparation rows", () => {
+	it("applies exact repository scope, descendant scope, and current-session exclusion before limit", () => {
+		const root = path.join(tmp, "repo_%");
+		const currentPath = path.join(sessionsDir, "--prep-current--", "current.jsonl");
+		writeFixture("--prep-current--", "current.jsonl", [
+			sessionHeader({ cwd: root, timestamp: "2026-01-08T00:00:00.000Z" }),
+			msg("pc", "user", "current"),
+		]);
+		writeFixture("--prep-sibling--", "sibling.jsonl", [
+			sessionHeader({ cwd: `${root}-sibling`, timestamp: "2026-01-07T00:00:00.000Z" }),
+			msg("ps", "user", "sibling"),
+		]);
+		writeFixture("--prep-outside--", "outside.jsonl", [
+			sessionHeader({ cwd: path.join(tmp, "other"), timestamp: "2026-01-06T00:00:00.000Z" }),
+			msg("po", "user", "outside"),
+		]);
+		const exact = writeFixture("--prep-exact--", "exact.jsonl", [
+			sessionHeader({ cwd: root, timestamp: "2026-01-05T00:00:00.000Z" }),
+			msg("pe", "user", "exact"),
+		]);
+		const descendant = writeFixture("--prep-descendant--", "descendant.jsonl", [
+			sessionHeader({ cwd: path.join(root, "packages", "app"), timestamp: "2026-01-04T00:00:00.000Z" }),
+			msg("pd", "user", "descendant"),
+		]);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+
+		const rows = getPreparationRows(dbPath, {
+			limit: 2,
+			repositoryRoot: root,
+			currentSessionPath: currentPath,
+		});
+		assert.deepEqual(rows.map((row) => row.path), [exact, descendant]);
+		assert.deepEqual(rows.map((row) => row.cwd), [root, path.join(root, "packages", "app")]);
+	});
+
+	it("collapses parent/child and external-parent siblings before limit with deterministic representatives", () => {
+		const root = path.join(tmp, "repo");
+		const parent = writeFixture("--prep-parent--", "parent.jsonl", [
+			sessionHeader({ cwd: root, timestamp: "2026-01-01T00:00:00.000Z" }),
+			msg("pp", "user", "parent"),
+		]);
+		writeFixture("--prep-child--", "child.jsonl", [
+			sessionHeader({ cwd: root, parentSession: parent, timestamp: "2026-01-09T00:00:00.000Z" }),
+			msg("pch", "assistant", "newer child"),
+		]);
+
+		const currentParent = writeFixture("--prep-current-parent--", "parent.jsonl", [
+			sessionHeader({ cwd: root, timestamp: "2026-01-10T00:00:00.000Z" }),
+			msg("pcp", "user", "excluded parent"),
+		]);
+		const currentNew = writeFixture("--prep-current-child-new--", "child.jsonl", [
+			sessionHeader({ cwd: root, parentSession: currentParent, timestamp: "2026-01-08T00:00:00.000Z" }),
+			msg("pccn", "assistant", "new current child"),
+		]);
+		writeFixture("--prep-current-child-old--", "child.jsonl", [
+			sessionHeader({ cwd: root, parentSession: currentParent, timestamp: "2026-01-07T00:00:00.000Z" }),
+			msg("pcco", "assistant", "old current child"),
+		]);
+
+		const outsideParent = writeFixture("--prep-outside-parent--", "parent.jsonl", [
+			sessionHeader({ cwd: path.join(tmp, "outside"), timestamp: "2026-01-11T00:00:00.000Z" }),
+			msg("pop", "user", "outside parent"),
+		]);
+		const outsideNew = writeFixture("--prep-outside-child-new--", "child.jsonl", [
+			sessionHeader({ cwd: root, parentSession: outsideParent, timestamp: "2026-01-06T00:00:00.000Z" }),
+			msg("pocn", "assistant", "new outside child"),
+		]);
+		writeFixture("--prep-outside-child-old--", "child.jsonl", [
+			sessionHeader({ cwd: root, parentSession: outsideParent, timestamp: "2026-01-05T00:00:00.000Z" }),
+			msg("poco", "assistant", "old outside child"),
+		]);
+
+		const missingParent = path.join(sessionsDir, "missing-parent.jsonl");
+		const missingA = writeFixture("--prep-missing-a--", "child.jsonl", [
+			sessionHeader({ cwd: root, parentSession: missingParent, timestamp: "2026-01-04T00:00:00.000Z" }),
+			msg("pma", "assistant", "missing sibling a"),
+		]);
+		const missingB = writeFixture("--prep-missing-b--", "child.jsonl", [
+			sessionHeader({ cwd: root, parentSession: missingParent, timestamp: "2026-01-04T00:00:00.000Z" }),
+			msg("pmb", "assistant", "missing sibling b"),
+		]);
+		syncSessions(sessionsDir, dbPath, { cap: 20 });
+
+		const limited = getPreparationRows(dbPath, {
+			limit: 2,
+			repositoryRoot: root,
+			currentSessionPath: currentParent,
+		});
+		assert.deepEqual(limited.map((row) => row.path), [currentNew, outsideNew], "collapsed siblings must not consume the limit");
+		assert.deepEqual(limited.map((row) => row.lineageId), [currentParent, outsideParent]);
+
+		const all = getPreparationRows(dbPath, {
+			limit: 10,
+			repositoryRoot: root,
+			currentSessionPath: currentParent,
+		});
+		assert.deepEqual(all.map((row) => row.path), [currentNew, outsideNew, missingA < missingB ? missingA : missingB, parent]);
+		assert.deepEqual(all.map((row) => row.lineageId), [currentParent, outsideParent, missingParent, parent]);
+	});
+
+	it("normalizes direct mutual cycles and orders equal-time representatives by path", () => {
+		const root = path.join(tmp, "repo");
+		const a = path.join(sessionsDir, "--prep-cycle-a--", "a.jsonl");
+		const b = path.join(sessionsDir, "--prep-cycle-b--", "b.jsonl");
+		writeFixture("--prep-cycle-a--", "a.jsonl", [
+			sessionHeader({ cwd: root, parentSession: b, timestamp: "2026-01-02T00:00:00.000Z" }),
+			msg("pca", "user", "cycle a"),
+		]);
+		writeFixture("--prep-cycle-b--", "b.jsonl", [
+			sessionHeader({ cwd: root, parentSession: a, timestamp: "2026-01-02T00:00:00.000Z" }),
+			msg("pcb", "user", "cycle b"),
+		]);
+		const rootA = writeFixture("--prep-root-a--", "a.jsonl", [
+			sessionHeader({ cwd: root, timestamp: "2026-01-01T00:00:00.000Z" }),
+			msg("pra", "user", "root a"),
+		]);
+		const rootB = writeFixture("--prep-root-b--", "b.jsonl", [
+			sessionHeader({ cwd: root, timestamp: "2026-01-01T00:00:00.000Z" }),
+			msg("prb", "user", "root b"),
+		]);
+		syncSessions(sessionsDir, dbPath, { cap: 10 });
+
+		const rows = getPreparationRows(dbPath, { limit: 10, repositoryRoot: root });
+		assert.deepEqual(rows.map((row) => row.path), [a < b ? a : b, rootA < rootB ? rootA : rootB, rootA < rootB ? rootB : rootA]);
+		assert.equal(rows[0].lineageId, a < b ? a : b);
 	});
 });
 
