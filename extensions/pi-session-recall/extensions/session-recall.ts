@@ -113,6 +113,9 @@ export default function (pi: ExtensionAPI): void {
 		label: "Session Search",
 		description: DESCRIPTION,
 		promptSnippet: "Search past Pi sessions for prior decisions and context",
+		promptGuidelines: [
+			"Use session_search only when the user explicitly asks about past Pi sessions, historical decisions, or repeated work not available in the current conversation. Do not use it for current-session continuation or ordinary repository inspection.",
+		],
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Search query (discovery). FTS5 syntax supported." })),
 			sessionId: Type.Optional(Type.String({ description: "Absolute path of the session file." })),
@@ -319,18 +322,18 @@ export default function (pi: ExtensionAPI): void {
 					if (!hydrateFull) {
 						// Compact hits still carry the matched anchor message.
 						try {
-							const win = getWindow(hit.path, hit.entryId, 0);
+							const win = getWindow(hit.path, hit.entryId, 0, { userAssistantTextOnly: true });
 							// Mark when the fixed compact cap already removed content, so a
 							// hit that still fits the budget isn't mistaken for complete.
 							const overCompactCap = win.messages.some((m) => m.content.length > 2000);
-							return fitOrTruncate({ ...meta, detail: "compact", ...(overCompactCap ? { contentTruncated: true } : {}), messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter }, win.messages);
+							return fitOrTruncate({ ...meta, detail: "compact", ...(overCompactCap ? { contentTruncated: true } : {}), ...(win.toolResultsOmitted ? { toolResultsOmitted: true } : {}), messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter }, win.messages);
 						} catch (error) {
 							return hydrationFallback(error);
 						}
 					}
 					try {
 						// One bounded snapshot feeds both window and branch bookends.
-						const win = getWindow(hit.path, hit.entryId, 5);
+						const win = getWindow(hit.path, hit.entryId, 5, full ? undefined : { userAssistantTextOnly: true });
 						// Same branch as the anchor — following the file's final leaf
 						// would attach unrelated sibling messages.
 						const bookends = { start: win.branchMessages.slice(0, 3), end: win.branchMessages.slice(-3) };
@@ -338,6 +341,7 @@ export default function (pi: ExtensionAPI): void {
 							{
 								...meta,
 								detail: "full" as const,
+								...(win.toolResultsOmitted ? { toolResultsOmitted: true } : {}),
 								messages: win.messages,
 								bookends,
 								messagesBefore: win.messagesBefore,

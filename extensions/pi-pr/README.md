@@ -21,10 +21,13 @@ keeps the complete JSON output. Read one item with
 `pr-feedback.mjs show --snapshot FILE --id ID`.
 
 `show` prints one JSON record with its exact stored body and fields. A thread
-record includes child IDs without child bodies. A nested comment includes only
-its parent thread's ID, state, and location. Missing, unknown, duplicate, or
-ambiguous IDs fail. `show` does not run Git, call GitHub, use the network, or
-write files.
+record includes child IDs without child bodies. Treat that record as a container.
+Inspect the `thread_comment` IDs directly. Do not call `show` on the parent only
+to find children. Show the parent only when it has no child, or when you need
+parent-level metadata. Issue independent `show` lookups in one tool-call round.
+A nested comment includes only its parent thread's ID, state, and location.
+Missing, unknown, duplicate, or ambiguous IDs fail. `show` does not run Git, call
+GitHub, use the network, or write files.
 
 ## Works with
 
@@ -106,7 +109,7 @@ The comment sweep resolves its bundled helper and references from the installed 
 
 The footer and widget load at session start. A directory outside a Git worktree stays silent and does not start polling. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
 
-They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. They also refresh after any successful delegated task settles. Active Git worktrees poll every 30 seconds. Polling updates presentation only and may be stale.
+They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. Active Git worktrees poll every 30 seconds. Polling updates presentation only and may be stale.
 
 The create widget stays hidden until the local branch has a commit beyond its creation point. Any displayed widget clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the widget when the handler finishes.
 

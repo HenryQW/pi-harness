@@ -231,7 +231,7 @@ export default function pullRequestExtension(
 
 	const refresh = async (): Promise<void> => {
 		const ctx = context;
-		if (!ctx) return;
+		if (!ctx || [...activeInvocations.values()].includes("create-workflow")) return;
 		const generation = sessionGeneration;
 		if (active) {
 			queued = true;
