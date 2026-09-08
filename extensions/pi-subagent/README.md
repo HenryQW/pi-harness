@@ -80,6 +80,10 @@ See the [orchestration guide](./docs/orchestration.md) for full delegation, tran
 
 The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill guides Main's planning and orchestration. It adds no runtime code, config, or Role installation.
 
+Implementers remove only task-created temporary, generated, or ignored artifacts. Required deliverables and unrelated files stay intact. They never use `git clean` or blanket deletion, and unclear paths block.
+
+For known regressions with a runner that supports test-name filtering, use a test-name filter. Keep broad package or workspace checks to one caller-owned final validation after relevant units integrate. Flow itself does not run that check.
+
 Before delegating:
 
 - Find concrete outcomes that can ship on their own.

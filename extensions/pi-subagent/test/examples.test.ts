@@ -26,8 +26,12 @@ test("bundled pi-subagent-delegated-development Skill is valid and registered", 
 	assert.match(skill, /validation is the authority for objective verification/i);
 	assert.match(skill, /task packet.*neighboring behavior.*stay unchanged/is);
 	assert.match(skill, /exact test name or error.*known CI evidence/is);
+	assert.match(skill, /known regression has a runner that supports test-name filtering.*exact test name.*validation command/is);
 	assert.match(skill, /Never claim a validation command matches unknown CI/i);
-	assert.match(skill, /Order declared validation from the cheapest focused check to broader required checks/i);
+	assert.match(skill, /Keep a unit's declared validation focused.*Do not run broad package or workspace suites in a unit/is);
+	assert.match(skill, /Reserve any required broad package or workspace checks for one caller-owned final validation after the relevant units integrate/i);
+	assert.match(skill, /Do not duplicate the same check or its pass\/fail state between a unit and that final validation/i);
+	assert.match(skill, /Flow itself has no post-merge validation/i);
 	assert.match(skill, /Add non-empty `review` only for an explicit judgment/i);
 	assert.match(skill, /caller-managed loop.*caller or repository policy.*explicitly requires judgment review.*not required for every ordinary implementation/is);
 	assert.match(skill, /`delegate_task` with `role: "reviewer"`.*effective `reviewer` Role.*same-named user Role remains effective/is);
@@ -103,6 +107,10 @@ test("missing config directory still returns validated built-in implementer, rev
 	assert.match(implementer!.systemPrompt, /ordinary delegation, run focused validation.*establish correctness/i);
 	assert.match(implementer!.systemPrompt, /Flow, the declared validation gate is authoritative/i);
 	assert.match(implementer!.systemPrompt, /narrow development checks.*do not duplicate that final gate/i);
+	assert.match(implementer!.systemPrompt, /remove only temporary, generated, or ignored artifacts that this task created and that are not required deliverables/i);
+	assert.match(implementer!.systemPrompt, /Preserve required deliverables and unrelated files/i);
+	assert.match(implementer!.systemPrompt, /Never use `git clean` or any blanket deletion/i);
+	assert.match(implementer!.systemPrompt, /ownership or necessity is uncertain, do not delete it; report its exact path as a blocker/i);
 	assert.match(implementer!.systemPrompt, /credentials.*network.*generate artifacts.*broaden scope/i);
 	assert.match(implementer!.systemPrompt, /external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i);
 	assert.match(implementer!.systemPrompt, /Commit completed scoped changes locally/i);
