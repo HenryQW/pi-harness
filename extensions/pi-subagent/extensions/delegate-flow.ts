@@ -550,7 +550,7 @@ export function registerDelegateFlow(pi: ExtensionAPI, runtime: DelegateFlowRunt
 		const tip = oid(tipResult.stdout, "Unit HEAD");
 		const branchTip = oid(await requireGit(["rev-parse", "--verify", `refs/heads/${unit.worktree.branch}^{commit}`], unit.worktree.cwd, signal), "Unit branch tip");
 		if (tip !== branchTip) return { block: `Unit ${JSON.stringify(unit.request.id)} branch no longer names its checked-out HEAD.` };
-		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all"], unit.worktree.cwd, signal);
+		const status = await requireGit(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], unit.worktree.cwd, signal);
 		if (status) return { block: `Unit Worktree is dirty:\n${capOutput(status)}` };
 		const flags = await inspectIndexFlags(unit.worktree.cwd, git, signal);
 		if (flags.failure) throw new Error(`Unit index inspection failed: ${flags.failure}`);
