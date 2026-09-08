@@ -12,6 +12,10 @@ _Avoid_: Repository PR list, PR dashboard
 The current branch's explicit Git push destination. It names one validated remote, repository, host, ref, and remote OID.
 _Avoid_: Upstream guess, default remote
 
+**PR identity observation**:
+A session entry that remembers only a configured pull request's stable identity. It stores the PR URL, number, host, head identity, and configured target identity. Normal discovery may reload that URL after the configured remote ref is deleted. The current target and local HEAD must still match. GitHub remains authoritative for mutable state. Invalid identity or a failed GitHub load never enables PR creation.
+_Avoid_: Pull request cache, worktree cache, mutable PR snapshot
+
 **Inferred PR target**:
 One exact PR target discovered when the branch has no configured push destination. It must be the only validated remote publishing the same branch ref, and its PR head must match the remote OID. It has presentation authority but no mutation authority until the user confirms linking.
 _Avoid_: Guessed upstream, automatic link
@@ -53,7 +57,7 @@ _Avoid_: Workflow menu, multiple actions
 _Avoid_: PR browser command, workflow menu, workflow chain
 
 **PR presentation refresh**:
-The footer and widget load at session start, refresh after local commits, PR creation, pushes, dispatched workflow settlement, and successful delegated-task settlement, and poll every 30 seconds. A session outside a Git worktree stays silent and does not poll. Any displayed widget clears when `/pr` starts. A creation workflow defers intermediate refreshes until agent settlement, so its push-before-PR transition stays hidden. Other dispatched workflows keep the widget hidden until settlement; direct and no-action routes refresh it after the handler finishes. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Polling is presentation only and may be stale. `/pr` reads fresh state and is authoritative for actions.
+The footer and widget load at session start, refresh after local commits, PR creation, pushes, dispatched workflow settlement, and successful delegated-task settlement, and poll every 30 seconds. A session outside a Git worktree stays silent and does not poll. Any displayed widget clears when `/pr` starts. A creation workflow defers intermediate refreshes until agent settlement, so its push-before-PR transition stays hidden. Other dispatched workflows keep the widget hidden until settlement; direct and no-action routes refresh it after the handler finishes. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Presentation and `/pr` share fresh discovery plus session identity rehydration. Polling is presentation only and may be stale. `/pr` reads fresh state and is authoritative for actions.
 _Avoid_: Polling-driven workflow, cached command state
 
 **PR creation workflow**:

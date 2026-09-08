@@ -9,16 +9,19 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
-import type {
-	CurrentPullRequest,
-	CurrentPullRequestDiscovery,
-	PullRequestLoadContext,
+import {
+	pullRequestObservation,
+	type CurrentPullRequest,
+	type CurrentPullRequestDiscovery,
+	type PullRequestLoadContext,
 } from "../extensions/pr-github.ts";
 import pullRequestExtension from "../extensions/pr.ts";
 
 type Loader = (
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
+	inspectedLocal?: unknown,
+	observation?: unknown,
 ) => Promise<CurrentPullRequest | CurrentPullRequestDiscovery | null>;
 type EventHandler = (event: unknown, context: ExtensionContext) => Promise<void> | void;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -141,6 +144,7 @@ function harness(options: {
 	commandHandler?: PrCommandHandler;
 	theme?: (color: string, text: string) => string;
 	exec?: Exec;
+	sessionEntries?: unknown[];
 }) {
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
@@ -151,6 +155,7 @@ function harness(options: {
 	const widgets: unknown[] = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
 	const execCalls: Array<{ command: string; args: string[]; options?: ExecOptions }> = [];
+	const appended: Array<{ customType: string; data: unknown }> = [];
 	const ui = {
 		setStatus(_key: string, value: string | undefined) { statuses.push(value); },
 		setWidget(_key: string, value: unknown) { widgets.push(value); },
@@ -170,14 +175,17 @@ function harness(options: {
 		registerCommand(name: string, registered: Command) {
 			if (name === "pr") command = registered;
 		},
+		appendEntry(customType: string, data: unknown) {
+			appended.push({ customType, data });
+		},
 		async exec(command: string, args: string[], execOptions?: ExecOptions) {
 			execCalls.push({ command, args: [...args], options: execOptions });
 			if (!options.exec) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
 			return options.exec(command, args, execOptions);
 		},
 	} as unknown as ExtensionAPI, {
-		loadCurrentPullRequest: async (pi, context) => {
-			const loaded = await options.load(pi, context);
+		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation) => {
+			const loaded = await options.load(pi, context, inspectedLocal, observation);
 			if (loaded && "kind" in loaded) return loaded;
 			if (loaded) return { kind: "current", pullRequest: loaded };
 			return {
@@ -202,12 +210,16 @@ function harness(options: {
 		if (value === undefined) throw new Error(`Missing ${name} handler`);
 		return value;
 	};
-	const context = (mode: "tui" | "rpc" = "rpc"): ExtensionContext => ({
+	const context = (
+		mode: "tui" | "rpc" = "rpc",
+		sessionEntries: unknown[] = options.sessionEntries ?? [],
+	): ExtensionContext => ({
 		hasUI: true,
 		mode,
 		cwd: "/repo",
 		signal: new AbortController().signal,
 		isIdle: () => true,
+		sessionManager: { getBranch: () => sessionEntries },
 		ui,
 	} as unknown as ExtensionContext);
 	const callbackContext = (ctx: ExtensionContext): ExtensionContext => ({ ...ctx });
@@ -217,6 +229,7 @@ function harness(options: {
 		widgets,
 		notifications,
 		execCalls,
+		appended,
 		context,
 		async start(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
@@ -260,6 +273,76 @@ test("stays silent and does not poll outside a Git worktree", async (t) => {
 	assert.equal(loads, 1);
 
 	await app.shutdown(ctx);
+});
+
+test("records one configured PR observation without polling duplicates", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const pullRequest = currentPullRequest();
+	const expected = pullRequestObservation(pullRequest);
+	assert.ok(expected);
+	const app = harness({ async load() { return pullRequest; } });
+	const ctx = app.context();
+
+	await app.start(ctx);
+	assert.deepEqual(app.appended, [{ customType: "pi-pr-observation", data: expected }]);
+
+	t.mock.timers.tick(60_000);
+	await flush();
+	assert.equal(app.appended.length, 1);
+	await app.shutdown(ctx);
+});
+
+test("restores the newest valid observation and resets it on session replacement", async () => {
+	const older = pullRequestObservation(currentPullRequest());
+	assert.ok(older);
+	const latest = {
+		...older,
+		pullRequest: {
+			...older.pullRequest,
+			number: 43,
+			url: "https://github.com/acme/project/pull/43",
+		},
+	};
+	const seen: unknown[] = [];
+	const app = harness({
+		async load(_pi, _context, _inspectedLocal, observation) {
+			seen.push(observation);
+			return { kind: "inactive" };
+		},
+	});
+	const first = app.context("rpc", [
+		{ type: "custom", customType: "pi-pr-observation", data: older },
+		{ type: "custom", customType: "pi-pr-observation", data: { pullRequest: "malformed" } },
+		{ type: "custom", customType: "pi-pr-observation", data: latest },
+		{ type: "custom", customType: "pi-pr-observation", data: null },
+	]);
+	const replacement = app.context("rpc", []);
+
+	await app.start(first);
+	await app.start(replacement);
+	assert.deepEqual(seen, [latest, undefined]);
+	await app.shutdown(replacement);
+});
+
+test("does not persist a stale observation after session replacement", async () => {
+	const stale = deferred<CurrentPullRequest>();
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return loads === 1 ? stale.promise : { kind: "inactive" };
+		},
+	});
+	const first = app.context();
+	const replacement = app.context();
+
+	const staleStart = app.start(first);
+	await flush();
+	await app.start(replacement);
+	stale.resolve(currentPullRequest());
+	await staleStart;
+	assert.deepEqual(app.appended, []);
+	await app.shutdown(replacement);
 });
 
 test("stops polling when an active worktree becomes inactive", async (t) => {
@@ -374,7 +457,7 @@ test("renders the shared projection and refreshes after successful create or pus
 			return true;
 		},
 	});
-	const noUi = { hasUI: false } as ExtensionContext;
+	const noUi = { hasUI: false, sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext;
 	const ctx = app.context();
 
 	await app.start(noUi);
@@ -918,16 +1001,18 @@ test("keeps one Herdr rename pending through delayed PR discovery", async () => 
 	}
 });
 
-test("waits for an open PR instead of renaming from a historical match", async () => {
+test("renames once when an observed configured PR rehydrates as closed or merged", async () => {
 	for (const lifecycle of ["closed", "merged"] as const) {
 		await withHerdrEnvironment("1", "workspace-7", async () => {
+			const observed = pullRequestObservation(currentPullRequest());
+			assert.ok(observed);
 			let loads = 0;
 			const app = harness({
-				async load() {
+				sessionEntries: [{ type: "custom", customType: "pi-pr-observation", data: observed }],
+				async load(_pi, _context, _inspectedLocal, observation) {
 					loads += 1;
-					if (loads === 1) return null;
-					if (loads === 2) return currentPullRequest({ lifecycle });
-					return currentPullRequest();
+					assert.deepEqual(observation, observed);
+					return loads === 1 ? null : currentPullRequest({ lifecycle });
 				},
 				async hasLocalCommit() {
 					return true;
@@ -950,14 +1035,14 @@ test("waits for an open PR instead of renaming from a historical match", async (
 				await app.command().handler("", ctx as ExtensionCommandContext);
 				await app.settle(ctx);
 				assert.equal(plain(app.statuses.at(-1) ?? ""), `PR #42 · ${lifecycle}`);
-				assert.equal(app.execCalls.length, 0, lifecycle);
+				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], lifecycle);
 
 				await app.tool({
 					toolName: "bash",
 					input: { command: "git push origin HEAD" },
 					isError: false,
 				}, ctx);
-				assert.deepEqual(app.execCalls.map(({ args }) => args[1]), ["get", "rename"], lifecycle);
+				assert.equal(app.execCalls.length, 2, `${lifecycle} rename is one-shot`);
 			} finally {
 				await app.shutdown(ctx);
 			}
@@ -1314,7 +1399,7 @@ test("/pr restores its hint after a command error and schedules a refresh", asyn
 		},
 	});
 	const ctx = app.context();
-	const noUi = { hasUI: false } as ExtensionContext;
+	const noUi = { hasUI: false, sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext;
 
 	await app.start(ctx);
 	assert.equal(loads, 1);

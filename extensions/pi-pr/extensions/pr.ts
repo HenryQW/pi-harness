@@ -8,6 +8,10 @@ import { createPrCommandHandler } from "./pr-command.ts";
 import {
 	hasLocalCommit,
 	loadCurrentPullRequest,
+	parsePullRequestObservation,
+	pullRequestObservation,
+	samePullRequestObservation,
+	type PullRequestObservation,
 } from "./pr-github.ts";
 import {
 	discoveryIssueKey,
@@ -22,6 +26,7 @@ import {
 const POLL_INTERVAL_MS = 30_000;
 const HERDR_TIMEOUT_MS = 10_000;
 const UI_KEY = "pi-pr";
+const OBSERVATION_ENTRY = "pi-pr-observation";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
 const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
@@ -49,6 +54,14 @@ function parseWorkspaceLabel(response: Record<string, unknown>, workspaceId: str
 		throw new Error("workspace get returned an empty label");
 	}
 	return label;
+}
+
+function latestObservation(ctx: ExtensionContext): PullRequestObservation | undefined {
+	for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
+		if (entry.type !== "custom" || entry.customType !== OBSERVATION_ENTRY) continue;
+		const observation = parsePullRequestObservation(entry.data);
+		if (observation !== null) return observation;
+	}
 }
 
 export default function pullRequestExtension(
@@ -86,10 +99,24 @@ export default function pullRequestExtension(
 		signal.throwIfAborted();
 	};
 
-	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
+	const discover = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
 	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
 	let context: ExtensionContext | undefined;
+	let observation: PullRequestObservation | undefined;
+	const load: typeof loadCurrentPullRequest = async (api, loadContext, inspectedLocal) => {
+		const generation = sessionGeneration;
+		const discovery = await discover(api, loadContext, inspectedLocal, observation);
+		if (generation !== sessionGeneration) return discovery;
+		if (discovery.kind === "current") {
+			const current = pullRequestObservation(discovery.pullRequest);
+			if (current !== null && !samePullRequestObservation(observation, current)) {
+				pi.appendEntry(OBSERVATION_ENTRY, current);
+				observation = current;
+			}
+		}
+		return discovery;
+	};
 	let sessionGeneration = 0;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let active: AbortController | undefined;
@@ -164,6 +191,7 @@ export default function pullRequestExtension(
 	const stop = (): void => {
 		sessionGeneration += 1;
 		context = undefined;
+		observation = undefined;
 		queued = false;
 		refreshFailureReported = false;
 		displayEstablished = false;
@@ -240,10 +268,7 @@ export default function pullRequestExtension(
 			refreshFailureReported = false;
 
 			const pullRequest = discovery.kind === "current" ? discovery.pullRequest : undefined;
-			if (
-				pendingWorkspaceRename && pullRequest?.lifecycle === "open" &&
-				pullRequest.target.provenance === "configured"
-			) {
+			if (pendingWorkspaceRename && pullRequest?.target.provenance === "configured") {
 				pendingWorkspaceRename = false;
 				const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
 				if (process.env.HERDR_ENV === "1" && workspaceId) {
@@ -279,6 +304,7 @@ export default function pullRequestExtension(
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
 		const generation = sessionGeneration;
+		observation = latestObservation(ctx);
 		if (!ctx.hasUI) return;
 		context = ctx;
 		await refresh();
@@ -318,7 +344,7 @@ export default function pullRequestExtension(
 		}
 	});
 
-	const commandHandler = createCommandHandler(pi);
+	const commandHandler = createCommandHandler(pi, { loadCurrentPullRequest: load });
 	pi.registerCommand("pr", {
 		description: "[instructions] — Run the current branch pull request next step",
 		handler: async (args, ctx) => {
