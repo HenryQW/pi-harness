@@ -598,8 +598,8 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 	assert.equal(await app.handler("", app.context), "merge");
 
 	assert.deepEqual(app.confirmations, [{
-		title: "Merge PR #42 with merge?",
-		message: "Merge PR #42 using merge.",
+		title: "Merge PR #42?",
+		message: "Method: merge.",
 	}]);
 	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
 	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
@@ -663,8 +663,8 @@ test("cancels a confirmed merge when the fresh merge method changes", async () =
 
 	await assert.rejects(app.handler("", app.context), /merge method changed from merge to rebase/);
 	assert.deepEqual(app.confirmations, [{
-		title: "Merge PR #42 with merge?",
-		message: "Merge PR #42 using merge.",
+		title: "Merge PR #42?",
+		message: "Method: merge.",
 	}]);
 	assert.deepEqual(app.events, ["load", "confirm", "load"]);
 	assert.equal(mutationCalls(app.calls).length, 0);
