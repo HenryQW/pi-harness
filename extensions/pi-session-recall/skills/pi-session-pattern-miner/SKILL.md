@@ -50,11 +50,11 @@ Do not copy secrets or unnecessary transcript text. Do not count forks, retries,
 
 ## Verify ownership
 
-After clustering, inspect only candidate-relevant skill, executable, and instruction files. Use the paths returned by the inventory.
+After clustering, use the inventory only to find likely owners. It is not ownership proof and does not verify the current worktree.
 
-Reuse or repair existing automation when it already owns the workflow. Inventory names and paths help discovery, but they do not prove ownership by themselves.
+Always inspect the current candidate-relevant package manifests, executable scripts, skill files, and instruction files before assigning ownership. Do this even when the inventory is available and complete.
 
-If inventory is truncated or unavailable, inspect the likely owning files directly. Abstain when ownership cannot be verified safely.
+Reuse or repair existing automation when it already owns the workflow. If targeted current-file verification cannot be performed safely, abstain.
 
 ## Evidence gate
 

@@ -1,14 +1,26 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const MAX_MANIFEST_BYTES = 1024 * 1024;
+export const MAX_PACKAGE_MANIFESTS = 512;
+export const MAX_TOTAL_MANIFEST_BYTES = 16 * 1024 * 1024;
 export const REPOSITORY_UNAVAILABLE_REASON = "not-a-git-repository";
 
+const ROOT_STDOUT_BYTES = 4 * 1024;
+const INDEX_STDOUT_BYTES = 8 * 1024 * 1024;
+const GIT_STDERR_BYTES = 4 * 1024;
+const SIZE_STDOUT_BYTES = 128;
 const INSTRUCTION_NAMES = new Set(["AGENTS.md", "AGENTS.override.md", "CLAUDE.md"]);
-const SAFE_READ_FLAGS = fs.constants.O_RDONLY |
-	(fs.constants.O_NOFOLLOW ?? 0) |
-	(fs.constants.O_NONBLOCK ?? 0);
+const REGULAR_MODES = new Set(["100644", "100755"]);
+const INDEX_MODES = new Set(["100644", "100755", "120000", "160000"]);
+const PROVENANCE = {
+	packageScripts: "git-index",
+	executableScripts: "git-index",
+	agentInstructions: "git-index",
+	skills: "pi-effective-registry",
+} as const;
 
 export type RepositoryInventoryMode = "required" | "optional";
 
@@ -24,18 +36,39 @@ export interface RepositorySkill {
 	sourcePath: string;
 }
 
-export interface RepositoryInventory {
-	available: boolean;
-	reason?: typeof REPOSITORY_UNAVAILABLE_REASON;
-	gitRoot?: string;
+interface RepositoryInventoryCollections {
 	packageScripts: PackageScript[];
 	executableScripts: string[];
 	skills: RepositorySkill[];
 	agentInstructions: string[];
+	worktreeVerified: false;
 }
 
-type InventoryPi = Pick<ExtensionAPI, "exec" | "getCommands">;
+export type RepositoryInventory = RepositoryInventoryCollections & ({
+	available: true;
+	gitRoot: string;
+	provenance: typeof PROVENANCE;
+	reason?: never;
+} | {
+	available: false;
+	reason: typeof REPOSITORY_UNAVAILABLE_REASON;
+	gitRoot?: never;
+	provenance?: never;
+});
+
+type InventoryPi = Pick<ExtensionAPI, "getCommands">;
 type InventoryContext = Pick<ExtensionContext, "cwd" | "signal">;
+
+interface GitResult {
+	stdout: Buffer;
+	code: number;
+}
+
+interface IndexEntry {
+	mode: string;
+	oid: string;
+	path: string;
+}
 
 function compare(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
@@ -56,12 +89,12 @@ function boundedPath(value: string): string {
 	return JSON.stringify(bounded);
 }
 
-function unsafeManifest(relativePath: string): Error {
-	return new Error(`Unsafe repository manifest: ${boundedPath(relativePath)}`);
-}
-
 function malformedManifest(relativePath: string): Error {
 	return new Error(`Malformed repository manifest: ${boundedPath(relativePath)}`);
+}
+
+function unsupportedManifestMode(relativePath: string): Error {
+	return new Error(`Unsupported repository manifest mode: ${boundedPath(relativePath)}`);
 }
 
 function oversizedManifest(relativePath: string): Error {
@@ -72,152 +105,199 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 	if (signal?.aborted) throw new Error("Repository inventory cancelled.");
 }
 
-async function runGit(
-	pi: InventoryPi,
-	ctx: InventoryContext,
+/** Spawn one bounded process and never expose child output through failures. */
+function runGit(
 	cwd: string,
 	args: string[],
-): Promise<{ stdout: string; code: number; killed: boolean }> {
-	throwIfAborted(ctx.signal);
-	let result: Awaited<ReturnType<InventoryPi["exec"]>>;
-	try {
-		result = await pi.exec("git", args, { cwd, signal: ctx.signal });
-	} catch {
-		throwIfAborted(ctx.signal);
-		throw new Error("Repository inventory could not run Git.");
-	}
-	if (result.killed || ctx.signal?.aborted) throw new Error("Repository inventory cancelled.");
-	return result;
+	signal: AbortSignal | undefined,
+	stdoutCap: number,
+	options: { allowNonzero?: boolean; allowStderrOnNonzero?: boolean } = {},
+): Promise<GitResult> {
+	throwIfAborted(signal);
+	return new Promise((resolve, reject) => {
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn("git", args, {
+				cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+		} catch {
+			reject(new Error("Repository inventory could not start Git."));
+			return;
+		}
+
+		const childStdout = child.stdout;
+		const childStderr = child.stderr;
+		if (!childStdout || !childStderr) {
+			child.kill("SIGKILL");
+			reject(new Error("Repository inventory could not start Git."));
+			return;
+		}
+		const stdout: Buffer[] = [];
+		let stdoutBytes = 0;
+		let stderrBytes = 0;
+		let failure: Error | undefined;
+		let settled = false;
+
+		const fail = (error: Error) => {
+			if (failure) return;
+			failure = error;
+			child.kill("SIGKILL");
+		};
+		const finish = (error?: Error, result?: GitResult) => {
+			if (settled) return;
+			settled = true;
+			signal?.removeEventListener("abort", onAbort);
+			if (error) reject(error);
+			else resolve(result!);
+		};
+		const onAbort = () => fail(new Error("Repository inventory cancelled."));
+
+		childStdout.on("data", (chunk: Buffer) => {
+			stdoutBytes += chunk.length;
+			if (stdoutBytes > stdoutCap) {
+				fail(new Error("Repository inventory Git stdout exceeded its limit."));
+				return;
+			}
+			stdout.push(chunk);
+		});
+		childStderr.on("data", (chunk: Buffer) => {
+			stderrBytes += chunk.length;
+			if (stderrBytes > GIT_STDERR_BYTES) {
+				fail(new Error("Repository inventory Git stderr exceeded its limit."));
+			} else if (!options.allowStderrOnNonzero) {
+				fail(new Error("Repository inventory Git wrote unexpected stderr."));
+			}
+		});
+		child.once("error", () => finish(new Error("Repository inventory could not start Git.")));
+		child.once("close", (code) => {
+			if (failure) {
+				finish(failure);
+				return;
+			}
+			if (signal?.aborted) {
+				finish(new Error("Repository inventory cancelled."));
+				return;
+			}
+			if (code === null || (code !== 0 && !options.allowNonzero)) {
+				finish(new Error("Repository inventory Git command failed."));
+				return;
+			}
+			if (stderrBytes > 0 && !(code !== 0 && options.allowStderrOnNonzero)) {
+				finish(new Error("Repository inventory Git wrote unexpected stderr."));
+				return;
+			}
+			finish(undefined, { stdout: Buffer.concat(stdout, stdoutBytes), code });
+		});
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
+	});
 }
 
-function gitRootFromOutput(stdout: string): string {
-	const root = stdout.endsWith("\r\n") ? stdout.slice(0, -2) : stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
+function decodeUtf8(value: Buffer, error: () => Error): string {
+	let decoded: string;
+	try {
+		decoded = new TextDecoder("utf-8", { fatal: true }).decode(value);
+	} catch {
+		throw error();
+	}
+	if (decoded.includes("�")) throw error();
+	return decoded;
+}
+
+function decodeAscii(value: Buffer, error: () => Error): string {
+	if (value.some((byte) => byte > 0x7f)) throw error();
+	return value.toString("ascii");
+}
+
+function canonicalDirectory(value: string): string {
+	try {
+		const canonical = fs.realpathSync(value);
+		if (!fs.statSync(canonical).isDirectory()) throw new Error("not a directory");
+		return canonical;
+	} catch {
+		throw new Error("Repository inventory could not resolve the Git root.");
+	}
+}
+
+function gitRootFromOutput(stdout: Buffer): string {
+	const invalid = () => new Error("Repository inventory could not resolve the Git root.");
+	const decoded = decodeUtf8(stdout, invalid);
+	const root = decoded.endsWith("\r\n") ? decoded.slice(0, -2) : decoded.endsWith("\n") ? decoded.slice(0, -1) : decoded;
 	if (!root || root.includes("\r") || root.includes("\n") || (!path.isAbsolute(root) && !path.win32.isAbsolute(root))) {
-		throw new Error("Repository inventory could not resolve the Git root.");
+		throw invalid();
 	}
-	try {
-		const canonicalRoot = fs.realpathSync(root);
-		if (!fs.statSync(canonicalRoot).isDirectory()) throw new Error("not a directory");
-		return canonicalRoot;
-	} catch {
-		throw new Error("Repository inventory could not resolve the Git root.");
-	}
+	return canonicalDirectory(root);
 }
 
-async function resolveGitRoot(
-	pi: InventoryPi,
-	ctx: InventoryContext,
-): Promise<string | undefined> {
-	const result = await runGit(pi, ctx, ctx.cwd, ["rev-parse", "--show-toplevel"]);
+async function resolveGitRoot(ctx: InventoryContext): Promise<string | undefined> {
+	const cwd = canonicalDirectory(ctx.cwd);
+	const result = await runGit(cwd, ["rev-parse", "--show-toplevel"], ctx.signal, ROOT_STDOUT_BYTES, {
+		allowNonzero: true,
+		allowStderrOnNonzero: true,
+	});
 	return result.code === 0 ? gitRootFromOutput(result.stdout) : undefined;
 }
 
 function looksLikePackageJson(value: string): boolean {
-	const normalized = value.replaceAll("\\", "/");
-	return normalized === "package.json" || normalized.endsWith("/package.json");
+	return value === "package.json" || value.endsWith("/package.json");
 }
 
 function normalizeRepositoryPath(value: string): string {
 	const segments = value.split("/");
 	if (
 		!value ||
-		value.includes("\0") ||
+		value.includes("�") ||
 		value.includes("\\") ||
 		path.isAbsolute(value) ||
 		path.win32.isAbsolute(value) ||
 		segments.some((segment) => !segment || segment === "." || segment === "..")
 	) {
-		if (looksLikePackageJson(value)) throw unsafeManifest(value);
 		throw new Error("Repository inventory received an invalid repository path.");
 	}
 	return value;
 }
 
-function nulRecords(stdout: string): string[] {
-	if (!stdout) return [];
-	const records = stdout.split("\0");
-	if (records.pop() !== "") throw new Error("Repository inventory received an invalid Git file listing.");
-	return records;
-}
-
-function trackedFiles(stdout: string): Map<string, boolean> {
-	const files = new Map<string, boolean>();
-	for (const record of nulRecords(stdout)) {
-		const tab = record.indexOf("\t");
-		if (tab < 0) throw new Error("Repository inventory received an invalid Git file listing.");
-		const [mode] = record.slice(0, tab).split(" ");
-		if (!mode || !/^\d{6}$/.test(mode)) throw new Error("Repository inventory received an invalid Git file listing.");
-		const relativePath = normalizeRepositoryPath(record.slice(tab + 1));
-		files.set(relativePath, files.get(relativePath) === true || mode === "100755");
+function parseIndex(stdout: Buffer): IndexEntry[] {
+	if (stdout.length === 0) return [];
+	if (stdout.at(-1) !== 0) throw new Error("Repository inventory received an invalid Git index listing.");
+	const entries: IndexEntry[] = [];
+	const paths = new Set<string>();
+	let start = 0;
+	while (start < stdout.length) {
+		const end = stdout.indexOf(0, start);
+		if (end < 0) throw new Error("Repository inventory received an invalid Git index listing.");
+		const record = stdout.subarray(start, end);
+		start = end + 1;
+		const tab = record.indexOf(0x09);
+		if (tab < 0) throw new Error("Repository inventory received an invalid Git index listing.");
+		const invalid = () => new Error("Repository inventory received an invalid Git index listing.");
+		const metadata = decodeAscii(record.subarray(0, tab), invalid);
+		const match = /^([0-7]{6}) ([0-9a-fA-F]{40}|[0-9a-fA-F]{64}) ([0-3])$/.exec(metadata);
+		if (!match) throw invalid();
+		const relativePath = normalizeRepositoryPath(decodeUtf8(record.subarray(tab + 1), invalid));
+		const [, mode, oid, stage] = match;
+		if (stage !== "0") throw new Error("Repository inventory does not accept conflicted Git index entries.");
+		if (paths.has(relativePath)) throw new Error("Repository inventory received duplicate Git index entries.");
+		paths.add(relativePath);
+		if (looksLikePackageJson(relativePath) && !REGULAR_MODES.has(mode)) throw unsupportedManifestMode(relativePath);
+		if (!INDEX_MODES.has(mode)) throw invalid();
+		entries.push({ mode, oid, path: relativePath });
 	}
-	return files;
-}
-
-function untrackedFiles(stdout: string): Set<string> {
-	return new Set(nulRecords(stdout).map(normalizeRepositoryPath));
-}
-
-function repositoryFile(root: string, relativePath: string, error: () => Error): string {
-	const candidate = path.resolve(root, ...relativePath.split("/"));
-	if (!isWithin(root, candidate)) throw error();
-	let parent: string;
-	try {
-		parent = fs.realpathSync(path.dirname(candidate));
-	} catch {
-		throw error();
-	}
-	if (!isWithin(root, parent)) throw error();
-	const filePath = path.join(parent, path.basename(candidate));
-	if (!isWithin(root, filePath)) throw error();
-	return filePath;
-}
-
-function readManifestSnapshot(root: string, relativePath: string): string {
-	const filePath = repositoryFile(root, relativePath, () => unsafeManifest(relativePath));
-	let fd: number | undefined;
-	try {
-		fd = fs.openSync(filePath, SAFE_READ_FLAGS);
-	} catch {
-		throw unsafeManifest(relativePath);
-	}
-	try {
-		let stat: fs.Stats;
-		try {
-			stat = fs.fstatSync(fd);
-		} catch {
-			throw unsafeManifest(relativePath);
-		}
-		if (!stat.isFile()) throw unsafeManifest(relativePath);
-		if (stat.size > MAX_MANIFEST_BYTES) throw oversizedManifest(relativePath);
-		const snapshot = Buffer.allocUnsafe(stat.size);
-		let read = 0;
-		while (read < snapshot.length) {
-			let bytesRead: number;
-			try {
-				bytesRead = fs.readSync(fd, snapshot, read, snapshot.length - read, read);
-			} catch {
-				throw unsafeManifest(relativePath);
-			}
-			if (bytesRead === 0) break;
-			read += bytesRead;
-		}
-		return snapshot.toString("utf8", 0, read);
-	} finally {
-		fs.closeSync(fd);
-	}
+	return entries.sort((left, right) => compare(left.path, right.path));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function scriptsFromManifest(root: string, relativePath: string): PackageScript[] {
+function scriptsFromManifest(source: string, relativePath: string): PackageScript[] {
 	let manifest: unknown;
 	try {
-		manifest = JSON.parse(readManifestSnapshot(root, relativePath));
-	} catch (error) {
-		if (error instanceof SyntaxError) throw malformedManifest(relativePath);
-		throw error;
+		manifest = JSON.parse(source);
+	} catch {
+		throw malformedManifest(relativePath);
 	}
 	if (!isRecord(manifest)) throw malformedManifest(relativePath);
 	const scripts = manifest.scripts;
@@ -231,27 +311,48 @@ function scriptsFromManifest(root: string, relativePath: string): PackageScript[
 	return result.sort((left, right) => compare(left.name, right.name));
 }
 
-function isUntrackedExecutable(root: string, relativePath: string): boolean {
-	const filePath = repositoryFile(root, relativePath, () => new Error("Repository inventory received an invalid repository path."));
-	let fd: number | undefined;
-	try {
-		fd = fs.openSync(filePath, SAFE_READ_FLAGS);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT" || code === "ELOOP" || code === "ENXIO") return false;
-		throw new Error("Repository inventory could not inspect untracked files.");
+function parseObjectSize(stdout: Buffer): number {
+	const invalid = () => new Error("Repository inventory received an invalid Git object size.");
+	const value = decodeAscii(stdout, invalid);
+	if (!/^(0|[1-9][0-9]*)\n$/.test(value)) throw invalid();
+	const size = BigInt(value.slice(0, -1));
+	if (size > BigInt(Number.MAX_SAFE_INTEGER)) throw invalid();
+	return Number(size);
+}
+
+async function packageScriptsFromIndex(
+	root: string,
+	entries: IndexEntry[],
+	signal: AbortSignal | undefined,
+): Promise<PackageScript[]> {
+	const packages = entries.filter((entry) => looksLikePackageJson(entry.path));
+	if (packages.length > MAX_PACKAGE_MANIFESTS) {
+		throw new Error("Repository inventory exceeds the 512 package manifest limit.");
 	}
-	try {
-		let stat: fs.Stats;
-		try {
-			stat = fs.fstatSync(fd);
-		} catch {
-			throw new Error("Repository inventory could not inspect untracked files.");
+
+	const sized: (IndexEntry & { size: number })[] = [];
+	let totalBytes = 0;
+	for (const entry of packages) {
+		const result = await runGit(root, ["--no-replace-objects", "cat-file", "-s", "--", entry.oid], signal, SIZE_STDOUT_BYTES);
+		const size = parseObjectSize(result.stdout);
+		if (size > MAX_MANIFEST_BYTES) throw oversizedManifest(entry.path);
+		if (totalBytes > MAX_TOTAL_MANIFEST_BYTES - size) {
+			throw new Error("Repository inventory exceeds the 16 MiB total manifest limit.");
 		}
-		return stat.isFile() && (stat.mode & 0o111) !== 0;
-	} finally {
-		fs.closeSync(fd);
+		totalBytes += size;
+		sized.push({ ...entry, size });
 	}
+
+	const scripts: PackageScript[] = [];
+	for (const entry of sized) {
+		const result = await runGit(root, ["--no-replace-objects", "cat-file", "blob", "--", entry.oid], signal, entry.size);
+		if (result.stdout.length !== entry.size) {
+			throw new Error("Repository inventory received an incorrect Git blob size.");
+		}
+		const invalid = () => malformedManifest(entry.path);
+		scripts.push(...scriptsFromManifest(decodeUtf8(result.stdout, invalid), entry.path));
+	}
+	return scripts;
 }
 
 function effectiveSkills(pi: InventoryPi, root: string): RepositorySkill[] {
@@ -284,14 +385,14 @@ function effectiveSkills(pi: InventoryPi, root: string): RepositorySkill[] {
 	);
 }
 
-/** Inventory Git-visible automation surfaces without traversing the working tree. */
+/** Return bounded discovery hints from the Git index and Pi's effective skill registry. */
 export async function inventoryRepository(
 	pi: InventoryPi,
 	ctx: InventoryContext,
 	mode: RepositoryInventoryMode = "required",
 ): Promise<RepositoryInventory> {
 	if (mode !== "required" && mode !== "optional") throw new Error("Invalid repository inventory mode.");
-	const gitRoot = await resolveGitRoot(pi, ctx);
+	const gitRoot = await resolveGitRoot(ctx);
 	if (!gitRoot) {
 		if (mode === "optional") {
 			return {
@@ -301,32 +402,23 @@ export async function inventoryRepository(
 				executableScripts: [],
 				skills: [],
 				agentInstructions: [],
+				worktreeVerified: false,
 			};
 		}
 		throw new Error("Repository inventory requires a Git repository.");
 	}
 
-	const tracked = trackedFiles((await runGit(pi, ctx, gitRoot, ["ls-files", "--stage", "-z"])).stdout);
-	const untracked = untrackedFiles((await runGit(pi, ctx, gitRoot, ["ls-files", "--others", "--exclude-standard", "-z"])).stdout);
-	const files = [...new Set([...tracked.keys(), ...untracked])].sort(compare);
-
-	const packageScripts = files
-		.filter(looksLikePackageJson)
-		.flatMap((relativePath) => scriptsFromManifest(gitRoot, relativePath));
-	const executableScripts = new Set<string>();
-	for (const [relativePath, executable] of tracked) {
-		if (executable) executableScripts.add(relativePath);
-	}
-	for (const relativePath of [...untracked].sort(compare)) {
-		if (isUntrackedExecutable(gitRoot, relativePath)) executableScripts.add(relativePath);
-	}
-
+	const index = parseIndex((await runGit(gitRoot, ["ls-files", "--stage", "-z"], ctx.signal, INDEX_STDOUT_BYTES)).stdout);
 	return {
 		available: true,
 		gitRoot,
-		packageScripts,
-		executableScripts: [...executableScripts].sort(compare),
+		packageScripts: await packageScriptsFromIndex(gitRoot, index, ctx.signal),
+		executableScripts: index.filter((entry) => entry.mode === "100755").map((entry) => entry.path),
 		skills: effectiveSkills(pi, gitRoot),
-		agentInstructions: files.filter((relativePath) => INSTRUCTION_NAMES.has(path.posix.basename(relativePath))),
+		agentInstructions: index
+			.filter((entry) => REGULAR_MODES.has(entry.mode) && INSTRUCTION_NAMES.has(path.posix.basename(entry.path)))
+			.map((entry) => entry.path),
+		provenance: PROVENANCE,
+		worktreeVerified: false,
 	};
 }

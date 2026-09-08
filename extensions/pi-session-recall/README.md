@@ -69,7 +69,32 @@ Run `/skill:pi-session-pattern-miner` to find repeated workflows in past session
 
 It treats one lineage as one source. It requires two independent examples before recommending automation. A requested topic gets a focused confirmation search even when the prepared sample does not contain it.
 
-After clustering, the skill may inspect candidate-relevant inventory paths. It must inspect likely owners or abstain when truncated or unavailable inventory cannot prove ownership.
+After clustering, the skill always checks current candidate-relevant package manifests, scripts, skills, and instructions. It abstains if it cannot check them safely.
+
+### Repository inventory
+
+Repository inventory contains discovery hints. It is never proof that a file owns a workflow. It does not verify the current worktree.
+
+Package scripts, executable paths, and instruction paths come from stage-0 entries in the Git index. Package content comes from indexed blobs, with replacement refs disabled. Inventory never opens working-tree package paths.
+
+Executables need index mode `100755`. Instructions need a recognized name and a regular-file index mode.
+
+Skills come from Pi's effective command registry. Their canonical source paths must stay inside the repository.
+
+Available inventory includes this provenance:
+
+```json
+{
+  "packageScripts": "git-index",
+  "executableScripts": "git-index",
+  "agentInstructions": "git-index",
+  "skills": "pi-effective-registry"
+}
+```
+
+It also sets `worktreeVerified:false`. Staged adds, changes, and deletes affect the snapshot. Unstaged changes, deletions, mode changes, symlinks, and untracked files do not.
+
+Inspect the current candidate files before assigning ownership. Abstain if targeted current-file checks cannot be done safely.
 
 ## Flow
 
@@ -137,6 +162,10 @@ Repository scope fails outside Git. All scope outside Git returns `inventory.ava
 
 Preparation rejects `query`, session cursors, `window`, or `detail` in the same call. It also rejects `scope` without the operation.
 
-Preparation output stays within 50,000 serialized characters. Inventory uses at most 10,000 characters and reports deterministic `omittedCounts`.
+Preparation output stays within 50,000 serialized characters. Inventory uses at most 10,000 characters. Its `omittedCounts` report only omitted collection entries, and `inventory.truncated` reports those omissions.
 
-Session `contentTruncated` reports transcript budget trimming. Top-level `contentTruncated` also covers inventory trimming. Session `truncated` reports omitted middle messages.
+Inventory fails if the Git root output exceeds 4 KiB or the raw index listing exceeds 8 MiB. It also fails on malformed index data, invalid UTF-8, conflict entries, unsupported package modes, Git errors, unexpected Git stderr, or bounded stream overflow.
+
+Inventory accepts at most 512 package manifests. Each indexed manifest can be at most 1 MiB, and their declared sizes can total at most 16 MiB. Blob sizes and UTF-8 are checked before manifest data is parsed.
+
+Session and top-level `contentTruncated` report transcript budget trimming only. Session `truncated` reports omitted middle messages.

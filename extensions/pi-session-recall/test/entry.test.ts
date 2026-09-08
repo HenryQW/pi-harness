@@ -808,6 +808,14 @@ describe("session_search entry point", () => {
 			assert.deepEqual(prepared.inventory.executableScripts, ["scripts/run.sh"]);
 			assert.deepEqual(prepared.inventory.skills, [{ name: "skill:local", description: "Local repository skill", sourcePath: "skills/local/SKILL.md" }]);
 			assert.deepEqual(prepared.inventory.agentInstructions, ["AGENTS.md"]);
+			assert.deepEqual(prepared.inventory.provenance, {
+				packageScripts: "git-index",
+				executableScripts: "git-index",
+				agentInstructions: "git-index",
+				skills: "pi-effective-registry",
+			});
+			assert.equal(prepared.inventory.worktreeVerified, false);
+			assert.equal(prepared.inventory.truncated, false);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -908,7 +916,59 @@ describe("session_search entry point", () => {
 			assert.deepEqual(prepared.inventory.executableScripts, ["bin/run"]);
 			assert.equal(prepared.inventory.skills.length, 1);
 			assert.deepEqual(prepared.inventory.agentInstructions, ["AGENTS.md"]);
+			assert.deepEqual(prepared.inventory.provenance, {
+				packageScripts: "git-index",
+				executableScripts: "git-index",
+				agentInstructions: "git-index",
+				skills: "pi-effective-registry",
+			});
+			assert.equal(prepared.inventory.worktreeVerified, false);
 			assert.equal(prepared.contentTruncated, true);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps inventory truncation independent from transcript content truncation", async () => {
+		clearRecallState();
+		const root = makeRepository();
+		try {
+			const scripts = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [
+				`script-${String(index).padStart(3, "0")}`,
+				`echo ${"x".repeat(500)}`,
+			]));
+			writeRepositoryFile(root, "package.json", JSON.stringify({ scripts }));
+			assert.equal(spawnSync("git", ["add", "."], { cwd: root }).status, 0);
+			writeSimpleSession("prepare-in-miner/short.jsonl", {
+				id: "short",
+				cwd: root,
+				timestamp: "2026-03-03T01:00:00.000Z",
+				text: "short mining episode",
+			});
+			const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-prepare-inventory-only`);
+			syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
+			const pi = makePi();
+			const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-prepare-inventory-only`);
+			register(pi as never);
+			const tool = (pi as any).tool as CapturedTool;
+			const prepared = JSON.parse((await tool.execute(
+				"inventory-only",
+				{ operation: "prepare-pattern-miner", scope: "repository", limit: 1 },
+				undefined,
+				undefined,
+				{ cwd: root, sessionManager: { getSessionFile: () => undefined } },
+			)).content[0].text);
+			assert.equal(prepared.inventory.truncated, true);
+			assert.ok(prepared.inventory.omittedCounts.packageScripts > 0);
+			assert.deepEqual(prepared.inventory.provenance, {
+				packageScripts: "git-index",
+				executableScripts: "git-index",
+				agentInstructions: "git-index",
+				skills: "pi-effective-registry",
+			});
+			assert.equal(prepared.inventory.worktreeVerified, false);
+			assert.equal(prepared.sessions[0].contentTruncated, false);
+			assert.equal(prepared.contentTruncated, false);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

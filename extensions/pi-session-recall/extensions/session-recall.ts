@@ -97,6 +97,8 @@ function inventoryShape(
 	return {
 		available: source.available,
 		...(source.reason ? { reason: source.reason } : {}),
+		...(source.provenance ? { provenance: source.provenance } : {}),
+		worktreeVerified: source.worktreeVerified,
 		packageScripts: kept.packageScripts,
 		executableScripts: kept.executableScripts,
 		skills: kept.skills,
@@ -251,7 +253,7 @@ function buildPreparationResult(
 	const baseLength = JSON.stringify(build(sessions.map((session) => session.metadata), inventory, false)).length;
 	const perSessionBudget = sessions.length === 0 ? 0 : Math.floor((OUTPUT_CHAR_BUDGET - baseLength) / sessions.length);
 	const allocated = sessions.map((session) => allocatePreparationMessages(session, perSessionBudget));
-	const contentTruncated = inventory.truncated === true || allocated.some((session) => session.contentTruncated === true);
+	const contentTruncated = allocated.some((session) => session.contentTruncated === true);
 	return build(allocated, inventory, contentTruncated);
 }
 
