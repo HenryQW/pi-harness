@@ -10,6 +10,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+	executeTaskRoutes,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
@@ -331,28 +332,32 @@ export default function (pi: ExtensionAPI) {
 		const routes = configuredTaskRoutes(ctx);
 		if (!routes.length) return;
 
-		for (const route of routes) {
-			try {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(route.model);
-				if (!auth.ok) continue;
+		try {
+			return await executeTaskRoutes(
+				routes,
+				async (route) => {
+					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(route.model);
+					if (!auth.ok) throw new Error("Configured task model authentication failed.");
 
-				const requestModel = auth.baseUrl ? { ...route.model, baseUrl: auth.baseUrl } : route.model;
-				return {
-					compaction: await compact(
-						event.preparation,
-						requestModel,
-						auth.apiKey,
-						withoutDeletedHeaders(auth.headers),
-						event.customInstructions,
-						event.signal,
-						route.thinkingLevel,
-						undefined,
-						auth.env,
-					),
-				};
-			} catch {
-				if (event.signal.aborted) return;
-			}
+					const requestModel = auth.baseUrl ? { ...route.model, baseUrl: auth.baseUrl } : route.model;
+					return {
+						compaction: await compact(
+							event.preparation,
+							requestModel,
+							auth.apiKey,
+							withoutDeletedHeaders(auth.headers),
+							event.customInstructions,
+							event.signal,
+							route.thinkingLevel,
+							undefined,
+							auth.env,
+						),
+					};
+				},
+				{ signal: event.signal, shouldFallback: () => true },
+			);
+		} catch {
+			if (event.signal.aborted) return;
 		}
 
 		if (!event.signal.aborted) {

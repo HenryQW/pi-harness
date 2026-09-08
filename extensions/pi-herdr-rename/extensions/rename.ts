@@ -5,6 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 import {
+	executeTaskRoutes,
 	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
@@ -185,9 +186,9 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 		return response;
 	};
 
-	let failure: RenameModelError | undefined;
-	for (const route of configuredRenameRoutes(ctx)) {
-		try {
+	return executeTaskRoutes(
+		configuredRenameRoutes(ctx),
+		async (route) => {
 			const response = await complete(route);
 			const title = response.content
 				.filter((part) => part.type === "text")
@@ -199,12 +200,12 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 			const generated = parseGeneratedTitle(title);
 			if (!generated) throw new RenameModelError("Rename task model returned an invalid title.");
 			return generated;
-		} catch (error) {
-			if (signal.aborted || !(error instanceof RenameModelError)) throw error;
-			failure = error;
-		}
-	}
-	throw failure ?? new RenameModelError("Rename task model routes failed.");
+		},
+		{
+			signal,
+			shouldFallback: (error) => error instanceof RenameModelError,
+		},
+	);
 }
 
 export default function herdrRenameExtension(pi: ExtensionAPI): void {
