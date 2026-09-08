@@ -161,6 +161,17 @@ test("invalid files remain unchanged", async () => {
 	});
 });
 
+test("oversized configs retain the ConfigStore error contract", async () => {
+	await withAgentDir(async (agentDir) => {
+		const store = createStore(agentDir);
+		await mkdir(dirname(store.path), { recursive: true });
+		await writeFile(store.path, Buffer.alloc(64 * 1024 + 1, 0x20));
+		assert.throws(() => store.loadSync(), {
+			message: `Config exceeds ${64 * 1024} bytes: ${store.path}`,
+		});
+	});
+});
+
 test("invalid mutations preserve the current file", async () => {
 	await withAgentDir(async (agentDir) => {
 		const store = createStore(agentDir);

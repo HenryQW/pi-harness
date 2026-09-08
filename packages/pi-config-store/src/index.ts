@@ -28,8 +28,10 @@ function readBufferSize(maxBytes: number, bytesRead: number): number {
 	return Math.min(64 * 1024, maxBytes - bytesRead + 1);
 }
 
+class BoundedTextFileTooLargeError extends Error {}
+
 function decodeBounded(chunks: Buffer[], bytesRead: number, path: string, maxBytes: number): string {
-	if (bytesRead > maxBytes) throw new Error(`Text file exceeds ${maxBytes} bytes: ${path}`);
+	if (bytesRead > maxBytes) throw new BoundedTextFileTooLargeError(`Text file exceeds ${maxBytes} bytes: ${path}`);
 	return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytesRead));
 }
 
@@ -165,6 +167,9 @@ class ConfigStore<T> {
 			contents = readTextFileBoundedSync(this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
 			if (isMissing(error)) return { source: "missing", value: this.parse(this.defaults()) };
+			if (error instanceof BoundedTextFileTooLargeError) {
+				throw new Error(`Config exceeds ${MAX_CONFIG_BYTES} bytes: ${this.path}`);
+			}
 			throw error;
 		}
 		return { source: "file", value: this.parse(JSON.parse(contents)) };
