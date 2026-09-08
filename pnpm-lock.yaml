@@ -48,7 +48,7 @@ importers:
         specifier: ^1.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-task-models':
-        specifier: ^5.0.0
+        specifier: ^5.1.0
         version: link:../pi-task-models
 
   extensions/pi-auto-dag:
@@ -148,7 +148,7 @@ importers:
         specifier: ^0.4.1
         version: link:../../packages/pi-herdr
       '@henryqw/pi-task-models':
-        specifier: ^5.0.0
+        specifier: ^5.1.0
         version: link:../pi-task-models
 
   extensions/pi-memory:
@@ -169,7 +169,7 @@ importers:
         specifier: ^1.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-task-models':
-        specifier: ^5.0.0
+        specifier: ^5.1.0
         version: link:../pi-task-models
       proper-lockfile:
         specifier: ^4.1.2

@@ -5,6 +5,7 @@ import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionCo
 import { askQuestion } from "@henryqw/pi-ask-question";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
+	executeTaskRoutes,
 	loadTaskModelsConfig,
 	registerModelTask,
 	resolveConfiguredTaskRoutes,
@@ -340,17 +341,20 @@ async function reviewMutation(
 ): Promise<CandidateReview> {
 	const request = createReviewRequest(mutation, snapshot);
 	const routes = viableReviewRoutes(configuredReviewRoutes(ctx), request);
-	let failure: MemoryReviewError | undefined;
-	for (const route of routes) {
-		try {
-			return await invokeReviewRoute(route, request, snapshot, ctx, signal);
-		} catch (error) {
-			if (signal?.aborted) throwIfAborted(signal);
-			if (!(error instanceof MemoryReviewError)) throw error;
-			failure = error;
-		}
+	try {
+		return await executeTaskRoutes(
+			routes,
+			(route) => invokeReviewRoute(route, request, snapshot, ctx, signal),
+			{
+				signal,
+				shouldFallback: (error) => error instanceof MemoryReviewError,
+			},
+		);
+	} catch (error) {
+		if (signal?.aborted) throwIfAborted(signal);
+		if (!(error instanceof MemoryReviewError)) throw error;
+		throw new MemoryReviewError(`${error.message} Configure ${MEMORY_REVIEW_TASK.id} with /task-models and retry.`);
 	}
-	throw new MemoryReviewError(`${failure?.message ?? "Memory review task routes failed."} Configure ${MEMORY_REVIEW_TASK.id} with /task-models and retry.`);
 }
 
 function validateMutation(mutation: MemoryMutation): void {
