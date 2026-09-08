@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-dag",
-  "version": "9.0.1",
+  "version": "9.0.2",
   "description": "Run durable dependent Pi tasks serially in one Git workspace.",
   "keywords": [
     "pi-package",
@@ -32,7 +32,7 @@
     "@earendil-works/pi-coding-agent": "^0.85.1"
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^1.0.4",
+    "@henryqw/pi-config-store": "^1.1.0",
     "@henryqw/pi-subagent": "^15.0.2",
     "@henryqw/pi-task-models": "^5.0.2",
     "proper-lockfile": "^4.1.2",

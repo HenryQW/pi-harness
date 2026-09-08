@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createConfigStore, extensionConfigDir } from "@henryqw/pi-config-store";
+import { createConfigStore, extensionConfigDir, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { lock } from "proper-lockfile";
 import {
 	createAssistantMessageEventStream,
@@ -258,22 +258,11 @@ async function saveState(state: UsageState, signal?: AbortSignal): Promise<void>
 	signal?.throwIfAborted();
 	if (state.untrusted) return;
 	const file = cachePath();
-	const directory = extensionConfigDir("pi-multi-codex");
-	await mkdir(directory, { recursive: true, mode: 0o700 });
 	const data = `${JSON.stringify({
 		slots: [...state.slots.values()].sort((a, b) => a.slot - b.slot),
 		locks: [...state.locks.values()].sort((a, b) => a.slot - b.slot),
 	})}\n`;
-	const temporary = `${file}.${randomUUID()}.tmp`;
-	try {
-		await writeFile(temporary, data, { encoding: "utf8", mode: 0o600, flag: "wx", signal });
-		signal?.throwIfAborted();
-		await rename(temporary, file);
-		signal?.throwIfAborted();
-		await chmod(file, 0o600);
-	} finally {
-		await rm(temporary, { force: true }).catch(() => undefined);
-	}
+	await writePrivateTextFileAtomically(file, data, { signal });
 }
 
 async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {

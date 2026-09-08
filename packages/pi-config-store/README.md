@@ -1,6 +1,6 @@
 # `@henryqw/pi-config-store`
 
-Give extension authors one safe home for user-editable Pi extension JSON. Shared paths, validation, locking, and atomic writes avoid rebuilding storage behavior. End users do not install it directly in Pi.
+Give extension authors one safe home for Pi extension files. The package provides safe file mechanics and a validated JSON store. End users do not install it directly in Pi.
 
 ## Install
 
@@ -61,6 +61,9 @@ await store.remove();
 | --- | --- | --- |
 | `extensionConfigDir(extensionId, agentDir?)` | function | Returns an extension's config home. |
 | `extensionConfigPath(extensionId, agentDir?)` | function | Returns the home’s `config.json` path. |
+| `readTextFileBoundedSync(path, maxBytes)` | function | Reads bounded strict UTF-8 text synchronously. |
+| `readTextFileBounded(path, maxBytes, options?)` | async function | Reads bounded strict UTF-8 text. `options.signal` can cancel it. |
+| `writePrivateTextFileAtomically(path, contents, options?)` | async function | Flushes and atomically replaces UTF-8 text. `options.signal` can cancel it. |
 | `createConfigStore({ extensionId, agentDir?, defaults, parse })` | function | Creates a store. `defaults` is `() => T`; `parse` is `(value: unknown) => T`. |
 | `store.path` | `string` | Gives the store's `config.json` path. |
 | `store.loadSync()` | `{ source: 'file' \| 'missing'; value: T }` | Loads and validates the current value. |
@@ -70,7 +73,7 @@ await store.remove();
 
 By default, helpers use Pi's `getAgentDir()`. Pass `agentDir` to use another agent directory. Path helpers return paths without filesystem side effects.
 
-For custom formats, call `extensionConfigDir(extensionId, agentDir?)`. Use the format's native library inside that directory.
+For custom files, use `extensionConfigDir` and the bounded text helpers when they fit. The text helpers do not parse data, handle missing files, or lock access. The owning extension controls its format, schema, recovery, and lock policy.
 
 Only the owning extension writes its config home. Consumers use the owner's API or namespaced Pi events. They do not read or write another extension's files directly.
 
@@ -89,7 +92,11 @@ An extension ID must be one lowercase path component. The helpers and store reje
 
 JSON reads and writes have a 64 KiB limit. UTF-8 decoding is strict. The `parse` function validates parsed `unknown` data. Values are validated before mutations are written.
 
-A present malformed or schema-invalid file is not missing. Invalid UTF-8, oversized JSON, invalid JSON, and parser failures throw errors. Malformed and schema-invalid files remain unchanged.
+A direct text read requires `maxBytes` to be a positive safe integer. It consumes at most `maxBytes + 1` bytes and rejects a larger file. Invalid UTF-8 throws, and missing-file errors pass through unchanged.
+
+A direct text write creates or restricts its parent directory to mode `0700` where supported. It writes a same-directory temporary file at mode `0600`, flushes it, then renames it. Failures before rename clean the temporary file. A successful rename is committed, so later cancellation does not turn success into an error.
+
+A present malformed or schema-invalid JSON file is not missing. Invalid UTF-8, oversized JSON, invalid JSON, and parser failures throw errors. Malformed and schema-invalid files remain unchanged.
 
 Repository default: most extension owners may assume one active config writer. Under that assumption, reload the extension after a manual or external edit before its next write. A stale in-memory full replacement is outside the supported workflow.
 

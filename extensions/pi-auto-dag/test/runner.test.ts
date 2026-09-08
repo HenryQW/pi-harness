@@ -686,6 +686,7 @@ test("recovery isolates oversized peers and reports them after saving valid work
 	const badContents = Buffer.alloc(2 * 1024 * 1024 + 1, 0x78);
 	await writeFile(badPath, badContents);
 
+	await assert.rejects(store.load(root, "bad-peer"), /pi-auto-dag state exceeds 2097152 bytes/);
 	await assert.rejects(runner.recover(root), /request IDs: "bad-peer"/);
 	const recovered = await store.load(root, definition.id);
 	assert.equal(recovered.status, "needs_attention");
