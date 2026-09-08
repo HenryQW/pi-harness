@@ -1,9 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
@@ -18,7 +18,6 @@ import {
 	parseResumeRequest,
 	parseRunState,
 	RUN_STATE_VERSION,
-	validateGraph,
 	type CheckCommand,
 	type CheckEvidence,
 	type ExecuteRequest,
@@ -97,6 +96,65 @@ function sameCheck(left: CheckCommand, right: CheckCommand): boolean {
 	return left.command === right.command
 		&& left.args.length === right.args.length
 		&& left.args.every((arg, index) => arg === right.args[index]);
+}
+
+function compactStateEvidence(state: RunState): void {
+	const owners = [...state.tasks, state.final];
+	const declaredChecks = [...state.request.tasks.flatMap((task) => task.checks), ...state.request.finalChecks];
+	let latestFailure: CheckEvidence | undefined;
+	for (const owner of owners) {
+		if (owner.status === "completed") continue;
+		for (const record of owner.checks) {
+			const superseded = owner.checks.some((candidate) => candidate.passed
+				&& candidate.at >= record.at
+				&& sameCheck(candidate, record)
+				&& sameWorkspace(candidate.workspace, record.workspace));
+			if (!record.passed && !superseded && (!latestFailure || record.at >= latestFailure.at)) latestFailure = record;
+		}
+	}
+	for (const owner of owners) {
+		const workspace = (owner.status === "completed" || owner.status === "needs_attention") && owner.verifiedWorkspace
+			? owner.verifiedWorkspace
+			: state.workspace;
+		const passing: CheckEvidence[] = [];
+		const compacted = owner.checks.filter((record) => {
+			if (!record.passed) {
+				if (record !== latestFailure) return false;
+				record.stdout = bounded(record.stdout);
+				record.stderr = bounded(record.stderr);
+				return true;
+			}
+			if (!sameWorkspace(record.workspace, workspace)
+				|| !declaredChecks.some((check) => sameCheck(check, record))
+				|| passing.some((candidate) => sameCheck(candidate, record))) return false;
+			record.stdout = "";
+			record.stderr = "";
+			passing.push(record);
+			return true;
+		});
+		owner.checks.splice(0, owner.checks.length, ...compacted);
+	}
+}
+
+function isWithin(root: string, candidate: string): boolean {
+	const fromRoot = relative(root, candidate);
+	return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
+}
+
+async function canonicalPlannedPath(path: string): Promise<string> {
+	let ancestor = resolve(path);
+	const suffix: string[] = [];
+	for (;;) {
+		try {
+			return resolve(await realpath(ancestor), ...suffix.reverse());
+		} catch (error) {
+			if (!isMissing(error)) throw error;
+			const parent = dirname(ancestor);
+			if (parent === ancestor) throw error;
+			suffix.push(basename(ancestor));
+			ancestor = parent;
+		}
+	}
 }
 
 function commandLabel(check: CheckCommand): string {
@@ -194,8 +252,7 @@ export class FileRunStore {
 			"state",
 			createHash("sha256").update(canonicalRoot).digest("hex"),
 		);
-		const fromRoot = relative(canonicalRoot, resolve(directory));
-		if (fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))) {
+		if (isWithin(canonicalRoot, resolve(directory))) {
 			throw new Error("Auto DAG state directory must be outside the Git workspace.");
 		}
 		return directory;
@@ -209,8 +266,16 @@ export class FileRunStore {
 		return join(this.stateDirectory(root), "lifecycle.lock");
 	}
 
+	private async assertSafeDestination(root: string, destination: string): Promise<void> {
+		if (isWithin(realpathSync.native(root), await canonicalPlannedPath(destination))) {
+			throw new Error("Auto DAG state directory must be outside the Git workspace.");
+		}
+	}
+
 	async withLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
-		await mkdir(this.stateDirectory(root), { recursive: true, mode: 0o700 });
+		const directory = this.stateDirectory(root);
+		await this.assertSafeDestination(root, directory);
+		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const release = await lock(this.lockPath(root), { ...LOCK_OPTIONS, lockfilePath: `${this.lockPath(root)}.lock` });
 		try {
 			return await operation();
@@ -220,9 +285,20 @@ export class FileRunStore {
 	}
 
 	async load(root: string, id: string): Promise<RunState> {
-		const raw = await readFile(this.statePath(root, id));
-		if (raw.byteLength > STATE_MAX_BYTES) throw new Error(`pi-auto-dag state exceeds ${STATE_MAX_BYTES} bytes.`);
-		const state = parseRunState(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)));
+		const handle = await open(this.statePath(root, id), "r");
+		const raw = Buffer.allocUnsafe(STATE_MAX_BYTES + 1);
+		let offset = 0;
+		try {
+			while (offset < raw.length) {
+				const { bytesRead } = await handle.read(raw, offset, raw.length - offset, offset);
+				if (!bytesRead) break;
+				offset += bytesRead;
+			}
+		} finally {
+			await handle.close();
+		}
+		if (offset > STATE_MAX_BYTES) throw new Error(`pi-auto-dag state exceeds ${STATE_MAX_BYTES} bytes.`);
+		const state = parseRunState(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw.subarray(0, offset))));
 		if (state.root !== root || state.request.id !== id) throw new Error("pi-auto-dag state identity does not match its workspace and filename.");
 		return state;
 	}
@@ -236,25 +312,34 @@ export class FileRunStore {
 		}
 	}
 
-	async list(root: string): Promise<RunState[]> {
+	async list(root: string): Promise<{ states: RunState[]; invalidIds: string[] }> {
 		let entries;
 		try {
 			entries = await readdir(this.stateDirectory(root), { withFileTypes: true });
 		} catch (error) {
-			if (isMissing(error)) return [];
+			if (isMissing(error)) return { states: [], invalidIds: [] };
 			throw error;
 		}
 		const states: RunState[] = [];
-		for (const entry of entries.filter((candidate) => candidate.isFile() && candidate.name.endsWith(".json"))) {
-			states.push(await this.load(root, entry.name.slice(0, -5)));
+		const invalidIds: string[] = [];
+		for (const entry of entries.filter((candidate) => candidate.isFile() && candidate.name.endsWith(".json")).sort((left, right) => left.name.localeCompare(right.name))) {
+			const id = entry.name.slice(0, -5);
+			try {
+				states.push(await this.load(root, id));
+			} catch {
+				invalidIds.push(id);
+			}
 		}
-		return states;
+		return { states, invalidIds };
 	}
 
 	async save(state: RunState): Promise<void> {
+		const directory = this.stateDirectory(state.root);
+		await this.assertSafeDestination(state.root, directory);
+		compactStateEvidence(state);
 		const contents = `${JSON.stringify(state, null, 2)}\n`;
 		if (Buffer.byteLength(contents, "utf8") > STATE_MAX_BYTES) throw new Error(`pi-auto-dag state exceeds ${STATE_MAX_BYTES} bytes.`);
-		await mkdir(this.stateDirectory(state.root), { recursive: true, mode: 0o700 });
+		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const temporary = `${this.statePath(state.root, state.request.id)}.${process.pid}.${randomUUID()}.tmp`;
 		let handle: import("node:fs/promises").FileHandle | undefined;
 		try {
@@ -331,8 +416,19 @@ export class AutoDagRunner {
 		const root = await this.runtime.resolveRoot(cwd, signal);
 		return await this.store.withLock(root, async () => {
 			const state = await this.store.load(root, request.id);
-			this.recoverState(state);
 			if (state.accepted) throw new Error(`Auto DAG request ${request.id} is already accepted.`);
+			let replacement: ExecuteRequest | undefined;
+			if (request.action === "replace") {
+				const task = taskById(state, request.task.id);
+				if (task.status === "completed") throw new Error(`Completed task ${task.request.id} cannot be retried or replaced.`);
+				if (task.attempts >= 2) throw new Error(`Task ${task.request.id} already used both launched attempts; repair it manually and use verify.`);
+				replacement = parseExecuteRequest({
+					...state.request,
+					tasks: state.request.tasks.map((candidate) => candidate.id === request.task.id ? request.task : candidate),
+				});
+			}
+			this.recoverState(state);
+			if (request.action === "replace") this.requireUnfinishedAttention(taskById(state, request.task.id));
 			state.manualInterventions += 1;
 			const actual = await this.runtime.identifyWorkspace(root, signal);
 			if (actual.branch !== state.workspace.branch) {
@@ -375,12 +471,8 @@ export class AutoDagRunner {
 				task.status = "pending";
 			} else if (request.action === "replace") {
 				const task = taskById(state, request.task.id);
-				this.requireUnfinishedAttention(task);
-				if (task.attempts >= 2) throw new Error(`Task ${task.request.id} already used both launched attempts; repair it manually and use verify.`);
-				const definitions = state.request.tasks.map((candidate) => candidate.id === request.task.id ? request.task : candidate);
-				validateGraph(definitions);
-				state.request = { ...state.request, tasks: definitions };
-				task.request = request.task;
+				state.request = replacement!;
+				state.tasks.forEach((taskState, index) => { taskState.request = replacement!.tasks[index]!; });
 				task.status = "pending";
 			} else if (request.action === "verify") {
 				const task = taskById(state, request.taskId);
@@ -452,8 +544,12 @@ export class AutoDagRunner {
 		const root = await this.runtime.resolveRoot(cwd);
 		try {
 			await this.store.withLock(root, async () => {
-				for (const state of await this.store.list(root)) {
+				const { states, invalidIds } = await this.store.list(root);
+				for (const state of states) {
 					if (this.recoverState(state)) await this.store.save(state);
+				}
+				if (invalidIds.length) {
+					throw new Error(`Auto DAG recovery left invalid state files unchanged for request IDs: ${invalidIds.map((id) => JSON.stringify(id)).join(", ")}.`);
 				}
 			});
 		} catch (error) {
@@ -750,6 +846,7 @@ export class AutoDagRunner {
 		meter: UsageMeter,
 	): Promise<string | undefined> {
 		state.final.status = "running";
+		state.final.verifiedWorkspace = undefined;
 		await this.store.save(state);
 		const drift = await this.runtime.identifyWorkspace(state.root, signal);
 		if (!sameWorkspace(drift, state.workspace)) return `Workspace drift before final checks. Expected ${JSON.stringify(state.workspace)}; actual ${JSON.stringify(drift)}.`;
@@ -913,11 +1010,23 @@ export async function assertCleanGitWorkspace(exec: ExecCommand, root: string, s
 	}
 }
 
-async function requireGitWithIndex(args: string[], root: string, index: string, signal?: AbortSignal): Promise<string> {
+async function requireGitWithIndex(
+	args: string[],
+	root: string,
+	index: string,
+	objectDirectory: string,
+	alternateObjectDirectories: string,
+	signal?: AbortSignal,
+): Promise<string> {
 	return await new Promise<string>((resolveOutput, reject) => {
 		execFile("git", args, {
 			cwd: root,
-			env: { ...process.env, GIT_INDEX_FILE: index },
+			env: {
+				...process.env,
+				GIT_INDEX_FILE: index,
+				GIT_OBJECT_DIRECTORY: objectDirectory,
+				GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectories,
+			},
 			signal,
 			timeout: GIT_TIMEOUT_MS,
 			maxBuffer: EVIDENCE_MAX_BYTES,
@@ -930,12 +1039,23 @@ async function requireGitWithIndex(args: string[], root: string, index: string, 
 	});
 }
 
-async function assertNoGitlinksWithIndex(root: string, index: string, signal?: AbortSignal): Promise<void> {
+async function assertNoGitlinksWithIndex(
+	root: string,
+	index: string,
+	objectDirectory: string,
+	alternateObjectDirectories: string,
+	signal?: AbortSignal,
+): Promise<void> {
 	signal?.throwIfAborted();
 	const args = ["ls-files", "--stage", "-z"];
 	const child = spawn("git", args, {
 		cwd: root,
-		env: { ...process.env, GIT_INDEX_FILE: index },
+		env: {
+			...process.env,
+			GIT_INDEX_FILE: index,
+			GIT_OBJECT_DIRECTORY: objectDirectory,
+			GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectories,
+		},
 		signal,
 		timeout: GIT_TIMEOUT_MS,
 		shell: false,
@@ -995,16 +1115,25 @@ export async function identifyGitWorkspace(exec: ExecCommand, root: string, sign
 	const head = oid(await requireCommand(exec, "git", ["rev-parse", "--verify", "HEAD^{commit}"], root, signal), "HEAD");
 	const indexPath = await requireCommand(exec, "git", ["rev-parse", "--git-path", "index"], root, signal);
 	if (!indexPath || /[\r\n\0]/.test(indexPath)) throw new Error("Git returned an invalid index path.");
-	const directory = await mkdtemp(join(tmpdir(), "pi-auto-dag-index-"));
+	const objectPath = await requireCommand(exec, "git", ["rev-parse", "--git-path", "objects"], root, signal);
+	if (!objectPath || /[\r\n\0]/.test(objectPath)) throw new Error("Git returned an invalid object directory.");
+	const realObjectDirectory = await realpath(resolve(root, objectPath));
+	const alternateObjectDirectories = [
+		JSON.stringify(realObjectDirectory),
+		process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES,
+	].filter((value): value is string => Boolean(value)).join(delimiter);
+	const directory = await mkdtemp(join(tmpdir(), "pi-auto-dag-git-"));
 	const indexCopy = join(directory, "real-index");
 	const workspaceIndex = join(directory, "workspace-index");
+	const objectDirectory = join(directory, "objects");
 	try {
+		await mkdir(objectDirectory);
 		await copyFile(resolve(root, indexPath), indexCopy);
-		const index = oid(await requireGitWithIndex(["write-tree"], root, indexCopy, signal), "index tree");
-		await requireGitWithIndex(["read-tree", "HEAD"], root, workspaceIndex, signal);
-		await requireGitWithIndex(["add", "-A", "--", "."], root, workspaceIndex, signal);
-		await assertNoGitlinksWithIndex(root, workspaceIndex, signal);
-		const tree = oid(await requireGitWithIndex(["write-tree"], root, workspaceIndex, signal), "workspace tree");
+		const index = oid(await requireGitWithIndex(["write-tree"], root, indexCopy, objectDirectory, alternateObjectDirectories, signal), "index tree");
+		await requireGitWithIndex(["read-tree", "HEAD"], root, workspaceIndex, objectDirectory, alternateObjectDirectories, signal);
+		await requireGitWithIndex(["add", "-A", "--", "."], root, workspaceIndex, objectDirectory, alternateObjectDirectories, signal);
+		await assertNoGitlinksWithIndex(root, workspaceIndex, objectDirectory, alternateObjectDirectories, signal);
+		const tree = oid(await requireGitWithIndex(["write-tree"], root, workspaceIndex, objectDirectory, alternateObjectDirectories, signal), "workspace tree");
 		return { branch, head, index, tree };
 	} finally {
 		await rm(directory, { recursive: true, force: true });
