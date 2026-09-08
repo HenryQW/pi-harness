@@ -569,7 +569,7 @@ test("discovers an upstream PR for a slash-containing fork branch with a branch-
 	assert.ok(search?.args.includes("github.com"));
 	assert.equal(search?.args.includes("--paginate"), false);
 	assert.equal(search?.args.includes("--slurp"), false);
-	assert.ok(search?.args.includes("searchQuery=is:pr head:acme:feature/pr"));
+	assert.ok(search?.args.includes("searchQuery=is:pr head:feature/pr"));
 	for (const field of [
 		"issueCount",
 		"__typename",
@@ -834,7 +834,7 @@ test("infers one exact open pull request from a published same-name branch", asy
 	const search = calls.find(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
 	);
-	assert.ok(search?.args.includes("searchQuery=is:pr is:open head:acme:feature/local"));
+	assert.ok(search?.args.includes("searchQuery=is:pr is:open head:feature/local"));
 });
 
 test("rejects true, malformed, and repeated remote mirror settings but allows normalized false", async () => {
@@ -1345,7 +1345,7 @@ test("does not fall back to local HEAD when the remote push ref is absent", asyn
 	const search = calls.find(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("search(query:"))
 	);
-	assert.ok(search?.args.includes("searchQuery=is:pr head:acme:feature/pr"));
+	assert.ok(search?.args.includes("searchQuery=is:pr head:feature/pr"));
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
 });
 
