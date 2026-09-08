@@ -12,16 +12,32 @@ Never concatenate one into shell syntax. Pass dynamic values through quoted shel
 variables. Use `--` before positional Git arguments when the command supports it.
 Never pass a credential-bearing URL to another command or print it.
 
-1. Resolve `<base>` from explicit input, current PR base, or repository default
-   branch. Stop if ambiguous. Resolve it to `<base-oid>` with `git rev-parse
-   --verify --end-of-options "${base}^{commit}"`. Use only the validated OID in
-   `git merge-base HEAD "$base_oid"`, then inspect `git diff "$merge_base" --`.
-   Also inspect `git status --short` and staged and unstaged diffs. Never commit
+1. Fetch current branch refs from `origin` without tags or submodules. Resolve
+   `<base>` from explicit input or the branch's actual parent. The parent may be
+   a feature branch; never assume the repository default branch. To infer it,
+   inspect branch-creation reflogs and the fetched commit graph, excluding the
+   current branch and symbolic refs. Accept history inference only when one
+   validated remote branch is uniquely nearest to `HEAD`. Stop and ask for the
+   base when evidence is absent or ambiguous. Validate `<base>` with
+   `git check-ref-format --branch "$base"`, resolve
+   `refs/remotes/origin/${base}` to a full `<base-oid>`, and use only that OID in
+   `git merge-base HEAD "$base_oid"` and `git diff "$merge_base" --`. Also
+   inspect `git status --short` and staged and unstaged diffs. Never commit
    `.context/` or unrelated changes.
 2. Commit each coherent pending change with a scoped Conventional Commit. Preserve existing coherent staging; stop when changes cannot be separated safely.
-3. Run smallest relevant non-destructive validation for current `HEAD`; state when none exists.
-4. Derive Conventional Commit PR title plus Summary and Testing body from live diff and validation.
-5. Resolve the push destination after validation. Require an attached branch.
+3. Require an attached branch and a clean tree, then merge the captured base OID
+   with `git merge --no-edit "$base_oid"`. Never merge the mutable branch name.
+   If conflicts occur, list only unmerged paths, inspect bounded conflict hunks,
+   preserve compatible changes from both sides, and stage each resolved path.
+   Regenerate generated files after resolving their sources. If intended behavior
+   is unclear, leave the merge pending and ask the user instead of guessing.
+   When no unmerged paths remain, run `GIT_EDITOR=true git merge --continue`.
+   Never rebase, reset, auto-stash, choose an entire side blindly, or bypass hooks.
+   Require `git merge-base --is-ancestor "$base_oid" HEAD` and a clean tree before
+   continuing.
+4. Run the smallest relevant non-destructive validation for current `HEAD`; state when none exists.
+5. Derive a Conventional Commit PR title plus Summary and Testing body from the live diff and validation.
+6. Resolve the push destination after validation. Require an attached branch.
    Validate the branch with `git check-ref-format --branch "$branch"`. Capture
    and validate the full `HEAD^{commit}` OID.
 
@@ -67,5 +83,5 @@ Never pass a credential-bearing URL to another command or print it.
    Reuse one result only when its base matches. Refresh its title and body.
    Stop on a different base or multiple results. Otherwise create with quoted,
    explicit `--repo`, `--head`, `--base`, title, and body-file arguments.
-6. Reply only with the already validated PR URL. The extension handles any
+7. Reply only with the already validated PR URL. The extension handles any
    Herdr workspace label update after it discovers the open PR.

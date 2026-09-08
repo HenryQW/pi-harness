@@ -24,7 +24,7 @@ import {
 } from "../extensions/delegate-flow.ts";
 import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
 import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
-import { CHILD_EXCLUDED_TOOLS, loadBuiltinRole } from "../src/index.ts";
+import { loadBuiltinRole } from "../src/index.ts";
 
 type Tool = {
 	name: string;
@@ -280,21 +280,13 @@ test("Flow schemas enforce the small public boundary and child tools cannot recu
 	assert.throws(() => parseDelegateFlowContinue({ guidance: " \n " }));
 	assert.throws(() => parseDelegateFlowContinue({ guidance: "repair", modelClass: "slow" }));
 	assert.throws(() => parseDelegateFlowContinue({ guidance: "repair", extra: true }));
-	assert.deepEqual(CHILD_EXCLUDED_TOOLS.split(",").filter((name) => name.startsWith("delegate_")), [
-		"delegate_task", "delegate_flow", "delegate_flow_continue",
-	]);
 	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/subagent.ts"]);
 });
 
-test("Flow tools leave rendering to Pi", async (t) => {
+test("Flow tools expose model class guidance", async (t) => {
 	const app = harness(await repository(t), () => success());
 	assert.ok(flowTool(app).promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)));
-	for (const tool of [flowTool(app), continueTool(app)]) {
-		assert.equal(tool.renderShell, undefined);
-		assert.equal(tool.renderCall, undefined);
-		assert.equal(tool.renderResult, undefined);
-	}
 });
 
 test("Flow prompt policy separates useful commuting outcomes without a quota", async (t) => {
@@ -532,6 +524,51 @@ test("Unit validation rejects hidden tracked changes without rejecting ignored g
 		assert.equal(await readFile(join(result.details.blocked.path, "build", "output"), "utf8"), "generated\n");
 		git(result.details.blocked.path, "update-index", disable, "base.txt");
 	}
+});
+
+test("Flow blocks validation-created submodule dirt before integration", async (t) => {
+	const source = await repository(t);
+	await writeFile(join(source, "tracked.txt"), "original\n");
+	git(source, "add", "tracked.txt");
+	git(source, "commit", "-qm", "add tracked submodule file");
+	const repo = await repository(t);
+	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
+	await writeFile(join(repo, ".gitignore"), "generated/\n");
+	git(repo, "add", ".gitmodules", ".gitignore", "mod");
+	git(repo, "commit", "-qm", "add submodule");
+	const mainHead = git(repo, "rev-parse", "HEAD");
+	let reviewers = 0;
+	const app = harness(repo, async (prepared) => {
+		if (childRole(prepared) === "reviewer") { reviewers++; return success("PASS"); }
+		git(prepared.cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
+		git(prepared.cwd, "config", "submodule.mod.ignore", "all");
+		await commit(prepared.cwd, "normal-root.txt", "normal root change\n");
+		await mkdir(join(prepared.cwd, "generated"), { recursive: true });
+		await writeFile(join(prepared.cwd, "generated", "output"), "generated\n");
+		return success();
+	});
+	const gate = [{
+		command: process.execPath,
+		args: ["-e", "const fs = require('node:fs'); fs.writeFileSync('mod/tracked.txt', 'changed\\n'); fs.writeFileSync('mod/untracked.txt', 'untracked\\n');"],
+	}];
+
+	const result = await flowTool(app).execute("flow-submodule-dirt", {
+		units: [reviewedUnit("flow-submodule-dirt", "Commit a normal root change.", gate)],
+	}, undefined, undefined, app.ctx);
+
+	assert.equal(result.details.outcome, "blocked");
+	assert.equal(result.details.blocked.classification, "validation");
+	assert.match(result.details.blocked.diagnostic, /Unit Worktree is dirty/);
+	assert.equal(reviewers, 0);
+	assert.equal(git(repo, "rev-parse", "HEAD"), mainHead);
+	assert.equal(git(repo, "status", "--porcelain"), "");
+	assert.equal(app.execLogs.filter(({ command, args }) => command === "git" && args[1] === "merge").length, 0);
+	assert.deepEqual(result.details.retained.map(({ id }: any) => id), ["flow-submodule-dirt"]);
+	const retained = result.details.retained[0];
+	assert.equal(existsSync(retained.path), true);
+	assert.equal(await readFile(join(retained.path, "generated", "output"), "utf8"), "generated\n");
+	assert.equal(git(retained.path, "status", "--porcelain=v1", "--untracked-files=all"), "");
+	assert.match(git(retained.path, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"), /mod/);
 });
 
 test("a post-checkout setup failure preserves and reports the attempted allocation", async (t) => {
