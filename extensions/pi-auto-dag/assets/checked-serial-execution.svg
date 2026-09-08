@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 1280 608" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="checked-serial-execution-title checked-serial-execution-desc">
+<svg width="1280" height="608" viewBox="0 0 1280 608" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="checked-serial-execution-title checked-serial-execution-desc">
       <title id="checked-serial-execution-title">Checked serial execution</title>
       <desc id="checked-serial-execution-desc">Auto DAG validates a request and workspace, persists important transitions, runs one eligible Role at a time, verifies direct checks and optional read-only judgment, retries only correctable work within two launched attempts, then accepts the unchanged checked workspace after final verification.</desc>
       <defs><style>@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap");</style>

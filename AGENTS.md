@@ -67,6 +67,7 @@ Every `README.md` is for people:
 - Remove repeated details, marketing language, and implementation history.
 - State requirements, limits, failures, and safety risks plainly.
 - Never simplify away important technical meaning.
+- Every README-linked SVG root must set `width` and `height` equal to its `viewBox` canvas dimensions. The docs site inlines it into an `<img>`, and Blume image zoom depends on the correct intrinsic size.
 - After any extension change, check its `README.md` and update it when commands, config, behavior, requirements, limits, safety guidance, or package relationships changed.
 
 For README/template-only changes:

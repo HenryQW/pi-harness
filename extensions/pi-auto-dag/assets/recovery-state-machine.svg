@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="recovery-state-machine-title recovery-state-machine-desc">
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="recovery-state-machine-title recovery-state-machine-desc">
       <title id="recovery-state-machine-title">Recovery state machine</title>
       <desc id="recovery-state-machine-desc">Auto DAG persists only pending, running, needs_attention, and completed. Interruptions and failures enter deliberate attention, where Main chooses retry, replace, verify, finalize, or final judgment approval before accepted completion.</desc>
       <defs><style>@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap");</style>
