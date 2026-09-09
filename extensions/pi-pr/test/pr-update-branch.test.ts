@@ -176,3 +176,40 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 		"--recurse-submodules=no", "--", "git@github.com:acme/fork.git", `${merged}:refs/heads/feature`,
 	]]);
 });
+
+test("does not push when HEAD or target authority changes after final ancestry checks", async (t) => {
+	for (const race of ["HEAD", "authority"] as const) {
+		let localHead = merged;
+		let ancestryChecks = 0;
+		const loads = [pullRequest(), pullRequest()];
+		const calls: Array<[string, string[]]> = [];
+		const exec: Exec = async (command, args) => {
+			calls.push([command, [...args]]);
+			const inspection = cleanInspection(command, args);
+			if (inspection) return inspection;
+			if (command === "git" && args[0] === "branch") return result("feature\n");
+			if (command === "git" && args[0] === "rev-parse") return result(`${localHead}\n`);
+			if (command === "git" && args[0] === "status") return result();
+			if (command === "git" && args[0] === "merge-base") {
+				ancestryChecks += 1;
+				if (ancestryChecks === 2) {
+					if (race === "HEAD") localHead = "d".repeat(40);
+					else {
+						const changed = pullRequest();
+						loads[1] = pullRequest({ target: {
+							...changed.target, fetchSource: "git@github.com:acme/moved.git", remoteOid: "e".repeat(40),
+						} });
+					}
+				}
+				return result();
+			}
+			throw new Error(`Unexpected ${command} ${args.join(" ")}`);
+		};
+		const app = updater(exec, loads);
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		app.workflow.state.phase = "verified";
+		app.workflow.state.verifiedHead = merged;
+		await assert.rejects(app.workflow.publish(), race === "HEAD" ? /local HEAD changed/ : /frozen pull request authority changed/);
+		assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false, race);
+	}
+});

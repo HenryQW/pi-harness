@@ -277,3 +277,33 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 	assert.equal(mutations, 1);
 	assert.equal(app.workflow.state.attempts.pullRequest, "unknown");
 });
+
+test("does not push when HEAD or target authority changes after final ancestry checks", async (t) => {
+	for (const race of ["HEAD", "authority"] as const) {
+		let localHead = head;
+		let latestTarget = target(true);
+		const calls: Array<[string, string[]]> = [];
+		const exec: Exec = async (command, args) => {
+			calls.push([command, [...args]]);
+			const text = args.join(" ");
+			if (command === "git" && text === "branch --show-current") return result("feature\n");
+			if (command === "gh" && args[0] === "api") return result(baseOutput());
+			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
+			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${localHead}\n`);
+			if (command === "git" && args[0] === "merge-base") {
+				if (race === "HEAD") localHead = "d".repeat(40);
+				else latestTarget = { ...latestTarget, fetchSource: "git@github.com:acme/moved.git", remoteOid: "e".repeat(40) };
+				return result();
+			}
+			throw new Error(`Unexpected ${command} ${text}`);
+		};
+		const app = creator(exec, target(true));
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
+			kind: "none", creationTarget: latestTarget,
+		});
+		await assert.rejects(app.workflow.push(), race === "HEAD" ? /local HEAD changed before push/ : /fresh complete discovery is no longer none/);
+		assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false, race);
+	}
+});

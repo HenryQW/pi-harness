@@ -141,11 +141,11 @@ export class PullRequestBranchUpdater {
 		}
 		const branch = singleLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("Branch update cancelled: current branch changed");
-		const head = await readHead(this.exec, this.execOptions());
-		if (head !== expectedHead) throw new Error("Branch update cancelled: local HEAD changed");
 		if (requireClean && await inspectWorktree(this.exec, this.execOptions()) !== "clean") {
 			throw new Error("Branch update cancelled: worktree is dirty or a Git operation is in progress");
 		}
+		const head = await readHead(this.exec, this.execOptions());
+		if (head !== expectedHead) throw new Error("Branch update cancelled: local HEAD changed");
 		return discovery.pullRequest;
 	}
 
@@ -294,32 +294,34 @@ export class PullRequestBranchUpdater {
 		if (this.state.phase !== "verified" || !this.state.verifiedHead || this.state.attempts.push !== "none") {
 			throw new Error("Branch update is not ready to publish");
 		}
+		const head = this.state.verifiedHead;
 		return await withWorktreeLock(this.cwd, async () => {
-			await this.freshAuthority(this.state.verifiedHead!, true);
-			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, this.state.verifiedHead!))) {
+			await this.freshAuthority(head, true);
+			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, head))) {
 				throw new Error("Verified branch no longer contains the frozen base");
 			}
-		const original = this.authority.target.remoteOid;
-		if (original === null) throw new Error("Current pull request remote ref is absent");
-		if (!(await isAncestor(this.exec, this.execOptions(), original, this.state.verifiedHead!))) {
-			throw new Error("Published branch would not be a fast-forward of the frozen remote OID");
-		}
-		this.state.attempts.push = "attempting";
-		try {
-			await runChecked(this.exec, "git", [
-				"push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
-				"--recurse-submodules=no", "--", this.authority.target.fetchSource,
-				`${this.state.verifiedHead}:refs/heads/${this.authority.target.ref}`,
-			], this.execOptions());
-			const remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref);
-			if (remote !== this.state.verifiedHead) throw new Error("Published remote ref did not match verified HEAD");
-			this.state.attempts.push = "applied";
-			this.state.phase = "published";
-			return { kind: "published", head: this.state.verifiedHead! };
-		} catch (error) {
-			this.state.attempts.push = "unknown";
-			throw error;
-		}
+			const original = this.authority.target.remoteOid;
+			if (original === null) throw new Error("Current pull request remote ref is absent");
+			if (!(await isAncestor(this.exec, this.execOptions(), original, head))) {
+				throw new Error("Published branch would not be a fast-forward of the frozen remote OID");
+			}
+			await this.freshAuthority(head, true);
+			this.state.attempts.push = "attempting";
+			try {
+				await runChecked(this.exec, "git", [
+					"push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
+					"--recurse-submodules=no", "--", this.authority.target.fetchSource,
+					`${head}:refs/heads/${this.authority.target.ref}`,
+				], this.execOptions());
+				const remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref);
+				if (remote !== head) throw new Error("Published remote ref did not match verified HEAD");
+				this.state.attempts.push = "applied";
+				this.state.phase = "published";
+				return { kind: "published", head };
+			} catch (error) {
+				this.state.attempts.push = "unknown";
+				throw error;
+			}
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 }

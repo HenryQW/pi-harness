@@ -445,6 +445,9 @@ export class PullRequestCreator {
 			if (original !== null && !(await isAncestor(this.exec, this.options(), original, head))) {
 				throw new Error("PR creation push would not fast-forward the frozen remote OID");
 			}
+			await this.freshNone();
+			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
+			if (await this.requireCleanHead() !== head) throw new Error("PR creation cancelled: local HEAD changed before push");
 			this.state.publicationHead = head;
 			this.state.attempts.push = "attempting";
 			try {
