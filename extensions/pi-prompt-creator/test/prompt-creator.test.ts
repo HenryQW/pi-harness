@@ -77,19 +77,13 @@ function harness(options: {
 	executor: EphemeralSubagentExecutor;
 	branch?: any[];
 	commands?: SlashCommandInfo[];
-	selections?: string[];
-	inputs?: Array<string | undefined>;
 }) {
 	const handlers = new Map<string, Handler>();
 	const registeredCommands = new Map<string, Command>();
 	const widgets: Array<{ key: string; content: unknown }> = [];
 	const notifications: Array<{ message: string; level?: string }> = [];
 	const sentMessages: Array<{ message: any; options: any }> = [];
-	const selectCalls: Array<{ title: string; choices: string[] }> = [];
-	const inputCalls: Array<{ title: string; placeholder?: string }> = [];
 	const branch = options.branch ?? [];
-	const selections = [...(options.selections ?? [])];
-	const inputs = [...(options.inputs ?? [])];
 	let nextEntryId = 1;
 	const branchEntries = () => {
 		for (const entry of branch) entry.id ??= `entry-${nextEntryId++}`;
@@ -131,14 +125,6 @@ function harness(options: {
 		ui: {
 			setWidget(key: string, content: unknown) { widgets.push({ key, content }); },
 			notify(message: string, level?: string) { notifications.push({ message, level }); },
-			async select(title: string, choices: string[]) {
-				selectCalls.push({ title, choices: [...choices] });
-				return selections.shift();
-			},
-			async input(title: string, placeholder?: string) {
-				inputCalls.push({ title, placeholder });
-				return inputs.shift();
-			},
 		},
 		async reload() { reloads += 1; },
 	} as unknown as ExtensionCommandContext;
@@ -153,8 +139,6 @@ function harness(options: {
 		widgets,
 		notifications,
 		sentMessages,
-		selectCalls,
-		inputCalls,
 		setMode(value: ExtensionContext["mode"]) { mode = value; },
 		setIdle(value: boolean) { idle = value; },
 		get reloads() { return reloads; },
@@ -171,7 +155,7 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
 	}
 }
 
-test("missing config starts automatic analysis after three user inputs", async () => {
+test("automatic analysis starts after three inputs and keeps its candidate pending", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
 		const app = harness({
@@ -190,6 +174,12 @@ test("missing config starts automatic analysis after three user inputs", async (
 		app.handlers.get("input")!({ source: "interactive", text: "third" }, app.ctx);
 		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
 		await eventually(() => child.runs.length === 1);
+		child.runs[0]!.resolve(success('{"candidate":{"name":"automatic-candidate","markdown":"# Automatic"}}'));
+		await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
+		assert.equal(app.sentMessages.length, 0);
+
+		await app.registeredCommands.get("promptor")!("", app.ctx);
+		assert.equal(app.sentMessages.length, 1);
 	});
 });
 
@@ -280,7 +270,6 @@ test("the child payload reserves its envelope and prioritizes the active summary
 		const app = harness({
 			agentDir,
 			executor: child.executor,
-			selections: ["Analyze now"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Replaced by the active summary." } },
 				{ type: "branch_summary", summary: activeSummary },
@@ -306,7 +295,6 @@ test("an oversized newest message does not hide smaller older messages", async (
 		const app = harness({
 			agentDir,
 			executor: child.executor,
-			selections: ["Analyze now"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Older usable request" } },
 				{ type: "message", message: { role: "assistant", content: "Older usable reply", stopReason: "stop" } },
@@ -329,7 +317,6 @@ test("analysis excludes incomplete assistant replies from the child payload", as
 		const app = harness({
 			agentDir,
 			executor: child.executor,
-			selections: ["Analyze now"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Request before interruption" } },
 				{ type: "message", message: { role: "assistant", content: "Interrupted reply", stopReason: "aborted" } },
@@ -348,7 +335,7 @@ test("analysis excludes incomplete assistant replies from the child payload", as
 	});
 });
 
-test("a candidate stays pending until shown, and invalid later output fails visibly", async () => {
+test("manual analysis shows its candidate directly, and invalid later output fails visibly", async () => {
 	assert.equal(parseDraftOutput('{"candidate":null}'), null);
 	assert.throws(
 		() => parseDraftOutput('{"candidate":{"name":"valid-name","markdown":"bad\\u0000text"}}'),
@@ -365,7 +352,6 @@ test("a candidate stays pending until shown, and invalid later output fails visi
 		const app = harness({
 			agentDir,
 			executor: child.executor,
-			selections: ["Analyze now", "Show candidate", "Analyze again"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Please make these reviews repeatable" } },
 				{ type: "message", message: { role: "assistant", content: "I can help.", stopReason: "stop" } },
@@ -379,14 +365,7 @@ test("a candidate stays pending until shown, and invalid later output fails visi
 		child.runs[0]!.resolve(success(JSON.stringify({
 			candidate: { name: "review-template", markdown: "# Review\n\nCheck the complete change." },
 		})));
-		await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
-		assert.deepEqual(app.widgets.at(-1)?.content, ["Prompt ready — /promptor"]);
-		assert.equal(app.sentMessages.length, 0, "analysis never injects a candidate automatically");
-
-		await promptor("", app.ctx);
-		assert.equal(app.selectCalls[1]!.choices.some((choice) => choice.startsWith("Analyze")), false);
-		assert.ok(app.selectCalls[1]!.choices.includes("Dismiss candidate"));
-		assert.equal(app.sentMessages.length, 1);
+		await eventually(() => app.sentMessages.length === 1);
 		const shown = app.sentMessages[0]!;
 		assert.equal(shown.message.customType, "pi-prompt-creator/candidate");
 		assert.equal(shown.message.display, true);
@@ -394,10 +373,9 @@ test("a candidate stays pending until shown, and invalid later output fails visi
 		assert.match(shown.message.content, /Untrusted prompt candidate/i);
 		assert.match(shown.message.content, /Suggested name: `review-template`/);
 		assert.match(shown.message.content, /> # Review\n> \n> Check the complete change\./);
-		assert.match(shown.message.content, /Main must emit only the complete Final Prompt Draft/);
+		assert.match(shown.message.content, /\/promptor save/);
 
-		await promptor("", app.ctx);
-		assert.ok(app.selectCalls[2]!.choices.includes("Analyze again"));
+		await promptor("analyze", app.ctx);
 		await eventually(() => child.runs.length === 2);
 		child.runs[1]!.resolve(success('{"candidate":{"name":"Bad Name","markdown":"draft"}}'));
 		await eventually(() => {
@@ -412,19 +390,13 @@ test("a candidate stays pending until shown, and invalid later output fails visi
 	});
 });
 
-test("saving requires a shown candidate and later Main review, retries failures, and consumes the review", async () => {
+test("direct save requires a reviewed draft, validates names, retries failures, and consumes the review", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
 		const app = harness({
 			agentDir,
 			executor: child.executor,
 			commands: [{ name: "taken-command", source: "extension" } as SlashCommandInfo],
-			selections: [
-				"Analyze now", "Show candidate", "",
-				...Array<string>(5).fill("Save latest Main draft"),
-				"",
-			],
-			inputs: ["Bad Name", "taken-command", "existing-prompt", "write-failure", "saved-prompt"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Draft a reusable review prompt" } },
 				{ type: "message", message: { role: "assistant", content: "Initial answer", stopReason: "stop" } },
@@ -433,18 +405,16 @@ test("saving requires a shown candidate and later Main review, retries failures,
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
 		const promptor = app.registeredCommands.get("promptor")!;
 
+		await promptor("save", app.ctx);
+		assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/);
 		await promptor("", app.ctx);
-		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "ordinary replies cannot enable save");
 		await eventually(() => child.runs.length === 1);
 		child.runs[0]!.resolve(success(JSON.stringify({
 			candidate: { name: "review-template", markdown: "Candidate text must not be saved." },
 		})));
-		await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
-		await promptor("", app.ctx);
-		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "a pending candidate cannot enable save");
-
-		await promptor("", app.ctx);
-		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "showing a candidate alone cannot enable save");
+		await eventually(() => app.sentMessages.length === 1);
+		await promptor("save", app.ctx);
+		assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/);
 
 		const finalDraft = "# Final prompt\n\nReview the whole change.\n";
 		app.branch.push({ type: "message", message: { role: "assistant", content: finalDraft, stopReason: "stop" } });
@@ -452,31 +422,29 @@ test("saving requires a shown candidate and later Main review, retries failures,
 		await mkdir(promptsDir, { recursive: true });
 		await writeFile(join(promptsDir, "existing-prompt.md"), "keep me");
 
-		await promptor("", app.ctx);
-		assert.ok(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"));
+		await promptor("save Bad_Name", app.ctx);
 		assert.match(app.notifications.at(-1)!.message, /Use lowercase kebab-case/);
-		await promptor("", app.ctx);
+		await promptor("save taken-command", app.ctx);
 		assert.match(app.notifications.at(-1)!.message, /command named \/taken-command already exists/);
-		await promptor("", app.ctx);
+		await promptor("save existing-prompt", app.ctx);
 		assert.equal(await readFile(join(promptsDir, "existing-prompt.md"), "utf8"), "keep me");
 		assert.match(app.notifications.at(-1)!.message, /Prompt \/existing-prompt already exists/);
 
 		await chmod(promptsDir, 0o500);
 		try {
-			await promptor("", app.ctx);
+			await promptor("save write-failure", app.ctx);
 			assert.match(app.notifications.at(-1)!.message, /Could not save \/write-failure/);
 		} finally {
 			await chmod(promptsDir, 0o700);
 		}
-		await promptor("", app.ctx);
+		await promptor("save", app.ctx);
 
-		assert.equal(await readFile(join(promptsDir, "saved-prompt.md"), "utf8"), finalDraft);
+		assert.equal(await readFile(join(promptsDir, "review-template.md"), "utf8"), finalDraft);
 		assert.equal(app.reloads, 1);
-		assert.deepEqual(app.inputCalls.map(({ placeholder }) => placeholder), Array<string>(5).fill("review-template"));
 
 		app.branch.push({ type: "message", message: { role: "assistant", content: "Ordinary later reply", stopReason: "stop" } });
-		await promptor("", app.ctx);
-		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "a successful save consumes the review");
+		await promptor("save another-prompt", app.ctx);
+		assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/);
 	});
 });
 
@@ -486,8 +454,6 @@ test("an incomplete latest Main reply cannot fall back to an older reviewed draf
 		const app = harness({
 			agentDir,
 			executor: child.executor,
-			selections: ["Analyze now", "Show candidate", "Save latest Main draft"],
-			inputs: ["must-not-save"],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Create a reusable prompt" } },
 				{ type: "message", message: { role: "assistant", content: "Ordinary answer", stopReason: "stop" } },
@@ -498,18 +464,16 @@ test("an incomplete latest Main reply cannot fall back to an older reviewed draf
 		await promptor("", app.ctx);
 		await eventually(() => child.runs.length === 1);
 		child.runs[0]!.resolve(success('{"candidate":{"name":"review-draft","markdown":"# Candidate"}}'));
-		await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
-		await promptor("", app.ctx);
+		await eventually(() => app.sentMessages.length === 1);
 
 		app.branch.push(
 			{ type: "message", message: { role: "assistant", content: "# Older complete draft", stopReason: "stop" } },
 			{ type: "message", message: { role: "user", content: "Revise that draft" } },
 			{ type: "message", message: { role: "assistant", content: "# Interrupted revision", stopReason: "aborted" } },
 		);
-		await promptor("", app.ctx);
+		await promptor("save must-not-save", app.ctx);
 
-		assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false);
-		assert.equal(app.inputCalls.length, 0);
+		assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/);
 		await assert.rejects(readFile(join(agentDir, "prompts", "must-not-save.md")), /ENOENT/);
 	});
 });
@@ -524,8 +488,6 @@ test("active summaries bound reviewed drafts to post-summary replies", async () 
 			const app = harness({
 				agentDir,
 				executor: child.executor,
-				selections: ["Analyze now", "Show candidate", "", "", "", "", "Save latest Main draft"],
-				inputs: [draftName],
 				branch: [
 					{ type: "message", message: { role: "user", content: "Write a draft" } },
 					{ type: "message", message: { role: "assistant", content: "# Replaced draft", stopReason: "stop" } },
@@ -536,34 +498,29 @@ test("active summaries bound reviewed drafts to post-summary replies", async () 
 			await promptor("", app.ctx);
 			await eventually(() => child.runs.length === 1);
 			child.runs[0]!.resolve(success('{"candidate":{"name":"summary-draft","markdown":"# Candidate"}}'));
-			await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
-			await promptor("", app.ctx);
+			await eventually(() => app.sentMessages.length === 1);
 
 			app.branch.push({ type: boundary, summary: "Active summary" });
-			await promptor("", app.ctx);
-			assert.equal(
-				app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"),
-				false,
-				`${boundary} hides drafts from replaced history`,
-			);
+			await promptor(`save ${draftName}`, app.ctx);
+			assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/, `${boundary} hides drafts from replaced history`);
 
 			app.branch.push(
 				{ type: "message", message: { role: "user", content: "Write a new draft" } },
 				{ type: "message", message: { role: "assistant", content: postSummaryDraft, stopReason: "stop" } },
 			);
 			await promptor("", app.ctx);
-			assert.ok(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"));
+			assert.match(app.notifications.at(-1)!.message, /Run \/promptor save/);
 
 			app.branch.push({ type: "message", message: { role: "assistant", content: "", stopReason: "stop" } });
-			await promptor("", app.ctx);
-			assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "invalid drafts do not fall back");
+			await promptor(`save ${draftName}`, app.ctx);
+			assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/, "invalid drafts do not fall back");
 
 			app.branch.push({ type: "message", message: { role: "assistant", content: "# Interrupted draft", stopReason: "aborted" } });
-			await promptor("", app.ctx);
-			assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false, "incomplete drafts do not fall back");
+			await promptor(`save ${draftName}`, app.ctx);
+			assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/, "incomplete drafts do not fall back");
 
 			app.branch.push({ type: "message", message: { role: "assistant", content: finalDraft, stopReason: "stop" } });
-			await promptor("", app.ctx);
+			await promptor(`save ${draftName}`, app.ctx);
 			assert.equal(await readFile(join(agentDir, "prompts", `${draftName}.md`), "utf8"), finalDraft);
 		});
 	}
@@ -575,11 +532,6 @@ test("review eligibility resets on tree, session, and shutdown lifecycle changes
 		const app = harness({
 			agentDir,
 			executor: child.executor,
-			selections: [
-				"Analyze now", "Show candidate", "", "",
-				"Analyze now", "Show candidate", "", "",
-				"Analyze now", "Show candidate", "", "",
-			],
 			branch: [
 				{ type: "message", message: { role: "user", content: "Create reusable review prompts" } },
 				{ type: "message", message: { role: "assistant", content: "Initial answer", stopReason: "stop" } },
@@ -594,16 +546,15 @@ test("review eligibility resets on tree, session, and shutdown lifecycle changes
 			child.runs[runIndex]!.resolve(success(JSON.stringify({
 				candidate: { name: `reset-${runIndex}`, markdown: "# Candidate" },
 			})));
-			await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
-			await promptor("", app.ctx);
+			await eventually(() => app.sentMessages.length === runIndex + 1);
 			app.branch.push({ type: "message", message: { role: "assistant", content: `# Review ${runIndex}`, stopReason: "stop" } });
 			await promptor("", app.ctx);
-			assert.ok(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"));
+			assert.match(app.notifications.at(-1)!.message, /Run \/promptor save/);
 			runIndex += 1;
 		};
 		const assertReset = async () => {
-			await promptor("", app.ctx);
-			assert.equal(app.selectCalls.at(-1)!.choices.includes("Save latest Main draft"), false);
+			await promptor("save reset-check", app.ctx);
+			assert.match(app.notifications.at(-1)!.message, /No reviewed Main draft/);
 		};
 
 		await makeReviewEligible();
@@ -627,7 +578,7 @@ test("malformed config is preserved and warns once until an explicit toggle repl
 		const malformed = '{"automatic":true,"inputThreshold":0}\n';
 		await writeFile(configPath, malformed);
 		const child = controlledExecutor();
-		const app = harness({ agentDir, executor: child.executor, selections: ["Automatic On"] });
+		const app = harness({ agentDir, executor: child.executor });
 
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
@@ -637,7 +588,7 @@ test("malformed config is preserved and warns once until an explicit toggle repl
 		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
 		assert.equal(child.runs.length, 0, "invalid config disables automatic analysis");
 
-		await app.registeredCommands.get("promptor")!("", app.ctx);
+		await app.registeredCommands.get("promptor")!("automatic on", app.ctx);
 		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: true, inputThreshold: 3 });
 		assert.equal(app.notifications.at(-1)?.message, "Automatic analysis enabled.");
 	});

@@ -21,4 +21,4 @@ Turn repetition and correction in the current Pi conversation into one editable 
 | Scripts, Skills, and other automation | Their owning package or repository |
 | This extension | Current-conversation Signal detection, Prompt Candidate generation, and Prompt Review |
 
-The extension stays silent when it finds no Prompt Candidate. Background analysis remains visible while it is running. Every completed candidate waits for explicit user display, so background work never steals editor focus.
+The extension stays silent when it finds no Prompt Candidate. Background analysis remains visible while it is running. Manually requested candidates display when ready; automatic candidates wait for explicit user display, so background work never steals editor focus.
