@@ -667,7 +667,7 @@ export class PullRequestCommentSweep {
 		}
 		if (head !== state.original.head) {
 			const changed = parseNulPaths((await runChecked(this.exec, "git", [
-				"diff", "--name-only", "-z", `${state.original.head}..${head}`,
+				"diff", "--name-only", "--no-renames", "-z", `${state.original.head}..${head}`,
 			], this.options())).stdout, "Sweep committed paths");
 			const committedOutside = changed.filter((path) => !owned.has(path));
 			if (committedOutside.length) throw new Error(`Comment sweep commit changed outside owned paths: ${committedOutside.join(", ")}`);

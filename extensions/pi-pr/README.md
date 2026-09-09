@@ -16,6 +16,9 @@ Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on
 includes IDs, kinds, states, authors, locations, and parent IDs as needed. It
 does not print comment or review bodies.
 
+With `--out`, it atomically replaces `FILE` as a mode-0600 file. It does not
+change the parent directory's permissions.
+
 The saved snapshot still contains the complete feedback. `fetch --json` also
 keeps the complete JSON output. Read one item with
 `pr-feedback.mjs show --snapshot FILE --id ID`.
@@ -112,6 +115,8 @@ A missing pull request uses creation. For an existing pull request, the first ma
 Ordinary conversation comments do not trigger a route or block a merge. Changes requested and unresolved review threads can select the package comment sweep.
 
 The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
+
+It runs one or more existing non-destructive checks on the clean committed `HEAD` before publishing. Finalization reruns them as a later state guard.
 
 ### Refresh
 

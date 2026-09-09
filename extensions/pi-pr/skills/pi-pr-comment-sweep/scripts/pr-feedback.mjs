@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
-import {
-	readTextFileBounded,
-	writePrivateTextFileAtomically,
-} from "@henryqw/pi-config-store";
+import { randomUUID } from "node:crypto";
+import { chmod, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { readTextFileBounded } from "@henryqw/pi-config-store";
 import {
 	collectPullRequestFeedback,
 	feedbackEntries,
@@ -115,6 +115,35 @@ async function requireCleanHead(cwd, signal, pullRequest, expectedHead = pullReq
 	}
 }
 
+async function writeSnapshotAtomically(path, contents, signal) {
+	signal.throwIfAborted();
+	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	let file;
+	let created = false;
+	try {
+		file = await open(temporaryPath, "wx", 0o600);
+		created = true;
+		signal.throwIfAborted();
+		if (process.platform !== "win32") await file.chmod(0o600);
+		signal.throwIfAborted();
+		await file.writeFile(contents, { encoding: "utf8", signal });
+		signal.throwIfAborted();
+		await file.sync();
+		signal.throwIfAborted();
+		await file.close();
+		file = undefined;
+		signal.throwIfAborted();
+		await rename(temporaryPath, path);
+	} catch (error) {
+		try {
+			await file?.close();
+		} finally {
+			if (created) await rm(temporaryPath, { force: true });
+		}
+		throw error;
+	}
+}
+
 async function fetchFeedback(options) {
 	const cwd = process.cwd();
 	const signal = new AbortController().signal;
@@ -139,7 +168,7 @@ async function fetchFeedback(options) {
 		return;
 	}
 	const destination = resolve(options.out);
-	await writePrivateTextFileAtomically(destination, text, { signal });
+	await writeSnapshotAtomically(destination, text, signal);
 	console.log(`snapshot=${destination}`);
 	console.log(`feedback_records=${feedbackEntries(snapshot).length}`);
 	for (const { kind, id } of feedbackEntries(snapshot)) console.log(`${kind}\t${id}`);
@@ -162,11 +191,28 @@ async function checks(options) {
 	console.log(`ci=${pullRequest.conditions.ci} review=${pullRequest.conditions.review} policy=${pullRequest.conditions.policy}`);
 }
 
-function selfTest() {
+async function selfTest() {
 	assert.throws(() => parse("push", []), /unknown command/);
 	assert.throws(() => parse("resolve", []), /unknown command/);
 	assert.throws(() => parse("fetch", ["--json", "--out", "file"]), /exactly one/);
 	assert.deepEqual(parse("show", ["--snapshot", "state.json", "--id", "C1"]), { snapshot: "state.json", id: "C1" });
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-pr-feedback-self-test-"));
+	try {
+		const destination = join(directory, "snapshot.json");
+		await writeFile(destination, "old\n", { mode: 0o644 });
+		if (process.platform !== "win32") await chmod(directory, 0o755);
+		const parentMode = (await stat(directory)).mode & 0o777;
+		await writeSnapshotAtomically(destination, "new\n", new AbortController().signal);
+		assert.equal(await readFile(destination, "utf8"), "new\n");
+		assert.deepEqual(await readdir(directory), ["snapshot.json"]);
+		if (process.platform !== "win32") {
+			assert.equal((await stat(destination)).mode & 0o777, 0o600);
+			assert.equal((await stat(directory)).mode & 0o777, parentMode);
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 	console.log("pr-feedback self-test ok");
 }
 
@@ -178,7 +224,7 @@ async function main(argv) {
 	const [command, ...args] = argv;
 	if (command === "self-test") {
 		if (args.length) throw new UsageError("self-test takes no arguments");
-		selfTest();
+		await selfTest();
 		return;
 	}
 	const options = parse(command, args);

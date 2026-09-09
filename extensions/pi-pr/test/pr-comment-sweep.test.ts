@@ -260,6 +260,20 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	assert.throws(() => readFileSync(recoveryPath, "utf8"), { code: "ENOENT" });
 });
 
+test("committed rename ownership includes the source and destination", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const recorded = await workflow.record(started.guard, ledger(started), ["renamed.txt"]);
+	git(app.root, "config", "diff.renames", "true");
+	git(app.root, "mv", "file.txt", "renamed.txt");
+	git(app.root, "commit", "-m", "fix: rename reviewed file");
+
+	await assert.rejects(workflow.publish(recorded.guard), /changed outside owned paths: file\.txt/);
+	assert.equal(app.world.pushCalls, 0);
+});
+
 test("resume rejects another route authority in the same worktree without mutation", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
