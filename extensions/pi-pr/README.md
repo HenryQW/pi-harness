@@ -45,9 +45,11 @@ Add optional instructions to guide a creation, branch-update, CI-fix, or feedbac
 | --- | --- | --- |
 | `/pr [instructions]` | command | Run the current pull request's next safe route. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
-| Widget | ui | Show one actionable icon-prefixed `Run /pr to …` hint. |
+| Widget | ui | Show one action hint or transient routing status. |
 
 The footer already shows the pull request and status. Actionable widgets omit duplicate identity and status. Each uses one semantic status icon, a space, and a plain `Run /pr to …` route. `✗` marks errors, `!` warnings, `✓` success, and `●` accent or neutral routes. In TUI, only the icon uses a theme color. RPC and non-TUI output use the same plain text without ANSI.
+
+The widget switches to `⠋ Checking pull request…` as soon as `/pr` starts discovery. The braille spinner animates in TUI mode. RPC receives one plain static line. The footer stays unchanged. The routing widget clears after route selection and before any prompt, notification, mutation, or workflow dispatch.
 
 ## Flow
 
@@ -115,7 +117,7 @@ The footer and widget load at session start. A directory outside a Git worktree 
 
 They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. Active Git worktrees poll every 30 seconds. Polling updates presentation only and may be stale.
 
-The create widget stays hidden until the local branch has a commit beyond its creation point. Any displayed widget clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the widget when the handler finishes.
+The create widget stays hidden until the local branch has a commit beyond its creation point. `/pr` replaces any hint with routing feedback while it selects a route. The feedback clears before route interaction. A dispatched workflow keeps the widget hidden until the agent settles. Direct and no-action routes refresh it after completion. A failed command restores the prior hint and schedules a refresh.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 

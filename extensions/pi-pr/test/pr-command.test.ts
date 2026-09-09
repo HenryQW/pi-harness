@@ -235,6 +235,7 @@ function harness(options: HarnessOptions) {
 			sourceInfo: { origin: command.origin },
 		})),
 		sendUserMessage(content: string, messageOptions: unknown) {
+			events.push("dispatch");
 			messages.push({ content, options: messageOptions });
 		},
 	} as unknown as Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
@@ -249,6 +250,7 @@ function harness(options: HarnessOptions) {
 				return options.confirmed ?? true;
 			},
 			notify(message: string, type?: string) {
+				events.push("notify");
 				notifications.push({ message, type: type ?? "info" });
 			},
 		},
@@ -294,6 +296,20 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 		command: "skill:pi-pr-fix-ci",
 	},
 ];
+
+test("signals route resolution before dispatch, notification, confirmation, or mutation", async () => {
+	const create = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
+	await create.handler("", create.context, () => create.events.push("route"));
+	assert.deepEqual(create.events, ["load", "route", "dispatch"]);
+
+	const noAction = harness({ states: [{ state: "MERGED" }] });
+	await noAction.handler("", noAction.context, () => noAction.events.push("route"));
+	assert.deepEqual(noAction.events, ["load", "route", "notify"]);
+
+	const merge = harness({ states: [{}, {}] });
+	await merge.handler("", merge.context, () => merge.events.push("route"));
+	assert.deepEqual(merge.events, ["load", "route", "confirm", "load", "merge"]);
+});
 
 test("routes one package workflow without opening a browser or chaining", async () => {
 	for (const route of routes) {
