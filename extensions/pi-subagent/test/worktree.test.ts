@@ -235,7 +235,7 @@ test("createChildWorktree invokes onPrepared once with final metadata before all
 	assert.equal(calls, 1);
 	assert.equal(prepared, info);
 	assert.equal(git(repo, "rev-parse", "HEAD"), info.baseCommit);
-	assert.equal(git(repo, "branch", "--list", info.branch), info.branch);
+	assert.equal(git(repo, "rev-parse", "--verify", `refs/heads/${info.branch}`), info.baseCommit);
 	assert.equal(git(repo, "worktree", "list", "--porcelain").includes(info.path), true);
 	assert.equal((await finalizeChildWorktree(info)).outcome, "pruned");
 });
