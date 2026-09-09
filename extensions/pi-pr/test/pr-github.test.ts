@@ -1608,6 +1608,19 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 });
 
+test("routes a diagnosable stale check through the existing CI failure workflow", async () => {
+	const { pi, context } = harness({
+		localHead: REMOTE_HEAD,
+		candidates: [pullRequest({
+			statusCheckRollup: [{ conclusion: "STALE", status: "COMPLETED" }],
+		})],
+	});
+	const loaded = await loadCurrentPullRequest(pi, context);
+	assert.ok(loaded);
+	assert.equal(loaded.conditions.ci, "failure");
+	assert.equal(derivePullRequestNextStep(loaded), "fix-ci");
+});
+
 test("normalizes empty gh review and check fields without accepting empty records", async () => {
 	const normalized = harness({
 		candidates: [pullRequest({

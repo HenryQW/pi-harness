@@ -34,10 +34,10 @@ const API_HEADERS = [
 	"-H", "X-GitHub-Api-Version: 2022-11-28",
 ];
 const FAILED_CONCLUSIONS = new Set([
-	"action_required", "cancelled", "failure", "startup_failure", "timed_out",
+	"action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
 ]);
 const CONCLUSIONS = new Set([
-	...FAILED_CONCLUSIONS, "neutral", "skipped", "stale", "success",
+	...FAILED_CONCLUSIONS, "neutral", "skipped", "success",
 ]);
 const STATUSES = new Set(["completed", "in_progress", "pending", "queued", "requested", "waiting"]);
 
@@ -183,7 +183,6 @@ function conclusion(value: unknown, status: string, label: string): string | nul
 	}
 	const parsed = text(value, `${label} conclusion`);
 	if (!CONCLUSIONS.has(parsed) || status !== "completed") throw new Error(`${label} returned an invalid conclusion`);
-	if (parsed === "stale") throw new Error(`${label} returned stale evidence`);
 	return parsed;
 }
 
@@ -370,18 +369,31 @@ function authorityIdentity(value: CurrentPullRequest) {
 	};
 }
 
-function snapshotFingerprint(authority: CurrentPullRequest, checks: CheckIdentity[], runs: RunIdentity[], failures: FailureIdentity[]): string {
+function snapshotFingerprint(authority: CurrentPullRequest, failures: FailureIdentity[]): string {
 	return createHash("sha256").update(JSON.stringify({
 		authority: authorityIdentity(authority),
-		checks,
-		runs,
-		mappings: failures.map(({ check, run, job, failedSteps }) => ({
-			checkRunId: check.id,
-			checkRunUrl: check.url,
-			suiteId: check.suiteId,
-			runId: run.id,
-			attempt: run.attempt,
-			jobId: job.id,
+		failures: failures.map(({ check, run, job, failedSteps }) => ({
+			check,
+			run: {
+				id: run.id,
+				url: run.url,
+				htmlUrl: run.htmlUrl,
+				attempt: run.attempt,
+				suiteId: run.suiteId,
+				headOid: run.headOid,
+			},
+			job: {
+				id: job.id,
+				url: job.url,
+				htmlUrl: job.htmlUrl,
+				checkRunUrl: job.checkRunUrl,
+				runId: job.runId,
+				attempt: job.attempt,
+				headOid: job.headOid,
+				name: job.name,
+				status: job.status,
+				conclusion: job.conclusion,
+			},
 			failedSteps,
 		})),
 	})).digest("hex");
@@ -725,7 +737,7 @@ export class PullRequestCiFixer {
 		}
 		failures.sort((left, right) => left.check.id - right.check.id);
 		return {
-			fingerprint: snapshotFingerprint(fresh, checks, runs, failures),
+			fingerprint: snapshotFingerprint(fresh, failures),
 			failures,
 		};
 	}

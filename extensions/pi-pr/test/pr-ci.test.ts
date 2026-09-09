@@ -15,7 +15,13 @@ const operationPaths = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-ci-no
 
 type Check = ReturnType<typeof check>;
 type Job = ReturnType<typeof job>;
-type Snapshot = { checks: Check[]; jobs: Job[]; attempt?: number };
+type Snapshot = {
+	checks: Check[];
+	jobs: Job[];
+	attempt?: number;
+	runStatus?: string;
+	runConclusion?: string | null;
+};
 
 type Scenario = {
 	snapshots: Snapshot[];
@@ -68,12 +74,13 @@ function check(id: number, jobId: number, options: {
 	runId?: number;
 	suiteId?: number;
 	name?: string;
-	conclusion?: string;
+	status?: string;
+	conclusion?: string | null;
 	provider?: string;
 } = {}) {
 	const runId = options.runId ?? 71;
 	const suiteId = options.suiteId ?? 61;
-	const conclusion = options.conclusion ?? "failure";
+	const conclusion = options.conclusion === undefined ? "failure" : options.conclusion;
 	return {
 		id,
 		url: `https://api.github.com/repos/acme/project/check-runs/${id}`,
@@ -81,7 +88,7 @@ function check(id: number, jobId: number, options: {
 		check_suite: { id: suiteId, head_sha: original },
 		head_sha: original,
 		name: options.name ?? `check-${id}`,
-		status: "completed",
+		status: options.status ?? "completed",
 		conclusion,
 		app: { slug: options.provider ?? "github-actions" },
 	};
@@ -92,12 +99,14 @@ function job(id: number, checkId: number, options: {
 	attempt?: number;
 	name?: string;
 	stepName?: string;
-	conclusion?: string;
+	status?: string;
+	conclusion?: string | null;
 	checkRunUrl?: string;
 } = {}) {
 	const runId = options.runId ?? 71;
 	const attempt = options.attempt ?? 2;
-	const conclusion = options.conclusion ?? "failure";
+	const status = options.status ?? "completed";
+	const conclusion = options.conclusion === undefined ? "failure" : options.conclusion;
 	return {
 		id,
 		run_id: runId,
@@ -107,9 +116,9 @@ function job(id: number, checkId: number, options: {
 		html_url: `https://github.com/acme/project/actions/runs/${runId}/job/${id}`,
 		check_run_url: options.checkRunUrl ?? `https://api.github.com/repos/acme/project/check-runs/${checkId}`,
 		name: options.name ?? `job-${id}`,
-		status: "completed",
+		status,
 		conclusion,
-		steps: [{ number: 1, name: options.stepName ?? `step-${id}`, status: "completed", conclusion }],
+		steps: [{ number: 1, name: options.stepName ?? `step-${id}`, status, conclusion }],
 	};
 }
 
@@ -126,8 +135,8 @@ function run(snapshot: Snapshot, runId = 71) {
 		head_sha: original,
 		repository: { full_name: "acme/project" },
 		head_repository: { full_name: "acme/fork" },
-		status: "completed",
-		conclusion: "failure",
+		status: snapshot.runStatus ?? "completed",
+		conclusion: snapshot.runConclusion === undefined ? "failure" : snapshot.runConclusion,
 	};
 }
 
@@ -335,12 +344,14 @@ test("rejects evidence whose complete emitted metadata exceeds its byte budget",
 	assert.equal(app.logReads.size, 0);
 });
 
-test("blocks unsupported, ambiguous, and stale evidence", async (t) => {
-	await t.test("stale conclusion", async (t) => {
+test("blocks unsupported or ambiguous evidence and collects diagnosable stale failures", async (t) => {
+	await t.test("stale check and job conclusions", async (t) => {
 		const app = harness({ snapshots: [{ checks: [check(11, 101, { conclusion: "stale" })], jobs: [job(101, 11, { conclusion: "stale" })] }] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-		await assert.rejects(app.workflow.collect(), /stale evidence/);
-		assert.equal(app.logReads.size, 0);
+		const evidence = await app.workflow.collect();
+		assert.equal(evidence.failures[0]!.checkRun.conclusion, "stale");
+		assert.equal(evidence.failures[0]!.job.conclusion, "stale");
+		assert.equal(app.logReads.get(101), 1);
 	});
 
 	await t.test("stale nested step conclusion", async (t) => {
@@ -348,8 +359,9 @@ test("blocks unsupported, ambiguous, and stale evidence", async (t) => {
 		staleStep.steps[0]!.conclusion = "stale";
 		const app = harness({ snapshots: [{ checks: [check(11, 101)], jobs: [staleStep] }] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-		await assert.rejects(app.workflow.collect(), /stale evidence/);
-		assert.equal(app.logReads.size, 0);
+		const evidence = await app.workflow.collect();
+		assert.equal(evidence.failures[0]!.failedSteps[0]!.conclusion, "stale");
+		assert.equal(app.logReads.get(101), 1);
 	});
 
 	await t.test("unexpected API origin", async (t) => {
@@ -405,6 +417,47 @@ test("blocks unsupported, ambiguous, and stale evidence", async (t) => {
 		app.setLocalHead(repair);
 		await assert.rejects(app.workflow.publish(), /stored evidence fingerprint is stale or replaced/);
 		assert.equal(app.calls.some(({ command, args }) => command === "git" && args[0] === "push"), false);
+	});
+});
+
+test("allows unrelated running checks and jobs to succeed before publication", async (t) => {
+	const running: Snapshot = {
+		checks: [check(11, 101), check(12, 102, { status: "in_progress", conclusion: null })],
+		jobs: [job(101, 11), job(102, 12, { status: "in_progress", conclusion: null })],
+		runStatus: "in_progress",
+		runConclusion: null,
+	};
+	const completed: Snapshot = {
+		checks: [check(11, 101), check(12, 102, { conclusion: "success" })],
+		jobs: [job(101, 11), job(102, 12, { conclusion: "success" })],
+	};
+	const app = harness({ snapshots: [running, running, completed], push: "success" });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	await app.workflow.collect();
+	app.setLocalHead(repair);
+	assert.deepEqual(await app.workflow.publish(), { kind: "published", head: repair, attempt: "applied" });
+});
+
+test("rejects new failures or changed original failure evidence before publication", async (t) => {
+	await t.test("new failure", async (t) => {
+		const first = oneFailure();
+		const second = { checks: [...first.checks, check(12, 102)], jobs: [...first.jobs, job(102, 12)] };
+		const app = harness({ snapshots: [first, first, second] });
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		await app.workflow.collect();
+		app.setLocalHead(repair);
+		await assert.rejects(app.workflow.publish(), /stored evidence fingerprint is stale or replaced/);
+	});
+
+	await t.test("changed failed step", async (t) => {
+		const first = oneFailure();
+		const second = oneFailure();
+		second.jobs[0]!.steps[0]!.name = "changed failure evidence";
+		const app = harness({ snapshots: [first, first, second] });
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		await app.workflow.collect();
+		app.setLocalHead(repair);
+		await assert.rejects(app.workflow.publish(), /stored evidence fingerprint is stale or replaced/);
 	});
 });
 
