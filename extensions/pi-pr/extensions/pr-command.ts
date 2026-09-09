@@ -27,7 +27,11 @@ const WORKFLOWS: Record<WorkflowNextStep, string> = {
 };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
-export type PrCommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<NextStep>;
+export type PrCommandHandler = (
+	args: string,
+	ctx: ExtensionCommandContext,
+	onRouteResolved?: (nextStep: NextStep) => void,
+) => Promise<NextStep>;
 
 type PrCommandDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
@@ -175,10 +179,11 @@ export function createPrCommandHandler(
 ): PrCommandHandler {
 	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
 	const link = dependencies.linkInferredPullRequest ?? linkInferredPullRequest;
-	return async (args, ctx) => {
+	return async (args, ctx, onRouteResolved) => {
 		const instructions = args.trim();
 		const discovery = await load(pi, ctx);
 		const nextStep = deriveNextStep(discovery);
+		onRouteResolved?.(nextStep);
 		if (instructions && !(nextStep in WORKFLOWS)) {
 			throw new Error("The current /pr route does not accept instructions");
 		}

@@ -3,6 +3,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import { createPrCommandHandler } from "./pr-command.ts";
 import {
@@ -24,6 +25,9 @@ import {
 } from "./pr-ui.ts";
 
 const POLL_INTERVAL_MS = 30_000;
+const ROUTING_SPINNER_INTERVAL_MS = 80;
+const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const ROUTING_WIDGET_TEXT = "Checking pull request…";
 const HERDR_TIMEOUT_MS = 10_000;
 const UI_KEY = "pi-pr";
 const OBSERVATION_ENTRY = "pi-pr-observation";
@@ -130,9 +134,23 @@ export default function pullRequestExtension(
 	let mergeCompleted = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
-	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
+	const activeInvocations = new Map<number, "routing" | "resolved" | "create-workflow" | "workflow">();
+	let widgetKind: "presentation" | "routing" = "presentation";
+	let routingSpinnerFrame = 0;
+	let routingSpinnerTimer: ReturnType<typeof setInterval> | undefined;
+	let routingSpinnerTui: TUI | undefined;
+	let routingSpinnerComponent: (Component & { dispose(): void }) | undefined;
+
+	const stopRoutingSpinner = (): void => {
+		if (routingSpinnerTimer !== undefined) clearInterval(routingSpinnerTimer);
+		routingSpinnerTimer = undefined;
+		routingSpinnerTui = undefined;
+		routingSpinnerComponent = undefined;
+	};
 
 	const setWidget = (ctx: ExtensionContext, display: PrDisplay | undefined): void => {
+		stopRoutingSpinner();
+		widgetKind = "presentation";
 		if (display?.widget === undefined) {
 			ctx.ui.setWidget(UI_KEY, undefined);
 			return;
@@ -147,6 +165,57 @@ export default function pullRequestExtension(
 		ctx.ui.setWidget(UI_KEY, formatPrWidget(display));
 	};
 
+	const setRoutingWidget = (ctx: ExtensionContext): void => {
+		if (widgetKind === "routing") return;
+		stopRoutingSpinner();
+		widgetKind = "routing";
+		routingSpinnerFrame = 0;
+		if (ctx.mode !== "tui") {
+			ctx.ui.setWidget(UI_KEY, [`${ROUTING_SPINNER_FRAMES[0]} ${ROUTING_WIDGET_TEXT}`]);
+			return;
+		}
+
+		ctx.ui.setWidget(UI_KEY, (tui, theme) => {
+			let cachedWidth: number | undefined;
+			let cachedLines: string[] | undefined;
+			const component: Component & { dispose(): void } = {
+				invalidate() {
+					cachedWidth = undefined;
+					cachedLines = undefined;
+				},
+				render(width) {
+					if (width <= 0) return [];
+					if (cachedLines !== undefined && cachedWidth === width) return cachedLines;
+					const line = `${theme.fg("accent", ROUTING_SPINNER_FRAMES[routingSpinnerFrame]!)} ${ROUTING_WIDGET_TEXT}`;
+					cachedWidth = width;
+					cachedLines = [truncateToWidth(line, Math.max(1, width))];
+					return cachedLines;
+				},
+				dispose() {
+					if (routingSpinnerComponent !== component) return;
+					stopRoutingSpinner();
+					widgetKind = "presentation";
+				},
+			};
+			routingSpinnerTui = tui;
+			routingSpinnerComponent = component;
+			return component;
+		});
+		routingSpinnerTimer = setInterval(() => {
+			routingSpinnerFrame = (routingSpinnerFrame + 1) % ROUTING_SPINNER_FRAMES.length;
+			routingSpinnerComponent?.invalidate();
+			routingSpinnerTui?.requestRender();
+		}, ROUTING_SPINNER_INTERVAL_MS);
+	};
+
+	const reconcileWidget = (ctx: ExtensionContext): void => {
+		if ([...activeInvocations.values()].includes("routing")) {
+			setRoutingWidget(ctx);
+			return;
+		}
+		setWidget(ctx, activeInvocations.size > 0 ? undefined : displayedWidget);
+	};
+
 	const render = (
 		ctx: ExtensionContext,
 		discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
@@ -159,7 +228,7 @@ export default function pullRequestExtension(
 			lastDiscovery = "inactive";
 			displayedWidget = undefined;
 			ctx.ui.setStatus(UI_KEY, undefined);
-			setWidget(ctx, undefined);
+			reconcileWidget(ctx);
 			return;
 		}
 		const display = projectPrDisplay(discovery, localCommit);
@@ -168,9 +237,8 @@ export default function pullRequestExtension(
 			throw new Error("Pull request display is missing a footer");
 		}
 		displayedWidget = display.widget === undefined ? undefined : display;
-		const widget = activeInvocations.size > 0 ? undefined : displayedWidget;
 		ctx.ui.setStatus(UI_KEY, footer);
-		setWidget(ctx, widget);
+		reconcileWidget(ctx);
 		if (discovery.kind === "blocked") {
 			const key = discoveryIssueKey(discovery.issue);
 			if (lastBlockedIssueKey !== key) {
@@ -203,6 +271,8 @@ export default function pullRequestExtension(
 		displayedWidget = undefined;
 		commandGeneration = 0;
 		activeInvocations.clear();
+		stopRoutingSpinner();
+		widgetKind = "presentation";
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
 		active?.abort();
@@ -255,8 +325,9 @@ export default function pullRequestExtension(
 				if (!controller.signal.aborted && sessionGeneration === generation) {
 					if (!displayEstablished) {
 						const unavailable = unavailablePrDisplay();
+						displayedWidget = undefined;
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
-						setWidget(ctx, undefined);
+						reconcileWidget(ctx);
 						displayEstablished = true;
 					}
 					reportRefreshFailure();
@@ -352,17 +423,21 @@ export default function pullRequestExtension(
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");
-			if (displayedWidget !== undefined) setWidget(ctx, undefined);
+			reconcileWidget(ctx);
+			const routeResolved = (): void => {
+				if (sessionGeneration !== generation || activeInvocations.get(invocation) !== "routing") return;
+				activeInvocations.set(invocation, "resolved");
+				reconcileWidget(ctx);
+			};
 			let nextStep: Awaited<ReturnType<typeof commandHandler>>;
 			try {
-				nextStep = await commandHandler(args, ctx);
+				nextStep = await commandHandler(args, ctx, routeResolved);
+				routeResolved();
 			} catch (error) {
 				if (sessionGeneration === generation) {
 					cancelRefresh();
 					activeInvocations.delete(invocation);
-					if (!activeInvocations.size) {
-						setWidget(ctx, displayedWidget);
-					}
+					reconcileWidget(ctx);
 					refreshInBackground();
 				}
 				throw error;
@@ -372,7 +447,7 @@ export default function pullRequestExtension(
 			if (WORKFLOW_ROUTES.has(nextStep)) {
 				activeInvocations.set(invocation, nextStep === "create" ? "create-workflow" : "workflow");
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
-				setWidget(ctx, undefined);
+				reconcileWidget(ctx);
 			} else {
 				if (nextStep === "merge") mergeCompleted = true;
 				activeInvocations.delete(invocation);
