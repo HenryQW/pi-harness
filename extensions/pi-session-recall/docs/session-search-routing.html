@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>session_search routing</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <style>
+    html, body { min-height: 100%; margin: 0; background: #f0eee9; }
+    body { display: grid; place-items: center; }
+    figure { width: min(100%, 1280px); margin: 0; }
+    svg { display: block; width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <figure>
+    <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="session-search-routing-title session-search-routing-desc">
+      <title id="session-search-routing-title">session_search routing</title>
+      <desc id="session-search-routing-desc">Flowchart routing session_search requests between indexed preparation, discovery, and browse calls and direct transcript scroll and read calls.</desc>
+      <defs>
+        <style>
+          .eyebrow { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .diagram-title { fill: #101828; font: 400 28px 'Instrument Serif', serif; }
+          .zone-label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .12em; }
+          .zone-note { fill: #6a7282; font: 400 8px 'Geist Mono', monospace; letter-spacing: .04em; }
+          .node-name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .technical-name { fill: #101828; font: 500 12px 'Geist Mono', monospace; text-anchor: middle; }
+          .node-sub { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#session-search-routing-arrow); }
+          .edge-label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; letter-spacing: .08em; }
+        </style>
+        <marker id="session-search-routing-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+          <polygon points="0 0,8 4,0 8" fill="#4c5665"/>
+        </marker>
+        <marker id="session-search-routing-arrow-accent" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+          <polygon points="0 0,8 4,0 8" fill="#1d4ed8"/>
+        </marker>
+        <marker id="session-search-routing-arrow-link" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+          <polygon points="0 0,8 4,0 8" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <text class="eyebrow" x="40" y="48">PI-SESSION-RECALL · FLOWCHART</text>
+      <text class="diagram-title" x="40" y="88">Five routes through session_search</text>
+
+      <!-- Routing zones are backgrounds, not primary nodes. -->
+      <rect x="40" y="352" width="752" height="320" rx="8" fill="#e6e4de" stroke="rgba(16,24,40,0.14)" stroke-width="1"/>
+      <text class="zone-label" x="56" y="376">INDEX-BACKED CALLS · LAZY SYNC</text>
+      <text class="zone-note" x="56" y="392">PREPARE · DISCOVERY · BROWSE</text>
+
+      <rect x="816" y="352" width="424" height="320" rx="8" fill="#e6e4de" stroke="rgba(16,24,40,0.14)" stroke-width="1"/>
+      <text class="zone-label" x="832" y="376">DIRECT TRANSCRIPT READS</text>
+      <text class="zone-note" x="832" y="392">RAW ROLES · TOOL RESULTS</text>
+
+      <!-- Connectors: all routes are painted before their nodes. -->
+      <path class="edge" d="M640 180 V212"/>
+      <path class="edge" d="M532 264 H320 Q312 264 312 272 V388 Q312 396 304 396 H184 Q176 396 176 404 V412"/>
+      <path class="edge" d="M640 316 V336 Q640 344 632 344 H432 Q424 344 424 352 V392"/>
+      <path class="edge" d="M748 264 H792 Q800 264 800 272 V328 Q800 336 808 336 H1016 Q1024 336 1024 344 V392"/>
+      <path class="edge" d="M536 448 H576"/>
+      <path class="edge" d="M424 504 V544"/>
+      <path class="edge" d="M1136 448 V536"/>
+      <path class="edge" d="M912 448 H896 Q888 448 888 456 V520 Q888 528 896 528 H912 Q920 528 920 536"/>
+
+      <!-- Branch labels stay 8px clear of their connectors. -->
+      <rect x="384" y="244" width="72" height="12" rx="2" fill="#f0eee9"/>
+      <text class="edge-label" x="420" y="252">PREPARE</text>
+
+      <rect x="488" y="324" width="112" height="12" rx="2" fill="#f0eee9"/>
+      <text class="edge-label" x="544" y="332">SEARCH / BROWSE</text>
+
+      <rect x="808" y="288" width="56" height="12" rx="2" fill="#f0eee9"/>
+      <text class="edge-label" x="836" y="296">INSPECT</text>
+
+      <rect x="544" y="428" width="24" height="12" rx="2" fill="#f0eee9"/>
+      <text class="edge-label" x="556" y="436">YES</text>
+
+      <rect x="432" y="516" width="24" height="12" rx="2" fill="#f0eee9"/>
+      <text class="edge-label" x="444" y="524">NO</text>
+
+      <rect x="1144" y="480" width="24" height="12" rx="2" fill="#f0eee9"/>
+      <text class="edge-label" x="1156" y="488">YES</text>
+
+      <rect x="896" y="480" width="24" height="12" rx="2" fill="#f0eee9"/>
+      <text class="edge-label" x="908" y="488">NO</text>
+
+      <!-- Primary nodes: one start, three decisions, and five terminal modes. -->
+      <rect x="540" y="132" width="200" height="48" rx="20" fill="rgba(16,24,40,0.03)" stroke="#4c5665" stroke-width="1"/>
+      <text class="technical-name" x="640" y="156">session_search</text>
+      <text class="node-sub" x="640" y="172">ONE LOCAL TOOL</text>
+
+      <polygon points="640,212 748,264 640,316 532,264" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
+      <text class="node-name" x="640" y="260">Call family?</text>
+      <text class="node-sub" x="640" y="280">ROUTE BY ARGUMENTS</text>
+
+      <rect x="48" y="412" width="240" height="128" rx="20" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
+      <text class="node-name" x="168" y="444">Pattern preparation</text>
+      <text class="node-sub" x="168" y="472">operation + scope · lazy sync</text>
+      <text class="node-sub" x="168" y="488">bounded user/assistant corpus</text>
+      <text class="node-sub" x="168" y="504">+ repository inventory · never tool results</text>
+
+      <polygon points="424,392 536,448 424,504 312,448" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
+      <text class="technical-name" x="424" y="444">query?</text>
+      <text class="node-sub" x="424" y="464">PRESENT</text>
+
+      <rect x="576" y="400" width="200" height="96" rx="20" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
+      <text class="node-name" x="676" y="428">Discovery</text>
+      <text class="node-sub" x="676" y="452">query · lazy sync + FTS5</text>
+      <text class="node-sub" x="676" y="468">adaptive output omits tool results</text>
+      <text class="node-sub" x="676" y="484">detail:&quot;full&quot; includes tool results</text>
+
+      <rect x="328" y="544" width="192" height="96" rx="20" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
+      <text class="node-name" x="424" y="572">Browse</text>
+      <text class="node-sub" x="424" y="596">no args · lazy sync</text>
+      <text class="node-sub" x="424" y="612">recent session metadata</text>
+
+      <polygon points="1024,392 1136,448 1024,504 912,448" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
+      <text class="technical-name" x="1024" y="444">aroundMessageId?</text>
+      <text class="node-sub" x="1024" y="464">WITH sessionId</text>
+
+      <rect x="1040" y="536" width="192" height="112" rx="20" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
+      <text class="node-name" x="1136" y="564">Scroll</text>
+      <text class="node-sub" x="1136" y="588">sessionId + aroundMessageId</text>
+      <text class="node-sub" x="1136" y="604">direct saved JSONL</text>
+      <text class="node-sub" x="1136" y="620">raw roles including tool results</text>
+      <text class="node-sub" x="1136" y="636">±window with branchTip</text>
+
+      <rect x="824" y="536" width="192" height="112" rx="20" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
+      <text class="node-name" x="920" y="564">Read</text>
+      <text class="node-sub" x="920" y="588">sessionId · direct saved JSONL</text>
+      <text class="node-sub" x="920" y="604">raw roles including tool results</text>
+      <text class="node-sub" x="920" y="620">head 20 + tail 10</text>
+    </svg>
+  </figure>
+</body>
+</html>
