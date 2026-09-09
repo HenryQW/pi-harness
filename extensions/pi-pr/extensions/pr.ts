@@ -137,6 +137,7 @@ type WorkflowContextBase = {
 	runId: string;
 	sessionGeneration: number;
 	worktree: string;
+	controller: AbortController;
 	usedSinceSettlement: boolean;
 	promptQueued: boolean;
 	conflictRetained: boolean;
@@ -274,6 +275,12 @@ export default function pullRequestExtension(
 	let workflowContext: WorkflowContext | undefined;
 	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
 
+	const clearWorkflow = (selected: WorkflowContext | undefined): void => {
+		if (!selected || workflowContext !== selected) return;
+		workflowContext = undefined;
+		selected.controller.abort();
+	};
+
 	const reserveWorkflow: NonNullable<PrCommandDependencies["reserveWorkflow"]> = async (reservation, ctx, invocation) => {
 		if (!invocation) throw new Error("PR workflow command generation is unavailable");
 		invocation.assertCurrent();
@@ -286,6 +293,7 @@ export default function pullRequestExtension(
 			runId,
 			sessionGeneration: invocation.sessionGeneration,
 			worktree,
+			controller: new AbortController(),
 			usedSinceSettlement: false,
 			promptQueued: false,
 			conflictRetained: false,
@@ -298,7 +306,7 @@ export default function pullRequestExtension(
 					workflow: createBranchUpdater({
 						cwd: worktree,
 						authority: reservation.pullRequest,
-						signal: ctx.signal,
+						signal: common.controller.signal,
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -311,7 +319,7 @@ export default function pullRequestExtension(
 					workflow: createPullRequestCreator({
 						cwd: worktree,
 						target: reservation.target,
-						signal: ctx.signal,
+						signal: common.controller.signal,
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -323,7 +331,7 @@ export default function pullRequestExtension(
 					workflow: createCommentSweep({
 						cwd: worktree,
 						authority: reservation.pullRequest,
-						signal: ctx.signal,
+						signal: common.controller.signal,
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -335,7 +343,7 @@ export default function pullRequestExtension(
 					workflow: createCiFixer({
 						cwd: worktree,
 						authority: reservation.pullRequest,
-						signal: ctx.signal,
+						signal: common.controller.signal,
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -350,31 +358,42 @@ export default function pullRequestExtension(
 	};
 
 	const releaseWorkflow: NonNullable<PrCommandDependencies["releaseWorkflow"]> = (runId, invocation) => {
+		const selected = workflowContext;
 		if (
-			invocation && workflowContext?.runId === runId &&
-			workflowContext.sessionGeneration === invocation.sessionGeneration
-		) workflowContext = undefined;
+			invocation && selected?.runId === runId &&
+			selected.sessionGeneration === invocation.sessionGeneration
+		) clearWorkflow(selected);
 	};
 
-	const requireWorkflow = async <Route extends WorkflowContext["route"]>(
+	const executeWorkflowAction = async <Route extends WorkflowContext["route"]>(
 		runId: string,
 		route: Route,
 		ctx: ExtensionContext,
 		signal: AbortSignal | undefined,
-	): Promise<Extract<WorkflowContext, { route: Route }>> => {
+		action: (selected: Extract<WorkflowContext, { route: Route }>) => Promise<unknown>,
+	) => {
 		signal?.throwIfAborted();
 		const selected = workflowContext;
 		if (!selected) throw new Error("No PR workflow is active");
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);
-		const worktree = await resolveCanonicalWorktree(ctx.cwd, signal);
-		if (workflowContext !== selected || selected.sessionGeneration !== sessionGeneration) {
-			throw new Error("PR workflow session changed during validation");
+		const abortRun = () => selected.controller.abort(signal?.reason);
+		if (signal?.aborted) abortRun();
+		else signal?.addEventListener("abort", abortRun, { once: true });
+		try {
+			selected.controller.signal.throwIfAborted();
+			const worktree = await resolveCanonicalWorktree(ctx.cwd, selected.controller.signal);
+			if (workflowContext !== selected || selected.sessionGeneration !== sessionGeneration) {
+				throw new Error("PR workflow session changed during validation");
+			}
+			selected.controller.signal.throwIfAborted();
+			if (worktree !== selected.worktree) throw new Error("PR workflow worktree is wrong or stale");
+			selected.usedSinceSettlement = true;
+			return toolResult(await action(selected as Extract<WorkflowContext, { route: Route }>));
+		} finally {
+			signal?.removeEventListener("abort", abortRun);
 		}
-		if (worktree !== selected.worktree) throw new Error("PR workflow worktree is wrong or stale");
-		selected.usedSinceSettlement = true;
-		return selected as Extract<WorkflowContext, { route: Route }>;
 	};
 
 	pi.registerTool({
@@ -384,12 +403,13 @@ export default function pullRequestExtension(
 		parameters: UpdateBranchParameters,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const selected = await requireWorkflow(params.runId, "update-branch", ctx, signal);
-			switch (params.action) {
-				case "merge": return toolResult(await selected.workflow.merge());
-				case "continue": return toolResult(await selected.workflow.continue(params.resolvedPaths));
-				case "publish": return toolResult(await selected.workflow.publish());
-			}
+			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, async (selected) => {
+				switch (params.action) {
+					case "merge": return await selected.workflow.merge();
+					case "continue": return await selected.workflow.continue(params.resolvedPaths);
+					case "publish": return await selected.workflow.publish();
+				}
+			});
 		},
 	});
 
@@ -400,14 +420,15 @@ export default function pullRequestExtension(
 		parameters: CreateParameters,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const selected = await requireWorkflow(params.runId, "create", ctx, signal);
-			switch (params.action) {
-				case "prepare": return toolResult(await selected.workflow.prepare(selected.base));
-				case "merge": return toolResult(await selected.workflow.merge());
-				case "continue": return toolResult(await selected.workflow.continue(params.resolvedPaths));
-				case "push": return toolResult(await selected.workflow.push());
-				case "publish": return toolResult(await selected.workflow.publish(params.title, params.body));
-			}
+			return executeWorkflowAction(params.runId, "create", ctx, signal, async (selected) => {
+				switch (params.action) {
+					case "prepare": return await selected.workflow.prepare(selected.base);
+					case "merge": return await selected.workflow.merge();
+					case "continue": return await selected.workflow.continue(params.resolvedPaths);
+					case "push": return await selected.workflow.push();
+					case "publish": return await selected.workflow.publish(params.title, params.body);
+				}
+			});
 		},
 	});
 
@@ -418,17 +439,18 @@ export default function pullRequestExtension(
 		parameters: SweepParameters,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const selected = await requireWorkflow(params.runId, "sweep", ctx, signal);
-			switch (params.action) {
-				case "start": return toolResult(await selected.workflow.start());
-				case "resume": return toolResult(await selected.workflow.resume());
-				case "show": return toolResult(await selected.workflow.show(params.guard, params.id));
-				case "record": return toolResult(await selected.workflow.record(params.guard, params.ledger, params.ownedPaths));
-				case "publish": return toolResult(await selected.workflow.publish(params.guard));
-				case "refresh": return toolResult(await selected.workflow.refresh(params.guard, params.ledger));
-				case "resolve": return toolResult(await selected.workflow.resolve(params.guard, params.threadIds));
-				case "finalize": return toolResult(await selected.workflow.finalize(params.guard, params.projection, params.checks));
-			}
+			return executeWorkflowAction(params.runId, "sweep", ctx, signal, async (selected) => {
+				switch (params.action) {
+					case "start": return await selected.workflow.start();
+					case "resume": return await selected.workflow.resume();
+					case "show": return await selected.workflow.show(params.guard, params.id);
+					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
+					case "publish": return await selected.workflow.publish(params.guard);
+					case "refresh": return await selected.workflow.refresh(params.guard, params.ledger);
+					case "resolve": return await selected.workflow.resolve(params.guard, params.threadIds);
+					case "finalize": return await selected.workflow.finalize(params.guard, params.projection, params.checks);
+				}
+			});
 		},
 	});
 
@@ -439,11 +461,12 @@ export default function pullRequestExtension(
 		parameters: FixCiParameters,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const selected = await requireWorkflow(params.runId, "fix-ci", ctx, signal);
-			switch (params.action) {
-				case "collect": return toolResult(await selected.workflow.collect());
-				case "publish": return toolResult(await selected.workflow.publish());
-			}
+			return executeWorkflowAction(params.runId, "fix-ci", ctx, signal, async (selected) => {
+				switch (params.action) {
+					case "collect": return await selected.workflow.collect();
+					case "publish": return await selected.workflow.publish();
+				}
+			});
 		},
 	});
 
@@ -517,7 +540,7 @@ export default function pullRequestExtension(
 		mergeCompleted = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
-		workflowContext = undefined;
+		clearWorkflow(workflowContext);
 		activeInvocations.clear();
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
@@ -617,6 +640,13 @@ export default function pullRequestExtension(
 		queued = false;
 	};
 
+	pi.on("before_agent_start", (event) => {
+		const selected = workflowContext;
+		if (selected?.promptQueued && event.prompt.includes(selected.runId)) {
+			selected.promptQueued = false;
+		}
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
 		const generation = sessionGeneration;
@@ -635,25 +665,24 @@ export default function pullRequestExtension(
 		if (!ctx.hasUI || !ctx.isIdle() || !context) return;
 		const selected = workflowContext;
 		const helperSettled = selected?.usedSinceSettlement ?? false;
-		const queuedHelperStarting = selected?.promptQueued === true && !helperSettled;
+		const queuedHelperPending = selected?.promptQueued === true && !helperSettled;
 		let workflowSettled = false;
 		let createWorkflowSettled = false;
 		for (const [invocation, phase] of activeInvocations) {
 			if (phase !== "workflow" && phase !== "create-workflow") continue;
-			if (queuedHelperStarting) continue;
+			if (queuedHelperPending) continue;
 			activeInvocations.delete(invocation);
 			workflowSettled = true;
 			if (phase === "create-workflow") createWorkflowSettled = true;
 		}
 		if (selected) {
-			selected.promptQueued = false;
 			const conflictPending = (selected.route === "create" || selected.route === "update-branch") &&
 				selected.workflow.state.phase === "conflict-awaiting-user";
-			if (!queuedHelperStarting) {
+			if (!queuedHelperPending) {
 				if (helperSettled && conflictPending && !selected.conflictRetained) {
 					selected.usedSinceSettlement = false;
 					selected.conflictRetained = true;
-				} else workflowContext = undefined;
+				} else clearWorkflow(selected);
 			}
 		}
 		const delegatedRefresh = delegatedWorkPending && lastDiscovery !== "inactive";

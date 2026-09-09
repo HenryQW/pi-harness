@@ -68,6 +68,13 @@ function deferred<T>(): Deferred<T> {
 	return { promise, resolve, reject };
 }
 
+function waitForAbort(signal: AbortSignal): Promise<never> {
+	return new Promise((_, reject) => {
+		if (signal.aborted) reject(signal.reason);
+		else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+	});
+}
+
 function currentPullRequest(overrides: {
 	conditions?: Partial<CurrentPullRequest["conditions"]>;
 	lifecycle?: CurrentPullRequest["lifecycle"];
@@ -157,6 +164,7 @@ function harness(options: {
 	createCiFixer?: ExtensionDependencies["createCiFixer"];
 	isIdle?: () => boolean;
 }) {
+	let beforeAgentStart: EventHandler | undefined;
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
 	let agentSettled: EventHandler | undefined;
@@ -211,6 +219,7 @@ function harness(options: {
 
 	pullRequestExtension({
 		on(event: string, handler: unknown) {
+			if (event === "before_agent_start") beforeAgentStart = handler as EventHandler;
 			if (event === "session_start") sessionStart = handler as EventHandler;
 			if (event === "session_shutdown") sessionShutdown = handler as EventHandler;
 			if (event === "agent_settled") agentSettled = handler as EventHandler;
@@ -276,19 +285,27 @@ function harness(options: {
 		async shutdown(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionShutdown, "session_shutdown")({} as never, callbackContext(ctx));
 		},
+		async beforeStart(prompt: string, ctx: ExtensionContext): Promise<void> {
+			await handler(beforeAgentStart, "before_agent_start")({ prompt } as never, callbackContext(ctx));
+		},
 		async settle(ctx: ExtensionContext): Promise<void> {
 			await handler(agentSettled, "agent_settled")({} as never, callbackContext(ctx));
 		},
 		async tool(event: unknown, ctx: ExtensionContext): Promise<void> {
 			await handler(toolResult, "tool_result")(event, callbackContext(ctx));
 		},
-		async callTool(name: string, params: unknown, ctx: ExtensionContext) {
+		async callTool(
+			name: string,
+			params: unknown,
+			ctx: ExtensionContext,
+			signal = new AbortController().signal,
+		) {
 			const registered = tools.find((tool) => tool.name === name);
 			if (!registered) throw new Error(`Missing ${name} tool`);
 			return await registered.execute(
 				"tool-call",
 				params as never,
-				new AbortController().signal,
+				signal,
 				undefined,
 				callbackContext(ctx),
 			);
@@ -486,7 +503,118 @@ test("releases a stale reservation when replacement wins before dispatch resumes
 	}
 });
 
-test("keeps a queued follow-up helper through the settlement that starts it", async () => {
+test("session replacement aborts an in-flight workflow helper", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	const actionStarted = deferred<void>();
+	let helperSignal: AbortSignal | undefined;
+	const state = {
+		phase: "ready",
+		attempts: { fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none" },
+	};
+	const app = harness({
+		async load() { return authority; },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createBranchUpdater(options) {
+			const signal = options.signal;
+			assert.ok(signal);
+			helperSignal = signal;
+			return {
+				state,
+				async merge() {
+					actionStarted.resolve();
+					return await waitForAbort(signal);
+				},
+			} as never;
+		},
+	});
+	const first = app.context();
+	const replacement = app.context();
+
+	try {
+		await app.start(first);
+		await app.command().handler("", first as ExtensionCommandContext);
+		const action = app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, first);
+		const cancelled = assert.rejects(action, (error) => {
+			assert.equal(error, helperSignal?.reason);
+			return true;
+		});
+		await actionStarted.promise;
+		await app.start(replacement);
+		await cancelled;
+		assert.equal(helperSignal?.aborted, true);
+	} finally {
+		await app.shutdown(replacement);
+	}
+});
+
+test("tool cancellation reaches only its active workflow action", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	const publishStarted = deferred<void>();
+	let helperSignal: AbortSignal | undefined;
+	const state = {
+		phase: "ready",
+		attempts: { fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none" },
+	};
+	const app = harness({
+		async load() { return authority; },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createBranchUpdater(options) {
+			const signal = options.signal;
+			assert.ok(signal);
+			helperSignal = signal;
+			return {
+				state,
+				async merge() {
+					return { kind: "verified", head: authority.head.oid, fastForward: false };
+				},
+				async publish() {
+					publishStarted.resolve();
+					return await waitForAbort(signal);
+				},
+			} as never;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		const completedAction = new AbortController();
+		await app.callTool(
+			"pi_pr_update_branch",
+			{ runId: routeRunId, action: "merge" },
+			ctx,
+			completedAction.signal,
+		);
+		completedAction.abort();
+		assert.equal(helperSignal?.aborted, false, "a completed tool must no longer abort its run");
+
+		const activeAction = new AbortController();
+		const reason = new Error("tool cancelled");
+		const action = app.callTool(
+			"pi_pr_update_branch",
+			{ runId: routeRunId, action: "publish" },
+			ctx,
+			activeAction.signal,
+		);
+		const cancelled = assert.rejects(action, (error) => {
+			assert.equal(error, reason);
+			return true;
+		});
+		await publishStarted.promise;
+		activeAction.abort(reason);
+		await cancelled;
+		assert.equal(helperSignal?.reason, reason);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("keeps a queued follow-up until its exact prompt starts, then clears an unused run", async () => {
 	const authority = currentPullRequest({ conditions: { ci: "failure" } });
 	let idle = false;
 	let loads = 0;
@@ -511,13 +639,17 @@ test("keeps a queued follow-up helper through the settlement that starts it", as
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		idle = true;
 		await app.settle(ctx);
-		assert.equal(loads, 2, "the settlement that starts a follow-up must not finish its workflow");
-
-		await app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "collect" }, ctx);
+		await app.beforeStart("unrelated runId=22222222-2222-4222-8222-222222222222", ctx);
 		await app.settle(ctx);
-		assert.deepEqual(calls, ["collect"]);
+		assert.equal(loads, 2, "an unmatched prompt must not finish the queued workflow");
+
+		await app.beforeStart(`expanded helper runId=${routeRunId} action=collect`, ctx);
+		await app.settle(ctx);
+		assert.equal(loads, 3);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
+		assert.deepEqual(calls, []);
 		await assert.rejects(
-			app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "publish" }, ctx),
+			app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "collect" }, ctx),
 			/No PR workflow is active/,
 		);
 	} finally {
