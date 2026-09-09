@@ -165,7 +165,7 @@ The package root exports the following mechanism-level APIs:
 | `resolveRoleLaunch(pi, ctx, input)` | Resolve a caller-owned Model Task route, applying call-level then Role `modelClass` precedence, and produce `ResolvedRoleLaunch`. |
 | `createRoleLaunch(pi, ctx, input)` | Produce the same launch from a caller-supplied resolved route. |
 | `createEphemeralSubagentExecutor(options)` | Queue and run one prepared no-session child per `run`. |
-| `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle. |
+| `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle; `createChildWorktree` can prepare exact metadata before allocation. |
 
 `finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union:
 

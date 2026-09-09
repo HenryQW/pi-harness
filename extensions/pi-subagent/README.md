@@ -129,7 +129,7 @@ A Role selects base tools, extensions, named Skills, instructions, and optional 
 
 Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
 
-Parent-only delegation tools and `ask_question` are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
+Parent-only delegation, orchestration, and Auto DAG tools, plus `ask_question`, are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
 
 An explicit unit `modelClass` overrides both frozen Roles. Without one, each Role uses its own `modelClass`, configured `pi-subagent/delegateTask` assignment, or declared default.
 
@@ -215,7 +215,7 @@ The package root includes these main exports:
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
 | `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
-| Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
+| Worktree helpers | functions | Create, prepare, inspect, finalize, and report child worktrees. |
 
 The executor works only inside the active Pi process. It does not discover or start a standalone Node.js Pi installation.
 

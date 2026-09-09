@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type GitRunner, type WorktreePayload } from "../src/worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type GitRunner, type WorktreeInfo, type WorktreePayload } from "../src/worktree.ts";
 import { loadRoles } from "../src/index.ts";
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
@@ -217,6 +217,44 @@ test("createChildWorktree sanitizes child ids and records the base commit", asyn
 	// Exclusion goes through the repository-local exclude file, never the tracked .gitignore.
 	assert.equal(await readFile(join(repo, ".git", "info", "exclude"), "utf8"), "/.worktrees/\n");
 	assert.equal(await readFile(join(repo, ".gitignore"), "utf8").then(() => true, () => false), false);
+});
+
+test("createChildWorktree invokes onPrepared once with final metadata before allocation", async (t) => {
+	const repo = await initializedRepository(t);
+	let calls = 0;
+	let prepared: WorktreeInfo | undefined;
+	const info = await createChildWorktree(repo, "prepared", undefined, undefined, async (candidate) => {
+		calls += 1;
+		prepared = candidate;
+		assert.equal(existsSync(candidate.path), false);
+		assert.equal(git(repo, "branch", "--list", candidate.branch), "");
+		assert.equal(git(repo, "worktree", "list", "--porcelain").includes(candidate.path), false);
+	});
+
+	assert.ok(info);
+	assert.equal(calls, 1);
+	assert.equal(prepared, info);
+	assert.equal(git(repo, "rev-parse", "HEAD"), info.baseCommit);
+	assert.equal(git(repo, "branch", "--list", info.branch), info.branch);
+	assert.equal(git(repo, "worktree", "list", "--porcelain").includes(info.path), true);
+	assert.equal((await finalizeChildWorktree(info)).outcome, "pruned");
+});
+
+test("createChildWorktree rejects before allocation when onPrepared fails", async (t) => {
+	const repo = await initializedRepository(t);
+	let calls = 0;
+	await assert.rejects(
+		createChildWorktree(repo, "rejected", undefined, undefined, async () => {
+			calls += 1;
+			throw new Error("prepare failed");
+		}),
+		/prepare failed/,
+	);
+
+	assert.equal(calls, 1);
+	assert.equal(git(repo, "branch", "--list", "pi-subagent/*"), "");
+	assert.equal(existsSync(join(repo, ".worktrees")), false);
+	assert.equal(git(repo, "worktree", "list", "--porcelain").includes(join(repo, ".worktrees")), false);
 });
 
 test("createChildWorktree anchors its local exclude at the repository root", async (t) => {
