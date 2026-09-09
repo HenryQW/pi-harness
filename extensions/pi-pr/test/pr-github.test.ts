@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -92,6 +92,11 @@ function git(cwd: string, ...args: string[]): string {
 	assert.equal(command.code, 0, `${args.join(" ")} failed: ${command.stderr}`);
 	return command.stdout.trim();
 }
+
+const LINK_LOCK_REPOSITORY = mkdtempSync(join(tmpdir(), "pi-pr-link-repository-"));
+after(() => rmSync(LINK_LOCK_REPOSITORY, { recursive: true, force: true }));
+mkdirSync(join(LINK_LOCK_REPOSITORY, "test"));
+git(LINK_LOCK_REPOSITORY, "init", "--initial-branch=main");
 
 function reviewThreadPage(nodes: unknown[], hasNextPage = false) {
 	return {
@@ -410,7 +415,7 @@ async function linkHarness(failures: {
 	assert.equal(initial.kind, "current");
 	if (initial.kind !== "current") throw new Error("Expected inferred pull request");
 	assert.equal(initial.pullRequest.target.provenance, "inferred");
-	app.context.cwd = process.cwd();
+	app.context.cwd = LINK_LOCK_REPOSITORY;
 	app.calls.length = 0;
 
 	const originalExec = app.pi.exec.bind(app.pi);
