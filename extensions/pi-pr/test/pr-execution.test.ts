@@ -278,6 +278,29 @@ test("worktree lock retains a BOM-prefixed malformed Git-ref owner", async (t) =
 	assert.equal(await readRef(root, ref), owner);
 });
 
+test("worktree lock retains a trailing-newline malformed Git-ref owner", async (t) => {
+	const root = await temporaryGitRepository("pi-pr-trailing-newline-lock-");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const ref = await worktreeLockRef(root);
+	const deadPid = 999_999_994;
+	const owner = (await git(root, ["hash-object", "-w", "--stdin", "--no-filters"],
+		`pid=${deadPid}\nnonce=77777777-7777-7777-7777-777777777777\n\n`)).trim();
+	await git(root, ["update-ref", ref, owner]);
+	const originalKill = process.kill;
+	process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+		if (pid === deadPid && signal === 0) throw missingProcess();
+		return originalKill(pid, signal);
+	}) as typeof process.kill;
+	t.after(() => { process.kill = originalKill; });
+	let called = false;
+	await assert.rejects(
+		withWorktreeLock(root, async () => { called = true; }),
+		/Git worktree lock owner object is invalid/,
+	);
+	assert.equal(called, false);
+	assert.equal(await readRef(root, ref), owner);
+});
+
 test("porcelain-v2 baseline preserves merge-produced staging outside declared conflicts", () => {
 	const staged = `1 M. N... 100644 100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} generated.lock\0`;
 	const conflict = `u UU N... 100644 100644 100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} ${"c".repeat(40)} source.ts\0`;

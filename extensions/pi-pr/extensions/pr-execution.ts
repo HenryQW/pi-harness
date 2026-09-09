@@ -233,7 +233,7 @@ function oidLine(output: string, label: string): string {
 
 function lockOwnerPid(payload: string): number {
 	const match = LOCK_OWNER_PAYLOAD.exec(payload);
-	if (!match) throw new Error("Git worktree lock owner object is invalid");
+	if (!match || match[0] !== payload) throw new Error("Git worktree lock owner object is invalid");
 	const pid = Number(match[1]);
 	if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== match[1]) {
 		throw new Error("Git worktree lock owner PID is invalid");
