@@ -30,6 +30,7 @@ EXTENSIONS='
 @henryqw/pi-open-in
 @henryqw/pi-pr
 @henryqw/pi-prompt-creator
+@henryqw/pi-rtk-test
 @henryqw/pi-session-recall
 @henryqw/pi-subagent
 @henryqw/pi-task-models

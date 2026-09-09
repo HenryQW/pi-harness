@@ -249,6 +249,12 @@ importers:
         specifier: ^5.0.0
         version: link:../pi-task-models
 
+  extensions/pi-rtk-test:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.85.1
+        version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
+
   extensions/pi-session-recall:
     dependencies:
       '@earendil-works/pi-ai':
