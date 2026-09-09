@@ -4,18 +4,15 @@ Use RTK for direct `pnpm test` Bash tool calls from Pi.
 
 ## Requirements
 
-- Use Pi with `@earendil-works/pi-coding-agent` `^0.85.1`.
-- Install RTK and make `rtk` available on Pi's `PATH`.
+- Install `rtk` and its Pi agent hook.
 
-Verify RTK before installing this package:
+This package does not install or update RTK:
 
 ```bash
+brew install rtk
 rtk --version
-rtk gain
-rtk test --help
+rtk init -g --agent pi
 ```
-
-This package does not install or update RTK.
 
 ## Install
 
