@@ -43,6 +43,13 @@ export type PrCommandHandler = (
 	invocation?: PrCommandInvocation,
 ) => Promise<NextStep>;
 
+export type WorkflowPromptIdentity = Readonly<{
+	route: WorkflowNextStep;
+	skill: string;
+	runId: string;
+	action: string;
+}>;
+
 export type PrCommandDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
 	linkInferredPullRequest?: typeof linkInferredPullRequest;
@@ -51,7 +58,7 @@ export type PrCommandDependencies = {
 		ctx: ExtensionCommandContext,
 		invocation?: PrCommandInvocation,
 	) => Promise<string>;
-	markWorkflowPromptQueued?: (runId: string, queued: boolean) => void;
+	markWorkflowPromptQueued?: (identity: WorkflowPromptIdentity, queued: boolean) => void;
 	releaseWorkflow?: (runId: string, invocation?: PrCommandInvocation) => void;
 };
 
@@ -104,12 +111,13 @@ async function dispatchWorkflow(
 		runId = await reserve(reservation, ctx, invocation);
 		invocation?.assertCurrent();
 		const queued = !ctx.isIdle();
-		markPromptQueued(runId, queued);
+		const identity = { route, skill: workflow.command.name, runId, action: workflow.action };
+		markPromptQueued(identity, queued);
 		const options = queued
 			? { deliverAs: "followUp" as const, expandPromptTemplates: true }
 			: { expandPromptTemplates: true };
 		invocation?.assertCurrent();
-		pi.sendUserMessage(`/${workflow.command.name} runId=${runId} action=${workflow.action}`, options);
+		pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}`, options);
 	} catch (error) {
 		if (runId !== undefined) release(runId, invocation);
 		throw error;

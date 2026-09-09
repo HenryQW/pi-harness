@@ -538,7 +538,7 @@ function onlyResolutionChanged(before: FeedbackSnapshot, after: FeedbackSnapshot
 
 export class PullRequestCommentSweep {
 	private readonly cwd: string;
-	private readonly suppliedAuthority?: CurrentPullRequest;
+	private readonly suppliedAuthority?: SweepAuthority;
 	private readonly signal?: AbortSignal;
 	private readonly agentDir?: string;
 	private readonly exec: Exec;
@@ -548,14 +548,13 @@ export class PullRequestCommentSweep {
 
 	constructor(options: PullRequestCommentSweepOptions) {
 		this.cwd = requiredText(options.cwd, "cwd");
-		this.suppliedAuthority = options.authority;
+		this.suppliedAuthority = options.authority ? authorityFromCurrent(options.authority) : undefined;
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
 		this.exec = options.exec ?? spawnBounded;
 		this.load = options.loadCurrentPullRequest ?? loadCurrentPullRequest;
 		this.newRunId = options.newRunId ?? randomUUID;
 		this.pause = options.pause;
-		if (options.authority) authorityFromCurrent(options.authority);
 	}
 
 	private options(extra: Partial<ExecOptions> = {}): ExecOptions {
@@ -708,7 +707,7 @@ export class PullRequestCommentSweep {
 			const location = await this.location();
 			if (await this.loadIfPresent(location)) throw new Error("A recoverable comment sweep already exists; use resume");
 			if (!this.suppliedAuthority) throw new Error("Comment sweep start requires route authority");
-			const authority = authorityFromCurrent(this.suppliedAuthority);
+			const authority = this.suppliedAuthority;
 			if (authority.head.oid !== authority.target.remoteOid) throw new Error("Comment sweep requires PR head and remote lease to match");
 			if ((await this.localPaths()).length || await readHead(this.exec, this.options()) !== authority.head.oid) {
 				throw new Error("Comment sweep start requires a clean worktree at the PR head");
@@ -800,8 +799,19 @@ export class PullRequestCommentSweep {
 
 	async resume(): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
+			if (!this.suppliedAuthority) throw new Error("Comment sweep resume requires route authority");
+			const suppliedAuthority = this.suppliedAuthority;
 			const location = await this.location();
 			const state = await this.loadState(location);
+			const permittedHeads = new Set<string>();
+			if (state.attempts.push.state !== "applied") permittedHeads.add(state.original.lease);
+			if (
+				(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
+				state.publicationHead
+			) permittedHeads.add(state.publicationHead);
+			if (![...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head))) {
+				throw new Error("Comment sweep recovery does not match supplied route authority");
+			}
 			await this.reconcile(state);
 			state.attempts.resolutions = state.attempts.resolutions.filter(({ state: attempt }) => attempt !== "blocked");
 			if (state.attempts.push.state === "blocked") {

@@ -260,6 +260,40 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	assert.throws(() => readFileSync(recoveryPath, "utf8"), { code: "ENOENT" });
 });
 
+test("resume rejects another route authority in the same worktree without mutation", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	await workflow.start();
+	const recoveryPath = await workflow.recoveryPath();
+	const recovery = readFileSync(recoveryPath, "utf8");
+	const current = app.current();
+	const mismatched = new PullRequestCommentSweep({
+		cwd: app.root,
+		authority: {
+			...current,
+			id: "PR_99",
+			number: 99,
+			url: new URL("https://github.com/acme/project/pull/99"),
+			head: { ...current.head, ref: "other" },
+			target: { ...current.target, branch: "other", ref: "other" },
+		},
+		agentDir: app.agentDir,
+		exec: app.exec,
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: app.current() }),
+		newRunId: () => "33333333-3333-4333-8333-333333333333",
+		pause: async () => {},
+	});
+
+	await assert.rejects(mismatched.resume(), /supplied route authority/);
+	assert.equal(readFileSync(recoveryPath, "utf8"), recovery);
+	assert.deepEqual({
+		push: app.world.pushCalls,
+		thread: app.world.mutationCalls,
+		checks: app.world.checkCalls,
+	}, { push: 0, thread: 0, checks: 0 });
+});
+
 test("resume reconciles a lost push response, rotates the run, and never replays it", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
@@ -272,7 +306,7 @@ test("resume reconciles a lost push response, rotates the run, and never replays
 	git(app.root, "commit", "-m", "fix: address review");
 	await assert.rejects(workflow.publish(recorded.guard), /push response lost/);
 	assert.equal(app.world.pushCalls, 1);
-	const resumed = await workflow.resume();
+	const resumed = await app.workflow(["33333333-3333-4333-8333-333333333333"]).resume();
 	assert.equal(resumed.phase, "published");
 	assert.equal(resumed.attempts.push, "applied");
 	assert.equal(resumed.guard.epoch, 2);

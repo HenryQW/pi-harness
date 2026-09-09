@@ -639,11 +639,17 @@ test("keeps a queued follow-up until its exact prompt starts, then clears an unu
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		idle = true;
 		await app.settle(ctx);
-		await app.beforeStart("unrelated runId=22222222-2222-4222-8222-222222222222", ctx);
-		await app.settle(ctx);
-		assert.equal(loads, 2, "an unmatched prompt must not finish the queued workflow");
+		for (const prompt of [
+			`<skill name="pi-pr-fix-ci" location="/skills/fix-ci/SKILL.md">\n\nunrelated runId=prefix-${routeRunId}-suffix action=collect`,
+			`<skill name="pi-pr-comment-sweep" location="/skills/sweep/SKILL.md">\n\nrunId=${routeRunId} action=collect`,
+			`<skill name="pi-pr-fix-ci" location="/skills/fix-ci/SKILL.md">\n\nrunId=${routeRunId} action=publish`,
+		]) {
+			await app.beforeStart(prompt, ctx);
+			await app.settle(ctx);
+		}
+		assert.equal(loads, 2, "a substring or wrong helper identity must not finish the queued workflow");
 
-		await app.beforeStart(`expanded helper runId=${routeRunId} action=collect`, ctx);
+		await app.beforeStart(`<skill name="pi-pr-fix-ci" location="/skills/fix-ci/SKILL.md">\n\nrunId=${routeRunId} action=collect`, ctx);
 		await app.settle(ctx);
 		assert.equal(loads, 3);
 		assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));

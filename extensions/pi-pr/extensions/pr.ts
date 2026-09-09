@@ -13,6 +13,7 @@ import {
 	createPrCommandHandler,
 	type PrCommandDependencies,
 	type PrCommandInvocation,
+	type WorkflowPromptIdentity,
 	type WorkflowReservation,
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
@@ -139,7 +140,7 @@ type WorkflowContextBase = {
 	worktree: string;
 	controller: AbortController;
 	usedSinceSettlement: boolean;
-	promptQueued: boolean;
+	queuedPrompt?: WorkflowPromptIdentity;
 	conflictRetained: boolean;
 };
 type WorkflowContext =
@@ -173,6 +174,14 @@ function toolResult(value: unknown) {
 		content: [{ type: "text" as const, text: JSON.stringify(value) }],
 		details: value,
 	};
+}
+
+function matchesWorkflowPrompt(prompt: string, identity: WorkflowPromptIdentity): boolean {
+	const tokens = new Set(prompt.split(/\s+/).filter(Boolean));
+	const skillName = identity.skill.startsWith("skill:") ? identity.skill.slice("skill:".length) : "";
+	const matchesSkill = tokens.has(`/${identity.skill}`) ||
+		(skillName !== "" && tokens.has("<skill") && tokens.has(`name="${skillName}"`));
+	return matchesSkill && tokens.has(`runId=${identity.runId}`) && tokens.has(`action=${identity.action}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -295,7 +304,6 @@ export default function pullRequestExtension(
 			worktree,
 			controller: new AbortController(),
 			usedSinceSettlement: false,
-			promptQueued: false,
 			conflictRetained: false,
 		};
 		switch (reservation.route) {
@@ -352,9 +360,11 @@ export default function pullRequestExtension(
 		return common.runId;
 	};
 
-	const markWorkflowPromptQueued: NonNullable<PrCommandDependencies["markWorkflowPromptQueued"]> = (runId, queued) => {
-		if (workflowContext?.runId !== runId) throw new Error("PR workflow reservation is wrong or stale");
-		workflowContext.promptQueued = queued;
+	const markWorkflowPromptQueued: NonNullable<PrCommandDependencies["markWorkflowPromptQueued"]> = (identity, queued) => {
+		if (workflowContext?.runId !== identity.runId || workflowContext.route !== identity.route) {
+			throw new Error("PR workflow reservation is wrong or stale");
+		}
+		workflowContext.queuedPrompt = queued ? identity : undefined;
 	};
 
 	const releaseWorkflow: NonNullable<PrCommandDependencies["releaseWorkflow"]> = (runId, invocation) => {
@@ -642,8 +652,8 @@ export default function pullRequestExtension(
 
 	pi.on("before_agent_start", (event) => {
 		const selected = workflowContext;
-		if (selected?.promptQueued && event.prompt.includes(selected.runId)) {
-			selected.promptQueued = false;
+		if (selected?.queuedPrompt && matchesWorkflowPrompt(event.prompt, selected.queuedPrompt)) {
+			selected.queuedPrompt = undefined;
 		}
 	});
 
@@ -665,7 +675,7 @@ export default function pullRequestExtension(
 		if (!ctx.hasUI || !ctx.isIdle() || !context) return;
 		const selected = workflowContext;
 		const helperSettled = selected?.usedSinceSettlement ?? false;
-		const queuedHelperPending = selected?.promptQueued === true && !helperSettled;
+		const queuedHelperPending = selected?.queuedPrompt !== undefined && !helperSettled;
 		let workflowSettled = false;
 		let createWorkflowSettled = false;
 		for (const [invocation, phase] of activeInvocations) {
