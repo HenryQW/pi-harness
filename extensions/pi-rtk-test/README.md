@@ -1,16 +1,17 @@
 # `@henryqw/pi-rtk-test`
 
-Use RTK for direct `pnpm test` Bash tool calls from Pi.
+Keep noisy `pnpm test` output out of Pi's model context.
+
+The extension routes direct `pnpm test` Bash calls through RTK's test filter. Pi receives failures and a compact result instead of the complete test log.
 
 ## Requirements
 
-- Install `rtk` and its Pi agent hook.
-
-This package does not install or update RTK:
+Install Rust Token Killer (`rtk`) on Pi's `PATH`. This extension does not install or update RTK.
 
 ```bash
 brew install rtk
 rtk --version
+
 rtk init -g --agent pi
 ```
 
@@ -19,8 +20,6 @@ rtk init -g --agent pi
 ```bash
 pi install npm:@henryqw/pi-rtk-test
 ```
-
-RTK's own Pi extension is optional.
 
 ## What it rewrites
 
