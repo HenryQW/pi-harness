@@ -98,6 +98,8 @@ Inspect the current candidate files before assigning ownership. Abstain if targe
 
 ## Flow
 
+![Flowchart showing session_search routing: preparation, discovery, and browse use the index; scroll and read retrieve saved transcripts directly.](docs/session-search-routing.svg)
+
 Search makes no model calls.
 
 ### Query and index
