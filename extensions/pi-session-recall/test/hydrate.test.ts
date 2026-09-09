@@ -120,6 +120,7 @@ test("linear session: window and read", () => {
 	const r = readSession(p);
 	assert.equal(r.truncated, false);
 	assert.equal(r.totalMessages, 4);
+	assert.equal(r.branchTip, "e04");
 });
 
 test("fork tree: window counts only messages on anchor branch", () => {
@@ -263,6 +264,44 @@ test("parentId cycle terminates (corrupt file)", () => {
 	// Must not hang; cycle broken at revisit.
 	const r = readSession(p);
 	assert.ok(r.messages.length >= 1);
+});
+
+test("preparation read filters before truncation and returns the selected branch tip", () => {
+	const p = write("preparation.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		{ type: "message", id: "u1", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "thinking", thinking: "hidden thought" }, { type: "text", text: "first" }] } },
+		{ type: "message", id: "tool", parentId: "u1", timestamp: "t2", message: { role: "toolResult", content: [{ type: "text", text: "hidden tool output" }] } },
+		{ type: "message", id: "empty-assistant", parentId: "tool", timestamp: "t3", message: { role: "assistant", content: [{ type: "thinking", thinking: "thinking only" }] } },
+		{ type: "message", id: "blank-user", parentId: "empty-assistant", timestamp: "t4", message: { role: "user", content: [{ type: "text", text: "  " }] } },
+		{ type: "message", id: "middle", parentId: "blank-user", timestamp: "t5", message: { role: "assistant", content: "middle" } },
+		{ type: "message", id: "last", parentId: "middle", timestamp: "t6", message: { role: "user", content: [{ type: "text", text: "last" }, { type: "thinking", thinking: "more hidden thought" }] } },
+		{ type: "model_change", id: "tip", parentId: "last", timestamp: "t7", provider: "x", modelId: "y" },
+	]);
+
+	const result = readSession(p, 1, 1, { userAssistantTextOnly: true });
+	assert.equal(result.branchTip, "tip");
+	assert.equal(result.totalMessages, 3);
+	assert.equal(result.truncated, true);
+	assert.deepEqual(result.messages.map((message) => [message.entryId, message.content]), [
+		["u1", "first"],
+		["last", "last"],
+	]);
+	assert.ok(!JSON.stringify(result).includes("hidden"));
+});
+
+test("preparation read returns a null branch tip when no user/assistant text is hydratable", () => {
+	const p = write("preparation-empty.jsonl", [
+		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
+		{ type: "message", id: "tool", parentId: null, timestamp: "t1", message: { role: "toolResult", content: [{ type: "text", text: "tool only" }] } },
+		{ type: "message", id: "thinking", parentId: "tool", timestamp: "t2", message: { role: "assistant", content: [{ type: "thinking", thinking: "thinking only" }] } },
+	]);
+
+	assert.deepEqual(readSession(p, 1, 1, { userAssistantTextOnly: true }), {
+		messages: [],
+		totalMessages: 0,
+		truncated: false,
+		branchTip: null,
+	});
 });
 
 test("read truncation head/tail + totals", () => {

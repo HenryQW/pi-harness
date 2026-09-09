@@ -9,15 +9,18 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import { getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
+import { getPreparationRows, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getWindow, readSession } from "./hydrate.ts";
 import { MAX_QUERY_CHARS } from "./query.ts";
-import type { WindowMessage } from "./types.ts";
+import { inventoryRepository, type RepositoryInventory } from "./repository-inventory.ts";
+import type { PreparationSessionRow, WindowMessage } from "./types.ts";
 
 const dbPath = () => join(extensionConfigDir("pi-session-recall"), "index.db");
 const sessionsDir = () => join(getAgentDir(), "sessions");
 
 const OUTPUT_CHAR_BUDGET = 50_000;
+const INVENTORY_CHAR_BUDGET = 10_000;
+const ERROR_MESSAGE_CHARS = 512;
 
 function clamp(n: number | undefined, min: number, max: number, dflt: number): number {
 	if (typeof n !== "number" || !Number.isFinite(n)) return dflt;
@@ -78,7 +81,185 @@ function boundContent(
 	return cap === null ? build(null) : { ...build(cap), contentTruncated: true };
 }
 
+type InventoryCollection = "packageScripts" | "executableScripts" | "skills" | "agentInstructions";
+const INVENTORY_COLLECTIONS: InventoryCollection[] = ["packageScripts", "executableScripts", "skills", "agentInstructions"];
+
+function inventoryShape(
+	source: RepositoryInventory,
+	kept: Record<InventoryCollection, unknown[]>,
+): Record<string, unknown> {
+	const omittedCounts = {
+		packageScripts: source.packageScripts.length - kept.packageScripts.length,
+		executableScripts: source.executableScripts.length - kept.executableScripts.length,
+		skills: source.skills.length - kept.skills.length,
+		agentInstructions: source.agentInstructions.length - kept.agentInstructions.length,
+	};
+	return {
+		available: source.available,
+		...(source.reason ? { reason: source.reason } : {}),
+		...(source.provenance ? { provenance: source.provenance } : {}),
+		worktreeVerified: source.worktreeVerified,
+		packageScripts: kept.packageScripts,
+		executableScripts: kept.executableScripts,
+		skills: kept.skills,
+		agentInstructions: kept.agentInstructions,
+		truncated: Object.values(omittedCounts).some((count) => count > 0),
+		omittedCounts,
+	};
+}
+
+/** Keep stable prefixes from every inventory collection within one bounded,
+ * round-robin allocation so a large first collection cannot starve the rest. */
+function boundInventory(source: RepositoryInventory, maxChars: number): Record<string, unknown> {
+	const all: Record<InventoryCollection, unknown[]> = {
+		packageScripts: source.packageScripts,
+		executableScripts: source.executableScripts,
+		skills: source.skills,
+		agentInstructions: source.agentInstructions,
+	};
+	const full = inventoryShape(source, all);
+	if (JSON.stringify(full).length <= maxChars) return full;
+
+	const kept: Record<InventoryCollection, unknown[]> = {
+		packageScripts: [],
+		executableScripts: [],
+		skills: [],
+		agentInstructions: [],
+	};
+	const blocked = new Set<InventoryCollection>();
+	for (;;) {
+		let advanced = false;
+		for (const key of INVENTORY_COLLECTIONS) {
+			if (blocked.has(key) || kept[key].length >= all[key].length) continue;
+			const candidate = { ...kept, [key]: [...kept[key], all[key][kept[key].length]] };
+			if (JSON.stringify(inventoryShape(source, candidate)).length <= maxChars) {
+				kept[key] = candidate[key];
+				advanced = true;
+			} else {
+				blocked.add(key);
+			}
+		}
+		if (!advanced) break;
+	}
+	return inventoryShape(source, kept);
+}
+
+interface PreparedSession {
+	metadata: Record<string, unknown>;
+	messages: WindowMessage[];
+}
+
+function hydrationError(error: unknown): { kind: "missing" | "oversized" | "unreadable"; message: string } {
+	const message = (error instanceof Error ? error.message : String(error)).slice(0, ERROR_MESSAGE_CHARS);
+	const code = (error as NodeJS.ErrnoException)?.code;
+	return {
+		kind: code === "ENOENT" ? "missing" : message.includes("exceeds 32 MiB snapshot limit") ? "oversized" : "unreadable",
+		message,
+	};
+}
+
+function hydratePreparationSession(row: PreparationSessionRow): PreparedSession {
+	const indexed = {
+		path: row.path,
+		cwd: row.cwd,
+		name: row.name ?? null,
+		startedAt: row.startedAt ?? null,
+		lineageId: row.lineageId,
+	};
+	try {
+		const hydrated = readSession(row.path, 20, 10, { userAssistantTextOnly: true });
+		return {
+			metadata: {
+				...indexed,
+				branchTip: hydrated.branchTip,
+				totalMessages: hydrated.totalMessages,
+				truncated: hydrated.truncated,
+				contentTruncated: false,
+				messages: [],
+			},
+			messages: hydrated.messages,
+		};
+	} catch (error) {
+		return {
+			metadata: {
+				...indexed,
+				branchTip: null,
+				totalMessages: null,
+				truncated: false,
+				contentTruncated: false,
+				messages: [],
+				error: hydrationError(error),
+			},
+			messages: [],
+		};
+	}
+}
+
+function allocatePreparationMessages(session: PreparedSession, budget: number): Record<string, unknown> {
+	if (session.messages.length === 0) return session.metadata;
+	if (JSON.stringify(session.messages).length - 2 <= budget) {
+		return { ...session.metadata, messages: session.messages };
+	}
+	const maxLen = Math.max(...session.messages.map((message) => message.content.length), 0);
+	const cap = maxFittingCap(maxLen, budget + 2, (value) => truncateContent(session.messages, value));
+	return {
+		...session.metadata,
+		contentTruncated: true,
+		messages: cap === null ? [] : truncateContent(session.messages, cap),
+	};
+}
+
+function buildPreparationResult(
+	kind: "repository" | "all",
+	requestedLimit: number,
+	gitRoot: string | undefined,
+	syncResult: ReturnType<typeof syncSessions>,
+	rows: PreparationSessionRow[],
+	repositoryInventory: RepositoryInventory,
+): Record<string, unknown> {
+	const sync = {
+		walkComplete: syncResult.walkComplete,
+		backlogRemaining: syncResult.backlogRemaining,
+		complete: syncResult.walkComplete && syncResult.backlogRemaining === 0,
+	};
+	const sessions = rows.map(hydratePreparationSession);
+	const emptyCollections: Record<InventoryCollection, unknown[]> = {
+		packageScripts: [],
+		executableScripts: [],
+		skills: [],
+		agentInstructions: [],
+	};
+	const minimumInventory = inventoryShape(repositoryInventory, emptyCollections);
+	const build = (
+		preparedSessions: Record<string, unknown>[],
+		inventory: Record<string, unknown>,
+		contentTruncated: boolean,
+	) => ({
+		mode: "prepare-pattern-miner",
+		scope: { kind, gitRoot: gitRoot ?? null, requestedLimit, sampledCount: preparedSessions.length },
+		sync,
+		sessions: preparedSessions,
+		inventory,
+		contentTruncated,
+	});
+
+	const metadataOnlyLength = JSON.stringify(build(sessions.map((session) => session.metadata), minimumInventory, false)).length;
+	if (metadataOnlyLength > OUTPUT_CHAR_BUDGET) throw new Error("Pattern-miner preparation metadata exceeds output budget.");
+	const inventoryBudget = Math.min(
+		INVENTORY_CHAR_BUDGET,
+		JSON.stringify(minimumInventory).length + OUTPUT_CHAR_BUDGET - metadataOnlyLength,
+	);
+	const inventory = boundInventory(repositoryInventory, inventoryBudget);
+	const baseLength = JSON.stringify(build(sessions.map((session) => session.metadata), inventory, false)).length;
+	const perSessionBudget = sessions.length === 0 ? 0 : Math.floor((OUTPUT_CHAR_BUDGET - baseLength) / sessions.length);
+	const allocated = sessions.map((session) => allocatePreparationMessages(session, perSessionBudget));
+	const contentTruncated = allocated.some((session) => session.contentTruncated === true);
+	return build(allocated, inventory, contentTruncated);
+}
+
 interface ToolParams {
+	operation?: "prepare-pattern-miner";
+	scope?: "repository" | "all";
 	query?: string;
 	sessionId?: string;
 	aroundMessageId?: string;
@@ -90,6 +271,7 @@ interface ToolParams {
 
 const DESCRIPTION = `Search past Pi sessions locally with FTS5; returns stored messages.
 
+- \`operation: "prepare-pattern-miner"\` + \`scope\`: prepare one bounded corpus and repository inventory.
 - \`query\`: discover matches. Prefer distinctive identifiers or uncommon terms; multi-word queries are AND. Use \`OR\`/\`NOT\` for Boolean queries and quotes only when exact wording is known.
 - \`sessionId\` + \`aroundMessageId\`: scroll ±\`window\`; retain \`branchTip\` across forks.
 - \`sessionId\` alone: read; no args: browse recent sessions.
@@ -117,12 +299,14 @@ export default function (pi: ExtensionAPI): void {
 			"Use session_search only when the user explicitly asks about past Pi sessions, historical decisions, or repeated work not available in the current conversation. Do not use it for current-session continuation or ordinary repository inspection.",
 		],
 		parameters: Type.Object({
+			operation: Type.Optional(StringEnum(["prepare-pattern-miner"] as const)),
+			scope: Type.Optional(StringEnum(["repository", "all"] as const)),
 			query: Type.Optional(Type.String({ description: "Search query (discovery). FTS5 syntax supported." })),
 			sessionId: Type.Optional(Type.String({ description: "Absolute path of the session file." })),
 			aroundMessageId: Type.Optional(Type.String({ description: "Anchor entry id for scroll mode — centers the window (with sessionId)." })),
 			branchTip: Type.Optional(Type.String({ description: "Branch tip entry id from a previous response — selects which branch of a forked session to scroll; aroundMessageId must lie on it." })),
 			window: Type.Optional(Type.Number({ description: "Scroll window radius, [1,20], default 5." })),
-			limit: Type.Optional(Type.Number({ description: "Max results, [1,10], default 3." })),
+			limit: Type.Optional(Type.Number({ description: "Max results, [1,10]. Defaults to 10 for preparation and 3 otherwise." })),
 			detail: Type.Optional(StringEnum(["adaptive", "full"] as const)),
 		}),
 		renderResult(result, { expanded }, theme) {
@@ -140,8 +324,39 @@ export default function (pi: ExtensionAPI): void {
 				invalidate() {},
 			};
 		},
-		async execute(_toolCallId, rawParams: ToolParams, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, rawParams: ToolParams, signal, _onUpdate, ctx) {
 			try {
+				if (rawParams.operation !== undefined && rawParams.operation !== "prepare-pattern-miner") {
+					throw new Error("Unsupported session_search operation.");
+				}
+				if (rawParams.scope !== undefined && rawParams.operation === undefined) {
+					throw new Error("scope requires operation: prepare-pattern-miner.");
+				}
+				if (rawParams.operation === "prepare-pattern-miner") {
+					const incompatible = (["query", "sessionId", "aroundMessageId", "branchTip", "window", "detail"] as const)
+						.filter((key) => rawParams[key] !== undefined);
+					if (incompatible.length > 0) {
+						throw new Error(`prepare-pattern-miner does not accept: ${incompatible.join(", ")}.`);
+					}
+					if (rawParams.scope !== "repository" && rawParams.scope !== "all") {
+						throw new Error("prepare-pattern-miner requires scope: repository or all.");
+					}
+					const limit = clamp(rawParams.limit, 1, 10, 10);
+					const inventory = await inventoryRepository(
+						pi,
+						{ cwd: ctx.cwd, signal },
+						rawParams.scope === "repository" ? "required" : "optional",
+					);
+					const sync = syncSessions(sessionsDir(), dbPath());
+					const currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
+					const rows = getPreparationRows(dbPath(), {
+						limit,
+						...(rawParams.scope === "repository" ? { repositoryRoot: inventory.gitRoot! } : {}),
+						currentSessionPath,
+					});
+					return textResult(buildPreparationResult(rawParams.scope, limit, inventory.gitRoot, sync, rows, inventory));
+				}
+
 				// LLMs sometimes send numeric ids/queries despite the string schema.
 				const params: ToolParams = {
 					query: rawParams.query != null ? String(rawParams.query) : undefined,
@@ -199,6 +414,7 @@ export default function (pi: ExtensionAPI): void {
 							(cap) => ({
 								mode: "read",
 								sessionId,
+								branchTip: r.branchTip,
 								totalMessages: r.totalMessages,
 								truncated: r.truncated,
 								messages: cap === null ? [] : truncateContent(r.messages, cap),

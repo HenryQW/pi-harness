@@ -51,13 +51,19 @@ function searchOutput(found: boolean) {
 			headRefOid: head,
 		},
 	}] : [];
-	return JSON.stringify({ data: { search: {
-		issueCount: edges.length,
-		edges,
-		pageInfo: {
-			hasNextPage: false,
-			startCursor: edges[0]?.cursor ?? null,
-			endCursor: edges[0]?.cursor ?? null,
+	return JSON.stringify({ data: { repository: {
+		nameWithOwner: "acme/project",
+		ref: {
+			name: "feature",
+			associatedPullRequests: {
+				totalCount: edges.length,
+				edges,
+				pageInfo: {
+					hasNextPage: false,
+					startCursor: edges[0]?.cursor ?? null,
+					endCursor: edges[0]?.cursor ?? null,
+				},
+			},
 		},
 	} } });
 }
@@ -151,7 +157,7 @@ test("creates with fully pinned gh arguments and verifies sole canonical metadat
 		calls.push({ command, args: [...args], stdin: options.stdin });
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-			if (query.includes("search(query:")) return result(searchOutput(searches++ > 0));
+			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
 			return result(baseOutput());
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
@@ -252,7 +258,7 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 	const exec: Exec = async (command, args) => {
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-			if (query.includes("search(query:")) return result(searchOutput(searches++ > 0));
+			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
 			return result(baseOutput());
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") {

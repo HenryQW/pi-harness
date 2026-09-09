@@ -19,12 +19,12 @@ import type {
 } from "./pr-routing.ts";
 
 const EXEC_TIMEOUT_MS = 10_000;
-const PR_SEARCH_PAGE_SIZE = 100;
-const PR_SEARCH_CAP = 1_000;
-const PR_SEARCH_MAX_PAGES = PR_SEARCH_CAP / PR_SEARCH_PAGE_SIZE;
+const PR_DISCOVERY_PAGE_SIZE = 100;
+const PR_DISCOVERY_CAP = 1_000;
+const PR_DISCOVERY_MAX_PAGES = PR_DISCOVERY_CAP / PR_DISCOVERY_PAGE_SIZE;
 const PR_FIELDS = "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
 const PR_PUBLICATION_FIELDS = "number,url,state,baseRefName,headRefName,headRefOid,headRepository,title,body";
-const PR_SEARCH_QUERY = "query($searchQuery:String!,$endCursor:String){search(query:$searchQuery,type:ISSUE,first:100,after:$endCursor){issueCount edges{cursor node{__typename ...on PullRequest{number url state baseRepository{nameWithOwner}headRepository{nameWithOwner}headRefName headRefOid}}}pageInfo{hasNextPage startCursor endCursor}}}";
+const PR_DISCOVERY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!,$endCursor:String){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name associatedPullRequests(first:100,after:$endCursor){totalCount edges{cursor node{__typename number url state baseRepository{nameWithOwner}headRepository{nameWithOwner}headRefName headRefOid}}pageInfo{hasNextPage startCursor endCursor}}}}}";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
 const BASE_BRANCH_POLICY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name branchProtectionRule{requiresStrictStatusChecks}}}}";
@@ -195,7 +195,7 @@ type SearchSelection =
 	| { kind: "target-invalid" };
 
 type SearchPage = {
-	issueCount: number;
+	totalCount: number;
 	candidates: SearchPullRequest[];
 	cursors: string[];
 	hasNextPage: boolean;
@@ -662,18 +662,29 @@ function searchPullRequest(value: unknown, host: string): SearchPullRequest {
 	};
 }
 
-function parseSearchPage(output: string, host: string): SearchPage {
+function parseSearchPage(output: string, pushTarget: Pick<PushTarget, "repository" | "ref">): SearchPage | null {
 	const page = parseJson(output, "Find pull requests");
 	if (!isRecord(page)) fail("Find pull requests", "invalid GitHub CLI output");
 	if (page.errors !== undefined) {
 		if (!Array.isArray(page.errors)) fail("Find pull requests", "invalid GitHub CLI output");
 		if (page.errors.length) fail("Find pull requests", "GitHub GraphQL returned errors");
 	}
-	const search = isRecord(page.data) ? page.data.search : undefined;
+	const repository = isRecord(page.data) ? page.data.repository : undefined;
+	if (!isRecord(repository)) fail("Find pull requests", "invalid GitHub CLI output");
 	if (
-		!isRecord(search) || typeof search.issueCount !== "number" ||
-		!Number.isSafeInteger(search.issueCount) || search.issueCount < 0 ||
-		!Array.isArray(search.edges) || search.edges.length > PR_SEARCH_PAGE_SIZE ||
+		normalizeRepository(repositoryName(repository.nameWithOwner, "Find pull requests", "repository.nameWithOwner")) !==
+		pushTarget.repository.normalizedName
+	) fail("Find pull requests", "repository does not match push target");
+	if (repository.ref === null) return null;
+	if (!isRecord(repository.ref)) fail("Find pull requests", "invalid GitHub CLI output");
+	if (text(repository.ref.name, "Find pull requests", "ref.name") !== pushTarget.ref) {
+		fail("Find pull requests", "ref does not match push target");
+	}
+	const search = repository.ref.associatedPullRequests;
+	if (
+		!isRecord(search) || typeof search.totalCount !== "number" ||
+		!Number.isSafeInteger(search.totalCount) || search.totalCount < 0 ||
+		!Array.isArray(search.edges) || search.edges.length > PR_DISCOVERY_PAGE_SIZE ||
 		!isRecord(search.pageInfo)
 	) fail("Find pull requests", "invalid GitHub CLI output");
 	const candidates: SearchPullRequest[] = [];
@@ -681,7 +692,7 @@ function parseSearchPage(output: string, host: string): SearchPage {
 	for (const edge of search.edges) {
 		if (!isRecord(edge)) fail("Find pull requests", "invalid GitHub CLI output");
 		cursors.push(text(edge.cursor, "Find pull requests", "cursor"));
-		candidates.push(searchPullRequest(edge.node, host));
+		candidates.push(searchPullRequest(edge.node, pushTarget.repository.host));
 	}
 	if (new Set(cursors).size !== cursors.length) fail("Find pull requests", "duplicate candidate cursor");
 	const { hasNextPage, startCursor, endCursor } = search.pageInfo;
@@ -692,7 +703,7 @@ function parseSearchPage(output: string, host: string): SearchPage {
 		fail("Find pull requests", "invalid search pageInfo");
 	}
 	return {
-		issueCount: search.issueCount,
+		totalCount: search.totalCount,
 		candidates,
 		cursors,
 		hasNextPage,
@@ -1540,26 +1551,31 @@ async function loadObservedPullRequest(
 async function enumerateSearchPullRequests(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	host: string,
-	searchQuery: string,
-): Promise<SearchPullRequest[]> {
+	target: Pick<PushTarget, "repository" | "ref">,
+): Promise<SearchPullRequest[] | null> {
+	const [owner, name] = target.repository.nameWithOwner.split("/");
 	const candidates: SearchPullRequest[] = [];
 	const cursors = new Set<string>();
-	let issueCount: number | null = null;
+	let totalCount: number | null = null;
 	let endCursor: string | null = null;
-	for (let pageIndex = 0; pageIndex < PR_SEARCH_MAX_PAGES; pageIndex += 1) {
+	for (let pageIndex = 0; pageIndex < PR_DISCOVERY_MAX_PAGES; pageIndex += 1) {
 		const args = [
-			"api", "graphql", "--hostname", host,
-			"-f", `query=${PR_SEARCH_QUERY}`,
-			"-F", `searchQuery=${searchQuery}`,
+			"api", "graphql", "--hostname", target.repository.host,
+			"-f", `query=${PR_DISCOVERY_QUERY}`,
+			"-F", `owner=${owner}`,
+			"-F", `name=${name}`,
+			"-F", `qualifiedName=refs/heads/${target.ref}`,
 		];
 		if (endCursor !== null) args.push("-F", `endCursor=${endCursor}`);
 		const result = await execute(pi, context, "Find pull requests", "gh", args);
-		const page = parseSearchPage(result.stdout, host);
-		if (issueCount !== null && page.issueCount !== issueCount) fail("Find pull requests", "inconsistent search result pages");
-		issueCount = page.issueCount;
-		if (issueCount > PR_SEARCH_CAP) fail("Find pull requests", "GitHub search result cap reached");
-		const expectedPageSize = Math.min(PR_SEARCH_PAGE_SIZE, Math.max(0, issueCount - candidates.length));
+		const page = parseSearchPage(result.stdout, target);
+		if (page === null) return null;
+		if (totalCount !== null && page.totalCount !== totalCount) {
+			fail("Find pull requests", "inconsistent search result pages");
+		}
+		totalCount = page.totalCount;
+		if (totalCount > PR_DISCOVERY_CAP) fail("Find pull requests", "GitHub pull request result cap reached");
+		const expectedPageSize = Math.min(PR_DISCOVERY_PAGE_SIZE, Math.max(0, totalCount - candidates.length));
 		if (page.candidates.length !== expectedPageSize) fail("Find pull requests", "incomplete search results");
 		for (const cursor of page.cursors) {
 			if (cursors.has(cursor)) fail("Find pull requests", "duplicate candidate cursor");
@@ -1569,13 +1585,13 @@ async function enumerateSearchPullRequests(
 		if (new Set(candidates.map(({ url }) => url.href.toLowerCase())).size !== candidates.length) {
 			fail("Find pull requests", "duplicate candidate url");
 		}
-		const hasMore = candidates.length < issueCount;
+		const hasMore = candidates.length < totalCount;
 		if (page.hasNextPage !== hasMore) fail("Find pull requests", "incomplete search results");
 		if (!hasMore) return candidates;
 		if (page.endCursor === null) fail("Find pull requests", "invalid search pageInfo");
 		endCursor = page.endCursor;
 	}
-	return fail("Find pull requests", "GitHub search result cap reached");
+	return fail("Find pull requests", "GitHub pull request result cap reached");
 }
 
 export async function findExactHeadPullRequests(
@@ -1586,8 +1602,11 @@ export async function findExactHeadPullRequests(
 	const host = text(target.host, "Find pull requests", "host").toLowerCase();
 	const repository = repositoryName(target.repository, "Find pull requests", "head repository");
 	const ref = text(target.ref, "Find pull requests", "head ref");
-	const owner = repository.split("/")[0]!;
-	const candidates = await enumerateSearchPullRequests(pi, context, host, `is:pr is:open head:${owner}:${ref}`);
+	const candidates = await enumerateSearchPullRequests(pi, context, {
+		repository: { host, nameWithOwner: repository, normalizedName: normalizeRepository(repository) },
+		ref,
+	});
+	if (candidates === null) return fail("Find pull requests", "published head ref is unavailable");
 	return candidates.filter((candidate) =>
 		candidate.lifecycle === "open" && candidate.headRepository !== null &&
 		normalizeRepository(candidate.headRepository) === normalizeRepository(repository) && candidate.headRef === ref
@@ -1610,9 +1629,10 @@ async function searchPullRequests(
 	context: PullRequestLoadContext,
 	pushTarget: PushTarget,
 ): Promise<SearchSelection> {
-	const headOwner = pushTarget.repository.nameWithOwner.split("/")[0]!;
-	const searchQuery = `is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${headOwner}:${pushTarget.ref}`;
-	const candidates = await enumerateSearchPullRequests(pi, context, pushTarget.repository.host, searchQuery);
+	const candidates = await enumerateSearchPullRequests(pi, context, pushTarget);
+	if (candidates === null) {
+		return pushTarget.remoteHeadOid === null ? { kind: "none" } : { kind: "target-invalid" };
+	}
 	const selected = selectSearchPullRequest(candidates, pushTarget);
 	if (selected.kind !== "candidate") return selected;
 	const loaded = await execute(pi, context, "Find pull requests", "gh", [

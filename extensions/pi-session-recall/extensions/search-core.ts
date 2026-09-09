@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildFtsQueryPlan, buildLikeQueryPlan, foldCase, nearLike } from "./query.ts";
 import { MAX_SESSION_FILE_BYTES, readTranscriptEntries } from "./transcript.ts";
-import type { SearchHit, SessionRow, SyncResult } from "./types.ts";
+import type { PreparationSessionRow, SearchHit, SessionRow, SyncResult } from "./types.ts";
 export const DEFAULT_SYNC_CAP = 50;
 /** Hard ceiling for the internal/test `opts.cap` work bound of syncSessions. */
 const MAX_SYNC_CAP = DEFAULT_SYNC_CAP * 10;
@@ -692,7 +692,76 @@ export function searchIndex(
 	}
 }
 
-// --- Browse ---
+// --- Preparation / browse ---
+
+export interface PreparationRowOptions {
+	limit: number;
+	/** Canonical repository root. Omit to sample all indexed sessions. */
+	repositoryRoot?: string;
+	currentSessionPath?: string;
+}
+
+/** Select deterministic, repository-scoped pattern-miner candidates from the
+ * existing index. Scope, current-session exclusion, and one-hop lineage
+ * collapse all happen before the sample limit. */
+export function getPreparationRows(
+	dbPath: string,
+	opts: PreparationRowOptions,
+): PreparationSessionRow[] {
+	const clauses: string[] = [];
+	const params: string[] = [];
+	if (opts.repositoryRoot !== undefined) {
+		const prefix = opts.repositoryRoot.endsWith(path.sep)
+			? opts.repositoryRoot
+			: opts.repositoryRoot + path.sep;
+		clauses.push("(s.cwd = ? OR substr(s.cwd, 1, length(?)) = ?)");
+		params.push(opts.repositoryRoot, prefix, prefix);
+	}
+	if (opts.currentSessionPath !== undefined) {
+		clauses.push("s.path <> ?");
+		params.push(opts.currentSessionPath);
+	}
+	const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+	const db = openDb(dbPath);
+	try {
+		const rows = db.prepare(`
+			WITH eligible AS (
+				SELECT s.path, s.cwd, s.name, s.started_at, s.preview,
+					CASE
+						WHEN s.parent_session IS NULL THEN s.path
+						WHEN parent.path <> s.path AND parent.parent_session = s.path
+							THEN min(s.path, parent.path)
+						ELSE s.parent_session
+					END AS lineage_id
+				FROM sessions s
+				LEFT JOIN sessions parent ON parent.path = s.parent_session
+				${where}
+			), ranked AS (
+				SELECT *, ROW_NUMBER() OVER (
+					PARTITION BY lineage_id
+					ORDER BY CASE WHEN path = lineage_id THEN 0 ELSE 1 END,
+						started_at DESC, path
+				) AS rn
+				FROM eligible
+			)
+			SELECT path, cwd, name, started_at, preview, lineage_id
+			FROM ranked
+			WHERE rn = 1
+			ORDER BY started_at DESC, path
+			LIMIT ?
+		`).all(...params, opts.limit) as any[];
+		return rows.map((r) => ({
+			path: r.path,
+			cwd: r.cwd ?? "",
+			name: r.name ?? undefined,
+			startedAt: r.started_at ?? undefined,
+			preview: r.preview ?? undefined,
+			lineageId: r.lineage_id,
+		}));
+	} finally {
+		db.close();
+	}
+}
 
 export function getSessionRows(dbPath: string, limit: number): SessionRow[] {
 	const db = openDb(dbPath);

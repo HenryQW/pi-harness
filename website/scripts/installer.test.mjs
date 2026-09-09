@@ -23,7 +23,10 @@ function writeExecutable(path, source) {
   writeFileSync(path, source, { mode: 0o755 });
 }
 
-function withInstaller(piSource, herdrSource, callback) {
+function withInstaller(piSource, herdrSource, callback, {
+  piLatest = "0.85.1",
+  herdrLatest = "0.7.4",
+} = {}) {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "pi-harness-installer-"));
   const binDirectory = join(temporaryDirectory, "bin");
   const logPath = join(temporaryDirectory, "commands.log");
@@ -32,17 +35,24 @@ function withInstaller(piSource, herdrSource, callback) {
     mkdirSync(binDirectory);
     writeExecutable(join(binDirectory, "pi"), piSource);
     writeExecutable(join(binDirectory, "herdr"), herdrSource);
-    writeExecutable(join(binDirectory, "curl"), `#!/bin/sh\nprintf 'curl\\n' >> "$PI_HARNESS_TEST_LOG"\nexit 1\n`);
+    writeExecutable(join(binDirectory, "curl"), `#!/bin/sh
+case "$*" in
+  *https://pi.dev/api/installer/releases/latest*) printf '{"version":"${piLatest}"}\\n' ;;
+  *https://herdr.dev/latest.json*) printf '{"version":"${herdrLatest}"}\\n' ;;
+  *) exit 1 ;;
+esac
+`);
 
     callback({
       commands: () => readFileSync(logPath, "utf8").trim().split("\n"),
-      runInstaller: () => spawnSync("sh", [installerPath, "--all"], {
+      runInstaller: (...args) => spawnSync("sh", [installerPath, ...(args.length ? args : ["--all"])], {
         cwd: temporaryDirectory,
         encoding: "utf8",
         env: {
           ...process.env,
           HOME: temporaryDirectory,
           PATH: `${binDirectory}:${process.env.PATH}`,
+          PI_HARNESS_TEST_DIR: temporaryDirectory,
           PI_HARNESS_TEST_LOG: logPath,
           TERM: "dumb",
         },
@@ -51,6 +61,21 @@ function withInstaller(piSource, herdrSource, callback) {
   } finally {
     rmSync(temporaryDirectory, { force: true, recursive: true });
   }
+}
+
+function updatableTool(name, current, latest) {
+  return `#!/bin/sh
+printf '${name} %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"
+state="$PI_HARNESS_TEST_DIR/${name}-version"
+case "$1" in
+  --version)
+    version='${current}'
+    if [ -f "$state" ]; then IFS= read -r version < "$state"; fi
+    printf '${name} %s\\n' "$version"
+    ;;
+  update) printf '${latest}\\n' > "$state" ;;
+esac
+`;
 }
 
 const compatiblePi = `#!/bin/sh\nprintf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nprintf 'pi 0.85.1\\n'\n`;
@@ -94,6 +119,58 @@ test("all mode accepts Pi 0.85.1 and Herdr 0.7.4, then installs every extension"
       ...names.map((name) => `pi install npm:${name}`),
     ]);
   });
+});
+
+test("update flag approves available Pi and Herdr updates", () => {
+  const names = collectInstallablePackages(repoRoot);
+  const pi = updatableTool("pi", "0.85.1", "0.85.2");
+  const herdr = updatableTool("herdr", "0.8.2", "0.9.0");
+
+  withInstaller(pi, herdr, ({ commands, runInstaller }) => {
+    assert.equal(runInstaller("--all", "--update").status, 0);
+    assert.deepEqual(commands(), [
+      "pi --version",
+      "pi update --self",
+      "pi --version",
+      "herdr --version",
+      "herdr update",
+      "herdr --version",
+      ...names.map((name) => `pi install npm:${name}`),
+    ]);
+  }, { piLatest: "0.85.2", herdrLatest: "0.9.0" });
+});
+
+test("an approved update failure stops before extension installation", () => {
+  const pi = `#!/bin/sh
+printf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"
+case "$1" in
+  --version) printf 'pi 0.85.1\\n' ;;
+  update) exit 1 ;;
+esac
+`;
+
+  withInstaller(pi, compatibleHerdr, ({ commands, runInstaller }) => {
+    const result = runInstaller("--all", "--update");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Pi update failed/);
+    assert.deepEqual(commands(), ["pi --version", "pi update --self"]);
+  }, { piLatest: "0.85.2" });
+});
+
+test("non-interactive mode skips an available update without consent", () => {
+  const names = collectInstallablePackages(repoRoot);
+  const herdr = updatableTool("herdr", "0.8.2", "0.9.0");
+
+  withInstaller(compatiblePi, herdr, ({ commands, runInstaller }) => {
+    const result = runInstaller();
+    assert.equal(result.status, 0);
+    assert.match(result.stderr, /Skipping the Herdr update because no interactive terminal is available/);
+    assert.deepEqual(commands(), [
+      "pi --version",
+      "herdr --version",
+      ...names.map((name) => `pi install npm:${name}`),
+    ]);
+  }, { herdrLatest: "0.9.0" });
 });
 
 test("a broken existing Pi stops before extension installation", () => {

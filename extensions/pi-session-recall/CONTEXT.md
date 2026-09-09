@@ -2,7 +2,7 @@
 
 ## Domain
 
-Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the corpus of Pi session JSONL trees under `~/.pi/agent/sessions/`, exposed as one LLM tool with four arg-inferred modes (discovery / scroll / read / browse). Zero LLM calls inside the tool; responses hydrate selected messages directly from disk. The bundled `pi-session-pattern-miner` skill uses that tool to find independently repeated work and prefer deterministic scripts over model-authored procedures.
+Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the corpus of Pi session JSONL trees under `~/.pi/agent/sessions/`, exposed as one LLM tool with four arg-inferred modes (discovery / scroll / read / browse) and one explicit pattern-miner preparation operation. Zero LLM calls run inside the tool; responses hydrate selected messages directly from disk. The bundled `pi-session-pattern-miner` skill uses one bounded preparation call to find independently repeated work and prefer deterministic scripts over model-authored procedures.
 
 ## Boundary
 
@@ -12,7 +12,7 @@ Pull-based cross-session recall for the Pi agent: FTS5 (trigram) search over the
 | Current-session context assembly / compaction | pi core (`buildContextEntries`, compaction entries) |
 | This extension | pull-based recall over past transcripts |
 
-Complementary to pi-memory: memory keeps high-signal distillations in context. Session recall leaves transcripts out of every-turn context, but its active tool registration has standing prompt cost. Adaptive discovery returns only user and assistant text. Explicit full discovery, READ, and SCROLL preserve tool-result access, and returned content enters active model context.
+Complementary to pi-memory: memory keeps high-signal distillations in context. Session recall leaves transcripts out of every-turn context, but its active tool registration has standing prompt cost. Adaptive discovery and pattern preparation return only user and assistant text. Explicit full discovery, READ, and SCROLL preserve tool-result access, and returned content enters active model context.
 
 ## Key decisions
 
@@ -24,7 +24,10 @@ Complementary to pi-memory: memory keeps high-signal distillations in context. S
 - **One-hop lineage suppression** (fork/clone only): pi `/new` creates files with no lineage link, so Hermes-style chain resolution would be dead code here.
 - **Query sanitize ladder**: quote-terms default → operator pass-through → quoted retry → OR-expand → LIKE, because raw LLM queries crash FTS5 parsers.
 - **Bounded trust boundary and output**: JSONL metadata is capped while parsing, indexed text contains only source text, and the complete serialized tool result is limited to 50,000 characters.
-- **Evidence-gated pattern mining**: the bundled skill requires two independent sessions, verifies current automation before proposing changes, and separates deterministic scripts from judgment-heavy skills. It reports sampling limits because browse is capped and discovery is query-driven.
+- **Prepared mining corpus**: one operation performs one lazy sync, excludes the current file, filters by indexed `cwd` before limiting, and collapses one-hop lineages. Safe hydration isolates per-file failures and never returns thinking or tool-result content. Envelope, sync, inventory counts, and all selected citation metadata take priority over fairly allocated transcript content.
+- **Index-snapshot inventory hints**: package scripts, executables, and instructions describe stage-0 Git index entries. Package content comes from indexed blobs. One local-only batch checks all selected objects, then one batch reads them; lazy fetching and replacement refs stay disabled. Skills come from Pi's effective registry and require canonical containment. The inventory sets `worktreeVerified:false`; it never proves ownership or current worktree state.
+- **Fail-closed inventory bounds**: root output is capped at 4 KiB, and the raw index is capped at 8 MiB. Inventory accepts up to 512 package manifests, 1 MiB each and 16 MiB total. Batch input and output are bounded, and records must match requested object IDs, types, sizes, order, and framing exactly. Invalid encodings, malformed or conflicted index data, unsupported package modes, missing objects, Git failures, stderr, and stream overflow fail explicitly. Required inventory propagates these failures. Optional inventory returns `inventory-failed`, but an AbortSignal always cancels. Serialized inventory stays within 10,000 characters, with omission counts for collections only.
+- **Evidence-gated pattern mining**: the bundled skill treats equal lineages as one source and requires two independent examples. It preserves requested topics as candidates. It always checks current candidate manifests, scripts, skills, and instructions before assigning ownership, and abstains when targeted checks are unsafe.
 - **Display-only tail preview**: the interactive renderer mirrors Pi's built-in tool output behavior—five trailing visual lines when collapsed and the full bounded result when expanded. Model-visible content is unchanged.
 
-Known ceiling: whole-file `readFileSync` per hydration call (fine for local corpora); frecency boosting deferred until starvation evidence.
+Known ceiling: one bounded whole-file snapshot per hydration call (fine for local corpora); frecency boosting deferred until starvation evidence.

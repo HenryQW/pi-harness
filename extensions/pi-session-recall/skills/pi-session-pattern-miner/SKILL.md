@@ -5,22 +5,60 @@ description: Mine repeated work, corrections, and manual procedures from past Pi
 
 # Pi Session Pattern Miner
 
-Find repeated work in past Pi sessions and turn the best-supported pattern into an automation candidate. Use `session_search` for session history; do not scan Pi session files directly. The current model mines the evidence once; the resulting automation should remove model judgment from recurring execution wherever the workflow permits it.
+Find repeated work in past Pi sessions. Turn the best-supported pattern into the smallest useful automation.
 
-## Scope
+Use `session_search` for session history. Do not scan Pi session files directly.
 
-Use the scope or topic in the request. Otherwise sample recent sessions. If the user specifies the current repository, use the current Git root and session `cwd` metadata to filter where possible; search distinctive repository or package names to find related sessions from other worktrees.
+## Prepare once
 
-State the sampled scope and its limits. `session_search` browse returns at most ten recent sessions, discovery is query-driven, and current live-context matches are suppressed. Its messages contain user/assistant text, not hidden thinking or tool output. Never claim exhaustive coverage or invent commands that are absent from the evidence.
+Choose the requested scope. Use `repository` for the current Git repository. Use `all` for a cross-repository request or work outside Git.
+
+Before interpretation, call `session_search` exactly once with:
+
+```json
+{
+  "operation": "prepare-pattern-miner",
+  "scope": "repository",
+  "limit": 10
+}
+```
+
+Change only `scope` when needed. Do not run manual browse, read, scroll, or inventory rounds during preparation.
+
+State the returned scope and sample count. If `sync.complete` is false, report the incomplete walk or positive backlog as a sample limitation.
+
+The prepared corpus is recent and bounded. A truncated session can omit middle episodes. Never claim exhaustive coverage.
 
 ## Mine
 
-1. Call `session_search` with only `limit: 10` to seed the sample.
-2. Read each in-scope session by `sessionId`. For a truncated session, inspect only relevant gaps with `sessionId`, `aroundMessageId`, and `window: 20`; retain `branchTip` while scrolling a fork.
-3. Extract candidate episodes: repeated user intents, corrections, manual procedures, avoidable retries, and agent-authored steps that recur. Ignore generic coding work such as inspect/edit/test unless the same concrete procedure repeats.
-4. Cluster by underlying job, not wording. A pattern needs evidence from at least two independent sessions; do not count forks, retries, or continuations of one task as separate evidence.
-5. Confirm each candidate with one or more distinctive `query` searches using `limit: 10` and `detail: "full"`. Record session path, date or name, relevant entry id, and a short paraphrase. Do not copy secrets or unnecessary transcript text.
-6. Inspect the current repository's commands, package scripts, executable scripts, skills, and agent instructions before proposing anything. Reuse or repair an existing automation when it already owns the workflow.
+The model performs these steps. Do not replace them with mechanical keyword rules.
+
+1. Identify semantic episodes, including repeated intents, corrections, retries, manual procedures, and recurring agent-authored steps.
+2. Ignore generic inspect, edit, and test work unless the same concrete procedure repeats.
+3. Cluster episodes by their underlying job, not their wording.
+4. Treat sessions with equal `lineageId` values as one source.
+5. Choose the owning automation surface from the prepared inventory and targeted repository evidence.
+6. Write the recommendation and implementation contract.
+
+A user-supplied topic is already a candidate. Run a focused confirmation search even when that topic is absent from the prepared sample.
+
+For other work, create a candidate from the prepared corpus before running optional searches. Do not search speculatively when no topic or candidate exists.
+
+Confirm a candidate with one or more distinctive `query` calls. Use `limit: 10`. Record the session path, date or name, relevant entry ID, and a short paraphrase.
+
+Do not copy secrets or unnecessary transcript text. Do not count forks, retries, or continuations of one task as independent evidence.
+
+## Verify ownership
+
+After clustering, use the inventory only to find likely owners. It is not ownership proof and does not verify the current worktree.
+
+Always inspect the current candidate-relevant package manifests, executable scripts, skill files, and instruction files before assigning ownership. Do this even when the inventory is available and complete.
+
+Reuse or repair existing automation when it already owns the workflow. If targeted current-file verification cannot be performed safely, abstain.
+
+## Evidence gate
+
+A recommendation requires two independent examples. This gate is mandatory.
 
 Stop with “not enough repeated evidence” when fewer than two independent sessions support a pattern. Do not manufacture a recommendation from one occurrence.
 
@@ -29,12 +67,14 @@ Stop with “not enough repeated evidence” when fewer than two independent ses
 Stop at the first option that fully handles the pattern:
 
 1. **Existing command or skill** — document, fix, or invoke it instead of adding another path.
-2. **Script** — choose when inputs, decisions, outputs, and failures can be specified without model judgment. Prefer a repository command or standard-library script over a new dependency.
-3. **Script plus thin skill** — choose when an agent must gather inputs or explain results, but the repeated operation itself can be deterministic. The skill must call the script rather than restate its algorithm.
-4. **Skill only** — choose only when the reusable work inherently requires judgment, repository inspection, or user decisions.
-5. **Product change** — choose when the root cause belongs in an extension, API, CI check, or other code rather than agent instructions.
+2. **Script** — use when inputs, decisions, outputs, and failures need no model judgment.
+3. **Script plus thin skill** — use when an agent gathers inputs, but a script performs the repeated operation.
+4. **Skill only** — use only when the reusable work inherently requires judgment, repository inspection, or user decisions.
+5. **Product change** — use when the root cause belongs in an extension, API, CI check, or other code.
 
-A deterministic candidate must define its trigger, inputs, outputs, side effects, failure behavior, and one runnable check. If those cannot be defined from session evidence plus the current codebase, recommend a focused investigation instead of automation.
+Prefer a repository command or standard-library script. Add no dependency without evidence that existing tools cannot handle the job.
+
+A deterministic candidate must define its trigger, inputs, outputs, side effects, failure behavior, and one runnable check. Recommend investigation when evidence cannot define these details.
 
 ## Report
 
@@ -43,7 +83,9 @@ Return at most three ranked patterns:
 | Pattern | Independent sessions | Repeated cost or failure | Existing coverage | Smallest automation |
 | --- | ---: | --- | --- | --- |
 
-For each pattern, cite the session paths and entry ids, explain why the proposed owning surface fits, and state what model work it removes. Then give the highest-confidence candidate a minimal implementation contract:
+For each pattern, cite session paths and entry IDs. Explain why the owning surface fits and what model work it removes.
+
+Give the highest-confidence candidate a minimal implementation contract:
 
 - **Trigger and inputs**
 - **Deterministic steps**
