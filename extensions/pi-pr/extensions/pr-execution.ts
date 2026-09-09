@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 export const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -341,7 +342,7 @@ async function writeWorktreeLockOwner(cwd: string, signal?: AbortSignal): Promis
 	return oidLine(result.stdout, "Git worktree lock owner");
 }
 
-/** Exclude concurrent PR mutations for one canonical worktree with a Git-ref lease. */
+/** Exclude concurrent PR mutations for one canonical worktree and pi-pr namespace with a Git-ref lease. */
 export async function withWorktreeLock<T>(
 	cwd: string,
 	operation: () => Promise<T>,
@@ -356,7 +357,8 @@ export async function withWorktreeLock<T>(
 	const rootLines = (normalizedRoot.endsWith("\n") ? normalizedRoot.slice(0, -1) : normalizedRoot).split("\n");
 	if (rootLines.length !== 1 || !rootLines[0]) throw new Error("Git worktree root resolution returned invalid output");
 	const canonical = requiredText(await realpath(rootLines[0]), "canonical Git worktree root");
-	const identity = createHash("sha256").update(canonical).digest("hex");
+	const lockNamespace = resolve(extensionConfigDir("pi-pr", options.agentDir));
+	const identity = createHash("sha256").update(lockNamespace).update("\0").update(canonical).digest("hex");
 	const lockRef = `${LOCK_REF_PREFIX}/${identity}`;
 	const ownerOid = await writeWorktreeLockOwner(canonical, options.signal);
 	let acquired = false;

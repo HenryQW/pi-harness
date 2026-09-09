@@ -3,8 +3,9 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
 	assertOnlyDeclaredStatusChanged,
 	inspectWorktree,
@@ -28,9 +29,10 @@ async function temporaryGitRepository(prefix: string): Promise<string> {
 	return root;
 }
 
-async function worktreeLockRef(root: string): Promise<string> {
+async function worktreeLockRef(root: string, agentDir?: string): Promise<string> {
 	const canonical = await realpath(root);
-	return `${LOCK_REF_PREFIX}/${createHash("sha256").update(canonical).digest("hex")}`;
+	const lockNamespace = resolve(extensionConfigDir("pi-pr", agentDir));
+	return `${LOCK_REF_PREFIX}/${createHash("sha256").update(lockNamespace).update("\0").update(canonical).digest("hex")}`;
 }
 
 async function writeLockOwner(root: string, pid: number, nonce: string): Promise<string> {
@@ -171,6 +173,32 @@ test("worktree lock canonicalizes root and subdirectory calls", async (t) => {
 	release();
 	await first;
 	await withWorktreeLock(subdirectory, async () => {});
+});
+
+test("worktree lock namespaces explicit agent directories independently", async (t) => {
+	const root = await temporaryGitRepository("pi-pr-lock-namespaces-");
+	const firstAgentDir = await mkdtemp(join(tmpdir(), "pi-pr-lock-agent-first-"));
+	const secondAgentDir = await mkdtemp(join(tmpdir(), "pi-pr-lock-agent-second-"));
+	t.after(() => Promise.all([
+		rm(root, { recursive: true, force: true }),
+		rm(firstAgentDir, { recursive: true, force: true }),
+		rm(secondAgentDir, { recursive: true, force: true }),
+	]));
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	let entered!: () => void;
+	const started = new Promise<void>((resolve) => { entered = resolve; });
+	const first = withWorktreeLock(root, async () => {
+		entered();
+		await held;
+	}, { agentDir: firstAgentDir });
+	await started;
+	try {
+		await withWorktreeLock(root, async () => {}, { agentDir: secondAgentDir });
+	} finally {
+		release();
+		await first;
+	}
 });
 
 test("worktree lock reclaims an orphan Git ref with a dead owner", async (t) => {
