@@ -86,6 +86,7 @@ test("parses a reached five-hour limit without changing seven-day quota", () => 
 	}, now), {
 		remaining: 80,
 		reset: now + 3_600_000,
+		fiveHourReset: now + 600_000,
 		limitedUntil: now + 600_000,
 		tier: "plus",
 	});
@@ -406,6 +407,26 @@ test("malformed config is preserved, warns once, and disables 429 switching", as
 		assert.equal(result, undefined);
 		assert.equal(setModels.length, 0);
 	});
+});
+
+test("shows the five-hour reset below Pro Lite and the seven-day reset at Pro Lite", async () => {
+	for (const [tier, footerWindow, status] of [
+		["plus", "5h 30m", "Codex slot 1 (plus): 50% of the seven-day quota remaining; five-hour reset in 30m (measured)"],
+		["prolite", "7d 1h", "Codex slot 1 (prolite): 50% of the seven-day quota remaining; seven-day reset in 1h (measured)"],
+	] as const) {
+		await withApp({ 1: 50 }, [], async ({ agentDir, commands, handlers, ctx, notices, statuses }) => {
+			const cache = usagePath(agentDir);
+			const state = JSON.parse(await readFile(cache, "utf8"));
+			state.slots[0].tier = tier;
+			state.slots[0].fiveHourReset = Date.now() + 30 * 60_000;
+			await writeFile(cache, JSON.stringify(state));
+
+			handlers.get("session_start")?.({ type: "session_start" }, ctx);
+			assert.equal(statuses.at(-1), `<success>Codex #1 · 50% · ${footerWindow}</success>`);
+			await commands.get("codex-status")?.("", ctx);
+			assert.equal(notices.at(-1), status);
+		});
+	}
 });
 
 test("colors fresh footer at every quota threshold", async () => {
