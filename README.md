@@ -12,3 +12,11 @@ See [the doc](https://pi.henry.wang).
 ```sh
 curl -fsSL https://pi.henry.wang/install.sh | sh
 ```
+
+The installer shows installed Pi and Herdr versions. It asks before updating either tool.
+
+Use `--update` to approve available updates without a prompt:
+
+```sh
+curl -fsSL https://pi.henry.wang/install.sh | sh -s -- --update
+```
