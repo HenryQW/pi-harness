@@ -5,6 +5,7 @@ import type {
 import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
+import { withWorktreeLock } from "./pr-execution.ts";
 import type {
 	CiStatus,
 	LocalMergeSafety,
@@ -22,6 +23,7 @@ const PR_SEARCH_PAGE_SIZE = 100;
 const PR_SEARCH_CAP = 1_000;
 const PR_SEARCH_MAX_PAGES = PR_SEARCH_CAP / PR_SEARCH_PAGE_SIZE;
 const PR_FIELDS = "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
+const PR_PUBLICATION_FIELDS = "number,url,state,baseRefName,headRefName,headRefOid,headRepository,title,body";
 const PR_SEARCH_QUERY = "query($searchQuery:String!,$endCursor:String){search(query:$searchQuery,type:ISSUE,first:100,after:$endCursor){issueCount edges{cursor node{__typename ...on PullRequest{number url state baseRepository{nameWithOwner}headRepository{nameWithOwner}headRefName headRefOid}}}pageInfo{hasNextPage startCursor endCursor}}}";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
@@ -149,7 +151,7 @@ type LinkConfiguration = {
 	mirror: string[];
 };
 
-type SearchPullRequest = {
+export type PullRequestCandidate = {
 	number: number;
 	url: URL;
 	lifecycle: PullRequestLifecycle;
@@ -157,6 +159,32 @@ type SearchPullRequest = {
 	headRepository: string | null;
 	headRef: string;
 	headOid: string;
+};
+
+type SearchPullRequest = PullRequestCandidate;
+
+export type PullRequestPublication = {
+	number: number;
+	url: URL;
+	lifecycle: PullRequestLifecycle;
+	base: { repository: string; ref: string };
+	head: PullRequestRef;
+	title: string;
+	body: string;
+};
+
+export type ValidatedRemoteAuthority = {
+	fetchSource: string;
+	host: string;
+	repository: string;
+};
+
+export type BranchUpstreamTarget = {
+	branch: string;
+	remote: string;
+	ref: string;
+	fetchSource: string;
+	remoteOid: string;
 };
 
 type SearchSelection =
@@ -707,6 +735,37 @@ function parseLoadedPullRequest(output: string, expectedUrl: URL): ListedPullReq
 	return candidate;
 }
 
+function parsePullRequestPublication(output: string, expectedUrl: URL): PullRequestPublication {
+	const value = parseJson(output, "Read pull request publication");
+	if (!isRecord(value) || !isRecord(value.headRepository)) {
+		fail("Read pull request publication", "invalid GitHub CLI output");
+	}
+	const number = value.number;
+	if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) {
+		fail("Read pull request publication", "invalid number");
+	}
+	const parsedUrl = parsePullRequestUrl(value.url, number);
+	if (parsedUrl.url.href !== expectedUrl.href) {
+		fail("Read pull request publication", "response does not match candidate url");
+	}
+	return {
+		number,
+		url: parsedUrl.url,
+		lifecycle: lifecycle(value.state),
+		base: {
+			repository: parsedUrl.repository,
+			ref: text(value.baseRefName, "Read pull request publication", "baseRefName"),
+		},
+		head: {
+			repository: repositoryName(value.headRepository.nameWithOwner, "Read pull request publication", "headRepository.nameWithOwner"),
+			ref: text(value.headRefName, "Read pull request publication", "headRefName"),
+			oid: oid(value.headRefOid, "Read pull request publication", "headRefOid"),
+		},
+		title: text(value.title, "Read pull request publication", "title"),
+		body: typeof value.body === "string" ? value.body : fail("Read pull request publication", "invalid body"),
+	};
+}
+
 function selectPullRequest(
 	candidates: ListedPullRequest[],
 	pushTarget: PushTarget,
@@ -810,7 +869,10 @@ function parseUnresolvedReviewThreads(output: string): number {
 	return total;
 }
 
-function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
+function parseBaseRefAuthority(
+	output: string,
+	expected: { repository: string; ref: string },
+): string {
 	const value = parseJson(output, "Read base ref");
 	if (!isRecord(value)) fail("Read base ref", "invalid GitHub CLI output");
 	if (value.errors !== undefined) {
@@ -823,10 +885,14 @@ function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
 	}
 	if (
 		normalizeRepository(repositoryName(repository.nameWithOwner, "Read base ref", "repository")) !==
-		normalizeRepository(candidate.base.repository) ||
-		text(repository.ref.name, "Read base ref", "ref") !== candidate.base.ref
+		normalizeRepository(expected.repository) ||
+		text(repository.ref.name, "Read base ref", "ref") !== expected.ref
 	) fail("Read base ref", "response does not match pull request base");
 	return oid(repository.ref.target.oid, "Read base ref", "target OID");
+}
+
+function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
+	return parseBaseRefAuthority(output, candidate.base);
 }
 
 function parseLegacyBaseBranchPolicy(output: string, candidate: ListedPullRequest): boolean {
@@ -987,6 +1053,20 @@ async function readRemoteAuthority(
 		if (!strict && error instanceof PullRequestLoadError) return null;
 		throw error;
 	}
+}
+
+export async function readValidatedRemoteAuthority(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	remote: string,
+): Promise<ValidatedRemoteAuthority> {
+	const authority = await readRemoteAuthority(pi, context, text(remote, "Read push remotes", "remote"), true);
+	if (!authority) fail("Read push target", "invalid remote authority");
+	return {
+		fetchSource: authority.fetchSource,
+		host: authority.repository.host,
+		repository: authority.repository.nameWithOwner,
+	};
 }
 
 async function readRemoteHeadOid(
@@ -1282,6 +1362,25 @@ async function readBaseRefOid(
 	return parseBaseRefOid(result.stdout, candidate);
 }
 
+export async function readPullRequestBaseRefOid(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	authority: { host: string; repository: string; ref: string },
+): Promise<string> {
+	const host = text(authority.host, "Read base ref", "host").toLowerCase();
+	const repository = repositoryName(authority.repository, "Read base ref", "repository");
+	const ref = text(authority.ref, "Read base ref", "ref");
+	const [owner, name] = repository.split("/");
+	const result = await execute(pi, context, "Read base ref", "gh", [
+		"api", "graphql", "--hostname", host,
+		"-f", `query=${BASE_REF_QUERY}`,
+		"-F", `owner=${owner}`,
+		"-F", `name=${name}`,
+		"-F", `qualifiedName=refs/heads/${ref}`,
+	]);
+	return parseBaseRefAuthority(result.stdout, { repository, ref });
+}
+
 async function readLegacyBaseBranchPolicy(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1438,34 +1537,26 @@ async function loadObservedPullRequest(
 	return loadPullRequestDetails(pi, context, candidate, pushTarget, inspectedLocal);
 }
 
-async function searchPullRequests(
+async function enumerateSearchPullRequests(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	pushTarget: PushTarget,
-): Promise<SearchSelection> {
-	const headOwner = pushTarget.repository.nameWithOwner.split("/")[0]!;
-	const searchQuery = `is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${headOwner}:${pushTarget.ref}`;
+	host: string,
+	searchQuery: string,
+): Promise<SearchPullRequest[]> {
 	const candidates: SearchPullRequest[] = [];
 	const cursors = new Set<string>();
 	let issueCount: number | null = null;
 	let endCursor: string | null = null;
 	for (let pageIndex = 0; pageIndex < PR_SEARCH_MAX_PAGES; pageIndex += 1) {
 		const args = [
-			"api",
-			"graphql",
-			"--hostname",
-			pushTarget.repository.host,
-			"-f",
-			`query=${PR_SEARCH_QUERY}`,
-			"-F",
-			`searchQuery=${searchQuery}`,
+			"api", "graphql", "--hostname", host,
+			"-f", `query=${PR_SEARCH_QUERY}`,
+			"-F", `searchQuery=${searchQuery}`,
 		];
 		if (endCursor !== null) args.push("-F", `endCursor=${endCursor}`);
 		const result = await execute(pi, context, "Find pull requests", "gh", args);
-		const page = parseSearchPage(result.stdout, pushTarget.repository.host);
-		if (issueCount !== null && page.issueCount !== issueCount) {
-			fail("Find pull requests", "inconsistent search result pages");
-		}
+		const page = parseSearchPage(result.stdout, host);
+		if (issueCount !== null && page.issueCount !== issueCount) fail("Find pull requests", "inconsistent search result pages");
 		issueCount = page.issueCount;
 		if (issueCount > PR_SEARCH_CAP) fail("Find pull requests", "GitHub search result cap reached");
 		const expectedPageSize = Math.min(PR_SEARCH_PAGE_SIZE, Math.max(0, issueCount - candidates.length));
@@ -1480,25 +1571,54 @@ async function searchPullRequests(
 		}
 		const hasMore = candidates.length < issueCount;
 		if (page.hasNextPage !== hasMore) fail("Find pull requests", "incomplete search results");
-		if (!hasMore) {
-			const selected = selectSearchPullRequest(candidates, pushTarget);
-			if (selected.kind !== "candidate") return selected;
-			const loaded = await execute(pi, context, "Find pull requests", "gh", [
-				"pr",
-				"view",
-				selected.candidate.url.href,
-				"--json",
-				PR_FIELDS,
-			]);
-			return {
-				...selected,
-				pullRequest: parseLoadedPullRequest(loaded.stdout, selected.candidate.url),
-			};
-		}
+		if (!hasMore) return candidates;
 		if (page.endCursor === null) fail("Find pull requests", "invalid search pageInfo");
 		endCursor = page.endCursor;
 	}
 	return fail("Find pull requests", "GitHub search result cap reached");
+}
+
+export async function findExactHeadPullRequests(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: { host: string; repository: string; ref: string },
+): Promise<PullRequestCandidate[]> {
+	const host = text(target.host, "Find pull requests", "host").toLowerCase();
+	const repository = repositoryName(target.repository, "Find pull requests", "head repository");
+	const ref = text(target.ref, "Find pull requests", "head ref");
+	const owner = repository.split("/")[0]!;
+	const candidates = await enumerateSearchPullRequests(pi, context, host, `is:pr is:open head:${owner}:${ref}`);
+	return candidates.filter((candidate) =>
+		candidate.lifecycle === "open" && candidate.headRepository !== null &&
+		normalizeRepository(candidate.headRepository) === normalizeRepository(repository) && candidate.headRef === ref
+	);
+}
+
+export async function loadPullRequestPublication(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	url: URL,
+): Promise<PullRequestPublication> {
+	const loaded = await execute(pi, context, "Read pull request publication", "gh", [
+		"pr", "view", url.href, "--json", PR_PUBLICATION_FIELDS,
+	]);
+	return parsePullRequestPublication(loaded.stdout, url);
+}
+
+async function searchPullRequests(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	pushTarget: PushTarget,
+): Promise<SearchSelection> {
+	const headOwner = pushTarget.repository.nameWithOwner.split("/")[0]!;
+	const searchQuery = `is:pr${pushTarget.provenance === "inferred" ? " is:open" : ""} head:${headOwner}:${pushTarget.ref}`;
+	const candidates = await enumerateSearchPullRequests(pi, context, pushTarget.repository.host, searchQuery);
+	const selected = selectSearchPullRequest(candidates, pushTarget);
+	if (selected.kind !== "candidate") return selected;
+	const loaded = await execute(pi, context, "Find pull requests", "gh", [
+		"pr", "view", selected.candidate.url.href, "--json", PR_FIELDS,
+	]);
+	return { ...selected, pullRequest: parseLoadedPullRequest(loaded.stdout, selected.candidate.url) };
 }
 
 export async function loadCurrentPullRequest(
@@ -1667,7 +1787,7 @@ function sameLinkedPullRequest(inferred: CurrentPullRequest, configured: Current
 		inferred.target.remoteOid === configured.target.remoteOid;
 }
 
-async function readTrackingOid(
+export async function readTrackingOid(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	trackingRef: string,
@@ -1679,6 +1799,46 @@ async function readTrackingOid(
 	if (result.code === 1 && result.stdout === "") return null;
 	if (result.code !== 0) commandFailure("Read remote-tracking ref", result);
 	return oid(singleLine(result.stdout, "Read remote-tracking ref", "OID"), "Read remote-tracking ref", "OID");
+}
+
+export function branchTrackingRef(target: Pick<BranchUpstreamTarget, "remote" | "ref">): string {
+	return `refs/remotes/${text(target.remote, "Read push remotes", "remote")}/${text(target.ref, "Read push target", "push ref")}`;
+}
+
+export async function fetchBranchTrackingRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: BranchUpstreamTarget,
+): Promise<void> {
+	await execute(pi, context, "Fetch branch tracking ref", "git", [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
+		target.fetchSource, `${target.remoteOid}:${branchTrackingRef(target)}`,
+	]);
+}
+
+export async function setBranchUpstream(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: BranchUpstreamTarget,
+): Promise<void> {
+	await execute(pi, context, "Set branch upstream", "git", [
+		"branch", `--set-upstream-to=${target.remote}/${target.ref}`, "--", target.branch,
+	]);
+}
+
+export async function verifyBranchUpstream(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: BranchUpstreamTarget,
+): Promise<void> {
+	const trackingOid = await readTrackingOid(pi, context, branchTrackingRef(target));
+	if (trackingOid !== target.remoteOid) throw new Error("Branch tracking ref does not match published OID");
+	const configuredTarget = optionalPushReference((await execute(pi, context, "Verify push target", "git", [
+		"for-each-ref", "--format=%(push:short)", `refs/heads/${target.branch}`,
+	])).stdout);
+	if (configuredTarget !== `${target.remote}/${target.ref}`) {
+		throw new Error("Configured push target does not match published branch");
+	}
 }
 
 async function restoreConfigValue(
@@ -1710,6 +1870,10 @@ async function restoreConfigValue(
 	}
 }
 
+function sameConfigValues(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 async function restoreLinkState(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1717,32 +1881,39 @@ async function restoreLinkState(
 	configuration: LinkConfiguration,
 	trackingRef: string,
 	trackingOid: string | null,
-	upstreamMutated: boolean,
-	fetchedOid: string | undefined,
+	upstreamAttempted: boolean,
+	fetchAttempted: boolean,
 ): Promise<void> {
 	let incomplete = false;
-	if (upstreamMutated) {
+	if (upstreamAttempted) {
 		for (const [key, expected, original] of [
 			[`branch.${target.branch}.remote`, target.remote, configuration.upstreamRemote],
 			[`branch.${target.branch}.merge`, `refs/heads/${target.ref}`, configuration.upstreamMerge],
 		] as const) {
 			try {
-				await restoreConfigValue(pi, context, key, expected, original);
+				const current = await readConfigValues(pi, context, key);
+				if (current === null) incomplete = true;
+				else if (sameConfigValues(current, original)) continue;
+				else if (current.length === 1 && current[0] === expected) {
+					await restoreConfigValue(pi, context, key, expected, original);
+				} else incomplete = true;
 			} catch {
 				incomplete = true;
 			}
 		}
 	}
-	if (fetchedOid !== undefined) {
+	if (fetchAttempted) {
 		try {
 			const currentTrackingOid = await readTrackingOid(pi, context, trackingRef);
-			if (currentTrackingOid !== fetchedOid) {
-				incomplete = true;
-			} else {
-				const args = trackingOid === null
-					? ["update-ref", "-d", trackingRef, currentTrackingOid]
-					: ["update-ref", trackingRef, trackingOid, currentTrackingOid];
-				await execute(pi, context, "Restore remote-tracking ref", "git", args);
+			if (currentTrackingOid !== trackingOid) {
+				if (target.remoteHeadOid === null || currentTrackingOid !== target.remoteHeadOid) {
+					incomplete = true;
+				} else {
+					const args = trackingOid === null
+						? ["update-ref", "-d", trackingRef, target.remoteHeadOid]
+						: ["update-ref", trackingRef, trackingOid, target.remoteHeadOid];
+					await execute(pi, context, "Restore remote-tracking ref", "git", args);
+				}
 			}
 		} catch {
 			incomplete = true;
@@ -1755,90 +1926,84 @@ export async function linkInferredPullRequest(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	inferred: CurrentPullRequest,
+	options: { agentDir?: string } = {},
 ): Promise<CurrentPullRequest> {
 	if (inferred.target.provenance !== "inferred" || inferred.lifecycle !== "open") {
 		throw new Error("Link branch failed: pull request is not an open inferred target");
 	}
-	const freshDiscovery = await loadCurrentPullRequest(pi, context);
-	if (
-		freshDiscovery.kind !== "current" ||
-		freshDiscovery.pullRequest.target.provenance !== "inferred" ||
-		!samePullRequestSnapshot(inferred, freshDiscovery.pullRequest)
-	) throw new Error("Link branch cancelled: inferred pull request context changed");
-	inferred = freshDiscovery.pullRequest;
-	const target: PushTarget = {
-		provenance: "inferred",
-		branch: inferred.target.branch,
-		remote: inferred.target.remote,
-		ref: inferred.target.ref,
-		fetchSource: inferred.target.fetchSource,
-		remoteHeadOid: inferred.target.remoteOid,
-		repository: {
-			nameWithOwner: inferred.target.repository,
-			normalizedName: normalizeRepository(inferred.target.repository),
-			host: inferred.target.host,
-		},
-	};
-	const linkConfiguration = await readLinkConfiguration(pi, context, target);
-	if (target.remoteHeadOid === null || !linkConfiguration || !canLinkTarget(linkConfiguration, target)) {
-		throw new Error("Link branch cancelled: target configuration changed");
-	}
-	const pushReference = optionalPushReference((await execute(pi, context, "Read push target", "git", [
-		"for-each-ref", "--format=%(push:short)", `refs/heads/${target.branch}`,
-	])).stdout);
-	if (pushReference !== null) throw new Error("Link branch cancelled: push target is no longer empty");
-	const remoteHeadOid = await readRemoteHeadOid(pi, context, target.fetchSource, target.ref);
-	if (remoteHeadOid !== target.remoteHeadOid) throw new Error("Link branch cancelled: remote ref changed");
-
-	const trackingRef = `refs/remotes/${target.remote}/${target.ref}`;
-	const trackingOid = await readTrackingOid(pi, context, trackingRef);
-	let fetchedOid: string | undefined;
-	let upstreamMutated = false;
-	try {
-		await execute(pi, context, "Fetch inferred branch", "git", [
-			"fetch",
-			"--no-write-fetch-head",
-			"--no-tags",
-			"--no-recurse-submodules",
-			target.fetchSource,
-			`${target.remoteHeadOid}:${trackingRef}`,
-		]);
-		fetchedOid = target.remoteHeadOid;
-		const verifiedFetchedOid = (await readTrackingOid(pi, context, trackingRef)) ?? undefined;
-		if (verifiedFetchedOid !== fetchedOid) {
-			throw new Error("Link branch cancelled: fetched remote ref changed");
+	return await withWorktreeLock(context.cwd, async () => {
+		const freshDiscovery = await loadCurrentPullRequest(pi, context);
+		if (
+			freshDiscovery.kind !== "current" ||
+			freshDiscovery.pullRequest.target.provenance !== "inferred" ||
+			!samePullRequestSnapshot(inferred, freshDiscovery.pullRequest)
+		) throw new Error("Link branch cancelled: inferred pull request context changed");
+		inferred = freshDiscovery.pullRequest;
+		const target: PushTarget = {
+			provenance: "inferred",
+			branch: inferred.target.branch,
+			remote: inferred.target.remote,
+			ref: inferred.target.ref,
+			fetchSource: inferred.target.fetchSource,
+			remoteHeadOid: inferred.target.remoteOid,
+			repository: {
+				nameWithOwner: inferred.target.repository,
+				normalizedName: normalizeRepository(inferred.target.repository),
+				host: inferred.target.host,
+			},
+		};
+		const linkConfiguration = await readLinkConfiguration(pi, context, target);
+		if (target.remoteHeadOid === null || !linkConfiguration || !canLinkTarget(linkConfiguration, target)) {
+			throw new Error("Link branch cancelled: target configuration changed");
 		}
-		await execute(pi, context, "Set branch upstream", "git", [
-			"branch", `--set-upstream-to=${target.remote}/${target.ref}`, "--", target.branch,
-		]);
-		upstreamMutated = true;
-		const configuredTarget = optionalPushReference((await execute(pi, context, "Verify push target", "git", [
+		const pushReference = optionalPushReference((await execute(pi, context, "Read push target", "git", [
 			"for-each-ref", "--format=%(push:short)", `refs/heads/${target.branch}`,
 		])).stdout);
-		if (configuredTarget !== `${target.remote}/${target.ref}`) {
-			throw new Error("Link branch failed: configured push target does not match inferred target");
-		}
-		const discovery = await loadCurrentPullRequest(pi, context);
-		if (discovery.kind !== "current" || !sameLinkedPullRequest(inferred, discovery.pullRequest)) {
-			throw new Error("Link branch failed: configured pull request does not match inferred target");
-		}
-		return discovery.pullRequest;
-	} catch (error) {
-		const rollbackContext = { cwd: context.cwd, signal: new AbortController().signal };
+		if (pushReference !== null) throw new Error("Link branch cancelled: push target is no longer empty");
+		const remoteHeadOid = await readRemoteHeadOid(pi, context, target.fetchSource, target.ref);
+		if (remoteHeadOid !== target.remoteHeadOid) throw new Error("Link branch cancelled: remote ref changed");
+
+		const trackingRef = `refs/remotes/${target.remote}/${target.ref}`;
+		const trackingOid = await readTrackingOid(pi, context, trackingRef);
+		let fetchAttempted = false;
+		let upstreamAttempted = false;
 		try {
-			await restoreLinkState(
-				pi,
-				rollbackContext,
-				target,
-				linkConfiguration,
-				trackingRef,
-				trackingOid,
-				upstreamMutated,
-				fetchedOid,
-			);
-		} catch {
-			throw new Error("Link branch failed and rollback was incomplete");
+			const upstreamTarget: BranchUpstreamTarget = {
+				branch: target.branch,
+				remote: target.remote,
+				ref: target.ref,
+				fetchSource: target.fetchSource,
+				remoteOid: target.remoteHeadOid,
+			};
+			fetchAttempted = true;
+			await fetchBranchTrackingRef(pi, context, upstreamTarget);
+			const verifiedFetchedOid = await readTrackingOid(pi, context, trackingRef);
+			if (verifiedFetchedOid !== target.remoteHeadOid) throw new Error("Link branch cancelled: fetched remote ref changed");
+			upstreamAttempted = true;
+			await setBranchUpstream(pi, context, upstreamTarget);
+			await verifyBranchUpstream(pi, context, upstreamTarget);
+			const discovery = await loadCurrentPullRequest(pi, context);
+			if (discovery.kind !== "current" || !sameLinkedPullRequest(inferred, discovery.pullRequest)) {
+				throw new Error("Link branch failed: configured pull request does not match inferred target");
+			}
+			return discovery.pullRequest;
+		} catch (error) {
+			const rollbackContext = { cwd: context.cwd, signal: new AbortController().signal };
+			try {
+				await restoreLinkState(
+					pi,
+					rollbackContext,
+					target,
+					linkConfiguration,
+					trackingRef,
+					trackingOid,
+					upstreamAttempted,
+					fetchAttempted,
+				);
+			} catch {
+				throw new Error("Link branch failed and rollback was incomplete");
+			}
+			throw error;
 		}
-		throw error;
-	}
+	}, { agentDir: options.agentDir, signal: context.signal });
 }

@@ -230,6 +230,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: ^0.85.1
         version: 0.85.1
+      '@henryqw/pi-config-store':
+        specifier: ^1.1.0
+        version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
         specifier: ^0.4.5
         version: link:../../packages/pi-herdr

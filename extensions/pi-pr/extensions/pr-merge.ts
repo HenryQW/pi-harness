@@ -1,24 +1,11 @@
-import { lstat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { inspectWorktree, type Exec, type ExecResult } from "./pr-execution.ts";
 import type { LocalMergeSafety } from "./pr-routing.ts";
 
-export type ExecResult = {
-	stdout: string;
-	stderr: string;
-	code: number;
-	killed?: boolean;
-};
-
-export type Exec = (
-	command: string,
-	args: string[],
-	options: { cwd: string },
-) => Promise<ExecResult>;
+export type { Exec, ExecResult } from "./pr-execution.ts";
 
 export type MergeMethod = "merge" | "rebase" | "squash";
 
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
-const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export type InspectLocalMergeSafetyInput = {
@@ -111,33 +98,6 @@ function validateInspectionInput(input: InspectLocalMergeSafetyInput): void {
 	if (typeof input.exec !== "function") throw new TypeError("exec must be a function");
 }
 
-async function inspectWorktree(exec: Exec, cwd: string): Promise<"clean" | "dirty"> {
-	const status = await runCommand(exec, cwd, "git", ["status", "--porcelain=v1", "--untracked-files=all"]);
-	const stateOutput = requiredOutput(
-		await runCommand(exec, cwd, "git", [
-			"rev-parse",
-			...GIT_OPERATION_STATES.flatMap((state) => ["--git-path", state]),
-		]),
-		"Git operation state paths",
-	);
-	const statePaths = stateOutput.replace(/\r\n/g, "\n").split("\n");
-	if (statePaths.length !== GIT_OPERATION_STATES.length || statePaths.some((path) => !path)) {
-		throw new Error("Git operation state path resolution returned invalid output");
-	}
-	let operationInProgress = false;
-	for (const [index, path] of statePaths.entries()) {
-		try {
-			await lstat(resolve(cwd, path));
-			operationInProgress = true;
-		} catch (error) {
-			if (isRecord(error) && error.code === "ENOENT") continue;
-			const detail = isRecord(error) && typeof error.code === "string" ? error.code : errorText(error);
-			throw new Error(`Git operation state inspection failed for ${GIT_OPERATION_STATES[index]}: ${detail}`);
-		}
-	}
-	return status.stdout.length === 0 && !operationInProgress ? "clean" : "dirty";
-}
-
 async function readLocalHead(exec: Exec, cwd: string): Promise<string> {
 	return requiredOid(
 		requiredOutput(await runCommand(exec, cwd, "git", ["rev-parse", "--verify", "HEAD^{commit}"]), "local HEAD"),
@@ -149,7 +109,7 @@ async function readLocalHead(exec: Exec, cwd: string): Promise<string> {
 export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInput): Promise<InspectedLocalMergeSafety> {
 	validateInspectionInput(input);
 
-	const worktree = await inspectWorktree(input.exec, input.cwd);
+	const worktree = await inspectWorktree(input.exec, { cwd: input.cwd });
 	await runCommand(input.exec, input.cwd, "git", [
 		"fetch",
 		"--no-write-fetch-head",
@@ -262,7 +222,7 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
 	}
 	await input.revalidateReadiness(local);
-	const finalWorktree = await inspectWorktree(input.exec, input.cwd);
+	const finalWorktree = await inspectWorktree(input.exec, { cwd: input.cwd });
 	if (finalWorktree !== "clean") {
 		throw new Error("Final local merge safety check failed: worktree is dirty");
 	}
