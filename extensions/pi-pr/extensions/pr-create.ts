@@ -193,6 +193,8 @@ export class PullRequestCreator {
 		], this.options());
 		const rows = configuredValues(refs.stdout);
 		if (rows.length > MAX_REMOTE_BRANCHES) throw new Error(`${BASE_RERUN}; more than ${MAX_REMOTE_BRANCHES} base candidates exist`);
+		const originOwnsTarget = authority.host === this.target.host &&
+			authority.repository.toLowerCase() === this.target.repository.toLowerCase();
 		const candidates: Array<{ ref: string; score: number }> = [];
 		for (const row of rows) {
 			const parts = row.split("\t");
@@ -200,8 +202,8 @@ export class PullRequestCreator {
 			const prefix = "refs/remotes/origin/";
 			if (!parts[0]!.startsWith(prefix)) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
 			const ref = parts[0]!.slice(prefix.length);
-			if (ref === "HEAD") continue;
-			if (!ref || ref === this.target.branch || parts[2] !== "") throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
+			if (ref === "HEAD" || originOwnsTarget && ref === this.target.ref) continue;
+			if (!ref || parts[2] !== "") throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
 			const oid = requiredOid(parts[1], "remote base OID");
 			const distance = line((await runChecked(this.exec, "git", ["rev-list", "--left-right", "--count", `HEAD...${oid}`], this.options())).stdout, "base distance");
 			const counts = /^(\d+)\s+(\d+)$/.exec(distance);
@@ -463,14 +465,25 @@ export class PullRequestCreator {
 				this.state.attempts.push = "unknown";
 				throw error;
 			}
-			if (this.noTarget) await this.configureNoTargetUpstream(head);
 			this.state.phase = "pushed";
+			if (this.noTarget) await this.configureNoTargetUpstream(head);
 			return { kind: "pushed", head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
 	private async publishedAuthority(): Promise<void> {
 		const head = this.state.publicationHead!;
+		if (this.noTarget && this.state.attempts.setUpstream !== "applied") {
+			const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
+			const authority = await readValidatedRemoteAuthority(this.pi(), this.context(), this.target.remote);
+			if (branch !== this.target.branch || authority.host !== this.target.host ||
+				authority.repository.toLowerCase() !== this.target.repository.toLowerCase() ||
+				authority.fetchSource !== this.target.fetchSource ||
+				await readRemoteOid(this.exec, this.options(), this.target.fetchSource, this.target.ref) !== head) {
+				throw new Error("Published target authority changed");
+			}
+			return;
+		}
 		const discovery = await this.load(this.pi(), this.context());
 		if (discovery.kind === "none") {
 			if (!sameTarget(this.target, discovery.creationTarget, head)) throw new Error("Published target authority changed");

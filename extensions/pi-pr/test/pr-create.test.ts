@@ -37,6 +37,10 @@ function baseOutput() {
 	} } });
 }
 
+function repositoryOutput() {
+	return JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" });
+}
+
 function searchOutput(found: boolean) {
 	const edges = found ? [{
 		cursor: "cursor-1",
@@ -149,6 +153,53 @@ test("push uses an empty exact lease then fetches tracking and sets verified ups
 	assert.equal(app.workflow.state.attempts.setUpstream, "applied");
 });
 
+test("a successful push remains publishable when no-target upstream setup fails", async (t) => {
+	const calls: Array<[string, string[]]> = [];
+	let pushes = 0;
+	let searches = 0;
+	const body = "Published after upstream setup failed.";
+	const exec: Exec = async (command, args) => {
+		calls.push([command, [...args]]);
+		const text = args.join(" ");
+		if (command === "git" && text === "branch --show-current") return result("feature\n");
+		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
+		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+		if (command === "git" && args[0] === "merge-base") return result();
+		if (command === "git" && args[0] === "push") {
+			pushes += 1;
+			return result("ok\n");
+		}
+		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
+		if (command === "git" && args[0] === "fetch") return result("", 1, "upstream fetch failed\n");
+		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
+			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
+			return result(baseOutput());
+		}
+		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
+		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
+		throw new Error(`Unexpected ${command} ${text}`);
+	};
+	const app = creator(exec, target(true));
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
+		kind: "none", creationTarget: target(true),
+	});
+	await assert.rejects(app.workflow.push(), /Fetch branch tracking ref failed/);
+	assert.equal(app.workflow.state.phase, "pushed");
+	assert.equal(app.workflow.state.attempts.push, "applied");
+	assert.equal(app.workflow.state.attempts.fetchTracking, "unknown");
+	const callsAfterFailure = calls.length;
+	await assert.rejects(app.workflow.push(), /not ready to push/);
+	assert.equal(calls.length, callsAfterFailure);
+	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url });
+	assert.equal(pushes, 1);
+});
+
 test("creates with fully pinned gh arguments and verifies sole canonical metadata", async (t) => {
 	const calls: Array<{ command: string; args: string[]; stdin?: string }> = [];
 	let searches = 0;
@@ -236,6 +287,59 @@ test("base inference skips the symbolic origin HEAD", async (t) => {
 	const prepared = await workflow.prepare();
 	assert.equal(prepared.kind, "prepared");
 	if (prepared.kind === "prepared") assert.equal(prepared.base.ref, "main");
+});
+
+test("base inference excludes a differently named configured push ref owned by origin", async (t) => {
+	const localRefOid = "d".repeat(40);
+	const pushRefOid = "e".repeat(40);
+	const creationTarget: PullRequestTarget = {
+		...target(false),
+		branch: "feature/local",
+		ref: "feature/published",
+		remoteOid: null,
+	};
+	const distanceRefs: string[] = [];
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	const exec: Exec = async (command, args) => {
+		const text = args.join(" ");
+		if (command === "git" && text === "branch --show-current") return result("feature/local\n");
+		if (command === "git" && text === "config --get-all branch.feature/local.gh-merge-base") return result("", 1);
+		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+		if (command === "git" && args[0] === "for-each-ref") {
+			return result(
+				`refs/remotes/origin/feature/published\t${pushRefOid}\t\n` +
+				`refs/remotes/origin/feature/local\t${localRefOid}\t\n` +
+				`refs/remotes/origin/main\t${base}\t\n`,
+			);
+		}
+		if (command === "git" && args[0] === "rev-list") {
+			const ref = args[3]!;
+			distanceRefs.push(ref);
+			if (ref === `HEAD...${localRefOid}`) return result("5 5\n");
+			if (ref === `HEAD...${base}`) return result("1 2\n");
+			throw new Error(`Unexpected base candidate ${ref}`);
+		}
+		if (command === "git" && text === "check-ref-format --branch main") return result("main\n");
+		if (command === "gh" && args[0] === "api") return result(baseOutput());
+		if (command === "git" && args[0] === "fetch") return result();
+		if (command === "git" && args[0] === "cat-file") return result();
+		if (command === "git" && text === `merge-base HEAD ${base}`) return result(`${head}\n`);
+		throw new Error(`Unexpected ${command} ${text}`);
+	};
+	const workflow = new PullRequestCreator({
+		cwd,
+		target: creationTarget,
+		agentDir,
+		exec,
+		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
+	});
+	const prepared = await workflow.prepare();
+	assert.equal(prepared.kind, "prepared");
+	if (prepared.kind === "prepared") assert.equal(prepared.base.ref, "main");
+	assert.deepEqual(distanceRefs, [`HEAD...${localRefOid}`, `HEAD...${base}`]);
 });
 
 test("a consumed conflict stage prevents continuation replay", async (t) => {
