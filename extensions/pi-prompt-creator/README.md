@@ -23,22 +23,19 @@ Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-pr
 
 Run `/promptor` in the interactive TUI after a repeated request or correction appears:
 
-1. Choose `Analyze now`. Wait for the `Prompt ready — /promptor` widget.
-2. Run `/promptor` again and choose `Show candidate`.
-3. Ask Main to refine it and return only the complete Final Prompt Draft.
-4. Run `/promptor`, choose `Save latest Main draft`, and enter a lowercase kebab-case name.
+1. Run `/promptor`. The completed candidate appears automatically.
+2. Ask Main to refine it and return only the complete Final Prompt Draft.
+3. Run `/promptor save` to save under the suggested name, or `/promptor save <name>` to rename it.
 
-The prompt is created at `~/.pi/agent/prompts/<name>.md`, then Pi reloads its resources.
+The prompt is created at `~/.pi/agent/prompts/<name>.md`, then Pi reloads its resources. No selection menu or name prompt is required.
 
-The menu adapts to the current state:
-
-| Item | Action |
+| Command | Action |
 | --- | --- |
-| `Analyze now` or `Analyze again` | Start one visible background analysis. |
-| `Automatic On` or `Automatic Off` | Turn automatic analysis on or off. |
-| `Show candidate` | Add the candidate to the conversation for review. |
-| `Dismiss candidate` | Forget the pending candidate. |
-| `Save latest Main draft` | Save Main's newest completed review reply after you show a candidate. |
+| `/promptor` | Start analysis, or show a candidate prepared by automatic analysis. |
+| `/promptor analyze` | Analyze again after a candidate has been reviewed or dismissed. |
+| `/promptor save [name]` | Save Main's newest completed review reply, using the suggested name by default. |
+| `/promptor dismiss` | Forget a candidate prepared by automatic analysis. |
+| `/promptor automatic <on\|off>` | Enable or disable automatic analysis. |
 
 ## Flow
 
@@ -68,11 +65,11 @@ New user input does not stop a running child. Branch navigation discards its old
 
 ### Review and save
 
-The widget shows `Prompt ready — /promptor` until you show or dismiss the completed candidate.
+A manually requested analysis displays its completed candidate immediately. Automatic background analysis keeps its candidate behind the `Prompt ready — /promptor` widget until you run `/promptor` or `/promptor dismiss`, so background work never interrupts the conversation.
 
-The extension never injects a candidate automatically. `Show candidate` adds one visible message and marks its contents as untrusted.
+Displayed candidates are visible messages marked as untrusted.
 
-Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving.
+Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving it with `/promptor save [name]`.
 
 The save item appears only after you show a candidate and Main then completes a valid Markdown review reply.
 
