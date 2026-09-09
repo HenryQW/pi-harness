@@ -4,7 +4,11 @@ Keep noisy `pnpm test` output out of Pi's model context.
 
 The extension routes direct `pnpm test` Bash calls through RTK's test filter. Pi receives failures and a compact result instead of the complete test log.
 
-## Requirements
+## Install
+
+```bash
+pi install npm:@henryqw/pi-rtk-test
+```
 
 Install Rust Token Killer (`rtk`) on Pi's `PATH`. This extension does not install or update RTK.
 
@@ -15,13 +19,7 @@ rtk --version
 rtk init -g --agent pi
 ```
 
-## Install
-
-```bash
-pi install npm:@henryqw/pi-rtk-test
-```
-
-## What it rewrites
+## Use
 
 The rewrite is transparent. Pi changes these direct commands before Bash runs them:
 
@@ -43,13 +41,10 @@ Only direct bare `pnpm test` commands with optional test arguments work. The pac
 
 For an unsupported form, use `rtk test ...` explicitly. For example, run `rtk test pnpm run test`.
 
-## When RTK is unavailable
+## Limits and recovery
 
-At startup, the package runs `rtk test --help` once.
-It blocks supported `pnpm test` calls if the probe throws, exits nonzero, is killed, or times out.
+At startup, the package runs `rtk test --help` once. It blocks supported `pnpm test` calls if the probe throws, exits nonzero, is killed, or times out.
 
 The block tells you to install RTK and verify `rtk test --help`. Other calls stay unchanged. The package does not warn at startup.
-
-## Execution and exit status
 
 This package does not run tests, capture output, or inspect test results. After a rewrite, RTK runs the command and owns its output and exit status.
