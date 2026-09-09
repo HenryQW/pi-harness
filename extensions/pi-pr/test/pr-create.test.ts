@@ -206,6 +206,11 @@ test("creates with fully pinned gh arguments and verifies sole canonical metadat
 	const body = "## Summary\n\n- Publish safely.\n\n## Testing\n\n- Tests pass.\n";
 	const exec: Exec = async (command, args, options) => {
 		calls.push({ command, args: [...args], stdin: options.stdin });
+		if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
+		if (command === "git" && args.join(" ") === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "git" && args.join(" ") === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
@@ -360,6 +365,11 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 	let searches = 0;
 	let mutations = 0;
 	const exec: Exec = async (command, args) => {
+		if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
+		if (command === "git" && args.join(" ") === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "git" && args.join(" ") === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
