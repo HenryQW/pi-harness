@@ -8,6 +8,7 @@ const localHead = "a".repeat(40);
 const nextHead = "b".repeat(40);
 const baseHead = "c".repeat(40);
 const DEFAULT_HOST = "github.com";
+const workflowRunId = "11111111-1111-4111-8111-111111111111";
 
 type PullRequestSpec = {
 	id?: string;
@@ -53,6 +54,7 @@ type HarnessOptions = {
 	unresolvedThreads?: number[];
 	pushReference?: string;
 	remoteNames?: string[];
+	sendError?: Error;
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -112,6 +114,8 @@ function harness(options: HarnessOptions) {
 	const messages: Array<{ content: string; options: unknown }> = [];
 	const notifications: Array<{ message: string; type: string }> = [];
 	const confirmations: Array<{ title: string; message: string }> = [];
+	const reservations: unknown[] = [];
+	const releases: string[] = [];
 	const events: string[] = [];
 	let stateIndex = 0;
 	let statusIndex = 0;
@@ -229,6 +233,8 @@ function harness(options: HarnessOptions) {
 			sourceInfo: { origin: command.origin },
 		})),
 		sendUserMessage(content: string, messageOptions: unknown) {
+			events.push("send");
+			if (options.sendError) throw options.sendError;
 			messages.push({ content, options: messageOptions });
 		},
 	} as unknown as Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
@@ -249,12 +255,24 @@ function harness(options: HarnessOptions) {
 	} as unknown as ExtensionCommandContext;
 	return {
 		pi,
-		handler: createPrCommandHandler(pi),
+		handler: createPrCommandHandler(pi, {
+			async reserveWorkflow(reservation) {
+				events.push("reserve");
+				reservations.push(reservation);
+				return workflowRunId;
+			},
+			releaseWorkflow(runId) {
+				events.push("release");
+				releases.push(runId);
+			},
+		}),
 		context,
 		calls,
 		messages,
 		notifications,
 		confirmations,
+		reservations,
+		releases,
 		events,
 	};
 }
@@ -265,8 +283,8 @@ function mutationCalls(calls: Call[]): Call[] {
 	);
 }
 
-const routes: Array<{ name: string; state: PullRequestSpec | null; command: string }> = [
-	{ name: "create", state: null, command: "skill:pi-pr-create" },
+const routes: Array<{ name: string; state: PullRequestSpec | null; command: string; action: string }> = [
+	{ name: "create", state: null, command: "skill:pi-pr-create", action: "prepare" },
 	{
 		name: "branch update outranks feedback and CI",
 		state: {
@@ -276,16 +294,25 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 			statusCheckRollup: [{ conclusion: "FAILURE" }],
 		},
 		command: "skill:pi-pr-update-branch",
+		action: "merge",
 	},
 	{
 		name: "CI repair outranks review sweep",
 		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
 		command: "skill:pi-pr-fix-ci",
+		action: "collect",
 	},
 	{
 		name: "CI repair outranks waiting",
 		state: { reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
 		command: "skill:pi-pr-fix-ci",
+		action: "collect",
+	},
+	{
+		name: "review feedback",
+		state: { reviewDecision: "CHANGES_REQUESTED" },
+		command: "skill:pi-pr-comment-sweep",
+		action: "start",
 	},
 ];
 
@@ -294,7 +321,11 @@ test("routes one package workflow without opening a browser or chaining", async 
 		const app = harness({ states: [route.state], commands: [packageCommand(route.command)] });
 		await app.handler("", app.context);
 
-		assert.deepEqual(app.messages, [{ content: `/${route.command}`, options: { expandPromptTemplates: true } }], route.name);
+		assert.deepEqual(app.messages, [{
+			content: `/${route.command} runId=${workflowRunId} action=${route.action}`,
+			options: { expandPromptTemplates: true },
+		}], route.name);
+		assert.equal(app.reservations.length, 1, route.name);
 		assert.equal(app.confirmations.length, 0, route.name);
 		assert.equal(mutationCalls(app.calls).length, 0, route.name);
 		assert.equal(app.calls.some(({ args }) => args.includes("--web")), false, route.name);
@@ -375,19 +406,72 @@ test("dispatches a workflow as a follow-up only while the agent is busy", async 
 	await app.handler("", app.context);
 
 	assert.deepEqual(app.messages, [{
-		content: "/skill:pi-pr-create",
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
 		options: { deliverAs: "followUp", expandPromptTemplates: true },
 	}]);
 });
 
-test("forwards trimmed instructions to the selected workflow", async () => {
+test("accepts only an anchored create base and keeps it out of the prompt", async () => {
 	const app = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
 
-	await app.handler("  keep the title under 50 characters  ", app.context);
+	await app.handler("  --base=github.com/acme/project:feature/base  ", app.context);
 	assert.deepEqual(app.messages, [{
-		content: "/skill:pi-pr-create keep the title under 50 characters",
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
 		options: { expandPromptTemplates: true },
 	}]);
+	assert.equal((app.reservations[0] as { route: string }).route, "create");
+	assert.equal((app.reservations[0] as { base: string }).base, "github.com/acme/project:feature/base");
+
+	for (const invalid of ["please use main", "--base=github.com/acme/project:main extra", "x --base=github.com/acme/project:main"]) {
+		const rejected = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
+		await assert.rejects(rejected.handler(invalid, rejected.context), /accepts only --base=/, invalid);
+		assert.deepEqual(rejected.reservations, [], invalid);
+	}
+});
+
+test("rejects instructions for non-create helper routes before reservation", async () => {
+	const app = harness({
+		states: [{ statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+		commands: [packageCommand("skill:pi-pr-fix-ci")],
+	});
+
+	await assert.rejects(app.handler("rerun the job", app.context), /helper route does not accept instructions/);
+	assert.deepEqual(app.reservations, []);
+	assert.deepEqual(app.messages, []);
+});
+
+test("checks command generation after discovery and reservation and immediately before send", async () => {
+	for (const failAt of [1, 2, 3]) {
+		const app = harness({
+			states: [null],
+			commands: [packageCommand("skill:pi-pr-create")],
+		});
+		let checks = 0;
+
+		await assert.rejects(app.handler("", app.context, {
+			sessionGeneration: 7,
+			assertCurrent() {
+				checks += 1;
+				if (checks === failAt) throw new Error("session replaced");
+			},
+		}), /session replaced/, `generation check ${failAt}`);
+		assert.deepEqual(app.messages, [], `generation check ${failAt}`);
+		assert.equal(app.reservations.length, failAt === 1 ? 0 : 1, `generation check ${failAt}`);
+		assert.deepEqual(app.releases, failAt === 1 ? [] : [workflowRunId], `generation check ${failAt}`);
+	}
+});
+
+test("rolls back exactly the new reservation when prompt dispatch fails", async () => {
+	const app = harness({
+		states: [null],
+		commands: [packageCommand("skill:pi-pr-create")],
+		sendError: new Error("send failed"),
+	});
+
+	await assert.rejects(app.handler("", app.context), /send failed/);
+	assert.deepEqual(app.events, ["load", "reserve", "send", "release"]);
+	assert.deepEqual(app.releases, [workflowRunId]);
+	assert.deepEqual(app.messages, []);
 });
 
 test("rejects instructions when the current route handles the action directly", async () => {

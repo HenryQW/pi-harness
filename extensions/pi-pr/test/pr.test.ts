@@ -25,6 +25,8 @@ type Loader = (
 ) => Promise<CurrentPullRequest | CurrentPullRequestDiscovery | null>;
 type EventHandler = (event: unknown, context: ExtensionContext) => Promise<void> | void;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
+type Tool = Parameters<ExtensionAPI["registerTool"]>[0];
+type ExtensionDependencies = NonNullable<Parameters<typeof pullRequestExtension>[1]>;
 type Deferred<T> = {
 	promise: Promise<T>;
 	resolve(value: T): void;
@@ -38,6 +40,7 @@ type Exec = (
 
 const plain = (text: string) => text.replace(/\x1b\]8;;.*?\x1b\\/g, "");
 const widgetLine = (text: string): string[] => [text];
+const routeRunId = "11111111-1111-4111-8111-111111111111";
 const inheritedHerdrEnvironment = {
 	HERDR_ENV: process.env.HERDR_ENV,
 	HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
@@ -142,15 +145,25 @@ function harness(options: {
 	load: Loader;
 	hasLocalCommit?: () => Promise<boolean>;
 	commandHandler?: PrCommandHandler;
+	useDefaultCommandHandler?: boolean;
 	theme?: (color: string, text: string) => string;
 	exec?: Exec;
 	sessionEntries?: unknown[];
+	canonicalWorktree?: ExtensionDependencies["canonicalWorktree"];
+	newRunId?: ExtensionDependencies["newRunId"];
+	createBranchUpdater?: ExtensionDependencies["createBranchUpdater"];
+	createPullRequestCreator?: ExtensionDependencies["createPullRequestCreator"];
+	createCommentSweep?: ExtensionDependencies["createCommentSweep"];
+	createCiFixer?: ExtensionDependencies["createCiFixer"];
+	isIdle?: () => boolean;
 }) {
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
 	let agentSettled: EventHandler | undefined;
 	let toolResult: EventHandler | undefined;
 	let command: Command | undefined;
+	const tools: Tool[] = [];
+	const messages: string[] = [];
 	const statuses: Array<string | undefined> = [];
 	const widgets: unknown[] = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
@@ -165,25 +178,7 @@ function harness(options: {
 		},
 	};
 
-	pullRequestExtension({
-		on(event: string, handler: unknown) {
-			if (event === "session_start") sessionStart = handler as EventHandler;
-			if (event === "session_shutdown") sessionShutdown = handler as EventHandler;
-			if (event === "agent_settled") agentSettled = handler as EventHandler;
-			if (event === "tool_result") toolResult = handler as EventHandler;
-		},
-		registerCommand(name: string, registered: Command) {
-			if (name === "pr") command = registered;
-		},
-		appendEntry(customType: string, data: unknown) {
-			appended.push({ customType, data });
-		},
-		async exec(command: string, args: string[], execOptions?: ExecOptions) {
-			execCalls.push({ command, args: [...args], options: execOptions });
-			if (!options.exec) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
-			return options.exec(command, args, execOptions);
-		},
-	} as unknown as ExtensionAPI, {
+	const extensionDependencies: ExtensionDependencies = {
 		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation) => {
 			const loaded = await options.load(pi, context, inspectedLocal, observation);
 			if (loaded && "kind" in loaded) return loaded;
@@ -203,8 +198,50 @@ function harness(options: {
 			};
 		},
 		hasLocalCommit: options.hasLocalCommit,
-		createPrCommandHandler: () => options.commandHandler ?? (async () => "none"),
-	});
+		canonicalWorktree: options.canonicalWorktree,
+		newRunId: options.newRunId,
+		createBranchUpdater: options.createBranchUpdater,
+		createPullRequestCreator: options.createPullRequestCreator,
+		createCommentSweep: options.createCommentSweep,
+		createCiFixer: options.createCiFixer,
+	};
+	if (!options.useDefaultCommandHandler) {
+		extensionDependencies.createPrCommandHandler = () => options.commandHandler ?? (async () => "none");
+	}
+
+	pullRequestExtension({
+		on(event: string, handler: unknown) {
+			if (event === "session_start") sessionStart = handler as EventHandler;
+			if (event === "session_shutdown") sessionShutdown = handler as EventHandler;
+			if (event === "agent_settled") agentSettled = handler as EventHandler;
+			if (event === "tool_result") toolResult = handler as EventHandler;
+		},
+		registerCommand(name: string, registered: Command) {
+			if (name === "pr") command = registered;
+		},
+		registerTool(tool: Tool) {
+			tools.push(tool);
+		},
+		getCommands() {
+			return [
+				"skill:pi-pr-create",
+				"skill:pi-pr-update-branch",
+				"skill:pi-pr-comment-sweep",
+				"skill:pi-pr-fix-ci",
+			].map((name) => ({ name, source: "skill", sourceInfo: { origin: "package" } }));
+		},
+		sendUserMessage(content: string) {
+			messages.push(content);
+		},
+		appendEntry(customType: string, data: unknown) {
+			appended.push({ customType, data });
+		},
+		async exec(command: string, args: string[], execOptions?: ExecOptions) {
+			execCalls.push({ command, args: [...args], options: execOptions });
+			if (!options.exec) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+			return options.exec(command, args, execOptions);
+		},
+	} as unknown as ExtensionAPI, extensionDependencies);
 
 	const handler = <T>(value: T | undefined, name: string): T => {
 		if (value === undefined) throw new Error(`Missing ${name} handler`);
@@ -218,13 +255,15 @@ function harness(options: {
 		mode,
 		cwd: "/repo",
 		signal: new AbortController().signal,
-		isIdle: () => true,
+		isIdle: options.isIdle ?? (() => true),
 		sessionManager: { getBranch: () => sessionEntries },
 		ui,
 	} as unknown as ExtensionContext);
 	const callbackContext = (ctx: ExtensionContext): ExtensionContext => ({ ...ctx });
 
 	return {
+		tools,
+		messages,
 		statuses,
 		widgets,
 		notifications,
@@ -243,6 +282,17 @@ function harness(options: {
 		async tool(event: unknown, ctx: ExtensionContext): Promise<void> {
 			await handler(toolResult, "tool_result")(event, callbackContext(ctx));
 		},
+		async callTool(name: string, params: unknown, ctx: ExtensionContext) {
+			const registered = tools.find((tool) => tool.name === name);
+			if (!registered) throw new Error(`Missing ${name} tool`);
+			return await registered.execute(
+				"tool-call",
+				params as never,
+				new AbortController().signal,
+				undefined,
+				callbackContext(ctx),
+			);
+		},
 		command(): Command {
 			const registered = handler(command, "pr command");
 			return {
@@ -252,6 +302,408 @@ function harness(options: {
 		},
 	};
 }
+
+test("registers exactly four sequential tools with closed action schemas", () => {
+	const app = harness({ async load() { return { kind: "inactive" }; } });
+	const expected = new Map([
+		["pi_pr_update_branch", ["merge", "continue", "publish"]],
+		["pi_pr_create", ["prepare", "merge", "continue", "push", "publish"]],
+		["pi_pr_sweep", ["start", "resume", "show", "record", "publish", "refresh", "resolve", "finalize"]],
+		["pi_pr_fix_ci", ["collect", "publish"]],
+	]);
+
+	assert.deepEqual(app.tools.map(({ name }) => name), [...expected.keys()]);
+	for (const tool of app.tools) {
+		assert.equal(tool.executionMode, "sequential", tool.name);
+		const alternatives = (tool.parameters as unknown as {
+			anyOf: Array<{ additionalProperties?: boolean; properties: { action: { const: string } } }>;
+		}).anyOf;
+		assert.deepEqual(alternatives.map(({ properties }) => properties.action.const), expected.get(tool.name), tool.name);
+		assert.ok(alternatives.every(({ additionalProperties }) => additionalProperties === false), tool.name);
+	}
+});
+
+test("binds one update run to its session, worktree, route, and fresh authority", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	const calls: string[] = [];
+	const state = {
+		phase: "ready",
+		attempts: { fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none" },
+	};
+	const app = harness({
+		async load() { return authority; },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree(cwd) { return cwd === "/repo" ? "/canonical/repo" : "/canonical/other"; },
+		createBranchUpdater(options) {
+			assert.equal(options.cwd, "/canonical/repo");
+			assert.equal(options.authority, authority);
+			return {
+				state,
+				async merge() { calls.push("merge"); state.phase = "verified"; return { kind: "verified", head: authority.head.oid, fastForward: false }; },
+				async continue() { calls.push("continue"); return { kind: "verified", head: authority.head.oid, fastForward: false }; },
+				async publish() { calls.push("publish"); return { kind: "published", head: authority.head.oid }; },
+			} as never;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [`/skill:pi-pr-update-branch runId=${routeRunId} action=merge`]);
+
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", { runId: "22222222-2222-4222-8222-222222222222", action: "merge" }, ctx),
+			/wrong or stale/,
+		);
+		await assert.rejects(
+			app.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, ctx),
+			/route is update-branch, not create/,
+		);
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, { ...ctx, cwd: "/other" }),
+			/worktree is wrong or stale/,
+		);
+		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, ctx);
+		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "publish" }, ctx);
+		assert.deepEqual(calls, ["merge", "publish"]);
+
+		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /still active/);
+		await app.settle(ctx);
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "publish" }, ctx),
+			/No PR workflow is active/,
+		);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("rejects session replacement while workflow discovery is pending", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	const staleDiscovery = deferred<CurrentPullRequest>();
+	let loads = 0;
+	let canonicalCalls = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			if (loads === 1) return authority;
+			if (loads === 2) return staleDiscovery.promise;
+			return { kind: "inactive" };
+		},
+		useDefaultCommandHandler: true,
+		async canonicalWorktree() { canonicalCalls += 1; return "/canonical/repo"; },
+	});
+	const first = app.context();
+	const replacement = app.context();
+
+	try {
+		await app.start(first);
+		const staleCommand = app.command().handler("", first as ExtensionCommandContext);
+		await flush();
+		await app.start(replacement);
+		staleDiscovery.resolve(authority);
+
+		await assert.rejects(staleCommand, /session changed during dispatch/);
+		assert.equal(canonicalCalls, 0);
+		assert.deepEqual(app.messages, []);
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, replacement),
+			/No PR workflow is active/,
+		);
+	} finally {
+		await app.shutdown(replacement);
+	}
+});
+
+test("rejects session replacement while canonical workflow authority is pending", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	const canonical = deferred<string>();
+	let reservations = 0;
+	const app = harness({
+		async load() { return authority; },
+		useDefaultCommandHandler: true,
+		async canonicalWorktree() { return canonical.promise; },
+		createBranchUpdater() { reservations += 1; return {} as never; },
+	});
+	const first = app.context();
+	const replacement = app.context();
+
+	try {
+		await app.start(first);
+		const staleCommand = app.command().handler("", first as ExtensionCommandContext);
+		await flush();
+		await app.start(replacement);
+		canonical.resolve("/canonical/repo");
+
+		await assert.rejects(staleCommand, /session changed during dispatch/);
+		assert.equal(reservations, 0);
+		assert.deepEqual(app.messages, []);
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, replacement),
+			/No PR workflow is active/,
+		);
+	} finally {
+		await app.shutdown(replacement);
+	}
+});
+
+test("releases a stale reservation when replacement wins before dispatch resumes", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	let app!: ReturnType<typeof harness>;
+	let replacement!: ExtensionContext;
+	let replacementStart: Promise<void> | undefined;
+	let reservations = 0;
+	app = harness({
+		async load() { return authority; },
+		useDefaultCommandHandler: true,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		newRunId() {
+			replacementStart = app.start(replacement);
+			return routeRunId;
+		},
+		createBranchUpdater() { reservations += 1; return {} as never; },
+	});
+	const first = app.context();
+	replacement = app.context();
+
+	try {
+		await app.start(first);
+		await assert.rejects(
+			app.command().handler("", first as ExtensionCommandContext),
+			/session changed during dispatch/,
+		);
+		await replacementStart;
+		assert.equal(reservations, 1);
+		assert.deepEqual(app.messages, []);
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, replacement),
+			/No PR workflow is active/,
+		);
+	} finally {
+		await app.shutdown(replacement);
+	}
+});
+
+test("keeps a queued follow-up helper through the settlement that starts it", async () => {
+	const authority = currentPullRequest({ conditions: { ci: "failure" } });
+	let idle = false;
+	let loads = 0;
+	const calls: string[] = [];
+	const app = harness({
+		async load() { loads += 1; return authority; },
+		useDefaultCommandHandler: true,
+		isIdle: () => idle,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createCiFixer() {
+			return {
+				async collect() { calls.push("collect"); return { fingerprint: "f".repeat(64), failures: [] }; },
+				async publish() { return { kind: "published", head: authority.head.oid, attempt: "applied" }; },
+			} as never;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		idle = true;
+		await app.settle(ctx);
+		assert.equal(loads, 2, "the settlement that starts a follow-up must not finish its workflow");
+
+		await app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "collect" }, ctx);
+		await app.settle(ctx);
+		assert.deepEqual(calls, ["collect"]);
+		await assert.rejects(
+			app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "publish" }, ctx),
+			/No PR workflow is active/,
+		);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("keeps an exact conflict context for continuation, then clears it on settlement", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	const calls: string[] = [];
+	const state = {
+		phase: "ready",
+		attempts: { fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none" },
+	};
+	const app = harness({
+		async load() { return authority; },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createBranchUpdater() {
+			return {
+				state,
+				async merge() {
+					calls.push("merge");
+					state.phase = "conflict-awaiting-user";
+					return { kind: "conflict", paths: ["conflicted.ts"] };
+				},
+				async continue(paths: string[]) {
+					calls.push(`continue:${paths.join(",")}`);
+					state.phase = "verified";
+					return { kind: "verified", head: authority.head.oid, fastForward: false };
+				},
+				async publish() { calls.push("publish"); return { kind: "published", head: authority.head.oid }; },
+			} as never;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, ctx);
+		await app.settle(ctx);
+		await app.callTool("pi_pr_update_branch", {
+			runId: routeRunId,
+			action: "continue",
+			resolvedPaths: ["conflicted.ts"],
+		}, ctx);
+		await app.settle(ctx);
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "publish" }, ctx),
+			/No PR workflow is active/,
+		);
+		assert.deepEqual(calls, ["merge", "continue:conflicted.ts"]);
+		assert.equal(state.phase, "verified");
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("clears a conflict run after one user turn without a valid continuation", async () => {
+	const authority = currentPullRequest({ conditions: { conflict: true } });
+	const state = {
+		phase: "ready",
+		attempts: { fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none" },
+	};
+	const app = harness({
+		async load() { return authority; },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createBranchUpdater() {
+			return {
+				state,
+				async merge() {
+					state.phase = "conflict-awaiting-user";
+					return { kind: "conflict", paths: ["conflicted.ts"] };
+				},
+			} as never;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "merge" }, ctx);
+		await app.settle(ctx);
+		await app.settle(ctx);
+
+		await assert.rejects(
+			app.callTool("pi_pr_update_branch", {
+				runId: routeRunId,
+				action: "continue",
+				resolvedPaths: ["conflicted.ts"],
+			}, ctx),
+			/No PR workflow is active/,
+		);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("routes create, sweep, and CI tool actions directly to their bound helpers", async () => {
+	const createCalls: unknown[][] = [];
+	const creatorState = {
+		phase: "unprepared",
+		attempts: {
+			fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none",
+			fetchTracking: "none", setUpstream: "none", pullRequest: "none",
+		},
+	};
+	const create = harness({
+		async load() { return null; },
+		async hasLocalCommit() { return true; },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createPullRequestCreator() {
+			return {
+				state: creatorState,
+				async prepare(base?: string) { createCalls.push(["prepare", base]); creatorState.phase = "prepared"; return { kind: "prepared" }; },
+				async merge() { createCalls.push(["merge"]); return { kind: "verified" }; },
+				async continue(paths: string[]) { createCalls.push(["continue", paths]); return { kind: "verified" }; },
+				async push() { createCalls.push(["push"]); return { kind: "pushed" }; },
+				async publish(title: string, body: string) { createCalls.push(["publish", title, body]); return { kind: "published", url: "https://github.com/acme/project/pull/42" }; },
+			} as never;
+		},
+	});
+	const createContext = create.context();
+	try {
+		await create.start(createContext);
+		await create.command().handler("--base=github.com/acme/project:main", createContext as ExtensionCommandContext);
+		await create.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, createContext);
+		assert.deepEqual(createCalls, [["prepare", "github.com/acme/project:main"]]);
+		assert.deepEqual(create.messages, [`/skill:pi-pr-create runId=${routeRunId} action=prepare`]);
+	} finally {
+		await create.shutdown(createContext);
+	}
+
+	const sweepCalls: string[] = [];
+	const sweep = harness({
+		async load() { return currentPullRequest({ conditions: { unresolvedThreads: 1 } }); },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createCommentSweep() {
+			return {
+				async start() { sweepCalls.push("start"); return { phase: "triage" }; },
+			} as never;
+		},
+	});
+	const sweepContext = sweep.context();
+	try {
+		await sweep.start(sweepContext);
+		await sweep.command().handler("", sweepContext as ExtensionCommandContext);
+		await sweep.callTool("pi_pr_sweep", { runId: routeRunId, action: "start" }, sweepContext);
+		assert.deepEqual(sweepCalls, ["start"]);
+	} finally {
+		await sweep.shutdown(sweepContext);
+	}
+
+	const ciCalls: string[] = [];
+	const ci = harness({
+		async load() { return currentPullRequest({ conditions: { ci: "failure" } }); },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createCiFixer() {
+			return {
+				async collect() { ciCalls.push("collect"); return { fingerprint: "f".repeat(64), failures: [] }; },
+				async publish() { ciCalls.push("publish"); return { kind: "published", head: "b".repeat(40), attempt: "applied" }; },
+			} as never;
+		},
+	});
+	const ciContext = ci.context();
+	try {
+		await ci.start(ciContext);
+		await ci.command().handler("", ciContext as ExtensionCommandContext);
+		await ci.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "collect" }, ciContext);
+		await ci.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "publish" }, ciContext);
+		assert.deepEqual(ciCalls, ["collect", "publish"]);
+	} finally {
+		await ci.shutdown(ciContext);
+	}
+});
 
 test("stays silent and does not poll outside a Git worktree", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });

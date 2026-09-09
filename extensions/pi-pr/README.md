@@ -37,13 +37,13 @@ GitHub, use the network, or write files.
 
 ## Use
 
-Run `/pr` in a GitHub checkout. It reads the current branch pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
+Run `/pr` in a GitHub checkout. It reads fresh pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
 
-Add optional instructions to guide a creation, branch-update, CI-fix, or feedback workflow. For example, run `/pr keep the title under 50 characters`. Direct routes, such as linking or merging, reject instructions instead of ignoring them.
+Creation accepts one optional base anchor. Use `/pr --base=<host>/<owner>/<repository>:<ref>`. All other route instructions fail instead of being ignored.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/pr [instructions]` | command | Run the current pull request's next safe route. |
+| `/pr [--base=<host>/<owner>/<repository>:<ref>]` | command | Run the current pull request's next safe route. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
 | Widget | ui | Show one actionable icon-prefixed `Run /pr to …` hint. |
 
@@ -68,7 +68,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
-`pi-pr-create` fetches branches from `origin` and finds the current branch's parent. The parent can be a feature branch. It uses an explicit base when provided. Otherwise, it accepts only a uniquely identifiable parent from reflog and commit history.
+`pi-pr-create` accepts an anchored base from `/pr --base=...`. Otherwise, it finds one unique parent from validated `origin` refs and commit history. The parent can be a feature branch.
 
 It merges the parent's captured commit before validation and push. It resolves clear conflicts and stops when the base or conflict intent is ambiguous.
 
@@ -79,6 +79,10 @@ Without a configured push target, discovery checks validated remotes for the sam
 Multiple candidate remotes, multiple matching PRs, OID mismatches, and unsafe Git push configuration block routing. A published ref with no PR also blocks creation. If no candidate ref exists, creation uses only a validated `origin` destination.
 
 The creation workflow repeats destination, remote OID, PR, and configuration checks immediately before pushing. It pushes to the saved validated URL, not a mutable remote name. Every push uses the saved remote OID as an exact lease. Existing refs must also be ancestors of the captured local OID. A missing ref uses an empty lease as a create-only compare-and-swap.
+
+Each helper workflow receives a random run ID and its first action. The run stays bound to one session, canonical worktree, route, and fresh authority. Helper calls from another run, session, worktree, or route fail.
+
+Only one helper run can exist at a time. Most runs expire when the agent settles. A create or branch-update conflict stays available for one user-guided continuation, then expires after that continuation settles. Session replacement and shutdown forget the run without aborting or cleaning a pending merge.
 
 After a `/pr` create workflow settles, the extension waits for a refresh that finds a configured current PR. It then prefixes the Herdr workspace label with `#<number> • `.
 
@@ -129,7 +133,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 ## Limits and recovery
 
-- `/pr` takes no arguments and does not open a browser.
+- `/pr` accepts only the optional anchored creation base described above. It does not open a browser.
 - It does not run `/done` or `/sweep`.
 - Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
