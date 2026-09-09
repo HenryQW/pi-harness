@@ -20,7 +20,7 @@ The site derives extension documentation from the packages' canonical READMEs an
 
 ## Operating Context
 
-Users browse static documentation at `pi.henry.wang` and install extensions from a shell. The installer sets up Pi and Herdr only when their commands are unavailable, then installs selected Pi extensions. The default selection is every installable extension.
+Users browse static documentation at `pi.henry.wang` and install extensions from a shell. The installer sets up missing Pi and Herdr commands. It reports installed versions and asks before available updates. It then installs the selected Pi extensions. The default selection is every installable extension.
 
 ## Capabilities and Constraints
 

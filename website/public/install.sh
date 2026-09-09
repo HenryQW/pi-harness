@@ -6,8 +6,10 @@
 set -eu
 
 PI_INSTALLER_URL="https://pi.dev/install.sh"
+PI_LATEST_URL="https://pi.dev/api/installer/releases/latest"
 PI_MIN_VERSION="0.85.1"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
+HERDR_LATEST_URL="https://herdr.dev/latest.json"
 HERDR_MIN_VERSION="0.7.4"
 
 # BEGIN GENERATED EXTENSIONS
@@ -165,7 +167,7 @@ version_at_least() {
   '
 }
 
-check_version() {
+installed_version() {
   label=$1
   bin=$2
   minimum=$3
@@ -176,22 +178,105 @@ check_version() {
 
   version=$(printf '%s\n' "$version_output" | parse_semantic_version)
   [ -n "$version" ] || die "$label at $bin did not report a recognized semantic version. Install or update $label $minimum+, then run this installer again."
+  printf '%s\n' "$version"
+}
+
+require_minimum_version() {
+  label=$1
+  bin=$2
+  version=$3
+  minimum=$4
 
   if ! version_at_least "$version" "$minimum"; then
     die "$label $version at $bin is too old. $label $minimum+ is required; update it, then run this installer again."
   fi
 }
 
+latest_version() {
+  label=$1
+  url=$2
+
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "Could not check for $label updates because curl is unavailable."
+    return 1
+  fi
+  if ! metadata=$(curl -fsSL --retry 3 --connect-timeout 10 --max-time 20 "$url"); then
+    warn "Could not check for $label updates at $url."
+    return 1
+  fi
+
+  version=$(printf '%s\n' "$metadata" | awk -F '"' '
+    {
+      for (field = 2; field < NF; field += 2) {
+        if ($field == "version") {
+          print $(field + 2)
+          exit
+        }
+      }
+    }
+  ' | parse_semantic_version)
+  if [ -z "$version" ]; then
+    warn "$label update metadata did not contain a recognized semantic version."
+    return 1
+  fi
+  printf '%s\n' "$version"
+}
+
+offer_update() {
+  label=$1
+  current=$2
+  latest=$3
+
+  info "$label $current is installed; $latest is available."
+  if [ "$approve_updates" = true ]; then
+    update_requested=true
+    return 0
+  fi
+  if ! has_tty; then
+    warn "Skipping the $label update because no interactive terminal is available. Rerun with --update to approve updates."
+    update_requested=false
+    return 0
+  fi
+
+  exec 3<>/dev/tty
+  printf 'Update %s from %s to %s? [y/N]: ' "$label" "$current" "$latest" >&3
+  if ! IFS= read -r answer <&3; then
+    exec 3>&-
+    die "Could not read the $label update choice from the terminal."
+  fi
+  exec 3>&-
+
+  case "$answer" in
+    y|Y|yes|YES) update_requested=true ;;
+    *) update_requested=false ;;
+  esac
+}
+
 ensure_pi() {
   if pi_bin=$(find_pi); then
-    success "Pi already installed: $pi_bin"
+    pi_status="already installed"
   else
     run_installer "Pi" "$PI_INSTALLER_URL"
     pi_bin=$(find_pi) || die "Pi installed, but could not be found. Restart your shell, then run this installer again."
-    success "Pi installed: $pi_bin"
+    pi_status="installed"
   fi
 
-  check_version "Pi" "$pi_bin" "$PI_MIN_VERSION"
+  pi_version=$(installed_version "Pi" "$pi_bin" "$PI_MIN_VERSION")
+  if [ "$pi_status" = "already installed" ] && pi_latest=$(latest_version "Pi" "$PI_LATEST_URL"); then
+    if [ "$pi_version" != "$pi_latest" ] && version_at_least "$pi_latest" "$pi_version"; then
+      offer_update "Pi" "$pi_version" "$pi_latest"
+      if [ "$update_requested" = true ]; then
+        info "Updating Pi..."
+        "$pi_bin" update --self || die "Pi update failed."
+        pi_version=$(installed_version "Pi" "$pi_bin" "$PI_MIN_VERSION")
+        version_at_least "$pi_version" "$pi_latest" || die "Pi update finished, but $pi_bin reports $pi_version instead of $pi_latest+."
+        pi_status="updated"
+      fi
+    fi
+  fi
+
+  require_minimum_version "Pi" "$pi_bin" "$pi_version" "$PI_MIN_VERSION"
+  success "Pi $pi_version $pi_status: $pi_bin"
 }
 
 ensure_herdr() {
@@ -203,8 +288,22 @@ ensure_herdr() {
     herdr_status="installed"
   fi
 
-  check_version "Herdr" "$herdr_bin" "$HERDR_MIN_VERSION"
-  success "Herdr $herdr_status: $herdr_bin"
+  herdr_version=$(installed_version "Herdr" "$herdr_bin" "$HERDR_MIN_VERSION")
+  if [ "$herdr_status" = "already installed" ] && herdr_latest=$(latest_version "Herdr" "$HERDR_LATEST_URL"); then
+    if [ "$herdr_version" != "$herdr_latest" ] && version_at_least "$herdr_latest" "$herdr_version"; then
+      offer_update "Herdr" "$herdr_version" "$herdr_latest"
+      if [ "$update_requested" = true ]; then
+        info "Updating Herdr..."
+        "$herdr_bin" update || die "Herdr update failed."
+        herdr_version=$(installed_version "Herdr" "$herdr_bin" "$HERDR_MIN_VERSION")
+        version_at_least "$herdr_version" "$herdr_latest" || die "Herdr update finished, but $herdr_bin reports $herdr_version instead of $herdr_latest+."
+        herdr_status="updated"
+      fi
+    fi
+  fi
+
+  require_minimum_version "Herdr" "$herdr_bin" "$herdr_version" "$HERDR_MIN_VERSION"
+  success "Herdr $herdr_version $herdr_status: $herdr_bin"
 }
 
 show_extensions() {
@@ -353,14 +452,15 @@ install_extensions() {
 main() {
   [ -n "${HOME:-}" ] || die "HOME must be set."
 
-  case "$#" in
-    0) force_all=false ;;
-    1)
-      [ "$1" = "--all" ] || die "Usage: sh install.sh [--all]"
-      force_all=true
-      ;;
-    *) die "Usage: sh install.sh [--all]" ;;
-  esac
+  force_all=false
+  approve_updates=false
+  for argument in "$@"; do
+    case "$argument" in
+      --all) force_all=true ;;
+      --update) approve_updates=true ;;
+      *) die "Usage: sh install.sh [--all] [--update]" ;;
+    esac
+  done
 
   extension_count=$(count_extensions)
   [ "$extension_count" -gt 0 ] || die "No installable Pi extensions were found."
