@@ -53,6 +53,7 @@ type HarnessOptions = {
 	unresolvedThreads?: number[];
 	pushReference?: string;
 	remoteNames?: string[];
+	branchAhead?: number;
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -129,6 +130,16 @@ function harness(options: HarnessOptions) {
 	const pi = {
 		exec: async (command: string, args: string[]) => {
 			calls.push({ command, args: [...args] });
+			if (command === process.execPath && args[0]?.endsWith("/skills/pi-pr-create/scripts/inspect-branch.mjs")) {
+				return result(`${JSON.stringify({
+					schemaVersion: 1,
+					status: "ready",
+					branch: "feature/pr",
+					head: configuredLocalHead,
+					base: { remote: "origin", ref: "main", oid: baseHead, mergeBase: baseHead },
+					ahead: options.branchAhead ?? 1,
+				})}\n`);
+			}
 			if (command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") return result("true\n");
 			if (command === "git" && args.join(" ") === "branch --show-current") return result("feature/pr\n");
 			if (
@@ -144,8 +155,8 @@ function harness(options: HarnessOptions) {
 				if (args[1]?.startsWith("refs/heads/")) return result();
 			}
 			if (
-				command === "git" &&
-				(args.join(" ") === "remote get-url --push --all fork" || args.join(" ") === "remote get-url --all fork")
+				command === "git" && args[0] === "remote" && args[1] === "get-url" &&
+				(args.at(-1) === "fork" || args.at(-1) === "origin")
 			) return result(`git@${nextHost()}:acme/project.git\n`);
 			if (
 				command === "gh" && args[0] === "repo" && args[1] === "view" &&
@@ -304,6 +315,9 @@ test("routes one package workflow without opening a browser or chaining", async 
 		assert.equal(app.confirmations.length, 0, route.name);
 		assert.equal(mutationCalls(app.calls).length, 0, route.name);
 		assert.equal(app.calls.some(({ args }) => args.includes("--web")), false, route.name);
+		if (route.state !== null) {
+			assert.equal(app.calls.some(({ command }) => command === process.execPath), false, `${route.name} keeps current PR priority`);
+		}
 	}
 });
 
@@ -370,6 +384,18 @@ test("does not dispatch mutating workflows when the worktree is dirty or local H
 		assert.deepEqual(behind.messages, [], `${route.name} behind`);
 		assert.match(behind.notifications[0]?.message ?? "", /local HEAD behind/, `${route.name} behind`);
 	}
+});
+
+test("never dispatches creation without a commit ahead of the resolved parent", async () => {
+	const app = harness({
+		states: [null],
+		commands: [packageCommand("skill:pi-pr-create")],
+		branchAhead: 0,
+	});
+
+	assert.equal(await app.handler("", app.context), "none");
+	assert.deepEqual(app.messages, []);
+	assert.equal(app.calls.some(({ command }) => command === process.execPath), true);
 });
 
 test("dispatches a workflow as a follow-up only while the agent is busy", async () => {

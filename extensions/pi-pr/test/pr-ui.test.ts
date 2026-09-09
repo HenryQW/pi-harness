@@ -37,10 +37,19 @@ const target = {
 	remoteOid: "b".repeat(40),
 };
 
-function projectPrDisplay(input: PrDisplayInput | null, hasLocalCommit = false) {
+function projectPrDisplay(input: PrDisplayInput | null, hasAheadCommit = false) {
 	return input
-		? projectDiscoveryDisplay({ kind: "current", pullRequest: input }, hasLocalCommit)
-		: projectDiscoveryDisplay({ kind: "none", creationTarget: target }, hasLocalCommit);
+		? projectDiscoveryDisplay({ kind: "current", pullRequest: input })
+		: projectDiscoveryDisplay({
+			kind: "none",
+			creationTarget: target,
+			branch: {
+				branch: target.branch,
+				head: "a".repeat(40),
+				base: { remote: "origin", ref: "main", oid: "b".repeat(40), mergeBase: "b".repeat(40) },
+				ahead: hasAheadCommit ? 1 : 0,
+			},
+		});
 }
 const theme: PrTheme = {
 	fg(color: PrStatusColor | "text", text: string) {
@@ -94,6 +103,11 @@ test("projects normal runnable, merge, and no-action states", () => {
 		color?: PrStatusColor;
 		widget?: string;
 	}> = [
+		{
+			name: "no pull request at resolved parent",
+			input: null,
+			nextStep: "none",
+		},
 		{
 			name: "no pull request after local commit",
 			input: null,

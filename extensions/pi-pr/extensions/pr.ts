@@ -6,7 +6,6 @@ import {
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import { createPrCommandHandler } from "./pr-command.ts";
 import {
-	hasLocalCommit,
 	loadCurrentPullRequest,
 	parsePullRequestObservation,
 	pullRequestObservation,
@@ -35,7 +34,6 @@ const DELEGATED_TOOLS = new Set(["delegate_task", "delegate_flow", "delegate_flo
 
 type PullRequestExtensionDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
-	hasLocalCommit?: typeof hasLocalCommit;
 	createPrCommandHandler?: typeof createPrCommandHandler;
 };
 
@@ -100,7 +98,6 @@ export default function pullRequestExtension(
 	};
 
 	const discover = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
-	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
 	let context: ExtensionContext | undefined;
 	let observation: PullRequestObservation | undefined;
@@ -127,7 +124,6 @@ export default function pullRequestExtension(
 	let lastBlockedIssueKey: string | undefined;
 	let delegatedWorkPending = false;
 	let pendingWorkspaceRename = false;
-	let mergeCompleted = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
 	const activeInvocations = new Map<number, "routing" | "create-workflow" | "workflow">();
@@ -150,7 +146,6 @@ export default function pullRequestExtension(
 	const render = (
 		ctx: ExtensionContext,
 		discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
-		localCommit: boolean,
 	): void => {
 		if (discovery.kind === "inactive") {
 			if (timer !== undefined) clearInterval(timer);
@@ -162,7 +157,7 @@ export default function pullRequestExtension(
 			setWidget(ctx, undefined);
 			return;
 		}
-		const display = projectPrDisplay(discovery, localCommit);
+		const display = projectPrDisplay(discovery);
 		const footer = formatPrFooter(display, ctx.ui.theme);
 		if ((discovery.kind === "current" || discovery.kind === "blocked") && footer === undefined) {
 			throw new Error("Pull request display is missing a footer");
@@ -199,7 +194,6 @@ export default function pullRequestExtension(
 		lastBlockedIssueKey = undefined;
 		delegatedWorkPending = false;
 		pendingWorkspaceRename = false;
-		mergeCompleted = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
 		activeInvocations.clear();
@@ -243,28 +237,26 @@ export default function pullRequestExtension(
 		active = controller;
 		try {
 			let discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>;
-			let localCommit = false;
 			try {
 				discovery = await load(pi, loadContext);
 				if (controller.signal.aborted || sessionGeneration !== generation) return;
-				if (discovery.kind === "none") {
-					localCommit = !mergeCompleted && await detectLocalCommit(pi, loadContext);
-				}
+				render(ctx, discovery);
 			} catch {
-				// Keep an established display. A cold Git-worktree failure gets a sanitized placeholder.
 				if (!controller.signal.aborted && sessionGeneration === generation) {
+					const hadAction = displayedWidget !== undefined;
+					displayedWidget = undefined;
 					if (!displayEstablished) {
 						const unavailable = unavailablePrDisplay();
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
 						setWidget(ctx, undefined);
 						displayEstablished = true;
+					} else if (hadAction) {
+						setWidget(ctx, undefined);
 					}
 					reportRefreshFailure();
 				}
 				return;
 			}
-			if (controller.signal.aborted || sessionGeneration !== generation) return;
-			render(ctx, discovery, localCommit);
 			refreshFailureReported = false;
 
 			const pullRequest = discovery.kind === "current" ? discovery.pullRequest : undefined;
@@ -339,7 +331,6 @@ export default function pullRequestExtension(
 		if (!isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
-			if (GIT_COMMIT.test(command)) mergeCompleted = false;
 			await refresh().catch(reportRefreshFailure);
 		}
 	});
@@ -360,9 +351,8 @@ export default function pullRequestExtension(
 				if (sessionGeneration === generation) {
 					cancelRefresh();
 					activeInvocations.delete(invocation);
-					if (!activeInvocations.size) {
-						setWidget(ctx, displayedWidget);
-					}
+					displayedWidget = undefined;
+					setWidget(ctx, undefined);
 					refreshInBackground();
 				}
 				throw error;
@@ -374,7 +364,6 @@ export default function pullRequestExtension(
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
 				setWidget(ctx, undefined);
 			} else {
-				if (nextStep === "merge") mergeCompleted = true;
 				activeInvocations.delete(invocation);
 				refreshInBackground();
 			}

@@ -59,7 +59,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 | Current condition | `/pr` route |
 | --- | --- |
-| No current-branch pull request, no published matching ref, and safe Git push configuration | Start pull-request creation. |
+| No current-branch pull request, no published matching ref, safe Git push configuration, and at least one commit ahead of the actual parent | Start pull-request creation. |
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
@@ -68,7 +68,11 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
-`pi-pr-create` fetches branches from `origin` and finds the current branch's parent. The parent can be a feature branch. It uses an explicit base when provided. Otherwise, it accepts only a uniquely identifiable parent from reflog and commit history.
+The extension runs the bundled branch inspector before it offers or routes creation. The inspector fetches branches from validated `origin`. It combines the branch-creation reflog with the commit graph. It accepts only one uniquely nearest remote parent.
+
+The parent can be a feature branch. A dirty tree does not make creation available. The current branch must have at least one commit beyond its merge-base with the resolved parent. Missing or ambiguous parent evidence blocks creation.
+
+`pi-pr-create` uses the same machine-readable inspector output. It uses an explicit base when provided, but still requires a commit ahead of the actual parent. It reruns the inspector immediately before Git mutation.
 
 It merges the parent's captured commit before validation and push. It resolves clear conflicts and stops when the base or conflict intent is ambiguous.
 
@@ -115,7 +119,7 @@ The footer and widget load at session start. A directory outside a Git worktree 
 
 They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. Active Git worktrees poll every 30 seconds. Polling updates presentation only and may be stale.
 
-The create widget stays hidden until the local branch has a commit beyond its creation point. Any displayed widget clears as soon as `/pr` starts. A dispatched workflow keeps it hidden until the agent settles. A direct merge, no-action route, or failed command refreshes the widget when the handler finishes.
+The create widget stays hidden until the branch has a commit ahead of its resolved actual parent. Any displayed widget clears as soon as `/pr` starts. A refresh failure also clears it, so stale instructions cannot be run. A dispatched workflow keeps it hidden until the agent settles. A direct merge or no-action route refreshes the widget when the handler finishes.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
@@ -145,5 +149,4 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 - CI repair captures the failed-step log tail and runs one narrow local reproducer before editing.
 - An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
-- After a successful merge, the create widget stays hidden until a new local commit.
 - Only authenticated GitHub.com and GitHub Enterprise repositories are supported.

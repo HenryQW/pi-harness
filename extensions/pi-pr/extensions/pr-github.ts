@@ -4,8 +4,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
 import type {
+	BranchInspection,
+	BranchInspectionBlocker,
 	CiStatus,
 	LocalMergeSafety,
 	PullRequest,
@@ -18,6 +21,8 @@ import type {
 } from "./pr-routing.ts";
 
 const EXEC_TIMEOUT_MS = 10_000;
+const MAX_INSPECTOR_OUTPUT_BYTES = 16_384;
+const BRANCH_INSPECTOR = fileURLToPath(new URL("../skills/pi-pr-create/scripts/inspect-branch.mjs", import.meta.url));
 const PR_DISCOVERY_PAGE_SIZE = 100;
 const PR_DISCOVERY_CAP = 1_000;
 const PR_DISCOVERY_MAX_PAGES = PR_DISCOVERY_CAP / PR_DISCOVERY_PAGE_SIZE;
@@ -59,6 +64,20 @@ const MERGE_STATE_VALUES = new Set([
 ]);
 const REVIEW_DECISION_VALUES = new Set(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"]);
 const MERGE_METHODS: MergeMethod[] = ["merge", "rebase", "squash"];
+const BRANCH_BLOCKER_CODES = new Set([
+	"ambiguous-parent",
+	"cancelled",
+	"detached-head",
+	"git-command-failed",
+	"inspector-failed",
+	"invalid-git-output",
+	"invalid-input",
+	"invalid-ref",
+	"missing-parent-evidence",
+	"output-limit",
+	"timeout",
+	"too-many-parent-candidates",
+]);
 
 export class PullRequestLoadError extends Error {
 	constructor(message: string) {
@@ -297,6 +316,95 @@ function parseCommandOutput(value: unknown, action: string): CommandOutput {
 		!Number.isSafeInteger(code) || code < 0 || typeof killed !== "boolean"
 	) fail(action, "invalid command result");
 	return { stdout, stderr, code, killed };
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+	const actual = Object.keys(value).sort();
+	const expected = [...keys].sort();
+	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+async function parseBranchInspectionBlocker(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	value: unknown,
+	baseRemote: string,
+): Promise<BranchInspectionBlocker> {
+	if (!isRecord(value)) fail("Inspect branch", "invalid blocker");
+	const allowedKeys = value.candidates === undefined ? ["code", "message"] : ["code", "message", "candidates"];
+	if (!hasExactKeys(value, allowedKeys)) fail("Inspect branch", "invalid blocker");
+	const code = text(value.code, "Inspect branch", "blocker code");
+	if (!BRANCH_BLOCKER_CODES.has(code)) fail("Inspect branch", "invalid blocker code");
+	const message = text(value.message, "Inspect branch", "blocker message");
+	if (message.length > 500) fail("Inspect branch", "invalid blocker message");
+	if (value.candidates === undefined) return { code, message };
+	if (!Array.isArray(value.candidates) || value.candidates.length < 2 || value.candidates.length > 100) {
+		fail("Inspect branch", "invalid blocker candidates");
+	}
+	const candidates = value.candidates.map((candidate) => text(candidate, "Inspect branch", "blocker candidate"));
+	const sorted = [...candidates].sort();
+	if (new Set(candidates).size !== candidates.length || candidates.some((candidate, index) => candidate !== sorted[index])) {
+		fail("Inspect branch", "invalid blocker candidates");
+	}
+	for (const candidate of candidates) {
+		if (!candidate.startsWith(`${baseRemote}/`)) fail("Inspect branch", "invalid blocker candidate remote");
+		const ref = candidate.slice(baseRemote.length + 1);
+		const checked = singleLine(
+			(await execute(pi, context, "Validate inspected candidate", "git", ["check-ref-format", "--branch", ref])).stdout,
+			"Validate inspected candidate",
+			"candidate ref",
+		);
+		if (checked !== ref) fail("Validate inspected candidate", "candidate ref changed");
+	}
+	return { code, message, candidates };
+}
+
+async function parseBranchInspection(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	output: string,
+	target: PullRequestTarget,
+	baseRemote: string,
+): Promise<BranchInspection | BranchInspectionBlocker> {
+	if (!output || Buffer.byteLength(output) > MAX_INSPECTOR_OUTPUT_BYTES) {
+		fail("Inspect branch", "invalid inspector output size");
+	}
+	const value = parseJson(output, "Inspect branch");
+	if (!isRecord(value) || value.schemaVersion !== 1 || (value.status !== "ready" && value.status !== "blocked")) {
+		fail("Inspect branch", "invalid inspector output");
+	}
+	if (value.status === "blocked") {
+		if (!hasExactKeys(value, ["schemaVersion", "status", "blocker"])) fail("Inspect branch", "invalid inspector output");
+		return parseBranchInspectionBlocker(pi, context, value.blocker, baseRemote);
+	}
+	if (!hasExactKeys(value, ["schemaVersion", "status", "branch", "head", "base", "ahead"]) || !isRecord(value.base)) {
+		fail("Inspect branch", "invalid inspector output");
+	}
+	if (!hasExactKeys(value.base, ["remote", "ref", "oid", "mergeBase"])) fail("Inspect branch", "invalid base");
+	const branch = text(value.branch, "Inspect branch", "branch");
+	const remote = text(value.base.remote, "Inspect branch", "base remote");
+	const ref = text(value.base.ref, "Inspect branch", "base ref");
+	if (branch !== target.branch || remote !== baseRemote) fail("Inspect branch", "result does not match creation target");
+	const checkedRef = singleLine(
+		(await execute(pi, context, "Validate inspected base", "git", ["check-ref-format", "--branch", ref])).stdout,
+		"Validate inspected base",
+		"base ref",
+	);
+	if (checkedRef !== ref) fail("Validate inspected base", "base ref changed");
+	if (typeof value.ahead !== "number" || !Number.isSafeInteger(value.ahead) || value.ahead < 0) {
+		fail("Inspect branch", "invalid ahead count");
+	}
+	return {
+		branch,
+		head: oid(value.head, "Inspect branch", "HEAD"),
+		base: {
+			remote,
+			ref,
+			oid: oid(value.base.oid, "Inspect branch", "base OID"),
+			mergeBase: oid(value.base.mergeBase, "Inspect branch", "merge-base"),
+		},
+		ahead: value.ahead,
+	};
 }
 
 async function invoke(
@@ -936,27 +1044,34 @@ function parseMergeMethodSettings(output: string, rulesetMethods: MergeMethod[] 
 	return { allowedMergeMethods, viewerDefaultMergeMethod };
 }
 
-export async function hasLocalCommit(
+async function inspectCreationBranch(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-): Promise<boolean> {
-	const branch = singleLine(
-		(await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])).stdout,
-		"Read current branch",
-		"branch",
-	);
-	const output = (await execute(pi, context, "Read branch history", "git", [
-		"reflog",
-		"show",
-		"--format=%H",
-		`refs/heads/${branch}`,
-	])).stdout.replace(/\r\n/g, "\n");
-	const entries = output.split("\n");
-	if (entries.at(-1) === "") entries.pop();
-	if (!entries.length) fail("Read branch history", "missing branch creation entry");
-	const commits = entries.map((entry) => oid(entry, "Read branch history", "commit"));
-	// ponytail: reflog expiry can hide old branch history; resolve the PR base if this becomes observable.
-	return commits[0] !== commits.at(-1);
+	target: PullRequestTarget,
+	baseFetchSource: string,
+): Promise<BranchInspection | BranchInspectionBlocker> {
+	const result = await execute(pi, context, "Inspect branch", process.execPath, [
+		BRANCH_INSPECTOR,
+		"--remote",
+		"origin",
+		"--fetch-source",
+		baseFetchSource,
+	]);
+	if (result.stderr !== "") fail("Inspect branch", "unexpected inspector stderr");
+	return parseBranchInspection(pi, context, result.stdout, target, "origin");
+}
+
+async function creationDiscovery(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+): Promise<CurrentPullRequestDiscovery> {
+	const origin = await readRemoteAuthority(pi, context, "origin");
+	if (!origin) return { kind: "blocked", issue: { kind: "origin-invalid" } };
+	const inspection = await inspectCreationBranch(pi, context, target, origin.fetchSource);
+	return "ahead" in inspection
+		? { kind: "none", creationTarget: target, branch: inspection }
+		: { kind: "blocked", issue: { kind: "branch-parent-unresolved", blocker: inspection } };
 }
 
 async function readRemoteAuthority(
@@ -1544,7 +1659,7 @@ export async function loadCurrentPullRequest(
 			if (!canLinkTarget(await readLinkConfiguration(pi, context, inferred.target), inferred.target)) {
 				return { kind: "blocked", issue: { kind: "link-configuration", remote: inferred.target.remote } };
 			}
-			return { kind: "none", creationTarget: publicTarget(inferred.target) };
+			return creationDiscovery(pi, context, publicTarget(inferred.target));
 		}
 		pushTarget = inferred.target;
 	} else {
@@ -1641,7 +1756,7 @@ export async function loadCurrentPullRequest(
 			}
 			throw error;
 		}
-		if (candidate === null) return { kind: "none", creationTarget: publicTarget(pushTarget) };
+		if (candidate === null) return creationDiscovery(pi, context, publicTarget(pushTarget));
 	}
 
 	return {

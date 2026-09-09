@@ -12,21 +12,34 @@ Never concatenate one into shell syntax. Pass dynamic values through quoted shel
 variables. Use `--` before positional Git arguments when the command supports it.
 Never pass a credential-bearing URL to another command or print it.
 
-1. Fetch current branch refs from `origin` without tags or submodules. Resolve
-   `<base>` from explicit input or the branch's actual parent. The parent may be
-   a feature branch; never assume the repository default branch. To infer it,
-   inspect branch-creation reflogs and the fetched commit graph, excluding the
-   current branch and symbolic refs. Accept history inference only when one
-   validated remote branch is uniquely nearest to `HEAD`. Stop and ask for the
-   base when evidence is absent or ambiguous. Validate `<base>` with
-   `git check-ref-format --branch "$base"`, resolve
-   `refs/remotes/origin/${base}` to a full `<base-oid>`, and use only that OID in
-   `git merge-base HEAD "$base_oid"` and `git diff "$merge_base" --`. Also
-   inspect `git status --short` and staged and unstaged diffs. Never commit
-   `.context/` or unrelated changes.
-2. Commit each coherent pending change with a scoped Conventional Commit. Preserve existing coherent staging; stop when changes cannot be separated safely.
-3. Require an attached branch and a clean tree, then merge the captured base OID
-   with `git merge --no-edit "$base_oid"`. Never merge the mutable branch name.
+1. Resolve `scripts/inspect-branch.mjs` beside this skill's `SKILL.md`. Reproduce
+   the extension's validated `origin` authority. Require one fetch URL, one push
+   URL, and the same GitHub host and repository for both. Run the inspector with
+   an argument array equivalent to:
+   `node "$inspector" --remote origin --fetch-source "$origin_fetch_source"`.
+   Do not infer a parent yourself.
+
+   Consume exactly one JSON object. Require `schemaVersion: 1`. A `blocked`
+   result is a traceable stop; report its blocker and do not commit, push, or
+   create a pull request. A `ready` result supplies the validated `branch`,
+   `head`, `base.remote`, `base.ref`, `base.oid`, `base.mergeBase`, and `ahead`.
+   Require `base.remote` to be `origin` and `ahead` to be at least one. A dirty
+   tree never substitutes for an ahead commit.
+
+   Use the inspected base unless the user gave an explicit base. The actual
+   parent may be a feature branch; never assume the default branch. For an
+   explicit base, retain the inspected actual-parent result for ahead gating,
+   then validate and resolve the explicit base as before. Use only validated
+   OIDs in `git merge-base` and `git diff`. Inspect `git status --short` plus
+   staged and unstaged diffs. Never commit `.context/` or unrelated changes.
+2. Commit each coherent pending change with a scoped Conventional Commit. Immediately before each commit, rerun and validate the inspector. Require the same branch, the current HEAD, a resolved actual base and merge-base, and positive ahead state. Preserve existing coherent staging; stop when changes cannot be separated safely.
+3. Require an attached branch and a clean tree. Immediately before merging,
+   rerun the bundled inspector and consume a fresh validated JSON result. Require
+   the same branch, a validated current `head`, a uniquely resolved base, its
+   current OID and merge-base, and `ahead >= 1`. For an inferred base, use these
+   fresh base fields. For an explicit base, re-resolve and revalidate that base
+   too. Then merge the captured base OID with
+   `git merge --no-edit "$base_oid"`. Never merge the mutable branch name.
    If conflicts occur, list only unmerged paths, inspect bounded conflict hunks,
    preserve compatible changes from both sides, and stage each resolved path.
    Regenerate generated files after resolving their sources. If intended behavior
@@ -63,9 +76,12 @@ Never pass a credential-bearing URL to another command or print it.
    be absent or exactly `simple`. Mark this as the only case that needs a new
    upstream.
 
-   Immediately before push, require local `HEAD` to equal the captured OID.
-   Repeat every destination, remote-ref OID, exact-head PR, configuration, and
-   no-target discovery check. Require every saved field and result to match.
+   Immediately before push, rerun the bundled inspector. Revalidate its JSON,
+   branch, current `HEAD`, actual base ref and OID, merge-base, and positive ahead
+   count. Require the inspected `HEAD` and local `HEAD` to equal the captured
+   push OID. Repeat every destination, remote-ref OID, exact-head PR,
+   configuration, and no-target discovery check. Require every saved field and
+   result to match.
    If the saved remote OID exists, require it to be an ancestor of the captured
    local OID. Push once with a quoted exact lease:
    `git push --porcelain --force-with-lease="refs/heads/${ref}:${remote_oid}"
@@ -81,7 +97,9 @@ Never pass a credential-bearing URL to another command or print it.
    Query open PRs with exact head `<OWNER>:<ref>` and the exact base repository.
    Validate every result's URL, host, head repository, head ref, OID, and base.
    Reuse one result only when its base matches. Refresh its title and body.
-   Stop on a different base or multiple results. Otherwise create with quoted,
-   explicit `--repo`, `--head`, `--base`, title, and body-file arguments.
+   Stop on a different base or multiple results. Immediately before updating or
+   creating the PR, rerun the inspector and require the same validated branch,
+   HEAD, actual base, merge-base, and positive ahead state. Then create with
+   quoted, explicit `--repo`, `--head`, `--base`, title, and body-file arguments.
 7. Reply only with the already validated PR URL. The extension handles any
    Herdr workspace label update after it discovers the open PR.

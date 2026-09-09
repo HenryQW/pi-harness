@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-	hasLocalCommit,
 	linkInferredPullRequest,
 	loadCurrentPullRequest as discoverCurrentPullRequest,
 	PullRequestLoadError,
@@ -71,6 +70,7 @@ type HarnessOptions = {
 	verifyResult?: ReturnType<typeof result>;
 	ancestry?: "behind" | "ahead" | "diverged";
 	ancestryResult?: ReturnType<typeof result>;
+	branchInspection?: unknown;
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -256,6 +256,16 @@ function harness(options: HarnessOptions = {}) {
 	const pi = {
 		exec: async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
 			calls.push({ command, args, options: commandOptions });
+			if (command === process.execPath && args[0]?.endsWith("/skills/pi-pr-create/scripts/inspect-branch.mjs")) {
+				return result(`${JSON.stringify(options.branchInspection ?? {
+					schemaVersion: 1,
+					status: "ready",
+					branch,
+					head: localHead,
+					base: { remote: "origin", ref: "main", oid: BASE_HEAD, mergeBase: BASE_HEAD },
+					ahead: 1,
+				})}\n`);
+			}
 			if (command === "git" && args.join(" ") === "rev-parse --is-inside-work-tree") return result("true\n");
 			if (command === "git" && args.join(" ") === "branch --show-current") {
 				return options.branchResult ?? result(`${branch}\n`);
@@ -501,34 +511,6 @@ async function linkHarness(failures: {
 	};
 	return { ...app, inferred: initial.pullRequest, config, getTrackingOid: () => trackingOid };
 }
-
-test("detects commits added after local branch creation", async (t) => {
-	const repository = mkdtempSync(join(tmpdir(), "pi-pr-local-commit-"));
-	t.after(() => rmSync(repository, { recursive: true, force: true }));
-	git(repository, "init", "-b", "main");
-	git(repository, "config", "user.name", "Pi PR Test");
-	git(repository, "config", "user.email", "pi-pr@example.com");
-	writeFileSync(join(repository, "tracked.txt"), "base\n");
-	git(repository, "add", "tracked.txt");
-	git(repository, "commit", "-m", "base");
-	git(repository, "switch", "-c", "feature");
-
-	const pi = {
-		exec: async (command: string, args: string[]) => {
-			assert.equal(command, "git");
-			return runGit(repository, args);
-		},
-	} as unknown as Parameters<typeof hasLocalCommit>[0];
-	const context = {
-		cwd: repository,
-		signal: new AbortController().signal,
-	} as Parameters<typeof hasLocalCommit>[1];
-
-	assert.equal(await hasLocalCommit(pi, context), false);
-	writeFileSync(join(repository, "tracked.txt"), "changed\n");
-	git(repository, "commit", "-am", "change");
-	assert.equal(await hasLocalCommit(pi, context), true);
-});
 
 test("discovers an upstream PR from repository-scoped ref associations", async () => {
 	const foreign = pullRequest({
@@ -995,7 +977,7 @@ test("blocks a published ref without a PR and an inferred OID mismatch", async (
 });
 
 test("offers creation only after validating origin and finding no published ref", async () => {
-	const { pi, context } = harness({
+	const { pi, context, calls } = harness({
 		pushResult: result("\n"),
 		remote: "origin",
 		remoteNames: ["origin"],
@@ -1015,7 +997,20 @@ test("offers creation only after validating origin and finding no published ref"
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
+		branch: {
+			branch: "feature/local",
+			head: LOCAL_HEAD,
+			base: { remote: "origin", ref: "main", oid: BASE_HEAD, mergeBase: BASE_HEAD },
+			ahead: 1,
+		},
 	});
+	const inspector = calls.find(({ command }) => command === process.execPath);
+	assert.deepEqual(inspector?.args.slice(1), [
+		"--remote", "origin", "--fetch-source", "git@github.com:acme/project.git",
+	]);
+	assert.equal(inspector?.options?.cwd, "/repo");
+	assert.equal(inspector?.options?.signal, context.signal);
+	assert.equal(inspector?.options?.timeout, 10_000);
 
 	const invalid = harness({
 		pushResult: result("\n"),
@@ -1048,6 +1043,58 @@ test("offers creation only after validating origin and finding no published ref"
 			issue: { kind: "link-configuration", remote: "origin" },
 		});
 	}
+});
+
+test("blocks creation when the authoritative parent inspector is unresolved", async () => {
+	const app = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		branchInspection: {
+			schemaVersion: 1,
+			status: "blocked",
+			blocker: {
+				code: "ambiguous-parent",
+				message: "More than one remote parent is equally nearest to HEAD",
+				candidates: ["origin/main", "origin/release"],
+			},
+		},
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(app.pi, app.context), {
+		kind: "blocked",
+		issue: {
+			kind: "branch-parent-unresolved",
+			blocker: {
+				code: "ambiguous-parent",
+				message: "More than one remote parent is equally nearest to HEAD",
+				candidates: ["origin/main", "origin/release"],
+			},
+		},
+	});
+});
+
+test("rejects malformed authoritative inspector JSON", async () => {
+	const app = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		branchInspection: {
+			schemaVersion: 1,
+			status: "ready",
+			branch: "feature/local",
+			head: LOCAL_HEAD,
+			base: { remote: "origin", ref: "main", oid: BASE_HEAD, mergeBase: BASE_HEAD },
+			ahead: 1,
+			unexpected: true,
+		},
+	});
+
+	await assert.rejects(discoverCurrentPullRequest(app.pi, app.context), /Inspect branch failed: invalid inspector output/);
 });
 
 test("links an inferred target only after fresh verification", async () => {
