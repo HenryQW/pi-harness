@@ -694,7 +694,8 @@ class CodexQuotaStatus {
 					return `Codex slot ${slot}${tier}: five-hour limit reached, resets in ${formatDuration(snapshot.limitedUntil! - now)} (${status})`;
 				}
 				const display = displayedReset(snapshot, now);
-				return `Codex slot ${slot}${tier}: ${formatPercent(snapshot.remaining)}% remaining, resets in ${formatDuration(display.time - now)} (${status})`;
+				const resetWindow = display.label === "5h" ? "five-hour" : "seven-day";
+				return `Codex slot ${slot}${tier}: ${formatPercent(snapshot.remaining)}% of the seven-day quota remaining; ${resetWindow} reset in ${formatDuration(display.time - now)} (${status})`;
 			});
 	}
 }

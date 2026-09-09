@@ -410,9 +410,9 @@ test("malformed config is preserved, warns once, and disables 429 switching", as
 });
 
 test("shows the five-hour reset below Pro Lite and the seven-day reset at Pro Lite", async () => {
-	for (const [tier, footerWindow, statusReset] of [
-		["plus", "5h 30m", "30m"],
-		["prolite", "7d 1h", "1h"],
+	for (const [tier, footerWindow, status] of [
+		["plus", "5h 30m", "Codex slot 1 (plus): 50% of the seven-day quota remaining; five-hour reset in 30m (measured)"],
+		["prolite", "7d 1h", "Codex slot 1 (prolite): 50% of the seven-day quota remaining; seven-day reset in 1h (measured)"],
 	] as const) {
 		await withApp({ 1: 50 }, [], async ({ agentDir, commands, handlers, ctx, notices, statuses }) => {
 			const cache = usagePath(agentDir);
@@ -424,7 +424,7 @@ test("shows the five-hour reset below Pro Lite and the seven-day reset at Pro Li
 			handlers.get("session_start")?.({ type: "session_start" }, ctx);
 			assert.equal(statuses.at(-1), `<success>Codex #1 · 50% · ${footerWindow}</success>`);
 			await commands.get("codex-status")?.("", ctx);
-			assert.equal(notices.at(-1), `Codex slot 1 (${tier}): 50% remaining, resets in ${statusReset} (measured)`);
+			assert.equal(notices.at(-1), status);
 		});
 	}
 });
