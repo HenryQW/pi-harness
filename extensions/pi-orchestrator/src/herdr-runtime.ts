@@ -508,20 +508,20 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	async allocateHost(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; launch?: VerifiedImplementerLaunch },
+		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; verifyLaunch?: () => Promise<VerifiedImplementerLaunch> },
 		context: OperationContext,
 	): Promise<AllocationResult> {
 		requireIntentIdentity(input.intent, input.attempt);
 		const details = parseDetails(input.intent);
 		if (details.kind === "workspace") {
-			if (input.launch) throw new Error("Implementer launch argv is valid only at the agent allocation boundary.");
+			if (input.verifyLaunch) throw new Error("Implementer launch verification is valid only at the agent allocation boundary.");
 			return await this.allocateWorkspace(details, input.intent, input.attempt, context);
 		}
 		if (details.kind === "worker_tab") {
-			if (input.launch) throw new Error("Implementer launch argv is valid only at the agent allocation boundary.");
+			if (input.verifyLaunch) throw new Error("Implementer launch verification is valid only at the agent allocation boundary.");
 			return await this.allocateWorkerTab(details, input.intent, input.attempt, context);
 		}
-		return await this.allocateAgent(details, input.intent, input.attempt, input.launch, context);
+		return await this.allocateAgent(details, input.intent, input.attempt, input.verifyLaunch, context);
 	}
 
 	async reconcileHostAllocation(
@@ -582,24 +582,35 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		assertAgentDetails(details, input.intent, input.attempt);
 		this.assertLeasePath(details.leasePath, input.intent.token);
-		const agents = (await this.listAgents(details.worktreeCwd, context)).map((agent) => {
-			const name = agent.name;
-			if (name !== undefined && name !== null && typeof name !== "string") throw new Error("Herdr listed agent name is malformed.");
+		try {
+			await this.assertPrivateLease(details.leasePath, false);
+			const agents = (await this.listAgents(details.worktreeCwd, context)).map((agent) => {
+				const name = agent.name;
+				if (name !== undefined && name !== null && typeof name !== "string") throw new Error("Herdr listed agent name is malformed.");
+				return {
+					name: typeof name === "string" ? name : undefined,
+					paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
+					tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
+				};
+			});
+			const matches = agents.filter((agent) => agent.name === details.agentName || agent.paneId === details.paneId || agent.tabId === details.tabId);
+			const holders = await this.scanLease(details.leasePath, details.worktreeCwd, context);
+			const possible = [
+				...matches.map((agent) => `possible agent ${agent.name ?? "without expected name"} in pane ${agent.paneId}`),
+				...holders.map((pid) => `lease holder pid ${pid}`),
+			];
+			if (possible.length) {
+				return { outcome: "possible", failure: "A possible prior agent allocation or lease holder remains; it was not adopted or touched.", possibleResources: possible };
+			}
+			await this.assertStartableAgentPane(details, context);
+			return { outcome: "absent" };
+		} catch (error) {
 			return {
-				name: typeof name === "string" ? name : undefined,
-				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
-				tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
+				outcome: "possible",
+				failure: `A prior agent allocation cannot be proved absent: ${safeText(error)}`,
+				possibleResources: [details.agentName, details.paneId, details.leasePath],
 			};
-		});
-		const matches = agents.filter((agent) => agent.name === details.agentName || agent.paneId === details.paneId || agent.tabId === details.tabId);
-		const holders = await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true);
-		const possible = [
-			...matches.map((agent) => `possible agent ${agent.name ?? "without expected name"} in pane ${agent.paneId}`),
-			...holders.map((pid) => `lease holder pid ${pid}`),
-		];
-		return possible.length
-			? { outcome: "possible", failure: "A possible prior agent allocation or lease holder remains; it was not adopted or touched.", possibleResources: possible }
-			: { outcome: "absent" };
+		}
 	}
 
 	async runWorker(
@@ -843,9 +854,10 @@ export class HerdrHostRuntime implements HostRuntime {
 			const pane = record(result.root_pane, "Herdr created tab root pane");
 			const tabId = exactString(tab.tab_id, "created tab_id");
 			const paneId = exactString(pane.pane_id, "created root pane_id");
-			if (tab.workspace_id !== details.workspaceId || tab.label !== details.label || tab.focused !== false
+			if (tabId === details.workspaceRootTabId || paneId === details.workspaceRootPaneId
+				|| tab.workspace_id !== details.workspaceId || tab.label !== details.label || tab.focused !== false || tab.pane_count !== 1
 				|| pane.workspace_id !== details.workspaceId || pane.tab_id !== tabId || pane.cwd !== details.worktreeCwd || pane.focused !== false) {
-				throw new Error("Herdr tab create response does not prove the exact non-focused worker tab.");
+				throw new Error("Herdr tab create response does not prove one exact non-focused worker pane distinct from the workspace root.");
 			}
 			return { outcome: "owned", resourceId: tabId, resources: { rootPaneId: paneId, leasePath: details.leasePath } };
 		} catch (error) {
@@ -857,19 +869,26 @@ export class HerdrHostRuntime implements HostRuntime {
 		details: AgentDetails,
 		intent: AllocationIntent,
 		attempt: TaskAttempt,
-		launch: VerifiedImplementerLaunch | undefined,
+		verifyLaunch: (() => Promise<VerifiedImplementerLaunch>) | undefined,
 		context: OperationContext,
 	): Promise<AllocationResult> {
 		assertAgentDetails(details, intent, attempt);
-		if (!launch || launch.role !== "implementer") throw new Error("Agent start requires an immediate prelaunch-verified Implementer argv.");
-		if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
+		if (!verifyLaunch) throw new Error("Agent start requires immediate Implementer launch verification.");
 		this.assertLeasePath(details.leasePath, intent.token);
 		await this.assertPrivateLease(details.leasePath, false);
+		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context)).length) {
+			throw new Error("Agent start requires an empty exact process lease.");
+		}
+		await this.assertStartableAgentPane(details, context);
+		const options = this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
+		const launch = await verifyLaunch();
+		if (launch.role !== "implementer") throw new Error("Agent start verification returned the wrong Role.");
+		if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
 		const response = await startPiAgent(this.herdr, {
 			name: details.agentName,
 			pane: details.paneId,
 			args: launch.args,
-			options: this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+			options,
 			shouldRetry: () => false,
 		});
 		if (response.code !== 0 || response.killed) {
@@ -930,6 +949,44 @@ export class HerdrHostRuntime implements HostRuntime {
 			// Terminal text is diagnostic only; lifecycle evidence remains authoritative.
 		}
 		return prefix;
+	}
+
+	private async assertStartableAgentPane(details: AgentDetails, context: OperationContext): Promise<void> {
+		const paneResponse = await this.herdr.json(
+			["pane", "get", details.paneId],
+			this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+		);
+		const paneResult = resultRecord(paneResponse, "Herdr agent pane response");
+		if (paneResult.type !== "pane_info") throw new Error("Herdr agent pane response has the wrong type.");
+		const pane = record(paneResult.pane, "Herdr agent pane");
+		if (exactString(pane.pane_id, "Herdr agent pane ID") !== details.paneId
+			|| exactString(pane.tab_id, "Herdr agent pane tab ID") !== details.tabId
+			|| exactString(pane.workspace_id, "Herdr agent pane workspace ID") !== details.workspaceId
+			|| pane.cwd !== details.worktreeCwd || pane.foreground_cwd !== details.worktreeCwd
+			|| pane.agent !== null || pane.agent_status !== "unknown") {
+			throw new Error("The exact saved agent pane is not empty and startable in its owned worktree.");
+		}
+
+		const processResponse = await this.herdr.json(
+			["pane", "process-info", "--pane", details.paneId],
+			this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+		);
+		const processResult = resultRecord(processResponse, "Herdr agent pane process-info response");
+		if (processResult.type !== "pane_process_info") throw new Error("Herdr agent pane process-info response has the wrong type.");
+		const processInfo = record(processResult.process_info, "Herdr agent pane process-info");
+		const shellPid = processInfo.shell_pid;
+		const foreground = processInfo.foreground_processes;
+		if (exactString(processInfo.pane_id, "Herdr agent process pane ID") !== details.paneId
+			|| !Number.isSafeInteger(shellPid) || Number(shellPid) <= 0
+			|| processInfo.foreground_process_group_id !== shellPid
+			|| !Array.isArray(foreground) || foreground.length !== 1) {
+			throw new Error("The exact saved agent pane process state is not an idle foreground shell.");
+		}
+		const shell = record(foreground[0], "Herdr agent pane foreground process");
+		if (shell.pid !== shellPid || shell.cwd !== details.worktreeCwd) {
+			throw new Error("The exact saved agent pane foreground process is not its owned idle shell.");
+		}
+		exactString(shell.name, "Herdr agent pane shell name");
 	}
 
 	private async createPrivateLease(path: string, token: string): Promise<void> {

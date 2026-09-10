@@ -301,15 +301,16 @@ class FakeRuntime implements OrchestratorRuntime {
 	}
 
 	async allocateHost(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; launch?: VerifiedImplementerLaunch },
+		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; verifyLaunch?: () => Promise<VerifiedImplementerLaunch> },
 		context: OperationContext,
 	): Promise<AllocationResult> {
 		if (input.intent.kind === "agent") {
-			if (!input.launch) throw new Error("missing verified Implementer launch");
+			if (!input.verifyLaunch) throw new Error("missing Implementer launch verification");
+			const launch = await input.verifyLaunch();
 			this.agentStartCalls.push({
-				launchKey: input.launch.key,
-				args: [...input.launch.args],
-				exposedPersistedFields: "rawArgs" in input.launch || "prompt" in input.launch,
+				launchKey: launch.key,
+				args: [...launch.args],
+				exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
 			});
 		}
 		return this.allocation(input, context);

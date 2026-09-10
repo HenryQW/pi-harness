@@ -280,6 +280,34 @@ function lsof(path: string, stdout = "", code = stdout ? 0 : 1, pid?: number): S
 	};
 }
 
+function startablePaneSteps(paths: Paths, processOverrides: Record<string, unknown> = {}): Step[] {
+	const shellPid = 501;
+	return [
+		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: success({
+			type: "pane_info",
+			pane: {
+				pane_id: WORKER_PANE_ID,
+				tab_id: WORKER_TAB_ID,
+				workspace_id: WORKSPACE_ID,
+				cwd: paths.worktree,
+				foreground_cwd: paths.worktree,
+				agent: null,
+				agent_status: "unknown",
+			},
+		}) },
+		{ command: "herdr", args: ["pane", "process-info", "--pane", WORKER_PANE_ID], result: success({
+			type: "pane_process_info",
+			process_info: {
+				pane_id: WORKER_PANE_ID,
+				shell_pid: shellPid,
+				foreground_process_group_id: shellPid,
+				foreground_processes: [{ pid: shellPid, name: "zsh", cwd: paths.worktree }],
+				...processOverrides,
+			},
+		}) },
+	];
+}
+
 function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: running\nversion: 0.9.0\nendpoint_compatible: yes\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"): Step[] {
 	return [
 		{ command: "herdr", args: ["--version"], result: { code: 0, stdout: "herdr 0.9.0\n", stderr: "" } },
@@ -378,19 +406,97 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	Object.assign(tabIntent, { status: "owned", resourceId: WORKER_TAB_ID, resources: tab.outcome === "owned" ? tab.resources : undefined });
 
 	const agentIntent = await plannedIntent(host, attempt, "agent");
-	script.push({
-		command: "herdr",
-		args: (args) => {
-			assert.deepEqual(args, [
-				"agent", "start", AGENT_NAME, "--kind", "pi", "--pane", WORKER_PANE_ID, "--",
-				...launch.args,
-			]);
-			assert.ok(!args.includes("Implementer raw prompt must stay private"));
+	let verified = false;
+	script.push(
+		lsof(tabDetails.leasePath),
+		...startablePaneSteps(fixture),
+		{
+			command: "herdr",
+			args: (args) => {
+				assert.equal(verified, true);
+				assert.deepEqual(args, [
+					"agent", "start", AGENT_NAME, "--kind", "pi", "--pane", WORKER_PANE_ID, "--",
+					...launch.args,
+				]);
+				assert.ok(!args.includes("Implementer raw prompt must stay private"));
+			},
+			result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
 		},
-		result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
-	});
-	const agent = await host.allocateHost({ intent: agentIntent, task, attempt, launch }, context());
+	);
+	const agent = await host.allocateHost({
+		intent: agentIntent,
+		task,
+		attempt,
+		verifyLaunch: async () => {
+			assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
+				["lsof-test", "-nP", "-a", "-F", "p", "--", tabDetails.leasePath],
+				["herdr", "pane", "get", WORKER_PANE_ID],
+				["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
+			]);
+			verified = true;
+			return launch;
+		},
+	}, context());
 	assert.deepEqual(agent, { outcome: "owned", resourceId: AGENT_NAME, resources: { paneId: WORKER_PANE_ID } });
+	script.done();
+});
+
+test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and mismatched panes", async (t) => {
+	const fixture = await paths(t);
+	for (const [name, tabOverrides, paneOverrides] of [
+		["root tab alias", { tab_id: ROOT_TAB_ID }, { tab_id: ROOT_TAB_ID }],
+		["root pane alias", {}, { pane_id: ROOT_PANE_ID }],
+		["multiple panes", { pane_count: 2 }, {}],
+		["mismatched pane", {}, { tab_id: "tab-decoy" }],
+	] as const) {
+		await t.test(name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const attempt = baseAttempt(fixture);
+			const workspaceDetails = await host.planHostAllocation({ kind: "workspace", task, attempt, owned: owned(attempt) }, context());
+			addOwnedWorkspace(attempt, workspaceDetails);
+			const intent = await plannedIntent(host, attempt, "worker_tab");
+			script.push({
+				command: "herdr",
+				args: () => {},
+				result: success({
+					type: "tab_created",
+					tab: tabInfo({ pane_count: 1, ...tabOverrides }),
+					root_pane: {
+						pane_id: WORKER_PANE_ID,
+						workspace_id: WORKSPACE_ID,
+						tab_id: WORKER_TAB_ID,
+						cwd: fixture.worktree,
+						focused: false,
+						...paneOverrides,
+					},
+				}),
+			});
+			assert.equal((await host.allocateHost({ intent, task, attempt }, context())).outcome, "unknown");
+			script.done();
+		});
+	}
+});
+
+test("last-moment launch resource drift blocks start after lease and pane proofs", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt, leasePath } = await fullAttempt(fixture, host);
+	attempt.allocations.pop();
+	const intent = await plannedIntent(host, attempt, "agent");
+	await privateLease(leasePath);
+	script.push(lsof(leasePath), ...startablePaneSteps(fixture));
+	await assert.rejects(host.allocateHost({
+		intent,
+		task,
+		attempt,
+		verifyLaunch: async () => {
+			assert.equal(script.calls.length, 3);
+			throw new Error("Implementer extension fingerprint drifted");
+		},
+	}, context()), /fingerprint drifted/);
+	assert.ok(script.calls.every(({ args }) => !(args[0] === "agent" && args[1] === "start")));
 	script.done();
 });
 
@@ -402,12 +508,12 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 	attempt.allocations.pop();
 	const intent = await plannedIntent(host, attempt, "agent");
 	await privateLease(leasePath);
-	script.push({ command: "herdr", args: () => {}, result: failure("agent_pane_busy") });
-	assert.deepEqual(await host.allocateHost({ intent, task, attempt, launch }, context()), {
+	script.push(lsof(leasePath), ...startablePaneSteps(fixture), { command: "herdr", args: () => {}, result: failure("agent_pane_busy") });
+	assert.deepEqual(await host.allocateHost({ intent, task, attempt, verifyLaunch: async () => launch }, context()), {
 		outcome: "absent",
 		failure: "herdr agent start failed: {\"error\":{\"code\":\"agent_pane_busy\"}}",
 	});
-	assert.equal(script.calls.length, 1);
+	assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, 1);
 	script.done();
 });
 
@@ -433,6 +539,7 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				const intent = await plannedIntent(host, attempt, kind);
 				if (kind === "worker_tab") leasePath = (JSON.parse(intent.details) as { leasePath: string }).leasePath;
 				const malformed = boundary === "malformed-after-side-effect";
+				if (kind === "agent") script.push(lsof(leasePath!), ...startablePaneSteps(fixture));
 				script.push({
 					command: "herdr",
 					args: () => {},
@@ -441,10 +548,10 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 						: { error: new Error(boundary === "before-side-effect" ? "spawn failed" : "result lost") }),
 				});
 				if (malformed) {
-					const result = await host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { launch } : {}) }, context());
+					const result = await host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { verifyLaunch: async () => launch } : {}) }, context());
 					assert.equal(result.outcome, "unknown");
 				} else {
-					await assert.rejects(host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { launch } : {}) }, context()), /spawn failed|result lost/);
+					await assert.rejects(host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { verifyLaunch: async () => launch } : {}) }, context()), /spawn failed|result lost/);
 				}
 				intent.status = "unknown";
 				const exists = boundary !== "before-side-effect";
@@ -465,7 +572,7 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 					script.push({ command: "herdr", args: ["agent", "list"], result: success({
 						type: "agent_list",
 						agents: exists ? [agentInfo("idle", true, { cwd: fixture.worktree })] : [],
-					}) }, lsof(leasePath!));
+					}) }, lsof(leasePath!), ...(exists ? [] : startablePaneSteps(fixture)));
 				}
 				const reconciled = await host.reconcileHostAllocation({ intent, task, attempt }, context());
 				assert.equal(reconciled.outcome, exists ? "possible" : "absent");
@@ -551,11 +658,55 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			const intent = attempt.allocations.at(-1)!;
 			intent.status = "unknown";
 			delete intent.resourceId;
-			if (holder) await privateLease(leasePath);
-			script.push({ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents }) });
-			if (holder) script.push(lsof(leasePath, "p83\n"));
+			await privateLease(leasePath);
+			script.push(
+				{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents }) },
+				lsof(leasePath, holder ? "p83\n" : ""),
+				...(outcome === "absent" ? startablePaneSteps(fixture) : []),
+			);
 			assert.equal((await host.reconcileHostAllocation({ intent, task, attempt }, context())).outcome, outcome);
+			script.done();
 		}
+	});
+
+	await t.test("agent absence requires the secure saved lease and a startable exact pane", async () => {
+		const missingScript = new ScriptedProcess();
+		const missingHost = runtime(fixture, missingScript);
+		const missing = await fullAttempt(fixture, missingHost);
+		const missingIntent = missing.attempt.allocations.at(-1)!;
+		missingIntent.status = "unknown";
+		delete missingIntent.resourceId;
+		assert.equal((await missingHost.reconcileHostAllocation({ intent: missingIntent, task, attempt: missing.attempt }, context())).outcome, "possible");
+		assert.equal(missingScript.calls.length, 0);
+
+		const partialScript = new ScriptedProcess();
+		const partialHost = runtime(fixture, partialScript);
+		const partial = await fullAttempt(fixture, partialHost);
+		const partialIntent = partial.attempt.allocations.at(-1)!;
+		partialIntent.status = "unknown";
+		delete partialIntent.resourceId;
+		await privateLease(partial.leasePath);
+		partialScript.push(
+			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
+			lsof(partial.leasePath),
+			...startablePaneSteps(fixture, {
+				foreground_process_group_id: 777,
+				foreground_processes: [{ pid: 777, name: "node", cwd: fixture.worktree }],
+			}),
+		);
+		assert.equal((await partialHost.reconcileHostAllocation({ intent: partialIntent, task, attempt: partial.attempt }, context())).outcome, "possible");
+		partialScript.done();
+
+		const malformedScript = new ScriptedProcess();
+		const malformedHost = runtime(fixture, malformedScript);
+		const malformed = await fullAttempt(fixture, malformedHost);
+		const malformedIntent = malformed.attempt.allocations.at(-1)!;
+		malformedIntent.status = "unknown";
+		delete malformedIntent.resourceId;
+		await privateLease(malformed.leasePath);
+		malformedScript.push({ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: "ambiguous" }) });
+		assert.equal((await malformedHost.reconcileHostAllocation({ intent: malformedIntent, task, attempt: malformed.attempt }, context())).outcome, "possible");
+		malformedScript.done();
 	});
 });
 

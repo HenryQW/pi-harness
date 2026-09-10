@@ -137,8 +137,8 @@ export interface HostRuntime {
 		intent: AllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		/** Present only for the non-idempotent agent start action. */
-		launch?: VerifiedImplementerLaunch;
+		/** Invoked only as the final asynchronous boundary before the non-idempotent agent start. */
+		verifyLaunch?: () => Promise<VerifiedImplementerLaunch>;
 	}, context: OperationContext): Promise<AllocationResult>;
 	reconcileHostAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
 	runWorker(input: {
@@ -656,14 +656,16 @@ export class OrchestratorRunner {
 								await handle.save();
 							},
 						}, context))
-						: await scope.call(async (context) => {
-							if (kind !== "agent") {
-								return await this.runtime.allocateHost({ intent, task: request, attempt }, context);
-							}
-							const launch = await this.runtime.verifyLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
-							if (launch.role !== "implementer") throw new Error("Implementer launch verification returned the wrong Role.");
-							return await this.runtime.allocateHost({ intent, task: request, attempt, launch }, context);
-						});
+						: await scope.call(async (context) => await this.runtime.allocateHost({
+							intent,
+							task: request,
+							attempt,
+							...(kind === "agent" ? { verifyLaunch: async () => {
+								const launch = await this.runtime.verifyLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
+								if (launch.role !== "implementer") throw new Error("Implementer launch verification returned the wrong Role.");
+								return launch;
+							} } : {}),
+						}, context));
 				} catch (error) {
 					intent.status = "unknown";
 					intent.failure = `Allocation result is unknown: ${errorText(error)}`;
