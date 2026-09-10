@@ -7,7 +7,7 @@ function recognizedCommand(command: string): string | undefined {
 	if (shellControlSyntax.test(command)) return undefined;
 
 	const trimmed = command.trim();
-	if (trimmed.startsWith("rtk") || !directPnpmTest.test(trimmed)) return undefined;
+	if (!directPnpmTest.test(trimmed)) return undefined;
 	return trimmed;
 }
 
