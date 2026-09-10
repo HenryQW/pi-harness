@@ -58,6 +58,7 @@ export {
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
+export const PI_ORCHESTRATOR_PROCESS_LEASE = "PI_ORCHESTRATOR_PROCESS_LEASE";
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",

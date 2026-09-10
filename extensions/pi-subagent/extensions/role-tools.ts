@@ -1,7 +1,10 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { lstatSync } from "node:fs";
+import { isAbsolute } from "node:path";
+import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	CHILD_EXCLUDED_TOOL_NAMES,
 	EXECUTION_BUDGET_ENV,
+	PI_ORCHESTRATOR_PROCESS_LEASE,
 	ROLE_TOOL_POLICY_FLAG,
 	type EphemeralSubagentExecutionBudget,
 } from "@henryqw/pi-subagent";
@@ -9,11 +12,26 @@ import {
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
 const WARNING_RATIO = 0.8;
 const WARNING_MESSAGE_TYPE = "pi-subagent-execution-budget";
+const PROCESS_LEASE_ERROR = `${PI_ORCHESTRATOR_PROCESS_LEASE} must be a nonempty NUL/newline-free absolute path naming a regular non-symlink file owned by the current uid with mode 0600.`;
 const FINAL_HANDOFF_MESSAGE = {
 	customType: "pi-subagent-final-handoff",
 	content: "**Final handoff required.** Tools are disabled. If your assigned task or Role requires exact output, reply only with that output instead; it takes precedence over this decision packet. Otherwise, reply only with this decision packet:\n\n**Status:** completed | blocked | incomplete\n**Outcome:** one sentence describing what is now true\n**Evidence:** up to three concrete findings, changes, or checks; include an attempted approach only when it prevents Main from repeating failed work\n**Blocker:** none or the exact blocker\n**Risk:** none or one material risk\n**Suggested next:** none or one concrete action",
 	display: true,
 };
+
+function validateProcessLease(path: string): void {
+	if (!path || /[\0\r\n]/.test(path) || !isAbsolute(path)) throw new Error(PROCESS_LEASE_ERROR);
+	let stats;
+	try {
+		stats = lstatSync(path);
+	} catch (error) {
+		throw new Error(PROCESS_LEASE_ERROR, { cause: error });
+	}
+	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+	if (uid === undefined || !stats.isFile() || stats.isSymbolicLink() || stats.uid !== uid || (stats.mode & 0o7777) !== 0o600) {
+		throw new Error(PROCESS_LEASE_ERROR);
+	}
+}
 
 function configuredTools(value: unknown): string[] {
 	if (typeof value !== "string") throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
@@ -80,6 +98,8 @@ function joinBudgetParts(parts: string[]): string {
 }
 
 export default function roleTools(pi: ExtensionAPI): void {
+	const processLease = process.env[PI_ORCHESTRATOR_PROCESS_LEASE];
+	if (processLease !== undefined) validateProcessLease(processLease);
 	pi.registerFlag(ROLE_TOOL_POLICY_FLAG, {
 		description: "Internal Pi Subagent Role tool policy",
 		type: "string",
@@ -106,6 +126,12 @@ export default function roleTools(pi: ExtensionAPI): void {
 		}
 	});
 
+	if (processLease !== undefined) {
+		pi.on("tool_call", (event) => {
+			if (!isToolCallEventType("bash", event)) return;
+			event.input.command = `exec 9>>"$${PI_ORCHESTRATOR_PROCESS_LEASE}"\n${event.input.command}`;
+		});
+	}
 	if (!budget) return;
 	const warningTurn = Math.ceil(budget.maxTurns * WARNING_RATIO);
 	const warningTokens = budget.maxTokens === undefined ? undefined : Math.ceil(budget.maxTokens * WARNING_RATIO);

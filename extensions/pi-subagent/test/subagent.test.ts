@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	capEphemeralSubagentOutput as capOutput,
 	EphemeralSubagentError,
+	PI_ORCHESTRATOR_PROCESS_LEASE,
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
 import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
@@ -20,6 +21,7 @@ import {
 	WorkflowFailureError,
 	type BackgroundWorkflowTransportDetails,
 } from "../extensions/result-transport.ts";
+import roleTools from "../extensions/role-tools.ts";
 import subagentExtension, { MAX_WIDGET_ACTIVE_TOOLS } from "../extensions/subagent.ts";
 import { parseWorkflow, WorkflowSchema } from "../extensions/workflow.ts";
 import { loadRoles } from "../src/index.ts";
@@ -35,6 +37,76 @@ type Tool = {
 	renderResult?: (...args: any[]) => { render: (width: number) => string[] };
 	execute: (...args: any[]) => Promise<any>;
 };
+
+type ToolCallHandler = (event: any) => unknown;
+
+function loadRoleTools(processLease: string | undefined): { events: string[]; toolCall?: ToolCallHandler } {
+	const previousLease = process.env[PI_ORCHESTRATOR_PROCESS_LEASE];
+	if (processLease === undefined) delete process.env[PI_ORCHESTRATOR_PROCESS_LEASE];
+	else process.env[PI_ORCHESTRATOR_PROCESS_LEASE] = processLease;
+	const events: string[] = [];
+	let toolCall: ToolCallHandler | undefined;
+	try {
+		roleTools({
+			registerFlag() {},
+			on(event: string, handler: (...args: any[]) => unknown) {
+				events.push(event);
+				if (event === "tool_call") toolCall = handler;
+			},
+		} as unknown as ExtensionAPI);
+		return { events, toolCall };
+	} finally {
+		if (previousLease === undefined) delete process.env[PI_ORCHESTRATOR_PROCESS_LEASE];
+		else process.env[PI_ORCHESTRATOR_PROCESS_LEASE] = previousLease;
+	}
+}
+
+test("process lease activates the role-tools hook with the exact Bash prefix", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-subagent-lease-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const lease = join(dir, "lease");
+	await writeFile(lease, "");
+	await chmod(lease, 0o600);
+	const extension = loadRoleTools(lease);
+	assert.equal(extension.events.filter((event) => event === "tool_call").length, 1);
+	assert.ok(extension.toolCall);
+	const bash = { type: "tool_call", toolCallId: "bash", toolName: "bash", input: { command: "printf ready" } };
+	extension.toolCall(bash);
+	assert.equal(bash.input.command, 'exec 9>>"$PI_ORCHESTRATOR_PROCESS_LEASE"\nprintf ready');
+	const read = { type: "tool_call", toolCallId: "read", toolName: "read", input: { path: "file.txt" } };
+	extension.toolCall(read);
+	assert.deepEqual(read.input, { path: "file.txt" });
+});
+
+test("process lease absence leaves ordinary role-tools calls unchanged", () => {
+	const extension = loadRoleTools(undefined);
+	assert.equal(extension.events.includes("tool_call"), false);
+});
+
+test("process lease rejects invalid paths, file types, owners, and modes", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-subagent-lease-invalid-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const regular = join(dir, "regular");
+	await writeFile(regular, "");
+	await chmod(regular, 0o600);
+	const badMode = join(dir, "bad-mode");
+	await writeFile(badMode, "");
+	await chmod(badMode, 0o640);
+	const link = join(dir, "link");
+	await symlink(regular, link);
+	for (const path of ["", "relative", `${dir}/newline\npath`, `${dir}/nul\0path`, join(dir, "missing"), dir, link, badMode]) {
+		assert.throws(() => loadRoleTools(path), /PI_ORCHESTRATOR_PROCESS_LEASE/);
+	}
+	const getuid = process.getuid;
+	if (!getuid) return;
+	const currentUid = getuid();
+	process.getuid = () => currentUid === 0 ? 1 : 0;
+	try {
+		assert.throws(() => loadRoleTools(regular), /PI_ORCHESTRATOR_PROCESS_LEASE/);
+	} finally {
+		process.getuid = getuid;
+	}
+});
 
 function singleEvidence(text: string, _details: any, kind: "assistant" | "failure"): string {
 	const match = /^- \[1\/1\] .+? · (result|failure):\n/m.exec(text);
