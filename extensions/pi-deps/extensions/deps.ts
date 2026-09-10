@@ -22,7 +22,7 @@ async function existingHook(path: string): Promise<string | undefined> {
 	}
 }
 
-export async function toggleDependencyHook(commonGitDir: string): Promise<{ enabled: boolean; path: string }> {
+async function toggleDependencyHook(commonGitDir: string): Promise<{ enabled: boolean; path: string }> {
 	const source = await readFile(hookSourcePath, "utf8");
 	const path = join(commonGitDir, "hooks", "post-checkout");
 	const existing = await existingHook(path);
@@ -83,7 +83,7 @@ interface InstallStatus {
 	message?: string;
 }
 
-export interface InstallWatchContext {
+interface InstallWatchContext {
 	cwd: string;
 	mode?: string;
 	ui: Pick<ExtensionUIContext, "setWidget">;
@@ -91,7 +91,7 @@ export interface InstallWatchContext {
 
 // Watches the status file written by the background installer spawned by the post-checkout hook.
 // First consumer wins: the status file is removed once reported.
-export async function watchDependencyInstallation(
+async function watchDependencyInstallation(
 	exec: ExtensionAPI["exec"],
 	ctx: InstallWatchContext,
 ): Promise<void> {

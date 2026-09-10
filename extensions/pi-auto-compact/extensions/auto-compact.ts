@@ -55,14 +55,6 @@ function parseAutoCompactConfig(value: unknown): AutoCompactConfig {
 	return { autoCompactThreshold: threshold };
 }
 
-function createAutoCompactConfigStore() {
-	return createConfigStore<AutoCompactConfig>({
-		extensionId: "pi-auto-compact",
-		defaults: () => ({ autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT }),
-		parse: parseAutoCompactConfig,
-	});
-}
-
 function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
 	try {
 		return resolveConfiguredTaskRoutes(ctx, AUTO_COMPACT_TASK);
@@ -150,7 +142,11 @@ function hasToolCall(message: AgentMessage): boolean {
 
 export default function (pi: ExtensionAPI) {
 	registerModelTask(pi, AUTO_COMPACT_TASK);
-	const configStore = createAutoCompactConfigStore();
+	const configStore = createConfigStore<AutoCompactConfig>({
+		extensionId: "pi-auto-compact",
+		defaults: () => ({ autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT }),
+		parse: parseAutoCompactConfig,
+	});
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	// Prevent lifecycle hooks from starting duplicate summaries.

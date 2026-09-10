@@ -90,9 +90,6 @@ importers:
 
   extensions/pi-footer:
     dependencies:
-      '@earendil-works/pi-ai':
-        specifier: ^0.85.1
-        version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
       '@earendil-works/pi-coding-agent':
         specifier: ^0.85.1
         version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)

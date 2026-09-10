@@ -278,7 +278,6 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	let configWarned = false;
 	let inputCount = 0;
 	let branchGeneration = 0;
-	let closed = false;
 	let candidate: PromptCandidate | undefined;
 	let candidateNameHint: string | undefined;
 	let reviewBoundary: ReviewBoundary | undefined;
@@ -294,7 +293,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, [FAILURE_WIDGET]);
 	};
 	const isCurrent = (run: ActiveRun) =>
-		!closed && activeRun === run && branchGeneration === run.branchGeneration && !run.controller.signal.aborted;
+		activeRun === run && branchGeneration === run.branchGeneration && !run.controller.signal.aborted;
 	const resetBranch = (ctx: ExtensionContext) => {
 		branchGeneration += 1;
 		inputCount = 0;
@@ -410,7 +409,6 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	};
 
 	pi.on("session_start", (_event, ctx) => {
-		closed = false;
 		activeRun?.controller.abort(new Error("Prompt Creator session changed."));
 		activeRun = undefined;
 		resetBranch(ctx);
@@ -454,14 +452,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 
 	pi.on("session_tree", (_event, ctx) => resetBranch(ctx));
 	pi.on("session_shutdown", (_event, ctx) => {
-		closed = true;
-		branchGeneration += 1;
-		candidate = undefined;
-		candidateNameHint = undefined;
-		reviewBoundary = undefined;
-		failure = false;
-		inputCount = 0;
-		clearWidget(ctx);
+		resetBranch(ctx);
 		activeRun?.controller.abort(new Error("Prompt Creator shut down."));
 		activeRun = undefined;
 	});
