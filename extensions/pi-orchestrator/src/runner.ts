@@ -26,6 +26,7 @@ import {
 	type TaskRequest,
 	type TaskState,
 	type WaveState,
+	type WorktreeRecord,
 	type WorkspaceIdentity,
 } from "./schema.ts";
 import { FileRunStore, type RunStateHandle } from "./store.ts";
@@ -83,7 +84,7 @@ export type IntegrationResult =
  * Productive hooks may inspect or change implementation state. Every call receives
  * the same request abort signal and a timeout capped by the persisted deadline.
  */
-export interface OrchestratorRuntime {
+export interface CoordinatorRuntime {
 	now(): number;
 	randomToken(): string;
 	preflight(input: { request: ExecuteRequest; root: string }, context: OperationContext): Promise<{
@@ -91,15 +92,21 @@ export interface OrchestratorRuntime {
 		launchRecords: LaunchRecord[];
 	}>;
 	recoverLaunchRecords(input: { request: ExecuteRequest; records: Record<string, LaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
-	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
-	planAllocation(input: {
-		kind: AllocationKind;
+}
+
+export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
+export type HostCleanupKind = Extract<CleanupKind, "worker_tab" | "workspace">;
+export type GitCleanupKind = Extract<CleanupKind, "worktree" | "branch">;
+
+export interface HostRuntime {
+	planHostAllocation(input: {
+		kind: HostAllocationKind;
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		owned: Partial<Record<AllocationKind, string>>;
 	}, context: OperationContext): Promise<string>;
-	allocate(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationResult>;
-	reconcileAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
+	allocateHost(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationResult>;
+	reconcileHostAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
 	runWorker(input: {
 		task: TaskRequest;
 		attempt: TaskAttempt;
@@ -109,34 +116,63 @@ export interface OrchestratorRuntime {
 		preCandidate: WorkspaceIdentity;
 		failure?: string;
 	}, context: OperationContext): Promise<WorkerResult>;
-	runChecks(input: {
-		scope: "task" | "final";
-		taskId?: string;
-		checks: CheckCommand[];
-		candidate: WorkspaceIdentity;
-	}, context: OperationContext): Promise<CheckRunResult>;
-	review(input: {
-		scope: "task" | "final";
-		taskId?: string;
-		criterion: string;
-		base: WorkspaceIdentity;
-		tip: WorkspaceIdentity;
-		launch: LaunchRecord;
-	}, context: OperationContext): Promise<ReviewResult>;
 	terminateWorker(input: {
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		workerId: string;
 		candidate: WorkspaceIdentity;
 	}, context: OperationContext): Promise<{ outcome: "terminated" } | { outcome: "unknown"; failure: string }>;
-	inspectRetainedTask(input: { task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
+	cleanupHost(input: {
+		kind: HostCleanupKind;
+		task: TaskRequest;
+		attempt: TaskAttempt;
+	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }>;
+}
+
+export interface GitRuntime {
+	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
+	allocateWorktree(input: {
+		root: string;
+		intent: AllocationIntent;
+		task: TaskRequest;
+		attempt: TaskAttempt;
+		onPrepared(worktree: WorktreeRecord): Promise<void>;
+	}, context: OperationContext): Promise<AllocationResult>;
+	reconcileWorktreeAllocation(input: {
+		root: string;
+		intent: AllocationIntent;
+		task: TaskRequest;
+		attempt: TaskAttempt;
+	}, context: OperationContext): Promise<AllocationReconciliation>;
+	runChecks(input: {
+		root: string;
+		scope: "task" | "final";
+		taskId?: string;
+		attempt?: TaskAttempt;
+		checks: CheckCommand[];
+		candidate: WorkspaceIdentity;
+	}, context: OperationContext): Promise<CheckRunResult>;
+	review(input: {
+		root: string;
+		scope: "task" | "final";
+		phase: ReviewEvidence["phase"];
+		taskId?: string;
+		attempt?: TaskAttempt;
+		criterion: string;
+		base: WorkspaceIdentity;
+		tip: WorkspaceIdentity;
+		launch: LaunchRecord;
+	}, context: OperationContext): Promise<ReviewResult>;
+	inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	rebase(input: {
+		root: string;
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		candidate: WorkspaceIdentity;
 		onto: WorkspaceIdentity;
 	}, context: OperationContext): Promise<RebaseResult>;
 	integrate(input: {
+		root: string;
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		expectedMain: WorkspaceIdentity;
@@ -144,16 +180,15 @@ export interface OrchestratorRuntime {
 		checks: CheckBatchEvidence;
 		review?: ReviewEvidence;
 	}, context: OperationContext): Promise<IntegrationResult>;
-}
-
-/** Cleanup hooks can only reconcile exact, already-recorded resources. */
-export interface CleanupRuntime {
-	cleanup(input: {
-		kind: CleanupKind;
+	cleanupGit(input: {
+		root: string;
+		kind: GitCleanupKind;
 		task: TaskRequest;
 		attempt: TaskAttempt;
 	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }>;
 }
+
+export interface OrchestratorRuntime extends CoordinatorRuntime, HostRuntime {}
 
 export interface RunResponse {
 	text: string;
@@ -285,12 +320,12 @@ function isDeadline(error: unknown, scope: DeadlineScope): boolean {
 
 export class OrchestratorRunner {
 	private readonly runtime: OrchestratorRuntime;
-	private readonly cleanupRuntime: CleanupRuntime;
+	private readonly gitRuntime: GitRuntime;
 	private readonly store: FileRunStore;
 
-	constructor(runtime: OrchestratorRuntime, cleanupRuntime: CleanupRuntime, store = new FileRunStore()) {
+	constructor(runtime: OrchestratorRuntime, gitRuntime: GitRuntime, store = new FileRunStore()) {
 		this.runtime = runtime;
-		this.cleanupRuntime = cleanupRuntime;
+		this.gitRuntime = gitRuntime;
 		this.store = store;
 	}
 
@@ -409,7 +444,7 @@ export class OrchestratorRunner {
 				if (!ready.length) throw new Error("No dependency wave is ready.");
 				let actualMain: WorkspaceIdentity;
 				try {
-					actualMain = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+					actualMain = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 				} catch (error) {
 					const failure = isDeadline(error, scope)
 						? "The productive request deadline expired before dependency-wave dispatch."
@@ -492,12 +527,14 @@ export class OrchestratorRunner {
 		try {
 			for (const kind of ALLOCATION_KINDS) {
 				if (allocationByKind(attempt, kind)) continue;
-				const details = await scope.call(async (context) => await this.runtime.planAllocation({
-					kind,
-					task: request,
-					attempt,
-					owned: ownedAllocations(attempt),
-				}, context));
+				const details = kind === "worktree"
+					? "Awaiting exact pi-subagent worktree preparation."
+					: await scope.call(async (context) => await this.runtime.planHostAllocation({
+						kind,
+						task: request,
+						attempt,
+						owned: ownedAllocations(attempt),
+					}, context));
 				const intent: AllocationIntent = {
 					kind,
 					generation: attempt.allocationGeneration,
@@ -509,7 +546,22 @@ export class OrchestratorRunner {
 				await handle.save();
 				let result: AllocationResult;
 				try {
-					result = await scope.call(async (context) => await this.runtime.allocate({ intent, task: request, attempt }, context));
+					result = kind === "worktree"
+						? await scope.call(async (context) => await this.gitRuntime.allocateWorktree({
+							root: state.root,
+							intent,
+							task: request,
+							attempt,
+							onPrepared: async (worktree) => {
+								if (worktree.baseCommit !== attempt.waveBase.head) {
+									throw new Error("Prepared worktree base does not match the recorded wave base.");
+								}
+								intent.worktree = { ...worktree };
+								intent.details = JSON.stringify(worktree);
+								await handle.save();
+							},
+						}, context))
+						: await scope.call(async (context) => await this.runtime.allocateHost({ intent, task: request, attempt }, context));
 				} catch (error) {
 					intent.status = "unknown";
 					intent.failure = `Allocation result is unknown: ${errorText(error)}`;
@@ -528,6 +580,9 @@ export class OrchestratorRunner {
 					return;
 				}
 				if (!result.resourceId.trim()) throw new Error(`${kind} allocation returned an empty resource ID.`);
+				if (kind === "worktree" && (!intent.worktree || intent.worktree.path !== result.resourceId)) {
+					throw new Error("Worktree allocation returned without exact persisted preparation metadata.");
+				}
 				intent.status = "owned";
 				intent.resourceId = result.resourceId;
 				await handle.save();
@@ -601,7 +656,7 @@ export class OrchestratorRunner {
 				}
 				prompt.candidate = worker.candidate;
 				attempt.candidate = worker.candidate;
-				const checks = await this.runCheckBatch(request.checks, worker.candidate, "preliminary", scope, task.taskId);
+				const checks = await this.runCheckBatch(handle, request.checks, worker.candidate, "preliminary", scope, task.taskId);
 				attempt.preliminaryChecks = checks;
 				await handle.save();
 				if (!checks.passed) {
@@ -688,15 +743,18 @@ export class OrchestratorRunner {
 	}
 
 	private async runCheckBatch(
+		handle: RunStateHandle,
 		checks: CheckCommand[],
 		candidate: WorkspaceIdentity,
 		phase: CheckBatchEvidence["phase"],
 		scope: DeadlineScope,
 		taskId?: string,
 	): Promise<CheckBatchEvidence> {
-		const result = await scope.call(async (context) => await this.runtime.runChecks({
+		const attempt = taskId ? latestAttempt(taskState(handle.state, taskId)) : undefined;
+		const result = await scope.call(async (context) => await this.gitRuntime.runChecks({
+			root: handle.state.root,
 			scope: phase === "final" ? "final" : "task",
-			...(taskId ? { taskId } : {}),
+			...(taskId ? { taskId, attempt } : {}),
 			checks,
 			candidate,
 		}, context));
@@ -731,9 +789,12 @@ export class OrchestratorRunner {
 		scope: DeadlineScope,
 		taskId?: string,
 	): Promise<ReviewEvidence> {
-		const result = await scope.call(async (context) => await this.runtime.review({
+		const attempt = taskId ? latestAttempt(taskState(handle.state, taskId)) : undefined;
+		const result = await scope.call(async (context) => await this.gitRuntime.review({
+			root: handle.state.root,
 			scope: phase === "final" ? "final" : "task",
-			...(taskId ? { taskId } : {}),
+			phase,
+			...(taskId ? { taskId, attempt } : {}),
 			criterion,
 			base,
 			tip,
@@ -764,12 +825,13 @@ export class OrchestratorRunner {
 		task.status = "integrating";
 		await handle.save();
 		try {
-			const actualMain = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+			const actualMain = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 			if (!sameIdentity(actualMain, state.main)) {
 				this.attention(task, "Main drifted before integration.");
 				return false;
 			}
-			const rebased = await scope.call(async (context) => await this.runtime.rebase({
+			const rebased = await scope.call(async (context) => await this.gitRuntime.rebase({
+				root: state.root,
 				task: request,
 				attempt,
 				candidate: attempt.candidate!,
@@ -785,7 +847,7 @@ export class OrchestratorRunner {
 			}
 			attempt.integrationBase = rebased.base;
 			attempt.integrationCandidate = rebased.candidate;
-			const checks = await this.runCheckBatch(request.checks, rebased.candidate, "authoritative", scope, task.taskId);
+			const checks = await this.runCheckBatch(handle, request.checks, rebased.candidate, "authoritative", scope, task.taskId);
 			attempt.authoritativeChecks = checks;
 			await handle.save();
 			if (!checkBatchPasses(checks, request.checks, rebased.candidate)) {
@@ -815,7 +877,8 @@ export class OrchestratorRunner {
 			await handle.save();
 			let integrated: IntegrationResult;
 			try {
-				integrated = await scope.call(async (context) => await this.runtime.integrate({
+				integrated = await scope.call(async (context) => await this.gitRuntime.integrate({
+					root: state.root,
 					task: request,
 					attempt,
 					expectedMain: state.main,
@@ -877,11 +940,17 @@ export class OrchestratorRunner {
 			step.failure = undefined;
 			await handle.save();
 			try {
-				const result: unknown = await scope.call(async (context) => await this.cleanupRuntime.cleanup({
-					kind: step.kind,
-					task: taskRequest(handle.state, task.taskId),
-					attempt,
-				}, context));
+				const request = taskRequest(handle.state, task.taskId);
+				let result: unknown;
+				if (step.kind === "worktree" || step.kind === "branch") {
+					const kind: GitCleanupKind = step.kind;
+					result = await scope.call(async (context) => await this.gitRuntime.cleanupGit({
+						root: handle.state.root, kind, task: request, attempt,
+					}, context));
+				} else {
+					const kind: HostCleanupKind = step.kind;
+					result = await scope.call(async (context) => await this.runtime.cleanupHost({ kind, task: request, attempt }, context));
+				}
 				const reported = result as { outcome?: unknown; failure?: unknown } | null;
 				if (reported?.outcome !== "completed" && reported?.outcome !== "absent") {
 					step.status = "pending";
@@ -941,8 +1010,8 @@ export class OrchestratorRunner {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
 		if (attempt.termination?.status !== "terminated") throw new Error("Manual verification requires exact recorded worker termination.");
-		const candidate = await scope.call(async (context) => await this.runtime.inspectRetainedTask({
-			task: taskRequest(handle.state, task.taskId), attempt,
+		const candidate = await scope.call(async (context) => await this.gitRuntime.inspectRetainedTask({
+			root: handle.state.root, task: taskRequest(handle.state, task.taskId), attempt,
 		}, context));
 		if (!isCleanCommitted(candidate)) throw new Error("Retained task candidate is not clean and committed.");
 		if (candidate.head === attempt.waveBase.head) throw new Error("Retained task candidate must differ from its wave base.");
@@ -983,9 +1052,14 @@ export class OrchestratorRunner {
 			for (const intent of attempt.allocations.filter((item) => item.status !== "owned")) {
 				let result: AllocationReconciliation;
 				try {
-					result = await scope.call(async (context) => await this.runtime.reconcileAllocation({
-						intent, task: taskRequest(handle.state, task.taskId), attempt,
-					}, context));
+					const request = taskRequest(handle.state, task.taskId);
+					result = intent.kind === "worktree"
+						? await scope.call(async (context) => await this.gitRuntime.reconcileWorktreeAllocation({
+							root: handle.state.root, intent, task: request, attempt,
+						}, context))
+						: await scope.call(async (context) => await this.runtime.reconcileHostAllocation({
+							intent, task: request, attempt,
+						}, context));
 				} catch (error) {
 					intent.status = "unknown";
 					intent.failure = `Allocation reconciliation is ambiguous: ${errorText(error)}`;
@@ -1028,7 +1102,7 @@ export class OrchestratorRunner {
 			throw new Error(`Final gate is ${state.final.status} and cannot be finalized.`);
 		}
 		if (state.final.identity) {
-			const actual = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+			const actual = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 			if (!sameIdentity(actual, state.final.identity)) {
 				await this.markSuperseded(handle, "Main drifted from the recorded final-gate identity.");
 				return this.response(state);
@@ -1045,14 +1119,14 @@ export class OrchestratorRunner {
 		state.accepted = false;
 		await handle.save();
 		try {
-			const identity = state.final.identity ?? await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+			const identity = state.final.identity ?? await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 			if (!sameIdentity(identity, state.main) || !isCleanCommitted(identity)) {
 				await this.markSuperseded(handle, "Main drifted before the final gate.");
 				return this.response(state);
 			}
 			state.final.identity = identity;
 			await handle.save();
-			const checks = await this.runCheckBatch(state.request.finalChecks, identity, "final", scope);
+			const checks = await this.runCheckBatch(handle, state.request.finalChecks, identity, "final", scope);
 			state.final.checks = checks;
 			await handle.save();
 			if (!sameIdentity(checks.identityAfter, identity)) {
@@ -1063,7 +1137,7 @@ export class OrchestratorRunner {
 				await this.markFinalFailed(handle, "A definitive final check failed.");
 				return this.response(state);
 			}
-			const afterChecks = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+			const afterChecks = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 			if (!sameIdentity(afterChecks, identity)) {
 				await this.markSuperseded(handle, "Main drifted after final checks.");
 				return this.response(state);
@@ -1090,12 +1164,12 @@ export class OrchestratorRunner {
 					return this.response(state);
 				}
 			}
-			const afterJudgment = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+			const afterJudgment = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 			if (!sameIdentity(afterJudgment, identity)) {
 				await this.markSuperseded(handle, "Main drifted after final judgment.");
 				return this.response(state);
 			}
-			const beforeAcceptance = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+			const beforeAcceptance = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 			if (!sameIdentity(beforeAcceptance, identity)) {
 				await this.markSuperseded(handle, "Main drifted before final acceptance.");
 				return this.response(state);

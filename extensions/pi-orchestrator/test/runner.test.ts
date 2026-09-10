@@ -8,7 +8,6 @@ import {
 	type AllocationReconciliation,
 	type AllocationResult,
 	type CheckRunResult,
-	type CleanupRuntime,
 	type CommandResult,
 	type IntegrationResult,
 	type OperationContext,
@@ -20,12 +19,14 @@ import {
 import {
 	parseRunState,
 	requiredLaunchKeys,
+	type AllocationIntent,
 	type AllocationKind,
 	type CheckCommand,
 	type CleanupKind,
 	type ExecuteRequest,
 	type LaunchRecord,
 	type ModelClass,
+	type WorktreeRecord,
 	type TaskAttempt,
 	type TaskRequest,
 	type WorkspaceIdentity,
@@ -86,7 +87,7 @@ type ReviewPlan = { verdict?: string; identityAfter?: WorkspaceIdentity; error?:
 type CleanupPlan = { outcome?: "completed" | "absent" | "blocked"; failure?: string; error?: Error; expire?: boolean };
 type InspectionPlan = { identity?: WorkspaceIdentity; error?: Error };
 
-class FakeRuntime implements OrchestratorRuntime, CleanupRuntime {
+class FakeRuntime implements OrchestratorRuntime {
 	clock = 1_000;
 	main = { ...MAIN_A };
 	preflightCalls = 0;
@@ -159,18 +160,15 @@ class FakeRuntime implements OrchestratorRuntime, CleanupRuntime {
 		return { ...(plan?.identity ?? this.main) };
 	}
 
-	async planAllocation(
-		input: { kind: AllocationKind; task: TaskRequest; attempt: TaskAttempt },
+	async planHostAllocation(
+		input: { kind: Exclude<AllocationKind, "worktree">; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
 	): Promise<string> {
 		this.observe("plan-allocation", context);
 		return `${input.task.id}/${input.kind}/${input.attempt.allocationGeneration}`;
 	}
 
-	async allocate(
-		input: { intent: { kind: AllocationKind }; task: TaskRequest },
-		context: OperationContext,
-	): Promise<AllocationResult> {
+	private allocation(input: { intent: { kind: AllocationKind }; task: TaskRequest }, context: OperationContext): AllocationResult {
 		this.observe("allocate", context);
 		this.allocationCalls.push(input.intent.kind);
 		if (this.allocationFailure?.kind === input.intent.kind) {
@@ -182,13 +180,43 @@ class FakeRuntime implements OrchestratorRuntime, CleanupRuntime {
 		return { outcome: "owned", resourceId: `${input.task.id}-${input.intent.kind}` };
 	}
 
-	async reconcileAllocation(
-		input: { intent: { kind: AllocationKind } },
+	async allocateWorktree(
+		input: { root: string; intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; onPrepared(worktree: WorktreeRecord): Promise<void> },
 		context: OperationContext,
-	): Promise<AllocationReconciliation> {
+	): Promise<AllocationResult> {
+		const planned: WorktreeRecord = {
+			path: `${input.task.id}-worktree`, cwd: `${input.task.id}-worktree`, branch: input.task.id,
+			repoRoot: "fake-root", baseCommit: input.attempt.waveBase.head,
+		};
+		await input.onPrepared(planned);
+		return this.allocation(input, context);
+	}
+
+	async allocateHost(
+		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		context: OperationContext,
+	): Promise<AllocationResult> {
+		return this.allocation(input, context);
+	}
+
+	private reconcile(input: { intent: { kind: AllocationKind } }, context: OperationContext): AllocationReconciliation {
 		this.observe("reconcile-allocation", context);
 		this.reconciliationCalls.push(input.intent.kind);
 		return this.reconciliation;
+	}
+
+	async reconcileWorktreeAllocation(
+		input: { root: string; intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		context: OperationContext,
+	): Promise<AllocationReconciliation> {
+		return this.reconcile(input, context);
+	}
+
+	async reconcileHostAllocation(
+		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		context: OperationContext,
+	): Promise<AllocationReconciliation> {
+		return this.reconcile(input, context);
 	}
 
 	async runWorker(
@@ -305,16 +333,30 @@ class FakeRuntime implements OrchestratorRuntime, CleanupRuntime {
 		return { outcome: "integrated", main: { ...this.main } };
 	}
 
-	async cleanup(
+	private runCleanup(
 		input: { kind: CleanupKind },
 		context: OperationContext,
-	): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }> {
+	): { outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string } {
 		const plan = this.cleanupPlans.shift() ?? {};
 		this.observe("cleanup", context, plan.expire);
 		this.cleanupCalls.push(input.kind);
 		if (plan.error) throw plan.error;
 		if (plan.outcome === "blocked") return { outcome: "blocked", failure: plan.failure ?? "blocked" };
 		return { outcome: plan.outcome ?? "completed" };
+	}
+
+	async cleanupHost(
+		input: { kind: "worker_tab" | "workspace" },
+		context: OperationContext,
+	): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }> {
+		return this.runCleanup(input, context);
+	}
+
+	async cleanupGit(
+		input: { kind: "worktree" | "branch" },
+		context: OperationContext,
+	): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }> {
+		return this.runCleanup(input, context);
 	}
 }
 
@@ -412,6 +454,10 @@ test("completed task and request states require exact authoritative evidence and
 	const malformedCleanup = structuredClone(valid);
 	malformedCleanup.tasks[0]!.attempts[0]!.cleanup[1]!.kind = "worker_tab";
 	assert.throws(() => parseRunState(malformedCleanup), /cleanup sequence/i);
+
+	const wrongWorktreeBase = structuredClone(valid);
+	wrongWorktreeBase.tasks[0]!.attempts[0]!.allocations[0]!.worktree!.baseCommit = oid("f");
+	assert.throws(() => parseRunState(wrongWorktreeBase), /worktree.*wave base/i);
 
 	const dirtyFinal = structuredClone(valid);
 	const dirtyIdentity = { ...dirtyFinal.final.identity!, index: oid("f") };

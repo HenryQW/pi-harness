@@ -97,6 +97,14 @@ export interface LaunchRecord {
 export type AllocationKind = "worktree" | "workspace" | "worker_tab" | "agent";
 export type AllocationStatus = "allocating" | "owned" | "absent" | "unknown";
 
+export interface WorktreeRecord {
+	path: string;
+	cwd: string;
+	branch: string;
+	repoRoot: string;
+	baseCommit: string;
+}
+
 export interface AllocationIntent {
 	kind: AllocationKind;
 	generation: number;
@@ -104,6 +112,7 @@ export interface AllocationIntent {
 	details: string;
 	status: AllocationStatus;
 	resourceId?: string;
+	worktree?: WorktreeRecord;
 	possibleResources?: string[];
 	failure?: string;
 }
@@ -265,6 +274,14 @@ const LaunchRecordSchema = Type.Object({
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });
 
+const WorktreeRecordSchema = Type.Object({
+	path: TextSchema,
+	cwd: TextSchema,
+	branch: TextSchema,
+	repoRoot: TextSchema,
+	baseCommit: Type.String({ pattern: OID_PATTERN }),
+}, { additionalProperties: false });
+
 const AllocationIntentSchema = Type.Object({
 	kind: Type.Union([Type.Literal("worktree"), Type.Literal("workspace"), Type.Literal("worker_tab"), Type.Literal("agent")]),
 	generation: Type.Integer({ minimum: 1, maximum: 2 }),
@@ -272,6 +289,7 @@ const AllocationIntentSchema = Type.Object({
 	details: TextSchema,
 	status: Type.Union([Type.Literal("allocating"), Type.Literal("owned"), Type.Literal("absent"), Type.Literal("unknown")]),
 	resourceId: Type.Optional(TextSchema),
+	worktree: Type.Optional(WorktreeRecordSchema),
 	possibleResources: Type.Optional(Type.Array(TextSchema, { maxItems: 32 })),
 	failure: OptionalTextSchema,
 }, { additionalProperties: false });
@@ -537,7 +555,7 @@ export function sameIdentity(left: WorkspaceIdentity, right: WorkspaceIdentity):
 }
 
 export function isCleanCommitted(identity: WorkspaceIdentity): boolean {
-	return identity.head === identity.index && identity.head === identity.tree;
+	return identity.index === identity.tree;
 }
 
 function sameCheck(left: CheckCommand, right: CheckCommand): boolean {
@@ -555,7 +573,7 @@ export function checkBatchPasses(evidence: CheckBatchEvidence | undefined, check
 		&& evidence.results.every((result, index) => sameCheck(result, checks[index]!) && result.code === 0 && !result.killed));
 }
 
-function reviewPasses(
+export function reviewEvidencePasses(
 	evidence: ReviewEvidence | undefined,
 	phase: ReviewEvidence["phase"],
 	criterion: string,
@@ -576,6 +594,10 @@ function reviewPasses(
 
 function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest): void {
 	const attempt = taskState.attempts.at(-1);
+	const worktree = [...(attempt?.allocations ?? [])].reverse().find((allocation) => allocation.kind === "worktree" && allocation.status === "owned");
+	if (!worktree?.worktree || worktree.resourceId !== worktree.worktree.path) {
+		throw new Error(`Completed task ${request.id} lacks an exact owned worktree record.`);
+	}
 	if (!attempt?.candidate || !attempt.integrationCandidate || !attempt.integrationBase) {
 		throw new Error(`Completed task ${request.id} has no integration candidate.`);
 	}
@@ -586,7 +608,7 @@ function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest
 		|| !checkBatchPasses(attempt.authoritativeChecks, request.checks, attempt.integrationCandidate)) {
 		throw new Error(`Completed task ${request.id} lacks authoritative passing checks on its exact candidate.`);
 	}
-	if (request.judgment && !reviewPasses(
+	if (request.judgment && !reviewEvidencePasses(
 		attempt.authoritativeReview,
 		"authoritative",
 		request.judgment.criterion,
@@ -641,6 +663,18 @@ export function parseRunState(value: unknown): RunState {
 			if (attempt.cleanup.some((step, cleanupIndex) => step.kind !== CLEANUP_KINDS[cleanupIndex])) {
 				throw new Error(`Malformed cleanup sequence for ${definition.id}.`);
 			}
+			for (const allocation of attempt.allocations) {
+				if (allocation.kind !== "worktree" && allocation.worktree) {
+					throw new Error(`Malformed worktree metadata for ${definition.id}.`);
+				}
+				if (allocation.worktree?.baseCommit !== undefined && allocation.worktree.baseCommit !== attempt.waveBase.head) {
+					throw new Error(`Worktree metadata for ${definition.id} does not match its recorded wave base.`);
+				}
+				if (allocation.kind === "worktree" && allocation.status === "owned"
+					&& (!allocation.worktree || allocation.resourceId !== allocation.worktree.path)) {
+					throw new Error(`Owned worktree allocation for ${definition.id} lacks exact metadata.`);
+				}
+			}
 		}
 		if (taskState.status === "completed") requireCompletedTaskEvidence(taskState, definition);
 	}
@@ -664,7 +698,7 @@ export function parseRunState(value: unknown): RunState {
 			|| !checkBatchPasses(state.final.checks, request.finalChecks, state.final.identity)) {
 			throw new Error("Accepted request lacks passing final checks on its exact identity.");
 		}
-		if (request.finalJudgment && !reviewPasses(
+		if (request.finalJudgment && !reviewEvidencePasses(
 			state.final.review,
 			"final",
 			request.finalJudgment.criterion,
