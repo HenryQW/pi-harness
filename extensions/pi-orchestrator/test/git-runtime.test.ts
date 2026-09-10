@@ -440,6 +440,9 @@ test("rebase conflicts retain exact work and report whether abort succeeded", as
 			const rebased = await runtime.rebase({ root, task: secondTask, attempt: second.attempt, candidate: secondCandidate, onto: firstMain }, context());
 			assert.equal(rebased.outcome, "blocked");
 			assert.match(rebased.outcome === "blocked" ? rebased.failure : "", abortFails ? /abort failed/ : /abort restored/);
+			assert.deepEqual(commands.find((command) => command[1] === "rebase" && command[2] !== "--abort")?.slice(1), [
+				"rebase", "--no-update-refs", "--no-autostash", firstMain.head,
+			]);
 			assert.ok(commands.some((command) => command[1] === "rebase" && command[2] === "--abort"));
 			if (!abortFails) {
 				assert.equal(git(second.intent.worktree!.cwd, "rev-parse", "HEAD"), secondCandidate.head);
@@ -505,13 +508,54 @@ test("failed checks, Reviewer findings or mutation, and Main drift cannot integr
 	assert.equal(git(driftRoot, "log", "-1", "--pretty=%s"), "change main.txt");
 });
 
+test("guarded fast-forward rejects candidate-ancestor Main drift before cleanup", async (t) => {
+	const root = await repository(t);
+	const commands: string[][] = [];
+	let candidateAncestor = "";
+	let movedMain = false;
+	const runtime = new CheckedGitRuntime({
+		runProcess: async (command, args, options) => {
+			commands.push([command, ...args]);
+			if (!movedMain && command === "git" && args.includes("merge")) {
+				movedMain = true;
+				git(root, "merge", "--no-autostash", "--ff-only", candidateAncestor);
+			}
+			return await directProcess(command, args, options);
+		},
+	});
+	const base = await runtime.inspectMain({ root }, context());
+	const definition = task("cas-drift");
+	const allocated = await allocate(runtime, root, definition, base, "token-cas-drift-01");
+	await commit(allocated.intent.worktree!.cwd, "ancestor.txt", "ancestor\n");
+	candidateAncestor = git(allocated.intent.worktree!.cwd, "rev-parse", "HEAD");
+	await commit(allocated.intent.worktree!.cwd, "candidate.txt", "candidate\n");
+	const candidate = await runtime.inspectRetainedTask({ root, task: definition, attempt: allocated.attempt }, context());
+	const prepared = await prepareIntegration(runtime, root, definition, allocated.attempt, candidate, base);
+	const result = await runtime.integrate({
+		root, task: definition, attempt: allocated.attempt, expectedMain: base,
+		candidate: prepared.candidate, checks: prepared.checks,
+	}, context());
+
+	assert.equal(result.outcome, "drift");
+	assert.match(result.outcome === "drift" ? result.failure : "", /guarded fast-forward ref transaction/);
+	assert.equal(git(root, "rev-parse", "HEAD"), candidateAncestor);
+	assert.equal(git(root, "status", "--porcelain"), "");
+	await assert.rejects(readFile(join(root, "candidate.txt"), "utf8"), { code: "ENOENT" });
+	assert.equal(git(allocated.intent.worktree!.cwd, "rev-parse", "HEAD"), candidate.head);
+	assert.match(git(root, "show-ref", "--verify", `refs/heads/${allocated.intent.worktree!.branch}`), new RegExp(candidate.head));
+	const cleanup = await runtime.cleanupGit({ root, kind: "worktree", task: definition, attempt: allocated.attempt }, context());
+	assert.equal(cleanup.outcome, "blocked");
+	assert.ok(commands.every(([, ...args]) => args[0] !== "worktree" || args[1] !== "remove"));
+	assert.ok(commands.every(([, ...args]) => args[0] !== "branch" || args[1] !== "-d"));
+});
+
 test("fast-forward failure preserves Main and exact retained work", async (t) => {
 	const root = await repository(t);
 	const commands: string[][] = [];
 	const runtime = new CheckedGitRuntime({
 		runProcess: async (command, args, options) => {
 			commands.push([command, ...args]);
-			if (command === "git" && args[0] === "merge") return { code: 1, killed: false, stdout: "", stderr: "refused" };
+			if (command === "git" && args.includes("merge")) return { code: 1, killed: false, stdout: "", stderr: "refused" };
 			return await directProcess(command, args, options);
 		},
 	});
@@ -536,8 +580,11 @@ test("fast-forward failure preserves Main and exact retained work", async (t) =>
 	assert.equal(result.outcome, "failed");
 	assert.equal(git(root, "rev-parse", "HEAD"), base.head);
 	assert.equal(git(allocated.intent.worktree!.cwd, "rev-parse", "HEAD"), candidate.head);
-	assert.deepEqual(commands.filter((command) => command[1] === "merge").map((command) => command.slice(1)), [
-		["merge", "--no-overwrite-ignore", "--ff-only", candidate.head],
+	const mergeCommand = commands.find((command) => command.includes("merge"));
+	assert.equal(mergeCommand?.[1], "-c");
+	assert.match(mergeCommand?.[2] ?? "", /^core\.hooksPath=.*pi-orchestrator-ref-guard-/);
+	assert.deepEqual(mergeCommand?.slice(mergeCommand.indexOf("merge")), [
+		"merge", "--no-overwrite-ignore", "--no-autostash", "--ff-only", candidate.head,
 	]);
 });
 
@@ -577,7 +624,7 @@ test("guarded cleanup reconciles partial removal without force or reintegration"
 	assert.equal((await runtime.cleanupGit({ root, kind: "branch", task: definition, attempt: allocated.attempt }, context())).outcome, "completed");
 	assert.equal((await runtime.cleanupGit({ root, kind: "branch", task: definition, attempt: allocated.attempt }, context())).outcome, "absent");
 	assert.ok(commands.every((command) => !command.includes("--force") && !command.includes("reset") && !command.includes("stash")));
-	assert.equal(commands.filter((command) => command[1] === "merge").length, 1);
+	assert.equal(commands.filter((command) => command.includes("merge")).length, 1);
 });
 
 test("cleanup preserves exact resources when integration evidence is incomplete or Main identity drifted", async (t) => {

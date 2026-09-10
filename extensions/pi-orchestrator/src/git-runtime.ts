@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { lstat, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	createChildWorktree,
 	inspectIndexFlags,
@@ -39,6 +41,7 @@ import type {
 const GIT_OPERATION_CAP_MS = 30_000;
 const COMMAND_OUTPUT_LIMIT = 1024 * 1024;
 const DIAGNOSTIC_LIMIT = 1_000;
+const REF_TRANSACTION_MISMATCH = "pi-orchestrator: guarded fast-forward rejected unexpected ref transaction";
 
 type ProcessResult = { code: number; killed: boolean; stdout: string; stderr: string };
 
@@ -115,6 +118,36 @@ function oid(value: string, field: string): string {
 function commandFailure(args: readonly string[], result: ProcessResult): string {
 	const detail = (result.stderr.trim() || result.stdout.trim()).slice(0, DIAGNOSTIC_LIMIT);
 	return `git ${args.map((arg) => JSON.stringify(arg)).join(" ")} failed with exit ${result.code}${detail ? `: ${detail}` : ""}`;
+}
+
+function referenceTransactionGuard(expectedBranch: string, expectedHead: string, candidateHead: string): string {
+	return `#!/usr/bin/env node
+const { readFileSync } = require("node:fs");
+const mismatch = ${JSON.stringify(REF_TRANSACTION_MISMATCH)};
+const expectedBranch = ${JSON.stringify(expectedBranch)};
+const expectedHead = ${JSON.stringify(expectedHead)};
+const candidateHead = ${JSON.stringify(candidateHead)};
+const state = process.argv[2];
+if (state !== "preparing" && state !== "prepared") process.exit(0);
+const input = readFileSync(0, "utf8");
+function reject() {
+	process.stderr.write(mismatch + "\\n");
+	process.exit(1);
+}
+if (!input.endsWith("\\n")) reject();
+const updates = input.slice(0, -1).split("\\n").map((line) => {
+	const first = line.indexOf(" ");
+	const second = line.indexOf(" ", first + 1);
+	if (first < 1 || second <= first + 1 || second === line.length - 1) reject();
+	return { oldValue: line.slice(0, first), newValue: line.slice(first + 1, second), ref: line.slice(second + 1) };
+});
+const originalHead = updates.filter((update) => update.ref === "ORIG_HEAD");
+if (originalHead.some((update) => update.newValue !== expectedHead)) reject();
+const moving = updates.filter((update) => update.ref === "HEAD" || update.ref.startsWith("refs/"));
+if (moving.length === 0) process.exit(0);
+const expectedRef = state === "preparing" ? "HEAD" : expectedBranch;
+if (moving.length !== 1 || moving[0].oldValue !== expectedHead || moving[0].newValue !== candidateHead || moving[0].ref !== expectedRef) reject();
+`;
 }
 
 function worktreeIntent(attempt: TaskAttempt): AllocationIntent & { worktree: WorktreeRecord } {
@@ -355,7 +388,7 @@ export class CheckedGitRuntime implements GitRuntime {
 			return { outcome: "ready", base: input.onto, candidate: current };
 		}
 		const worktree = worktreeIntent(input.attempt).worktree;
-		const args = ["rebase", input.onto.head];
+		const args = ["rebase", "--no-update-refs", "--no-autostash", input.onto.head];
 		const rebased = await this.git(args, worktree.cwd, context);
 		if (rebased.code !== 0 || rebased.killed) {
 			let abortFailure = "The shared deadline expired before git rebase --abort could run.";
@@ -415,11 +448,21 @@ export class CheckedGitRuntime implements GitRuntime {
 		const main = await this.inspectMain({ root: input.root }, context);
 		if (!sameIdentity(main, input.expectedMain)) return { outcome: "drift", failure: "Main drifted before fast-forward integration." };
 		await this.inspectTask(input.root, input.task, input.attempt, input.candidate, input.expectedMain.head, context);
-		const fencedMain = await this.inspectMain({ root: input.root }, context);
-		if (!sameIdentity(fencedMain, input.expectedMain)) return { outcome: "drift", failure: "Main drifted at the integration fence." };
-		const args = ["merge", "--no-overwrite-ignore", "--ff-only", input.candidate.head];
-		const merged = await this.git(args, input.root, context);
+		const hookDirectory = await mkdtemp(join(tmpdir(), "pi-orchestrator-ref-guard-"));
+		const hookPath = join(hookDirectory, "reference-transaction");
+		const args = ["-c", `core.hooksPath=${hookDirectory}`, "merge", "--no-overwrite-ignore", "--no-autostash", "--ff-only", input.candidate.head];
+		let merged: ProcessResult;
+		try {
+			await writeFile(hookPath, referenceTransactionGuard(input.expectedMain.branch, input.expectedMain.head, input.candidate.head));
+			await chmod(hookPath, 0o700);
+			merged = await this.git(args, input.root, context);
+		} finally {
+			await rm(hookDirectory, { recursive: true });
+		}
 		if (merged.code !== 0 || merged.killed) {
+			if (merged.stderr.includes(REF_TRANSACTION_MISMATCH)) {
+				return { outcome: "drift", failure: "Main drifted at the guarded fast-forward ref transaction." };
+			}
 			try {
 				const afterFailure = await this.inspectMain({ root: input.root }, context);
 				if (sameIdentity(afterFailure, input.expectedMain)) {
