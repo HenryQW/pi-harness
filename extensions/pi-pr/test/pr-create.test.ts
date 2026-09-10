@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Exec, ExecResult } from "../extensions/pr-execution.ts";
+import type { Exec, ExecOptions, ExecResult } from "../extensions/pr-execution.ts";
 import { PullRequestCreator } from "../extensions/pr-create.ts";
 import type { PullRequestTarget } from "../extensions/pr-routing.ts";
 
@@ -114,11 +114,12 @@ function createAuthorityOutput(
 	} });
 }
 
-function creator(exec: Exec, creationTarget: PullRequestTarget) {
+function creator(exec: Exec, creationTarget: PullRequestTarget, signal?: AbortSignal) {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
 	const workflow = new PullRequestCreator({
 		cwd,
 		target: creationTarget,
+		signal,
 		exec,
 		agentDir,
 		loadCurrentPullRequest: async () => none({ ...creationTarget, provenance: "configured", remoteOid: head }),
@@ -173,6 +174,98 @@ test("no-target push fetches tracking but leaves upstream unset", async (t) => {
 	assert.equal(app.workflow.state.attempts.fetchTracking, "applied");
 	assert.equal(app.workflow.state.attempts.setUpstream, "none");
 	assert.deepEqual(app.workflow.state.originalUpstream, { remote: [], merge: [] });
+});
+
+test("no-target publication restores upstream after cancellation following setup", async (t) => {
+	const calls: Array<{ command: string; args: string[]; options: ExecOptions }> = [];
+	const config = new Map<string, string[]>([
+		["branch.feature.remote", ["previous"]],
+		["branch.feature.merge", ["refs/heads/previous"]],
+	]);
+	const controller = new AbortController();
+	const cancellation = new Error("cancel after upstream setup");
+	let tracking = false;
+	let pushes = 0;
+	let published = false;
+	const body = "Published before upstream setup.";
+	const configValues = (key: string) => config.get(key) ?? [];
+	const exec: Exec = async (command, args, options) => {
+		calls.push({ command, args: [...args], options });
+		options.signal?.throwIfAborted();
+		const text = args.join(" ");
+		if (command === "git" && text === "branch --show-current") return result("feature\n");
+		if (command === "git" && args[0] === "config") {
+			if (args[1] === "--get-all") {
+				const values = configValues(args[2]!);
+				return values.length ? result(`${values.join("\n")}\n`) : result("", 1);
+			}
+			if (args[1] === "--fixed-value" && args[2] === "--unset-all") {
+				const key = args[3]!;
+				const expected = args[4]!;
+				const values = configValues(key);
+				if (values.length !== 1 || values[0] !== expected) return result("", 5);
+				config.delete(key);
+				return result();
+			}
+			if (args[1] === "--add") {
+				const key = args[2]!;
+				config.set(key, [...configValues(key), args[3]!]);
+				return result();
+			}
+		}
+		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
+		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+		if (command === "git" && text === "rev-parse --verify --quiet refs/remotes/origin/feature^{commit}") {
+			return tracking ? result(`${head}\n`) : result("", 1);
+		}
+		if (command === "git" && args[0] === "merge-base") return result();
+		if (command === "git" && args[0] === "push") {
+			pushes += 1;
+			return result("ok\n");
+		}
+		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
+		if (command === "git" && args[0] === "fetch") {
+			tracking = true;
+			return result();
+		}
+		if (command === "git" && args[0] === "branch" && args[1]?.startsWith("--set-upstream-to=")) {
+			config.set("branch.feature.remote", ["origin"]);
+			config.set("branch.feature.merge", ["refs/heads/feature"]);
+			controller.abort(cancellation);
+			return result();
+		}
+		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
+			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+			if (query.includes("associatedPullRequests(")) return result(searchOutput(published));
+			return result(baseOutput());
+		}
+		if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+			published = true;
+			return result(`${url}\n`);
+		}
+		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
+		throw new Error(`Unexpected ${command} ${text}`);
+	};
+	const app = creator(exec, target(true), controller.signal);
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(true));
+
+	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	await assert.rejects(app.workflow.publish("feat: publish", body), /Read remote-tracking ref failed: command threw/);
+	assert.deepEqual(configValues("branch.feature.remote"), ["previous"]);
+	assert.deepEqual(configValues("branch.feature.merge"), ["refs/heads/previous"]);
+	assert.equal(pushes, 1);
+	const rollbackCalls = calls.filter(({ command, args, options }) =>
+		command === "git" && args[0] === "config" && options.signal !== controller.signal,
+	);
+	assert.ok(rollbackCalls.length > 0);
+	assert.ok(rollbackCalls.every(({ options }) =>
+		options.cwd === cwd && options.timeoutMs === 10_000 && options.signal?.aborted === false,
+	));
 });
 
 test("no-target publication revalidates the PR before upstream, rolls back, and retries without another push", async (t) => {

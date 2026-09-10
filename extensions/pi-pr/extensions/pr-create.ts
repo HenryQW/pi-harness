@@ -495,8 +495,9 @@ export class PullRequestCreator {
 			this.state.attempts.setUpstream = "applied";
 		} catch (error) {
 			this.state.attempts.setUpstream = "unknown";
+			const rollbackContext = { cwd: this.cwd, signal: new AbortController().signal };
 			try {
-				await restoreBranchUpstreamConfiguration(this.pi(), this.context(), target, original);
+				await restoreBranchUpstreamConfiguration(this.pi(), rollbackContext, target, original);
 			} catch {
 				this.state.phase = "blocked";
 				throw new Error("PR creation upstream setup failed and rollback was incomplete");
