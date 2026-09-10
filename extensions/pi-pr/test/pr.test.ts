@@ -1942,13 +1942,14 @@ test("tracks creation from the fresh command route instead of stale presentation
 	}
 });
 
-test("restores the create hint immediately when /pr cannot dispatch creation", async () => {
+test("restores the create hint immediately but clears it when its scheduled refresh fails", async () => {
+	const scheduledRefresh = deferred<CurrentPullRequest | CurrentPullRequestDiscovery>();
 	let loads = 0;
 	const app = harness({
 		async load() {
 			loads += 1;
 			if (loads === 1) return noPullRequest(1);
-			throw new Error("lookup unavailable");
+			return await scheduledRefresh.promise;
 		},
 		async commandHandler() {
 			throw new Error("dispatch failed");
@@ -1960,8 +1961,10 @@ test("restores the create hint immediately when /pr cannot dispatch creation", a
 		await app.start(ctx);
 		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /dispatch failed/);
 		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+		assert.equal(loads, 2);
+		scheduledRefresh.reject(new Error("lookup unavailable"));
 		await flush();
-		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+		assert.equal(app.widgets.at(-1), undefined);
 	} finally {
 		await app.shutdown(ctx);
 	}

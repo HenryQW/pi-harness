@@ -648,7 +648,7 @@ export default function pullRequestExtension(
 		}
 	};
 
-	const refresh = async (retainWidgetOnFailure = false): Promise<void> => {
+	const refresh = async (): Promise<void> => {
 		const ctx = context;
 		if (!ctx || [...activeInvocations.values()].includes("create-workflow")) return;
 		const generation = sessionGeneration;
@@ -668,10 +668,8 @@ export default function pullRequestExtension(
 			} catch {
 				// Keep an established footer. A refresh failure must not leave a stale action hint.
 				if (!controller.signal.aborted && sessionGeneration === generation) {
-					if (!retainWidgetOnFailure) {
-						displayedWidget = undefined;
-						reconcileWidget(ctx);
-					}
+					displayedWidget = undefined;
+					reconcileWidget(ctx);
 					if (!displayEstablished) {
 						const unavailable = unavailablePrDisplay();
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
@@ -709,8 +707,8 @@ export default function pullRequestExtension(
 		}
 	};
 
-	const refreshInBackground = (retainWidgetOnFailure = false): void => {
-		void refresh(retainWidgetOnFailure).catch(reportRefreshFailure);
+	const refreshInBackground = (): void => {
+		void refresh().catch(reportRefreshFailure);
 	};
 
 	const cancelRefresh = (): void => {
@@ -818,7 +816,7 @@ export default function pullRequestExtension(
 					cancelRefresh();
 					activeInvocations.delete(invocation);
 					reconcileWidget(ctx);
-					refreshInBackground(true);
+					refreshInBackground();
 				}
 				throw error;
 			}
