@@ -7,9 +7,8 @@ import test from "node:test";
 import {
 	executeGitHubMerge,
 	inspectLocalMergeSafety,
-	type Exec,
-	type ExecResult,
 } from "../extensions/pr-merge.ts";
+import type { Exec, ExecResult } from "../extensions/pr-execution.ts";
 
 const cwd = "/repo";
 const hostname = "github.com";
