@@ -18,7 +18,6 @@ import {
 	sameIdentity,
 	type AllocationIntent,
 	type CheckCommand,
-	type LaunchRecord,
 	type ReviewEvidence,
 	type TaskAttempt,
 	type TaskRequest,
@@ -37,6 +36,7 @@ import type {
 	OperationContext,
 	RebaseResult,
 	ReviewResult,
+	VerifiedReviewerLaunch,
 } from "./runner.ts";
 
 const GIT_OPERATION_CAP_MS = 30_000;
@@ -68,7 +68,7 @@ export interface ExactReviewExecutorInput {
 	scope: "task" | "final";
 	taskId?: string;
 	criterion: string;
-	launch: LaunchRecord;
+	launch: VerifiedReviewerLaunch;
 	cwd: string;
 	packet: ExactReviewPacket;
 }
@@ -323,7 +323,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		launch: LaunchRecord;
+		verifyLaunch(): Promise<VerifiedReviewerLaunch>;
 	}, context: OperationContext): Promise<ReviewResult> {
 		if (!this.executeReview) throw new Error("Exact Reviewer execution is not configured.");
 		if (input.scope === "final") {
@@ -352,11 +352,12 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
 			if (evidence.base !== input.base.head || evidence.tip !== input.tip.head) {
 				throw new Error("Exact review evidence resolved an unexpected base or tip.");
 			}
+			const launch = await input.verifyLaunch();
 			const reviewed = await this.executeReview({
 				scope: input.scope,
 				...(input.taskId ? { taskId: input.taskId } : {}),
 				criterion: input.criterion,
-				launch: input.launch,
+				launch,
 				cwd,
 				packet: { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath },
 			}, context);

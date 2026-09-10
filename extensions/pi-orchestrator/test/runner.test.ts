@@ -16,6 +16,9 @@ import {
 	type OrchestratorRuntime,
 	type RebaseResult,
 	type ReviewResult,
+	type VerifiedImplementerLaunch,
+	type VerifiedLaunch,
+	type VerifiedReviewerLaunch,
 	type WorkerResult,
 } from "../src/runner.ts";
 import {
@@ -106,10 +109,19 @@ class FakeRuntime implements OrchestratorRuntime {
 		workerId: string;
 		kind: "initial" | "correction";
 		launchKey: string;
+		args: string[];
+		exposedPersistedFields: boolean;
 		preCandidate: WorkspaceIdentity;
 	}[] = [];
 	checkCalls: { scope: "task" | "final"; taskId?: string }[] = [];
-	reviewCalls: { scope: "task" | "final"; taskId?: string; launchKey: string }[] = [];
+	reviewCalls: {
+		scope: "task" | "final";
+		taskId?: string;
+		launchKey: string;
+		args: string[];
+		exposedPersistedFields: boolean;
+	}[] = [];
+	verificationCalls: string[] = [];
 	terminationCalls: { workerId: string; candidate: WorkspaceIdentity }[] = [];
 	rebaseCalls: { taskId: string; onto: WorkspaceIdentity }[] = [];
 	integrationCalls: string[] = [];
@@ -130,6 +142,7 @@ class FakeRuntime implements OrchestratorRuntime {
 	preflightAction?: () => Promise<void>;
 	preflightRoot?: string;
 	materializeAction?: () => Promise<void>;
+	verifyLaunchAction?: (record: NormalizedLaunchRecord) => Promise<void>;
 	workerBarrierSize = 0;
 	expireHook?: string;
 	private barrierResolvers: (() => void)[] = [];
@@ -152,8 +165,11 @@ class FakeRuntime implements OrchestratorRuntime {
 		return [...requiredLaunchKeys(input).entries()].map(([key, route]) => {
 			const extensionPath = `/roles/${route.role}-${route.modelClass}.ts`;
 			const skillPath = `/skills/${route.role}.md`;
-			const rawArgs = ["--model", `${route.modelClass}-model`, "--thinking", "high"];
-			const rawPrompt = `Implement with ${route.modelClass}.`;
+			const rawPrompt = `Implement with ${route.modelClass}.\nUse the exact request.`;
+			const rawArgs = ["--model", `${route.modelClass}-model`, "--thinking", "high", "--append-system-prompt", rawPrompt];
+			const promptPath = `/private/${key.replace("/", "-")}.prompt`;
+			const finalArgs = [...rawArgs];
+			finalArgs[finalArgs.length - 1] = promptPath;
 			const record: Omit<NormalizedLaunchRecord, "fingerprint"> = {
 				key,
 				...route,
@@ -170,10 +186,10 @@ class FakeRuntime implements OrchestratorRuntime {
 				],
 				...(route.role === "implementer" ? { prompt: {
 					rawValue: rawPrompt,
-					path: `/private/${key.replace("/", "-")}.prompt`,
+					path: promptPath,
 					mode: 0o600 as const,
 					sha256: sha256(rawPrompt),
-					finalArgs: [...rawArgs, "--prompt-file", `/private/${key.replace("/", "-")}.prompt`],
+					finalArgs,
 				} } : {}),
 			};
 			return { ...record, fingerprint: launchRecordFingerprint(record) };
@@ -203,6 +219,24 @@ class FakeRuntime implements OrchestratorRuntime {
 		this.observe("recover-launches", context);
 		this.recoverCalls.push(structuredClone(input.records));
 		return Object.values(input.records).map((record) => structuredClone(record));
+	}
+
+	async verifyLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<VerifiedLaunch> {
+		this.observe("verify-launch", context);
+		this.verificationCalls.push(record.key);
+		await this.verifyLaunchAction?.(record);
+		const common = {
+			key: record.key,
+			modelClass: record.modelClass,
+			model: record.model,
+			thinkingLevel: record.thinkingLevel,
+			env: { ...record.env },
+			tools: [...record.tools],
+			fingerprint: record.fingerprint,
+		};
+		return record.role === "implementer"
+			? { ...common, role: "implementer", args: [...record.prompt!.finalArgs] }
+			: { ...common, role: "reviewer", args: [...record.rawArgs] };
 	}
 
 	async inspectMain(_input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity> {
@@ -295,7 +329,7 @@ class FakeRuntime implements OrchestratorRuntime {
 		input: {
 			task: TaskRequest;
 			workerId: string;
-			launch: LaunchRecord;
+			launch: VerifiedImplementerLaunch;
 			kind: "initial" | "correction";
 			preCandidate: WorkspaceIdentity;
 		},
@@ -308,6 +342,8 @@ class FakeRuntime implements OrchestratorRuntime {
 			workerId: input.workerId,
 			kind: input.kind,
 			launchKey: input.launch.key,
+			args: [...input.launch.args],
+			exposedPersistedFields: "rawArgs" in input.launch || "prompt" in input.launch,
 			preCandidate: structuredClone(input.preCandidate),
 		});
 		if (this.workerBarrierSize > 0 && this.workerCalls.length <= this.workerBarrierSize) {
@@ -353,16 +389,19 @@ class FakeRuntime implements OrchestratorRuntime {
 			scope: "task" | "final";
 			taskId?: string;
 			tip: WorkspaceIdentity;
-			launch: LaunchRecord;
+			verifyLaunch(): Promise<VerifiedReviewerLaunch>;
 		},
 		context: OperationContext,
 	): Promise<ReviewResult> {
 		const plan = this.reviewPlans.shift() ?? {};
+		const launch = await input.verifyLaunch();
 		this.observe("review", context, plan.expire);
 		this.reviewCalls.push({
 			scope: input.scope,
 			...(input.taskId ? { taskId: input.taskId } : {}),
-			launchKey: input.launch.key,
+			launchKey: launch.key,
+			args: [...launch.args],
+			exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
 		});
 		if (plan.error) throw plan.error;
 		return { verdict: plan.verdict ?? "PASS", identityAfter: plan.identityAfter ?? { ...input.tip } };
@@ -595,6 +634,69 @@ test("mixed Role/model launches remain keyed and recover exactly before finaliza
 	assert.deepEqual(runtime.recoverCalls, [interrupted.state.launchRecords]);
 	assert.deepEqual(runtime.workerCalls.map(({ launchKey }) => launchKey), ["implementer/fast", "implementer/frontier"]);
 	assert.deepEqual(runtime.reviewCalls.map(({ launchKey }) => launchKey), ["reviewer/balanced", "reviewer/balanced", "reviewer/fav"]);
+});
+
+test("child hooks receive only freshly verified Role-safe argv", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	const definition = request({
+		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+	});
+	const result = await runner.execute(definition, root);
+	const implementer = result.state.launchRecords["implementer/fast"]!;
+	const reviewer = result.state.launchRecords["reviewer/balanced"]!;
+
+	assert.deepEqual(runtime.workerCalls.map(({ args }) => args), [implementer.prompt!.finalArgs]);
+	assert.ok(runtime.workerCalls.every(({ args, exposedPersistedFields }) =>
+		!exposedPersistedFields && !args.includes(implementer.prompt!.rawValue)));
+	assert.ok(runtime.reviewCalls.every(({ args, exposedPersistedFields }) =>
+		!exposedPersistedFields && JSON.stringify(args) === JSON.stringify(reviewer.rawArgs)));
+	assert.deepEqual(runtime.contexts
+		.filter(({ hook }) => ["verify-launch", "worker", "review"].includes(hook))
+		.map(({ hook }) => hook), ["verify-launch", "worker", "verify-launch", "review", "verify-launch", "review"]);
+});
+
+test("resource drift after recovery blocks worker and Reviewer spawn hooks", async (t) => {
+	await t.test("Implementer", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.inspectionPlans.push({ error: new Error("pause before dispatch") });
+		await runner.execute(request(), root);
+		runtime.contexts.length = 0;
+		runtime.recoverCalls.length = 0;
+		runtime.verificationCalls.length = 0;
+		runtime.verifyLaunchAction = async (record) => {
+			if (record.role === "implementer") throw new Error("Implementer extension fingerprint drifted");
+		};
+
+		const stopped = await runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root);
+		assert.equal(stopped.state.tasks[0]!.status, "needs_attention");
+		assert.equal(runtime.recoverCalls.length, 1);
+		assert.deepEqual(runtime.verificationCalls, ["implementer/fast"]);
+		assert.equal(runtime.workerCalls.length, 0);
+		assert.ok(runtime.contexts.findIndex(({ hook }) => hook === "recover-launches")
+			< runtime.contexts.findIndex(({ hook }) => hook === "verify-launch"));
+	});
+
+	await t.test("Reviewer", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		const definition = request({ finalJudgment: { criterion: "Review all work.", modelClass: "balanced" } });
+		runtime.checkPlans.push({}, {}, { error: new Error("pause before final review") });
+		await runner.execute(definition, root);
+		assert.equal(runtime.reviewCalls.length, 0);
+		runtime.contexts.length = 0;
+		runtime.recoverCalls.length = 0;
+		runtime.verificationCalls.length = 0;
+		runtime.verifyLaunchAction = async (record) => {
+			if (record.role === "reviewer") throw new Error("Reviewer extension fingerprint drifted");
+		};
+
+		const stopped = await runner.resume({ id: "request-one", action: "finalize" }, root);
+		assert.equal(stopped.state.final.status, "interrupted");
+		assert.equal(runtime.recoverCalls.length, 1);
+		assert.deepEqual(runtime.verificationCalls, ["reviewer/balanced"]);
+		assert.equal(runtime.reviewCalls.length, 0);
+		assert.ok(runtime.contexts.findIndex(({ hook }) => hook === "recover-launches")
+			< runtime.contexts.findIndex(({ hook }) => hook === "verify-launch"));
+	});
 });
 
 test("completed task and request states require exact authoritative evidence and termination", async (t) => {

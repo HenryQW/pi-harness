@@ -14,7 +14,7 @@ import {
 	type Role as SubagentRole,
 } from "@henryqw/pi-subagent";
 import { registerModelTask } from "@henryqw/pi-task-models";
-import type { CoordinatorRuntime, OperationContext } from "./runner.ts";
+import type { CoordinatorRuntime, OperationContext, VerifiedLaunch } from "./runner.ts";
 import {
 	launchKey,
 	launchRecordFingerprint,
@@ -456,6 +456,21 @@ async function assertRecordResources(record: NormalizedLaunchRecord, signal?: Ab
 async function verifyPromptFile(record: NormalizedLaunchRecord, signal?: AbortSignal): Promise<void> {
 	if (!record.prompt) return;
 	abortIfNeeded(signal);
+	const promptDirectory = dirname(record.prompt.path);
+	let directoryInfo;
+	try {
+		directoryInfo = await lstat(promptDirectory);
+	} catch (error) {
+		if (isMissing(error)) throw new Error(`Launch ${record.key} private prompt directory is missing.`);
+		throw error;
+	}
+	if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()
+		|| (directoryInfo.mode & 0o7777) !== REQUEST_DIRECTORY_MODE) {
+		throw new Error(`Launch ${record.key} private prompt directory mode drifted from 0700.`);
+	}
+	if (normalize(await realpath(promptDirectory)) !== promptDirectory) {
+		throw new Error(`Launch ${record.key} private prompt directory is no longer canonical.`);
+	}
 	let info;
 	try {
 		info = await lstat(record.prompt.path);
@@ -464,7 +479,7 @@ async function verifyPromptFile(record: NormalizedLaunchRecord, signal?: AbortSi
 		throw error;
 	}
 	if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Launch ${record.key} private prompt is not a regular non-symlink file.`);
-	if ((info.mode & 0o777) !== PROMPT_MODE) throw new Error(`Launch ${record.key} private prompt mode drifted from 0600.`);
+	if ((info.mode & 0o7777) !== PROMPT_MODE) throw new Error(`Launch ${record.key} private prompt mode drifted from 0600.`);
 	if (normalize(await realpath(record.prompt.path)) !== record.prompt.path) {
 		throw new Error(`Launch ${record.key} private prompt path is no longer canonical.`);
 	}
@@ -476,10 +491,22 @@ async function verifyPromptFile(record: NormalizedLaunchRecord, signal?: AbortSi
 	}
 }
 
-/** Revalidate a persisted launch immediately before starting its child process. */
-export async function verifyLaunchRecord(record: NormalizedLaunchRecord, options: { signal?: AbortSignal } = {}): Promise<void> {
+/** Revalidate a persisted launch and return only its exact executable argv. */
+export async function verifyLaunchRecord(record: NormalizedLaunchRecord, options: { signal?: AbortSignal } = {}): Promise<VerifiedLaunch> {
 	await assertRecordResources(record, options.signal);
 	await verifyPromptFile(record, options.signal);
+	const common = {
+		key: record.key,
+		modelClass: record.modelClass,
+		model: record.model,
+		thinkingLevel: record.thinkingLevel,
+		env: Object.freeze({ ...record.env }),
+		tools: Object.freeze([...record.tools]),
+		fingerprint: record.fingerprint,
+	};
+	return record.role === "implementer"
+		? Object.freeze({ ...common, role: "implementer", args: Object.freeze([...record.prompt!.finalArgs]) })
+		: Object.freeze({ ...common, role: "reviewer", args: Object.freeze([...record.rawArgs]) });
 }
 
 export class RoleLaunchRuntime implements CoordinatorRuntime {
@@ -593,7 +620,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		}
 		const requestInfo = await lstat(requestDirectory);
 		if (requestInfo.isSymbolicLink() || !requestInfo.isDirectory()
-			|| (requestInfo.mode & 0o777) !== REQUEST_DIRECTORY_MODE
+			|| (requestInfo.mode & 0o7777) !== REQUEST_DIRECTORY_MODE
 			|| normalize(await realpath(requestDirectory)) !== requestDirectory) {
 			throw new Error("Private launch request directory is not canonical mode 0700 storage.");
 		}
@@ -631,6 +658,10 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		}
 		for (const record of Object.values(recorded)) await verifyLaunchRecord(record, { signal: context.signal });
 		return freshRecords;
+	}
+
+	async verifyLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<VerifiedLaunch> {
+		return await verifyLaunchRecord(record, { signal: context.signal });
 	}
 }
 

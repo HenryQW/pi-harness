@@ -18,6 +18,7 @@ import {
 	type CommandEvidence,
 	type ExecuteRequest,
 	type LaunchRecord,
+	type ModelClass,
 	type NormalizedLaunchRecord,
 	type PromptRecord,
 	type ReviewEvidence,
@@ -82,6 +83,28 @@ export type IntegrationResult =
 	| { outcome: "integrated"; main: WorkspaceIdentity }
 	| { outcome: "failed" | "drift" | "unknown"; failure: string };
 
+/** A prelaunch-verified value that omits the persisted record and private Implementer prompt metadata. */
+export interface VerifiedLaunchBase {
+	readonly key: string;
+	readonly modelClass: ModelClass;
+	readonly model: string;
+	readonly thinkingLevel: string;
+	readonly args: readonly string[];
+	readonly env: Readonly<Record<string, string>>;
+	readonly tools: readonly string[];
+	readonly fingerprint: string;
+}
+
+export interface VerifiedImplementerLaunch extends VerifiedLaunchBase {
+	readonly role: "implementer";
+}
+
+export interface VerifiedReviewerLaunch extends VerifiedLaunchBase {
+	readonly role: "reviewer";
+}
+
+export type VerifiedLaunch = VerifiedImplementerLaunch | VerifiedReviewerLaunch;
+
 /**
  * Productive hooks may inspect or change implementation state. Every call receives
  * the same request abort signal and a timeout capped by the persisted deadline.
@@ -96,6 +119,7 @@ export interface CoordinatorRuntime {
 	}>;
 	materializeLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<void>;
 	recoverLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
+	verifyLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<VerifiedLaunch>;
 }
 
 export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
@@ -115,7 +139,7 @@ export interface HostRuntime {
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		workerId: string;
-		launch: LaunchRecord;
+		launch: VerifiedImplementerLaunch;
 		kind: "initial" | "correction";
 		preCandidate: WorkspaceIdentity;
 		failure?: string;
@@ -169,7 +193,7 @@ export interface GitRuntime {
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		launch: LaunchRecord;
+		verifyLaunch(): Promise<VerifiedReviewerLaunch>;
 	}, context: OperationContext): Promise<ReviewResult>;
 	inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	rebase(input: {
@@ -720,15 +744,19 @@ export class OrchestratorRunner {
 			await handle.save();
 			let worker: WorkerResult;
 			try {
-				worker = await scope.call(async (context) => await this.runtime.runWorker({
-					task: request,
-					attempt,
-					workerId,
-					launch: state.launchRecords[task.implementerLaunchKey]!,
-					kind,
-					preCandidate,
-					...(failure ? { failure } : {}),
-				}, context));
+				worker = await scope.call(async (context) => {
+					const launch = await this.runtime.verifyLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
+					if (launch.role !== "implementer") throw new Error("Implementer launch verification returned the wrong Role.");
+					return await this.runtime.runWorker({
+						task: request,
+						attempt,
+						workerId,
+						launch,
+						kind,
+						preCandidate,
+						...(failure ? { failure } : {}),
+					}, context);
+				});
 			} catch (error) {
 				prompt.status = "ambiguous";
 				prompt.failure = `Prompt result is ambiguous and will not be replayed: ${errorText(error)}`;
@@ -930,6 +958,7 @@ export class OrchestratorRunner {
 		taskId?: string,
 	): Promise<ReviewEvidence> {
 		const attempt = taskId ? latestAttempt(taskState(handle.state, taskId)) : undefined;
+		const record = handle.state.launchRecords[recordKey]!;
 		const result = await scope.call(async (context) => await this.gitRuntime.review({
 			root: handle.state.root,
 			scope: phase === "final" ? "final" : "task",
@@ -938,7 +967,11 @@ export class OrchestratorRunner {
 			criterion,
 			base,
 			tip,
-			launch: handle.state.launchRecords[recordKey]!,
+			verifyLaunch: async () => {
+				const launch = await this.runtime.verifyLaunch(record, context);
+				if (launch.role !== "reviewer") throw new Error("Reviewer launch verification returned the wrong Role.");
+				return launch;
+			},
 		}, context));
 		const evidence: ReviewEvidence = {
 			phase,

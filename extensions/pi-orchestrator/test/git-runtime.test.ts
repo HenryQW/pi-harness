@@ -10,13 +10,18 @@ import {
 	type DirectProcessRunner,
 	type ExactReviewExecutorInput,
 } from "../src/git-runtime.ts";
-import { sameIdentity, type AllocationIntent, type CheckBatchEvidence, type CommandEvidence, type LaunchRecord, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
-import type { OperationContext } from "../src/runner.ts";
+import { sameIdentity, type AllocationIntent, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
+import type { OperationContext, VerifiedReviewerLaunch } from "../src/runner.ts";
 
-const launch: LaunchRecord = {
+const launch: VerifiedReviewerLaunch = {
 	key: "reviewer/fast",
 	role: "reviewer",
 	modelClass: "fast",
+	model: "provider/model",
+	thinkingLevel: "high",
+	args: ["--model", "provider/model"],
+	env: {},
+	tools: ["read", "grep", "find", "ls"],
 	fingerprint: "1".repeat(64),
 };
 
@@ -201,7 +206,7 @@ async function prepareIntegration(
 			criterion: definition.judgment.criterion,
 			base: rebased.base,
 			tip: rebased.candidate,
-			launch,
+			verifyLaunch: async () => launch,
 		}, operationContext);
 		review = reviewEvidence(definition, rebased.base, rebased.candidate, result);
 		attempt.authoritativeReview = review;
@@ -454,7 +459,7 @@ test("same-wave units use wave-base preliminary packets and integration-base aut
 		attempt.candidate = candidate;
 		await runtime.review({
 			root, scope: "task", phase: "preliminary", taskId: definition.id, attempt,
-			criterion: definition.judgment!.criterion, base, tip: candidate, launch,
+			criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
 		}, context());
 	}
 	const firstPrepared = await prepareIntegration(runtime, root, firstTask, first.attempt, firstCandidate, base);
@@ -503,7 +508,7 @@ test("final review resolves a canonical Main worktree root without changing the 
 		criterion: "Review the final change.",
 		base,
 		tip,
-		launch,
+		verifyLaunch: async () => launch,
 	}, operationContext);
 
 	assert.equal(reviewed.verdict, "PASS");
@@ -587,13 +592,13 @@ test("failed checks, Reviewer findings or mutation, and Main drift cannot integr
 	assert.ok(sameIdentity(failed.identityAfter, candidate));
 	const findings = await runtime.review({
 		root, scope: "task", phase: "preliminary", taskId: definition.id, attempt: allocated.attempt,
-		criterion: definition.judgment!.criterion, base, tip: candidate, launch,
+		criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
 	}, context());
 	assert.match(findings.verdict, /Finding/);
 	reviewMode = "mutation";
 	const mutated = await runtime.review({
 		root, scope: "task", phase: "preliminary", taskId: definition.id, attempt: allocated.attempt,
-		criterion: definition.judgment!.criterion, base, tip: candidate, launch,
+		criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
 	}, context());
 	assert.equal(mutated.verdict, "PASS");
 	assert.ok(!sameIdentity(mutated.identityAfter, candidate));

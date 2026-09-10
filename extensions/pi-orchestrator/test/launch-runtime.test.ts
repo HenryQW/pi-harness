@@ -476,14 +476,38 @@ test("materialization creates exclusive mode-0600 prompt files and verifies exac
 	for (const record of Object.values(records)) {
 		assert.ok(record.prompt);
 		assert.equal(await readFile(record.prompt.path, "utf8"), record.prompt.rawValue);
-		const mode = (await lstat(record.prompt.path)).mode & 0o777;
+		const mode = (await lstat(record.prompt.path)).mode & 0o7777;
 		assert.equal(mode, 0o600);
+		assert.equal((await lstat(dirname(record.prompt.path))).mode & 0o7777, 0o700);
 		await verifyLaunchRecord(record);
 	}
 	await assert.rejects(
 		fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: definition, records }, operationContext()),
 		/already exists/i,
 	);
+});
+
+test("prelaunch verification exposes only each Role's exact executable argv", async (t) => {
+	const fixture = await harness(t);
+	const definition = request([task("task-a", "fast", { criterion: "Review.", modelClass: "fast" })]);
+	const prepared = await preflight(fixture, definition);
+	const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
+	await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: definition, records }, operationContext());
+
+	const implementerRecord = records["implementer/fast"]!;
+	const implementer = await fixture.runtime.verifyLaunch(implementerRecord, operationContext());
+	assert.equal(implementer.role, "implementer");
+	assert.deepEqual(implementer.args, implementerRecord.prompt!.finalArgs);
+	assert.ok(!implementer.args.includes(implementerRecord.prompt!.rawValue));
+	assert.equal("rawArgs" in implementer, false);
+	assert.equal("prompt" in implementer, false);
+
+	const reviewerRecord = records["reviewer/fast"]!;
+	const reviewer = await fixture.runtime.verifyLaunch(reviewerRecord, operationContext());
+	assert.equal(reviewer.role, "reviewer");
+	assert.deepEqual(reviewer.args, reviewerRecord.rawArgs);
+	assert.equal("rawArgs" in reviewer, false);
+	assert.equal("prompt" in reviewer, false);
 });
 
 test("materialization rejects pre-existing material and duplicate request prompt paths without rewriting", async (t) => {
@@ -560,6 +584,31 @@ test("verification rejects record, argv, resource, prompt hash/content, and mode
 		await chmod(record.prompt!.path, 0o644);
 		await assert.rejects(verifyLaunchRecord(record), /mode drifted from 0600/i);
 	});
+	for (const mode of [0o4600, 0o2600]) {
+		await t.test(`prompt special mode ${mode.toString(8)}`, async (t) => {
+			const fixture = await harness(t);
+			const prepared = await preflight(fixture);
+			const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
+			await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
+			const record = records["implementer/fast"]!;
+			await chmod(record.prompt!.path, mode);
+			assert.equal((await lstat(record.prompt!.path)).mode & 0o7777, mode);
+			await assert.rejects(verifyLaunchRecord(record), /mode drifted from 0600/i);
+		});
+	}
+	for (const mode of [0o2700, 0o1700]) {
+		await t.test(`prompt directory special mode ${mode.toString(8)}`, async (t) => {
+			const fixture = await harness(t);
+			const prepared = await preflight(fixture);
+			const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
+			await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
+			const record = records["implementer/fast"]!;
+			const directory = dirname(record.prompt!.path);
+			await chmod(directory, mode);
+			assert.equal((await lstat(directory)).mode & 0o7777, mode);
+			await assert.rejects(verifyLaunchRecord(record), /directory mode drifted from 0700/i);
+		});
+	}
 });
 
 test("recovery requires exact effective routes, argv, resources, fingerprints, and prompt files", async (t) => {
