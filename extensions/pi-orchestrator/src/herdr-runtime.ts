@@ -30,6 +30,7 @@ const MIN_HERDR_VERSION = [0, 9, 0] as const;
 const MIN_HERDR_PROTOCOL = 22;
 const HERDR_OPERATION_CAP_MS = 30_000;
 const LSOF_OPERATION_CAP_MS = 3_000;
+const PROCESS_INSPECTION_CAP_MS = 3_000;
 const GIT_INSPECTION_CAP_MS = 30_000;
 const OUTPUT_LIMIT = 1024 * 1024;
 const DIAGNOSTIC_LIMIT = 8 * 1024;
@@ -987,6 +988,29 @@ export class HerdrHostRuntime implements HostRuntime {
 			throw new Error("The exact saved agent pane foreground process is not its owned idle shell.");
 		}
 		exactString(shell.name, "Herdr agent pane shell name");
+
+		// Herdr's foreground list excludes background jobs, so inventory every process on the shell's controlling TTY.
+		const inventory = await this.execute(
+			"ps",
+			["-axo", "pid=,tty="],
+			this.processOptions(details.worktreeCwd, context, PROCESS_INSPECTION_CAP_MS),
+		);
+		if (inventory.code !== 0 || inventory.killed || inventory.stderr.trim() || !inventory.stdout.trim()) {
+			throw new Error("The exact saved agent pane process inventory failed or was ambiguous.");
+		}
+		const processes = inventory.stdout.trim().split(/\r?\n/).map((line) => {
+			const match = /^\s*([1-9]\d*)\s+(\S+)\s*$/.exec(line);
+			if (!match) throw new Error("The exact saved agent pane process inventory is malformed.");
+			return { pid: Number(match[1]), tty: match[2]! };
+		});
+		if (processes.some(({ pid }) => !Number.isSafeInteger(pid)) || new Set(processes.map(({ pid }) => pid)).size !== processes.length) {
+			throw new Error("The exact saved agent pane process inventory is malformed.");
+		}
+		const savedShell = processes.filter(({ pid }) => pid === shellPid);
+		if (savedShell.length !== 1 || ["?", "??", "-"].includes(savedShell[0]!.tty)
+			|| processes.filter(({ tty }) => tty === savedShell[0]!.tty).length !== 1) {
+			throw new Error("The exact saved agent pane contains a process other than its owned idle shell.");
+		}
 	}
 
 	private async createPrivateLease(path: string, token: string): Promise<void> {

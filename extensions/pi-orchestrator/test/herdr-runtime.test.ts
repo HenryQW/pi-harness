@@ -280,7 +280,11 @@ function lsof(path: string, stdout = "", code = stdout ? 0 : 1, pid?: number): S
 	};
 }
 
-function startablePaneSteps(paths: Paths, processOverrides: Record<string, unknown> = {}): Step[] {
+function startablePaneSteps(
+	paths: Paths,
+	processOverrides: Record<string, unknown> = {},
+	paneProcessIds: readonly number[] = [501],
+): Step[] {
 	const shellPid = 501;
 	return [
 		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: success({
@@ -305,6 +309,11 @@ function startablePaneSteps(paths: Paths, processOverrides: Record<string, unkno
 				...processOverrides,
 			},
 		}) },
+		{
+			command: "ps",
+			args: ["-axo", "pid=,tty="],
+			result: { code: 0, stdout: `1 ??\n${paneProcessIds.map((pid) => `${pid} ttys042`).join("\n")}\n`, stderr: "" },
+		},
 	];
 }
 
@@ -428,10 +437,11 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		task,
 		attempt,
 		verifyLaunch: async () => {
-			assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
+			assert.deepEqual(script.calls.slice(-4).map(({ command, args }) => [command, ...args]), [
 				["lsof-test", "-nP", "-a", "-F", "p", "--", tabDetails.leasePath],
 				["herdr", "pane", "get", WORKER_PANE_ID],
 				["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
+				["ps", "-axo", "pid=,tty="],
 			]);
 			verified = true;
 			return launch;
@@ -492,7 +502,7 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 		task,
 		attempt,
 		verifyLaunch: async () => {
-			assert.equal(script.calls.length, 3);
+			assert.equal(script.calls.length, 4);
 			throw new Error("Implementer extension fingerprint drifted");
 		},
 	}, context()), /fingerprint drifted/);
@@ -692,10 +702,46 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			...startablePaneSteps(fixture, {
 				foreground_process_group_id: 777,
 				foreground_processes: [{ pid: 777, name: "node", cwd: fixture.worktree }],
-			}),
+			}).slice(0, 2),
 		);
 		assert.equal((await partialHost.reconcileHostAllocation({ intent: partialIntent, task, attempt: partial.attempt }, context())).outcome, "possible");
 		partialScript.done();
+
+		const backgroundScript = new ScriptedProcess();
+		const backgroundHost = runtime(fixture, backgroundScript);
+		const background = await fullAttempt(fixture, backgroundHost);
+		const backgroundIntent = background.attempt.allocations.at(-1)!;
+		backgroundIntent.status = "unknown";
+		delete backgroundIntent.resourceId;
+		await privateLease(background.leasePath);
+		backgroundScript.push(
+			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
+			lsof(background.leasePath),
+			...startablePaneSteps(fixture, {}, [501, 777]),
+		);
+		assert.equal(
+			(await backgroundHost.reconcileHostAllocation({ intent: backgroundIntent, task, attempt: background.attempt }, context())).outcome,
+			"possible",
+			"an unregistered background Pi on the exact pane must block retry even while its shell is idle",
+		);
+		backgroundScript.done();
+
+		const inventoryScript = new ScriptedProcess();
+		const inventoryHost = runtime(fixture, inventoryScript);
+		const inventory = await fullAttempt(fixture, inventoryHost);
+		const inventoryIntent = inventory.attempt.allocations.at(-1)!;
+		inventoryIntent.status = "unknown";
+		delete inventoryIntent.resourceId;
+		await privateLease(inventory.leasePath);
+		const malformedPaneSteps = startablePaneSteps(fixture);
+		malformedPaneSteps[2]!.result = { code: 0, stdout: "unsupported inventory", stderr: "" };
+		inventoryScript.push(
+			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
+			lsof(inventory.leasePath),
+			...malformedPaneSteps,
+		);
+		assert.equal((await inventoryHost.reconcileHostAllocation({ intent: inventoryIntent, task, attempt: inventory.attempt }, context())).outcome, "possible");
+		inventoryScript.done();
 
 		const malformedScript = new ScriptedProcess();
 		const malformedHost = runtime(fixture, malformedScript);
