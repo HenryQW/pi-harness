@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isAbsolute, normalize } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
@@ -95,16 +96,34 @@ export interface LaunchResourceFingerprint {
 }
 
 export interface LaunchPromptFile {
-	path: string;
-	sha256: string;
 	rawValue: string;
+	path: string;
+	mode: 0o600;
+	sha256: string;
 	finalArgs: string[];
 }
 
+/**
+ * Runtime hooks are untrusted boundaries, so the added fields remain optional
+ * on hook input and become required only after validateLaunchRecords succeeds.
+ */
 export interface LaunchRecord {
 	key: string;
 	role: Role;
 	modelClass: ModelClass;
+	model?: string;
+	thinkingLevel?: string;
+	rawArgs?: string[];
+	env?: Record<string, string>;
+	tools?: string[];
+	roleExtensions?: string[];
+	roleSkills?: string[];
+	resources?: LaunchResourceFingerprint[];
+	prompt?: LaunchPromptFile;
+	fingerprint: string;
+}
+
+export interface NormalizedLaunchRecord extends LaunchRecord {
 	model: string;
 	thinkingLevel: string;
 	rawArgs: string[];
@@ -113,12 +132,37 @@ export interface LaunchRecord {
 	roleExtensions: string[];
 	roleSkills: string[];
 	resources: LaunchResourceFingerprint[];
-	prompt?: LaunchPromptFile;
-	fingerprint: string;
 }
 
-export function launchRecordFingerprint(record: Omit<LaunchRecord, "fingerprint">): string {
-	return createHash("sha256").update(JSON.stringify(record)).digest("hex");
+function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprint">): object {
+	return {
+		key: record.key,
+		role: record.role,
+		modelClass: record.modelClass,
+		model: record.model,
+		thinkingLevel: record.thinkingLevel,
+		rawArgs: [...record.rawArgs],
+		env: { ...record.env },
+		tools: [...record.tools],
+		roleExtensions: [...record.roleExtensions],
+		roleSkills: [...record.roleSkills],
+		resources: record.resources.map((resource) => ({
+			kind: resource.kind,
+			path: resource.path,
+			sha256: resource.sha256,
+		})),
+		...(record.prompt ? { prompt: {
+			rawValue: record.prompt.rawValue,
+			path: record.prompt.path,
+			mode: record.prompt.mode,
+			sha256: record.prompt.sha256,
+			finalArgs: [...record.prompt.finalArgs],
+		} } : {}),
+	};
+}
+
+export function launchRecordFingerprint(record: Omit<NormalizedLaunchRecord, "fingerprint">): string {
+	return createHash("sha256").update(JSON.stringify(launchFingerprintValue(record))).digest("hex");
 }
 
 export type AllocationKind = "worktree" | "workspace" | "worker_tab" | "agent";
@@ -268,6 +312,12 @@ export interface CleanupRecovery {
 	deadline: number;
 }
 
+export interface LaunchMaterialization {
+	status: "pending" | "materializing" | "ready" | "failed";
+	at?: number;
+	failure?: string;
+}
+
 export interface RunState {
 	version: typeof RUN_STATE_VERSION;
 	request: ExecuteRequest;
@@ -276,7 +326,8 @@ export interface RunState {
 	main: WorkspaceIdentity;
 	deadlineStartedAt: number;
 	deadline: number;
-	launchRecords: Record<string, LaunchRecord>;
+	launchRecords: Record<string, NormalizedLaunchRecord>;
+	launchMaterialization: LaunchMaterialization;
 	status: RequestStatus;
 	tasks: TaskState[];
 	waves: WaveState[];
@@ -302,9 +353,10 @@ const LaunchResourceFingerprintSchema = Type.Object({
 }, { additionalProperties: false });
 
 const LaunchPromptFileSchema = Type.Object({
-	path: TextSchema,
-	sha256: Type.String({ pattern: SHA256_PATTERN }),
 	rawValue: TextSchema,
+	path: TextSchema,
+	mode: Type.Literal(0o600),
+	sha256: Type.String({ pattern: SHA256_PATTERN }),
 	finalArgs: Type.Array(Type.String({ maxLength: 32_000 }), { minItems: 1, maxItems: 256 }),
 }, { additionalProperties: false });
 
@@ -314,14 +366,22 @@ const LaunchRecordSchema = Type.Object({
 	modelClass: ModelClassSchema,
 	model: TextSchema,
 	thinkingLevel: TextSchema,
-	rawArgs: Type.Array(Type.String({ maxLength: 32_000 }), { minItems: 1, maxItems: 256 }),
+	rawArgs: Type.Array(Type.String({ maxLength: 32_000 }), { maxItems: 256 }),
 	env: Type.Record(Type.String(), Type.String({ maxLength: 32_000 })),
 	tools: Type.Array(TextSchema, { maxItems: 128 }),
-	roleExtensions: Type.Array(TextSchema, { maxItems: 128 }),
-	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
-	resources: Type.Array(LaunchResourceFingerprintSchema, { maxItems: 256 }),
+	roleExtensions: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
+	roleSkills: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
+	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 2, maxItems: 256 }),
 	prompt: Type.Optional(LaunchPromptFileSchema),
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
+}, { additionalProperties: false });
+
+const LaunchMaterializationSchema = Type.Object({
+	status: Type.Union([
+		Type.Literal("pending"), Type.Literal("materializing"), Type.Literal("ready"), Type.Literal("failed"),
+	]),
+	at: Type.Optional(TimestampSchema),
+	failure: OptionalTextSchema,
 }, { additionalProperties: false });
 
 const WorktreeRecordSchema = Type.Object({
@@ -465,6 +525,7 @@ const RunStateSchema = Type.Object({
 	deadlineStartedAt: TimestampSchema,
 	deadline: TimestampSchema,
 	launchRecords: Type.Record(Type.String(), LaunchRecordSchema),
+	launchMaterialization: LaunchMaterializationSchema,
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"), Type.Literal("completed"),
 		Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
@@ -583,22 +644,91 @@ export function requiredLaunchKeys(request: ExecuteRequest): Map<string, { role:
 	return required;
 }
 
-export function validateLaunchRecords(request: ExecuteRequest, records: readonly LaunchRecord[]): Record<string, LaunchRecord> {
+function requireExactLaunchText(value: string, field: string): string {
+	if (!value.trim() || value.trim() !== value || value.includes("\0")) {
+		throw new Error(`${field} must be exact non-empty text without surrounding whitespace or NUL bytes.`);
+	}
+	return value;
+}
+
+function requireCanonicalPath(value: string, field: string): string {
+	requireExactLaunchText(value, field);
+	if (!isAbsolute(value) || normalize(value) !== value) throw new Error(`${field} must be a canonical absolute path.`);
+	return value;
+}
+
+function requireUnique(values: readonly string[], field: string): void {
+	if (new Set(values).size !== values.length) throw new Error(`${field} must not contain duplicates.`);
+}
+
+export function validateLaunchRecords(request: ExecuteRequest, records: readonly LaunchRecord[]): Record<string, NormalizedLaunchRecord> {
 	const required = requiredLaunchKeys(request);
-	const keyed: Record<string, LaunchRecord> = {};
-	for (const record of records) {
+	const keyed: Record<string, NormalizedLaunchRecord> = {};
+	for (const candidate of records) {
+		if (!Check(LaunchRecordSchema, candidate)) {
+			throw new Error("Launch record must contain complete strict launch metadata.");
+		}
+		const record = candidate as NormalizedLaunchRecord;
 		if (keyed[record.key]) throw new Error(`Duplicate launch record ${record.key}.`);
 		const expected = required.get(record.key);
 		if (!expected || record.role !== expected.role || record.modelClass !== expected.modelClass) {
 			throw new Error(`Unexpected launch record ${record.key}.`);
 		}
-		if (!new RegExp(SHA256_PATTERN).test(record.fingerprint)) throw new Error(`Launch record ${record.key} has an invalid fingerprint.`);
-		const { fingerprint, ...fingerprinted } = record;
-		if (launchRecordFingerprint(fingerprinted) !== fingerprint) throw new Error(`Launch record ${record.key} fingerprint does not match its contents.`);
+		requireExactLaunchText(record.model, `Launch record ${record.key} model`);
+		requireExactLaunchText(record.thinkingLevel, `Launch record ${record.key} thinking level`);
+		for (const [index, arg] of record.rawArgs.entries()) {
+			if (arg.includes("\0")) throw new Error(`Launch record ${record.key} rawArgs[${index}] contains a NUL byte.`);
+		}
 		if (Object.keys(record.env).length) throw new Error(`Launch record ${record.key} must not pass caller Role environment.`);
+		for (const [index, tool] of record.tools.entries()) requireExactLaunchText(tool, `Launch record ${record.key} tools[${index}]`);
+		requireUnique(record.tools, `Launch record ${record.key} tools`);
+		for (const [index, path] of record.roleExtensions.entries()) requireCanonicalPath(path, `Launch record ${record.key} roleExtensions[${index}]`);
+		for (const [index, path] of record.roleSkills.entries()) requireCanonicalPath(path, `Launch record ${record.key} roleSkills[${index}]`);
+		requireUnique(record.roleExtensions, `Launch record ${record.key} roleExtensions`);
+		requireUnique(record.roleSkills, `Launch record ${record.key} roleSkills`);
+		const resourceKeys = new Set<string>();
+		for (const [index, resource] of record.resources.entries()) {
+			requireCanonicalPath(resource.path, `Launch record ${record.key} resources[${index}].path`);
+			const resourceKey = `${resource.kind}\0${resource.path}`;
+			if (resourceKeys.has(resourceKey)) throw new Error(`Launch record ${record.key} has duplicate resource fingerprints.`);
+			resourceKeys.add(resourceKey);
+		}
+		const selectedResources = [
+			...record.roleExtensions.map((path) => `extension\0${path}`),
+			...record.roleSkills.map((path) => `skill\0${path}`),
+		];
+		if (selectedResources.length !== record.resources.length
+			|| selectedResources.some((resourceKey) => !resourceKeys.has(resourceKey))) {
+			throw new Error(`Launch record ${record.key} resource fingerprints must match its exact Role extension and Skill paths.`);
+		}
 		if (record.role === "implementer" && !record.prompt) throw new Error(`Implementer launch record ${record.key} lacks its private prompt file.`);
-		if (record.role === "reviewer" && record.prompt) throw new Error(`Reviewer launch record ${record.key} must not use a Herdr prompt file.`);
-		keyed[record.key] = structuredClone(record);
+		if (record.role === "reviewer" && record.prompt) throw new Error(`Reviewer launch record ${record.key} must not use a private Implementer prompt file.`);
+		if (record.prompt) {
+			requireCanonicalPath(record.prompt.path, `Launch record ${record.key} prompt path`);
+			if (record.prompt.mode !== 0o600) throw new Error(`Launch record ${record.key} prompt file must use mode 0600.`);
+			if (!record.prompt.rawValue.trim() || record.prompt.rawValue.includes("\0")) {
+				throw new Error(`Launch record ${record.key} raw prompt must be non-empty text without NUL bytes.`);
+			}
+			const promptHash = createHash("sha256").update(record.prompt.rawValue).digest("hex");
+			if (record.prompt.sha256 !== promptHash) {
+				throw new Error(`Launch record ${record.key} prompt hash does not match its raw prompt value.`);
+			}
+			for (const [index, arg] of record.prompt.finalArgs.entries()) {
+				if (arg.includes("\0")) throw new Error(`Launch record ${record.key} finalArgs[${index}] contains a NUL byte.`);
+				if (arg === record.prompt.rawValue) {
+					throw new Error(`Launch record ${record.key} final argv must not expose its raw prompt value.`);
+				}
+			}
+			if (!record.prompt.finalArgs.includes(record.prompt.path)) {
+				throw new Error(`Launch record ${record.key} final argv must reference its private prompt path.`);
+			}
+		}
+		const normalized = structuredClone(record);
+		const { fingerprint, ...fingerprinted } = normalized;
+		if (launchRecordFingerprint(fingerprinted) !== fingerprint) {
+			throw new Error(`Launch record ${record.key} fingerprint does not match its complete contents.`);
+		}
+		keyed[record.key] = normalized;
 	}
 	for (const key of required.keys()) {
 		if (!keyed[key]) throw new Error(`Missing launch record ${key}.`);
@@ -694,10 +824,18 @@ export function parseRunState(value: unknown): RunState {
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
-	if (state.deadlineStartedAt < state.createdAt
-		|| state.deadlineStartedAt > state.updatedAt
+	if (state.deadlineStartedAt > state.createdAt
+		|| state.createdAt > state.updatedAt
 		|| state.deadline !== state.deadlineStartedAt + request.budgetMs) {
 		throw new Error("Malformed pi-orchestrator v1 deadline.");
+	}
+	const materialization = state.launchMaterialization;
+	if (((materialization.status === "ready" || materialization.status === "failed") && materialization.at === undefined)
+		|| (materialization.status === "failed" && !materialization.failure?.trim())
+		|| ((materialization.status === "pending" || materialization.status === "materializing")
+			&& (materialization.at !== undefined || materialization.failure !== undefined))
+		|| (materialization.status !== "failed" && materialization.failure !== undefined)) {
+		throw new Error("Malformed pi-orchestrator v1 launch materialization state.");
 	}
 	const records = validateLaunchRecords(request, Object.values(state.launchRecords));
 	if (!isDeepStrictEqual(records, state.launchRecords)) throw new Error("Malformed pi-orchestrator v1 launch record keys.");
@@ -716,6 +854,16 @@ export function parseRunState(value: unknown): RunState {
 			if (attempt.prompts[0]?.kind === "correction" || (attempt.prompts[1] && attempt.prompts[1].kind !== "correction")) {
 				throw new Error(`Malformed correction history for ${definition.id}.`);
 			}
+			const correction = attempt.prompts[1];
+			const initialPrompt = attempt.prompts[0];
+			if (attempt.prompts.some((prompt) => !isCleanCommitted(prompt.preCandidate))
+				|| (initialPrompt && initialPrompt.preCandidate.head !== attempt.waveBase.head)) {
+				throw new Error(`Prompt history for ${definition.id} lacks a clean exact pre-prompt candidate.`);
+			}
+			const retainedCandidate = initialPrompt?.candidate ?? initialPrompt?.preCandidate;
+			if (correction && retainedCandidate && !sameIdentity(correction.preCandidate, retainedCandidate)) {
+				throw new Error(`Correction for ${definition.id} did not fence the exact retained candidate.`);
+			}
 			if (attempt.cleanup.some((step, cleanupIndex) => step.kind !== CLEANUP_KINDS[cleanupIndex])) {
 				throw new Error(`Malformed cleanup sequence for ${definition.id}.`);
 			}
@@ -726,6 +874,36 @@ export function parseRunState(value: unknown): RunState {
 				if (allocation.worktree?.baseCommit !== undefined && allocation.worktree.baseCommit !== attempt.waveBase.head) {
 					throw new Error(`Worktree metadata for ${definition.id} does not match its recorded wave base.`);
 				}
+				if (allocation.status === "owned") {
+					if (!allocation.resourceId
+						|| !allocation.resourceId.trim()
+						|| allocation.resourceId.trim() !== allocation.resourceId
+						|| allocation.resourceId.includes("\0")) {
+						throw new Error(`Owned ${allocation.kind} allocation for ${definition.id} lacks an exact resource ID.`);
+					}
+				} else if (allocation.resourceId || allocation.resources) {
+					throw new Error(`Unowned ${allocation.kind} allocation for ${definition.id} must not claim resources.`);
+				}
+				if (allocation.status === "unknown") {
+					if (!allocation.failure?.trim()) throw new Error(`Unknown ${allocation.kind} allocation for ${definition.id} lacks a failure.`);
+					if (allocation.possibleResources) {
+						for (const resource of allocation.possibleResources) {
+							if (!resource.trim() || resource.trim() !== resource || resource.includes("\0")) {
+								throw new Error(`Unknown ${allocation.kind} allocation for ${definition.id} has malformed possible resources.`);
+							}
+						}
+					}
+				} else if (allocation.possibleResources) {
+					throw new Error(`Only unknown allocations may record possible resources for ${definition.id}.`);
+				}
+				if (allocation.resources) {
+					for (const [key, value] of Object.entries(allocation.resources)) {
+						if (!key.trim() || key.trim() !== key || key.includes("\0")
+							|| !value.trim() || value.trim() !== value || value.includes("\0")) {
+							throw new Error(`Owned ${allocation.kind} allocation for ${definition.id} has malformed resource metadata.`);
+						}
+					}
+				}
 				if (allocation.kind === "worktree" && allocation.status === "owned"
 					&& (!allocation.worktree || allocation.resourceId !== allocation.worktree.path)) {
 					throw new Error(`Owned worktree allocation for ${definition.id} lacks exact metadata.`);
@@ -733,6 +911,10 @@ export function parseRunState(value: unknown): RunState {
 			}
 		}
 		if (taskState.status === "completed") requireCompletedTaskEvidence(taskState, definition);
+	}
+	if (materialization.status !== "ready"
+		&& (state.tasks.some((task) => task.attempts.length > 0) || state.waves.length > 0 || state.final.status !== "pending" || state.accepted)) {
+		throw new Error("Productive state exists without ready launch materialization.");
 	}
 	if (state.recovery && !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
 		throw new Error("Malformed cleanup-only recovery task.");

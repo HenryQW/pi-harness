@@ -18,6 +18,7 @@ import {
 	type CommandEvidence,
 	type ExecuteRequest,
 	type LaunchRecord,
+	type NormalizedLaunchRecord,
 	type PromptRecord,
 	type ReviewEvidence,
 	type ResumeRequest,
@@ -93,8 +94,8 @@ export interface CoordinatorRuntime {
 		main: WorkspaceIdentity;
 		launchRecords: LaunchRecord[];
 	}>;
-	materializeLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, LaunchRecord> }, context: OperationContext): Promise<void>;
-	recoverLaunchRecords(input: { request: ExecuteRequest; records: Record<string, LaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
+	materializeLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<void>;
+	recoverLaunchRecords(input: { request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
 }
 
 export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
@@ -132,9 +133,12 @@ export interface HostRuntime {
 	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }>;
 }
 
+export interface TaskCandidateInspector {
+	inspectTaskCandidate(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
+}
+
 export interface GitRuntime {
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
-	inspectTaskCandidate(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {
 		root: string;
 		intent: AllocationIntent;
@@ -255,6 +259,10 @@ function errorText(error: unknown): string {
 	return bounded(error instanceof Error ? error.message : String(error));
 }
 
+function exactResourceText(value: string): boolean {
+	return Boolean(value.trim() && value.trim() === value && !value.includes("\0"));
+}
+
 function taskRequest(state: RunState, id: string): TaskRequest {
 	const task = state.request.tasks.find((candidate) => candidate.id === id);
 	if (!task) throw new Error(`Unknown task ID: ${id}.`);
@@ -324,10 +332,10 @@ function isDeadline(error: unknown, scope: DeadlineScope): boolean {
 
 export class OrchestratorRunner {
 	private readonly runtime: OrchestratorRuntime;
-	private readonly gitRuntime: GitRuntime;
+	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
 
-	constructor(runtime: OrchestratorRuntime, gitRuntime: GitRuntime, store = new FileRunStore()) {
+	constructor(runtime: OrchestratorRuntime, gitRuntime: GitRuntime & TaskCandidateInspector, store = new FileRunStore()) {
 		this.runtime = runtime;
 		this.gitRuntime = gitRuntime;
 		this.store = store;
@@ -336,18 +344,19 @@ export class OrchestratorRunner {
 	async execute(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const startedAt = this.runtime.now();
 		const request = parseExecuteRequest(value);
+		root = realpathSync.native(root);
 		const deadline = startedAt + request.budgetMs;
 		const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
 		try {
-			const prepared = await scope.call(async (context) => await this.runtime.preflight({
-				request,
-				root: realpathSync.native(root),
-			}, context));
-			root = realpathSync.native(prepared.root);
+			await this.store.withLock(root, async () => await this.store.assertAvailable(root, request.id));
+			const prepared = await scope.call(async (context) => await this.runtime.preflight({ request, root }, context));
+			const preparedRoot = realpathSync.native(prepared.root);
+			if (preparedRoot !== root) throw new Error("Preflight repository root does not match the canonical request root.");
 			if (!isCleanCommitted(prepared.main)) throw new Error("Preflight Main identity must be clean and committed.");
 			const launchRecords = validateLaunchRecords(request, prepared.launchRecords);
 			return await this.store.withLock(root, async () => {
 				await this.store.assertAvailable(root, request.id);
+				const createdAt = this.runtime.now();
 				const state: RunState = {
 					version: RUN_STATE_VERSION,
 					request,
@@ -357,6 +366,7 @@ export class OrchestratorRunner {
 					deadlineStartedAt: startedAt,
 					deadline,
 					launchRecords,
+					launchMaterialization: { status: "pending" },
 					status: "pending",
 					tasks: request.tasks.map((task) => ({
 						taskId: task.id,
@@ -368,15 +378,34 @@ export class OrchestratorRunner {
 					waves: [],
 					final: { status: "pending" },
 					accepted: false,
-					createdAt: startedAt,
-					updatedAt: this.runtime.now(),
+					createdAt,
+					updatedAt: createdAt,
 				};
 				const handle = await this.store.create(state);
-				await scope.call(async (context) => await this.runtime.materializeLaunchRecords({
-					root,
-					request,
-					records: launchRecords,
-				}, context));
+				const durable = handle.state;
+				durable.launchMaterialization = { status: "materializing" };
+				durable.updatedAt = this.runtime.now();
+				await handle.save();
+				try {
+					await scope.call(async (context) => await this.runtime.materializeLaunchRecords({
+						root,
+						request,
+						records: launchRecords,
+					}, context));
+				} catch (error) {
+					durable.launchMaterialization = {
+						status: "failed",
+						at: this.runtime.now(),
+						failure: `Private launch materialization failed closed: ${errorText(error)}`,
+					};
+					durable.status = "needs_attention";
+					durable.updatedAt = this.runtime.now();
+					await handle.save();
+					return this.response(durable);
+				}
+				durable.launchMaterialization = { status: "ready", at: this.runtime.now() };
+				durable.updatedAt = this.runtime.now();
+				await handle.save();
 				return await this.run(handle, scope);
 			});
 		} finally {
@@ -391,7 +420,11 @@ export class OrchestratorRunner {
 			const handle = await this.store.load(root, request.id);
 			const state = handle.state;
 			if (this.recoverInterrupted(state)) await handle.save();
+			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
+			if (state.launchMaterialization.status !== "ready") {
+				throw new Error(`Pi Orchestrator request ${request.id} launch materialization is ${state.launchMaterialization.status}; productive resume is forbidden.`);
+			}
 
 			if (request.action === "verify") {
 				const task = taskState(state, request.taskId);
@@ -421,24 +454,19 @@ export class OrchestratorRunner {
 			const handle = await this.store.load(root, id);
 			const state = handle.state;
 			if (terminal(state)) return this.response(state);
-			let failed = false;
+			if (this.recoverInterrupted(state)) await handle.save();
+			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
 			for (const task of state.tasks) {
-				const attempt = task.attempts.at(-1);
-				const workerId = attempt && allocationByKind(attempt, "agent")?.resourceId;
-				if (!attempt || !workerId || attempt.termination?.status === "terminated") continue;
-				const candidate = attempt.candidate ?? attempt.prompts.at(-1)?.preCandidate ?? attempt.waveBase;
-				if (!await this.terminateWithSafety(handle, task, workerId, candidate, outerSignal)) failed = true;
+				for (const attempt of task.attempts) {
+					if (!allocationByKind(attempt, "agent")?.resourceId || attempt.termination?.status === "terminated") continue;
+					await this.terminateWithSafety(
+						handle, task, attempt, this.terminationCandidate(attempt), outerSignal, safetyDeadline,
+					);
+				}
 			}
 			state.status = "aborted";
 			state.accepted = false;
 			state.updatedAt = this.runtime.now();
-			if (failed) {
-				for (const task of state.tasks) {
-					if (task.attempts.at(-1)?.termination?.status === "unknown") {
-						task.failure ??= "Abort could not prove exact worker/process termination; retained resources may still be active.";
-					}
-				}
-			}
 			await handle.save();
 			return this.response(state);
 		});
@@ -449,6 +477,7 @@ export class OrchestratorRunner {
 		return await this.store.withLock(root, async () => {
 			const handle = await this.store.load(root, id);
 			if (this.recoverInterrupted(handle.state)) await handle.save();
+			await this.terminateAmbiguousPromptWorkers(handle);
 			return this.response(handle.state);
 		});
 	}
@@ -615,7 +644,10 @@ export class OrchestratorRunner {
 					await handle.save();
 					return;
 				}
-				if (!result.resourceId.trim()) throw new Error(`${kind} allocation returned an empty resource ID.`);
+				if (!exactResourceText(result.resourceId)) throw new Error(`${kind} allocation returned a malformed resource ID.`);
+				if (result.resources && Object.entries(result.resources).some(([key, value]) => !exactResourceText(key) || !exactResourceText(value))) {
+					throw new Error(`${kind} allocation returned malformed resource metadata.`);
+				}
 				if (kind === "worktree" && (!intent.worktree || intent.worktree.path !== result.resourceId)) {
 					throw new Error("Worktree allocation returned without exact persisted preparation metadata.");
 				}
@@ -649,7 +681,7 @@ export class OrchestratorRunner {
 		for (;;) {
 			if (kind === "correction" && !correctionEligible(request, attempt)) {
 				this.attention(task, "The same-agent correction is unavailable or already used.");
-				await this.terminateWithSafety(handle, task, workerId, attempt.candidate ?? attempt.waveBase);
+				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				return;
 			}
 			let preCandidate: WorkspaceIdentity;
@@ -661,12 +693,24 @@ export class OrchestratorRunner {
 				}, context));
 			} catch (error) {
 				this.attention(task, `Pre-prompt candidate identity is unavailable: ${errorText(error)}`);
-				await this.terminateWithSafety(handle, task, workerId, attempt.candidate ?? attempt.waveBase);
+				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				return;
 			}
-			if (attempt.candidate && !sameIdentity(preCandidate, attempt.candidate)) {
+			const worktree = allocationByKind(attempt, "worktree")?.worktree;
+			if (!worktree
+				|| preCandidate.branch !== `refs/heads/${worktree.branch}`
+				|| !isCleanCommitted(preCandidate)
+				|| (kind === "initial" && preCandidate.head !== attempt.waveBase.head)) {
+				this.attention(task, "Pre-prompt task candidate inspection returned an invalid owned worktree identity.");
+				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				return;
+			}
+			const retainedCandidate = kind === "correction"
+				? attempt.candidate ?? attempt.prompts[0]?.candidate ?? attempt.prompts[0]?.preCandidate
+				: undefined;
+			if (retainedCandidate && !sameIdentity(preCandidate, retainedCandidate)) {
 				this.attention(task, "The same-agent correction worktree identity drifted before prompting.");
-				await this.terminateWithSafety(handle, task, workerId, preCandidate);
+				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			const prompt: PromptRecord = { kind, status: "submitting", preCandidate, at: this.runtime.now() };
@@ -688,14 +732,14 @@ export class OrchestratorRunner {
 				prompt.status = "ambiguous";
 				prompt.failure = `Prompt result is ambiguous and will not be replayed: ${errorText(error)}`;
 				this.attention(task, prompt.failure);
-				await this.terminateWithSafety(handle, task, workerId, preCandidate);
+				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			if (worker.outcome === "unknown" || worker.outcome === "interrupted") {
 				prompt.status = "ambiguous";
 				prompt.failure = bounded(worker.diagnostic);
 				this.attention(task, `${worker.outcome} worker result will not be replayed: ${prompt.failure}`);
-				await this.terminateWithSafety(handle, task, workerId, preCandidate);
+				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			prompt.status = "settled";
@@ -775,20 +819,33 @@ export class OrchestratorRunner {
 		candidate: WorkspaceIdentity,
 		_scope: DeadlineScope,
 	): Promise<boolean> {
-		return await this.terminateWithSafety(handle, task, workerId, candidate);
+		const attempt = latestAttempt(task);
+		if (allocationByKind(attempt, "agent")?.resourceId !== workerId) {
+			throw new Error("Worker termination requires the exact durably owned agent ID.");
+		}
+		return await this.terminateWithSafety(handle, task, attempt, candidate);
+	}
+
+	private terminationCandidate(attempt: TaskAttempt): WorkspaceIdentity {
+		return attempt.candidate
+			?? attempt.prompts.at(-1)?.candidate
+			?? attempt.prompts.at(-1)?.preCandidate
+			?? attempt.waveBase;
 	}
 
 	private async terminateWithSafety(
 		handle: RunStateHandle,
 		task: TaskState,
-		workerId: string,
+		attempt: TaskAttempt,
 		candidate: WorkspaceIdentity,
 		outerSignal?: AbortSignal,
+		safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS,
 	): Promise<boolean> {
-		const attempt = latestAttempt(task);
+		const workerId = allocationByKind(attempt, "agent")?.resourceId;
+		if (!workerId) throw new Error("Safety termination requires an exact durably owned agent ID.");
 		attempt.termination = { status: "terminating", workerId, candidate };
 		await handle.save();
-		const safety = new DeadlineScope(this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS, () => this.runtime.now(), outerSignal);
+		const safety = new DeadlineScope(safetyDeadline, () => this.runtime.now(), outerSignal);
 		try {
 			const result = await safety.call(async (context) => await this.runtime.terminateWorker({
 				task: taskRequest(handle.state, task.taskId), attempt, workerId, candidate,
@@ -807,6 +864,20 @@ export class OrchestratorRunner {
 		} finally {
 			safety.close();
 			await handle.save();
+		}
+	}
+
+	private async terminateAmbiguousPromptWorkers(handle: RunStateHandle, outerSignal?: AbortSignal): Promise<void> {
+		const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
+		for (const task of handle.state.tasks) {
+			for (const attempt of task.attempts) {
+				if (!attempt.prompts.some((prompt) => prompt.status === "ambiguous")
+					|| !allocationByKind(attempt, "agent")?.resourceId
+					|| attempt.termination?.status === "terminated") continue;
+				await this.terminateWithSafety(
+					handle, task, attempt, this.terminationCandidate(attempt), outerSignal, safetyDeadline,
+				);
+			}
 		}
 	}
 
@@ -1109,9 +1180,15 @@ export class OrchestratorRunner {
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be retried or adopted automatically.");
 		if (attempt.prompts.length) {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
+				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.resourceId) {
+					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+				}
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
 			if (!correctionEligible(taskRequest(handle.state, task.taskId), attempt)) {
+				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.resourceId) {
+					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+				}
 				throw new Error("The same-agent correction is unavailable or already used.");
 			}
 			task.status = "working";
@@ -1277,6 +1354,20 @@ export class OrchestratorRunner {
 	}
 
 	private recoverInterrupted(state: RunState): boolean {
+		if (state.launchMaterialization.status !== "ready") {
+			if (state.launchMaterialization.status === "pending" || state.launchMaterialization.status === "materializing") {
+				state.launchMaterialization = {
+					status: "failed",
+					at: this.runtime.now(),
+					failure: "Private launch materialization was interrupted and will not be replayed automatically.",
+				};
+				state.status = "needs_attention";
+				state.accepted = false;
+				state.updatedAt = this.runtime.now();
+				return true;
+			}
+			return false;
+		}
 		if (state.status === "pending") {
 			const ready = readyPendingTasks(state).filter((task) => task.attempts.length === 0);
 			if (!ready.length) return false;
@@ -1372,6 +1463,7 @@ export class OrchestratorRunner {
 			text: bounded([
 				`Pi Orchestrator ${state.request.id}: ${state.status}.`,
 				`Tasks: ${completed}/${state.tasks.length} completed. Accepted: ${state.accepted}.`,
+				...(state.launchMaterialization.failure ? [`Launch materialization: ${state.launchMaterialization.failure}`] : []),
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
