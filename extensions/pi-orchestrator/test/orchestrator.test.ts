@@ -514,6 +514,8 @@ test("root active delegation sources smoke-load only generic delegation and orch
 
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-orchestrator-smoke-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const previousActivePi = process.env.PI_CODING_AGENT;
+	const previousTitle = process.title;
 	const toolNames: string[] = [];
 	const pi = {
 		events: {
@@ -526,6 +528,8 @@ test("root active delegation sources smoke-load only generic delegation and orch
 	} as unknown as ExtensionAPI;
 	try {
 		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.PI_CODING_AGENT = "true";
+		process.title = "pi";
 		for (const source of active.filter((entry) => /pi-(?:subagent|orchestrator)\//.test(entry))) {
 			const loaded = await import(pathToFileURL(resolve(repositoryRoot, source)).href) as { default(pi: ExtensionAPI): void };
 			loaded.default(pi);
@@ -533,6 +537,9 @@ test("root active delegation sources smoke-load only generic delegation and orch
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		if (previousActivePi === undefined) delete process.env.PI_CODING_AGENT;
+		else process.env.PI_CODING_AGENT = previousActivePi;
+		process.title = previousTitle;
 		await rm(agentDir, { recursive: true, force: true });
 	}
 
