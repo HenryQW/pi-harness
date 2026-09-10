@@ -116,6 +116,19 @@ async function allocate(
 	return { attempt, intent, result };
 }
 
+function recordExactWorkerTermination(attempt: TaskAttempt, candidate: WorkspaceIdentity): void {
+	if (attempt.candidate && !sameIdentity(attempt.candidate, candidate)) {
+		assert.fail("Worker termination candidate must match the recorded task candidate.");
+	}
+	attempt.candidate = { ...candidate };
+	attempt.termination = {
+		status: "terminated",
+		workerId: `worker-${attempt.correlationToken}`,
+		candidate: { ...candidate },
+		at: Date.now(),
+	};
+}
+
 function checksEvidence(candidate: WorkspaceIdentity, results: Awaited<ReturnType<CheckedGitRuntime["runChecks"]>>): CheckBatchEvidence {
 	return {
 		phase: "authoritative",
@@ -162,6 +175,7 @@ async function prepareIntegration(
 	onto: WorkspaceIdentity,
 	operationContext = context(),
 ): Promise<{ base: WorkspaceIdentity; candidate: WorkspaceIdentity; checks: CheckBatchEvidence; review?: ReviewEvidence }> {
+	recordExactWorkerTermination(attempt, candidate);
 	const rebased = await runtime.rebase({ root, task: definition, attempt, candidate, onto }, operationContext);
 	if (rebased.outcome !== "ready") assert.fail(rebased.failure);
 	attempt.integrationBase = rebased.base;
@@ -378,6 +392,7 @@ test("rebase conflicts retain exact work and report whether abort succeeded", as
 			const firstPrepared = await prepareIntegration(runtime, root, firstTask, first.attempt, firstCandidate, base);
 			const firstMain = await integrate(runtime, root, firstTask, first.attempt, firstPrepared);
 			const secondCandidate = await runtime.inspectRetainedTask({ root, task: secondTask, attempt: second.attempt }, context());
+			recordExactWorkerTermination(second.attempt, secondCandidate);
 			const rebased = await runtime.rebase({ root, task: secondTask, attempt: second.attempt, candidate: secondCandidate, onto: firstMain }, context());
 			assert.equal(rebased.outcome, "blocked");
 			assert.match(rebased.outcome === "blocked" ? rebased.failure : "", abortFails ? /abort failed/ : /abort restored/);
