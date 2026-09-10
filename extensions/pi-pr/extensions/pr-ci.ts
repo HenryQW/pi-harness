@@ -24,7 +24,7 @@ import {
 const PAGE_BYTES = 512 * 1024;
 const MAX_PAGES = 100;
 const MAX_RECORDS = 1_000;
-const LOG_BYTES = 8 * 1024 * 1024;
+const LOG_TAIL_BYTES = 20 * 1024;
 const LOG_TIMEOUT_MS = 60_000;
 const EVIDENCE_RECORD_BYTES = 20 * 1024;
 const EVIDENCE_TOTAL_BYTES = 256 * 1024;
@@ -341,14 +341,21 @@ function jsonBytes(value: unknown): number {
 	return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
-function boundedEvidenceRecord(failure: FailureIdentity, rawLog: string, maxBytes: number): CiFailureEvidence {
+function boundedEvidenceRecord(
+	failure: FailureIdentity,
+	rawLog: { text: string; truncated: boolean },
+	maxBytes: number,
+): CiFailureEvidence {
 	const metadata = failureEvidence(failure, { text: "", truncated: false });
 	const metadataBytes = jsonBytes(metadata);
 	if (metadataBytes > maxBytes) throw new Error(`Failed job ${failure.job.id} metadata exceeds its evidence budget`);
-	let logBytes = Math.min(Buffer.byteLength(rawLog, "utf8"), maxBytes - metadataBytes);
+	let logBytes = Math.min(Buffer.byteLength(rawLog.text, "utf8"), maxBytes - metadataBytes);
 	while (true) {
-		const log = tailUtf8(rawLog, logBytes);
-		const evidence = failureEvidence(failure, log);
+		const retained = tailUtf8(rawLog.text, logBytes);
+		const evidence = failureEvidence(failure, {
+			text: retained.text,
+			truncated: rawLog.truncated || retained.truncated,
+		});
 		const size = jsonBytes(evidence);
 		if (size <= maxBytes) return evidence;
 		if (logBytes === 0) throw new Error(`Failed job ${failure.job.id} metadata exceeds its evidence budget`);
@@ -742,13 +749,15 @@ export class PullRequestCiFixer {
 		};
 	}
 
-	private async readJobLog(jobId: number): Promise<string> {
-		const label = `Read failed job ${jobId} log`;
-		return await this.api(
+	private async readJobLog(jobId: number): Promise<{ text: string; truncated: boolean }> {
+		const result = await runChecked(this.exec, "gh", [
+			"api", "--hostname", this.authority.host, ...API_HEADERS,
 			`repos/${this.authority.base.repository}/actions/jobs/${jobId}/logs`,
-			label,
-			{ stdoutLimitBytes: LOG_BYTES, timeoutMs: LOG_TIMEOUT_MS },
-		);
+		], this.options({ stdoutTailBytes: LOG_TAIL_BYTES, timeoutMs: LOG_TIMEOUT_MS }));
+		if (Buffer.byteLength(result.stdout, "utf8") > LOG_TAIL_BYTES) {
+			throw new Error(`Read failed job ${jobId} log executor exceeded its retained tail limit`);
+		}
+		return { text: result.stdout, truncated: result.stdoutTruncated === true };
 	}
 
 	async collect(): Promise<CiEvidence> {
@@ -799,25 +808,33 @@ export class PullRequestCiFixer {
 		}
 	}
 
-	private async validatePublishAuthority(): Promise<void> {
+	private async requireCollectedEvidence(): Promise<void> {
 		const current = await this.readSnapshot(false);
 		if (!this.collectedFingerprint || current.fingerprint !== this.collectedFingerprint) {
 			throw new Error("CI repair publish cancelled: stored evidence fingerprint is stale or replaced");
 		}
+	}
+
+	private async requireSavedDestination(original: string): Promise<void> {
 		const remote = await readValidatedRemoteAuthority(this.pi(), this.context(), this.authority.target.remote);
 		if (remote.fetchSource !== this.authority.target.fetchSource || remote.host !== this.authority.target.host ||
 			remote.repository.toLowerCase() !== this.authority.target.repository.toLowerCase()) {
 			throw new Error("CI repair publish cancelled: configured remote authority changed");
 		}
+		if (await readRemoteOid(this.exec, this.options(), this.authority.target.fetchSource, this.authority.target.ref) !== original) {
+			throw new Error("CI repair publish cancelled: remote target no longer matches the frozen pull request head");
+		}
+	}
+
+	private async validatePublishAuthority(): Promise<string> {
+		await this.requireCollectedEvidence();
+		const original = this.authority.head.oid;
+		await this.requireSavedDestination(original);
 		const branch = outputLine(
 			(await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout,
 			"current branch",
 		);
 		if (branch !== this.authority.target.branch) throw new Error("CI repair publish cancelled: current branch changed");
-		const original = this.authority.head.oid;
-		if (await readRemoteOid(this.exec, this.options(), this.authority.target.fetchSource, this.authority.target.ref) !== original) {
-			throw new Error("CI repair publish cancelled: remote target no longer matches the frozen pull request head");
-		}
 		if (await inspectWorktree(this.exec, this.options()) !== "clean") {
 			throw new Error("CI repair publish requires a clean worktree with no Git operation in progress");
 		}
@@ -827,6 +844,13 @@ export class PullRequestCiFixer {
 		}
 		if (await readHead(this.exec, this.options()) !== repairHead) throw new Error("CI repair HEAD changed before push");
 		this.state.repairHead = repairHead;
+		return repairHead;
+	}
+
+	private async finalPublishRevalidation(original: string, repairHead: string): Promise<void> {
+		await this.requireSavedDestination(original);
+		await this.requireCollectedEvidence();
+		if (await readHead(this.exec, this.options()) !== repairHead) throw new Error("CI repair HEAD changed before push");
 	}
 
 	private blockUnpublishedAttempt(): void {
@@ -838,9 +862,9 @@ export class PullRequestCiFixer {
 		this.publishConsumed = true;
 		try {
 			return await withWorktreeLock(this.cwd, async () => {
-				await this.validatePublishAuthority();
+				const repairHead = await this.validatePublishAuthority();
 				const original = this.authority.head.oid;
-				const repairHead = this.state.repairHead!;
+				await this.finalPublishRevalidation(original, repairHead);
 				let pushError: unknown;
 				try {
 					await runChecked(this.exec, "git", [

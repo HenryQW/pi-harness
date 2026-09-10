@@ -23,6 +23,7 @@ export type ExecResult = {
 	stderr: string;
 	code: number;
 	killed: boolean;
+	stdoutTruncated?: boolean;
 };
 
 export type ExecOptions = {
@@ -30,6 +31,7 @@ export type ExecOptions = {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	stdoutLimitBytes?: number;
+	stdoutTailBytes?: number;
 	stderrLimitBytes?: number;
 	stdin?: string;
 };
@@ -79,6 +81,9 @@ export const spawnBounded: Exec = async (command, args, options) => {
 	options.signal?.throwIfAborted();
 	const timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS, "timeoutMs");
 	const stdoutLimit = positiveInteger(options.stdoutLimitBytes ?? DEFAULT_OUTPUT_LIMIT_BYTES, "stdoutLimitBytes");
+	const stdoutTailLimit = options.stdoutTailBytes === undefined
+		? undefined
+		: positiveInteger(options.stdoutTailBytes, "stdoutTailBytes");
 	const stderrLimit = positiveInteger(options.stderrLimitBytes ?? DEFAULT_OUTPUT_LIMIT_BYTES, "stderrLimitBytes");
 	if (options.stdin !== undefined && typeof options.stdin !== "string") throw new TypeError("stdin must be a string");
 
@@ -94,11 +99,16 @@ export const spawnBounded: Exec = async (command, args, options) => {
 			Number.isSafeInteger(childPid) && childPid > 0 ? childPid : null;
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
+		const stdoutDecoder = stdoutTailLimit === undefined
+			? undefined
+			: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 		let stdoutBytes = 0;
+		let stdoutTruncated = false;
 		let stderrBytes = 0;
 		let failure: Error | undefined;
 		let killed = false;
 		let settled = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
 
 		const signalChild = (signal: NodeJS.Signals): void => {
 			if (processGroup !== null) {
@@ -116,15 +126,52 @@ export const spawnBounded: Exec = async (command, args, options) => {
 			if (failure) return;
 			failure = error;
 			signalChild("SIGTERM");
-			setTimeout(() => signalChild("SIGKILL"), PROCESS_TERMINATION_GRACE_MS);
+			killTimer = setTimeout(() => signalChild("SIGKILL"), PROCESS_TERMINATION_GRACE_MS);
+		};
+		const appendTail = (text: string): void => {
+			if (!text || stdoutTailLimit === undefined) return;
+			const chunk = Buffer.from(text, "utf8");
+			stdout.push(chunk);
+			stdoutBytes += chunk.length;
+			if (stdoutBytes <= stdoutTailLimit) return;
+			stdoutTruncated = true;
+			let remove = stdoutBytes - stdoutTailLimit;
+			while (remove > 0) {
+				const first = stdout[0]!;
+				if (first.length <= remove) {
+					stdout.shift();
+					stdoutBytes -= first.length;
+					remove -= first.length;
+					continue;
+				}
+				let start = remove;
+				while (start < first.length && (first[start]! & 0xc0) === 0x80) start += 1;
+				stdout[0] = Buffer.from(first.subarray(start));
+				stdoutBytes -= start;
+				remove = 0;
+			}
+		};
+		const decodeTail = (chunk?: Buffer): void => {
+			if (!stdoutDecoder) return;
+			try {
+				appendTail(chunk === undefined ? stdoutDecoder.decode() : stdoutDecoder.decode(chunk, { stream: true }));
+			} catch {
+				stop(new Error(`${command} stdout was not valid UTF-8`));
+			}
 		};
 		const timer = setTimeout(() => stop(new Error(`${command} timed out after ${timeoutMs}ms`)), timeoutMs);
 		const abort = (): void => stop(options.signal?.reason instanceof Error
 			? options.signal.reason
 			: new DOMException("The operation was aborted", "AbortError"));
 		options.signal?.addEventListener("abort", abort, { once: true });
+		if (options.signal?.aborted) abort();
 
 		child.stdout.on("data", (chunk: Buffer) => {
+			if (failure) return;
+			if (stdoutDecoder) {
+				decodeTail(chunk);
+				return;
+			}
 			stdoutBytes += chunk.length;
 			if (stdoutBytes > stdoutLimit) {
 				stop(new Error(`${command} stdout exceeded ${stdoutLimit} bytes`));
@@ -133,6 +180,7 @@ export const spawnBounded: Exec = async (command, args, options) => {
 			stdout.push(chunk);
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
+			if (failure) return;
 			stderrBytes += chunk.length;
 			if (stderrBytes > stderrLimit) {
 				stop(new Error(`${command} stderr exceeded ${stderrLimit} bytes`));
@@ -140,24 +188,27 @@ export const spawnBounded: Exec = async (command, args, options) => {
 			}
 			stderr.push(chunk);
 		});
-		child.once("error", (error) => {
-			failure ??= error;
-		});
+		child.once("error", stop);
 		child.once("close", (code, signal) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			if (killTimer !== undefined && processGroup === null) clearTimeout(killTimer);
 			options.signal?.removeEventListener("abort", abort);
+			if (!failure && stdoutDecoder) decodeTail();
 			if (failure) {
 				reject(failure);
 				return;
 			}
 			try {
 				resolve({
-					stdout: decode(stdout, stdoutBytes, `${command} stdout`),
+					stdout: stdoutDecoder
+						? Buffer.concat(stdout, stdoutBytes).toString("utf8")
+						: decode(stdout, stdoutBytes, `${command} stdout`),
 					stderr: decode(stderr, stderrBytes, `${command} stderr`),
 					code: code ?? 1,
 					killed: killed || signal !== null,
+					...(stdoutDecoder ? { stdoutTruncated } : {}),
 				});
 			} catch (error) {
 				reject(error);

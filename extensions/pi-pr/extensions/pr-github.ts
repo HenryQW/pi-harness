@@ -207,6 +207,11 @@ type RulesetBranchPolicy = {
 	allowedMergeMethods: MergeMethod[] | null;
 };
 
+type CheckState = {
+	state: string;
+	diagnosableFailure: boolean;
+};
+
 type ListedPullRequest = {
 	id: string;
 	number: number;
@@ -218,7 +223,7 @@ type ListedPullRequest = {
 	mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 	mergeStateStatus: "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE";
 	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
-	checkStates: string[];
+	checkStates: CheckState[];
 };
 
 function fail(action: string, reason: string): never {
@@ -564,27 +569,64 @@ function checkOutcome(state: string): "failure" | "success" | "running" {
 	return "running";
 }
 
-function checkState(value: unknown): string {
-	if (!isRecord(value)) fail("Find pull requests", "invalid statusCheckRollup");
-	const conclusion = optionalCheckState(value, "conclusion");
-	const state = optionalCheckState(value, "state");
-	const status = optionalCheckState(value, "status");
-	const states = [conclusion, state, status].filter((value): value is string => value !== null);
+function canonicalPositiveDecimal(value: string): boolean {
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 && String(parsed) === value;
+}
+
+function isActionsJobUrl(value: unknown, pullRequestUrl: URL, repository: string): boolean {
+	if (typeof value !== "string" || !value) return false;
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return false;
+	}
+	if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash ||
+		url.hostname.toLowerCase() !== pullRequestUrl.hostname.toLowerCase()) return false;
+	const parts = url.pathname.split("/").filter(Boolean);
+	const expected = repository.split("/");
+	return parts.length === 7 && expected.length === 2 &&
+		parts[0]!.toLowerCase() === expected[0]!.toLowerCase() &&
+		parts[1]!.toLowerCase() === expected[1]!.toLowerCase() &&
+		parts[2] === "actions" && parts[3] === "runs" && canonicalPositiveDecimal(parts[4]!) &&
+		parts[5] === "job" && canonicalPositiveDecimal(parts[6]!);
+}
+
+function isDiagnosableActionsCheck(check: Record<string, unknown>, pullRequestUrl: URL, repository: string): boolean {
+	const workflowName = check.workflowName;
+	return typeof workflowName === "string" && !!workflowName && workflowName.trim() === workflowName &&
+		!/\p{Cc}/u.test(workflowName) && isActionsJobUrl(check.detailsUrl, pullRequestUrl, repository);
+}
+
+function checkState(value: unknown, pullRequestUrl: URL, repository: string): CheckState {
+	if (!isRecord(value) || (value.__typename !== "CheckRun" && value.__typename !== "StatusContext")) {
+		return fail("Find pull requests", "invalid statusCheckRollup");
+	}
+	const conclusion = value.__typename === "CheckRun" ? optionalCheckState(value, "conclusion") : null;
+	const state = value.__typename === "StatusContext" ? optionalCheckState(value, "state") : null;
+	const status = value.__typename === "CheckRun" ? optionalCheckState(value, "status") : null;
+	const states = [conclusion, state, status].filter((candidate): candidate is string => candidate !== null);
 	if (!states.length) fail("Find pull requests", "invalid statusCheckRollup");
 
 	// COMPLETED describes a check run's lifecycle; its conclusion gives the outcome.
-	const outcomes = states.filter((value) => value !== "COMPLETED").map(checkOutcome);
+	const outcomes = states.filter((candidate) => candidate !== "COMPLETED").map(checkOutcome);
 	if (
 		new Set(outcomes).size > 1 ||
 		(states.includes("COMPLETED") && outcomes.includes("running"))
 	) fail("Find pull requests", "invalid statusCheckRollup");
-	return conclusion ?? state ?? status ?? fail("Find pull requests", "invalid statusCheckRollup");
+	const selected = conclusion ?? state ?? status ?? fail("Find pull requests", "invalid statusCheckRollup");
+	return {
+		state: selected,
+		diagnosableFailure: FAILED_CHECK_STATES.has(selected) && value.__typename === "CheckRun" &&
+			isDiagnosableActionsCheck(value, pullRequestUrl, repository),
+	};
 }
 
-function checkStates(value: unknown): string[] {
+function checkStates(value: unknown, pullRequestUrl: URL, repository: string): CheckState[] {
 	if (value === null) return [];
 	if (!Array.isArray(value)) fail("Find pull requests", "invalid statusCheckRollup");
-	return value.map(checkState);
+	return value.map((check) => checkState(check, pullRequestUrl, repository));
 }
 
 function listedPullRequest(value: unknown): ListedPullRequest | null {
@@ -617,7 +659,7 @@ function listedPullRequest(value: unknown): ListedPullRequest | null {
 		mergeable: mergeable(value.mergeable),
 		mergeStateStatus: mergeStateStatus(value.mergeStateStatus),
 		reviewDecision: reviewDecision(value.reviewDecision),
-		checkStates: checkStates(value.statusCheckRollup),
+		checkStates: checkStates(value.statusCheckRollup, parsedUrl.url, parsedUrl.repository),
 	};
 }
 
@@ -804,13 +846,19 @@ function selectPullRequest(
 	return historical[0] ?? null;
 }
 
-function ciStatus(states: string[]): CiStatus {
-	if (!states.length) return "none";
+function ciStatus(checks: CheckState[]): CiStatus {
+	if (!checks.length) return "none";
+	let failed = false;
 	let running = false;
-	for (const state of states) {
-		if (FAILED_CHECK_STATES.has(state)) return "failure";
-		if (!SUCCESSFUL_CHECK_STATES.has(state)) running = true;
+	for (const check of checks) {
+		if (FAILED_CHECK_STATES.has(check.state)) {
+			if (!check.diagnosableFailure) return "failure-blocked";
+			failed = true;
+		} else if (!SUCCESSFUL_CHECK_STATES.has(check.state)) {
+			running = true;
+		}
 	}
+	if (failed) return "failure";
 	return running ? "running" : "success";
 }
 

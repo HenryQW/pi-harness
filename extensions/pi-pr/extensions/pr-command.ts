@@ -131,6 +131,9 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	if (pullRequest.conditions.draft) {
 		return { message: `PR #${pullRequest.number} is draft; no action available`, type: "warning" };
 	}
+	if (pullRequest.conditions.ci === "failure-blocked") {
+		return { message: `PR #${pullRequest.number} has a failed CI check that cannot run the CI fix workflow`, type: "warning" };
+	}
 	const mutatingWorkflowSelected = pullRequest.conditions.baseUpdateRequired || pullRequest.conditions.conflict ||
 		pullRequest.conditions.changesRequested || pullRequest.conditions.unresolvedThreads > 0 ||
 		pullRequest.conditions.ci === "failure";

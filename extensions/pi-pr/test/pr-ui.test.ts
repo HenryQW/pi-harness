@@ -134,6 +134,13 @@ test("projects normal runnable, merge, and no-action states", () => {
 			widget: "Run /pr to fix CI",
 		},
 		{
+			name: "unsupported CI failure",
+			input: pullRequest({ conditions: { ci: "failure-blocked" } }),
+			nextStep: "none",
+			footer: "CI failed",
+			color: "error",
+		},
+		{
 			name: "waiting for CI",
 			input: pullRequest({ conditions: { ci: "running" } }),
 			nextStep: "none",

@@ -59,6 +59,16 @@ type HarnessOptions = {
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
 
+function actionsCheck(overrides: Record<string, unknown>) {
+	return {
+		__typename: "CheckRun",
+		workflowName: "CI",
+		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
+		status: "COMPLETED",
+		...overrides,
+	};
+}
+
 function pullRequest(overrides: PullRequestSpec = {}) {
 	const host = overrides.host ?? DEFAULT_HOST;
 	return {
@@ -75,7 +85,7 @@ function pullRequest(overrides: PullRequestSpec = {}) {
 		mergeable: overrides.mergeable ?? "MERGEABLE",
 		mergeStateStatus: overrides.mergeStateStatus ?? "CLEAN",
 		reviewDecision: overrides.reviewDecision ?? "APPROVED",
-		statusCheckRollup: overrides.statusCheckRollup ?? [{ conclusion: "SUCCESS" }],
+		statusCheckRollup: overrides.statusCheckRollup ?? [actionsCheck({ conclusion: "SUCCESS" })],
 	};
 }
 
@@ -298,20 +308,20 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 			mergeable: "CONFLICTING",
 			mergeStateStatus: "DIRTY",
 			reviewDecision: "CHANGES_REQUESTED",
-			statusCheckRollup: [{ conclusion: "FAILURE" }],
+			statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })],
 		},
 		command: "skill:pi-pr-update-branch",
 		action: "merge",
 	},
 	{
 		name: "CI repair outranks review sweep",
-		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
+		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] },
 		command: "skill:pi-pr-fix-ci",
 		action: "collect",
 	},
 	{
 		name: "CI repair outranks waiting",
-		state: { reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
+		state: { reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] },
 		command: "skill:pi-pr-fix-ci",
 		action: "collect",
 	},
@@ -400,7 +410,7 @@ test("does not dispatch mutating workflows when the worktree is dirty or local H
 	const conditions: Array<{ name: string; state: PullRequestSpec }> = [
 		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } },
 		{ name: "comment sweep", state: { reviewDecision: "CHANGES_REQUESTED" } },
-		{ name: "CI fix", state: { statusCheckRollup: [{ conclusion: "FAILURE" }] } },
+		{ name: "CI fix", state: { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] } },
 	];
 	for (const route of conditions) {
 		const dirty = harness({ states: [route.state], status: " M file.ts\n" });
@@ -452,7 +462,7 @@ test("accepts only an anchored create base and keeps it out of the prompt", asyn
 
 test("rejects instructions for non-create helper routes before reservation", async () => {
 	const app = harness({
-		states: [{ statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+		states: [{ statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
 		commands: [packageCommand("skill:pi-pr-fix-ci")],
 	});
 
@@ -529,7 +539,13 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 		{ name: "merged", state: { state: "MERGED" }, message: "PR #42 is merged; no action needed", type: "info" },
 		{ name: "closed", state: { state: "CLOSED" }, message: "PR #42 is closed; no action needed", type: "info" },
 		{ name: "draft", state: { isDraft: true }, message: "PR #42 is draft; no action available", type: "warning" },
-		{ name: "CI running", state: { statusCheckRollup: [{ state: "IN_PROGRESS" }] }, message: "PR #42 is waiting for CI", type: "warning" },
+		{
+			name: "unsupported CI failure",
+			state: { statusCheckRollup: [{ __typename: "StatusContext", context: "legacy", state: "ERROR" }] },
+			message: "PR #42 has a failed CI check that cannot run the CI fix workflow",
+			type: "warning",
+		},
+		{ name: "CI running", state: { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] }, message: "PR #42 is waiting for CI", type: "warning" },
 		{ name: "review pending", state: { reviewDecision: "REVIEW_REQUIRED" }, message: "PR #42 is waiting for review", type: "warning" },
 		{ name: "merge policy pending", state: { mergeStateStatus: "BLOCKED" }, message: "PR #42 is blocked by merge policy", type: "warning" },
 		{ name: "dirty worktree", state: {}, status: " M file.ts\n", message: "PR #42 is blocked by a dirty worktree", type: "warning" },
@@ -594,7 +610,7 @@ test("cancels a confirmed merge when post-inspection authority is absent, differ
 		},
 		{
 			name: "optional check fails",
-			states: [{}, { statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+			states: [{}, { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
 			error: /no longer merge-ready/,
 		},
 		{

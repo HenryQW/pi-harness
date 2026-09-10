@@ -68,7 +68,8 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
-| CI failed | Run the CI fix workflow when the same local prerequisite holds. |
+| GitHub Actions job failed | Run the CI fix workflow when the same local prerequisite holds. |
+| External check or commit status failed | Show `CI failed` as a no-action blocker. |
 | Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
@@ -101,7 +102,7 @@ If Herdr lookup, JSON validation, or rename fails, the PR and normal UI refresh 
 
 Current-branch discovery reads pull requests associated with the exact push repository ref. It does not run a global branch search. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 
-A no-action state includes a draft, merged or closed pull request, running CI, pending review, or blocked merge policy. It also includes a mutating workflow whose tree is dirty or whose local HEAD differs from the PR head.
+A no-action state includes drafts, merged or closed pull requests, running or unsupported failed CI, pending review, and blocked merge policy. A dirty tree or mismatched local HEAD also blocks a mutating workflow.
 
 ### Route priority
 
@@ -109,7 +110,7 @@ A missing pull request uses creation. For an existing pull request, the first ma
 
 1. Merged, closed, or draft: no action.
 2. Base update required or merge conflict. Run only with a clean tree and equal local and PR heads.
-3. CI failure. Apply the same local prerequisite.
+3. A failed GitHub Actions job. Apply the same local prerequisite. Other failed checks remain blockers.
 4. Changes requested or unresolved review threads. Apply the same local prerequisite.
 5. Waiting or local safety block: no action.
 6. Merge-ready: allow clean local HEAD equal to or behind the PR head. Confirm, then merge directly.
@@ -153,7 +154,8 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 - A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
 - A branch update resolves the base repository ref directly. It stops if that ref moves before merge or push.
 - Before a comment-sweep push, it revalidates the configured destination, full PR identity, and local HEAD. It pushes the captured OID.
-- CI repair captures the failed-step log tail and runs one narrow local reproducer before editing.
+- CI repair streams a bounded failed-step log tail and runs one narrow local reproducer before editing.
+- Before push, CI repair revalidates the saved destination, open PR, failure evidence, and repair HEAD.
 - An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
 - After a successful merge, the create widget stays hidden until a new local commit.

@@ -218,6 +218,19 @@ function candidateSearchOutput(
 	));
 }
 
+function actionsCheck(overrides: Record<string, unknown> = {}) {
+	return {
+		__typename: "CheckRun",
+		workflowName: "CI",
+		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
+		...overrides,
+	};
+}
+
+function statusContext(overrides: Record<string, unknown> = {}) {
+	return { __typename: "StatusContext", ...overrides };
+}
+
 function pullRequest(overrides: Record<string, unknown> = {}) {
 	return {
 		id: "PR_kwDOExample",
@@ -550,7 +563,10 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 		mergeable: "CONFLICTING",
 		mergeStateStatus: "DIRTY",
 		reviewDecision: "CHANGES_REQUESTED",
-		statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }, { state: "IN_PROGRESS" }],
+		statusCheckRollup: [
+			actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" }),
+			statusContext({ state: "IN_PROGRESS" }),
+		],
 	});
 	const { pi, context, calls } = harness({
 		candidates: [foreign, matching],
@@ -1584,7 +1600,7 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 
 	const malformed = harness({
-		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "BROKEN" }] })],
+		candidates: [pullRequest({ statusCheckRollup: [statusContext({ state: "BROKEN" })] })],
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(malformed.pi, malformed.context),
@@ -1592,7 +1608,9 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 
 	const contradictory = harness({
-		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", status: "IN_PROGRESS" }] })],
+		candidates: [pullRequest({
+			statusCheckRollup: [actionsCheck({ conclusion: "SUCCESS", status: "IN_PROGRESS" })],
+		})],
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(contradictory.pi, contradictory.context),
@@ -1625,17 +1643,40 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 });
 
-test("routes a diagnosable stale check through the existing CI failure workflow", async () => {
-	const { pi, context } = harness({
-		localHead: REMOTE_HEAD,
-		candidates: [pullRequest({
-			statusCheckRollup: [{ conclusion: "STALE", status: "COMPLETED" }],
-		})],
+test("routes only diagnosable failed GitHub Actions checks through the CI fixer", async (t) => {
+	await t.test("stale Actions check", async () => {
+		const { pi, context } = harness({
+			localHead: REMOTE_HEAD,
+			candidates: [pullRequest({
+				statusCheckRollup: [actionsCheck({ conclusion: "STALE", status: "COMPLETED" })],
+			})],
+		});
+		const loaded = await loadCurrentPullRequest(pi, context);
+		assert.ok(loaded);
+		assert.equal(loaded.conditions.ci, "failure");
+		assert.equal(derivePullRequestNextStep(loaded), "fix-ci");
 	});
-	const loaded = await loadCurrentPullRequest(pi, context);
-	assert.ok(loaded);
-	assert.equal(loaded.conditions.ci, "failure");
-	assert.equal(derivePullRequestNextStep(loaded), "fix-ci");
+
+	for (const candidate of [
+		statusContext({ context: "legacy", state: "ERROR", targetUrl: "https://ci.example.test/build/1" }),
+		actionsCheck({
+			conclusion: "FAILURE",
+			status: "COMPLETED",
+			workflowName: "",
+			detailsUrl: "https://ci.example.test/check/1",
+		}),
+	]) {
+		await t.test(candidate.__typename === "StatusContext" ? "failed legacy status" : "failed external-app check", async () => {
+			const { pi, context } = harness({
+				localHead: REMOTE_HEAD,
+				candidates: [pullRequest({ statusCheckRollup: [candidate] })],
+			});
+			const loaded = await loadCurrentPullRequest(pi, context);
+			assert.ok(loaded);
+			assert.equal(loaded.conditions.ci, "failure-blocked");
+			assert.equal(derivePullRequestNextStep(loaded), "none");
+		});
+	}
 });
 
 test("normalizes empty gh review and check fields without accepting empty records", async () => {
@@ -1643,9 +1684,9 @@ test("normalizes empty gh review and check fields without accepting empty record
 		candidates: [pullRequest({
 			reviewDecision: "",
 			statusCheckRollup: [
-				{ conclusion: "", status: "QUEUED" },
-				{ conclusion: "SUCCESS", state: "", status: "COMPLETED" },
-				{ conclusion: "", state: "IN_PROGRESS", status: "" },
+				actionsCheck({ conclusion: "", status: "QUEUED" }),
+				actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" }),
+				statusContext({ state: "IN_PROGRESS" }),
 			],
 		})],
 	});
@@ -1657,8 +1698,8 @@ test("normalizes empty gh review and check fields without accepting empty record
 
 	for (const candidate of [
 		pullRequest({ reviewDecision: "DISMISSED" }),
-		pullRequest({ statusCheckRollup: [{ conclusion: "", state: "", status: "" }] }),
-		pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "FAILURE" }] }),
+		pullRequest({ statusCheckRollup: [{ __typename: "CheckRun", conclusion: "", status: "" }] }),
+		pullRequest({ statusCheckRollup: [actionsCheck({ conclusion: "SUCCESS", status: "FAILURE" })] }),
 	]) {
 		const invalid = harness({ candidates: [candidate] });
 		await assert.rejects(loadCurrentPullRequest(invalid.pi, invalid.context), /invalid reviewDecision|invalid statusCheckRollup/);
