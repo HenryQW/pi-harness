@@ -5,12 +5,12 @@ description: Prepare and publish the current branch pull request with determinis
 
 # Pi PR Create
 
-Use the `pi_pr_create` helper for base, merge, push, upstream, and GitHub mechanics. Do not reproduce its checks or commands with shell tools.
+Use only `pi_pr_create` for base selection, merge, push, upstream, and GitHub work. Do not repeat its Git or GitHub checks with shell tools.
 
-Use the prepared base and merge-base to inspect the live change. Separate pending work into coherent commits. Preserve coherent existing staging. Exclude `.context/` and unrelated changes. Stop when changes cannot be separated safely.
+Start with the prompted `prepare` action. It uses the saved branch base: explicit `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then validated `origin` default. It requires a committed change ahead. Dirty work alone cannot start this route. The base is always `origin`; fork heads must share its GitHub source and host. Apply trailing prompt guidance only to the PR content.
 
-If the helper reports conflicts, inspect only its returned paths and bounded conflict hunks. Resolve only clear intent, then declare the complete resolved path set to the helper. Ask the user when the correct behavior is unclear.
+After `prepare`, inspect the returned base and merge-base. Separate and commit coherent pending work. Preserve coherent staging. Exclude `.context/` and unrelated changes. Stop when separation is unsafe.
 
-Choose and run the smallest relevant validation after the helper verifies the merge. Stop on failure.
+Use this action order: `prepare`, `merge`, optional `continue`, `push`, then `publish`. On conflict, inspect only returned paths and bounded hunks. Give `continue` every resolved path. Run the smallest relevant validation after the helper verifies the merge.
 
-Write a concise Conventional Commit title. Write a body with `Summary` and `Testing` sections that matches the live diff and checks. Give both to the helper only after it has published the captured head. Reply with only the helper's validated pull request URL.
+Give `publish` a concise Conventional Commit title and a body with `Summary` and `Testing`. It validates the exact PR before no-target upstream setup. If that setup fails after publication, retry `publish` with the same title and body. Do not push again or create another PR. Reply only with the validated PR URL.

@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import {
-	hasLocalCommit,
 	linkInferredPullRequest,
 	loadCurrentPullRequest as discoverCurrentPullRequest,
+	preflightPullRequestCreation,
 	PullRequestLoadError,
 } from "../extensions/pr-github.ts";
 
@@ -19,7 +19,7 @@ async function loadCurrentPullRequest(
 	if (discovery.kind === "none" || discovery.kind === "inactive") return null;
 	throw new PullRequestLoadError(`Discovery blocked: ${discovery.issue.kind}`);
 }
-import { derivePullRequestNextStep } from "../extensions/pr-routing.ts";
+import { derivePullRequestNextStep, type PullRequestTarget } from "../extensions/pr-routing.ts";
 
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
@@ -73,6 +73,13 @@ type HarnessOptions = {
 	verifyResult?: ReturnType<typeof result>;
 	ancestry?: "behind" | "ahead" | "diverged";
 	ancestryResult?: ReturnType<typeof result>;
+	configResults?: Record<string, ReturnType<typeof result>>;
+	creationBaseOid?: string;
+	creationMergeBase?: string;
+	creationAhead?: string;
+	creationFetchResult?: ReturnType<typeof result>;
+	creationDefaultBranch?: string;
+	repositoryApiResults?: Record<string, ReturnType<typeof result>>;
 };
 
 const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed });
@@ -264,6 +271,22 @@ function observation(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function creationTarget(overrides: Partial<PullRequestTarget> = {}): PullRequestTarget {
+	return {
+		provenance: "configured",
+		branch: "feature/local",
+		remote: "origin",
+		ref: "feature/pr",
+		repository: "acme/project",
+		host: "github.com",
+		fetchSource: "git@github.com:acme/project.git",
+		remoteOid: REMOTE_HEAD,
+		...overrides,
+	};
+}
+
+const forkOrigin = { pushUrls: { origin: "git@github.com:acme/fork.git" } };
+
 function harness(options: HarnessOptions = {}) {
 	const calls: CommandCall[] = [];
 	const candidates = options.candidates ?? [pullRequest()];
@@ -302,11 +325,16 @@ function harness(options: HarnessOptions = {}) {
 					: options.fetchUrls?.[requestedRemote] ?? (requestedRemote === remote ? options.fetchUrl : undefined) ?? defaultUrl;
 				return result(`${requestedUrl}\n`);
 			}
-			if (command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "nameWithOwner,url") {
-				if (options.pushRepositoryResult) return options.pushRepositoryResult;
+			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
 				const [host, owner, name, ...rest] = (args[2] ?? "").split("/");
 				if (!host || !owner || !name || rest.length) throw new Error(`Unexpected repository locator: ${args[2]}`);
-				return result(JSON.stringify({ nameWithOwner: `${owner}/${name}`, url: `https://${host}/${owner}/${name}` }));
+				if (args[4] === "nameWithOwner,url") {
+					if (options.pushRepositoryResult) return options.pushRepositoryResult;
+					return result(JSON.stringify({ nameWithOwner: `${owner}/${name}`, url: `https://${host}/${owner}/${name}` }));
+				}
+				if (args[4] === "defaultBranchRef") {
+					return result(JSON.stringify({ defaultBranchRef: { name: options.creationDefaultBranch ?? "main" } }));
+				}
 			}
 			if (command === "git" && args[0] === "ls-remote") {
 				if (options.remoteHeadResult) return options.remoteHeadResult;
@@ -321,6 +349,8 @@ function harness(options: HarnessOptions = {}) {
 			}
 			if (command === "git" && args[0] === "config") {
 				const key = args.at(-1) ?? "";
+				const configuredResult = options.configResults?.[key];
+				if (configuredResult) return configuredResult;
 				const values = options.configValues?.[key] ?? [];
 				if (values.length === 0) return result("", 1);
 				if (args.includes("--type=bool")) {
@@ -332,6 +362,33 @@ function harness(options: HarnessOptions = {}) {
 					return normalized.includes(null) ? result("", 128) : result(`${normalized.join("\n")}\n`);
 				}
 				return result(`${values.join("\n")}\n`);
+			}
+			if (
+				command === "git" && args[0] === "fetch" &&
+				args.slice(1, 5).join(" ") === "--no-write-fetch-head --no-tags --no-recurse-submodules --"
+			) return options.creationFetchResult ?? result();
+			if (
+				command === "git" && args[0] === "rev-parse" && args[1] === "--verify" &&
+				args[2]?.startsWith("refs/remotes/origin/") && args[2]?.endsWith("^{commit}")
+			) return result(`${options.creationBaseOid ?? BASE_HEAD}\n`);
+			if (command === "git" && args[0] === "merge-base" && args[1] !== "--is-ancestor") {
+				return result(`${options.creationMergeBase ?? BASE_HEAD}\n`);
+			}
+			if (command === "git" && args[0] === "rev-list" && args[1] === "--count") {
+				return result(`${options.creationAhead ?? "1"}\n`);
+			}
+			if (command === "gh" && args[0] === "api" && args[1] === "--hostname") {
+				const endpoint = args.at(-1) ?? "";
+				if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
+					const configuredResult = options.repositoryApiResults?.[endpoint];
+					if (configuredResult) return configuredResult;
+					const [, owner, name] = endpoint.split("/");
+					return result(JSON.stringify({
+						full_name: `${owner}/${name}`,
+						html_url: `https://github.com/${owner}/${name}`,
+						source: null,
+					}));
+				}
 			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				if (options.pullRequestResult) return options.pullRequestResult;
@@ -524,34 +581,6 @@ async function linkHarness(failures: {
 	};
 	return { ...app, inferred: initial.pullRequest, config, getTrackingOid: () => trackingOid };
 }
-
-test("detects commits added after local branch creation", async (t) => {
-	const repository = mkdtempSync(join(tmpdir(), "pi-pr-local-commit-"));
-	t.after(() => rmSync(repository, { recursive: true, force: true }));
-	git(repository, "init", "-b", "main");
-	git(repository, "config", "user.name", "Pi PR Test");
-	git(repository, "config", "user.email", "pi-pr@example.com");
-	writeFileSync(join(repository, "tracked.txt"), "base\n");
-	git(repository, "add", "tracked.txt");
-	git(repository, "commit", "-m", "base");
-	git(repository, "switch", "-c", "feature");
-
-	const pi = {
-		exec: async (command: string, args: string[]) => {
-			assert.equal(command, "git");
-			return runGit(repository, args);
-		},
-	} as unknown as Parameters<typeof hasLocalCommit>[0];
-	const context = {
-		cwd: repository,
-		signal: new AbortController().signal,
-	} as Parameters<typeof hasLocalCommit>[1];
-
-	assert.equal(await hasLocalCommit(pi, context), false);
-	writeFileSync(join(repository, "tracked.txt"), "changed\n");
-	git(repository, "commit", "-am", "change");
-	assert.equal(await hasLocalCommit(pi, context), true);
-});
 
 test("discovers an upstream PR from repository-scoped ref associations", async () => {
 	const foreign = pullRequest({
@@ -910,6 +939,7 @@ test("does not globally search a common branch with no pull request", async () =
 			nameWithOwner: "HenryQW/pi-harness",
 			url: "https://github.com/HenryQW/pi-harness",
 		})),
+		creationDefaultBranch: "trunk",
 	});
 
 	assert.equal((await discoverCurrentPullRequest(app.pi, app.context)).kind, "none");
@@ -1021,7 +1051,7 @@ test("blocks a published ref without a PR and an inferred OID mismatch", async (
 });
 
 test("offers creation only after validating origin and finding no published ref", async () => {
-	const { pi, context } = harness({
+	const { pi, context, calls } = harness({
 		pushResult: result("\n"),
 		remote: "origin",
 		remoteNames: ["origin"],
@@ -1041,7 +1071,13 @@ test("offers creation only after validating origin and finding no published ref"
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
+		branch: { ahead: 1 },
 	});
+	assert.equal(calls.some(({ command }) => command === process.execPath), false);
+	assert.deepEqual(calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		"git@github.com:acme/project.git", "+refs/heads/main:refs/remotes/origin/main",
+	]);
 
 	const invalid = harness({
 		pushResult: result("\n"),
@@ -1074,6 +1110,287 @@ test("offers creation only after validating origin and finding no published ref"
 			issue: { kind: "link-configuration", remote: "origin" },
 		});
 	}
+});
+
+test("prioritizes a current pull request before an explicit creation preflight", async () => {
+	const app = harness();
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
+
+	assert.equal(discovery.kind, "current");
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+});
+
+test("uses an explicit creation branch for discovery ahead routing", async () => {
+	const app = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		creationAhead: "2",
+	});
+
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
+	assert.deepEqual(discovery.kind === "none" ? discovery.branch : undefined, { ahead: 2 });
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), true);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "defaultBranchRef"
+	), false);
+	assert.deepEqual(app.calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		"git@github.com:acme/project.git", "+refs/heads/release:refs/remotes/origin/release",
+	]);
+});
+
+test("preflights an explicit creation base from captured OIDs", async () => {
+	const baseOid = "e".repeat(40);
+	const mergeBase = "f".repeat(40);
+	const app = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		creationBaseOid: baseOid,
+		creationMergeBase: mergeBase,
+		creationAhead: "2",
+	});
+	const preflight = await preflightPullRequestCreation(app.pi, app.context, creationTarget(), "release");
+
+	assert.deepEqual(preflight, {
+		head: LOCAL_HEAD,
+		base: {
+			host: "github.com",
+			repository: "acme/project",
+			fetchSource: "git@github.com:acme/project.git",
+			ref: "release",
+			oid: baseOid,
+			mergeBase,
+		},
+		ahead: 2,
+	});
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "gh" && args.join(" ") === "repo view github.com/acme/project --json defaultBranchRef"
+	), false);
+	assert.deepEqual(app.calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		"git@github.com:acme/project.git", "+refs/heads/release:refs/remotes/origin/release",
+	]);
+	assert.ok(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === `merge-base ${LOCAL_HEAD} ${baseOid}`
+	));
+	assert.ok(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === `rev-list --count ${mergeBase}..${LOCAL_HEAD}`
+	));
+});
+
+test("rediscovers an unpublished branch before link configuration or creation preflight", async () => {
+	const options: HarnessOptions = {
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		candidates: [pullRequest({
+			headRepository: { nameWithOwner: "acme/project" },
+			headRefName: "feature/local",
+			headRefOid: REMOTE_HEAD,
+		})],
+	};
+	const app = harness(options);
+	const originalExec = app.pi.exec.bind(app.pi);
+	let remoteReads = 0;
+	app.pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+		if (command === "git" && args[0] === "ls-remote" && args.at(-1) === "refs/heads/feature/local") {
+			app.calls.push({ command, args, options: commandOptions });
+			remoteReads += 1;
+			if (remoteReads === 2) options.remoteHead = REMOTE_HEAD;
+			return remoteReads === 1
+				? result("", 2)
+				: result(`${REMOTE_HEAD}\trefs/heads/feature/local\n`);
+		}
+		return await originalExec(command, args, commandOptions);
+	};
+
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(discovery.kind, "current");
+	const remoteReadIndexes = app.calls.flatMap(({ command, args }, index) =>
+		command === "git" && args[0] === "ls-remote" ? [index] : []
+	);
+	const firstConfigIndex = app.calls.findIndex(({ command, args }) => command === "git" && args[0] === "config");
+	assert.equal(remoteReads, 2);
+	assert.equal(remoteReadIndexes.length, 2);
+	assert.ok(firstConfigIndex > remoteReadIndexes[1]!);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+});
+
+test("uses a configured base or the strict positional repository default", async () => {
+	const configured = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		configValues: { "branch.feature/local.gh-merge-base": ["release"] },
+	});
+	const configuredPreflight = await preflightPullRequestCreation(configured.pi, configured.context, creationTarget());
+	assert.equal(configuredPreflight.base.ref, "release");
+	const branchCheck = configured.calls.findIndex(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch feature/local"
+	);
+	const configRead = configured.calls.findIndex(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	);
+	assert.ok(branchCheck >= 0 && branchCheck < configRead);
+	assert.equal(configured.calls.some(({ command, args }) =>
+		command === "gh" && args.join(" ") === "repo view github.com/acme/project --json defaultBranchRef"
+	), false);
+
+	const defaulted = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		creationDefaultBranch: "trunk",
+	});
+	const defaultedPreflight = await preflightPullRequestCreation(defaulted.pi, defaulted.context, creationTarget());
+	assert.equal(defaultedPreflight.base.ref, "trunk");
+	assert.deepEqual(defaulted.calls.find(({ command, args }) =>
+		command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "defaultBranchRef"
+	)?.args, ["repo", "view", "github.com/acme/project", "--json", "defaultBranchRef"]);
+});
+
+test("accepts an absent creation base config only as empty exit 1", async () => {
+	for (const configResult of [
+		result("release\n", 1),
+		result("", 1, "configuration failed\n"),
+		result("", 2),
+	]) {
+		const app = harness({
+			remote: "origin",
+			pushUrl: "git@github.com:acme/project.git",
+			configResults: { "branch.feature/local.gh-merge-base": configResult },
+		});
+		await assert.rejects(
+			preflightPullRequestCreation(app.pi, app.context, creationTarget()),
+			/Read creation base configuration failed: exit code/,
+		);
+		assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+	}
+
+	const invalidRef = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		refCheckResult: result("rewritten\n"),
+	});
+	await assert.rejects(
+		preflightPullRequestCreation(invalidRef.pi, invalidRef.context, creationTarget(), "release"),
+		/Validate creation base failed: ref changed/,
+	);
+	assert.equal(invalidRef.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+});
+
+test("rejects noncanonical creation ahead counts", async () => {
+	for (const ahead of ["01", "1.0", "-1", "9007199254740992"]) {
+		const app = harness({
+			remote: "origin",
+			pushUrl: "git@github.com:acme/project.git",
+			creationAhead: ahead,
+		});
+		await assert.rejects(
+			preflightPullRequestCreation(app.pi, app.context, creationTarget(), "release"),
+			/Count creation commits failed: invalid ahead count/,
+			ahead,
+		);
+	}
+});
+
+test("guards creation branch and repository relation before qualified base fetch", async () => {
+	const branchChanged = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		branchResult: result("other\n"),
+	});
+	await assert.rejects(
+		preflightPullRequestCreation(branchChanged.pi, branchChanged.context, creationTarget(), "release"),
+		/Read creation branch failed: branch changed/,
+	);
+	assert.equal(branchChanged.calls.some(({ command, args }) => command === "git" && args[0] === "config"), false);
+	assert.equal(branchChanged.calls.some(({ command, args }) => command === "git" && args[0] === "remote"), false);
+
+	const hostMismatch = harness({ remote: "origin", pushUrl: "git@github.com:acme/project.git" });
+	await assert.rejects(
+		preflightPullRequestCreation(hostMismatch.pi, hostMismatch.context, creationTarget({ host: "ghe.example" }), "release"),
+		/base and head hosts do not match/,
+	);
+	assert.equal(hostMismatch.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+
+	const sameRef = harness({ remote: "origin", pushUrl: "git@github.com:acme/project.git" });
+	await assert.rejects(
+		preflightPullRequestCreation(sameRef.pi, sameRef.context, creationTarget({ ref: "main" }), "main"),
+		/head and base refs match/,
+	);
+	assert.equal(sameRef.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+
+	const originRepository = result(JSON.stringify({
+		full_name: "acme/project",
+		html_url: "https://github.com/acme/project",
+		source: null,
+	}));
+	const unrelated = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		repositoryApiResults: {
+			"repos/acme/project": originRepository,
+			"repos/acme/fork": result(JSON.stringify({
+				full_name: "acme/fork",
+				html_url: "https://github.com/acme/fork",
+				source: { full_name: "acme/unrelated" },
+			})),
+		},
+	});
+	await assert.rejects(
+		preflightPullRequestCreation(unrelated.pi, unrelated.context, creationTarget({
+			remote: "fork",
+			repository: "acme/fork",
+			fetchSource: "git@github.com:acme/fork.git",
+		}), "release"),
+		/base and head are unrelated/,
+	);
+	assert.equal(unrelated.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+
+	const related = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		repositoryApiResults: {
+			"repos/acme/project": originRepository,
+			"repos/acme/fork": result(JSON.stringify({
+				full_name: "acme/fork",
+				html_url: "https://github.com/acme/fork",
+				source: { full_name: "acme/project" },
+			})),
+		},
+	});
+	await preflightPullRequestCreation(related.pi, related.context, creationTarget({
+		remote: "fork",
+		repository: "acme/fork",
+		fetchSource: "git@github.com:acme/fork.git",
+	}), "release");
+	const lineageReads = related.calls.flatMap(({ command, args }, index) =>
+		command === "gh" && args[0] === "api" && args.at(-1)?.startsWith("repos/") ? [index] : []
+	);
+	const fetchIndex = related.calls.findIndex(({ command, args }) => command === "git" && args.includes("--"));
+	assert.equal(lineageReads.length, 2);
+	assert.ok(lineageReads.every((index) => index < fetchIndex));
 });
 
 test("links an inferred target only after fresh verification", async () => {
@@ -1384,7 +1701,7 @@ test("ignores the same head ref in an unrelated repository", async () => {
 		url: "https://github.com/acme/unrelated/pull/42",
 		headRepository: { nameWithOwner: "acme/unrelated" },
 	});
-	const { pi, context, calls } = harness({ candidates: [unrelated] });
+	const { pi, context, calls } = harness({ candidates: [unrelated], ...forkOrigin });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 0);
@@ -1484,7 +1801,7 @@ test("fails for ambiguous historical PRs matching the remote push ref", async ()
 
 test("does not fall back to local HEAD when the remote push ref is absent", async () => {
 	const historical = pullRequest({ state: "CLOSED", headRefOid: LOCAL_HEAD });
-	const { pi, context, calls } = harness({ candidates: [historical], remoteHead: null });
+	const { pi, context, calls } = harness({ candidates: [historical], remoteHead: null, ...forkOrigin });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	const search = calls.find(({ command, args }) =>
@@ -1537,7 +1854,7 @@ test("ignores stale observations when configured target or local HEAD identity d
 	];
 	for (const mismatch of mismatches) {
 		const merged = pullRequest({ state: "MERGED" });
-		const { pi, context, calls } = harness({ candidates: [merged], localHead: REMOTE_HEAD, remoteHead: null });
+		const { pi, context, calls } = harness({ candidates: [merged], localHead: REMOTE_HEAD, remoteHead: null, ...forkOrigin });
 		const discovery = await discoverCurrentPullRequest(pi, context, undefined, mismatch.value);
 		assert.equal(discovery.kind, "none", mismatch.name);
 		assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 0, mismatch.name);
@@ -1572,7 +1889,7 @@ test("fails visibly when remote push-ref authority errors or is malformed", asyn
 
 test("returns null only when no current-branch PR matches", async () => {
 	const stale = pullRequest({ state: "CLOSED", headRefOid: LOCAL_HEAD });
-	const { pi, context, calls } = harness({ candidates: [stale] });
+	const { pi, context, calls } = harness({ candidates: [stale], ...forkOrigin });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);

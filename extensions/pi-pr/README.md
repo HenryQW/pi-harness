@@ -42,11 +42,11 @@ GitHub, use the network, or write files.
 
 Run `/pr` in a GitHub checkout. It reads fresh pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
 
-Creation accepts one optional base anchor. Use `/pr --base=<host>/<owner>/<repository>:<ref>`. All other route instructions fail instead of being ignored.
+For creation, put an optional base branch first. For example, run `/pr --base release/2026 Keep the title concise.` The base is a branch name, not a host or repository. Only creation accepts the base and remaining guidance. Other routes reject them instead of ignoring them.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/pr [--base=<host>/<owner>/<repository>:<ref>]` | command | Run the current pull request's next safe route. |
+| `/pr [--base BRANCH] [creation instructions]` | command | Run the current pull request's next safe route. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
 | Widget | ui | Show one action hint or transient routing status. |
 
@@ -64,7 +64,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 | Current condition | `/pr` route |
 | --- | --- |
-| No current-branch pull request, no published matching ref, and safe Git push configuration | Start pull-request creation. |
+| No current-branch pull request, no published matching ref, safe Git push configuration, and a commit ahead of the selected base | Start pull-request creation. |
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
@@ -74,11 +74,13 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
-`pi-pr-create` accepts an anchored base from `/pr --base=...`. Otherwise, it finds one unique parent from validated `origin` refs and commit history. The parent can be a feature branch.
+`pi-pr-create` selects its base in this order: the leading `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then the default branch of validated `origin`. It captures the selected base OID and merge-base. Creation requires at least one committed change ahead. Dirty work alone does not enable creation.
 
-It merges the parent's captured commit before validation and push. It resolves clear conflicts and stops when the base or conflict intent is ambiguous.
+The base always comes from validated `origin`. The head may use that repository or a fork with the same GitHub source. Base and head must use the same GitHub host. Other fork relationships stop before mutation.
 
-It honors an existing configured push target. Without one, it pushes a captured OID to the local branch ref on `origin` and sets upstream.
+It merges the captured base commit before validation and push. It resolves clear conflicts and stops when the base or conflict intent is ambiguous.
+
+A configured target never changes branch upstream settings. Without a target, the helper pushes the captured OID to the local branch ref on validated `origin` and fetches its tracking ref. It leaves upstream unset. It creates or updates and validates the exact PR before it sets and verifies upstream. A failed setup rolls back only unchanged helper-owned settings. If configuration changed concurrently, it stops without overwriting it. Retrying `publish` resumes setup without another push or PR mutation.
 
 Without a configured push target, discovery checks validated remotes for the same branch ref. One exact open PR becomes an inferred target. `/pr` names the exact `remote/ref` and asks before linking it. The extension revalidates the branch, PR, remote OID, and Git configuration before mutation. It rolls back its upstream and remote-tracking changes if final verification fails.
 
@@ -145,7 +147,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 ## Limits and recovery
 
-- `/pr` accepts only the optional anchored creation base described above. It does not open a browser.
+- `/pr` accepts creation syntax only as a leading `--base BRANCH`, followed by optional creation guidance. It does not open a browser.
 - It does not run `/done` or `/sweep`.
 - Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.

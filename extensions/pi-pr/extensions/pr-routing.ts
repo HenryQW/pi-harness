@@ -38,6 +38,10 @@ export type PullRequestTarget = {
 	remoteOid: string | null;
 };
 
+export type BranchCreationState = {
+	ahead: number;
+};
+
 export type DiscoveryIssue =
 	| { kind: "detached-head" }
 	| { kind: "target-invalid" }
@@ -50,7 +54,7 @@ export type DiscoveryIssue =
 
 export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
 	| { kind: "current"; pullRequest: T }
-	| { kind: "none"; creationTarget: PullRequestTarget }
+	| { kind: "none"; creationTarget: PullRequestTarget; branch: BranchCreationState }
 	| { kind: "blocked"; issue: DiscoveryIssue }
 	| { kind: "inactive" };
 
@@ -87,7 +91,7 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
 	if (discovery.kind === "inactive") return "none";
 	if (discovery.kind === "blocked") return "blocked";
-	if (discovery.kind === "none") return "create";
+	if (discovery.kind === "none") return discovery.branch.ahead > 0 ? "create" : "none";
 	if (discovery.pullRequest.target.provenance === "inferred") {
 		return discovery.pullRequest.lifecycle === "open" ? "link-branch" : "none";
 	}

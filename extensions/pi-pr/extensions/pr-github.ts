@@ -105,6 +105,24 @@ export type PullRequestObservation = {
 
 export type PullRequestLoadContext = Pick<ExtensionContext, "cwd" | "signal">;
 
+export type PullRequestCreationPreflight = {
+	head: string;
+	base: {
+		host: string;
+		repository: string;
+		fetchSource: string;
+		ref: string;
+		oid: string;
+		mergeBase: string;
+	};
+	ahead: number;
+};
+
+type CreationIdentity = {
+	target: PullRequestTarget;
+	head: string;
+};
+
 type CommandOutput = {
 	stdout: string;
 	stderr: string;
@@ -185,6 +203,11 @@ export type BranchUpstreamTarget = {
 	ref: string;
 	fetchSource: string;
 	remoteOid: string;
+};
+
+export type BranchUpstreamConfiguration = {
+	remote: string[];
+	merge: string[];
 };
 
 type SearchSelection =
@@ -330,6 +353,12 @@ function parseCommandOutput(value: unknown, action: string): CommandOutput {
 		!Number.isSafeInteger(code) || code < 0 || typeof killed !== "boolean"
 	) fail(action, "invalid command result");
 	return { stdout, stderr, code, killed };
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+	const actual = Object.keys(value).sort();
+	const expected = [...keys].sort();
+	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
 async function invoke(
@@ -1050,27 +1079,232 @@ function parseMergeMethodSettings(output: string, rulesetMethods: MergeMethod[] 
 	return { allowedMergeMethods, viewerDefaultMergeMethod };
 }
 
-export async function hasLocalCommit(
+function validatedCreationTarget(target: PullRequestTarget): PullRequestTarget {
+	if (!isRecord(target)) fail("Read creation target", "invalid target");
+	if (target.provenance !== "configured" && target.provenance !== "inferred") {
+		fail("Read creation target", "invalid provenance");
+	}
+	return {
+		provenance: target.provenance,
+		branch: text(target.branch, "Read creation target", "branch"),
+		remote: text(target.remote, "Read creation target", "remote"),
+		ref: text(target.ref, "Read creation target", "ref"),
+		repository: repositoryName(target.repository, "Read creation target", "repository"),
+		host: text(target.host, "Read creation target", "host").toLowerCase(),
+		fetchSource: text(target.fetchSource, "Read creation target", "fetch source"),
+		remoteOid: target.remoteOid === null ? null : oid(target.remoteOid, "Read creation target", "remote OID"),
+	};
+}
+
+function sameCreationTarget(left: PullRequestTarget, right: PullRequestTarget): boolean {
+	return left.provenance === right.provenance && left.branch === right.branch &&
+		left.remote === right.remote && left.ref === right.ref &&
+		normalizeRepository(left.repository) === normalizeRepository(right.repository) &&
+		left.host === right.host && left.fetchSource === right.fetchSource && left.remoteOid === right.remoteOid;
+}
+
+async function validateCreationRef(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-): Promise<boolean> {
+	ref: string,
+): Promise<string> {
+	const requested = text(ref, "Validate creation base", "ref");
+	const checked = singleLine(
+		(await execute(pi, context, "Validate creation base", "git", ["check-ref-format", "--branch", requested])).stdout,
+		"Validate creation base",
+		"ref",
+	);
+	if (checked !== requested) fail("Validate creation base", "ref changed");
+	return requested;
+}
+
+async function captureCreationIdentity(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+): Promise<CreationIdentity> {
+	const validatedTarget = validatedCreationTarget(target);
 	const branch = singleLine(
-		(await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])).stdout,
-		"Read current branch",
+		(await execute(pi, context, "Read creation branch", "git", ["branch", "--show-current"])).stdout,
+		"Read creation branch",
 		"branch",
 	);
-	const output = (await execute(pi, context, "Read branch history", "git", [
-		"reflog",
-		"show",
-		"--format=%H",
-		`refs/heads/${branch}`,
-	])).stdout.replace(/\r\n/g, "\n");
-	const entries = output.split("\n");
-	if (entries.at(-1) === "") entries.pop();
-	if (!entries.length) fail("Read branch history", "missing branch creation entry");
-	const commits = entries.map((entry) => oid(entry, "Read branch history", "commit"));
-	// ponytail: reflog expiry can hide old branch history; resolve the PR base if this becomes observable.
-	return commits[0] !== commits.at(-1);
+	if (branch !== validatedTarget.branch) fail("Read creation branch", "branch changed");
+	await validateCreationRef(pi, context, branch);
+	const head = oid(singleLine(
+		(await execute(pi, context, "Read creation HEAD", "git", ["rev-parse", "--verify", "HEAD^{commit}"])).stdout,
+		"Read creation HEAD",
+		"OID",
+	), "Read creation HEAD", "OID");
+	return { target: validatedTarget, head };
+}
+
+async function readConfiguredCreationBaseRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	branch: string,
+): Promise<string | null> {
+	const result = await invoke(pi, context, "Read creation base configuration", "git", [
+		"config", "--get-all", `branch.${branch}.gh-merge-base`,
+	]);
+	if (result.killed) commandFailure("Read creation base configuration", result);
+	if (result.code === 1 && result.stdout === "" && result.stderr === "") return null;
+	if (result.code !== 0) commandFailure("Read creation base configuration", result);
+	if (result.stderr !== "") fail("Read creation base configuration", "unexpected diagnostic");
+	const values = lines(result.stdout, "Read creation base configuration", "base ref");
+	if (values.length !== 1) fail("Read creation base configuration", "multiple base refs");
+	return await validateCreationRef(pi, context, values[0]!);
+}
+
+function parseDefaultCreationBaseRef(output: string): string {
+	const value = parseJson(output, "Read creation default branch");
+	if (!isRecord(value) || !hasExactKeys(value, ["defaultBranchRef"]) || !isRecord(value.defaultBranchRef) ||
+		!hasExactKeys(value.defaultBranchRef, ["name"])) {
+		fail("Read creation default branch", "invalid GitHub CLI output");
+	}
+	return text(value.defaultBranchRef.name, "Read creation default branch", "default branch ref");
+}
+
+async function readDefaultCreationBaseRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	origin: { repository: PushRepository },
+): Promise<string> {
+	const result = await execute(pi, context, "Read creation default branch", "gh", [
+		"repo", "view", `${origin.repository.host}/${origin.repository.nameWithOwner}`, "--json", "defaultBranchRef",
+	]);
+	if (result.stderr !== "") fail("Read creation default branch", "unexpected diagnostic");
+	return await validateCreationRef(pi, context, parseDefaultCreationBaseRef(result.stdout));
+}
+
+function parseCreationRepositoryLineage(output: string, expected: PushRepository): string {
+	const value = parseJson(output, "Read creation repository");
+	if (!isRecord(value)) fail("Read creation repository", "invalid GitHub CLI output");
+	const fullName = repositoryName(value.full_name, "Read creation repository", "full_name");
+	const url = parseHttpUrl(value.html_url, "Read creation repository", "html_url");
+	if (
+		normalizeRepository(fullName) !== expected.normalizedName || url.protocol !== "https:" || url.port ||
+		url.hostname.toLowerCase() !== expected.host || url.pathname.toLowerCase() !== `/${expected.normalizedName}`
+	) fail("Read creation repository", "response does not match repository");
+	const source = value.source;
+	if (source !== undefined && source !== null && !isRecord(source)) {
+		fail("Read creation repository", "invalid source");
+	}
+	const sourceName = source === undefined || source === null
+		? fullName
+		: repositoryName(source.full_name, "Read creation repository", "source.full_name");
+	return normalizeRepository(sourceName);
+}
+
+async function assertCreationRepositoryRelation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	origin: { repository: PushRepository },
+	baseRef: string,
+): Promise<void> {
+	if (target.host !== origin.repository.host) {
+		fail("Read creation repository", "base and head hosts do not match");
+	}
+	if (normalizeRepository(target.repository) === origin.repository.normalizedName) {
+		if (target.ref === baseRef) fail("Read creation repository", "head and base refs match");
+		return;
+	}
+	const read = async (repository: PushRepository): Promise<string> => {
+		const [owner, name] = repository.nameWithOwner.split("/");
+		const result = await execute(pi, context, "Read creation repository", "gh", [
+			"api", "--hostname", origin.repository.host, `repos/${owner}/${name}`,
+		]);
+		if (result.stderr !== "") fail("Read creation repository", "unexpected diagnostic");
+		return parseCreationRepositoryLineage(result.stdout, repository);
+	};
+	const originSource = await read(origin.repository);
+	const targetSource = await read({
+		nameWithOwner: target.repository,
+		normalizedName: normalizeRepository(target.repository),
+		host: target.host,
+	});
+	if (originSource !== targetSource) fail("Read creation repository", "base and head are unrelated");
+}
+
+function parseCreationAhead(output: string): number {
+	const value = singleLine(output, "Count creation commits", "ahead count");
+	if (!/^(?:0|[1-9][0-9]*)$/.test(value)) fail("Count creation commits", "invalid ahead count");
+	const ahead = Number(value);
+	if (!Number.isSafeInteger(ahead) || ahead < 0) fail("Count creation commits", "invalid ahead count");
+	return ahead;
+}
+
+async function preflightCreation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef: string | undefined,
+	identity: CreationIdentity,
+): Promise<PullRequestCreationPreflight> {
+	const validatedTarget = validatedCreationTarget(target);
+	if (!sameCreationTarget(identity.target, validatedTarget)) {
+		fail("Read creation target", "target changed");
+	}
+	const origin = await readRemoteAuthority(pi, context, "origin", true);
+	if (!origin) fail("Read creation repository", "origin is unavailable");
+	const configuredBaseRef = explicitBaseRef === undefined
+		? await readConfiguredCreationBaseRef(pi, context, identity.target.branch)
+		: await validateCreationRef(pi, context, explicitBaseRef);
+	const baseRef = configuredBaseRef ?? await readDefaultCreationBaseRef(pi, context, origin);
+	await assertCreationRepositoryRelation(pi, context, identity.target, origin, baseRef);
+	const trackingRef = `refs/remotes/origin/${baseRef}`;
+	await execute(pi, context, "Fetch creation base", "git", [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		origin.fetchSource, `+refs/heads/${baseRef}:${trackingRef}`,
+	]);
+	const baseOid = oid(singleLine(
+		(await execute(pi, context, "Read creation base", "git", ["rev-parse", "--verify", `${trackingRef}^{commit}`])).stdout,
+		"Read creation base",
+		"OID",
+	), "Read creation base", "OID");
+	const mergeBase = oid(singleLine(
+		(await execute(pi, context, "Find creation merge base", "git", ["merge-base", identity.head, baseOid])).stdout,
+		"Find creation merge base",
+		"OID",
+	), "Find creation merge base", "OID");
+	const ahead = parseCreationAhead((await execute(pi, context, "Count creation commits", "git", [
+		"rev-list", "--count", `${mergeBase}..${identity.head}`,
+	])).stdout);
+	return {
+		head: identity.head,
+		base: {
+			host: origin.repository.host,
+			repository: origin.repository.nameWithOwner,
+			fetchSource: origin.fetchSource,
+			ref: baseRef,
+			oid: baseOid,
+			mergeBase,
+		},
+		ahead,
+	};
+}
+
+export async function preflightPullRequestCreation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef?: string,
+): Promise<PullRequestCreationPreflight> {
+	const identity = await captureCreationIdentity(pi, context, target);
+	return await preflightCreation(pi, context, target, explicitBaseRef, identity);
+}
+
+async function creationDiscovery(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef: string | undefined,
+	identity?: CreationIdentity,
+): Promise<CurrentPullRequestDiscovery> {
+	const captured = identity ?? await captureCreationIdentity(pi, context, target);
+	const preflight = await preflightCreation(pi, context, target, explicitBaseRef, captured);
+	return { kind: "none", creationTarget: target, branch: { ahead: preflight.ahead } };
 }
 
 async function readRemoteAuthority(
@@ -1165,6 +1399,22 @@ async function readConfigValues(
 		if (error instanceof PullRequestLoadError) return null;
 		throw error;
 	}
+}
+
+export async function readBranchUpstreamConfiguration(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	branch: string,
+): Promise<BranchUpstreamConfiguration> {
+	const checkedBranch = text(branch, "Read branch upstream", "branch");
+	const [remote, merge] = await Promise.all([
+		readConfigValues(pi, context, `branch.${checkedBranch}.remote`),
+		readConfigValues(pi, context, `branch.${checkedBranch}.merge`),
+	]);
+	if (remote === null || merge === null) {
+		throw new Error("Read branch upstream failed: invalid Git configuration");
+	}
+	return { remote, merge };
 }
 
 async function readBooleanConfigValues(
@@ -1694,6 +1944,18 @@ export async function loadCurrentPullRequest(
 	context: PullRequestLoadContext,
 	inspectedLocal?: LocalMergeSafety,
 	observed?: unknown,
+	explicitCreationBase?: string,
+): Promise<CurrentPullRequestDiscovery> {
+	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase);
+}
+
+async function loadCurrentPullRequestInternal(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	inspectedLocal: LocalMergeSafety | undefined,
+	observed: unknown,
+	explicitCreationBase: string | undefined,
+	creationIdentity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
 	if (read.kind === "inactive") return { kind: "inactive" };
@@ -1714,10 +1976,18 @@ export async function loadCurrentPullRequest(
 			};
 		}
 		if (inferred.kind === "none") {
+			const target = publicTarget(inferred.target);
+			if (creationIdentity === undefined) {
+				const captured = await captureCreationIdentity(pi, context, target);
+				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase, captured);
+			}
+			if (!sameCreationTarget(creationIdentity.target, validatedCreationTarget(target))) {
+				fail("Read creation target", "target changed");
+			}
 			if (!canLinkTarget(await readLinkConfiguration(pi, context, inferred.target), inferred.target)) {
 				return { kind: "blocked", issue: { kind: "link-configuration", remote: inferred.target.remote } };
 			}
-			return { kind: "none", creationTarget: publicTarget(inferred.target) };
+			return await creationDiscovery(pi, context, target, explicitCreationBase, creationIdentity);
 		}
 		pushTarget = inferred.target;
 	} else {
@@ -1814,7 +2084,10 @@ export async function loadCurrentPullRequest(
 			}
 			throw error;
 		}
-		if (candidate === null) return { kind: "none", creationTarget: publicTarget(pushTarget) };
+		if (candidate === null) {
+			if (creationIdentity !== undefined) fail("Read creation target", "target changed");
+			return await creationDiscovery(pi, context, publicTarget(pushTarget), explicitCreationBase);
+		}
 	}
 
 	return {
@@ -1940,6 +2213,42 @@ async function restoreConfigValue(
 
 function sameConfigValues(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export async function restoreBranchUpstreamConfiguration(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: Pick<BranchUpstreamTarget, "branch" | "remote" | "ref">,
+	original: BranchUpstreamConfiguration,
+): Promise<void> {
+	let incomplete = false;
+	for (const [key, expected, values] of [
+		[`branch.${target.branch}.remote`, target.remote, original.remote],
+		[`branch.${target.branch}.merge`, `refs/heads/${target.ref}`, original.merge],
+	] as const) {
+		try {
+			const current = await readConfigValues(pi, context, key);
+			if (current === null) incomplete = true;
+			else if (sameConfigValues(current, values)) continue;
+			else if (current.length === 1 && current[0] === expected) {
+				await restoreConfigValue(pi, context, key, expected, values);
+			} else incomplete = true;
+		} catch {
+			incomplete = true;
+		}
+	}
+	for (const [key, values] of [
+		[`branch.${target.branch}.remote`, original.remote],
+		[`branch.${target.branch}.merge`, original.merge],
+	] as const) {
+		try {
+			const current = await readConfigValues(pi, context, key);
+			if (current === null || !sameConfigValues(current, values)) incomplete = true;
+		} catch {
+			incomplete = true;
+		}
+	}
+	if (incomplete) throw new Error("Restore branch upstream failed and rollback was incomplete");
 }
 
 async function restoreLinkState(
