@@ -285,10 +285,18 @@ export async function withWorktreeLock<T>(
 	options.signal?.throwIfAborted();
 	await mkdir(lockDirectory, { recursive: true, mode: 0o700 });
 	options.signal?.throwIfAborted();
-	const release = await lock(lockPath, {
-		...WORKTREE_LOCK_OPTIONS,
-		lockfilePath: `${lockPath}.lock`,
-	});
+	let release: () => Promise<void>;
+	try {
+		release = await lock(lockPath, {
+			...WORKTREE_LOCK_OPTIONS,
+			lockfilePath: `${lockPath}.lock`,
+		});
+	} catch (error) {
+		if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ELOCKED") {
+			throw new Error("Another pi-pr mutation is active", { cause: error });
+		}
+		throw error;
+	}
 	try {
 		options.signal?.throwIfAborted();
 		return await operation();

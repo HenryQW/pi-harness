@@ -142,7 +142,7 @@ test("worktree lock canonicalizes root and subdirectory calls", async (t) => {
 	await started;
 	await assert.rejects(
 		withWorktreeLock(subdirectory, async () => {}, { agentDir }),
-		/Lock file is already being held/,
+		/Another pi-pr mutation is active/,
 	);
 	release();
 	await first;
