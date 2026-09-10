@@ -15,46 +15,113 @@ import {
 import {
 	deriveNextStep,
 	type NextStep,
+	type PullRequestTarget,
 } from "./pr-routing.ts";
 
-type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
+export type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
 
-const WORKFLOWS: Record<WorkflowNextStep, string> = {
-	create: "skill:pi-pr-create",
-	"update-branch": "skill:pi-pr-update-branch",
-	sweep: "skill:pi-pr-comment-sweep",
-	"fix-ci": "skill:pi-pr-fix-ci",
+const WORKFLOWS: Record<WorkflowNextStep, { command: string; action: string }> = {
+	create: { command: "skill:pi-pr-create", action: "prepare" },
+	"update-branch": { command: "skill:pi-pr-update-branch", action: "merge" },
+	sweep: { command: "skill:pi-pr-comment-sweep", action: "start" },
+	"fix-ci": { command: "skill:pi-pr-fix-ci", action: "collect" },
 };
+const CREATE_BASE = /^--base=([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+:[^\s\0]+)$/;
+
+export type WorkflowReservation =
+	| { route: "create"; target: PullRequestTarget; base?: string }
+	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
+export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
+	sessionGeneration: number;
+	assertCurrent(): void;
+};
 export type PrCommandHandler = (
 	args: string,
 	ctx: ExtensionCommandContext,
-	onRouteResolved?: (nextStep: NextStep) => void,
+	onRouteResolved?: PrCommandInvocation | ((nextStep: NextStep) => void),
 ) => Promise<NextStep>;
 
-type PrCommandDependencies = {
+export type WorkflowPromptIdentity = Readonly<{
+	route: WorkflowNextStep;
+	skill: string;
+	runId: string;
+	action: string;
+}>;
+
+export type PrCommandDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
 	linkInferredPullRequest?: typeof linkInferredPullRequest;
+	reserveWorkflow?: (
+		reservation: WorkflowReservation,
+		ctx: ExtensionCommandContext,
+		invocation?: PrCommandInvocation,
+	) => Promise<string>;
+	markWorkflowPromptQueued?: (identity: WorkflowPromptIdentity, queued: boolean) => void;
+	releaseWorkflow?: (runId: string, invocation?: PrCommandInvocation) => void;
 };
 
-function dispatchWorkflow(
-	pi: PrCommandPi,
-	ctx: ExtensionCommandContext,
-	commandName: string,
+function createBase(instructions: string): string | undefined {
+	if (!instructions) return undefined;
+	const match = CREATE_BASE.exec(instructions);
+	if (!match) throw new Error("PR creation accepts only --base=<host>/<owner>/<repository>:<ref>");
+	return match[1]!;
+}
+
+function workflowReservation(
+	nextStep: WorkflowNextStep,
+	discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
 	instructions: string,
-): void {
+): WorkflowReservation {
+	if (nextStep === "create") {
+		if (discovery.kind !== "none") throw new Error("/pr create failed: creation target is unavailable");
+		const base = createBase(instructions);
+		return { route: "create", target: discovery.creationTarget, ...(base === undefined ? {} : { base }) };
+	}
+	if (instructions) throw new Error("The current /pr helper route does not accept instructions");
+	if (discovery.kind !== "current") throw new Error(`/pr ${nextStep} failed: pull request is unavailable`);
+	return { route: nextStep, pullRequest: discovery.pullRequest };
+}
+
+function packageWorkflowCommand(pi: PrCommandPi, route: WorkflowNextStep) {
+	const workflow = WORKFLOWS[route];
 	const command = pi.getCommands().find((candidate) =>
-		candidate.name === commandName &&
+		candidate.name === workflow.command &&
 		candidate.source === "skill" &&
 		candidate.sourceInfo.origin === "package"
 	);
-	if (!command) throw new Error(`${commandName} failed: bundled workflow is unavailable`);
+	if (!command) throw new Error(`${workflow.command} failed: bundled workflow is unavailable`);
+	return { command, action: workflow.action };
+}
 
-	const options = ctx.isIdle()
-		? { expandPromptTemplates: true }
-		: { deliverAs: "followUp" as const, expandPromptTemplates: true };
-	pi.sendUserMessage(`/${command.name}${instructions ? ` ${instructions}` : ""}`, options);
+async function dispatchWorkflow(
+	pi: PrCommandPi,
+	ctx: ExtensionCommandContext,
+	route: WorkflowNextStep,
+	reservation: WorkflowReservation,
+	invocation: PrCommandInvocation | undefined,
+	reserve: NonNullable<PrCommandDependencies["reserveWorkflow"]>,
+	markPromptQueued: NonNullable<PrCommandDependencies["markWorkflowPromptQueued"]>,
+	release: NonNullable<PrCommandDependencies["releaseWorkflow"]>,
+): Promise<void> {
+	const workflow = packageWorkflowCommand(pi, route);
+	let runId: string | undefined;
+	try {
+		runId = await reserve(reservation, ctx, invocation);
+		invocation?.assertCurrent();
+		const queued = !ctx.isIdle();
+		const identity = { route, skill: workflow.command.name, runId, action: workflow.action };
+		markPromptQueued(identity, queued);
+		const options = queued
+			? { deliverAs: "followUp" as const, expandPromptTemplates: true }
+			: { expandPromptTemplates: true };
+		invocation?.assertCurrent();
+		pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}`, options);
+	} catch (error) {
+		if (runId !== undefined) release(runId, invocation);
+		throw error;
+	}
 }
 
 function noActionNotification(pullRequest: CurrentPullRequest): { message: string; type: "info" | "warning" } {
@@ -63,6 +130,9 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	}
 	if (pullRequest.conditions.draft) {
 		return { message: `PR #${pullRequest.number} is draft; no action available`, type: "warning" };
+	}
+	if (pullRequest.conditions.ci === "failure-blocked") {
+		return { message: `PR #${pullRequest.number} has a failed CI check that cannot run the CI fix workflow`, type: "warning" };
 	}
 	const mutatingWorkflowSelected = pullRequest.conditions.baseUpdateRequired || pullRequest.conditions.conflict ||
 		pullRequest.conditions.changesRequested || pullRequest.conditions.unresolvedThreads > 0 ||
@@ -179,9 +249,18 @@ export function createPrCommandHandler(
 ): PrCommandHandler {
 	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
 	const link = dependencies.linkInferredPullRequest ?? linkInferredPullRequest;
+	const reserve = dependencies.reserveWorkflow ?? (async () => {
+		throw new Error("/pr workflow tools are unavailable");
+	});
+	const markPromptQueued = dependencies.markWorkflowPromptQueued ?? (() => {});
+	const release = dependencies.releaseWorkflow ?? (() => {});
 	return async (args, ctx, onRouteResolved) => {
+		const commandInvocation = onRouteResolved && "assertCurrent" in onRouteResolved
+			? onRouteResolved as PrCommandInvocation
+			: undefined;
 		const instructions = args.trim();
 		const discovery = await load(pi, ctx);
+		commandInvocation?.assertCurrent();
 		const nextStep = deriveNextStep(discovery);
 		onRouteResolved?.(nextStep);
 		if (instructions && !(nextStep in WORKFLOWS)) {
@@ -209,7 +288,9 @@ export function createPrCommandHandler(
 		}
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
-		dispatchWorkflow(pi, ctx, WORKFLOWS[nextStep as WorkflowNextStep], instructions);
+		const route = nextStep as WorkflowNextStep;
+		const reservation = workflowReservation(route, discovery, instructions);
+		await dispatchWorkflow(pi, ctx, route, reservation, commandInvocation, reserve, markPromptQueued, release);
 		return nextStep;
 	};
 }

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
 	hasLocalCommit,
 	linkInferredPullRequest,
@@ -25,6 +25,8 @@ const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
 const BASE_HEAD = "c".repeat(40);
 const LIVE_BASE_HEAD = "d".repeat(40);
+const LINK_LOCK_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-pr-link-agent-"));
+after(() => rmSync(LINK_LOCK_AGENT_DIR, { recursive: true, force: true }));
 
 type CommandCall = {
 	command: string;
@@ -73,7 +75,7 @@ type HarnessOptions = {
 	ancestryResult?: ReturnType<typeof result>;
 };
 
-const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
+const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed });
 
 function runGit(cwd: string, args: string[]) {
 	const command = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -90,6 +92,11 @@ function git(cwd: string, ...args: string[]): string {
 	assert.equal(command.code, 0, `${args.join(" ")} failed: ${command.stderr}`);
 	return command.stdout.trim();
 }
+
+const LINK_LOCK_REPOSITORY = mkdtempSync(join(tmpdir(), "pi-pr-link-repository-"));
+after(() => rmSync(LINK_LOCK_REPOSITORY, { recursive: true, force: true }));
+mkdirSync(join(LINK_LOCK_REPOSITORY, "test"));
+git(LINK_LOCK_REPOSITORY, "init", "--initial-branch=main");
 
 function reviewThreadPage(nodes: unknown[], hasNextPage = false) {
 	return {
@@ -209,6 +216,19 @@ function candidateSearchOutput(
 		repository,
 		ref,
 	));
+}
+
+function actionsCheck(overrides: Record<string, unknown> = {}) {
+	return {
+		__typename: "CheckRun",
+		workflowName: "CI",
+		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
+		...overrides,
+	};
+}
+
+function statusContext(overrides: Record<string, unknown> = {}) {
+	return { __typename: "StatusContext", ...overrides };
 }
 
 function pullRequest(overrides: Record<string, unknown> = {}) {
@@ -395,6 +415,8 @@ async function linkHarness(failures: {
 	closeBeforeFinalVerification?: boolean;
 	initialTrackingOid?: string;
 	moveRemoteBeforeFetchTo?: string;
+	loseFetchResponse?: boolean;
+	loseUpstreamResponse?: boolean;
 } = {}) {
 	const candidate = pullRequest({ headRefName: "feature/local" });
 	const app = harness({
@@ -406,6 +428,7 @@ async function linkHarness(failures: {
 	assert.equal(initial.kind, "current");
 	if (initial.kind !== "current") throw new Error("Expected inferred pull request");
 	assert.equal(initial.pullRequest.target.provenance, "inferred");
+	app.context.cwd = LINK_LOCK_REPOSITORY;
 	app.calls.length = 0;
 
 	const originalExec = app.pi.exec.bind(app.pi);
@@ -463,10 +486,10 @@ async function linkHarness(failures: {
 		}
 		if (command === "git" && args[0] === "fetch" && args.at(-1)?.endsWith(`:${trackingRef}`)) {
 			record();
-			assert.equal(args.at(-1), `${REMOTE_HEAD}:${trackingRef}`);
+			assert.equal(args.at(-1), `+${REMOTE_HEAD}:${trackingRef}`);
 			movedRemoteHead = failures.moveRemoteBeforeFetchTo ?? null;
 			trackingOid = REMOTE_HEAD;
-			return result();
+			return failures.loseFetchResponse ? result("", 0, "", true) : result();
 		}
 		if (movedRemoteHead && command === "git" && args[0] === "ls-remote") {
 			record();
@@ -477,7 +500,7 @@ async function linkHarness(failures: {
 			config.set("branch.feature/local.remote", ["fork"]);
 			config.set("branch.feature/local.merge", ["refs/heads/feature/local"]);
 			linked = true;
-			return result();
+			return failures.loseUpstreamResponse ? result("", 0, "", true) : result();
 		}
 		if (command === "git" && args[0] === "update-ref") {
 			record();
@@ -540,7 +563,10 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 		mergeable: "CONFLICTING",
 		mergeStateStatus: "DIRTY",
 		reviewDecision: "CHANGES_REQUESTED",
-		statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }, { state: "IN_PROGRESS" }],
+		statusCheckRollup: [
+			actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" }),
+			statusContext({ state: "IN_PROGRESS" }),
+		],
 	});
 	const { pi, context, calls } = harness({
 		candidates: [foreign, matching],
@@ -1052,7 +1078,7 @@ test("offers creation only after validating origin and finding no published ref"
 
 test("links an inferred target only after fresh verification", async () => {
 	const app = await linkHarness();
-	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred);
+	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR });
 
 	assert.equal(linked.target.provenance, "configured");
 	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["fork"]);
@@ -1070,9 +1096,51 @@ test("links an inferred target only after fresh verification", async () => {
 		"--no-tags",
 		"--no-recurse-submodules",
 		"git@github.com:acme/fork.git",
-		`${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
+		`+${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
 	]);
-	assert.equal(fetch?.args.includes("--force"), false);
+});
+
+test("forces a pinned non-fast-forward tracking replacement before linking", async () => {
+	const previousTrackingOid = "f".repeat(40);
+	const app = await linkHarness({ initialTrackingOid: previousTrackingOid });
+	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR });
+
+	assert.equal(linked.target.provenance, "configured");
+	assert.equal(app.getTrackingOid(), REMOTE_HEAD);
+	const fetch = app.calls.find(({ command, args }) =>
+		command === "git" && args.at(-1)?.endsWith(":refs/remotes/fork/feature/local")
+	);
+	assert.equal(fetch?.args.at(-1), `+${REMOTE_HEAD}:refs/remotes/fork/feature/local`);
+});
+
+test("serializes simultaneous links for the same worktree", async () => {
+	const app = await linkHarness();
+	const originalExec = app.pi.exec.bind(app.pi);
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	let enter!: () => void;
+	const entered = new Promise<void>((resolve) => { enter = resolve; });
+	let firstFetch = true;
+	app.pi.exec = async (command: string, args: string[], options?: CommandCall["options"]) => {
+		if (firstFetch && command === "git" && args[0] === "fetch") {
+			firstFetch = false;
+			enter();
+			await held;
+		}
+		return await originalExec(command, args, options);
+	};
+	const first = linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR });
+	await entered;
+	const subdirectoryContext = { ...app.context, cwd: join(app.context.cwd, "test") };
+	try {
+		await assert.rejects(
+			linkInferredPullRequest(app.pi, subdirectoryContext, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
+			/Another pi-pr mutation is active/,
+		);
+	} finally {
+		release();
+	}
+	await first;
 });
 
 test("cancels linking when the remote becomes a mirror after discovery", async () => {
@@ -1080,7 +1148,7 @@ test("cancels linking when the remote becomes a mirror after discovery", async (
 	app.config.set("remote.fork.mirror", ["true"]);
 
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch cancelled: inferred pull request context changed/,
 	);
 	assert.equal(app.config.has("branch.feature/local.remote"), false);
@@ -1096,17 +1164,37 @@ test("cancels and rolls back when the remote moves between precheck and fetch", 
 	});
 
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed: configured pull request does not match inferred target/,
 	);
 	assert.equal(app.getTrackingOid(), originalTrackingOid);
 	assert.equal(app.config.size, 0);
 });
 
+test("rolls back a tracking ref after a lost fetch response", async () => {
+	const app = await linkHarness({ loseFetchResponse: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
+		/Fetch branch tracking ref failed/,
+	);
+	assert.equal(app.getTrackingOid(), null);
+	assert.equal(app.config.size, 0);
+});
+
+test("rolls back upstream and tracking state after a lost upstream response", async () => {
+	const app = await linkHarness({ loseUpstreamResponse: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
+		/Set branch upstream failed/,
+	);
+	assert.equal(app.getTrackingOid(), null);
+	assert.equal(app.config.size, 0);
+});
+
 test("rolls back upstream and tracking state when final link verification fails", async () => {
 	const app = await linkHarness({ failFinalLookup: true });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Find pull requests failed: exit code 1/,
 	);
 
@@ -1118,7 +1206,7 @@ test("rolls back upstream and tracking state when final link verification fails"
 test("removes its fetched tracking ref when post-fetch verification errors", async () => {
 	const app = await linkHarness({ failPostFetchRead: true });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Read remote-tracking ref failed: exit code 128/,
 	);
 	assert.equal(app.getTrackingOid(), null);
@@ -1129,7 +1217,7 @@ test("does not overwrite a concurrent tracking-ref update during rollback", asyn
 	const concurrentOid = "e".repeat(40);
 	const app = await linkHarness({ concurrentTrackingOid: concurrentOid });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed and rollback was incomplete/,
 	);
 	assert.equal(app.getTrackingOid(), concurrentOid);
@@ -1139,7 +1227,7 @@ test("does not overwrite a concurrent tracking-ref update during rollback", asyn
 test("does not erase a concurrent branch-config update during rollback", async () => {
 	const app = await linkHarness({ failFinalLookup: true, concurrentConfigValue: "other" });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed and rollback was incomplete/,
 	);
 	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["other"]);
@@ -1150,7 +1238,7 @@ test("does not erase a concurrent branch-config update during rollback", async (
 test("rolls back when the inferred pull request closes before final verification", async () => {
 	const app = await linkHarness({ closeBeforeFinalVerification: true });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed: configured pull request does not match inferred target/,
 	);
 	assert.equal(app.config.size, 0);
@@ -1512,7 +1600,7 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 
 	const malformed = harness({
-		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "BROKEN" }] })],
+		candidates: [pullRequest({ statusCheckRollup: [statusContext({ state: "BROKEN" })] })],
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(malformed.pi, malformed.context),
@@ -1520,7 +1608,9 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 
 	const contradictory = harness({
-		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", status: "IN_PROGRESS" }] })],
+		candidates: [pullRequest({
+			statusCheckRollup: [actionsCheck({ conclusion: "SUCCESS", status: "IN_PROGRESS" })],
+		})],
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(contradictory.pi, contradictory.context),
@@ -1553,14 +1643,50 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 });
 
+test("routes only diagnosable failed GitHub Actions checks through the CI fixer", async (t) => {
+	await t.test("stale Actions check", async () => {
+		const { pi, context } = harness({
+			localHead: REMOTE_HEAD,
+			candidates: [pullRequest({
+				statusCheckRollup: [actionsCheck({ conclusion: "STALE", status: "COMPLETED" })],
+			})],
+		});
+		const loaded = await loadCurrentPullRequest(pi, context);
+		assert.ok(loaded);
+		assert.equal(loaded.conditions.ci, "failure");
+		assert.equal(derivePullRequestNextStep(loaded), "fix-ci");
+	});
+
+	for (const candidate of [
+		statusContext({ context: "legacy", state: "ERROR", targetUrl: "https://ci.example.test/build/1" }),
+		actionsCheck({
+			conclusion: "FAILURE",
+			status: "COMPLETED",
+			workflowName: "",
+			detailsUrl: "https://ci.example.test/check/1",
+		}),
+	]) {
+		await t.test(candidate.__typename === "StatusContext" ? "failed legacy status" : "failed external-app check", async () => {
+			const { pi, context } = harness({
+				localHead: REMOTE_HEAD,
+				candidates: [pullRequest({ statusCheckRollup: [candidate] })],
+			});
+			const loaded = await loadCurrentPullRequest(pi, context);
+			assert.ok(loaded);
+			assert.equal(loaded.conditions.ci, "failure-blocked");
+			assert.equal(derivePullRequestNextStep(loaded), "none");
+		});
+	}
+});
+
 test("normalizes empty gh review and check fields without accepting empty records", async () => {
 	const normalized = harness({
 		candidates: [pullRequest({
 			reviewDecision: "",
 			statusCheckRollup: [
-				{ conclusion: "", status: "QUEUED" },
-				{ conclusion: "SUCCESS", state: "", status: "COMPLETED" },
-				{ conclusion: "", state: "IN_PROGRESS", status: "" },
+				actionsCheck({ conclusion: "", status: "QUEUED" }),
+				actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" }),
+				statusContext({ state: "IN_PROGRESS" }),
 			],
 		})],
 	});
@@ -1572,8 +1698,8 @@ test("normalizes empty gh review and check fields without accepting empty record
 
 	for (const candidate of [
 		pullRequest({ reviewDecision: "DISMISSED" }),
-		pullRequest({ statusCheckRollup: [{ conclusion: "", state: "", status: "" }] }),
-		pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "FAILURE" }] }),
+		pullRequest({ statusCheckRollup: [{ __typename: "CheckRun", conclusion: "", status: "" }] }),
+		pullRequest({ statusCheckRollup: [actionsCheck({ conclusion: "SUCCESS", status: "FAILURE" })] }),
 	]) {
 		const invalid = harness({ candidates: [candidate] });
 		await assert.rejects(loadCurrentPullRequest(invalid.pi, invalid.context), /invalid reviewDecision|invalid statusCheckRollup/);

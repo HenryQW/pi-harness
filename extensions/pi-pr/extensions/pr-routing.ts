@@ -1,5 +1,5 @@
 export type PullRequestLifecycle = "open" | "merged" | "closed";
-export type CiStatus = "none" | "running" | "success" | "failure";
+export type CiStatus = "none" | "running" | "success" | "failure" | "failure-blocked";
 export type ReviewReadiness = "ready" | "pending";
 export type PolicyReadiness = "ready" | "pending";
 export type LocalWorktree = "clean" | "dirty";
@@ -71,6 +71,7 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 		return localMutationSafe(local) ? "update-branch" : "none";
 	}
 	if (conditions.ci === "failure") return localMutationSafe(local) ? "fix-ci" : "none";
+	if (conditions.ci === "failure-blocked") return "none";
 	if (conditions.changesRequested || conditions.unresolvedThreads > 0) {
 		return localMutationSafe(local) ? "sweep" : "none";
 	}

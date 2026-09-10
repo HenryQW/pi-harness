@@ -1,95 +1,51 @@
 ---
 name: pi-pr-comment-sweep
-description: Fetch GitHub pull request comments with gh, assess actionable feedback, then apply, validate, commit, push, and resolve scoped fixes without approval pauses. Use when asked to sweep, address, or fix PR comments end to end.
+description: Fetch GitHub pull request feedback, assess every item, apply scoped fixes, publish one guarded head, and resolve addressed review threads.
 ---
 
 # PR Comment Sweep
 
-Address actionable feedback on current-branch PR or supplied PR number/URL.
-Run standalone; never invoke, defer to, or modify Shipyard.
+Use the package-owned comment-sweep workflow. It exposes these closed actions:
+`start`, `resume`, `show`, `record`, `publish`, `refresh`, `resolve`, and
+`finalize`.
 
-1. Resolve `<skill>` as the absolute directory containing the effective
-   `SKILL.md` loaded by Pi. It is a placeholder to substitute, never a literal
-   path; use it for bundled scripts and references. Set optional `$PR` and
-   require a clean tracked tree. On resume, dirt, or head mismatch, read
-   [Sweep recovery](<skill>/references/recovery.md>) and stop unless its
-   checkpoint or adoption rules pass. For a fresh sweep:
+1. Call `start` for a fresh current-branch pull request. Call `resume` only for
+   saved work. Never replace or delete blocked recovery state by hand. See
+   [Sweep recovery](references/recovery.md).
+2. Use `show` for one feedback ID at a time. Inspect every conversation
+   comment, review, thread, and thread comment. Follow
+   [Thread triage](references/thread-triage.md).
+3. Classify every item exactly once as `addressed`, `non-actionable`, or
+   `blocked`. Give each entry a short note. Use `record` with the complete
+   ledger and the exact repository-relative paths this sweep may change.
+   `ownedPaths` is required for this initial record.
+4. Make judgment calls in the model. Verify claims against the code and its
+   callers. Edit only owned paths. Add the smallest useful regression. Commit
+   accepted fixes with a scoped Conventional Commit message.
+5. Choose one or more existing non-destructive checks that cover the changes.
+   Run each on the clean committed `HEAD`. Do not call `publish` unless every
+   chosen check passes. Keep the exact commands for finalization.
+6. Call `publish`. It captures the validated clean `HEAD`. It skips the push
+   when `HEAD` is unchanged. Otherwise it performs one exact-OID push with the
+   original lease. Never retry an unknown push.
+7. Call `refresh` with the current guard and no ledger. It freezes the complete
+   fresh feedback, clears the old ledger, and returns a new guard plus bounded
+   IDs and kinds. Status never includes feedback bodies.
+8. Use `show` with the new guard for every returned ID. This catches new items
+   and edits that kept the same ID. Then call `record` with that guard and one
+   complete replacement ledger. Omit `ownedPaths`; the initial ownership stays
+   fixed. A stale guard or mismatched coverage fails.
+9. Call `resolve` only with addressed, unresolved parent thread IDs. Do not
+   resolve a thread classified as non-actionable or blocked. Do not post replies
+   unless the user asks.
+10. Call `finalize` with the exact projection returned by the post-refresh
+   `record` and the same chosen checks. Finalization reruns them, then reloads
+   feedback as a later state guard. It succeeds only when PR linkage, content,
+   and thread states still match.
 
-   ```bash
-   SNAPSHOT=$(mktemp)
-   if [ -n "${PR:-}" ]; then
-     node "<skill>/scripts/pr-feedback.mjs" target --pr "$PR"
-     node "<skill>/scripts/pr-feedback.mjs" fetch --pr "$PR" --out "$SNAPSHOT"
-   else
-     node "<skill>/scripts/pr-feedback.mjs" target
-     node "<skill>/scripts/pr-feedback.mjs" fetch --out "$SNAPSHOT"
-   fi
-   PR=$(node "<skill>/scripts/pr-feedback.mjs" snapshot-url --snapshot "$SNAPSHOT")
-   ```
+The bundled `scripts/pr-feedback.mjs` is a read-only diagnostic CLI. It supports
+only `fetch`, `show`, `checks`, and `self-test`. It cannot push or resolve
+threads.
 
-   Target verification requires authenticated `gh`, an open PR, exact local/PR
-   head, and one matching configured push target. Inspect the base and full
-   diff. Maintain the recovery reference's one-line checkpoint after each phase.
-
-2. Initial fetch prints a compact index of every feedback ID. Later fetches into
-   a copied snapshot print compact indexes of additions, edits, and state changes.
-   The snapshot remains complete. A thread record with child IDs is a container:
-   inspect `thread_comment` IDs directly. Do not call `show` on the parent solely
-   to discover its children. Show the parent only if it has no child or parent-level
-   metadata is actually needed. For each non-obvious item, inspect only that item:
-
-   ```bash
-   node "<skill>/scripts/pr-feedback.mjs" show --snapshot "$SNAPSHOT" --id "$ID"
-   ```
-
-   Issue independent `show` lookups in one tool-call round. Always inspect every
-   unresolved feedback item before triage. Never
-   read or print the whole raw snapshot when `show` provides the bounded lookup.
-   Follow [Thread triage](<skill>/references/thread-triage.md>) and ledger every item as
-   `actionable`, `non-actionable`, or `blocked`, with terse evidence, smallest
-   fix, and regression. Never reconstruct GraphQL pagination.
-
-3. Verify feedback against code, callers, tests, and PR intent. For SDK/framework
-   claims, inspect installed types and runtime caller; missing public capability
-   is `blocked`, never a private-API or cast workaround. Invocation authorizes
-   scoped edits, commits, push, and addressed-thread resolution. Stop only for
-   unclear behavior, conflicting feedback, material product choice, or scope
-   expansion.
-4. Inspect resulting diff and run smallest relevant non-destructive validation.
-   Stage only inspected paths; stop on failed or unavailable required validation
-   unless user accepts risk. Never change secrets or unrelated work. Never
-   hand-edit generated files: change source, run canonical generator for required
-   tracked artifacts, then inspect both. Never wait or poll checks.
-5. Commit accepted fixes with scoped Conventional Commit message(s). With no
-   fixes, do not commit or push. After clean-tree validation, run
-   `node "<skill>/scripts/pr-feedback.mjs" push --snapshot "$SNAPSHOT"`. The
-   helper revalidates the configured destination, PR identity, and local HEAD.
-   It pushes the captured OID once with no fallback. Then capture the swept head:
-
-   ```bash
-   EXPECTED_HEAD=$(git rev-parse --verify 'HEAD^{commit}')
-   ```
-
-6. Copy baseline before final fetch:
-
-   ```bash
-   FINAL_SNAPSHOT=$(mktemp)
-   cp "$SNAPSHOT" "$FINAL_SNAPSHOT"
-   node "<skill>/scripts/pr-feedback.mjs" fetch --pr "$PR" --out "$FINAL_SNAPSHOT"
-   ```
-
-   Assess the compact delta. Use `show --snapshot "$FINAL_SNAPSHOT" --id "$ID"`
-   for each non-obvious delta item and every unresolved human feedback item.
-   Then resolve all addressed IDs in one command, repeating the flag:
-   `node "<skill>/scripts/pr-feedback.mjs" resolve --pr "$PR" --expected-head
-"$EXPECTED_HEAD" --thread "$ID1" --thread "$ID2"`. Before each resolution,
-   the helper re-resolves the checkout's configured push target and exact open PR.
-   Never resolve non-actionable or blocked threads. Re-fetch once into `FINAL_SNAPSHOT`, assess
-   late delta, batch any newly addressed IDs, then run
-   `node "<skill>/scripts/pr-feedback.mjs" checks --pr "$PR" --expected-head
-"$EXPECTED_HEAD"` once. Read-only
-   transient retries are allowed; mutation retries and polling are not. Do not
-   reply unless explicitly requested.
-
-7. Report `PR | actioned | resolved IDs | skipped IDs | pending IDs | checks |
-commits | push | blockers`.
+Report `PR | addressed | resolved IDs | non-actionable | blocked | checks |
+commit | push`.

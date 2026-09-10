@@ -16,6 +16,9 @@ Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on
 includes IDs, kinds, states, authors, locations, and parent IDs as needed. It
 does not print comment or review bodies.
 
+With `--out`, it atomically replaces `FILE` as a mode-0600 file. It does not
+change the parent directory's permissions.
+
 The saved snapshot still contains the complete feedback. `fetch --json` also
 keeps the complete JSON output. Read one item with
 `pr-feedback.mjs show --snapshot FILE --id ID`.
@@ -37,13 +40,13 @@ GitHub, use the network, or write files.
 
 ## Use
 
-Run `/pr` in a GitHub checkout. It reads the current branch pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
+Run `/pr` in a GitHub checkout. It reads fresh pull request and local state, then runs one route. The PR hostname selects its GitHub API host, and the extension works outside Herdr.
 
-Add optional instructions to guide a creation, branch-update, CI-fix, or feedback workflow. For example, run `/pr keep the title under 50 characters`. Direct routes, such as linking or merging, reject instructions instead of ignoring them.
+Creation accepts one optional base anchor. Use `/pr --base=<host>/<owner>/<repository>:<ref>`. All other route instructions fail instead of being ignored.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/pr [instructions]` | command | Run the current pull request's next safe route. |
+| `/pr [--base=<host>/<owner>/<repository>:<ref>]` | command | Run the current pull request's next safe route. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
 | Widget | ui | Show one action hint or transient routing status. |
 
@@ -65,12 +68,13 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
-| CI failed | Run the CI fix workflow when the same local prerequisite holds. |
+| GitHub Actions job failed | Run the CI fix workflow when the same local prerequisite holds. |
+| External check or commit status failed | Show `CI failed` as a no-action blocker. |
 | Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
 
-`pi-pr-create` fetches branches from `origin` and finds the current branch's parent. The parent can be a feature branch. It uses an explicit base when provided. Otherwise, it accepts only a uniquely identifiable parent from reflog and commit history.
+`pi-pr-create` accepts an anchored base from `/pr --base=...`. Otherwise, it finds one unique parent from validated `origin` refs and commit history. The parent can be a feature branch.
 
 It merges the parent's captured commit before validation and push. It resolves clear conflicts and stops when the base or conflict intent is ambiguous.
 
@@ -81,6 +85,10 @@ Without a configured push target, discovery checks validated remotes for the sam
 Multiple candidate remotes, multiple matching PRs, OID mismatches, and unsafe Git push configuration block routing. A published ref with no PR also blocks creation. If no candidate ref exists, creation uses only a validated `origin` destination.
 
 The creation workflow repeats destination, remote OID, PR, and configuration checks immediately before pushing. It pushes to the saved validated URL, not a mutable remote name. Every push uses the saved remote OID as an exact lease. Existing refs must also be ancestors of the captured local OID. A missing ref uses an empty lease as a create-only compare-and-swap.
+
+Each helper workflow receives a random run ID and its first action. The run stays bound to one session, canonical worktree, route, and fresh authority. Helper calls from another run, session, worktree, or route fail.
+
+Only one helper run can exist at a time. Most runs expire when the agent settles. A create or branch-update conflict stays available for one user-guided continuation, then expires after that continuation settles. Session replacement and shutdown forget the run without aborting or cleaning a pending merge.
 
 After a `/pr` create workflow settles, the extension waits for a refresh that finds a configured current PR. It then prefixes the Herdr workspace label with `#<number> • `.
 
@@ -94,7 +102,7 @@ If Herdr lookup, JSON validation, or rename fails, the PR and normal UI refresh 
 
 Current-branch discovery reads pull requests associated with the exact push repository ref. It does not run a global branch search. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 
-A no-action state includes a draft, merged or closed pull request, running CI, pending review, or blocked merge policy. It also includes a mutating workflow whose tree is dirty or whose local HEAD differs from the PR head.
+A no-action state includes drafts, merged or closed pull requests, running or unsupported failed CI, pending review, and blocked merge policy. A dirty tree or mismatched local HEAD also blocks a mutating workflow.
 
 ### Route priority
 
@@ -102,7 +110,7 @@ A missing pull request uses creation. For an existing pull request, the first ma
 
 1. Merged, closed, or draft: no action.
 2. Base update required or merge conflict. Run only with a clean tree and equal local and PR heads.
-3. CI failure. Apply the same local prerequisite.
+3. A failed GitHub Actions job. Apply the same local prerequisite. Other failed checks remain blockers.
 4. Changes requested or unresolved review threads. Apply the same local prerequisite.
 5. Waiting or local safety block: no action.
 6. Merge-ready: allow clean local HEAD equal to or behind the PR head. Confirm, then merge directly.
@@ -110,6 +118,12 @@ A missing pull request uses creation. For an existing pull request, the first ma
 Ordinary conversation comments do not trigger a route or block a merge. Changes requested and unresolved review threads can select the package comment sweep.
 
 The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
+
+After publishing, `refresh` freezes the complete latest feedback and returns only IDs and kinds. Use `show` to inspect every fresh item.
+
+A second guarded `record` must cover that exact snapshot before resolution or finalization. It keeps the paths from the initial record.
+
+The sweep runs existing non-destructive checks on the clean committed `HEAD` before publishing. Finalization reruns them as a later state guard.
 
 ### Refresh
 
@@ -131,7 +145,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 ## Limits and recovery
 
-- `/pr` takes no arguments and does not open a browser.
+- `/pr` accepts only the optional anchored creation base described above. It does not open a browser.
 - It does not run `/done` or `/sweep`.
 - Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
@@ -144,7 +158,8 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 - A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
 - A branch update resolves the base repository ref directly. It stops if that ref moves before merge or push.
 - Before a comment-sweep push, it revalidates the configured destination, full PR identity, and local HEAD. It pushes the captured OID.
-- CI repair captures the failed-step log tail and runs one narrow local reproducer before editing.
+- CI repair streams a bounded failed-step log tail and runs one narrow local reproducer before editing.
+- Before push, CI repair revalidates the saved destination, open PR, failure evidence, and repair HEAD.
 - An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
 - After a successful merge, the create widget stays hidden until a new local commit.

@@ -8,6 +8,7 @@ const localHead = "a".repeat(40);
 const nextHead = "b".repeat(40);
 const baseHead = "c".repeat(40);
 const DEFAULT_HOST = "github.com";
+const workflowRunId = "11111111-1111-4111-8111-111111111111";
 
 type PullRequestSpec = {
 	id?: string;
@@ -53,9 +54,20 @@ type HarnessOptions = {
 	unresolvedThreads?: number[];
 	pushReference?: string;
 	remoteNames?: string[];
+	sendError?: Error;
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
+
+function actionsCheck(overrides: Record<string, unknown>) {
+	return {
+		__typename: "CheckRun",
+		workflowName: "CI",
+		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
+		status: "COMPLETED",
+		...overrides,
+	};
+}
 
 function pullRequest(overrides: PullRequestSpec = {}) {
 	const host = overrides.host ?? DEFAULT_HOST;
@@ -73,7 +85,7 @@ function pullRequest(overrides: PullRequestSpec = {}) {
 		mergeable: overrides.mergeable ?? "MERGEABLE",
 		mergeStateStatus: overrides.mergeStateStatus ?? "CLEAN",
 		reviewDecision: overrides.reviewDecision ?? "APPROVED",
-		statusCheckRollup: overrides.statusCheckRollup ?? [{ conclusion: "SUCCESS" }],
+		statusCheckRollup: overrides.statusCheckRollup ?? [actionsCheck({ conclusion: "SUCCESS" })],
 	};
 }
 
@@ -118,6 +130,8 @@ function harness(options: HarnessOptions) {
 	const messages: Array<{ content: string; options: unknown }> = [];
 	const notifications: Array<{ message: string; type: string }> = [];
 	const confirmations: Array<{ title: string; message: string }> = [];
+	const reservations: unknown[] = [];
+	const releases: string[] = [];
 	const events: string[] = [];
 	let stateIndex = 0;
 	let statusIndex = 0;
@@ -235,7 +249,8 @@ function harness(options: HarnessOptions) {
 			sourceInfo: { origin: command.origin },
 		})),
 		sendUserMessage(content: string, messageOptions: unknown) {
-			events.push("dispatch");
+			events.push("send");
+			if (options.sendError) throw options.sendError;
 			messages.push({ content, options: messageOptions });
 		},
 	} as unknown as Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
@@ -257,12 +272,24 @@ function harness(options: HarnessOptions) {
 	} as unknown as ExtensionCommandContext;
 	return {
 		pi,
-		handler: createPrCommandHandler(pi),
+		handler: createPrCommandHandler(pi, {
+			async reserveWorkflow(reservation) {
+				events.push("reserve");
+				reservations.push(reservation);
+				return workflowRunId;
+			},
+			releaseWorkflow(runId) {
+				events.push("release");
+				releases.push(runId);
+			},
+		}),
 		context,
 		calls,
 		messages,
 		notifications,
 		confirmations,
+		reservations,
+		releases,
 		events,
 	};
 }
@@ -273,34 +300,43 @@ function mutationCalls(calls: Call[]): Call[] {
 	);
 }
 
-const routes: Array<{ name: string; state: PullRequestSpec | null; command: string }> = [
-	{ name: "create", state: null, command: "skill:pi-pr-create" },
+const routes: Array<{ name: string; state: PullRequestSpec | null; command: string; action: string }> = [
+	{ name: "create", state: null, command: "skill:pi-pr-create", action: "prepare" },
 	{
 		name: "branch update outranks feedback and CI",
 		state: {
 			mergeable: "CONFLICTING",
 			mergeStateStatus: "DIRTY",
 			reviewDecision: "CHANGES_REQUESTED",
-			statusCheckRollup: [{ conclusion: "FAILURE" }],
+			statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })],
 		},
 		command: "skill:pi-pr-update-branch",
+		action: "merge",
 	},
 	{
 		name: "CI repair outranks review sweep",
-		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
+		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] },
 		command: "skill:pi-pr-fix-ci",
+		action: "collect",
 	},
 	{
 		name: "CI repair outranks waiting",
-		state: { reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
+		state: { reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] },
 		command: "skill:pi-pr-fix-ci",
+		action: "collect",
+	},
+	{
+		name: "review feedback",
+		state: { reviewDecision: "CHANGES_REQUESTED" },
+		command: "skill:pi-pr-comment-sweep",
+		action: "start",
 	},
 ];
 
 test("signals route resolution before dispatch, notification, confirmation, or mutation", async () => {
 	const create = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
 	await create.handler("", create.context, () => create.events.push("route"));
-	assert.deepEqual(create.events, ["load", "route", "dispatch"]);
+	assert.deepEqual(create.events, ["load", "route", "reserve", "send"]);
 
 	const noAction = harness({ states: [{ state: "MERGED" }] });
 	await noAction.handler("", noAction.context, () => noAction.events.push("route"));
@@ -316,7 +352,11 @@ test("routes one package workflow without opening a browser or chaining", async 
 		const app = harness({ states: [route.state], commands: [packageCommand(route.command)] });
 		await app.handler("", app.context);
 
-		assert.deepEqual(app.messages, [{ content: `/${route.command}`, options: { expandPromptTemplates: true } }], route.name);
+		assert.deepEqual(app.messages, [{
+			content: `/${route.command} runId=${workflowRunId} action=${route.action}`,
+			options: { expandPromptTemplates: true },
+		}], route.name);
+		assert.equal(app.reservations.length, 1, route.name);
 		assert.equal(app.confirmations.length, 0, route.name);
 		assert.equal(mutationCalls(app.calls).length, 0, route.name);
 		assert.equal(app.calls.some(({ args }) => args.includes("--web")), false, route.name);
@@ -370,7 +410,7 @@ test("does not dispatch mutating workflows when the worktree is dirty or local H
 	const conditions: Array<{ name: string; state: PullRequestSpec }> = [
 		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } },
 		{ name: "comment sweep", state: { reviewDecision: "CHANGES_REQUESTED" } },
-		{ name: "CI fix", state: { statusCheckRollup: [{ conclusion: "FAILURE" }] } },
+		{ name: "CI fix", state: { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] } },
 	];
 	for (const route of conditions) {
 		const dirty = harness({ states: [route.state], status: " M file.ts\n" });
@@ -397,19 +437,72 @@ test("dispatches a workflow as a follow-up only while the agent is busy", async 
 	await app.handler("", app.context);
 
 	assert.deepEqual(app.messages, [{
-		content: "/skill:pi-pr-create",
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
 		options: { deliverAs: "followUp", expandPromptTemplates: true },
 	}]);
 });
 
-test("forwards trimmed instructions to the selected workflow", async () => {
+test("accepts only an anchored create base and keeps it out of the prompt", async () => {
 	const app = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
 
-	await app.handler("  keep the title under 50 characters  ", app.context);
+	await app.handler("  --base=github.com/acme/project:feature/base  ", app.context);
 	assert.deepEqual(app.messages, [{
-		content: "/skill:pi-pr-create keep the title under 50 characters",
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
 		options: { expandPromptTemplates: true },
 	}]);
+	assert.equal((app.reservations[0] as { route: string }).route, "create");
+	assert.equal((app.reservations[0] as { base: string }).base, "github.com/acme/project:feature/base");
+
+	for (const invalid of ["please use main", "--base=github.com/acme/project:main extra", "x --base=github.com/acme/project:main"]) {
+		const rejected = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
+		await assert.rejects(rejected.handler(invalid, rejected.context), /accepts only --base=/, invalid);
+		assert.deepEqual(rejected.reservations, [], invalid);
+	}
+});
+
+test("rejects instructions for non-create helper routes before reservation", async () => {
+	const app = harness({
+		states: [{ statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
+		commands: [packageCommand("skill:pi-pr-fix-ci")],
+	});
+
+	await assert.rejects(app.handler("rerun the job", app.context), /helper route does not accept instructions/);
+	assert.deepEqual(app.reservations, []);
+	assert.deepEqual(app.messages, []);
+});
+
+test("checks command generation after discovery and reservation and immediately before send", async () => {
+	for (const failAt of [1, 2, 3]) {
+		const app = harness({
+			states: [null],
+			commands: [packageCommand("skill:pi-pr-create")],
+		});
+		let checks = 0;
+
+		await assert.rejects(app.handler("", app.context, Object.assign(() => {}, {
+			sessionGeneration: 7,
+			assertCurrent() {
+				checks += 1;
+				if (checks === failAt) throw new Error("session replaced");
+			},
+		})), /session replaced/, `generation check ${failAt}`);
+		assert.deepEqual(app.messages, [], `generation check ${failAt}`);
+		assert.equal(app.reservations.length, failAt === 1 ? 0 : 1, `generation check ${failAt}`);
+		assert.deepEqual(app.releases, failAt === 1 ? [] : [workflowRunId], `generation check ${failAt}`);
+	}
+});
+
+test("rolls back exactly the new reservation when prompt dispatch fails", async () => {
+	const app = harness({
+		states: [null],
+		commands: [packageCommand("skill:pi-pr-create")],
+		sendError: new Error("send failed"),
+	});
+
+	await assert.rejects(app.handler("", app.context), /send failed/);
+	assert.deepEqual(app.events, ["load", "reserve", "send", "release"]);
+	assert.deepEqual(app.releases, [workflowRunId]);
+	assert.deepEqual(app.messages, []);
 });
 
 test("rejects instructions when the current route handles the action directly", async () => {
@@ -446,7 +539,13 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 		{ name: "merged", state: { state: "MERGED" }, message: "PR #42 is merged; no action needed", type: "info" },
 		{ name: "closed", state: { state: "CLOSED" }, message: "PR #42 is closed; no action needed", type: "info" },
 		{ name: "draft", state: { isDraft: true }, message: "PR #42 is draft; no action available", type: "warning" },
-		{ name: "CI running", state: { statusCheckRollup: [{ state: "IN_PROGRESS" }] }, message: "PR #42 is waiting for CI", type: "warning" },
+		{
+			name: "unsupported CI failure",
+			state: { statusCheckRollup: [{ __typename: "StatusContext", context: "legacy", state: "ERROR" }] },
+			message: "PR #42 has a failed CI check that cannot run the CI fix workflow",
+			type: "warning",
+		},
+		{ name: "CI running", state: { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] }, message: "PR #42 is waiting for CI", type: "warning" },
 		{ name: "review pending", state: { reviewDecision: "REVIEW_REQUIRED" }, message: "PR #42 is waiting for review", type: "warning" },
 		{ name: "merge policy pending", state: { mergeStateStatus: "BLOCKED" }, message: "PR #42 is blocked by merge policy", type: "warning" },
 		{ name: "dirty worktree", state: {}, status: " M file.ts\n", message: "PR #42 is blocked by a dirty worktree", type: "warning" },
@@ -511,7 +610,7 @@ test("cancels a confirmed merge when post-inspection authority is absent, differ
 		},
 		{
 			name: "optional check fails",
-			states: [{}, { statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+			states: [{}, { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
 			error: /no longer merge-ready/,
 		},
 		{
