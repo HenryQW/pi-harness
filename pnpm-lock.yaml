@@ -230,9 +230,15 @@ importers:
       '@henryqw/pi-config-store':
         specifier: ^1.1.0
         version: link:../../packages/pi-config-store
+      '@henryqw/pi-multi-codex':
+        specifier: ^1.0.0
+        version: link:../pi-multi-codex
       '@henryqw/pi-subagent':
         specifier: ^15.2.0
         version: link:../pi-subagent
+      '@henryqw/pi-task-models':
+        specifier: ^5.1.0
+        version: link:../pi-task-models
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2

@@ -370,8 +370,8 @@ const LaunchRecordSchema = Type.Object({
 	env: Type.Record(Type.String(), Type.String({ maxLength: 32_000 })),
 	tools: Type.Array(TextSchema, { maxItems: 128 }),
 	roleExtensions: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
-	roleSkills: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
-	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 2, maxItems: 256 }),
+	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
+	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 1, maxItems: 256 }),
 	prompt: Type.Optional(LaunchPromptFileSchema),
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });

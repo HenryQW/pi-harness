@@ -197,7 +197,7 @@ class FakeRuntime implements OrchestratorRuntime {
 	}
 
 	async recoverLaunchRecords(
-		input: { request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> },
+		input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> },
 		context: OperationContext,
 	): Promise<LaunchRecord[]> {
 		this.observe("recover-launches", context);

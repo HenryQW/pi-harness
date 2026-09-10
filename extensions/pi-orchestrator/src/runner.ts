@@ -95,7 +95,7 @@ export interface CoordinatorRuntime {
 		launchRecords: LaunchRecord[];
 	}>;
 	materializeLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<void>;
-	recoverLaunchRecords(input: { request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
+	recoverLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
 }
 
 export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
@@ -484,6 +484,7 @@ export class OrchestratorRunner {
 
 	private async requireRecoveredLaunches(state: RunState, scope: DeadlineScope): Promise<void> {
 		const records = await scope.call(async (context) => await this.runtime.recoverLaunchRecords({
+			root: state.root,
 			request: state.request,
 			records: state.launchRecords,
 		}, context));
