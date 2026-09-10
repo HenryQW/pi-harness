@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import {
 	checkBatchPasses,
+	CLEANUP_KINDS,
 	isCleanCommitted,
 	launchKey,
 	parseExecuteRequest,
@@ -19,6 +20,7 @@ import {
 	type LaunchRecord,
 	type PromptRecord,
 	type ReviewEvidence,
+	type ResumeRequest,
 	type RunState,
 	type TaskAttempt,
 	type TaskRequest,
@@ -31,7 +33,6 @@ import { FileRunStore, type RunStateHandle } from "./store.ts";
 const EVIDENCE_MAX_BYTES = 8 * 1024;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 const ALLOCATION_KINDS: readonly AllocationKind[] = ["worktree", "workspace", "worker_tab", "agent"];
-const CLEANUP_KINDS: readonly CleanupKind[] = ["worker_tab", "workspace", "worktree", "branch"];
 
 export interface OperationContext {
 	readonly signal: AbortSignal;
@@ -157,6 +158,7 @@ export interface CleanupRuntime {
 export interface RunResponse {
 	text: string;
 	state: RunState;
+	continuation?: ResumeRequest;
 }
 
 class DeadlineExpired extends Error {
@@ -254,6 +256,11 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 
 function terminal(state: RunState): boolean {
 	return state.status === "completed" || state.status === "final_failed" || state.status === "superseded" || state.status === "aborted";
+}
+
+function readyPendingTasks(state: RunState): TaskState[] {
+	return state.tasks.filter((task) => task.status === "pending"
+		&& taskRequest(state, task.taskId).dependsOn.every((dependency) => taskState(state, dependency).status === "completed"));
 }
 
 function isDeadline(error: unknown, scope: DeadlineScope): boolean {
@@ -376,10 +383,19 @@ export class OrchestratorRunner {
 					state.status = "needs_attention";
 					return this.response(state);
 				}
-				const ready = state.tasks.filter((task) => task.status === "pending"
-					&& taskRequest(state, task.taskId).dependsOn.every((dependency) => taskState(state, dependency).status === "completed"));
+				const ready = readyPendingTasks(state);
 				if (!ready.length) throw new Error("No dependency wave is ready.");
-				const actualMain = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+				let actualMain: WorkspaceIdentity;
+				try {
+					actualMain = await scope.call(async (context) => await this.runtime.inspectMain({ root: state.root }, context));
+				} catch (error) {
+					const failure = isDeadline(error, scope)
+						? "The productive request deadline expired before dependency-wave dispatch."
+						: `Main inspection failed before dependency-wave dispatch: ${errorText(error)}`;
+					for (const task of ready) this.attention(task, failure);
+					state.status = "needs_attention";
+					return this.response(state);
+				}
 				if (!sameIdentity(actualMain, state.main)) {
 					for (const task of ready) this.attention(task, "Main drifted before dependency-wave dispatch.");
 					state.status = "needs_attention";
@@ -563,19 +579,33 @@ export class OrchestratorRunner {
 						? "A declared task check failed on the recorded candidate."
 						: "A declared task check changed the recorded candidate.";
 				} else if (request.judgment) {
-					const review = await this.runReview(
-						handle,
-						request.judgment.criterion,
-						attempt.waveBase,
-						worker.candidate,
-						task.judgmentLaunchKey!,
-						"preliminary",
-						scope,
-						task.taskId,
-					);
+					let review: ReviewEvidence;
+					try {
+						review = await this.runReview(
+							handle,
+							request.judgment.criterion,
+							attempt.waveBase,
+							worker.candidate,
+							task.judgmentLaunchKey!,
+							"preliminary",
+							scope,
+							task.taskId,
+						);
+					} catch (error) {
+						this.attention(task, `Preliminary review was ambiguous and cannot trigger correction: ${errorText(error)}`);
+						await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope);
+						return;
+					}
 					attempt.preliminaryReview = review;
 					await handle.save();
-					failure = review.passed ? undefined : "Reviewer did not return exact PASS on the recorded candidate.";
+					if (!review.passed) {
+						this.attention(task, sameIdentity(review.identityAfter, worker.candidate)
+							? "Preliminary Reviewer did not return exact PASS; correction requires deliberate verification."
+							: "Preliminary Reviewer changed the recorded candidate; correction is forbidden.");
+						await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope);
+						return;
+					}
+					failure = undefined;
 				} else {
 					failure = undefined;
 				}
@@ -817,15 +847,18 @@ export class OrchestratorRunner {
 			step.failure = undefined;
 			await handle.save();
 			try {
-				const result = await scope.call(async (context) => await this.cleanupRuntime.cleanup({
+				const result: unknown = await scope.call(async (context) => await this.cleanupRuntime.cleanup({
 					kind: step.kind,
 					task: taskRequest(handle.state, task.taskId),
 					attempt,
 				}, context));
-				if (result.outcome === "blocked") {
+				const reported = result as { outcome?: unknown; failure?: unknown } | null;
+				if (reported?.outcome !== "completed" && reported?.outcome !== "absent") {
 					step.status = "pending";
-					step.failure = bounded(result.failure);
-					this.attention(task, `Cleanup ${step.kind} blocked: ${step.failure}`);
+					step.failure = typeof reported?.failure === "string" && reported.failure.trim()
+						? bounded(reported.failure)
+						: "Cleanup did not return an explicit completed or absent outcome.";
+					this.attention(task, `Cleanup ${step.kind} failed closed: ${step.failure}`);
 					return false;
 				}
 				step.status = "completed";
@@ -858,7 +891,10 @@ export class OrchestratorRunner {
 			if (await this.runCleanup(handle, task, attempt, scope)) {
 				task.status = "completed";
 				task.failure = undefined;
-				state.status = "pending";
+				for (const next of readyPendingTasks(state)) {
+					this.attention(next, `Cleanup-only verification completed; resume retry for ${next.taskId} to continue dependency scheduling.`);
+				}
+				state.status = state.tasks.some((candidate) => candidate.status === "needs_attention") ? "needs_attention" : "pending";
 			} else {
 				state.status = "needs_attention";
 			}
@@ -879,6 +915,7 @@ export class OrchestratorRunner {
 			task: taskRequest(handle.state, task.taskId), attempt,
 		}, context));
 		if (!isCleanCommitted(candidate)) throw new Error("Retained task candidate is not clean and committed.");
+		if (candidate.head === attempt.waveBase.head) throw new Error("Retained task candidate must differ from its wave base.");
 		attempt.candidate = candidate;
 		task.status = "ready_to_integrate";
 		task.failure = undefined;
@@ -891,7 +928,17 @@ export class OrchestratorRunner {
 	}
 
 	private async retry(handle: RunStateHandle, task: TaskState, scope: DeadlineScope): Promise<RunResponse> {
-		const attempt = latestAttempt(task);
+		const attempt = task.attempts.at(-1);
+		if (!attempt) {
+			for (const pending of handle.state.tasks) {
+				if (pending.status === "needs_attention" && pending.attempts.length === 0) {
+					pending.status = "pending";
+					pending.failure = undefined;
+				}
+			}
+			await handle.save();
+			return await this.run(handle, scope);
+		}
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be retried or adopted automatically.");
 		if (attempt.prompts.length) {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
@@ -1058,8 +1105,18 @@ export class OrchestratorRunner {
 	}
 
 	private recoverInterrupted(state: RunState): boolean {
+		if (state.status === "pending") {
+			const ready = readyPendingTasks(state).filter((task) => task.attempts.length === 0);
+			if (!ready.length) return false;
+			for (const task of ready) {
+				this.attention(task, `Dependency scheduling is pending before ${task.taskId} started; resume retry to continue.`);
+			}
+			state.status = "needs_attention";
+			state.accepted = false;
+			state.updatedAt = this.runtime.now();
+			return true;
+		}
 		if (state.status !== "running") return false;
-		let changed = false;
 		for (const task of state.tasks) {
 			if (["pending", "completed", "needs_attention"].includes(task.status)) continue;
 			const attempt = task.attempts.at(-1);
@@ -1089,18 +1146,21 @@ export class OrchestratorRunner {
 			this.attention(task, state.recovery?.taskId === task.taskId
 				? "Cleanup-only verification was interrupted; only exact saved-resource cleanup may resume."
 				: "Execution was interrupted at an ambiguous boundary and will not replay automatically.");
-			changed = true;
+		}
+		if (!state.tasks.some((task) => task.status === "needs_attention")) {
+			for (const task of readyPendingTasks(state)) {
+				this.attention(task, `Dependency scheduling was interrupted before ${task.taskId} started; resume retry to continue.`);
+			}
 		}
 		if (state.final.status === "running") {
 			state.final.status = "interrupted";
 			state.final.failure = "Final verification was interrupted without a definitive result.";
-			changed = true;
 		}
 		state.recovery = undefined;
 		state.status = "needs_attention";
 		state.accepted = false;
 		state.updatedAt = this.runtime.now();
-		return changed || true;
+		return true;
 	}
 
 	private attention(task: TaskState, failure: string): void {
@@ -1111,14 +1171,25 @@ export class OrchestratorRunner {
 	private response(state: RunState): RunResponse {
 		const completed = state.tasks.filter((task) => task.status === "completed").length;
 		const attention = state.tasks.find((task) => task.status === "needs_attention");
+		let continuation: ResumeRequest | undefined;
+		if (!terminal(state) && completed === state.tasks.length
+			&& (state.final.status === "pending" || state.final.status === "interrupted")) {
+			continuation = { id: state.request.id, action: "finalize" };
+		} else if (!terminal(state) && attention?.attempts.length === 0) {
+			continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
+		} else if (!terminal(state) && attention?.attempts.at(-1)?.integration?.status === "integrated") {
+			continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
+		}
 		return {
 			text: bounded([
 				`Pi Orchestrator ${state.request.id}: ${state.status}.`,
 				`Tasks: ${completed}/${state.tasks.length} completed. Accepted: ${state.accepted}.`,
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
+				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
 			].join("\n")),
 			state,
+			...(continuation ? { continuation } : {}),
 		};
 	}
 }

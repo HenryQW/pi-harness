@@ -161,7 +161,8 @@ export interface IntegrationRecord {
 	failure?: string;
 }
 
-export type CleanupKind = "worker_tab" | "workspace" | "worktree" | "branch";
+export const CLEANUP_KINDS = ["worker_tab", "workspace", "worktree", "branch"] as const;
+export type CleanupKind = (typeof CLEANUP_KINDS)[number];
 export interface CleanupStep {
 	kind: CleanupKind;
 	status: "pending" | "running" | "completed";
@@ -330,7 +331,7 @@ const IntegrationRecordSchema = Type.Object({
 }, { additionalProperties: false });
 
 const CleanupStepSchema = Type.Object({
-	kind: Type.Union([Type.Literal("worker_tab"), Type.Literal("workspace"), Type.Literal("worktree"), Type.Literal("branch")]),
+	kind: Type.Union(CLEANUP_KINDS.map((kind) => Type.Literal(kind))),
 	status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed")]),
 	failure: OptionalTextSchema,
 }, { additionalProperties: false });
@@ -352,7 +353,7 @@ const TaskAttemptSchema = Type.Object({
 	authoritativeChecks: Type.Optional(CheckBatchEvidenceSchema),
 	authoritativeReview: Type.Optional(ReviewEvidenceSchema),
 	integration: Type.Optional(IntegrationRecordSchema),
-	cleanup: Type.Array(CleanupStepSchema, { maxItems: 4 }),
+	cleanup: Type.Array(CleanupStepSchema, { minItems: CLEANUP_KINDS.length, maxItems: CLEANUP_KINDS.length }),
 }, { additionalProperties: false });
 
 const TaskStateSchema = Type.Object({
@@ -631,6 +632,9 @@ export function parseRunState(value: unknown): RunState {
 			if (attempt.prompts[0]?.kind === "correction" || (attempt.prompts[1] && attempt.prompts[1].kind !== "correction")) {
 				throw new Error(`Malformed correction history for ${definition.id}.`);
 			}
+			if (attempt.cleanup.some((step, cleanupIndex) => step.kind !== CLEANUP_KINDS[cleanupIndex])) {
+				throw new Error(`Malformed cleanup sequence for ${definition.id}.`);
+			}
 		}
 		if (taskState.status === "completed") requireCompletedTaskEvidence(taskState, definition);
 	}
@@ -647,7 +651,10 @@ export function parseRunState(value: unknown): RunState {
 		if (state.status !== "completed" || state.final.status !== "passed" || state.tasks.some((task) => task.status !== "completed")) {
 			throw new Error("Malformed accepted pi-orchestrator state.");
 		}
-		if (!state.final.identity || state.final.checks?.phase !== "final"
+		if (!state.final.identity || !isCleanCommitted(state.final.identity)) {
+			throw new Error("Accepted request lacks a clean final identity.");
+		}
+		if (state.final.checks?.phase !== "final"
 			|| !checkBatchPasses(state.final.checks, request.finalChecks, state.final.identity)) {
 			throw new Error("Accepted request lacks passing final checks on its exact identity.");
 		}

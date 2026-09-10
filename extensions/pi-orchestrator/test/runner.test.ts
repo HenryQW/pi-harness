@@ -84,6 +84,7 @@ type CheckPlan = {
 };
 type ReviewPlan = { verdict?: string; identityAfter?: WorkspaceIdentity; error?: Error; expire?: boolean };
 type CleanupPlan = { outcome?: "completed" | "absent" | "blocked"; failure?: string; error?: Error; expire?: boolean };
+type InspectionPlan = { identity?: WorkspaceIdentity; error?: Error };
 
 class FakeRuntime implements OrchestratorRuntime, CleanupRuntime {
 	clock = 1_000;
@@ -104,6 +105,7 @@ class FakeRuntime implements OrchestratorRuntime, CleanupRuntime {
 	checkPlans: CheckPlan[] = [];
 	reviewPlans: ReviewPlan[] = [];
 	cleanupPlans: CleanupPlan[] = [];
+	inspectionPlans: InspectionPlan[] = [];
 	retainedCandidate?: WorkspaceIdentity;
 	allocationFailure?: { kind: AllocationKind; error?: Error; result?: AllocationResult };
 	reconciliation: AllocationReconciliation = { outcome: "absent" };
@@ -152,7 +154,9 @@ class FakeRuntime implements OrchestratorRuntime, CleanupRuntime {
 
 	async inspectMain(_input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity> {
 		this.observe("inspect-main", context);
-		return { ...this.main };
+		const plan = this.inspectionPlans.shift();
+		if (plan?.error) throw plan.error;
+		return { ...(plan?.identity ?? this.main) };
 	}
 
 	async planAllocation(
@@ -405,6 +409,18 @@ test("completed task and request states require exact authoritative evidence and
 	preliminaryOnly.tasks[0]!.attempts[0]!.authoritativeChecks!.phase = "preliminary";
 	assert.throws(() => parseRunState(preliminaryOnly), /authoritative/i);
 
+	const malformedCleanup = structuredClone(valid);
+	malformedCleanup.tasks[0]!.attempts[0]!.cleanup[1]!.kind = "worker_tab";
+	assert.throws(() => parseRunState(malformedCleanup), /cleanup sequence/i);
+
+	const dirtyFinal = structuredClone(valid);
+	const dirtyIdentity = { ...dirtyFinal.final.identity!, index: oid("f") };
+	dirtyFinal.main = dirtyIdentity;
+	dirtyFinal.final.identity = dirtyIdentity;
+	dirtyFinal.final.checks!.candidate = dirtyIdentity;
+	dirtyFinal.final.checks!.identityAfter = dirtyIdentity;
+	assert.throws(() => parseRunState(dirtyFinal), /final checks|clean/i);
+
 	const uncheckedCompletion = structuredClone(valid);
 	uncheckedCompletion.accepted = false;
 	delete uncheckedCompletion.acceptedAt;
@@ -447,6 +463,30 @@ test("a failed preliminary gate gets one correction in the same recorded worker"
 	assert.equal(runtime.allocationCalls.filter((kind) => kind === "agent").length, 1);
 });
 
+test("preliminary review drift, throws, and ambiguous verdicts terminate in attention without correction", async (t) => {
+	const cases: [string, ReviewPlan][] = [
+		["drift", { verdict: "PASS", identityAfter: identity("f", "refs/heads/task-a") }],
+		["throw", { error: new Error("review transport lost") }],
+		["ambiguity", { verdict: "UNCLEAR" }],
+	];
+	for (const [name, plan] of cases) {
+		await t.test(name, async (t) => {
+			const { root, runtime, runner } = await harness(t);
+			runtime.reviewPlans.push(plan);
+			const result = await runner.execute(request({
+				tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+			}), root);
+			assert.equal(result.state.tasks[0]!.status, "needs_attention");
+			assert.equal(result.state.tasks[0]!.attempts[0]!.termination?.status, "terminated");
+			await assert.rejects(
+				runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
+				/correction is unavailable/,
+			);
+			assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial"]);
+		});
+	}
+});
+
 test("verify accepts a manually repaired candidate only after recorded worker termination", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	runtime.checkPlans.push({ code: 1 }, { code: 1 });
@@ -456,6 +496,18 @@ test("verify accepts a manually repaired candidate only after recorded worker te
 	const verified = await runner.resume({ id: "request-one", action: "verify", taskId: "task-a" }, root);
 	assert.equal(verified.state.accepted, true);
 	assert.equal(verified.state.tasks[0]!.attempts[0]!.integrationCandidate!.head, oid("f"));
+});
+
+test("manual verify rejects a clean retained candidate with the wave-base head", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.checkPlans.push({ code: 1 }, { code: 1 });
+	await runner.execute(request(), root);
+	runtime.retainedCandidate = identity("a", "refs/heads/task-a");
+	await assert.rejects(
+		runner.resume({ id: "request-one", action: "verify", taskId: "task-a" }, root),
+		/must differ from its wave base/,
+	);
+	assert.equal(runtime.integrationCalls.length, 0);
 });
 
 test("an interrupted prompt enters attention and is never replayed", async (t) => {
@@ -499,6 +551,62 @@ test("unknown allocations block adoption, while a proved-absent unprompted start
 	}
 });
 
+test("pre-wave drift and inspection failure remain actionable without creating an attempt", async (t) => {
+	for (const [name, plan] of [
+		["drift", { identity: identity("f") }],
+		["inspection failure", { error: new Error("inspection unavailable") }],
+	] satisfies [string, InspectionPlan][]) {
+		await t.test(name, async (t) => {
+			const { root, runtime, runner } = await harness(t);
+			runtime.inspectionPlans.push(plan);
+			const waiting = await runner.execute(request(), root);
+			assert.equal(waiting.state.tasks[0]!.status, "needs_attention");
+			assert.equal(waiting.state.tasks[0]!.attempts.length, 0);
+			assert.deepEqual(waiting.continuation, { id: "request-one", action: "retry", taskId: "task-a" });
+			assert.equal(runtime.workerCalls.length, 0);
+
+			const completed = await runner.resume(waiting.continuation!, root);
+			assert.equal(completed.state.accepted, true);
+		});
+	}
+});
+
+test("an initial persisted pending scheduler state recovers to a no-attempt retry", async (t) => {
+	const { root, runtime, store, runner } = await harness(t);
+	runtime.inspectionPlans.push({ error: new Error("inspection unavailable") });
+	await runner.execute(request(), root);
+	const handle = await store.load(root, "request-one");
+	handle.state.status = "pending";
+	handle.state.tasks[0]!.status = "pending";
+	handle.state.tasks[0]!.failure = undefined;
+	await handle.save();
+
+	const recovered = await runner.status("request-one", root);
+	assert.equal(recovered.state.tasks[0]!.status, "needs_attention");
+	assert.deepEqual(recovered.continuation, { id: "request-one", action: "retry", taskId: "task-a" });
+	const completed = await runner.resume(recovered.continuation!, root);
+	assert.equal(completed.state.accepted, true);
+});
+
+test("cleanup accepts only explicit completed or absent outcomes", async (t) => {
+	await t.test("absent", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.cleanupPlans.push({ outcome: "absent" });
+		const result = await runner.execute(request(), root);
+		assert.equal(result.state.accepted, true);
+	});
+
+	await t.test("unexpected", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.cleanupPlans.push({ outcome: "unexpected" as never });
+		const result = await runner.execute(request(), root);
+		assert.equal(result.state.tasks[0]!.status, "needs_attention");
+		assert.equal(result.state.tasks[0]!.attempts[0]!.cleanup[0]!.status, "pending");
+		assert.match(result.state.tasks[0]!.failure!, /failed closed/);
+		assert.deepEqual(runtime.cleanupCalls, ["worker_tab"]);
+	});
+});
+
 test("cleanup-only verify finishes exact cleanup after expiry without productive hooks or acceptance", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	runtime.cleanupPlans.push({}, { expire: true });
@@ -515,6 +623,25 @@ test("cleanup-only verify finishes exact cleanup after expiry without productive
 	assert.ok(cleaned.state.tasks[0]!.attempts[0]!.cleanup.every(({ status }) => status === "completed"));
 	assert.equal(productiveCallCount(runtime), beforeProductive);
 	assert.equal(cleaned.state.recovery, undefined);
+	assert.deepEqual(cleaned.continuation, { id: "request-one", action: "finalize" });
+});
+
+test("cleanup-only verify exposes a runnable pending-wave continuation without productive work", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.cleanupPlans.push({ outcome: "blocked", failure: "workspace still busy" });
+	const definition = request({
+		tasks: [task("task-a"), task("task-b", ["task-a"])],
+	});
+	await runner.execute(definition, root);
+	const beforeProductive = productiveCallCount(runtime);
+
+	const cleaned = await runner.resume({ id: "request-one", action: "verify", taskId: "task-a" }, root);
+	assert.equal(productiveCallCount(runtime), beforeProductive);
+	assert.equal(cleaned.state.tasks[1]!.status, "needs_attention");
+	assert.deepEqual(cleaned.continuation, { id: "request-one", action: "retry", taskId: "task-b" });
+
+	const completed = await runner.resume(cleaned.continuation!, root);
+	assert.equal(completed.state.accepted, true);
 });
 
 test("cleanup verification never reintegrates an already accepted task tip", async (t) => {
