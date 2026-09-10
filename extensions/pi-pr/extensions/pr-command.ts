@@ -33,15 +33,14 @@ export type WorkflowReservation =
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
-export type PrCommandInvocation = {
+export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	sessionGeneration: number;
 	assertCurrent(): void;
-	onRouteResolved?(nextStep: NextStep): void;
 };
 export type PrCommandHandler = (
 	args: string,
 	ctx: ExtensionCommandContext,
-	invocation?: PrCommandInvocation | ((nextStep: NextStep) => void),
+	onRouteResolved?: PrCommandInvocation | ((nextStep: NextStep) => void),
 ) => Promise<NextStep>;
 
 export type WorkflowPromptIdentity = Readonly<{
@@ -252,9 +251,10 @@ export function createPrCommandHandler(
 	});
 	const markPromptQueued = dependencies.markWorkflowPromptQueued ?? (() => {});
 	const release = dependencies.releaseWorkflow ?? (() => {});
-	return async (args, ctx, invocation) => {
-		const commandInvocation = typeof invocation === "function" ? undefined : invocation;
-		const onRouteResolved = typeof invocation === "function" ? invocation : invocation?.onRouteResolved;
+	return async (args, ctx, onRouteResolved) => {
+		const commandInvocation = onRouteResolved && "assertCurrent" in onRouteResolved
+			? onRouteResolved as PrCommandInvocation
+			: undefined;
 		const instructions = args.trim();
 		const discovery = await load(pi, ctx);
 		commandInvocation?.assertCurrent();

@@ -799,20 +799,19 @@ export default function pullRequestExtension(
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");
 			reconcileWidget(ctx);
-			const routeResolved = (): void => {
+			const routeResolved = (_nextStep?: unknown): void => {
 				if (sessionGeneration !== generation || activeInvocations.get(invocation) !== "routing") return;
 				activeInvocations.set(invocation, "resolved");
 				reconcileWidget(ctx);
 			};
-			const commandInvocation: PrCommandInvocation = {
+			const commandInvocation: PrCommandInvocation = Object.assign(routeResolved, {
 				sessionGeneration: generation,
 				assertCurrent() {
 					if (sessionGeneration !== generation) {
 						throw new Error("PR command session changed during dispatch");
 					}
 				},
-				onRouteResolved: routeResolved,
-			};
+			});
 			let nextStep: Awaited<ReturnType<typeof commandHandler>>;
 			try {
 				nextStep = await commandHandler(args, ctx, commandInvocation);

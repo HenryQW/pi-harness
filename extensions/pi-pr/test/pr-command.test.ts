@@ -326,7 +326,7 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 test("signals route resolution before dispatch, notification, confirmation, or mutation", async () => {
 	const create = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
 	await create.handler("", create.context, () => create.events.push("route"));
-	assert.deepEqual(create.events, ["load", "route", "send"]);
+	assert.deepEqual(create.events, ["load", "route", "reserve", "send"]);
 
 	const noAction = harness({ states: [{ state: "MERGED" }] });
 	await noAction.handler("", noAction.context, () => noAction.events.push("route"));
@@ -469,13 +469,13 @@ test("checks command generation after discovery and reservation and immediately 
 		});
 		let checks = 0;
 
-		await assert.rejects(app.handler("", app.context, {
+		await assert.rejects(app.handler("", app.context, Object.assign(() => {}, {
 			sessionGeneration: 7,
 			assertCurrent() {
 				checks += 1;
 				if (checks === failAt) throw new Error("session replaced");
 			},
-		}), /session replaced/, `generation check ${failAt}`);
+		})), /session replaced/, `generation check ${failAt}`);
 		assert.deepEqual(app.messages, [], `generation check ${failAt}`);
 		assert.equal(app.reservations.length, failAt === 1 ? 0 : 1, `generation check ${failAt}`);
 		assert.deepEqual(app.releases, failAt === 1 ? [] : [workflowRunId], `generation check ${failAt}`);
