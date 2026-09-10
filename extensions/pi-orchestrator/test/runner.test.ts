@@ -644,6 +644,29 @@ test("cleanup-only verify exposes a runnable pending-wave continuation without p
 	assert.equal(completed.state.accepted, true);
 });
 
+test("cleanup-only verify exposes a retained same-wave peer for later verification", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.cleanupPlans.push({ outcome: "blocked", failure: "workspace still busy" });
+	const interrupted = await runner.execute(request({
+		tasks: [task("task-a"), task("task-b")],
+	}), root);
+	assert.equal(interrupted.state.tasks[0]!.status, "needs_attention");
+	assert.equal(interrupted.state.tasks[1]!.status, "needs_attention");
+	assert.equal(interrupted.state.tasks[1]!.attempts[0]!.termination?.status, "terminated");
+	assert.deepEqual(interrupted.continuation, { id: "request-one", action: "verify", taskId: "task-a" });
+	const beforeProductive = productiveCallCount(runtime);
+
+	const cleaned = await runner.resume(interrupted.continuation!, root);
+	assert.equal(productiveCallCount(runtime), beforeProductive);
+	assert.equal(cleaned.state.tasks[0]!.status, "completed");
+	assert.equal(cleaned.state.tasks[1]!.status, "needs_attention");
+	assert.deepEqual(cleaned.continuation, { id: "request-one", action: "verify", taskId: "task-b" });
+
+	const completed = await runner.resume(cleaned.continuation!, root);
+	assert.equal(completed.state.accepted, true);
+	assert.deepEqual(runtime.integrationCalls, ["task-a", "task-b"]);
+});
+
 test("cleanup verification never reintegrates an already accepted task tip", async (t) => {
 	const { root, runtime, store, runner } = await harness(t);
 	await runner.execute(request(), root);

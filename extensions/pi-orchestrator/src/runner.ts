@@ -432,6 +432,12 @@ export class OrchestratorRunner {
 				await handle.save();
 				for (const task of ready) {
 					if (!await this.integrateTask(handle, task, scope)) {
+						for (const retained of ready) {
+							if (retained.status === "ready_to_integrate"
+								&& latestAttempt(retained).termination?.status === "terminated") {
+								this.attention(retained, "Earlier same-wave integration stopped; verify the retained candidate to continue.");
+							}
+						}
 						wave.status = "needs_attention";
 						state.status = "needs_attention";
 						return this.response(state);
@@ -1178,6 +1184,10 @@ export class OrchestratorRunner {
 		} else if (!terminal(state) && attention?.attempts.length === 0) {
 			continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 		} else if (!terminal(state) && attention?.attempts.at(-1)?.integration?.status === "integrated") {
+			continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
+		} else if (!terminal(state)
+			&& attention?.attempts.at(-1)?.termination?.status === "terminated"
+			&& attention.attempts.at(-1)?.integration?.status !== "unknown") {
 			continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
 		}
 		return {
