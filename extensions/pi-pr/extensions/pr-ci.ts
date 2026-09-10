@@ -149,7 +149,6 @@ function cloneAuthority(value: CurrentPullRequest): CurrentPullRequest {
 		base: { ...value.base },
 		head: { ...value.head },
 		target: { ...value.target },
-		merge: value.merge ? { ...value.merge, allowedMergeMethods: [...value.merge.allowedMergeMethods] } : null,
 	};
 }
 

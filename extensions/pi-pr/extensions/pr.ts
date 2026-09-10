@@ -5,7 +5,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import { Type } from "typebox";
 import { PullRequestCiFixer, type PullRequestCiFixOptions } from "./pr-ci.ts";
@@ -298,14 +298,10 @@ export default function pullRequestExtension(
 	let widgetKind: "presentation" | "routing" = "presentation";
 	let routingSpinnerFrame = 0;
 	let routingSpinnerTimer: ReturnType<typeof setInterval> | undefined;
-	let routingSpinnerTui: TUI | undefined;
-	let routingSpinnerComponent: (Component & { dispose(): void }) | undefined;
 
 	const stopRoutingSpinner = (): void => {
 		if (routingSpinnerTimer !== undefined) clearInterval(routingSpinnerTimer);
 		routingSpinnerTimer = undefined;
-		routingSpinnerTui = undefined;
-		routingSpinnerComponent = undefined;
 	};
 
 	const clearWorkflow = (selected: WorkflowContext | undefined): void => {
@@ -526,42 +522,30 @@ export default function pullRequestExtension(
 		stopRoutingSpinner();
 		widgetKind = "routing";
 		routingSpinnerFrame = 0;
-		if (ctx.mode !== "tui") {
-			ctx.ui.setWidget(UI_KEY, [`${ROUTING_SPINNER_FRAMES[0]} ${ROUTING_WIDGET_TEXT}`]);
-			return;
-		}
+		const update = (): void => {
+			const frame = ROUTING_SPINNER_FRAMES[routingSpinnerFrame]!;
+			if (ctx.mode === "tui") {
+				ctx.ui.setWidget(UI_KEY, (_tui, theme) => ({
+					invalidate() {},
+					render(width) {
+						if (width <= 0) return [];
+						return [truncateToWidth(`${theme.fg("accent", frame)} ${ROUTING_WIDGET_TEXT}`, width)];
+					},
+				}));
+				return;
+			}
+			ctx.ui.setWidget(UI_KEY, [`${frame} ${ROUTING_WIDGET_TEXT}`]);
+		};
+		update();
+		if (ctx.mode !== "tui") return;
 
-		ctx.ui.setWidget(UI_KEY, (tui, theme) => {
-			let cachedWidth: number | undefined;
-			let cachedLines: string[] | undefined;
-			const component: Component & { dispose(): void } = {
-				invalidate() {
-					cachedWidth = undefined;
-					cachedLines = undefined;
-				},
-				render(width) {
-					if (width <= 0) return [];
-					if (cachedLines !== undefined && cachedWidth === width) return cachedLines;
-					const line = `${theme.fg("accent", ROUTING_SPINNER_FRAMES[routingSpinnerFrame]!)} ${ROUTING_WIDGET_TEXT}`;
-					cachedWidth = width;
-					cachedLines = [truncateToWidth(line, Math.max(1, width))];
-					return cachedLines;
-				},
-				dispose() {
-					if (routingSpinnerComponent !== component) return;
-					stopRoutingSpinner();
-					widgetKind = "presentation";
-				},
-			};
-			routingSpinnerTui = tui;
-			routingSpinnerComponent = component;
-			return component;
-		});
-		routingSpinnerTimer = setInterval(() => {
+		let spinnerTimer: ReturnType<typeof setInterval>;
+		spinnerTimer = setInterval(() => {
+			if (routingSpinnerTimer !== spinnerTimer || widgetKind !== "routing") return;
 			routingSpinnerFrame = (routingSpinnerFrame + 1) % ROUTING_SPINNER_FRAMES.length;
-			routingSpinnerComponent?.invalidate();
-			routingSpinnerTui?.requestRender();
+			update();
 		}, ROUTING_SPINNER_INTERVAL_MS);
+		routingSpinnerTimer = spinnerTimer;
 	};
 
 	const reconcileWidget = (ctx: ExtensionContext): void => {

@@ -42,10 +42,6 @@ import {
 	type ExecOptions,
 } from "./pr-execution.ts";
 
-export const PR_COMMENT_SWEEP_ACTIONS = [
-	"start", "resume", "show", "record", "publish", "refresh", "resolve", "finalize",
-] as const;
-export type PrCommentSweepAction = (typeof PR_COMMENT_SWEEP_ACTIONS)[number];
 export const SWEEP_RECOVERY_MAX_BYTES = 1024 * 1024;
 
 const STATE_VERSION = 1;
@@ -140,16 +136,6 @@ export type PullRequestCommentSweepOptions = {
 	newRunId?: () => string;
 	pause?: (milliseconds: number) => Promise<void>;
 };
-export type PrCommentSweepRequest =
-	| { action: "start" }
-	| { action: "resume" }
-	| { action: "show"; guard: SweepRunGuard; id: string }
-	| { action: "record"; guard: SweepRunGuard; ledger: SweepLedgerEntry[]; ownedPaths?: string[] }
-	| { action: "publish"; guard: SweepRunGuard }
-	| { action: "refresh"; guard: SweepRunGuard }
-	| { action: "resolve"; guard: SweepRunGuard; threadIds: string[] }
-	| { action: "finalize"; guard: SweepRunGuard; projection: SweepFinalProjection; checks: SweepCheck[] };
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -1085,18 +1071,5 @@ export class PullRequestCommentSweep {
 			await rm(location.path);
 			return { kind: "finalized", pullRequestUrl: state.authority.url, head: state.publicationHead, checks: checks.length };
 		}, { agentDir: this.agentDir, signal: this.signal });
-	}
-
-	async action(request: PrCommentSweepRequest): Promise<SweepStatus | FeedbackItem | { kind: "finalized"; pullRequestUrl: string; head: string; checks: number }> {
-		switch (request.action) {
-			case "start": return await this.start();
-			case "resume": return await this.resume();
-			case "show": return await this.show(request.guard, request.id);
-			case "record": return await this.record(request.guard, request.ledger, request.ownedPaths);
-			case "publish": return await this.publish(request.guard);
-			case "refresh": return await this.refresh(request.guard);
-			case "resolve": return await this.resolve(request.guard, request.threadIds);
-			case "finalize": return await this.finalize(request.guard, request.projection, request.checks);
-		}
 	}
 }

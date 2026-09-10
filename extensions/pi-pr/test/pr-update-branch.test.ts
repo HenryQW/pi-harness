@@ -45,7 +45,6 @@ function pullRequest(overrides: Partial<CurrentPullRequest> = {}): CurrentPullRe
 			provenance: "configured", branch: "feature", remote: "fork", ref: "feature",
 			repository: "acme/fork", host: "github.com", fetchSource: "git@github.com:acme/fork.git", remoteOid: oldHead,
 		},
-		merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 		...overrides,
 	};
 }
@@ -76,10 +75,6 @@ test("fetches only the frozen base OID and skips merge when it is already an anc
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${oldHead}\n`);
 		if (command === "git" && text === "status --porcelain=v2 -z --untracked-files=all") return result();
 		if (command === "gh" && text === "config get git_protocol --host github.com") return result("ssh\n");
-		if (command === "gh" && args[0] === "api") return result(JSON.stringify({
-			clone_url: "https://github.com/acme/project.git",
-			ssh_url: "git@github.com:acme/project.git",
-		}));
 		if (command === "git" && args[0] === "fetch") return result();
 		if (command === "git" && args[0] === "cat-file") return result();
 		if (command === "git" && args[0] === "merge-base") return result();
@@ -104,7 +99,6 @@ test("rechecks frozen authority after fetch before launching merge", async (t) =
 		if (command === "git" && args[0] === "rev-parse") return result(`${oldHead}\n`);
 		if (command === "git" && args[0] === "status") return result();
 		if (command === "gh" && args[0] === "config") return result("ssh\n");
-		if (command === "gh" && args[0] === "api") return result(JSON.stringify({ clone_url: "https://github.com/acme/project.git", ssh_url: "git@github.com:acme/project.git" }));
 		if (command === "git" && (args[0] === "fetch" || args[0] === "cat-file")) return result();
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
@@ -132,7 +126,6 @@ test("captures a conflict baseline and rejects an outside-set delta before stagi
 			return result(statusReads === 1 ? staged + unresolved : unresolved);
 		}
 		if (command === "gh" && args[0] === "config") return result("ssh\n");
-		if (command === "gh" && args[0] === "api") return result(JSON.stringify({ clone_url: "https://github.com/acme/project.git", ssh_url: "git@github.com:acme/project.git" }));
 		if (command === "git" && (args[0] === "fetch" || args[0] === "cat-file")) return result();
 		if (command === "git" && args[0] === "merge-base") return result("", 1);
 		if (command === "git" && args[0] === "merge") return result("", 1, "conflict");
@@ -169,6 +162,7 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 	app.workflow.state.phase = "verified";
 	app.workflow.state.verifiedHead = merged;
 	await assert.rejects(app.workflow.publish(), /response lost/);
+	assert.equal(app.workflow.state.phase, "blocked");
 	await assert.rejects(app.workflow.publish(), /not ready to publish/);
 	assert.equal(pushes, 1);
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "push"), ["git", [

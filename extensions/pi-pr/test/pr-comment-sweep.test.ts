@@ -191,7 +191,6 @@ function fixture(): Fixture {
 				provenance: "configured", branch: "feature", remote: "origin", ref: "feature",
 				repository: "acme/fork", host: "github.com", fetchSource: bare, remoteOid: head,
 			},
-			merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 		};
 	};
 	const workflow = (ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]) => {
