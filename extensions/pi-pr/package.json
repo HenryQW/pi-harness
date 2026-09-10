@@ -33,7 +33,11 @@
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^1.1.0",
-    "@henryqw/pi-herdr": "^0.4.5"
+    "@henryqw/pi-herdr": "^0.4.5",
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4"
   },
   "repository": {
     "type": "git",

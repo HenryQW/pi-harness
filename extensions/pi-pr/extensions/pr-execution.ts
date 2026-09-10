@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
-import { lstat, realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { lock } from "proper-lockfile";
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 export const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -13,10 +14,7 @@ export const MAX_CONFLICT_PATHS_BYTES = 32 * 1024;
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 const PROCESS_TERMINATION_GRACE_MS = 250;
-const LOCK_OWNER_MAX_BYTES = 128;
-const LOCK_NONCE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const LOCK_OWNER_PAYLOAD = /^pid=([1-9][0-9]*)\nnonce=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\n$/;
-const LOCK_REF_PREFIX = "refs/pi-pr/worktree-locks";
+const WORKTREE_LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
 
 export type ExecResult = {
 	stdout: string;
@@ -265,135 +263,7 @@ export async function inspectWorktree(exec: Exec, options: ExecOptions): Promise
 	return status.stdout === "" ? "clean" : "dirty";
 }
 
-type WorktreeLockOwner = {
-	oid: string;
-	pid: number;
-};
-
-function gitFailure(args: string[], result: ExecResult): Error {
-	const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command was killed" : `exit code ${result.code}`);
-	return new Error(`${commandText("git", args)} failed: ${detail}`);
-}
-
-function oidLine(output: string, label: string): string {
-	const normalized = output.replace(/\r\n/g, "\n");
-	if (!normalized.endsWith("\n") || normalized.slice(0, -1).includes("\n")) {
-		throw new Error(`${label} returned invalid output`);
-	}
-	return requiredOid(normalized.slice(0, -1), label);
-}
-
-function lockOwnerPid(payload: string): number {
-	const match = LOCK_OWNER_PAYLOAD.exec(payload);
-	if (!match || match[0] !== payload) throw new Error("Git worktree lock owner object is invalid");
-	const pid = Number(match[1]);
-	if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== match[1]) {
-		throw new Error("Git worktree lock owner PID is invalid");
-	}
-	return pid;
-}
-
-function ownerIsDead(pid: number): boolean {
-	positiveInteger(pid, "Git worktree lock owner PID");
-	try {
-		process.kill(pid, 0);
-		return false;
-	} catch (error) {
-		return !!error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ESRCH";
-	}
-}
-
-function zeroOid(oid: string): string {
-	return requiredOid(oid, "Git worktree lock owner OID").replace(/[0-9a-f]/g, "0");
-}
-
-async function readWorktreeLock(cwd: string, lockRef: string, signal?: AbortSignal): Promise<WorktreeLockOwner | null> {
-	const symbolicArgs = ["symbolic-ref", "-q", lockRef];
-	const symbolic = await spawnBounded("git", symbolicArgs, { cwd, signal });
-	if (symbolic.killed || (symbolic.code !== 0 && symbolic.code !== 1)) throw gitFailure(symbolicArgs, symbolic);
-	if (symbolic.code === 0) throw new Error("Git worktree lock ref is symbolic");
-	if (symbolic.stdout !== "" || symbolic.stderr !== "") throw new Error("Git worktree lock symbolic-ref check returned invalid output");
-
-	const refArgs = ["rev-parse", "--verify", "--quiet", lockRef];
-	const ref = await spawnBounded("git", refArgs, { cwd, signal });
-	if (ref.killed || (ref.code !== 0 && ref.code !== 1)) throw gitFailure(refArgs, ref);
-	if (ref.code === 1) {
-		if (ref.stdout !== "" || ref.stderr !== "") throw new Error("Git worktree lock ref lookup returned invalid output");
-		return null;
-	}
-	if (ref.stderr !== "") throw new Error("Git worktree lock ref lookup returned invalid output");
-	const oid = oidLine(ref.stdout, "Git worktree lock ref");
-
-	const objectArgs = ["cat-file", "blob", oid];
-	const object = await runChecked(spawnBounded, "git", objectArgs, {
-		cwd,
-		signal,
-		stdoutLimitBytes: LOCK_OWNER_MAX_BYTES,
-		stderrLimitBytes: LOCK_OWNER_MAX_BYTES,
-	});
-	if (object.stderr !== "") throw new Error("Git worktree lock owner object returned invalid output");
-	return { oid, pid: lockOwnerPid(object.stdout) };
-}
-
-async function updateWorktreeLock(cwd: string, args: string[]): Promise<boolean> {
-	const result = await spawnBounded("git", args, { cwd });
-	if (result.killed) throw gitFailure(args, result);
-	return result.code === 0;
-}
-
-async function createWorktreeLock(cwd: string, lockRef: string, ownerOid: string): Promise<boolean> {
-	return await updateWorktreeLock(cwd, ["update-ref", "--no-deref", lockRef, ownerOid, zeroOid(ownerOid)]);
-}
-
-async function deleteWorktreeLock(cwd: string, lockRef: string, ownerOid: string): Promise<boolean> {
-	return await updateWorktreeLock(cwd, ["update-ref", "--no-deref", "-d", lockRef, ownerOid]);
-}
-
-async function releaseWorktreeLock(cwd: string, lockRef: string, ownerOid: string): Promise<void> {
-	const args = ["update-ref", "--no-deref", "-d", lockRef, ownerOid];
-	const result = await spawnBounded("git", args, { cwd });
-	if (result.killed || result.code !== 0) throw gitFailure(args, result);
-}
-
-async function acquireWorktreeLock(
-	cwd: string,
-	canonical: string,
-	lockRef: string,
-	ownerOid: string,
-	signal?: AbortSignal,
-): Promise<void> {
-	signal?.throwIfAborted();
-	if (await createWorktreeLock(cwd, lockRef, ownerOid)) return;
-	signal?.throwIfAborted();
-	const observed = await readWorktreeLock(cwd, lockRef, signal);
-	if (!observed) throw new Error("Git worktree lock acquisition failed without a competing owner");
-	if (!ownerIsDead(observed.pid)) throw new Error(`Another pi-pr mutation is active for ${canonical}`);
-	signal?.throwIfAborted();
-	const reclaimed = await deleteWorktreeLock(cwd, lockRef, observed.oid);
-	signal?.throwIfAborted();
-	if (await createWorktreeLock(cwd, lockRef, ownerOid)) return;
-	const replacement = await readWorktreeLock(cwd, lockRef, signal);
-	if (!replacement) throw new Error("Git worktree lock disappeared during stale owner recovery");
-	if (!ownerIsDead(replacement.pid)) throw new Error(`Another pi-pr mutation is active for ${canonical}`);
-	if (replacement.oid !== observed.oid) throw new Error("Git worktree lock changed during stale owner recovery");
-	if (!reclaimed) throw new Error("Git worktree stale lock owner could not be reclaimed");
-	throw new Error("Git worktree stale lock owner remained after reclamation");
-}
-
-async function writeWorktreeLockOwner(cwd: string, signal?: AbortSignal): Promise<string> {
-	const pid = positiveInteger(process.pid, "process PID");
-	const nonce = randomUUID();
-	if (!LOCK_NONCE.test(nonce)) throw new Error("Generated Git worktree lock nonce is invalid");
-	const result = await runChecked(spawnBounded, "git", ["hash-object", "-w", "--stdin", "--no-filters"], {
-		cwd,
-		signal,
-		stdin: `pid=${pid}\nnonce=${nonce}\n`,
-	});
-	if (result.stderr !== "") throw new Error("Git worktree lock owner creation returned invalid output");
-	return oidLine(result.stdout, "Git worktree lock owner");
-}
-
-/** Exclude concurrent PR mutations for one canonical worktree and pi-pr namespace with a Git-ref lease. */
+/** Exclude concurrent PR mutations for one canonical worktree and pi-pr namespace. */
 export async function withWorktreeLock<T>(
 	cwd: string,
 	operation: () => Promise<T>,
@@ -409,17 +279,21 @@ export async function withWorktreeLock<T>(
 	if (rootLines.length !== 1 || !rootLines[0]) throw new Error("Git worktree root resolution returned invalid output");
 	const canonical = requiredText(await realpath(rootLines[0]), "canonical Git worktree root");
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", options.agentDir));
-	const identity = createHash("sha256").update(lockNamespace).update("\0").update(canonical).digest("hex");
-	const lockRef = `${LOCK_REF_PREFIX}/${identity}`;
-	const ownerOid = await writeWorktreeLockOwner(canonical, options.signal);
-	let acquired = false;
+	const lockDirectory = join(lockNamespace, "worktree-locks");
+	const identity = createHash("sha256").update(canonical).digest("hex");
+	const lockPath = join(lockDirectory, identity);
+	options.signal?.throwIfAborted();
+	await mkdir(lockDirectory, { recursive: true, mode: 0o700 });
+	options.signal?.throwIfAborted();
+	const release = await lock(lockPath, {
+		...WORKTREE_LOCK_OPTIONS,
+		lockfilePath: `${lockPath}.lock`,
+	});
 	try {
-		await acquireWorktreeLock(canonical, canonical, lockRef, ownerOid, options.signal);
-		acquired = true;
 		options.signal?.throwIfAborted();
 		return await operation();
 	} finally {
-		if (acquired) await releaseWorktreeLock(canonical, lockRef, ownerOid);
+		await release();
 	}
 }
 
@@ -535,24 +409,7 @@ export async function resolveRepositoryFetchSource(
 	if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) throw new TypeError("repository must be OWNER/REPOSITORY");
 	const protocol = (await runChecked(exec, "gh", ["config", "get", "git_protocol", "--host", host], options)).stdout.trim();
 	if (protocol !== "https" && protocol !== "ssh") throw new Error("GitHub CLI git protocol must be https or ssh");
-	const response = await runChecked(exec, "gh", [
-		"api", "--hostname", host,
-		"-H", "Accept: application/vnd.github+json",
-		"-H", "X-GitHub-Api-Version: 2022-11-28",
-		`repos/${repository}`,
-	], options);
-	let value: unknown;
-	try {
-		value = JSON.parse(response.stdout);
-	} catch {
-		throw new Error("Read repository URLs returned invalid JSON");
-	}
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Read repository URLs returned invalid JSON");
-	const record = value as Record<string, unknown>;
-	const expectedHttps = `https://${host}/${repository}.git`;
-	const expectedSsh = `git@${host}:${repository}.git`;
-	if (record.clone_url !== expectedHttps || record.ssh_url !== expectedSsh) {
-		throw new Error("Read repository URLs did not match frozen repository authority");
-	}
-	return protocol === "https" ? expectedHttps : expectedSsh;
+	return protocol === "https"
+		? `https://${host}/${repository}.git`
+		: `git@${host}:${repository}.git`;
 }

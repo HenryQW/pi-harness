@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
@@ -13,8 +12,6 @@ import {
 	spawnBounded,
 	withWorktreeLock,
 } from "../extensions/pr-execution.ts";
-
-const LOCK_REF_PREFIX = "refs/pi-pr/worktree-locks";
 
 async function git(root: string, args: string[], stdin?: string): Promise<string> {
 	const result = await spawnBounded("git", args, { cwd: root, stdin });
@@ -29,37 +26,10 @@ async function temporaryGitRepository(prefix: string): Promise<string> {
 	return root;
 }
 
-async function worktreeLockRef(root: string, agentDir?: string): Promise<string> {
+async function worktreeLockPath(root: string, agentDir: string): Promise<string> {
 	const canonical = await realpath(root);
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", agentDir));
-	return `${LOCK_REF_PREFIX}/${createHash("sha256").update(lockNamespace).update("\0").update(canonical).digest("hex")}`;
-}
-
-async function writeLockOwner(root: string, pid: number, nonce: string): Promise<string> {
-	const oid = (await git(root, ["hash-object", "-w", "--stdin", "--no-filters"], `pid=${pid}\nnonce=${nonce}\n`)).trim();
-	assert.match(oid, /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
-	return oid;
-}
-
-async function readRef(root: string, ref: string): Promise<string | null> {
-	const result = await spawnBounded("git", ["rev-parse", "--verify", "--quiet", ref], { cwd: root });
-	assert.equal(result.killed, false);
-	if (result.code === 1) {
-		assert.equal(result.stdout, "");
-		assert.equal(result.stderr, "");
-		return null;
-	}
-	assert.equal(result.code, 0, result.stderr || result.stdout);
-	assert.equal(result.stderr, "");
-	const oid = result.stdout.trim();
-	assert.match(oid, /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
-	return oid;
-}
-
-function missingProcess(): NodeJS.ErrnoException {
-	const error = new Error("no such process") as NodeJS.ErrnoException;
-	error.code = "ESRCH";
-	return error;
+	return join(lockNamespace, "worktree-locks", `${createHash("sha256").update(canonical).digest("hex")}.lock`);
 }
 
 function delay(ms: number): Promise<void> {
@@ -155,7 +125,11 @@ test("worktree inspection treats an empty-status Git operation as dirty", async 
 test("worktree lock canonicalizes root and subdirectory calls", async (t) => {
 	const root = await temporaryGitRepository("pi-pr-lock-");
 	const subdirectory = join(root, "nested");
-	t.after(() => rm(root, { recursive: true, force: true }));
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-pr-lock-agent-"));
+	t.after(() => Promise.all([
+		rm(root, { recursive: true, force: true }),
+		rm(agentDir, { recursive: true, force: true }),
+	]));
 	await mkdir(subdirectory);
 	let release!: () => void;
 	const held = new Promise<void>((resolve) => { release = resolve; });
@@ -164,15 +138,15 @@ test("worktree lock canonicalizes root and subdirectory calls", async (t) => {
 	const first = withWorktreeLock(root, async () => {
 		entered();
 		await held;
-	});
+	}, { agentDir });
 	await started;
 	await assert.rejects(
-		withWorktreeLock(subdirectory, async () => {}),
-		/Another pi-pr mutation is active/,
+		withWorktreeLock(subdirectory, async () => {}, { agentDir }),
+		/Lock file is already being held/,
 	);
 	release();
 	await first;
-	await withWorktreeLock(subdirectory, async () => {});
+	await withWorktreeLock(subdirectory, async () => {}, { agentDir });
 });
 
 test("worktree lock namespaces explicit agent directories independently", async (t) => {
@@ -194,139 +168,44 @@ test("worktree lock namespaces explicit agent directories independently", async 
 	}, { agentDir: firstAgentDir });
 	await started;
 	try {
-		await withWorktreeLock(root, async () => {}, { agentDir: secondAgentDir });
+		let called = false;
+		await withWorktreeLock(root, async () => { called = true; }, { agentDir: secondAgentDir });
+		assert.equal(called, true);
 	} finally {
 		release();
 		await first;
 	}
 });
 
-test("worktree lock reclaims an orphan Git ref with a dead owner", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-orphan-lock-");
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const ref = await worktreeLockRef(root);
-	const deadPid = 999_999_991;
-	const orphan = await writeLockOwner(root, deadPid, "11111111-1111-1111-1111-111111111111");
-	await git(root, ["update-ref", ref, orphan]);
-	const originalKill = process.kill;
-	process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-		if (pid === deadPid && signal === 0) throw missingProcess();
-		return originalKill(pid, signal);
-	}) as typeof process.kill;
-	t.after(() => { process.kill = originalKill; });
+test("worktree lock recovers a stale lock", async (t) => {
+	const root = await temporaryGitRepository("pi-pr-stale-lock-");
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-pr-stale-agent-"));
+	t.after(() => Promise.all([
+		rm(root, { recursive: true, force: true }),
+		rm(agentDir, { recursive: true, force: true }),
+	]));
+	const lockPath = await worktreeLockPath(root, agentDir);
+	await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+	await mkdir(lockPath);
+	const stale = new Date(Date.now() - 60_000);
+	await utimes(lockPath, stale, stale);
 	let calls = 0;
-	await withWorktreeLock(root, async () => {
-		calls += 1;
-		assert.notEqual(await readRef(root, ref), orphan);
-	});
+	await withWorktreeLock(root, async () => { calls += 1; }, { agentDir });
 	assert.equal(calls, 1);
-	assert.equal(await readRef(root, ref), null);
 });
 
-test("worktree lock cannot delete a competing replacement during stale recovery", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-lock-cas-");
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const ref = await worktreeLockRef(root);
-	const deadPid = 999_999_992;
-	const orphan = await writeLockOwner(root, deadPid, "22222222-2222-2222-2222-222222222222");
-	const replacement = await writeLockOwner(root, process.pid, "33333333-3333-3333-3333-333333333333");
-	await git(root, ["update-ref", ref, orphan]);
-	const originalKill = process.kill;
-	let replaced = false;
-	process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-		if (pid === deadPid && signal === 0) {
-			execFileSync("git", ["update-ref", ref, replacement, orphan], { cwd: root, encoding: "utf8" });
-			replaced = true;
-			throw missingProcess();
-		}
-		return originalKill(pid, signal);
-	}) as typeof process.kill;
-	t.after(() => { process.kill = originalKill; });
-	let called = false;
+test("worktree lock releases safely after operation failure", async (t) => {
+	const root = await temporaryGitRepository("pi-pr-release-lock-");
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-pr-release-agent-"));
+	t.after(() => Promise.all([
+		rm(root, { recursive: true, force: true }),
+		rm(agentDir, { recursive: true, force: true }),
+	]));
 	await assert.rejects(
-		withWorktreeLock(root, async () => { called = true; }),
-		/Another pi-pr mutation is active/,
+		withWorktreeLock(root, async () => { throw new Error("operation failed"); }, { agentDir }),
+		/operation failed/,
 	);
-	assert.equal(replaced, true);
-	assert.equal(called, false);
-	assert.equal(await readRef(root, ref), replacement);
-});
-
-test("worktree lock release cannot delete a competing replacement", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-lock-release-");
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const ref = await worktreeLockRef(root);
-	const replacement = await writeLockOwner(root, process.pid, "44444444-4444-4444-4444-444444444444");
-	await assert.rejects(
-		withWorktreeLock(root, async () => {
-			const owner = await readRef(root, ref);
-			assert.ok(owner);
-			await git(root, ["update-ref", ref, replacement, owner]);
-		}),
-		/git update-ref .* failed/,
-	);
-	assert.equal(await readRef(root, ref), replacement);
-});
-
-test("worktree lock rejects a live Git-ref owner", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-live-lock-");
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const ref = await worktreeLockRef(root);
-	const owner = await writeLockOwner(root, process.pid, "55555555-5555-5555-5555-555555555555");
-	await git(root, ["update-ref", ref, owner]);
-	let called = false;
-	await assert.rejects(
-		withWorktreeLock(root, async () => { called = true; }),
-		/Another pi-pr mutation is active/,
-	);
-	assert.equal(called, false);
-	assert.equal(await readRef(root, ref), owner);
-});
-
-test("worktree lock retains a BOM-prefixed malformed Git-ref owner", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-bom-lock-");
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const ref = await worktreeLockRef(root);
-	const deadPid = 999_999_993;
-	const owner = (await git(root, ["hash-object", "-w", "--stdin", "--no-filters"],
-		`\uFEFFpid=${deadPid}\nnonce=66666666-6666-6666-6666-666666666666\n`)).trim();
-	await git(root, ["update-ref", ref, owner]);
-	const originalKill = process.kill;
-	process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-		if (pid === deadPid && signal === 0) throw missingProcess();
-		return originalKill(pid, signal);
-	}) as typeof process.kill;
-	t.after(() => { process.kill = originalKill; });
-	let called = false;
-	await assert.rejects(
-		withWorktreeLock(root, async () => { called = true; }),
-		/Git worktree lock owner object is invalid/,
-	);
-	assert.equal(called, false);
-	assert.equal(await readRef(root, ref), owner);
-});
-
-test("worktree lock retains a trailing-newline malformed Git-ref owner", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-trailing-newline-lock-");
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const ref = await worktreeLockRef(root);
-	const deadPid = 999_999_994;
-	const owner = (await git(root, ["hash-object", "-w", "--stdin", "--no-filters"],
-		`pid=${deadPid}\nnonce=77777777-7777-7777-7777-777777777777\n\n`)).trim();
-	await git(root, ["update-ref", ref, owner]);
-	const originalKill = process.kill;
-	process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-		if (pid === deadPid && signal === 0) throw missingProcess();
-		return originalKill(pid, signal);
-	}) as typeof process.kill;
-	t.after(() => { process.kill = originalKill; });
-	let called = false;
-	await assert.rejects(
-		withWorktreeLock(root, async () => { called = true; }),
-		/Git worktree lock owner object is invalid/,
-	);
-	assert.equal(called, false);
-	assert.equal(await readRef(root, ref), owner);
+	await withWorktreeLock(root, async () => {}, { agentDir });
 });
 
 test("porcelain-v2 baseline preserves merge-produced staging outside declared conflicts", () => {
