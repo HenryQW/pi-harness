@@ -133,13 +133,18 @@ export interface HostRuntime {
 		attempt: TaskAttempt;
 		owned: Partial<Record<AllocationKind, string>>;
 	}, context: OperationContext): Promise<string>;
-	allocateHost(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationResult>;
+	allocateHost(input: {
+		intent: AllocationIntent;
+		task: TaskRequest;
+		attempt: TaskAttempt;
+		/** Present only for the non-idempotent agent start action. */
+		launch?: VerifiedImplementerLaunch;
+	}, context: OperationContext): Promise<AllocationResult>;
 	reconcileHostAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
 	runWorker(input: {
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		workerId: string;
-		launch: VerifiedImplementerLaunch;
 		kind: "initial" | "correction";
 		preCandidate: WorkspaceIdentity;
 		failure?: string;
@@ -651,7 +656,14 @@ export class OrchestratorRunner {
 								await handle.save();
 							},
 						}, context))
-						: await scope.call(async (context) => await this.runtime.allocateHost({ intent, task: request, attempt }, context));
+						: await scope.call(async (context) => {
+							if (kind !== "agent") {
+								return await this.runtime.allocateHost({ intent, task: request, attempt }, context);
+							}
+							const launch = await this.runtime.verifyLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
+							if (launch.role !== "implementer") throw new Error("Implementer launch verification returned the wrong Role.");
+							return await this.runtime.allocateHost({ intent, task: request, attempt, launch }, context);
+						});
 				} catch (error) {
 					intent.status = "unknown";
 					intent.failure = `Allocation result is unknown: ${errorText(error)}`;
@@ -744,19 +756,14 @@ export class OrchestratorRunner {
 			await handle.save();
 			let worker: WorkerResult;
 			try {
-				worker = await scope.call(async (context) => {
-					const launch = await this.runtime.verifyLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
-					if (launch.role !== "implementer") throw new Error("Implementer launch verification returned the wrong Role.");
-					return await this.runtime.runWorker({
-						task: request,
-						attempt,
-						workerId,
-						launch,
-						kind,
-						preCandidate,
-						...(failure ? { failure } : {}),
-					}, context);
-				});
+				worker = await scope.call(async (context) => await this.runtime.runWorker({
+					task: request,
+					attempt,
+					workerId,
+					kind,
+					preCandidate,
+					...(failure ? { failure } : {}),
+				}, context));
 			} catch (error) {
 				prompt.status = "ambiguous";
 				prompt.failure = `Prompt result is ambiguous and will not be replayed: ${errorText(error)}`;
