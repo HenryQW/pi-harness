@@ -263,6 +263,30 @@ test("automatic analysis defaults on when only the input threshold is configured
 	});
 });
 
+test("analysis completion after shutdown is discarded and aborts the child", async () => {
+	await withAgentDir(async (agentDir) => {
+		const child = controlledExecutor();
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			branch: [{ type: "message", message: { role: "user", content: "Create a reusable prompt." } }],
+		});
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		const promptor = app.registeredCommands.get("promptor")!;
+
+		await promptor("", app.ctx);
+		await eventually(() => child.runs.length === 1);
+		const run = child.runs[0]!;
+		await app.handlers.get("session_shutdown")!({ type: "session_shutdown" }, app.ctx);
+		assert.equal(run.input.signal?.aborted, true, "shutdown must abort the child");
+
+		run.resolve(success('{"candidate":{"name":"stale-candidate","markdown":"# Stale"}}'));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(app.sentMessages.length, 0, "a result completed after shutdown must not publish");
+		assert.equal(app.widgets.some(({ content }) => Array.isArray(content) && content[0] === "Prompt ready — /promptor"), false);
+	});
+});
+
 test("the child payload reserves its envelope and prioritizes the active summary", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
