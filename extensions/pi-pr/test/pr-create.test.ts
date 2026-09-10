@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Exec, ExecOptions, ExecResult } from "../extensions/pr-execution.ts";
+import type { Exec, ExecResult } from "../extensions/pr-execution.ts";
 import { PullRequestCreator } from "../extensions/pr-create.ts";
 import type { PullRequestTarget } from "../extensions/pr-routing.ts";
 
@@ -133,14 +133,15 @@ function creator(exec: Exec, creationTarget: PullRequestTarget, signal?: AbortSi
 	return { workflow, agentDir };
 }
 
-test("no-target push fetches tracking but leaves upstream unset", async (t) => {
+test("successful no-target upstream setup revalidates a changed configured push ref", async (t) => {
 	const calls: Array<[string, string[]]> = [];
 	let tracking = false;
+	let upstream = false;
+	let discoveredTarget = target(true);
 	const exec: Exec = async (command, args) => {
 		calls.push([command, [...args]]);
 		const text = args.join(" ");
 		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "git" && args[0] === "config" && args[1] === "--get-all") return result("", 1);
 		if (command === "gh" && args[0] === "api") return result(baseOutput());
 		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
 		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
@@ -155,14 +156,20 @@ test("no-target push fetches tracking but leaves upstream unset", async (t) => {
 		if (command === "git" && text === "rev-parse --verify --quiet refs/remotes/origin/feature^{commit}") {
 			return tracking ? result(`${head}\n`) : result("", 1);
 		}
-		if (command === "git" && args[0] === "branch") throw new Error("push must not set upstream");
+		if (command === "git" && args[0] === "branch" && args[1]?.startsWith("--set-upstream-to=")) {
+			upstream = true;
+			return result();
+		}
+		if (command === "git" && args[0] === "for-each-ref") return result(upstream ? "origin/feature\n" : "\n");
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = creator(exec, target(true));
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(true));
-
+	// Push must compare against the original no-target authority, not the post-push discovery fixture.
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({ kind: "none", creationTarget: discoveredTarget });
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	discoveredTarget = { ...target(false), ref: "renamed", remoteOid: head };
+	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /Published target authority changed/);
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "push"), ["git", [
 		"push", "--porcelain", "--force-with-lease=refs/heads/feature:", "--recurse-submodules=no", "--",
 		"git@github.com:acme/project.git", `${head}:refs/heads/feature`,
@@ -171,202 +178,52 @@ test("no-target push fetches tracking but leaves upstream unset", async (t) => {
 		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
 		"git@github.com:acme/project.git", `+${head}:refs/remotes/origin/feature`,
 	]]);
-	assert.equal(app.workflow.state.attempts.fetchTracking, "applied");
-	assert.equal(app.workflow.state.attempts.setUpstream, "none");
-	assert.deepEqual(app.workflow.state.originalUpstream, { remote: [], merge: [] });
+	assert.equal(app.workflow.state.phase, "pushed");
 });
 
-test("no-target publication restores upstream after cancellation following setup", async (t) => {
-	const calls: Array<{ command: string; args: string[]; options: ExecOptions }> = [];
-	const config = new Map<string, string[]>([
-		["branch.feature.remote", ["previous"]],
-		["branch.feature.merge", ["refs/heads/previous"]],
-	]);
-	const controller = new AbortController();
-	const cancellation = new Error("cancel after upstream setup");
-	let tracking = false;
-	let pushes = 0;
-	let published = false;
-	const body = "Published before upstream setup.";
-	const configValues = (key: string) => config.get(key) ?? [];
-	const exec: Exec = async (command, args, options) => {
-		calls.push({ command, args: [...args], options });
-		options.signal?.throwIfAborted();
-		const text = args.join(" ");
-		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "git" && args[0] === "config") {
-			if (args[1] === "--get-all") {
-				const values = configValues(args[2]!);
-				return values.length ? result(`${values.join("\n")}\n`) : result("", 1);
-			}
-			if (args[1] === "--fixed-value" && args[2] === "--unset-all") {
-				const key = args[3]!;
-				const expected = args[4]!;
-				const values = configValues(key);
-				if (values.length !== 1 || values[0] !== expected) return result("", 5);
-				config.delete(key);
-				return result();
-			}
-			if (args[1] === "--add") {
-				const key = args[2]!;
-				config.set(key, [...configValues(key), args[3]!]);
-				return result();
-			}
-		}
-		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
-		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
-		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
-		if (command === "git" && text === "rev-parse --verify --quiet refs/remotes/origin/feature^{commit}") {
-			return tracking ? result(`${head}\n`) : result("", 1);
-		}
-		if (command === "git" && args[0] === "merge-base") return result();
-		if (command === "git" && args[0] === "push") {
-			pushes += 1;
-			return result("ok\n");
-		}
-		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
-		if (command === "git" && args[0] === "fetch") {
-			tracking = true;
-			return result();
-		}
-		if (command === "git" && args[0] === "branch" && args[1]?.startsWith("--set-upstream-to=")) {
-			config.set("branch.feature.remote", ["origin"]);
-			config.set("branch.feature.merge", ["refs/heads/feature"]);
-			controller.abort(cancellation);
-			return result();
-		}
-		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
-		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
-			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-			if (query.includes("associatedPullRequests(")) return result(searchOutput(published));
-			return result(baseOutput());
-		}
-		if (command === "gh" && args[0] === "pr" && args[1] === "create") {
-			published = true;
-			return result(`${url}\n`);
-		}
-		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
-		throw new Error(`Unexpected ${command} ${text}`);
-	};
-	const app = creator(exec, target(true), controller.signal);
-	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(true));
-
-	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
-	await assert.rejects(app.workflow.publish("feat: publish", body), /Read remote-tracking ref failed: command threw/);
-	assert.deepEqual(configValues("branch.feature.remote"), ["previous"]);
-	assert.deepEqual(configValues("branch.feature.merge"), ["refs/heads/previous"]);
-	assert.equal(pushes, 1);
-	const rollbackCalls = calls.filter(({ command, args, options }) =>
-		command === "git" && args[0] === "config" && options.signal !== controller.signal,
-	);
-	assert.ok(rollbackCalls.length > 0);
-	assert.ok(rollbackCalls.every(({ options }) =>
-		options.cwd === cwd && options.timeoutMs === 10_000 && options.signal?.aborted === false,
-	));
-});
-
-test("no-target publication revalidates the PR before upstream, rolls back, and retries without another push", async (t) => {
+test("a successful push remains publishable when no-target upstream setup fails", async (t) => {
 	const calls: Array<[string, string[]]> = [];
-	const config = new Map<string, string[]>();
-	let tracking = false;
 	let pushes = 0;
-	let created = 0;
-	let published = false;
-	let upstreamSets = 0;
-	const body = "Published before upstream setup.";
-	const configValues = (key: string) => config.get(key) ?? [];
+	let searches = 0;
+	const body = "Published after upstream setup failed.";
 	const exec: Exec = async (command, args) => {
 		calls.push([command, [...args]]);
 		const text = args.join(" ");
 		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "git" && args[0] === "config") {
-			if (args[1] === "--get-all") {
-				const values = configValues(args[2]!);
-				return values.length ? result(`${values.join("\n")}\n`) : result("", 1);
-			}
-			if (args[1] === "--fixed-value" && args[2] === "--unset-all") {
-				const key = args[3]!;
-				const expected = args[4]!;
-				const values = configValues(key);
-				if (values.length !== 1 || values[0] !== expected) return result("", 5);
-				config.delete(key);
-				return result();
-			}
-			if (args[1] === "--add") {
-				const key = args[2]!;
-				config.set(key, [...configValues(key), args[3]!]);
-				return result();
-			}
-		}
 		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
 		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
-		if (command === "git" && text === "rev-parse --verify --quiet refs/remotes/origin/feature^{commit}") {
-			return tracking ? result(`${head}\n`) : result("", 1);
-		}
 		if (command === "git" && args[0] === "merge-base") return result();
 		if (command === "git" && args[0] === "push") {
 			pushes += 1;
 			return result("ok\n");
 		}
 		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
-		if (command === "git" && args[0] === "fetch") {
-			tracking = true;
-			return result();
-		}
-		if (command === "git" && args[0] === "branch" && args[1]?.startsWith("--set-upstream-to=")) {
-			upstreamSets += 1;
-			config.set("branch.feature.remote", ["origin"]);
-			config.set("branch.feature.merge", ["refs/heads/feature"]);
-			return result();
-		}
-		if (command === "git" && args[0] === "for-each-ref") return result(upstreamSets === 1 ? "\n" : "origin/feature\n");
+		if (command === "git" && args[0] === "fetch") return result("", 1, "upstream fetch failed\n");
 		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
 		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
 		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-			if (query.includes("associatedPullRequests(")) return result(searchOutput(published));
+			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
 			return result(baseOutput());
 		}
-		if (command === "gh" && args[0] === "pr" && args[1] === "create") {
-			created += 1;
-			published = true;
-			return result(`${url}\n`);
-		}
+		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = creator(exec, target(true));
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(true));
-
-	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
-	await assert.rejects(app.workflow.publish("feat: publish", body), /Configured push target does not match published branch/);
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
+		kind: "none", creationTarget: target(true),
+	});
+	await assert.rejects(app.workflow.push(), /Fetch branch tracking ref failed/);
 	assert.equal(app.workflow.state.phase, "pushed");
-	assert.equal(app.workflow.state.attempts.pullRequest, "applied");
-	assert.equal(app.workflow.state.attempts.setUpstream, "unknown");
-	assert.deepEqual(configValues("branch.feature.remote"), []);
-	assert.deepEqual(configValues("branch.feature.merge"), []);
-
+	const callsAfterFailure = calls.length;
+	await assert.rejects(app.workflow.push(), /not ready to push/);
+	assert.equal(calls.length, callsAfterFailure);
 	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url });
 	assert.equal(pushes, 1);
-	assert.equal(created, 1);
-	assert.equal(upstreamSets, 2);
-	const createIndex = calls.findIndex(([command, args]) => command === "gh" && args[0] === "pr" && args[1] === "create");
-	const validationIndexes = calls.flatMap(([command, args], index) =>
-		command === "gh" && args[0] === "pr" && args[1] === "view" ? [index] : [],
-	);
-	const upstreamIndexes = calls.flatMap(([command, args], index) =>
-		command === "git" && args[0] === "branch" && args[1]?.startsWith("--set-upstream-to=") ? [index] : [],
-	);
-	assert.equal(validationIndexes.length, 2);
-	assert.equal(upstreamIndexes.length, 2);
-	assert.ok(createIndex >= 0 && createIndex < validationIndexes[0]! && validationIndexes[0]! < upstreamIndexes[0]!);
-	assert.ok(upstreamIndexes[0]! < validationIndexes[1]! && validationIndexes[1]! < upstreamIndexes[1]!);
 });
 
 test("configured-target pushes never read or change upstream", async (t) => {
@@ -727,11 +584,11 @@ test("prepare rejects a shared preflight with no commits ahead", async (t) => {
 	});
 
 	await assert.rejects(workflow.prepare("main"), /at least one commit ahead/);
-	assert.equal(workflow.state.attempts.fetchBase, "none");
+	assert.equal(workflow.state.phase, "unprepared");
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "cat-file"), false);
 });
 
-test("a consumed conflict stage prevents continuation replay", async (t) => {
+test("a blocked conflict continuation prevents replay", async (t) => {
 	let commands = 0;
 	const app = creator(async () => {
 		commands += 1;
@@ -740,8 +597,8 @@ test("a consumed conflict stage prevents continuation replay", async (t) => {
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	app.workflow.state.phase = "conflict-awaiting-user";
 	app.workflow.state.conflict = { paths: ["conflicted.ts"], statusBaseline: "", originalHead: head };
-	app.workflow.state.attempts.stage = "unknown";
-	await assert.rejects(app.workflow.continue(["conflicted.ts"]), /continuation was already consumed/);
+	app.workflow.state.phase = "blocked";
+	await assert.rejects(app.workflow.continue(["conflicted.ts"]), /no conflict awaiting continuation/);
 	assert.equal(commands, 0);
 });
 
@@ -773,7 +630,7 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /did not retain canonical identity, title, and body/);
 	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /not ready to publish metadata/);
 	assert.equal(mutations, 1);
-	assert.equal(app.workflow.state.attempts.pullRequest, "unknown");
+	assert.equal(app.workflow.state.phase, "blocked");
 });
 
 test("does not push when HEAD or target authority changes after final ancestry checks", async (t) => {

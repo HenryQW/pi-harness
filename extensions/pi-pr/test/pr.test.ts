@@ -115,7 +115,6 @@ function currentPullRequest(overrides: {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: "b".repeat(40),
 		},
-		merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 	};
 }
 
@@ -1165,7 +1164,7 @@ test("keeps the RPC widget as a plain icon-prefixed action despite a terminal th
 	}
 });
 
-test("animates and clears a width-aware TUI routing component at route resolution", async (t) => {
+test("animates and clears a width-aware TUI routing widget at route resolution", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const discovery = deferred<void>();
 	const interaction = deferred<void>();
@@ -1181,36 +1180,35 @@ test("animates and clears a width-aware TUI routing component at route resolutio
 		},
 	});
 	const ctx = app.context("tui");
+	const renderWidget = (widget: unknown, width: number): string[] => {
+		assert.equal(typeof widget, "function");
+		const component = (widget as (tui: unknown, theme: {
+			fg(color: string, text: string): string;
+		}) => { render(width: number): string[] })({}, {
+			fg(color, text) { return `<${color}>${text}</${color}>`; },
+		});
+		return component.render(width);
+	};
 
 	try {
 		await app.start(ctx);
 		const statusWrites = app.statuses.length;
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
-		const widget = app.widgets.at(-1);
-		assert.equal(typeof widget, "function");
-		let renders = 0;
-		const component = (widget as (tui: { requestRender(): void }, theme: {
-			fg(color: string, text: string): string;
-		}) => { dispose(): void; render(width: number): string[] })({
-			requestRender() { renders += 1; },
-		}, {
-			fg(_color, text) { return `\x1b[36m${text}\x1b[0m`; },
-		});
-		assert.deepEqual(component.render(0), []);
-		assert.match(component.render(80)[0] ?? "", /⠋.*Checking pull request…/);
-		assert.ok(component.render(8).every((line) => visibleWidth(line) <= 8));
+		const firstWidget = app.widgets.at(-1);
+		assert.deepEqual(renderWidget(firstWidget, 0), []);
+		assert.match(renderWidget(firstWidget, 80)[0] ?? "", /<accent>⠋<\/accent> Checking pull request…/);
+		assert.ok(renderWidget(firstWidget, 8).every((line) => visibleWidth(line) <= 8));
 
 		t.mock.timers.tick(80);
-		assert.equal(renders, 1);
-		assert.match(component.render(80)[0] ?? "", /⠙.*Checking pull request…/);
+		assert.match(renderWidget(app.widgets.at(-1), 80)[0] ?? "", /<accent>⠙<\/accent> Checking pull request…/);
 
 		discovery.resolve();
 		await flush();
 		assert.equal(app.widgets.at(-1), undefined, "routing feedback clears before route interaction");
 		assert.equal(app.statuses.length, statusWrites, "routing must preserve the footer");
+		const widgetWrites = app.widgets.length;
 		t.mock.timers.tick(160);
-		assert.equal(renders, 1, "route resolution must stop animation");
-		component.dispose();
+		assert.equal(app.widgets.length, widgetWrites, "route resolution must stop animation");
 
 		interaction.resolve();
 		await command;
@@ -1448,7 +1446,7 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 	assert.equal(calls, callsAfterShutdown, "shutdown must stop later polling");
 });
 
-test("session replacement disposes routing animation before stale /pr completion", async (t) => {
+test("session replacement stops routing animation before stale /pr completion", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const workflow = deferred<"create">();
 	let loads = 0;
@@ -1466,18 +1464,16 @@ test("session replacement disposes routing animation before stale /pr completion
 
 	await app.start(firstSession);
 	const staleCommand = app.command().handler("", firstSession as ExtensionCommandContext);
-	const routingWidget = app.widgets.at(-1);
-	assert.equal(typeof routingWidget, "function");
-	let renders = 0;
-	(routingWidget as (tui: { requestRender(): void }, theme: {
-		fg(color: string, text: string): string;
-	}) => unknown)({ requestRender() { renders += 1; } }, { fg(_color, text) { return text; } });
+	assert.equal(typeof app.widgets.at(-1), "function");
+	const widgetWritesBeforeTick = app.widgets.length;
 	t.mock.timers.tick(80);
-	assert.equal(renders, 1);
+	assert.equal(app.widgets.length, widgetWritesBeforeTick + 1);
+	assert.equal(typeof app.widgets.at(-1), "function");
 
 	await app.shutdown(firstSession);
+	const widgetWritesAfterShutdown = app.widgets.length;
 	t.mock.timers.tick(160);
-	assert.equal(renders, 1, "shutdown must stop the stale spinner timer");
+	assert.equal(app.widgets.length, widgetWritesAfterShutdown, "shutdown must stop the stale spinner timer");
 	await app.start(secondSession);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
 	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));

@@ -17,7 +17,6 @@ import {
 	runChecked,
 	spawnBounded,
 	withWorktreeLock,
-	type AttemptState,
 	type Exec,
 	type ExecOptions,
 } from "./pr-execution.ts";
@@ -26,13 +25,6 @@ export type UpdateBranchPhase = "ready" | "conflict-awaiting-user" | "verified" 
 
 export type UpdateBranchState = {
 	phase: UpdateBranchPhase;
-	attempts: {
-		fetchBase: AttemptState;
-		merge: AttemptState;
-		stage: AttemptState;
-		continueMerge: AttemptState;
-		push: AttemptState;
-	};
 	verifiedHead?: string;
 	conflict?: { paths: string[]; statusBaseline: string };
 };
@@ -62,7 +54,6 @@ function cloneAuthority(value: CurrentPullRequest): CurrentPullRequest {
 		base: { ...value.base },
 		head: { ...value.head },
 		target: { ...value.target },
-		merge: value.merge ? { ...value.merge, allowedMergeMethods: [...value.merge.allowedMergeMethods] } : null,
 	};
 }
 
@@ -89,10 +80,7 @@ function validateDeclaredPaths(paths: readonly string[], expected: readonly stri
 }
 
 export class PullRequestBranchUpdater {
-	readonly state: UpdateBranchState = {
-		phase: "ready",
-		attempts: { fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none" },
-	};
+	readonly state: UpdateBranchState = { phase: "ready" };
 
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
@@ -188,26 +176,18 @@ export class PullRequestBranchUpdater {
 	}
 
 	async merge(): Promise<UpdateBranchResult> {
-		if (this.state.phase !== "ready" || this.state.attempts.fetchBase !== "none" || this.state.attempts.merge !== "none") {
-			throw new Error("Branch update merge action was already consumed");
-		}
+		if (this.state.phase !== "ready") throw new Error("Branch update merge action was already consumed");
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshAuthority(this.authority.head.oid, true);
 			const source = await resolveRepositoryFetchSource(this.exec, this.execOptions(), {
 				host: this.authority.host,
 				repository: this.authority.base.repository,
 			});
-			this.state.attempts.fetchBase = "attempting";
-			try {
-				await runChecked(this.exec, "git", [
-					"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", source, this.authority.base.oid,
-				], this.execOptions());
-				await runChecked(this.exec, "git", ["cat-file", "-e", `${this.authority.base.oid}^{commit}`], this.execOptions());
-				this.state.attempts.fetchBase = "applied";
-			} catch (error) {
-				this.state.attempts.fetchBase = "unknown";
-				throw error;
-			}
+			this.state.phase = "blocked";
+			await runChecked(this.exec, "git", [
+				"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", source, this.authority.base.oid,
+			], this.execOptions());
+			await runChecked(this.exec, "git", ["cat-file", "-e", `${this.authority.base.oid}^{commit}`], this.execOptions());
 			await this.freshAuthority(this.authority.head.oid, true);
 			if (await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, this.authority.head.oid)) {
 				this.state.phase = "verified";
@@ -215,35 +195,16 @@ export class PullRequestBranchUpdater {
 				return { kind: "verified", head: this.authority.head.oid, fastForward: false };
 			}
 
-			this.state.attempts.merge = "attempting";
-			let result;
-			try {
-				result = await this.exec("git", ["merge", "--no-edit", this.authority.base.oid], this.execOptions());
-			} catch (error) {
-				this.state.attempts.merge = "unknown";
-				throw error;
-			}
-			if (result.killed) {
-				this.state.attempts.merge = "unknown";
-				throw new Error("git merge was killed; its outcome is unknown");
-			}
+			const result = await this.exec("git", ["merge", "--no-edit", this.authority.base.oid], this.execOptions());
+			if (result.killed) throw new Error("git merge was killed; its outcome is unknown");
 			if (result.code === 0) {
-				try {
-					const verified = await this.verifyMerge(this.authority.head.oid);
-					this.state.attempts.merge = "applied";
-					return { kind: "verified", ...verified };
-				} catch (error) {
-					this.state.attempts.merge = "unknown";
-					throw error;
-				}
+				const verified = await this.verifyMerge(this.authority.head.oid);
+				return { kind: "verified", ...verified };
 			}
 			try {
 				const paths = await this.captureConflict();
-				this.state.attempts.merge = "applied";
 				return { kind: "conflict", paths: [...paths] };
 			} catch (error) {
-				this.state.attempts.merge = "blocked";
-				this.state.phase = "blocked";
 				const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
 				throw new Error(`git merge failed: ${detail}; ${error instanceof Error ? error.message : String(error)}`);
 			}
@@ -262,36 +223,19 @@ export class PullRequestBranchUpdater {
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
 
-			if (this.state.attempts.stage !== "none") throw new Error("Conflict staging action was already consumed");
-			this.state.attempts.stage = "attempting";
-			try {
-				await runChecked(this.exec, "git", ["add", "--", ...paths], this.execOptions());
-				this.state.attempts.stage = "applied";
-			} catch (error) {
-				this.state.attempts.stage = "unknown";
-				throw error;
-			}
+			this.state.phase = "blocked";
+			await runChecked(this.exec, "git", ["add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
-			if (unmerged.length) {
-				this.state.phase = "blocked";
-				throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
-			}
+			if (unmerged.length) throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
 
-			this.state.attempts.continueMerge = "attempting";
-			try {
-				await runChecked(this.exec, "git", ["-c", "core.editor=true", "merge", "--continue"], this.execOptions());
-				const verified = await this.verifyMerge(this.authority.head.oid);
-				this.state.attempts.continueMerge = "applied";
-				return { kind: "verified", ...verified };
-			} catch (error) {
-				this.state.attempts.continueMerge = "unknown";
-				throw error;
-			}
+			await runChecked(this.exec, "git", ["-c", "core.editor=true", "merge", "--continue"], this.execOptions());
+			const verified = await this.verifyMerge(this.authority.head.oid);
+			return { kind: "verified", ...verified };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
 	async publish(): Promise<UpdateBranchResult> {
-		if (this.state.phase !== "verified" || !this.state.verifiedHead || this.state.attempts.push !== "none") {
+		if (this.state.phase !== "verified" || !this.state.verifiedHead) {
 			throw new Error("Branch update is not ready to publish");
 		}
 		const head = this.state.verifiedHead;
@@ -306,22 +250,16 @@ export class PullRequestBranchUpdater {
 				throw new Error("Published branch would not be a fast-forward of the frozen remote OID");
 			}
 			await this.freshAuthority(head, true);
-			this.state.attempts.push = "attempting";
-			try {
-				await runChecked(this.exec, "git", [
-					"push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
-					"--recurse-submodules=no", "--", this.authority.target.fetchSource,
-					`${head}:refs/heads/${this.authority.target.ref}`,
-				], this.execOptions());
-				const remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref);
-				if (remote !== head) throw new Error("Published remote ref did not match verified HEAD");
-				this.state.attempts.push = "applied";
-				this.state.phase = "published";
-				return { kind: "published", head };
-			} catch (error) {
-				this.state.attempts.push = "unknown";
-				throw error;
-			}
+			this.state.phase = "blocked";
+			await runChecked(this.exec, "git", [
+				"push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
+				"--recurse-submodules=no", "--", this.authority.target.fetchSource,
+				`${head}:refs/heads/${this.authority.target.ref}`,
+			], this.execOptions());
+			const remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref);
+			if (remote !== head) throw new Error("Published remote ref did not match verified HEAD");
+			this.state.phase = "published";
+			return { kind: "published", head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 }
