@@ -12,8 +12,6 @@ caller-owned Model Task declaration, cwd, signal ────────┤
 
 Main plans and orchestrates. `delegate_task` owns its flat single/parallel/chain policy, while the public executor runs one prepared delegation. Downstream packages compose their own workflows with ordinary JavaScript and own semantic protocols, shared workspace/state, retry decisions, and bounds. There is no recursive workflow AST.
 
-`delegate_flow` is the exception: it is a fixed package-owned Git workflow, not an executor primitive or general workflow language. It uses the effective `implementer` Role and, only for explicit judgment review, the effective `reviewer` Role through the same prepared-child runner; its contract is below.
-
 ## Frozen `delegate_task` contract
 
 A call selects exactly one of these shapes. Unknown properties and nested modes are rejected.
@@ -81,33 +79,6 @@ Any foreground entry failure makes the tool call throw. Parallel mode first sett
 
 All Main-visible text for one tool call shares one aggregate 50 KiB UTF-8 transport cap, including child output, sibling failures, and worktree/recovery evidence. Parallel execution does not multiply the cap by its entry count. Truncation is explicit; internal bookkeeping is not made visible by bypassing the cap.
 
-## `delegate_flow`
-
-`delegate_flow({ units })` accepts 1–8 units with unique non-empty `id`, a required Main-supplied short `name` (about five words and fewer than 30 characters, without C0/C1 control characters), a non-empty `task`, one or more direct `{command, args}` validation commands, optional `modelClass`, and optional non-empty `review` text. `delegate_flow_continue({ guidance, modelClass? })` is available only for the one blocked unit of the active Flow.
-
-A Flow is memory-only and permits one active Flow. At start it always resolves/freezes the effective `implementer` Role, including a same-named user override. It resolves/freezes the effective `reviewer` only if at least one requested unit declares `review`. An explicit unit class overrides both frozen Roles. Without one, the Implementer and Reviewer each use their own optional Role default; a Role without one uses pi-subagent's local `pi-subagent/delegateTask` assignment or declared `fast` default. The selected class resolves through its existing `pi-task-models` profile model-and-thinking route. It requires clean committed Git Main and creates every Unit Worktree before launching work; setup failure launches no Implementer. Each unit gets exactly one worktree and one Implementer. Implementers run in parallel and all settle. Flow then processes units in declared order:
-
-```text
-Implementers (parallel, one Unit Worktree each)
-                 │ all settle
-                 v
-for each declared unit:
-  rebase in its Unit Worktree when earlier units advanced Main
-  inspect committed state; run declared validation (objective authority)
-  ├─ no review: git merge --ff-only <exact validated tip>
-  └─ review: Reviewer receives exact {base, tip, patchPath}
-             exact PASS → git merge --ff-only <full reviewed OID>
-  git worktree remove; git branch -d
-```
-
-Flow derives identity from Git, not child output. Add `review` only for an explicit judgment criterion that automated validation cannot establish; it is not a second generic verification pass. The Reviewer reads the exact patch as authoritative and may use the same worktree only for referenced context. A full-OID fast-forward is the only integration path. Cleanup is non-forced; after a successful integration, cleanup refusal returns `completed` with a retained path/branch warning.
-
-If rebase drops all unit commits, `base === tip` is a no-op: Flow validates current state, skips Reviewer and merge, then cleans up ordinarily. Implementer failure, dirty or missing committed work, validation failure, or reviewer findings block the first affected declared unit. `delegate_flow_continue({ guidance, modelClass? })` reruns the Flow's frozen Implementer Role in that same worktree once, then repeats derivation, validation, and conditional review with fresh exact evidence. An omitted continuation class retains a supplied Unit class; when no Unit class was supplied, each frozen Role uses its own default. A supplied continuation class replaces both Role defaults for that repair and any subsequent Reviewer launch. A second block is terminal. A failed rebase is aborted and terminates as an infrastructure failure with Git diagnostics; other infrastructure failures are terminal. A reported fast-forward failure completes with its diagnostic as a warning only when Main is clean at the exact integrated tip; otherwise it is terminal. Terminal outcomes retain worktrees for Main to reslice. Earlier integrated units are never rolled back.
-
-Flow has no dependency graph, saved state, automatic retry, aggregate review, or post-merge validation. Use it only for commuting changes; combine or sequence units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
-
-`delegate_task` remains generic: its optional worktree isolation, non-Git behavior, and direct plan/file review are unchanged. The built-in `scout` is available only through generic `delegate_task`; Flow uses package-shipped Implementer and conditional Reviewer Roles as defaults while retaining same-named user Role overrides.
-
 ## Per-delegation resources and isolation
 
 `delegate_task` first preflights every requested Role name, so an initially unknown Role starts no sibling. Then, after receiving an executor permit, every single entry, parallel sibling, and chain step independently:
@@ -119,7 +90,7 @@ Flow has no dependency graph, saved state, automatic retry, aggregate review, or
 
 Separate deterministic identities produce separate worktree paths and branches. Parallel siblings cannot collide, and a chain does not base one step's worktree on the preceding step's branch. `{previous}` passes text only. There is no implicit shared worktree or hidden workflow state.
 
-A worktree starts from Main's current `HEAD`. Clean worktrees with no child commits are pruned; committed, dirty, switched, unmeasurable, or otherwise recoverable work is preserved and reported. For `delegate_task`, non-git directories and repositories with an unborn `HEAD` use Main's working directory. Git submodules reject worktree isolation, and setup failure in a real repository throws rather than silently sharing Main's checkout. `delegate_flow` requires a Git repository with a committed `HEAD`.
+A worktree starts from Main's current `HEAD`. Clean worktrees with no child commits are pruned; committed, dirty, switched, unmeasurable, or otherwise recoverable work is preserved and reported. For `delegate_task`, non-git directories and repositories with an unborn `HEAD` use Main's working directory. Git submodules reject worktree isolation, and setup failure in a real repository throws rather than silently sharing Main's checkout.
 
 If steps must share files, make that an explicit caller decision: use an intentionally shared workspace, merge preserved child commits, or pass state through a caller-owned store. Do not rely on chain order to imply filesystem sharing.
 
@@ -138,19 +109,19 @@ A Role file requires:
 
 Every launch installs the Role tool policy. At launch, a package caller may add `tools`, `extensions`, and `env`; caller tools are unioned into the Role base list and loaded extension tools activate in every case. Caller `env` adds to or overrides the active Pi process environment for the child.
 
-Children start with ambient extension and Skill discovery disabled. Only explicit Role/caller extensions, explicitly resolved Skill paths, resources supplied by those extension packages, and any required internal tool-policy or Codex adapter load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `delegate_flow`, `delegate_flow_continue`, and `ask_question`. Explicit Role/caller tool names are verified against the final filtered active child registry after every explicit provider extension completes `session_start`; unavailable names fail before the first model turn and identify the missing names with provider-extension guidance.
+Children start with ambient extension and Skill discovery disabled. Only explicit Role/caller extensions, explicitly resolved Skill paths, resources supplied by those extension packages, and any required internal tool-policy or Codex adapter load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `orchestrate_execute`, `orchestrate_status`, `orchestrate_resume`, `orchestrate_abort`, `auto_dag_execute`, `auto_dag_status`, `auto_dag_resume`, `auto_dag_abort`, and `ask_question`. Explicit Role/caller tool names are verified against the final filtered active child registry after every explicit provider extension completes `session_start`; unavailable names fail before the first model turn and identify the missing names with provider-extension guidance.
 
 Role Skill names resolve through Main's effective Pi Skill registry at launch. Missing names are returned in `ResolvedRoleLaunch.missingSkills`; `delegate_task` warns and skips them. Library callers must surface that warning themselves. Missing Skills do not block launch.
 
 ### Role final-turn handoff
 
-Role launches made by `createRoleLaunch` reserve a response-only handoff at either boundary. They use the penultimate `maxTurns` turn or a continuing `maxTokens` crossing. This includes `delegate_task` and every Flow Implementer, Reviewer, and repair launch.
+Role launches made by `createRoleLaunch` reserve a response-only handoff at either boundary. They use the penultimate `maxTurns` turn or a continuing `maxTokens` crossing. This includes `delegate_task` and library Role launches made with the public launch API.
 
 With `maxTurns` set to 1, Pi disables tools during `session_start`. The sole provider turn is the response-only handoff.
 
 After a continuing boundary turn, Pi completes its tools. It then disables every active tool and queues one structured final handoff. A terminal boundary response succeeds without a handoff. If the child continues after the token handoff, the executor rejects with `token_limit`.
 
-The handoff requests a fixed Markdown decision packet with Status (`completed`, `blocked`, or `incomplete`), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence, and the child replies only with it. This preserves a Flow Reviewer's exact `PASS` and caller-required structured output. The handoff remains inside `maxTurns`, but it is the one permitted response after crossing `maxTokens`. A timeout, provider failure, or child-process failure can end a Role launch before handoff. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
+The handoff requests a fixed Markdown decision packet with Status (`completed`, `blocked`, or `incomplete`), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence, and the child replies only with it. This preserves caller-required exact structured output. The handoff remains inside `maxTurns`, but it is the one permitted response after crossing `maxTokens`. A timeout, provider failure, or child-process failure can end a Role launch before handoff. Structured executor and retained-worktree facts remain authoritative; the model handoff supplies semantic context and a suggested next action.
 
 A raw `createEphemeralSubagentExecutor` launch enforces the token extra-turn window. It does not guarantee disabled tools or the handoff message. Only Role launches install that policy.
 
@@ -166,6 +137,7 @@ The package root exports the following mechanism-level APIs:
 | `createRoleLaunch(pi, ctx, input)` | Produce the same launch from a caller-supplied resolved route. |
 | `createEphemeralSubagentExecutor(options)` | Queue and run one prepared no-session child per `run`. |
 | `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle; `createChildWorktree` can prepare exact metadata before allocation. |
+| `prepareExactReviewEvidence` | Validate Git identity and create a bounded private base-to-tip patch with exact `{base, tip, patchPath}` evidence. |
 
 `finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union:
 
@@ -425,11 +397,11 @@ The package ships three working built-in Roles, validated by the same parser as 
 | Built-in | Behavior |
 | --- | --- |
 | `implementer` | Focused implementation requesting `isolation: worktree`; commits scoped changes locally, never pushes or opens PRs without authorization. Non-Git or unborn-`HEAD` contexts may use Main's cwd. |
-| `reviewer` | Read-only correctness review of supplied plans/files, or—when a Flow unit declares `review`—Flow's exact `{base, tip, patchPath}` packet in its Unit Worktree; never edits or commits. |
+| `reviewer` | Read-only correctness review of supplied plans, files, or caller-prepared exact evidence; never edits or commits. |
 | `scout` | Read-only code and evidence mapping for one bounded task; never changes files. |
 
 A same-named Markdown file in `config/pi-subagent/` explicitly overrides the built-in default.
 
-The bundled [`pi-subagent-delegated-development`](../skills/pi-subagent-delegated-development/SKILL.md) Skill is Main-side planner/orchestrator policy only. `delegate_flow` owns its fixed Git mechanics and objective validation authority; the Skill defines no runtime code or configuration. `delegate_task` remains the generic flat single/parallel/chain mechanism.
+`delegate_task` remains the generic flat single, parallel, and chain mechanism. Library callers own any richer protocol.
 
-See [ADR 001](./adr/001-composable-ephemeral-execution.md) for the executor boundary and [ADR 002](./adr/002-package-owned-delegate-flow-orchestration.md) for Flow.
+See [ADR 001](./adr/001-composable-ephemeral-execution.md) for the executor boundary.

@@ -1,9 +1,8 @@
 # `@henryqw/pi-subagent`
 
-Delegate bounded work from Main to isolated Pi Roles, or run independent implementation units through a fixed Git Flow. One Role system covers focused research, review, implementation, parallel work, and ordered chains without loading every detail into Main.
+Delegate bounded work from Main to isolated Pi Roles. One Role system covers focused research, review, implementation, parallel work, and ordered chains without loading every detail into Main.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
-![Delegate Flow lifecycle](./docs/delegate-flow.svg)
 
 ## Install
 
@@ -39,9 +38,6 @@ A separate child returns a bounded report to Main. It creates no saved Pi sessio
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `delegate_task` | tool | Run one bounded task, independent tasks in parallel, or dependent tasks in a chain. |
-| `delegate_flow` | tool | Implement and integrate 1–8 independent Git units. |
-| `delegate_flow_continue` | tool | Repair the one blocked Flow unit once. |
-| `pi-subagent-delegated-development` | skill | Guide Main's planning and orchestration. |
 
 Pi's built-in tool block shows each call and result.
 
@@ -68,7 +64,7 @@ Parallel tasks start together, settle together, and report in input order. Chain
 
 Foreground failures throw after keeping bounded sibling and recovery evidence. One call has one aggregate 50 KiB cap for Main-visible text. Final results show summaries first and full evidence below.
 
-The status widget shows each task group name above at most three indented child rows. Each row shows a one-letter Role badge, status, activity, usage, and duration. Flow stages for one unit share that unit's heading.
+The status widget shows each task group name above at most three indented child rows. Each row shows a one-letter Role badge, status, activity, usage, and duration.
 
 Background work belongs to its launching session. Shutdown or reload aborts it and may leave only recoverable-work evidence or no follow-up message.
 
@@ -76,13 +72,13 @@ Each entry resolves its own Role, resources, route, and optional isolation. A Ro
 
 See the [orchestration guide](./docs/orchestration.md) for full delegation, transport, isolation, and UI behavior.
 
-### Skills
+### Delegation guidance
 
-The bundled [`pi-subagent-delegated-development`](./skills/pi-subagent-delegated-development/SKILL.md) Skill guides Main's planning and orchestration. It adds no runtime code, config, or Role installation.
+`delegate_task` is generic delegation, not checked implementation orchestration. Main or a consuming package owns validation, review, integration, recovery, and durable state.
 
 Implementers remove only task-created temporary, generated, or ignored artifacts. Required deliverables and unrelated files stay intact. They never use `git clean` or blanket deletion, and unclear paths block.
 
-For known regressions with a runner that supports test-name filtering, use a test-name filter. Keep broad package or workspace checks to one caller-owned final validation after relevant units integrate. Flow itself does not run that check.
+For known regressions with a runner that supports test-name filtering, use a test-name filter. Keep broad package or workspace checks to one caller-owned final validation after relevant changes integrate. Generic delegation does not run that check.
 
 Before delegating:
 
@@ -98,46 +94,15 @@ Its ordinary review loop is optional. Use it only when the caller or repository 
 
 - Call `delegate_task` with `role: "reviewer"` to select the effective `reviewer` Role.
 - Its task packet must state the read-only scope and exact `PASS` or findings contract. Include exact acceptance criteria and validation evidence.
-- The Reviewer must see exact candidate evidence from its working directory. Use `delegate_flow` for an isolated candidate, not an ordinary review from Main's unchanged checkout.
+- The Reviewer must receive exact candidate evidence. An ordinary review from Main's unchanged checkout cannot inspect an isolated candidate.
 - Fix initial findings together. Validate repaired inputs once before focused re-review. Include the original findings and acceptance criteria, exact repaired-candidate evidence, and validation evidence.
 - Only `PASS` completes the loop. Surface and block on re-review findings or empty output. Retry empty output only when explicit caller policy requires one. A second empty result blocks. Do not add another round.
-
-Flow is separate. It owns exact review evidence, exact `PASS` approval, validation replay, one repair continuation, and no automatic retry.
-
-## Flow
-
-Flow requires a clean Main worktree on an attached branch with a committed `HEAD`. Use it only for independent Git changes that can merge in any order.
-
-Keep work together or run it in order when a split divides an invariant or adds coordination. Do not split units with overlapping mutable ownership. Do not split units that overlap files, APIs, schemas, generated output, package metadata, lockfiles, or invariants.
-
-One Implementer launch must plausibly finish before the configured maximum runtime. Cohesion is not enough when work has several preservable, separately verifiable milestones. Split oversized dependent work into serial one-unit Flows after each milestone integrates. Units in one Flow stay independent and commuting.
-
-```text
-delegate_flow({ units: [{ id, name, task, modelClass?, validation: [{ command, args }], review? }] })
-delegate_flow_continue({ guidance, modelClass? })
-```
-
-A Flow has 1–8 units with unique non-empty IDs and allows one active Flow. It freezes the effective Implementer at start. It freezes the Reviewer only when a unit requests `review`.
-
-- Each unit gets one worktree. Implementers run in parallel. Flow handles units in declared order.
-- Flow runs each declared command with its arguments. That validation is authoritative for objective checks.
-- Without `review`, Flow fast-forwards the exact validated tip.
-- With `review`, the Reviewer receives the exact `{base, tip, patchPath}` packet and must return exactly `PASS` before the same integration path. Use `review` only for stated judgment that validation cannot decide.
-- Trust a successful Flow result. Do not re-read integrated files or repeat its validation merely to confirm it.
 
 A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
 
 Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
 
-Parent-only delegation, orchestration, and Auto DAG tools, plus `ask_question`, are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
-
-An explicit unit `modelClass` overrides both frozen Roles. Without one, each Role uses its own `modelClass`, configured `pi-subagent/delegateTask` assignment, or declared default.
-
-One `delegate_flow_continue` can repair an Implementer, validation, or review block in the same worktree. Omitting its class keeps the unit's explicit class and frozen Role defaults. Supplying one replaces both Role defaults for that repair and its later Reviewer launch.
-
-A second block is terminal. Rebase and infrastructure failures are terminal.
-
-Flow has no dependency graph, saved recovery, automatic retry, aggregate review, or post-merge validation.
+Main-only delegation and orchestration tools, plus `ask_question`, are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
 
 ## Config
 
@@ -151,7 +116,7 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A
 | `timeout.idleMinutes` | Sets the idle timeout for a child. | Positive minutes; minutes × 60,000 ≤ 2,147,483,647 ms | `10` |
 | `timeout.maxMinutes` | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`; minutes × 60,000 ≤ 2,147,483,647 ms | `30` |
 
-`maxTokens` applies separately to every child. This includes `delegate_task` and each Flow Implementer, Reviewer, and repair launch. It is not a shared pool or per-call option. Set it only in this file.
+`maxTokens` applies separately to every child. It is not a shared pool or per-call option. Set it only in this file.
 
 Pi adds each completed assistant response's `Usage.totalTokens` once. This matches the executor's aggregate `Usage`. At 80%, a Role receives one convergence warning.
 
@@ -161,13 +126,13 @@ Excess children wait FIFO without using a child timeout. A terminal response on 
 
 ### Final response handoff
 
-Role launches reserve a response-only handoff at a continuing `maxTokens` crossing or the penultimate `maxTurns` turn. This includes `delegate_task` and every Implementer or Reviewer launch within `delegate_flow`.
+Role launches reserve a response-only handoff at a continuing `maxTokens` crossing or the penultimate `maxTurns` turn. This includes `delegate_task` and Role launches made through the public API.
 
 With `maxTurns` set to 1, Pi disables tools at startup. The sole provider turn is the response-only handoff.
 
 Pi waits for the current turn's tools. It then disables all tools and requests a final report. A terminal boundary response gets no handoff.
 
-The fixed decision packet asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence. The child returns only that output, such as a Flow Reviewer's exact `PASS` or caller-required structured output. The handoff stays within `maxTurns`, but it is the one allowed turn after a token crossing. Commits, validation, and retained-worktree facts from executor/Flow structured evidence remain authoritative; the model handoff supplies semantic context and a suggested next action.
+The fixed decision packet asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence. The child returns only that caller-required exact output, such as structured JSON or `PASS`. The handoff stays within `maxTurns`, but it is the one allowed turn after a token crossing. Structured executor and retained-worktree facts remain authoritative; the model handoff supplies semantic context and a suggested next action.
 
 A raw `createEphemeralSubagentExecutor` launch can enforce the extra-turn window. It cannot guarantee disabled tools or the final handoff. A timeout, provider failure, or child-process failure can also end a Role launch before handoff.
 
@@ -190,19 +155,17 @@ Role Markdown files live beside the config file. They require frontmatter and a 
 | `skills` | Required YAML array of non-empty Skill names. |
 | body | Required Markdown system prompt after the frontmatter. |
 
-A Role's `modelClass` is a default. A call-level or Flow-unit class wins.
+A Role's `modelClass` is a default. A call-level class wins.
 
 An unreadable or invalid Role fails loading fast. Duplicate Role names are rejected. A same-named user file overrides a built-in Role.
 
-The package always provides these built-in Roles. Their files leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` assignment or declared default unless a call or Flow unit overrides it:
+The package always provides these built-in Roles. Their files leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` assignment or declared default unless a call overrides it:
 
 | Role | Purpose | Isolation/use |
 | --- | --- | --- |
 | `implementer` | Make and validate one focused change. | Requests a worktree; commits scoped work locally. Never pushes or opens a PR without permission. |
-| `reviewer` | Review supplied plans or files for correctness. | Read-only. For Flow review, reads the exact packet in the Unit Worktree; never edits or commits. |
-| `scout` | Map code and evidence for one bounded task. | Read-only and generic `delegate_task` only; never changes files. |
-
-Flow uses the effective Implementer and, only when requested, Reviewer. The Scout is not part of Flow.
+| `reviewer` | Review supplied plans, files, or caller-prepared exact evidence. | Read-only; never edits or commits. |
+| `scout` | Map code and evidence for one bounded task. | Read-only; never changes files. |
 
 ## API
 
@@ -215,7 +178,8 @@ The package root includes these main exports:
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
 | `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
-| Worktree helpers | functions | Create, prepare, inspect, finalize, and report child worktrees. |
+| Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
+| `prepareExactReviewEvidence` | function | Create a bounded private base-to-tip patch with exact Git identity for caller-owned review. |
 
 The executor works only inside the active Pi process. It does not discover or start a standalone Node.js Pi installation.
 
@@ -227,6 +191,6 @@ See the [public Role and executor API](./docs/orchestration.md#public-role-and-e
 
 An explicitly selected extension is trusted, not sandboxed. Its tools, Skills, and executable behavior load together. Select fewer trusted extensions to reduce scope. pi-subagent does not guess or remove undocumented dependencies.
 
-Flow never force-deletes recoverable work. Failed or uncertain units, and cleanup refusals after integration, retain their worktree path or branch for recovery.
+Worktree cleanup never force-deletes recoverable work. Retained and recovery payloads report the worktree path and branch.
 
-See [Flow mechanics and recovery](./docs/orchestration.md#delegate_flow) for retained-work recovery.
+See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for worktree and exact-review-evidence contracts.

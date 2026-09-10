@@ -302,7 +302,7 @@ test("missing Skills and duplicate canonical resources fail preflight", async (t
 	});
 });
 
-test("Role extensions reject package, remote, file URL, missing, non-regular, symlink, legacy, and self sources", async (t) => {
+test("Role extensions reject package, remote, file URL, missing, non-regular, symlink, and self sources", async (t) => {
 	for (const [name, extension, pattern, prepare] of [
 		["package", "npm:@example/role", /package, remote, or file URL/i],
 		["remote", "https://example.test/role.ts", /package, remote, or file URL/i],
@@ -320,7 +320,6 @@ test("Role extensions reject package, remote, file URL, missing, non-regular, sy
 			await symlink(target, path);
 			return path;
 		}],
-		["legacy", "/tmp/pi-auto-dag/role.ts", /forbidden.*source/i],
 	] as const) {
 		await t.test(name, async (t) => {
 			const fixture = await harness(t);
@@ -332,7 +331,7 @@ test("Role extensions reject package, remote, file URL, missing, non-regular, sy
 	await t.test("canonical self entrypoint", async (t) => {
 		const fixture = await harness(t);
 		await fixture.setRole({ name: "implementer", extensions: [fixture.orchestratorEntrypoint] });
-		await assert.rejects(preflight(fixture), /legacy\/self source/i);
+		await assert.rejects(preflight(fixture), /self source/i);
 	});
 });
 

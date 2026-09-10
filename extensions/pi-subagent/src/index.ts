@@ -62,8 +62,6 @@ export const PI_ORCHESTRATOR_PROCESS_LEASE = "PI_ORCHESTRATOR_PROCESS_LEASE";
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
-	"delegate_flow",
-	"delegate_flow_continue",
 	"ask_question",
 	"orchestrate_execute",
 	"orchestrate_status",

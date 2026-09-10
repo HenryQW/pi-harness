@@ -36,7 +36,7 @@ const EXTENSION_FLAG = "--extension";
 const SKILL_FLAG = "--skill";
 const REQUEST_DIRECTORY_MODE = 0o700;
 const PROMPT_MODE = 0o600 as const;
-const FORBIDDEN_ROLE_SOURCE_NAMES = ["pi-orchestrator", "pi-auto-dag"] as const;
+const FORBIDDEN_ROLE_SOURCE_NAMES = ["pi-orchestrator"] as const;
 
 export const ORCHESTRATOR_MODEL_TASK = {
 	id: "pi-orchestrator/roleLaunch",
@@ -105,7 +105,7 @@ function requireUnique(values: readonly string[], label: string): void {
 function rejectRoleExtensionSource(value: string, role: Role): void {
 	const components = value.toLowerCase().split(/[\\/:@]+/);
 	if (FORBIDDEN_ROLE_SOURCE_NAMES.some((name) => components.some((component) => component === name || component.startsWith(`${name}.`)))) {
-		throw new Error(`Role ${role} extension explicitly names a forbidden ${FORBIDDEN_ROLE_SOURCE_NAMES.join("/")} source: ${value}`);
+		throw new Error(`Role ${role} extension explicitly names the forbidden ${FORBIDDEN_ROLE_SOURCE_NAMES.join("/")} source: ${value}`);
 	}
 	if (!isAbsolute(value)) {
 		throw new Error(`Role ${role} extension must be an absolute local path, not a package, remote, or file URL: ${value}`);
@@ -335,7 +335,7 @@ export async function normalizeResolvedRoleLaunch(
 	for (const source of resolvedExtensions) {
 		if (source === knownFiles.orchestratorEntrypoint
 			|| source.split(sep).some((component) => FORBIDDEN_ROLE_SOURCE_NAMES.includes(component as typeof FORBIDDEN_ROLE_SOURCE_NAMES[number]))) {
-			throw new Error(`Resolved ${role}/${modelClass} extension is a forbidden legacy/self source: ${source}`);
+			throw new Error(`Resolved ${role}/${modelClass} extension is a forbidden self source: ${source}`);
 		}
 	}
 	if (role === "reviewer") {

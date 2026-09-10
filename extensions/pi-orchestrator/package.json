@@ -17,11 +17,17 @@
     "LICENSE",
     "dist",
     "extensions",
-    "src"
+    "src",
+    "skills",
+    "README.md",
+    "CONTEXT.md"
   ],
   "pi": {
     "extensions": [
       "./extensions/orchestrator.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "types": "./dist/index.d.ts",
@@ -43,9 +49,9 @@
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^1.1.0",
-    "@henryqw/pi-herdr": "workspace:^",
+    "@henryqw/pi-herdr": "^0.4.7",
     "@henryqw/pi-multi-codex": "^1.0.0",
-    "@henryqw/pi-subagent": "^15.2.0",
+    "@henryqw/pi-subagent": "^16.0.0",
     "@henryqw/pi-task-models": "^5.1.0",
     "proper-lockfile": "^4.1.2",
     "typebox": "^1.3.15"

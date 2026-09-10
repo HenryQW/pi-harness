@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^1.0.0",
-    "@henryqw/pi-subagent": "^15.0.0",
+    "@henryqw/pi-subagent": "^16.0.0",
     "@henryqw/pi-task-models": "^5.0.0"
   }
 }

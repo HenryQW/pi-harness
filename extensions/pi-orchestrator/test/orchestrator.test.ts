@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -450,11 +451,26 @@ test("missing Role context and root preflight failures stay explicit", async () 
 	assert.equal(statusCalls, 0);
 });
 
-test("manifest entrypoint smoke-loads four tools in Main and none in a Role child", async () => {
+test("manifest entrypoint and Main-side Skill ship with the four tools", async () => {
 	const manifest = JSON.parse(await readFile(resolve(PACKAGE_ROOT, "package.json"), "utf8")) as {
-		pi?: { extensions?: string[] };
+		dependencies?: Record<string, string>;
+		files?: string[];
+		pi?: { extensions?: string[]; skills?: string[] };
 	};
+	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^16.0.0");
+	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.4.7");
 	assert.deepEqual(manifest.pi?.extensions, ["./extensions/orchestrator.ts"]);
+	assert.deepEqual(manifest.pi?.skills, ["./skills"]);
+	for (const path of ["README.md", "CONTEXT.md", "skills"]) assert.ok(manifest.files?.includes(path));
+	const skill = await readFile(resolve(PACKAGE_ROOT, "skills/pi-orchestrator/SKILL.md"), "utf8");
+	for (const contract of [
+		/^name: pi-orchestrator$/m,
+		/Use `delegate_task` for bounded research, review, or other lightweight work/i,
+		/Use `orchestrate_execute` for non-trivial implementation/i,
+		/authoritative task and final checks/i,
+		/`orchestrate_status`.*`orchestrate_resume`.*`orchestrate_abort`/is,
+	]) assert.match(skill, contract);
+	assert.doesNotMatch(skill, /delegate_flow|auto_dag/i);
 	const entrypoint = resolve(PACKAGE_ROOT, manifest.pi.extensions[0]!);
 	const loaded = await import(pathToFileURL(entrypoint).href) as { default(pi: ExtensionAPI): void };
 	const mainTools: string[] = [];
@@ -484,4 +500,48 @@ test("manifest entrypoint smoke-loads four tools in Main and none in a Role chil
 		process.argv = originalArgv;
 	}
 	assert.equal(childSideEffects, 0);
+});
+
+test("root active delegation sources smoke-load only generic delegation and orchestrator tools", async () => {
+	const repositoryRoot = resolve(PACKAGE_ROOT, "../..");
+	const rootManifest = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8")) as {
+		pi?: { extensions?: string[] };
+	};
+	const active = rootManifest.pi?.extensions ?? [];
+	assert.ok(active.includes("./extensions/pi-subagent/extensions/subagent.ts"));
+	assert.ok(active.includes("./extensions/pi-orchestrator/extensions/orchestrator.ts"));
+	assert.ok(active.every((source) => !source.includes("pi-auto-dag")));
+
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-orchestrator-smoke-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const toolNames: string[] = [];
+	const pi = {
+		events: {
+			on() { return () => {}; },
+			emit() {},
+		},
+		registerMessageRenderer() {},
+		on() {},
+		registerTool(tool: { name: string }) { toolNames.push(tool.name); },
+	} as unknown as ExtensionAPI;
+	try {
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		for (const source of active.filter((entry) => /pi-(?:subagent|orchestrator)\//.test(entry))) {
+			const loaded = await import(pathToFileURL(resolve(repositoryRoot, source)).href) as { default(pi: ExtensionAPI): void };
+			loaded.default(pi);
+		}
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+
+	assert.deepEqual([...toolNames].sort(), [
+		"delegate_task",
+		"orchestrate_abort",
+		"orchestrate_execute",
+		"orchestrate_resume",
+		"orchestrate_status",
+	]);
+	assert.ok(toolNames.every((name) => !name.startsWith("delegate_flow") && !name.startsWith("auto_dag_")));
 });

@@ -431,7 +431,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
 		assert.deepEqual(child.args, [
 			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
-			"--exclude-tools", "delegate_task,delegate_flow,delegate_flow_continue,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort,auto_dag_execute,auto_dag_status,auto_dag_resume,auto_dag_abort",
+			"--exclude-tools", "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort,auto_dag_execute,auto_dag_status,auto_dag_resume,auto_dag_abort",
 			"--extension", "/user/extensions/review.ts",
 			"--extension", policyExtension,
 			"--skill", "/effective/skills/security/SKILL.md",
@@ -554,7 +554,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
 		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
-		assert.equal(args[args.indexOf("--exclude-tools") + 1], "delegate_task,delegate_flow,delegate_flow_continue,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort,auto_dag_execute,auto_dag_status,auto_dag_resume,auto_dag_abort");
+		assert.equal(args[args.indexOf("--exclude-tools") + 1], "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort,auto_dag_execute,auto_dag_status,auto_dag_resume,auto_dag_abort");
 	});
 });
 
@@ -880,129 +880,6 @@ setTimeout(() => event({ type: "message_end", message: { role: "assistant", cont
 	});
 });
 
-test("widget preserves blocked Flow rows through input and prioritizes active task groups", async (t) => {
-	const repo = await initializedRepository(t);
-	await environment(async (agentDir) => {
-		const reviewCount = join(agentDir, "flow-review-count");
-		const repairStarted = join(agentDir, "flow-repair-started");
-		const repairRelease = join(agentDir, "flow-repair-release");
-		const rereviewStarted = join(agentDir, "flow-rereview-started");
-		const rereviewRelease = join(agentDir, "flow-rereview-release");
-		const activeStarted = join(agentDir, "flow-active-started");
-		const activeRelease = join(agentDir, "flow-active-release");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { execFileSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
-const task = process.argv.at(-1)?.replace(/^Task: /, "");
-const event = (text = "done") => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end" } }));
-const waitForRelease = (path, next) => {
-	const timer = setInterval(() => {
-		if (!existsSync(path)) return;
-		clearInterval(timer);
-		next();
-	}, 5);
-};
-if (task === "ordinary terminal") event();
-else if (task?.startsWith("Flow Unit")) {
-	writeFileSync("initial.txt", "initial\\n");
-	execFileSync("git", ["add", "initial.txt"]);
-	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"]);
-	event();
-} else if (task?.startsWith("Repair Flow Unit")) {
-	writeFileSync(${JSON.stringify(repairStarted)}, "");
-	waitForRelease(${JSON.stringify(repairRelease)}, () => {
-		writeFileSync("repair.txt", "repair\\n");
-		execFileSync("git", ["add", "repair.txt"]);
-		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "repair"]);
-		event();
-	});
-} else if (task?.startsWith("Review Flow Unit")) {
-	if (!existsSync(${JSON.stringify(reviewCount)})) {
-		writeFileSync(${JSON.stringify(reviewCount)}, "1");
-		event("repair needed");
-	} else {
-		writeFileSync(${JSON.stringify(rereviewStarted)}, "");
-		waitForRelease(${JSON.stringify(rereviewRelease)}, () => event("PASS"));
-	}
-} else if (task === "other active task") {
-	writeFileSync(${JSON.stringify(activeStarted)}, "");
-	waitForRelease(${JSON.stringify(activeRelease)}, () => event("active done"));
-} else throw new Error("Unexpected task: " + task);
-`);
-		process.argv[1] = runner;
-		const app = harness({ cwd: repo, ui: true });
-		const flow = app.tools.get("delegate_flow")!;
-		const continuation = app.tools.get("delegate_flow_continue")!;
-		let active: Promise<any> | undefined;
-		let resumed: Promise<any> | undefined;
-		try {
-			await app.tool.execute("ordinary", { role: "scout", name: "Ordinary terminal", task: "ordinary terminal" }, undefined, undefined, app.ctx);
-			const blocked = await flow.execute("widget-flow", { units: [{
-				id: "widget",
-				name: "Repair feedback widget",
-				task: "Repair the widget.",
-				validation: [{ command: process.execPath, args: ["-e", "process.exit(0)"] }],
-				review: "Require exact approval.",
-			}] }, undefined, undefined, app.ctx);
-			assert.equal(blocked.details.outcome, "blocked");
-
-			await app.handlers.get("input")?.({ source: "interactive", text: "continue" }, app.ctx);
-			const afterInput = app.widget!.render(160);
-			assert.doesNotMatch(afterInput.join("\n"), /Ordinary terminal/);
-			assert.equal(afterInput[0], "Repair feedback widget");
-			assert.deepEqual(afterInput.filter((line) => WIDGET_STATUS_ROW.test(line)).map((line) => /\[[IR]\]/.exec(line)?.[0]), ["[I]", "[R]"]);
-			assertWidgetHierarchy(afterInput);
-
-			resumed = continuation.execute("widget-flow-continue", { guidance: "Repair the widget." }, undefined, undefined, app.ctx);
-			await waitFor(() => existsSync(repairStarted));
-			const continuing = app.widget!.render(160);
-			assert.equal(continuing.length, 4);
-			assert.equal(continuing[0], "Repair feedback widget");
-			assert.match(continuing[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[I\] thinking…/);
-			assert.match(continuing[2]!, /^  ✓ \[I\] Done/);
-			assert.match(continuing[3]!, /^  ✓ \[R\] Done/);
-			assertWidgetHierarchy(continuing);
-			await writeFile(repairRelease, "");
-			await waitFor(() => existsSync(rereviewStarted));
-			const capped = app.widget!.render(160);
-			const cappedRows = capped.filter((line) => WIDGET_STATUS_ROW.test(line));
-			assert.equal(capped.length, 5);
-			assert.equal(capped[0], "Repair feedback widget");
-			assert.equal(cappedRows.length, 3);
-			assert.deepEqual(cappedRows.map((line) => /\[[IR]\]/.exec(line)?.[0]), ["[R]", "[I]", "[R]"]);
-			assert.equal(capped[4], "… 1 more · 1 complete");
-			assertWidgetHierarchy(capped);
-			active = app.tool.execute("other-active", { role: "scout", name: "Other active task", task: "other active task" }, undefined, undefined, app.ctx);
-			await waitFor(() => existsSync(activeStarted));
-			const rows = app.widget!.render(160);
-			assert.equal(rows.length, 6);
-			assert.equal(rows[0], "Repair feedback widget");
-			assert.match(rows[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
-			assert.match(rows[2]!, /^  ✓ \[I\] Done/);
-			assert.equal(rows[3], "Other active task");
-			assert.match(rows[4]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking…/);
-			assert.equal(rows[5], "… 2 more · 2 complete");
-			assertWidgetHierarchy(rows);
-			for (const width of [160, 24, 1]) {
-				const rendered = app.widget!.render(width);
-				assert.equal(rendered.length, 6);
-				assert.ok(rendered.every((line) => visibleWidth(line) <= width));
-				if (width > 1) assertWidgetHierarchy(rendered);
-			}
-
-			await Promise.all([writeFile(rereviewRelease, ""), writeFile(activeRelease, "")]);
-			const [completed] = await Promise.all([resumed, active]);
-			assert.equal(completed.details.outcome, "completed");
-			await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
-			assert.deepEqual(app.widget!.render(160), []);
-		} finally {
-			await Promise.all([writeFile(repairRelease, ""), writeFile(rereviewRelease, ""), writeFile(activeRelease, "")]);
-			await Promise.allSettled([resumed, active].filter((task): task is Promise<unknown> => task !== undefined));
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
-	});
-});
-
 test("widget keeps same-named tasks separate with indented status rows", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -1234,98 +1111,6 @@ test("widget evicts the oldest terminal row so new active work remains visible a
 		} finally {
 			runner.release("active ninth");
 			await active;
-		}
-	});
-});
-
-test("widget keeps current Flow stages grouped when all unrelated stored rows are working", async (t) => {
-	const repo = await initializedRepository(t);
-	await environment(async (agentDir) => {
-		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "8";
-		const validationStarted = join(agentDir, "validation-started");
-		const validationRelease = join(agentDir, "validation-release");
-		const reviewerStarted = join(agentDir, "reviewer-started");
-		const reviewerRelease = join(agentDir, "reviewer-release");
-		const workersRelease = join(agentDir, "workers-release");
-		const workerStarted = join(agentDir, "worker-started-");
-		const validation = join(agentDir, "validation.mjs");
-		await writeFile(validation, `import { existsSync, writeFileSync } from "node:fs";
-const [started, release] = process.argv.slice(2);
-writeFileSync(started, "");
-const timer = setInterval(() => {
-	if (!existsSync(release)) return;
-	clearInterval(timer);
-	process.exit(0);
-}, 5);
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { execFileSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
-const task = process.argv.at(-1)?.replace(/^Task: /, "");
-const event = (text) => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end" } }));
-const waitForRelease = (path, next) => {
-	const timer = setInterval(() => {
-		if (!existsSync(path)) return;
-		clearInterval(timer);
-		next();
-	}, 5);
-};
-const worker = /^working (\\d+)$/.exec(task ?? "");
-if (task?.startsWith("Flow Unit")) {
-	writeFileSync("flow.txt", "done\\n");
-	execFileSync("git", ["add", "flow.txt"]);
-	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "flow"]);
-	event("done");
-} else if (task?.startsWith("Review Flow Unit")) {
-	writeFileSync(${JSON.stringify(reviewerStarted)}, "");
-	waitForRelease(${JSON.stringify(reviewerRelease)}, () => event("PASS"));
-} else if (worker) {
-	writeFileSync(${JSON.stringify(workerStarted)} + worker[1], "");
-	waitForRelease(${JSON.stringify(workersRelease)}, () => event("done"));
-} else throw new Error("Unexpected task: " + task);
-`);
-		process.argv[1] = runner;
-		const app = harness({ cwd: repo, ui: true });
-		const flow = app.tools.get("delegate_flow")!;
-		const running = flow.execute("widget-capacity", { units: [{
-			id: "flow",
-			name: "Keep Flow stages together",
-			task: "Keep terminal stages grouped.",
-			validation: [{ command: process.execPath, args: [validation, validationStarted, validationRelease] }],
-			review: "Return PASS only.",
-		}] }, undefined, undefined, app.ctx);
-		const workers = Array.from({ length: 7 }, (_, index) => `working ${index + 1}`);
-		const workerCalls: Promise<unknown>[] = [];
-		try {
-			await waitFor(() => existsSync(validationStarted));
-			workerCalls.push(...workers.map((task, index) =>
-				app.tool.execute(`working-${index + 1}`, { role: "scout", name: task, task }, undefined, undefined, app.ctx)));
-			await waitFor(() => workers.every((_, index) => existsSync(`${workerStarted}${index + 1}`)));
-
-			await writeFile(validationRelease, "");
-			await waitFor(() => existsSync(reviewerStarted));
-			assert.equal(app.widget!.render(160).at(-1), "… 7 more · 6 working · 1 complete");
-			await writeFile(workersRelease, "");
-			await Promise.all(workerCalls);
-
-			const widget = app.widget!.render(160);
-			assert.equal(widget.length, 6);
-			assert.equal(widget[0], "Keep Flow stages together");
-			assert.match(widget[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[R\] thinking…/);
-			assert.match(widget[2]!, /^  ✓ \[I\] Done/);
-			assert.match(widget[3]!, /^working \d+$/);
-			assert.match(widget[4]!, /^  ✓ \[S\] Done/);
-			assert.equal(widget[5], "… 6 more · 6 complete");
-			assertWidgetHierarchy(widget);
-			for (const width of [160, 24, 1]) assert.ok(app.widget!.render(width).every((line) => visibleWidth(line) <= width));
-
-			await writeFile(reviewerRelease, "");
-			assert.equal((await running).details.outcome, "completed");
-		} finally {
-			await Promise.all([writeFile(validationRelease, ""), writeFile(reviewerRelease, ""), writeFile(workersRelease, "")]);
-			await Promise.allSettled([running, ...workerCalls]);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-			delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
 		}
 	});
 });
