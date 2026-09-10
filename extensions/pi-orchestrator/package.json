@@ -15,8 +15,15 @@
   "license": "MIT",
   "files": [
     "LICENSE",
-    "dist"
+    "dist",
+    "extensions",
+    "src"
   ],
+  "pi": {
+    "extensions": [
+      "./extensions/orchestrator.ts"
+    ]
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -27,7 +34,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck src/*.ts test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck extensions/*.ts src/*.ts test/*.test.ts",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
   },

@@ -20,7 +20,12 @@ const IdSchema = Type.String({ minLength: 1, maxLength: 80, pattern: ID_PATTERN 
 const TextSchema = Type.String({ minLength: 1, maxLength: 32_000 });
 const OptionalTextSchema = Type.Optional(Type.String({ maxLength: 32_000 }));
 const TimestampSchema = Type.Integer({ minimum: 0 });
-const ModelClassSchema = Type.Union(MODEL_CLASSES.map((value) => Type.Literal(value)));
+const ModelClassSchema = Type.Union([
+	Type.Literal("fast"),
+	Type.Literal("balanced"),
+	Type.Literal("frontier"),
+	Type.Literal("fav"),
+]);
 const RoleSchema = Type.Union([Type.Literal("implementer"), Type.Literal("reviewer")]);
 
 export const CheckCommandSchema = Type.Object({
@@ -52,12 +57,15 @@ export const ExecuteRequestSchema = Type.Object({
 	finalJudgment: Type.Optional(JudgmentSchema),
 }, { additionalProperties: false });
 
+export const IdOnlySchema = Type.Object({ id: IdSchema }, { additionalProperties: false });
+
 export const ResumeRequestSchema = Type.Union([
 	Type.Object({ id: IdSchema, action: Type.Literal("retry"), taskId: IdSchema }, { additionalProperties: false }),
 	Type.Object({ id: IdSchema, action: Type.Literal("verify"), taskId: IdSchema }, { additionalProperties: false }),
 	Type.Object({ id: IdSchema, action: Type.Literal("finalize") }, { additionalProperties: false }),
 ]);
 
+export type IdOnly = { id: string };
 export type CheckCommand = { command: string; args: string[] };
 export type Judgment = { criterion: string; modelClass: ModelClass };
 export type TaskRequest = {
@@ -621,6 +629,11 @@ export function parseExecuteRequest(value: unknown): ExecuteRequest {
 	}
 	validateGraph(request.tasks);
 	return request;
+}
+
+export function parseIdOnly(value: unknown): IdOnly {
+	if (!Check(IdOnlySchema, value)) throw new Error("orchestrate request ID must match the strict v1 schema.");
+	return value as IdOnly;
 }
 
 export function parseResumeRequest(value: unknown): ResumeRequest {
