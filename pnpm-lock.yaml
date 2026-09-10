@@ -230,6 +230,9 @@ importers:
       '@henryqw/pi-config-store':
         specifier: ^1.1.0
         version: link:../../packages/pi-config-store
+      '@henryqw/pi-herdr':
+        specifier: workspace:^
+        version: link:../../packages/pi-herdr
       '@henryqw/pi-multi-codex':
         specifier: ^1.0.0
         version: link:../pi-multi-codex

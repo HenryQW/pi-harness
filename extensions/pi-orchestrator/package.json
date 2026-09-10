@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^1.1.0",
+    "@henryqw/pi-herdr": "workspace:^",
     "@henryqw/pi-multi-codex": "^1.0.0",
     "@henryqw/pi-subagent": "^15.2.0",
     "@henryqw/pi-task-models": "^5.1.0",

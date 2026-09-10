@@ -104,13 +104,15 @@ class FakeRuntime implements OrchestratorRuntime {
 	recoverCalls: Record<string, NormalizedLaunchRecord>[] = [];
 	allocationCalls: AllocationKind[] = [];
 	reconciliationCalls: AllocationKind[] = [];
+	agentStartCalls: {
+		launchKey: string;
+		args: string[];
+		exposedPersistedFields: boolean;
+	}[] = [];
 	workerCalls: {
 		taskId: string;
 		workerId: string;
 		kind: "initial" | "correction";
-		launchKey: string;
-		args: string[];
-		exposedPersistedFields: boolean;
 		preCandidate: WorkspaceIdentity;
 	}[] = [];
 	checkCalls: { scope: "task" | "final"; taskId?: string }[] = [];
@@ -299,9 +301,17 @@ class FakeRuntime implements OrchestratorRuntime {
 	}
 
 	async allocateHost(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; launch?: VerifiedImplementerLaunch },
 		context: OperationContext,
 	): Promise<AllocationResult> {
+		if (input.intent.kind === "agent") {
+			if (!input.launch) throw new Error("missing verified Implementer launch");
+			this.agentStartCalls.push({
+				launchKey: input.launch.key,
+				args: [...input.launch.args],
+				exposedPersistedFields: "rawArgs" in input.launch || "prompt" in input.launch,
+			});
+		}
 		return this.allocation(input, context);
 	}
 
@@ -328,8 +338,8 @@ class FakeRuntime implements OrchestratorRuntime {
 	async runWorker(
 		input: {
 			task: TaskRequest;
+			attempt: TaskAttempt;
 			workerId: string;
-			launch: VerifiedImplementerLaunch;
 			kind: "initial" | "correction";
 			preCandidate: WorkspaceIdentity;
 		},
@@ -341,9 +351,6 @@ class FakeRuntime implements OrchestratorRuntime {
 			taskId: input.task.id,
 			workerId: input.workerId,
 			kind: input.kind,
-			launchKey: input.launch.key,
-			args: [...input.launch.args],
-			exposedPersistedFields: "rawArgs" in input.launch || "prompt" in input.launch,
 			preCandidate: structuredClone(input.preCandidate),
 		});
 		if (this.workerBarrierSize > 0 && this.workerCalls.length <= this.workerBarrierSize) {
@@ -632,11 +639,11 @@ test("mixed Role/model launches remain keyed and recover exactly before finaliza
 	assert.equal(completed.state.deadline, originalDeadline);
 	assert.equal(completed.state.deadline, completed.state.deadlineStartedAt + completed.state.request.budgetMs);
 	assert.deepEqual(runtime.recoverCalls, [interrupted.state.launchRecords]);
-	assert.deepEqual(runtime.workerCalls.map(({ launchKey }) => launchKey), ["implementer/fast", "implementer/frontier"]);
+	assert.deepEqual(runtime.agentStartCalls.map(({ launchKey }) => launchKey), ["implementer/fast", "implementer/frontier"]);
 	assert.deepEqual(runtime.reviewCalls.map(({ launchKey }) => launchKey), ["reviewer/balanced", "reviewer/balanced", "reviewer/fav"]);
 });
 
-test("child hooks receive only freshly verified Role-safe argv", async (t) => {
+test("verified Implementer launch immediately precedes agent start and raw args never reach host spawn", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	const definition = request({
 		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
@@ -645,14 +652,17 @@ test("child hooks receive only freshly verified Role-safe argv", async (t) => {
 	const implementer = result.state.launchRecords["implementer/fast"]!;
 	const reviewer = result.state.launchRecords["reviewer/balanced"]!;
 
-	assert.deepEqual(runtime.workerCalls.map(({ args }) => args), [implementer.prompt!.finalArgs]);
-	assert.ok(runtime.workerCalls.every(({ args, exposedPersistedFields }) =>
+	assert.deepEqual(runtime.agentStartCalls.map(({ args }) => args), [implementer.prompt!.finalArgs]);
+	assert.ok(runtime.agentStartCalls.every(({ args, exposedPersistedFields }) =>
 		!exposedPersistedFields && !args.includes(implementer.prompt!.rawValue)));
 	assert.ok(runtime.reviewCalls.every(({ args, exposedPersistedFields }) =>
 		!exposedPersistedFields && JSON.stringify(args) === JSON.stringify(reviewer.rawArgs)));
 	assert.deepEqual(runtime.contexts
-		.filter(({ hook }) => ["verify-launch", "worker", "review"].includes(hook))
-		.map(({ hook }) => hook), ["verify-launch", "worker", "verify-launch", "review", "verify-launch", "review"]);
+		.filter(({ hook }) => ["verify-launch", "allocate", "worker", "review"].includes(hook))
+		.map(({ hook }) => hook), [
+			"allocate", "allocate", "allocate", "verify-launch", "allocate", "worker",
+			"verify-launch", "review", "verify-launch", "review",
+		]);
 });
 
 test("resource drift after recovery blocks worker and Reviewer spawn hooks", async (t) => {

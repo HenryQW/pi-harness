@@ -148,13 +148,13 @@ function safeText(error: unknown): string {
 }
 
 function compareVersion(actual: string, minimum: readonly number[]): boolean {
-	const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$/.exec(actual);
+	const match = /^(\d+)\.(\d+)\.(\d+)(?:(-[0-9A-Za-z.-]+)|\+[0-9A-Za-z.-]+)?$/.exec(actual);
 	if (!match) return false;
 	const values = match.slice(1, 4).map(Number);
 	for (let index = 0; index < minimum.length; index += 1) {
 		if (values[index]! !== minimum[index]!) return values[index]! > minimum[index]!;
 	}
-	return true;
+	return match[4] === undefined;
 }
 
 function statusFields(stdout: string): Map<string, string> {
@@ -192,18 +192,16 @@ function requireSchemaCapabilities(schema: JsonRecord): void {
 	}
 	const schemas = record(schema.schemas, "Herdr API schemas");
 	const request = record(schemas.request, "Herdr request schema");
-	if (!Array.isArray(request.oneOf)) throw new Error("Herdr API request schema has no command definitions.");
+	const definitions = request.oneOf;
+	if (!Array.isArray(definitions)) throw new Error("Herdr API request schema has no command definitions.");
 	const method = (name: string): JsonRecord => {
-		const matches = request.oneOf!.filter((entry) => {
+		const matches = definitions.filter((entry) => {
 			try {
-				return record(record(entry, "Herdr method").properties, "Herdr method properties")
-					&& record(record(entry, "Herdr method").properties, "Herdr method properties").method;
+				const properties = record(record(entry, "Herdr method").properties, "Herdr method properties");
+				return record(properties.method, "Herdr method name").const === name;
 			} catch {
 				return false;
 			}
-		}).filter((entry) => {
-			const properties = record(record(entry, "Herdr method").properties, "Herdr method properties");
-			return record(properties.method, "Herdr method name").const === name;
 		});
 		if (matches.length !== 1) throw new Error(`Herdr API schema must advertise exactly one ${name} request.`);
 		return record(matches[0], `Herdr ${name} request`);
@@ -358,6 +356,12 @@ function parseAgent(response: JsonRecord, expected: AgentDetails, acceptedTypes:
 	return { status, interactiveReady: agent.interactive_ready === true };
 }
 
+function requireOkResponse(stdout: string, label: string): void {
+	if (resultRecord(parseJsonObject(stdout, label), label).type !== "ok") {
+		throw new Error(`${label} has the wrong type.`);
+	}
+}
+
 function assignment(input: {
 	task: TaskRequest;
 	kind: "initial" | "correction";
@@ -460,24 +464,27 @@ export class HerdrHostRuntime implements HostRuntime {
 	): Promise<string> {
 		context.signal.throwIfAborted();
 		const worktree = worktreeIntent(input.attempt);
-		if (input.owned.worktree !== worktree.resourceId) throw new Error("Host allocation does not reference the exact owned worktree.");
+		const worktreeId = exactString(worktree.resourceId, "owned worktree ID");
+		if (input.owned.worktree !== worktreeId) throw new Error("Host allocation does not reference the exact owned worktree.");
 		if (input.kind === "workspace") {
 			return JSON.stringify({
 				kind: "workspace",
 				label: expectedLabel(input.attempt.correlationToken, "workspace"),
 				worktreeCwd: worktree.worktree.cwd,
 				repoRoot: worktree.worktree.repoRoot,
-				expectedWorktreeId: worktree.resourceId,
+				expectedWorktreeId: worktreeId,
 			} satisfies WorkspaceDetails);
 		}
 		const workspace = ownedIntent(input.attempt, "workspace");
-		if (input.owned.workspace !== workspace.resourceId) throw new Error("Host allocation does not reference the exact owned workspace.");
+		const workspaceId = exactString(workspace.resourceId, "owned workspace ID");
+		if (input.owned.workspace !== workspaceId) throw new Error("Host allocation does not reference the exact owned workspace.");
 		if (input.kind === "worker_tab") {
 			const leasePath = join(this.leaseDirectory, input.attempt.correlationToken, `${this.randomId()}.lease`);
+			this.assertLeasePath(leasePath, input.attempt.correlationToken);
 			return JSON.stringify({
 				kind: "worker_tab",
 				label: expectedLabel(input.attempt.correlationToken, "worker"),
-				workspaceId: workspace.resourceId,
+				workspaceId,
 				workspaceRootTabId: exactString(workspace.resources?.tabId, "owned workspace root tab ID"),
 				workspaceRootPaneId: exactString(workspace.resources?.rootPaneId, "owned workspace root pane ID"),
 				worktreeCwd: worktree.worktree.cwd,
@@ -485,15 +492,18 @@ export class HerdrHostRuntime implements HostRuntime {
 			} satisfies WorkerTabDetails);
 		}
 		const tab = ownedIntent(input.attempt, "worker_tab");
-		if (input.owned.worker_tab !== tab.resourceId) throw new Error("Agent allocation does not reference the exact owned worker tab.");
+		const tabId = exactString(tab.resourceId, "owned worker tab ID");
+		if (input.owned.worker_tab !== tabId) throw new Error("Agent allocation does not reference the exact owned worker tab.");
+		const leasePath = exactString(tab.resources?.leasePath, "owned worker lease path");
+		this.assertLeasePath(leasePath, input.attempt.correlationToken);
 		return JSON.stringify({
 			kind: "agent",
 			agentName: expectedAgentName(input.attempt.correlationToken),
-			workspaceId: workspace.resourceId,
-			tabId: tab.resourceId,
+			workspaceId,
+			tabId,
 			paneId: exactString(tab.resources?.rootPaneId, "owned worker root pane ID"),
 			worktreeCwd: worktree.worktree.cwd,
-			leasePath: exactString(tab.resources?.leasePath, "owned worker lease path"),
+			leasePath,
 		} satisfies AgentDetails);
 	}
 
@@ -503,8 +513,14 @@ export class HerdrHostRuntime implements HostRuntime {
 	): Promise<AllocationResult> {
 		requireIntentIdentity(input.intent, input.attempt);
 		const details = parseDetails(input.intent);
-		if (details.kind === "workspace") return await this.allocateWorkspace(details, input.intent, input.attempt, context);
-		if (details.kind === "worker_tab") return await this.allocateWorkerTab(details, input.intent, input.attempt, context);
+		if (details.kind === "workspace") {
+			if (input.launch) throw new Error("Implementer launch argv is valid only at the agent allocation boundary.");
+			return await this.allocateWorkspace(details, input.intent, input.attempt, context);
+		}
+		if (details.kind === "worker_tab") {
+			if (input.launch) throw new Error("Implementer launch argv is valid only at the agent allocation boundary.");
+			return await this.allocateWorkerTab(details, input.intent, input.attempt, context);
+		}
 		return await this.allocateAgent(details, input.intent, input.attempt, input.launch, context);
 	}
 
@@ -522,39 +538,63 @@ export class HerdrHostRuntime implements HostRuntime {
 			);
 			const result = resultRecord(response, "Herdr worktree list response");
 			if (result.type !== "worktree_list" || !Array.isArray(result.worktrees)) throw new Error("Herdr worktree list response is malformed.");
-			const matches = result.worktrees.filter((entry) => {
+			const worktrees = result.worktrees.map((entry) => {
 				const item = record(entry, "Herdr listed worktree");
-				return item.path === details.worktreeCwd || item.label === details.label;
+				const path = exactString(item.path, "Herdr listed worktree path");
+				const label = exactString(item.label, "Herdr listed worktree label");
+				const openWorkspaceId = item.open_workspace_id;
+				if (openWorkspaceId !== undefined && openWorkspaceId !== null) exactString(openWorkspaceId, "Herdr listed open workspace ID");
+				return { path, label, openWorkspaceId: typeof openWorkspaceId === "string" ? openWorkspaceId : undefined };
 			});
-			const possible = matches.flatMap((entry) => {
-				const item = record(entry, "Herdr listed worktree");
-				return typeof item.open_workspace_id === "string" || item.label === details.label
-					? [`possible workspace ${String(item.open_workspace_id ?? "without returned ID")}`]
-					: [];
-			});
+			const target = worktrees.filter((item) => item.path === details.worktreeCwd);
+			const tokenMatches = worktrees.filter((item) => item.label === details.label);
+			const possible = [
+				...(target.length === 1 ? [] : [`expected worktree match count ${target.length}`]),
+				...target.filter((item) => item.openWorkspaceId).map((item) => `possible workspace ${item.openWorkspaceId}`),
+				...tokenMatches.map((item) => `token-labelled worktree ${item.path}${item.openWorkspaceId ? ` in workspace ${item.openWorkspaceId}` : ""}`),
+			];
 			return possible.length
-				? { outcome: "possible", failure: "A possible prior Herdr workspace allocation remains; it was not adopted or closed.", possibleResources: possible }
+				? { outcome: "possible", failure: "A possible prior Herdr workspace allocation or parent mismatch remains; it was not adopted or closed.", possibleResources: possible }
 				: { outcome: "absent" };
 		}
 		if (details.kind === "worker_tab") {
 			assertWorkerTabDetails(details, input.intent, input.attempt);
-			const tabs = await this.listTabs(details.workspaceId, details.worktreeCwd, context);
-			const unexpected = tabs.filter((tab) => tab.tab_id !== details.workspaceRootTabId);
+			this.assertLeasePath(details.leasePath, input.intent.token);
+			const tabs = (await this.listTabs(details.workspaceId, details.worktreeCwd, context)).map((tab) => ({
+				id: exactString(tab.tab_id, "Herdr listed tab ID"),
+				workspaceId: exactString(tab.workspace_id, "Herdr listed tab workspace ID"),
+				label: exactString(tab.label, "Herdr listed tab label"),
+			}));
+			if (tabs.some((tab) => tab.workspaceId !== details.workspaceId)) {
+				throw new Error("Herdr tab list escaped the exact saved workspace scope.");
+			}
+			const rootTabs = tabs.filter((tab) => tab.id === details.workspaceRootTabId);
+			const unexpected = tabs.filter((tab) => tab.id !== details.workspaceRootTabId || tab.label === details.label);
 			const holders = await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true);
 			const possible = [
-				...unexpected.map((tab) => `possible tab ${String(tab.tab_id ?? "without returned ID")}`),
+				...(rootTabs.length === 1 ? [] : [`workspace root tab match count ${rootTabs.length}`]),
+				...unexpected.map((tab) => `possible tab ${tab.id}`),
 				...holders.map((pid) => `lease holder pid ${pid}`),
 			];
 			return possible.length
-				? { outcome: "possible", failure: "A possible prior worker-tab allocation or lease holder remains; it was not adopted or touched.", possibleResources: possible }
+				? { outcome: "possible", failure: "A possible prior worker-tab allocation, parent mismatch, or lease holder remains; it was not adopted or touched.", possibleResources: possible }
 				: { outcome: "absent" };
 		}
 		assertAgentDetails(details, input.intent, input.attempt);
-		const agents = await this.listAgents(details.worktreeCwd, context);
-		const matches = agents.filter((agent) => agent.name === details.agentName || agent.pane_id === details.paneId || agent.tab_id === details.tabId);
+		this.assertLeasePath(details.leasePath, input.intent.token);
+		const agents = (await this.listAgents(details.worktreeCwd, context)).map((agent) => {
+			const name = agent.name;
+			if (name !== undefined && name !== null && typeof name !== "string") throw new Error("Herdr listed agent name is malformed.");
+			return {
+				name: typeof name === "string" ? name : undefined,
+				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
+				tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
+			};
+		});
+		const matches = agents.filter((agent) => agent.name === details.agentName || agent.paneId === details.paneId || agent.tabId === details.tabId);
 		const holders = await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true);
 		const possible = [
-			...matches.map((agent) => `possible agent ${String(agent.name ?? "without expected name")} in pane ${String(agent.pane_id ?? "unknown")}`),
+			...matches.map((agent) => `possible agent ${agent.name ?? "without expected name"} in pane ${agent.paneId}`),
 			...holders.map((pid) => `lease holder pid ${pid}`),
 		];
 		return possible.length
@@ -587,7 +627,9 @@ export class HerdrHostRuntime implements HostRuntime {
 			return { outcome: context.signal.aborted ? "interrupted" : "unknown", diagnostic: `Exact worker readiness is unknown: ${safeText(error)}` };
 		}
 		if (ready.status === "blocked") return { outcome: "blocked", diagnostic: await this.diagnostic(details, context, "Worker was blocked before prompt submission.") };
-		if (!SETTLED_AGENT_STATES.has(ready.status)) return { outcome: "unknown", diagnostic: `Exact worker was not ready: ${ready.status}.` };
+		if (!SETTLED_AGENT_STATES.has(ready.status) || !ready.interactiveReady) {
+			return { outcome: "unknown", diagnostic: `Exact worker was not interactively ready: ${ready.status}.` };
+		}
 
 		const text = assignment({ task: input.task, kind: input.kind, worktreeCwd: details.worktreeCwd, ...(input.failure ? { failure: input.failure } : {}) });
 		const promptArgs = [
@@ -597,7 +639,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		];
 		const prompted = await this.herdr.exec(promptArgs, this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 		if (prompted.code !== 0 || prompted.killed) {
-			if (hasHerdrErrorCode(prompted, "agent_prompt_stalled")) {
+			if (!prompted.killed && !context.signal.aborted && hasHerdrErrorCode(prompted, "agent_prompt_stalled")) {
 				let settled;
 				try {
 					settled = await this.waitForSettledAgent(details, context);
@@ -634,6 +676,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (details.kind !== "agent") throw new Error("Owned agent allocation has the wrong details.");
 			assertAgentDetails(details, intent, input.attempt);
 			if (input.workerId !== intent.resourceId || input.workerId !== details.agentName) throw new Error("Worker termination identity does not match the exact saved agent.");
+			this.assertLeasePath(details.leasePath, intent.token);
 			await this.assertPrivateLease(details.leasePath, false);
 
 			const processInfo = await this.herdr.json(
@@ -641,14 +684,15 @@ export class HerdrHostRuntime implements HostRuntime {
 				this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
 			);
 			const processResult = resultRecord(processInfo, "Herdr pane process-info response");
+			if (processResult.type !== "pane_process_info") throw new Error("Herdr pane process-info response has the wrong type.");
 			const captured = record(processResult.process_info, "Herdr pane process-info");
-			if (processResult.type !== "pane_process_info" || captured.pane_id !== details.paneId) {
+			if (captured.pane_id !== details.paneId) {
 				throw new Error("Herdr pane process-info did not match the exact saved pane.");
 			}
 
 			const closed = await this.herdr.exec(["pane", "close", details.paneId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 			if (closed.code !== 0 || closed.killed) throw new Error(herdrCommandFailure(["pane", "close"], closed));
-			resultRecord(parseJsonObject(closed.stdout, "Herdr pane close response"), "Herdr pane close response");
+			requireOkResponse(closed.stdout, "Herdr pane close response");
 			if (!await this.paneAbsent(details.paneId, details.worktreeCwd, context)) throw new Error("The exact saved pane still exists after pane close.");
 
 			let holders = await this.scanLease(details.leasePath, details.worktreeCwd, context);
@@ -682,18 +726,29 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		try {
 			if (input.kind === "worker_tab") {
-				const tab = ownedIntent(input.attempt, "worker_tab");
-				const workspace = ownedIntent(input.attempt, "workspace");
-				const details = parseDetails(tab);
-				if (details.kind !== "worker_tab" || tab.resourceId === details.workspaceRootTabId) throw new Error("Saved worker-tab identity is malformed.");
-				if (!await this.paneAbsent(exactString(tab.resources?.rootPaneId, "saved worker pane ID"), details.worktreeCwd, context)) {
+				const tabIntent = ownedIntent(input.attempt, "worker_tab");
+				const workspaceIntent = ownedIntent(input.attempt, "workspace");
+				const details = parseDetails(tabIntent);
+				if (details.kind !== "worker_tab") throw new Error("Saved worker-tab identity is malformed.");
+				assertWorkerTabDetails(details, tabIntent, input.attempt);
+				const tabId = exactString(tabIntent.resourceId, "saved worker tab ID");
+				const workspaceId = exactString(workspaceIntent.resourceId, "saved workspace ID");
+				if (tabId === details.workspaceRootTabId) throw new Error("Saved worker tab aliases the workspace root tab.");
+				if (!await this.paneAbsent(exactString(tabIntent.resources?.rootPaneId, "saved worker pane ID"), details.worktreeCwd, context)) {
 					return { outcome: "blocked", failure: "The exact saved worker pane still exists after termination." };
 				}
-				if (await this.workspaceAbsent(workspace.resourceId!, details.worktreeCwd, context)) return { outcome: "absent" };
-				const tabs = await this.listTabs(workspace.resourceId!, details.worktreeCwd, context);
-				return tabs.some((item) => item.tab_id === tab.resourceId)
-					? { outcome: "blocked", failure: "The exact saved worker tab still exists; no workspace was closed." }
-					: { outcome: "completed" };
+				if (await this.workspaceAbsent(workspaceId, details.worktreeCwd, context)) return { outcome: "absent" };
+				const tab = await this.getTab(tabId, details.worktreeCwd, context);
+				if (!tab) return { outcome: "absent" };
+				if (tab.workspace_id !== workspaceId || tab.label !== details.label || tab.pane_count !== 0) {
+					return { outcome: "blocked", failure: "The exact saved worker tab no longer matches its owned empty tab identity." };
+				}
+				const closed = await this.herdr.exec(["tab", "close", tabId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+				if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["tab", "close"], closed)) };
+				requireOkResponse(closed.stdout, "Herdr tab close response");
+				return await this.getTab(tabId, details.worktreeCwd, context) === undefined
+					? { outcome: "completed" }
+					: { outcome: "blocked", failure: "The exact saved worker tab still exists after close." };
 			}
 
 			const workerCleanup = input.attempt.cleanup.find((step) => step.kind === "worker_tab");
@@ -701,17 +756,28 @@ export class HerdrHostRuntime implements HostRuntime {
 			const workspaceIntent = ownedIntent(input.attempt, "workspace");
 			const details = parseDetails(workspaceIntent);
 			if (details.kind !== "workspace") throw new Error("Saved workspace identity is malformed.");
-			if (await this.workspaceAbsent(workspaceIntent.resourceId!, details.worktreeCwd, context)) return { outcome: "absent" };
-			const response = await this.herdr.json(["workspace", "get", workspaceIntent.resourceId!], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
-			const workspace = parseWorkspaceInfo(response, workspaceIntent.resourceId);
+			assertWorkspaceDetails(details, workspaceIntent, input.attempt);
+			const workspaceId = exactString(workspaceIntent.resourceId, "saved workspace ID");
+			if (await this.workspaceAbsent(workspaceId, details.worktreeCwd, context)) return { outcome: "absent" };
+			const response = await this.herdr.json(["workspace", "get", workspaceId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+			const workspace = parseWorkspaceInfo(response, workspaceId);
 			const worktree = record(workspace.worktree, "Owned Herdr workspace worktree");
-			if (worktree.checkout_path !== details.worktreeCwd || worktree.repo_root !== details.repoRoot) {
-				return { outcome: "blocked", failure: "The exact saved workspace no longer matches its owned checkout." };
+			if (workspace.label !== details.label || worktree.checkout_path !== details.worktreeCwd || worktree.repo_root !== details.repoRoot) {
+				return { outcome: "blocked", failure: "The exact saved workspace no longer matches its owned label and checkout." };
 			}
-			const closed = await this.herdr.exec(["workspace", "close", workspaceIntent.resourceId!], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+			const rootTabId = exactString(workspaceIntent.resources?.tabId, "saved workspace root tab ID");
+			const rootPaneId = exactString(workspaceIntent.resources?.rootPaneId, "saved workspace root pane ID");
+			const tabs = await this.listTabs(workspaceId, details.worktreeCwd, context);
+			const panes = await this.listPanes(workspaceId, details.worktreeCwd, context);
+			if (tabs.length !== 1 || tabs[0]!.tab_id !== rootTabId || tabs[0]!.workspace_id !== workspaceId || tabs[0]!.pane_count !== 1
+				|| panes.length !== 1 || panes[0]!.pane_id !== rootPaneId || panes[0]!.tab_id !== rootTabId
+				|| panes[0]!.workspace_id !== workspaceId || (panes[0]!.agent !== undefined && panes[0]!.agent !== null)) {
+				return { outcome: "blocked", failure: "The exact saved workspace contains missing, mismatched, or additional resources; it was not closed." };
+			}
+			const closed = await this.herdr.exec(["workspace", "close", workspaceId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 			if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["workspace", "close"], closed)) };
-			resultRecord(parseJsonObject(closed.stdout, "Herdr workspace close response"), "Herdr workspace close response");
-			return await this.workspaceAbsent(workspaceIntent.resourceId!, details.worktreeCwd, context)
+			requireOkResponse(closed.stdout, "Herdr workspace close response");
+			return await this.workspaceAbsent(workspaceId, details.worktreeCwd, context)
 				? { outcome: "completed" }
 				: { outcome: "blocked", failure: "The exact saved workspace still exists after close." };
 		} catch (error) {
@@ -797,6 +863,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		assertAgentDetails(details, intent, attempt);
 		if (!launch || launch.role !== "implementer") throw new Error("Agent start requires an immediate prelaunch-verified Implementer argv.");
 		if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
+		this.assertLeasePath(details.leasePath, intent.token);
 		await this.assertPrivateLease(details.leasePath, false);
 		const response = await startPiAgent(this.herdr, {
 			name: details.agentName,
@@ -901,8 +968,9 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") return false;
 			throw new Error(`Exact process lease cannot be inspected: ${path}`, { cause: error });
 		}
-		if (info.isSymbolicLink() || !info.isFile() || (info.mode & 0o777) !== LEASE_MODE) {
-			throw new Error("Exact process lease must be a regular non-symlink mode-0600 file.");
+		const uid = process.getuid?.();
+		if (info.isSymbolicLink() || !info.isFile() || (info.mode & 0o777) !== LEASE_MODE || (uid !== undefined && info.uid !== uid)) {
+			throw new Error("Exact process lease must be a current-user regular non-symlink mode-0600 file.");
 		}
 		return true;
 	}
@@ -964,6 +1032,26 @@ export class HerdrHostRuntime implements HostRuntime {
 		return result.agents.map((item) => record(item, "Herdr listed agent"));
 	}
 
+	private async listPanes(workspaceId: string, cwd: string, context: OperationContext): Promise<JsonRecord[]> {
+		const response = await this.herdr.json(["pane", "list", "--workspace", workspaceId], this.processOptions(cwd, context, HERDR_OPERATION_CAP_MS));
+		const result = resultRecord(response, "Herdr pane list response");
+		if (result.type !== "pane_list" || !Array.isArray(result.panes)) throw new Error("Herdr pane list response is malformed.");
+		return result.panes.map((item) => record(item, "Herdr listed pane"));
+	}
+
+	private async getTab(tabId: string, cwd: string, context: OperationContext): Promise<JsonRecord | undefined> {
+		const response = await this.herdr.exec(["tab", "get", tabId], this.processOptions(cwd, context, HERDR_OPERATION_CAP_MS));
+		if (response.code === 0 && !response.killed) {
+			const result = resultRecord(parseJsonObject(response.stdout, "Herdr tab get response"), "Herdr tab get response");
+			if (result.type !== "tab_info") throw new Error("Herdr tab get response has the wrong type.");
+			const tab = record(result.tab, "Herdr tab");
+			if (exactString(tab.tab_id, "Herdr tab ID") !== tabId) throw new Error("Herdr tab get returned mismatched data.");
+			return tab;
+		}
+		if (!response.killed && hasHerdrErrorCode(response, "tab_not_found")) return undefined;
+		throw new Error("Exact saved tab presence is ambiguous.");
+	}
+
 	private async paneAbsent(paneId: string, cwd: string, context: OperationContext): Promise<boolean> {
 		const response = await this.herdr.exec(["pane", "get", paneId], this.processOptions(cwd, context, HERDR_OPERATION_CAP_MS));
 		if (response.code === 0 && !response.killed) {
@@ -1004,4 +1092,3 @@ export class HerdrHostRuntime implements HostRuntime {
 export function createHerdrHostRuntime(options: HerdrHostRuntimeOptions): HerdrHostRuntime {
 	return new HerdrHostRuntime(options);
 }
-(x=>x)
