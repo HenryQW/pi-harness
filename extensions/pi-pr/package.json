@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "4.0.3",
+  "version": "4.0.4",
   "description": "Run /pr to safely discover or link the current pull request, then create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
