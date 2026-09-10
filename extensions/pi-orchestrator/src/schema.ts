@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
@@ -87,11 +88,37 @@ export interface WorkspaceIdentity {
 	tree: string;
 }
 
+export interface LaunchResourceFingerprint {
+	kind: "skill" | "extension";
+	path: string;
+	sha256: string;
+}
+
+export interface LaunchPromptFile {
+	path: string;
+	sha256: string;
+	rawValue: string;
+	finalArgs: string[];
+}
+
 export interface LaunchRecord {
 	key: string;
 	role: Role;
 	modelClass: ModelClass;
+	model: string;
+	thinkingLevel: string;
+	rawArgs: string[];
+	env: Record<string, string>;
+	tools: string[];
+	roleExtensions: string[];
+	roleSkills: string[];
+	resources: LaunchResourceFingerprint[];
+	prompt?: LaunchPromptFile;
 	fingerprint: string;
+}
+
+export function launchRecordFingerprint(record: Omit<LaunchRecord, "fingerprint">): string {
+	return createHash("sha256").update(JSON.stringify(record)).digest("hex");
 }
 
 export type AllocationKind = "worktree" | "workspace" | "worker_tab" | "agent";
@@ -114,6 +141,7 @@ export interface AllocationIntent {
 	resourceId?: string;
 	worktree?: WorktreeRecord;
 	possibleResources?: string[];
+	resources?: Record<string, string>;
 	failure?: string;
 }
 
@@ -267,10 +295,32 @@ const WorkspaceSchema = Type.Object({
 	tree: Type.String({ pattern: OID_PATTERN }),
 }, { additionalProperties: false });
 
+const LaunchResourceFingerprintSchema = Type.Object({
+	kind: Type.Union([Type.Literal("skill"), Type.Literal("extension")]),
+	path: TextSchema,
+	sha256: Type.String({ pattern: SHA256_PATTERN }),
+}, { additionalProperties: false });
+
+const LaunchPromptFileSchema = Type.Object({
+	path: TextSchema,
+	sha256: Type.String({ pattern: SHA256_PATTERN }),
+	rawValue: TextSchema,
+	finalArgs: Type.Array(Type.String({ maxLength: 32_000 }), { minItems: 1, maxItems: 256 }),
+}, { additionalProperties: false });
+
 const LaunchRecordSchema = Type.Object({
 	key: TextSchema,
 	role: RoleSchema,
 	modelClass: ModelClassSchema,
+	model: TextSchema,
+	thinkingLevel: TextSchema,
+	rawArgs: Type.Array(Type.String({ maxLength: 32_000 }), { minItems: 1, maxItems: 256 }),
+	env: Type.Record(Type.String(), Type.String({ maxLength: 32_000 })),
+	tools: Type.Array(TextSchema, { maxItems: 128 }),
+	roleExtensions: Type.Array(TextSchema, { maxItems: 128 }),
+	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
+	resources: Type.Array(LaunchResourceFingerprintSchema, { maxItems: 256 }),
+	prompt: Type.Optional(LaunchPromptFileSchema),
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });
 
@@ -291,6 +341,7 @@ const AllocationIntentSchema = Type.Object({
 	resourceId: Type.Optional(TextSchema),
 	worktree: Type.Optional(WorktreeRecordSchema),
 	possibleResources: Type.Optional(Type.Array(TextSchema, { maxItems: 32 })),
+	resources: Type.Optional(Type.Record(Type.String(), TextSchema)),
 	failure: OptionalTextSchema,
 }, { additionalProperties: false });
 
@@ -542,7 +593,12 @@ export function validateLaunchRecords(request: ExecuteRequest, records: readonly
 			throw new Error(`Unexpected launch record ${record.key}.`);
 		}
 		if (!new RegExp(SHA256_PATTERN).test(record.fingerprint)) throw new Error(`Launch record ${record.key} has an invalid fingerprint.`);
-		keyed[record.key] = { ...record };
+		const { fingerprint, ...fingerprinted } = record;
+		if (launchRecordFingerprint(fingerprinted) !== fingerprint) throw new Error(`Launch record ${record.key} fingerprint does not match its contents.`);
+		if (Object.keys(record.env).length) throw new Error(`Launch record ${record.key} must not pass caller Role environment.`);
+		if (record.role === "implementer" && !record.prompt) throw new Error(`Implementer launch record ${record.key} lacks its private prompt file.`);
+		if (record.role === "reviewer" && record.prompt) throw new Error(`Reviewer launch record ${record.key} must not use a Herdr prompt file.`);
+		keyed[record.key] = structuredClone(record);
 	}
 	for (const key of required.keys()) {
 		if (!keyed[key]) throw new Error(`Missing launch record ${key}.`);

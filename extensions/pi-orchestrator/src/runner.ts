@@ -33,6 +33,7 @@ import { FileRunStore, type RunStateHandle } from "./store.ts";
 
 const EVIDENCE_MAX_BYTES = 8 * 1024;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
+export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 const ALLOCATION_KINDS: readonly AllocationKind[] = ["worktree", "workspace", "worker_tab", "agent"];
 
 export interface OperationContext {
@@ -49,7 +50,7 @@ export interface CommandResult extends CheckCommand {
 }
 
 export type AllocationResult =
-	| { outcome: "owned"; resourceId: string }
+	| { outcome: "owned"; resourceId: string; resources?: Record<string, string> }
 	| { outcome: "absent"; failure: string }
 	| { outcome: "unknown"; failure: string; possibleResources?: string[] };
 
@@ -88,9 +89,11 @@ export interface CoordinatorRuntime {
 	now(): number;
 	randomToken(): string;
 	preflight(input: { request: ExecuteRequest; root: string }, context: OperationContext): Promise<{
+		root: string;
 		main: WorkspaceIdentity;
 		launchRecords: LaunchRecord[];
 	}>;
+	materializeLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, LaunchRecord> }, context: OperationContext): Promise<void>;
 	recoverLaunchRecords(input: { request: ExecuteRequest; records: Record<string, LaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
 }
 
@@ -131,6 +134,7 @@ export interface HostRuntime {
 
 export interface GitRuntime {
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
+	inspectTaskCandidate(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {
 		root: string;
 		intent: AllocationIntent;
@@ -332,15 +336,18 @@ export class OrchestratorRunner {
 	async execute(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const startedAt = this.runtime.now();
 		const request = parseExecuteRequest(value);
-		root = realpathSync.native(root);
 		const deadline = startedAt + request.budgetMs;
 		const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
 		try {
+			const prepared = await scope.call(async (context) => await this.runtime.preflight({
+				request,
+				root: realpathSync.native(root),
+			}, context));
+			root = realpathSync.native(prepared.root);
+			if (!isCleanCommitted(prepared.main)) throw new Error("Preflight Main identity must be clean and committed.");
+			const launchRecords = validateLaunchRecords(request, prepared.launchRecords);
 			return await this.store.withLock(root, async () => {
 				await this.store.assertAvailable(root, request.id);
-				const prepared = await scope.call(async (context) => await this.runtime.preflight({ request, root }, context));
-				if (!isCleanCommitted(prepared.main)) throw new Error("Preflight Main identity must be clean and committed.");
-				const launchRecords = validateLaunchRecords(request, prepared.launchRecords);
 				const state: RunState = {
 					version: RUN_STATE_VERSION,
 					request,
@@ -365,6 +372,11 @@ export class OrchestratorRunner {
 					updatedAt: this.runtime.now(),
 				};
 				const handle = await this.store.create(state);
+				await scope.call(async (context) => await this.runtime.materializeLaunchRecords({
+					root,
+					request,
+					records: launchRecords,
+				}, context));
 				return await this.run(handle, scope);
 			});
 		} finally {
@@ -389,11 +401,6 @@ export class OrchestratorRunner {
 				}
 			}
 
-			const deadlineStartedAt = this.runtime.now();
-			state.deadlineStartedAt = deadlineStartedAt;
-			state.deadline = deadlineStartedAt + state.request.budgetMs;
-			state.updatedAt = deadlineStartedAt;
-			await handle.save();
 			const scope = new DeadlineScope(state.deadline, () => this.runtime.now(), outerSignal);
 			try {
 				await this.requireRecoveredLaunches(state, scope);
@@ -405,6 +412,35 @@ export class OrchestratorRunner {
 			} finally {
 				scope.close();
 			}
+		});
+	}
+
+	async abort(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
+		root = realpathSync.native(root);
+		return await this.store.withLock(root, async () => {
+			const handle = await this.store.load(root, id);
+			const state = handle.state;
+			if (terminal(state)) return this.response(state);
+			let failed = false;
+			for (const task of state.tasks) {
+				const attempt = task.attempts.at(-1);
+				const workerId = attempt && allocationByKind(attempt, "agent")?.resourceId;
+				if (!attempt || !workerId || attempt.termination?.status === "terminated") continue;
+				const candidate = attempt.candidate ?? attempt.prompts.at(-1)?.preCandidate ?? attempt.waveBase;
+				if (!await this.terminateWithSafety(handle, task, workerId, candidate, outerSignal)) failed = true;
+			}
+			state.status = "aborted";
+			state.accepted = false;
+			state.updatedAt = this.runtime.now();
+			if (failed) {
+				for (const task of state.tasks) {
+					if (task.attempts.at(-1)?.termination?.status === "unknown") {
+						task.failure ??= "Abort could not prove exact worker/process termination; retained resources may still be active.";
+					}
+				}
+			}
+			await handle.save();
+			return this.response(state);
 		});
 	}
 
@@ -585,6 +621,7 @@ export class OrchestratorRunner {
 				}
 				intent.status = "owned";
 				intent.resourceId = result.resourceId;
+				if (result.resources) intent.resources = { ...result.resources };
 				await handle.save();
 			}
 			task.status = "working";
@@ -612,9 +649,26 @@ export class OrchestratorRunner {
 		for (;;) {
 			if (kind === "correction" && !correctionEligible(request, attempt)) {
 				this.attention(task, "The same-agent correction is unavailable or already used.");
+				await this.terminateWithSafety(handle, task, workerId, attempt.candidate ?? attempt.waveBase);
 				return;
 			}
-			const preCandidate = attempt.candidate ?? attempt.waveBase;
+			let preCandidate: WorkspaceIdentity;
+			try {
+				preCandidate = await scope.call(async (context) => await this.gitRuntime.inspectTaskCandidate({
+					root: state.root,
+					task: request,
+					attempt,
+				}, context));
+			} catch (error) {
+				this.attention(task, `Pre-prompt candidate identity is unavailable: ${errorText(error)}`);
+				await this.terminateWithSafety(handle, task, workerId, attempt.candidate ?? attempt.waveBase);
+				return;
+			}
+			if (attempt.candidate && !sameIdentity(preCandidate, attempt.candidate)) {
+				this.attention(task, "The same-agent correction worktree identity drifted before prompting.");
+				await this.terminateWithSafety(handle, task, workerId, preCandidate);
+				return;
+			}
 			const prompt: PromptRecord = { kind, status: "submitting", preCandidate, at: this.runtime.now() };
 			attempt.prompts.push(prompt);
 			task.failure = undefined;
@@ -634,12 +688,14 @@ export class OrchestratorRunner {
 				prompt.status = "ambiguous";
 				prompt.failure = `Prompt result is ambiguous and will not be replayed: ${errorText(error)}`;
 				this.attention(task, prompt.failure);
+				await this.terminateWithSafety(handle, task, workerId, preCandidate);
 				return;
 			}
 			if (worker.outcome === "unknown" || worker.outcome === "interrupted") {
 				prompt.status = "ambiguous";
 				prompt.failure = bounded(worker.diagnostic);
 				this.attention(task, `${worker.outcome} worker result will not be replayed: ${prompt.failure}`);
+				await this.terminateWithSafety(handle, task, workerId, preCandidate);
 				return;
 			}
 			prompt.status = "settled";
@@ -717,13 +773,24 @@ export class OrchestratorRunner {
 		task: TaskState,
 		workerId: string,
 		candidate: WorkspaceIdentity,
-		scope: DeadlineScope,
+		_scope: DeadlineScope,
+	): Promise<boolean> {
+		return await this.terminateWithSafety(handle, task, workerId, candidate);
+	}
+
+	private async terminateWithSafety(
+		handle: RunStateHandle,
+		task: TaskState,
+		workerId: string,
+		candidate: WorkspaceIdentity,
+		outerSignal?: AbortSignal,
 	): Promise<boolean> {
 		const attempt = latestAttempt(task);
 		attempt.termination = { status: "terminating", workerId, candidate };
 		await handle.save();
+		const safety = new DeadlineScope(this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS, () => this.runtime.now(), outerSignal);
 		try {
-			const result = await scope.call(async (context) => await this.runtime.terminateWorker({
+			const result = await safety.call(async (context) => await this.runtime.terminateWorker({
 				task: taskRequest(handle.state, task.taskId), attempt, workerId, candidate,
 			}, context));
 			if (result.outcome !== "terminated") {
@@ -738,6 +805,7 @@ export class OrchestratorRunner {
 			this.attention(task, `Worker termination is unproved: ${errorText(error)}`);
 			return false;
 		} finally {
+			safety.close();
 			await handle.save();
 		}
 	}
