@@ -7,7 +7,6 @@ import test from "node:test";
 import {
 	executeGitHubMerge,
 	inspectLocalMergeSafety,
-	selectMergeMethod,
 	type Exec,
 	type ExecResult,
 } from "../extensions/pr-merge.ts";
@@ -243,7 +242,7 @@ test("final merge rejects every in-progress Git operation in a linked worktree",
 	const assertUnsafe = async (operation: string) => {
 		assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "", operation);
 		await assert.rejects(
-			executeGitHubMerge({ ...inspectInput(exec), cwd: linked, pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
+			executeGitHubMerge({ ...inspectInput(exec), cwd: linked, pullRequestId, hostname }),
 			/Local merge safety check failed: worktree is dirty/,
 			operation,
 		);
@@ -286,29 +285,10 @@ test("rejects a missing fetch source before any command or mutation", async () =
 			...input,
 			pullRequestId,
 			hostname,
-			allowedMergeMethods: ["squash"],
 		}),
 		/PR head fetch source must be a non-empty string/,
 	);
 	assert.deepEqual(calls, []);
-});
-
-test("selects a deterministic allowed merge method", () => {
-	assert.equal(selectMergeMethod({ allowedMergeMethods: ["merge"] }), "merge");
-	assert.equal(selectMergeMethod({ allowedMergeMethods: ["merge", "rebase"], viewerDefaultMergeMethod: "rebase" }), "rebase");
-	assert.equal(selectMergeMethod({ allowedMergeMethods: ["merge", "squash"], viewerDefaultMergeMethod: "merge" }), "squash");
-	assert.equal(selectMergeMethod({ allowedMergeMethods: ["rebase"] }), "rebase");
-});
-
-test("fails when no sole method, squash, or allowed viewer default exists", () => {
-	assert.throws(
-		() => selectMergeMethod({ allowedMergeMethods: ["merge", "rebase"], viewerDefaultMergeMethod: null }),
-		/No deterministic GitHub merge method is available/,
-	);
-	assert.throws(
-		() => selectMergeMethod({ allowedMergeMethods: ["merge", "rebase"], viewerDefaultMergeMethod: "squash" }),
-		/No deterministic GitHub merge method is available/,
-	);
 });
 
 test("does not issue a merge mutation when fresh local safety checks fail", async () => {
@@ -352,7 +332,6 @@ test("does not issue a merge mutation when fresh local safety checks fail", asyn
 				...inspectInput(exec),
 				pullRequestId,
 				hostname,
-				allowedMergeMethods: ["squash"],
 			}),
 			candidate.error,
 		);
@@ -364,7 +343,7 @@ test("does not issue a merge mutation when fresh local safety checks fail", asyn
 	}
 });
 
-test("executes the selected method with exact GraphQL variables and atomic head check", async () => {
+test("executes a squash merge with exact GraphQL variables and atomic head check", async () => {
 	const mutation = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 	const cases: Array<{ name: string; localHead: string; ancestry?: number[] }> = [
 		{ name: "equal", localHead: expectedHead },
@@ -390,8 +369,6 @@ test("executes the selected method with exact GraphQL variables and atomic head 
 			...inspectInput(exec),
 			pullRequestId,
 			hostname,
-			allowedMergeMethods: ["merge", "squash"],
-			viewerDefaultMergeMethod: "merge",
 		});
 
 		assert.deepEqual(calls.at(-1), {
@@ -450,7 +427,6 @@ test("blocks local changes made during readiness without a second fetch or mutat
 			...inspectInput(exec),
 			pullRequestId,
 			hostname,
-			allowedMergeMethods: ["squash"],
 			revalidateReadiness: async (local) => {
 				readinessCalls += 1;
 				assert.deepEqual(local, { worktree: "clean", head: "equal", headOid: expectedHead });
@@ -480,7 +456,6 @@ test("runs one readiness evaluation after local inspection and stops on any read
 				...inspectInput(exec),
 				pullRequestId,
 				hostname,
-				allowedMergeMethods: ["squash"],
 				revalidateReadiness: async (local) => {
 					readinessCalls += 1;
 					assert.deepEqual(local, { worktree: "clean", head: "equal", headOid: expectedHead });
@@ -537,7 +512,7 @@ test("rejects GraphQL errors and malformed or non-merged responses without retry
 			result(candidate.output),
 		]);
 		await assert.rejects(
-			executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
+			executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname }),
 			candidate.error,
 			candidate.name,
 		);
@@ -559,7 +534,7 @@ test("surfaces GitHub CLI merge failures without retrying", async () => {
 	]);
 
 	await assert.rejects(
-		executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname, allowedMergeMethods: ["squash"] }),
+		executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname }),
 		/gh api graphql --hostname github\.com .* failed: merge blocked/,
 	);
 	assert.equal(calls.length, 9);

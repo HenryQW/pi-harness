@@ -45,7 +45,6 @@ function pullRequest(overrides: Partial<CurrentPullRequest> = {}): CurrentPullRe
 			provenance: "configured", branch: "feature", remote: "fork", ref: "feature",
 			repository: "acme/fork", host: "github.com", fetchSource: "git@github.com:acme/fork.git", remoteOid: oldHead,
 		},
-		merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 		...overrides,
 	};
 }

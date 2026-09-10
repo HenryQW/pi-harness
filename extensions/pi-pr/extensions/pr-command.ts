@@ -2,10 +2,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import {
-	executeGitHubMerge,
-	selectMergeMethod,
-} from "./pr-merge.ts";
+import { executeGitHubMerge } from "./pr-merge.ts";
 import {
 	linkInferredPullRequest,
 	loadCurrentPullRequest,
@@ -176,11 +173,9 @@ async function mergePullRequest(
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
 ): Promise<boolean> {
-	if (!current.merge) throw new Error(`PR #${current.number} merge failed: merge capabilities are unavailable`);
-	const method = selectMergeMethod(current.merge);
 	const confirmed = await ctx.ui.confirm(
 		`Merge PR #${current.number}?`,
-		`Method: ${method}.`,
+		"Method: squash.",
 	);
 	if (!confirmed) return false;
 
@@ -196,8 +191,6 @@ async function mergePullRequest(
 		expectedHead: current.head.oid,
 		expectedBase: current.base,
 		headFetchSource: current.headFetchSource,
-		allowedMergeMethods: current.merge.allowedMergeMethods,
-		viewerDefaultMergeMethod: current.merge.viewerDefaultMergeMethod,
 		revalidateReadiness: async (local) => {
 			const discovery = await load(pi, ctx, local);
 			if (discovery.kind !== "current") {
@@ -209,11 +202,6 @@ async function mergePullRequest(
 			}
 			if (deriveNextStep(discovery) !== "merge") {
 				throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
-			}
-			if (!fresh.merge) throw new Error(`PR #${fresh.number} merge failed: merge capabilities are unavailable`);
-			const freshMethod = selectMergeMethod(fresh.merge);
-			if (freshMethod !== method) {
-				throw new Error(`PR #${fresh.number} merge cancelled: merge method changed from ${method} to ${freshMethod}`);
 			}
 		},
 	});

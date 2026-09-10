@@ -114,7 +114,6 @@ function currentPullRequest(overrides: {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: "b".repeat(40),
 		},
-		merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 	};
 }
 

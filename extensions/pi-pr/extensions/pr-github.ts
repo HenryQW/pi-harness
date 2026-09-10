@@ -15,7 +15,6 @@ import type {
 	PullRequestLifecycle,
 	PullRequestTarget,
 	ReviewReadiness,
-	PolicyReadiness,
 } from "./pr-routing.ts";
 
 const EXEC_TIMEOUT_MS = 10_000;
@@ -27,7 +26,6 @@ const PR_PUBLICATION_FIELDS = "number,url,state,baseRefName,headRefName,headRefO
 const PR_DISCOVERY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!,$endCursor:String){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name associatedPullRequests(first:100,after:$endCursor){totalCount edges{cursor node{__typename number url state baseRepository{nameWithOwner}headRepository{nameWithOwner}headRefName headRefOid}}pageInfo{hasNextPage startCursor endCursor}}}}}";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
-const BASE_BRANCH_POLICY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name branchProtectionRule{requiresStrictStatusChecks}}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const FAILED_CHECK_STATES = new Set([
 	"ACTION_REQUIRED",
@@ -60,7 +58,6 @@ const MERGE_STATE_VALUES = new Set([
 	"UNSTABLE",
 ]);
 const REVIEW_DECISION_VALUES = new Set(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"]);
-const MERGE_METHODS: MergeMethod[] = ["merge", "rebase", "squash"];
 
 export class PullRequestLoadError extends Error {
 	constructor(message: string) {
@@ -75,13 +72,6 @@ export type PullRequestRef = {
 	oid: string;
 };
 
-export type MergeMethod = "merge" | "rebase" | "squash";
-
-export type PullRequestMerge = {
-	allowedMergeMethods: MergeMethod[];
-	viewerDefaultMergeMethod: MergeMethod;
-};
-
 export type CurrentPullRequest = PullRequest & {
 	id: string;
 	number: number;
@@ -92,7 +82,6 @@ export type CurrentPullRequest = PullRequest & {
 	head: PullRequestRef;
 	headFetchSource: string;
 	target: PullRequestTarget;
-	merge: PullRequestMerge | null;
 };
 
 export type CurrentPullRequestDiscovery = PullRequestDiscovery<CurrentPullRequest>;
@@ -200,11 +189,6 @@ type SearchPage = {
 	cursors: string[];
 	hasNextPage: boolean;
 	endCursor: string | null;
-};
-
-type RulesetBranchPolicy = {
-	requiresStrictStatusChecks: boolean;
-	allowedMergeMethods: MergeMethod[] | null;
 };
 
 type CheckState = {
@@ -865,7 +849,6 @@ function ciStatus(checks: CheckState[]): CiStatus {
 function conditions(
 	candidate: ListedPullRequest,
 	unresolvedThreads: number,
-	requiresStrictStatusChecks: boolean,
 ): PullRequestConditions {
 	if (
 		(candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "DIRTY") ||
@@ -875,19 +858,17 @@ function conditions(
 		? "pending"
 		: "ready";
 	const behind = candidate.mergeStateStatus === "BEHIND";
-	const policy: PolicyReadiness = candidate.mergeable === "MERGEABLE" &&
-		(candidate.mergeStateStatus === "CLEAN" || (behind && !requiresStrictStatusChecks))
-		? "ready"
-		: "pending";
 	return {
 		draft: candidate.isDraft,
-		baseUpdateRequired: behind && requiresStrictStatusChecks,
+		baseUpdateRequired: behind,
 		conflict: candidate.mergeable === "CONFLICTING" || candidate.mergeStateStatus === "DIRTY",
 		changesRequested: candidate.reviewDecision === "CHANGES_REQUESTED",
 		unresolvedThreads,
 		ci: ciStatus(candidate.checkStates),
 		review,
-		policy,
+		policy: candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "CLEAN"
+			? "ready"
+			: "pending",
 	};
 }
 
@@ -952,102 +933,6 @@ function parseBaseRefAuthority(
 
 function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
 	return parseBaseRefAuthority(output, candidate.base);
-}
-
-function parseLegacyBaseBranchPolicy(output: string, candidate: ListedPullRequest): boolean {
-	const value = parseJson(output, "Read base branch policy");
-	if (!isRecord(value)) fail("Read base branch policy", "invalid GitHub CLI output");
-	if (value.errors !== undefined) {
-		if (!Array.isArray(value.errors)) fail("Read base branch policy", "invalid GitHub CLI output");
-		if (value.errors.length) fail("Read base branch policy", "GitHub GraphQL returned errors");
-	}
-	const repository = isRecord(value.data) ? value.data.repository : undefined;
-	if (!isRecord(repository) || !isRecord(repository.ref)) {
-		fail("Read base branch policy", "invalid GitHub CLI output");
-	}
-	if (
-		normalizeRepository(repositoryName(repository.nameWithOwner, "Read base branch policy", "repository")) !==
-		normalizeRepository(candidate.base.repository) ||
-		text(repository.ref.name, "Read base branch policy", "ref") !== candidate.base.ref
-	) fail("Read base branch policy", "response does not match pull request base");
-	const rule = repository.ref.branchProtectionRule;
-	if (rule === null) return false;
-	if (!isRecord(rule) || typeof rule.requiresStrictStatusChecks !== "boolean") {
-		fail("Read base branch policy", "invalid GitHub CLI output");
-	}
-	return rule.requiresStrictStatusChecks;
-}
-
-function parseRulesetBaseBranchPolicy(output: string): RulesetBranchPolicy {
-	const pages = parseJson(output, "Read base branch rulesets");
-	if (!Array.isArray(pages) || !pages.length) fail("Read base branch rulesets", "invalid GitHub CLI output");
-	let requiresStrictStatusChecks = false;
-	let allowedMergeMethods: Set<MergeMethod> | null = null;
-	for (const page of pages) {
-		if (!Array.isArray(page)) fail("Read base branch rulesets", "invalid GitHub CLI output");
-		for (const rule of page) {
-			if (!isRecord(rule)) fail("Read base branch rulesets", "invalid GitHub CLI output");
-			const type = text(rule.type, "Read base branch rulesets", "rule type");
-			if (type === "required_status_checks") {
-				if (!isRecord(rule.parameters) || typeof rule.parameters.strict_required_status_checks_policy !== "boolean") {
-					fail("Read base branch rulesets", "invalid GitHub CLI output");
-				}
-				requiresStrictStatusChecks ||= rule.parameters.strict_required_status_checks_policy;
-			}
-			if (type === "pull_request") {
-				if (!isRecord(rule.parameters) || !Array.isArray(rule.parameters.allowed_merge_methods)) {
-					fail("Read base branch rulesets", "invalid GitHub CLI output");
-				}
-				const methods = rule.parameters.allowed_merge_methods;
-				if (
-					methods.some((method) => typeof method !== "string" || !MERGE_METHODS.includes(method as MergeMethod)) ||
-					new Set(methods).size !== methods.length
-				) fail("Read base branch rulesets", "invalid GitHub CLI output");
-				const restriction = new Set<MergeMethod>(methods as MergeMethod[]);
-				allowedMergeMethods = allowedMergeMethods === null
-					? restriction
-					: new Set<MergeMethod>([...allowedMergeMethods].filter((method: MergeMethod) => restriction.has(method)));
-			}
-		}
-	}
-	return {
-		requiresStrictStatusChecks,
-		allowedMergeMethods: allowedMergeMethods === null
-			? null
-			: MERGE_METHODS.filter((method) => allowedMergeMethods.has(method)),
-	};
-}
-
-function parseMergeMethodSettings(output: string, rulesetMethods: MergeMethod[] | null): PullRequestMerge {
-	const value = parseJson(output, "Read merge methods");
-	if (!isRecord(value)) fail("Read merge methods", "invalid GitHub CLI output");
-	const { mergeCommitAllowed, rebaseMergeAllowed, squashMergeAllowed } = value;
-	if (
-		typeof mergeCommitAllowed !== "boolean" || typeof rebaseMergeAllowed !== "boolean" ||
-		typeof squashMergeAllowed !== "boolean"
-	) fail("Read merge methods", "invalid GitHub CLI output");
-	let allowedMergeMethods: MergeMethod[] = [];
-	if (mergeCommitAllowed) allowedMergeMethods.push("merge");
-	if (rebaseMergeAllowed) allowedMergeMethods.push("rebase");
-	if (squashMergeAllowed) allowedMergeMethods.push("squash");
-	if (!allowedMergeMethods.length) fail("Read merge methods", "repository allows no merge method");
-	const viewerDefaultMergeMethod = value.viewerDefaultMergeMethod === "MERGE"
-		? "merge"
-		: value.viewerDefaultMergeMethod === "REBASE"
-		? "rebase"
-		: value.viewerDefaultMergeMethod === "SQUASH"
-		? "squash"
-		: fail("Read merge methods", "invalid viewerDefaultMergeMethod");
-	if (!allowedMergeMethods.includes(viewerDefaultMergeMethod)) {
-		fail("Read merge methods", "viewerDefaultMergeMethod is not allowed");
-	}
-	if (rulesetMethods !== null) {
-		allowedMergeMethods = allowedMergeMethods.filter((method) => rulesetMethods.includes(method));
-	}
-	if (!allowedMergeMethods.length) {
-		fail("Read merge methods", "repository and applicable rules allow no common merge method");
-	}
-	return { allowedMergeMethods, viewerDefaultMergeMethod };
 }
 
 export async function hasLocalCommit(
@@ -1440,66 +1325,6 @@ export async function readPullRequestBaseRefOid(
 	return parseBaseRefAuthority(result.stdout, { repository, ref });
 }
 
-async function readLegacyBaseBranchPolicy(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	candidate: ListedPullRequest,
-): Promise<boolean> {
-	const [owner, name] = candidate.base.repository.split("/");
-	const result = await execute(pi, context, "Read base branch policy", "gh", [
-		"api",
-		"graphql",
-		"--hostname",
-		candidate.url.hostname,
-		"-f",
-		`query=${BASE_BRANCH_POLICY_QUERY}`,
-		"-F",
-		`owner=${owner}`,
-		"-F",
-		`name=${name}`,
-		"-F",
-		`qualifiedName=refs/heads/${candidate.base.ref}`,
-	]);
-	return parseLegacyBaseBranchPolicy(result.stdout, candidate);
-}
-
-async function readRulesetBaseBranchPolicy(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	candidate: ListedPullRequest,
-): Promise<RulesetBranchPolicy> {
-	const [owner, name] = candidate.base.repository.split("/");
-	const result = await execute(pi, context, "Read base branch rulesets", "gh", [
-		"api",
-		"--hostname",
-		candidate.url.hostname,
-		"--paginate",
-		"--slurp",
-		"-H",
-		"Accept: application/vnd.github+json",
-		"-H",
-		"X-GitHub-Api-Version: 2022-11-28",
-		`repos/${owner}/${name}/rules/branches/${encodeURIComponent(candidate.base.ref)}`,
-	]);
-	return parseRulesetBaseBranchPolicy(result.stdout);
-}
-
-async function readMergeMethods(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	candidate: ListedPullRequest,
-	rulesetMethods: MergeMethod[] | null,
-): Promise<PullRequestMerge> {
-	const result = await execute(pi, context, "Read merge methods", "gh", [
-		"repo",
-		"view",
-		`${candidate.url.hostname}/${candidate.base.repository}`,
-		"--json",
-		"mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod",
-	]);
-	return parseMergeMethodSettings(result.stdout, rulesetMethods);
-}
-
 async function loadPullRequestDetails(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1518,17 +1343,7 @@ async function loadPullRequestDetails(
 	const liveBaseOid = candidate.lifecycle === "open"
 		? await readBaseRefOid(pi, context, candidate)
 		: null;
-	const rulesetPolicy = candidate.lifecycle === "open"
-		? await readRulesetBaseBranchPolicy(pi, context, candidate)
-		: null;
-	const legacyStrict = candidate.lifecycle === "open" && candidate.mergeStateStatus === "BEHIND"
-		? await readLegacyBaseBranchPolicy(pi, context, candidate)
-		: false;
-	const requiresStrictStatusChecks = legacyStrict || (rulesetPolicy?.requiresStrictStatusChecks ?? false);
-	const pullRequestConditions = conditions(candidate, unresolvedThreads, requiresStrictStatusChecks);
-	const merge = candidate.lifecycle === "open"
-		? await readMergeMethods(pi, context, candidate, rulesetPolicy?.allowedMergeMethods ?? null)
-		: null;
+	const pullRequestConditions = conditions(candidate, unresolvedThreads);
 	const inspected = inspectedLocal ?? await inspectLocalMergeSafety({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
@@ -1553,7 +1368,6 @@ async function loadPullRequestDetails(
 		head: candidate.head,
 		headFetchSource: pushTarget.fetchSource,
 		target: publicTarget(pushTarget),
-		merge,
 	};
 }
 

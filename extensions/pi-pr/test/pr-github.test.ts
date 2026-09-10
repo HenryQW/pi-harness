@@ -43,7 +43,6 @@ type HarnessOptions = {
 	listResults?: ReturnType<typeof result>[];
 	pullRequestResult?: ReturnType<typeof result>;
 	localHead?: string;
-	localHeadAfterRulesetRead?: string;
 	pushResult?: ReturnType<typeof result>;
 	pushReference?: string;
 	refCheckResult?: ReturnType<typeof result>;
@@ -61,11 +60,7 @@ type HarnessOptions = {
 	remoteHeadResult?: ReturnType<typeof result>;
 	threads?: string;
 	baseRefResult?: ReturnType<typeof result>;
-	policyResult?: ReturnType<typeof result>;
 	baseRefTargetOid?: string;
-	requiresStrictStatusChecks?: boolean | null;
-	rulesetResult?: ReturnType<typeof result>;
-	methods?: Record<string, unknown>;
 	status?: string;
 	stateResult?: ReturnType<typeof result>;
 	gitStateCwd?: string;
@@ -124,32 +119,6 @@ function baseRefOutput(targetOid = BASE_HEAD): string {
 			},
 		},
 	});
-}
-
-function baseBranchPolicyOutput(requiresStrictStatusChecks: boolean | null): string {
-	return JSON.stringify({
-		data: {
-			repository: {
-				nameWithOwner: "acme/project",
-				ref: {
-					name: "main",
-					branchProtectionRule: requiresStrictStatusChecks === null
-						? null
-						: { requiresStrictStatusChecks },
-				},
-			},
-		},
-	});
-}
-
-function rulesetOutput(...pages: unknown[][]): string {
-	return JSON.stringify(pages);
-}
-
-function rulesetPolicyOutput(...pages: boolean[]): string {
-	return rulesetOutput(...pages.map((strict) => strict
-		? [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: true } }]
-		: []));
 }
 
 function searchIdentity(candidate: Record<string, unknown>): Record<string, unknown> {
@@ -359,13 +328,6 @@ function harness(options: HarnessOptions = {}) {
 				if (query.includes("target{oid}")) {
 					return options.baseRefResult ?? result(baseRefOutput(options.baseRefTargetOid));
 				}
-				if (query.includes("branchProtectionRule")) {
-					return options.policyResult ?? result(baseBranchPolicyOutput(options.requiresStrictStatusChecks ?? null));
-				}
-			}
-			if (command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main") {
-				if (options.localHeadAfterRulesetRead) localHead = options.localHeadAfterRulesetRead;
-				return options.rulesetResult ?? result(rulesetPolicyOutput(false));
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return options.gitStateCwd ? runGit(options.gitStateCwd, args) : result(options.status ?? "");
@@ -388,14 +350,6 @@ function harness(options: HarnessOptions = {}) {
 				if (ancestry === "behind" && left === localHead && right === REMOTE_HEAD) return result();
 				if (ancestry === "ahead" && left === REMOTE_HEAD && right === localHead) return result();
 				return result("", 1);
-			}
-			if (command === "gh" && args.join(" ") === "repo view github.com/acme/project --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod") {
-				return result(JSON.stringify(options.methods ?? {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: true,
-					squashMergeAllowed: true,
-					viewerDefaultMergeMethod: "SQUASH",
-				}));
 			}
 			throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
 		},
@@ -610,10 +564,6 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 			fetchSource: "git@github.com:acme/fork.git",
 			remoteOid: REMOTE_HEAD,
 		},
-		merge: {
-			allowedMergeMethods: ["merge", "rebase", "squash"],
-			viewerDefaultMergeMethod: "squash",
-		},
 	});
 
 	const search = calls.find(({ command, args }) =>
@@ -649,8 +599,6 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 	assert.ok(threads?.args.includes("--slurp"));
 	assert.equal(threads?.args.includes("--jq"), false);
 	assert.doesNotMatch(threads?.args.join(" ") ?? "", /comments/);
-	const mergeSettings = calls.find(({ command, args }) => command === "gh" && args[0] === "repo" && args[2] === "github.com/acme/project");
-	assert.ok(mergeSettings?.args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod"));
 	const fetch = calls.find(({ command, args }) => command === "git" && args[0] === "fetch");
 	assert.deepEqual(fetch?.args, [
 		"fetch",
@@ -666,6 +614,16 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 		assert.equal(call.options?.timeout, 10_000);
 		assert.equal(call.options?.signal, context.signal);
 	}
+});
+
+test("loads an open PR without repository policy lookups", async () => {
+	const app = harness();
+
+	const loaded = await loadCurrentPullRequest(app.pi, app.context);
+	assert.equal(loaded?.number, 42);
+	assert.equal(app.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), false);
+	assert.equal(app.calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
+	assert.equal(app.calls.some(({ args }) => args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod")), false);
 });
 
 test("resolves the current base ref target instead of the pull request base snapshot", async () => {
@@ -694,22 +652,6 @@ test("uses inspected local safety without reopening the fetch window", async () 
 	assert.ok(loaded);
 	assert.deepEqual(loaded.local, { worktree: "clean", head: "equal" });
 	assert.equal(calls.some(({ command, args }) => command === "git" && ["status", "fetch", "cat-file", "merge-base"].includes(args[0] ?? "")), false);
-});
-
-test("routes from the local HEAD sampled after remote policy reads", async () => {
-	const { pi, context, calls } = harness({
-		localHead: REMOTE_HEAD,
-		localHeadAfterRulesetRead: LOCAL_HEAD,
-		ancestry: "ahead",
-	});
-
-	const loaded = await loadCurrentPullRequest(pi, context);
-	assert.ok(loaded);
-	assert.equal(loaded.local.head, "ahead");
-	assert.equal(derivePullRequestNextStep(loaded), "none");
-	const policyRead = calls.findIndex(({ command, args }) => command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main");
-	const headRead = calls.findIndex(({ command, args }) => command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}");
-	assert.ok(policyRead >= 0 && headRead > policyRead);
 });
 
 test("batches complete ref-associated pull requests beyond 100 and loads only the exact candidate", async () => {
@@ -1443,7 +1385,6 @@ test("retains a just-merged PR by its exact remote push-ref OID when local HEAD 
 	assert.equal(loaded.local.worktree, "dirty");
 	assert.equal(loaded.local.head, "behind");
 	assert.equal(loaded.conditions.unresolvedThreads, 0);
-	assert.equal(loaded.merge, null);
 	assert.equal(calls.some(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && !args.some((arg) => arg.includes("associatedPullRequests("))
 	), false);
@@ -1723,192 +1664,38 @@ test("rejects partial review-thread data when any paginated GraphQL page has err
 	);
 });
 
-test("requires a base update for strict legacy protection or an applicable strict ruleset", async () => {
-	const cases = [
-		{ name: "legacy only", legacy: true, rulesets: rulesetPolicyOutput(false), required: true },
-		{ name: "ruleset only", legacy: null, rulesets: rulesetPolicyOutput(true), required: true },
-		{ name: "later ruleset page", legacy: null, rulesets: rulesetPolicyOutput(false, true), required: true },
-		{ name: "neither", legacy: null, rulesets: rulesetPolicyOutput(false), required: false },
-	] as const;
-	for (const candidate of cases) {
-		const app = harness({
-			candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
-			requiresStrictStatusChecks: candidate.legacy,
-			rulesetResult: result(candidate.rulesets),
-		});
-		const loaded = await loadCurrentPullRequest(app.pi, app.context);
-		assert.ok(loaded);
-		assert.equal(loaded.conditions.baseUpdateRequired, candidate.required, candidate.name);
-		assert.equal(loaded.conditions.policy, candidate.required ? "pending" : "ready", candidate.name);
-		const legacy = app.calls.find(({ command, args }) =>
-			command === "gh" && args.some((arg) => arg.includes("branchProtectionRule"))
-		);
-		assert.ok(legacy, candidate.name);
-		assert.ok(legacy.args.includes("owner=acme"), candidate.name);
-		assert.ok(legacy.args.includes("name=project"), candidate.name);
-		assert.ok(legacy.args.includes("qualifiedName=refs/heads/main"), candidate.name);
-		const rulesets = app.calls.find(({ command, args }) =>
-			command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main"
-		);
-		assert.ok(rulesets?.args.includes("--hostname"), candidate.name);
-		assert.ok(rulesets?.args.includes("github.com"), candidate.name);
-		assert.ok(rulesets?.args.includes("--paginate"), candidate.name);
-		assert.ok(rulesets?.args.includes("--slurp"), candidate.name);
-	}
+test("requires a base update whenever GitHub reports the PR behind", async () => {
+	const app = harness({ candidates: [pullRequest({ mergeStateStatus: "BEHIND" })] });
 
-	const blocked = harness({ candidates: [pullRequest({ mergeStateStatus: "BLOCKED" })] });
-	const blockedPullRequest = await loadCurrentPullRequest(blocked.pi, blocked.context);
-	assert.ok(blockedPullRequest);
-	assert.equal(blockedPullRequest.conditions.baseUpdateRequired, false);
-	assert.equal(blockedPullRequest.conditions.policy, "pending");
-	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
-	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), true);
+	const loaded = await loadCurrentPullRequest(app.pi, app.context);
+	assert.ok(loaded);
+	assert.equal(loaded.conditions.baseUpdateRequired, true);
+	assert.equal(loaded.conditions.policy, "pending");
 });
 
-test("fails visibly when either base branch authority fails or is malformed", async () => {
-	const cases: Array<{
-		name: string;
-		baseRefResult?: ReturnType<typeof result>;
-		policyResult?: ReturnType<typeof result>;
-		rulesetResult?: ReturnType<typeof result>;
-		error: RegExp;
-	}> = [
+test("fails visibly when current base branch authority fails or is malformed", async () => {
+	const cases = [
+		{ name: "query failure", output: result("", 1), error: /Read base ref failed: exit code 1/ },
 		{
-			name: "base ref query failure",
-			baseRefResult: result("", 1),
-			error: /Read base ref failed: exit code 1/,
-		},
-		{
-			name: "base ref GraphQL denial",
-			baseRefResult: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
+			name: "GraphQL denial",
+			output: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
 			error: /Read base ref failed: GitHub GraphQL returned errors/,
 		},
 		{
-			name: "malformed base ref authority",
-			baseRefResult: result(JSON.stringify({ data: { repository: null } })),
+			name: "malformed authority",
+			output: result(JSON.stringify({ data: { repository: null } })),
 			error: /Read base ref failed: invalid GitHub CLI output/,
 		},
 		{
-			name: "malformed base target OID",
-			baseRefResult: result(baseRefOutput("not-an-oid")),
+			name: "malformed target OID",
+			output: result(baseRefOutput("not-an-oid")),
 			error: /Read base ref failed: invalid target OID/,
 		},
-		{
-			name: "legacy query failure",
-			policyResult: result("", 1),
-			error: /Read base branch policy failed: exit code 1/,
-		},
-		{
-			name: "legacy GraphQL denial",
-			policyResult: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
-			error: /Read base branch policy failed: GitHub GraphQL returned errors/,
-		},
-		{
-			name: "malformed legacy authority",
-			policyResult: result(JSON.stringify({ data: { repository: null } })),
-			error: /Read base branch policy failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "ruleset authorization failure",
-			rulesetResult: result("", 1),
-			error: /Read base branch rulesets failed: exit code 1/,
-		},
-		{
-			name: "malformed ruleset page collection",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(JSON.stringify([[], {}])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "malformed status rule on a valid page",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(JSON.stringify([[{ type: "required_status_checks", parameters: {} }]])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "malformed pull request rule",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(rulesetOutput([{ type: "pull_request", parameters: {} }])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "unsupported pull request merge method",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(rulesetOutput([{ type: "pull_request", parameters: { allowed_merge_methods: ["octopus"] } }])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-	];
+	] as const;
 	for (const candidate of cases) {
-		const { pi, context } = harness({
-			candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
-			baseRefResult: candidate.baseRefResult,
-			policyResult: candidate.policyResult,
-			rulesetResult: candidate.rulesetResult,
-		});
-		await assert.rejects(loadCurrentPullRequest(pi, context), candidate.error, candidate.name);
+		const app = harness({ baseRefResult: candidate.output });
+		await assert.rejects(loadCurrentPullRequest(app.pi, app.context), candidate.error, candidate.name);
 	}
-});
-
-test("intersects repository merge methods with every applicable pull-request rule", async () => {
-	const restricted = harness({
-		rulesetResult: result(rulesetOutput(
-			[{ type: "pull_request", parameters: { allowed_merge_methods: ["merge", "squash"] } }],
-			[{ type: "pull_request", parameters: { allowed_merge_methods: ["rebase", "squash"] } }],
-		)),
-	});
-	const loaded = await loadCurrentPullRequest(restricted.pi, restricted.context);
-	assert.ok(loaded);
-	assert.deepEqual(loaded.merge, {
-		allowedMergeMethods: ["squash"],
-		viewerDefaultMergeMethod: "squash",
-	});
-
-	const repositoryRestricted = harness({
-		methods: {
-			mergeCommitAllowed: true,
-			rebaseMergeAllowed: true,
-			squashMergeAllowed: false,
-			viewerDefaultMergeMethod: "REBASE",
-		},
-		rulesetResult: result(rulesetOutput([
-			{ type: "pull_request", parameters: { allowed_merge_methods: ["rebase", "squash"] } },
-		])),
-	});
-	const repositoryLoaded = await loadCurrentPullRequest(repositoryRestricted.pi, repositoryRestricted.context);
-	assert.ok(repositoryLoaded);
-	assert.deepEqual(repositoryLoaded.merge, {
-		allowedMergeMethods: ["rebase"],
-		viewerDefaultMergeMethod: "rebase",
-	});
-
-	const empty = harness({
-		methods: {
-			mergeCommitAllowed: true,
-			rebaseMergeAllowed: false,
-			squashMergeAllowed: false,
-			viewerDefaultMergeMethod: "MERGE",
-		},
-		rulesetResult: result(rulesetOutput([
-			{ type: "pull_request", parameters: { allowed_merge_methods: ["squash"] } },
-		])),
-	});
-	await assert.rejects(
-		loadCurrentPullRequest(empty.pi, empty.context),
-		/Read merge methods failed: repository and applicable rules allow no common merge method/,
-	);
-
-	const invalidDefault = harness({
-		methods: {
-			mergeCommitAllowed: true,
-			rebaseMergeAllowed: true,
-			squashMergeAllowed: false,
-			viewerDefaultMergeMethod: "SQUASH",
-		},
-	});
-	await assert.rejects(
-		loadCurrentPullRequest(invalidDefault.pi, invalidDefault.context),
-		/Read merge methods failed: viewerDefaultMergeMethod is not allowed/,
-	);
 });
 
 test("classifies clean and in-progress Git operations in a linked worktree", async (t) => {

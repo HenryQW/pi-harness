@@ -72,7 +72,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | External check or commit status failed | Show `CI failed` as a no-action blocker. |
 | Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
-| Merge-ready pull request | Ask for final confirmation, recheck fresh state, and merge directly if confirmed. |
+| Merge-ready pull request | Ask for final confirmation, recheck fresh state, and squash-merge if confirmed. |
 
 `pi-pr-create` accepts an anchored base from `/pr --base=...`. Otherwise, it finds one unique parent from validated `origin` refs and commit history. The parent can be a feature branch.
 
@@ -152,8 +152,8 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 - It does not rebase the local branch, overwrite concurrent remote updates, delete branches, or clean up worktrees. Creation uses exact leases plus ancestry checks; an empty lease is only an atomic absence check.
 - Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.
 - Presentation fetches use that exact push URL and exact advertised OID. They do not use shared fetch state.
-- Strict status checks in legacy branch protection or applicable repository rulesets require a base update.
-- Applicable ruleset restrictions intersect repository-wide merge methods. An empty intersection stops the workflow.
+- A pull request that GitHub reports as behind requires a base update.
+- Direct merges always use squash. GitHub rejects the mutation if repository policy does not allow it.
 - Before merge, `/pr` fetches the exact head OID from the validated push URL without shared fetch state.
 - A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
 - A branch update resolves the base repository ref directly. It stops if that ref moves before merge or push.

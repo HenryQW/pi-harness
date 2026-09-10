@@ -3,8 +3,6 @@ import type { LocalMergeSafety } from "./pr-routing.ts";
 
 export type { Exec, ExecResult } from "./pr-execution.ts";
 
-export type MergeMethod = "merge" | "rebase" | "squash";
-
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -15,16 +13,11 @@ export type InspectLocalMergeSafetyInput = {
 	headFetchSource: string;
 };
 
-export type MergeMethodSelectionInput = {
-	allowedMergeMethods: readonly MergeMethod[];
-	viewerDefaultMergeMethod?: MergeMethod | null;
-};
-
 export type InspectedLocalMergeSafety = LocalMergeSafety & {
 	headOid: string;
 };
 
-export type ExecuteGitHubMergeInput = MergeMethodSelectionInput & InspectLocalMergeSafetyInput & {
+export type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
 	pullRequestId: string;
 	hostname: string;
 	expectedBase: {
@@ -142,32 +135,6 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 	return { worktree, head: expectedAncestor.code === 0 ? "ahead" : "diverged", headOid };
 }
 
-function validateMergeMethods(input: MergeMethodSelectionInput): void {
-	if (!Array.isArray(input.allowedMergeMethods)) throw new TypeError("allowedMergeMethods must be an array");
-	if (input.allowedMergeMethods.some((method) => method !== "merge" && method !== "rebase" && method !== "squash")) {
-		throw new TypeError("allowedMergeMethods contains an unsupported method");
-	}
-	if (
-		input.viewerDefaultMergeMethod !== undefined &&
-		input.viewerDefaultMergeMethod !== null &&
-		input.viewerDefaultMergeMethod !== "merge" &&
-		input.viewerDefaultMergeMethod !== "rebase" &&
-		input.viewerDefaultMergeMethod !== "squash"
-	) throw new TypeError("viewerDefaultMergeMethod is unsupported");
-}
-
-export function selectMergeMethod(input: MergeMethodSelectionInput): MergeMethod {
-	validateMergeMethods(input);
-	if (input.allowedMergeMethods.length === 1) return input.allowedMergeMethods[0]!;
-	if (input.allowedMergeMethods.includes("squash")) return "squash";
-	if (
-		input.viewerDefaultMergeMethod !== undefined &&
-		input.viewerDefaultMergeMethod !== null &&
-		input.allowedMergeMethods.includes(input.viewerDefaultMergeMethod)
-	) return input.viewerDefaultMergeMethod;
-	throw new Error("No deterministic GitHub merge method is available");
-}
-
 function validateExecuteInput(input: ExecuteGitHubMergeInput): void {
 	validateInspectionInput(input);
 	requiredText(input.pullRequestId, "pullRequestId");
@@ -216,7 +183,6 @@ function parseMergeResponse(output: string, expectedId: string): void {
 
 export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promise<void> {
 	validateExecuteInput(input);
-	const method = selectMergeMethod(input);
 	const local = await inspectLocalMergeSafety(input);
 	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
@@ -242,7 +208,7 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 		"-F",
 		`expectedHeadOid=${input.expectedHead}`,
 		"-F",
-		`mergeMethod=${method.toUpperCase()}`,
+		"mergeMethod=SQUASH",
 	]);
 	parseMergeResponse(requiredOutput(merged, "GitHub merge"), input.pullRequestId);
 }

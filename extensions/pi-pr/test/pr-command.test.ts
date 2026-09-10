@@ -24,12 +24,6 @@ type PullRequestSpec = {
 	mergeStateStatus?: "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE";
 	reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
 	statusCheckRollup?: unknown[];
-	methods?: {
-		mergeCommitAllowed: boolean;
-		rebaseMergeAllowed: boolean;
-		squashMergeAllowed: boolean;
-		viewerDefaultMergeMethod: "MERGE" | "REBASE" | "SQUASH";
-	};
 };
 
 type CommandSpec = {
@@ -173,10 +167,6 @@ function harness(options: HarnessOptions) {
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				return result(JSON.stringify(active ? pullRequest(active) : null));
 			}
-			if (
-				command === "gh" &&
-				args.join(" ") === `api --hostname ${active?.host ?? DEFAULT_HOST} --paginate --slurp -H Accept: application/vnd.github+json -H X-GitHub-Api-Version: 2022-11-28 repos/${active?.baseRepository ?? "acme/project"}/rules/branches/${encodeURIComponent(active?.baseRefName ?? "main")}`
-			) return result("[[]]");
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 				if (query.includes("associatedPullRequests(")) {
@@ -202,24 +192,10 @@ function harness(options: HarnessOptions) {
 						},
 					} } }));
 				}
-				if (query.includes("branchProtectionRule")) {
-					return result(JSON.stringify({ data: { repository: {
-						nameWithOwner: active?.baseRepository ?? "acme/project",
-						ref: { name: active?.baseRefName ?? "main", branchProtectionRule: null },
-					} } }));
-				}
 				if (query.includes("mergePullRequest")) {
 					events.push("merge");
 					return result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequest(active ?? {}).id, state: "MERGED" } } } }));
 				}
-			}
-			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
-				return result(JSON.stringify(active?.methods ?? {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: true,
-					squashMergeAllowed: true,
-					viewerDefaultMergeMethod: "MERGE",
-				}));
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return result(options.statuses?.[statusIndex++] ?? options.status ?? "");
@@ -694,33 +670,15 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 	const host = "github.example.test";
 	const app = harness({
 		states: [
-			{
-				id: "PR_kwDOExample",
-				host,
-				methods: {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: false,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "MERGE",
-				},
-			},
-			{
-				id: "PR_kwDOExample",
-				host,
-				methods: {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: false,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "MERGE",
-				},
-			},
+			{ id: "PR_kwDOExample", host },
+			{ id: "PR_kwDOExample", host },
 		],
 	});
 	assert.equal(await app.handler("", app.context), "merge");
 
 	assert.deepEqual(app.confirmations, [{
 		title: "Merge PR #42?",
-		message: "Method: merge.",
+		message: "Method: squash.",
 	}]);
 	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
 	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
@@ -753,40 +711,8 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 			"-F",
 			`expectedHeadOid=${localHead}`,
 			"-F",
-			"mergeMethod=MERGE",
+			"mergeMethod=SQUASH",
 		],
 	}]);
 	assert.equal(app.calls.some(({ args }) => args.includes("--web")), false);
-});
-
-test("cancels a confirmed merge when the fresh merge method changes", async () => {
-	const app = harness({
-		states: [
-			{
-				methods: {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: false,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "MERGE",
-				},
-			},
-			{
-				methods: {
-					mergeCommitAllowed: false,
-					rebaseMergeAllowed: true,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "REBASE",
-				},
-			},
-		],
-		ancestry: "behind",
-	});
-
-	await assert.rejects(app.handler("", app.context), /merge method changed from merge to rebase/);
-	assert.deepEqual(app.confirmations, [{
-		title: "Merge PR #42?",
-		message: "Method: merge.",
-	}]);
-	assert.deepEqual(app.events, ["load", "confirm", "load"]);
-	assert.equal(mutationCalls(app.calls).length, 0);
 });

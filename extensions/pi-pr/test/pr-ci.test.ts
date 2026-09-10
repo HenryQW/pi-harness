@@ -80,7 +80,6 @@ function pullRequest(localHead = original): CurrentPullRequest {
 			fetchSource: "git@github.com:acme/fork.git",
 			remoteOid: original,
 		},
-		merge: { allowedMergeMethods: ["squash"], viewerDefaultMergeMethod: "squash" },
 	};
 }
 
