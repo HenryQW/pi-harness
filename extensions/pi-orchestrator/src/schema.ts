@@ -237,6 +237,7 @@ export interface RunState {
 	root: string;
 	requestStartMain: WorkspaceIdentity;
 	main: WorkspaceIdentity;
+	deadlineStartedAt: number;
 	deadline: number;
 	launchRecords: Record<string, LaunchRecord>;
 	status: RequestStatus;
@@ -392,6 +393,7 @@ const RunStateSchema = Type.Object({
 	root: TextSchema,
 	requestStartMain: WorkspaceSchema,
 	main: WorkspaceSchema,
+	deadlineStartedAt: TimestampSchema,
 	deadline: TimestampSchema,
 	launchRecords: Type.Record(Type.String(), LaunchRecordSchema),
 	status: Type.Union([
@@ -614,7 +616,11 @@ export function parseRunState(value: unknown): RunState {
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
-	if (state.deadline !== state.createdAt + request.budgetMs) throw new Error("Malformed pi-orchestrator v1 deadline.");
+	if (state.deadlineStartedAt < state.createdAt
+		|| state.deadlineStartedAt > state.updatedAt
+		|| state.deadline !== state.deadlineStartedAt + request.budgetMs) {
+		throw new Error("Malformed pi-orchestrator v1 deadline.");
+	}
 	const records = validateLaunchRecords(request, Object.values(state.launchRecords));
 	if (!isDeepStrictEqual(records, state.launchRecords)) throw new Error("Malformed pi-orchestrator v1 launch record keys.");
 	if (state.tasks.length !== request.tasks.length) throw new Error("Malformed pi-orchestrator v1 task count.");

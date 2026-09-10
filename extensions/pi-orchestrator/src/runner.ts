@@ -254,6 +254,22 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 	});
 }
 
+function correctionEligible(request: TaskRequest, attempt: TaskAttempt): boolean {
+	const prompt = attempt.prompts.length === 1 ? attempt.prompts[0] : undefined;
+	if (prompt?.kind !== "initial" || prompt.status !== "settled" || attempt.termination || attempt.preliminaryReview) return false;
+	if (!attempt.candidate) {
+		return !attempt.preliminaryChecks && Boolean(prompt.failure?.trim());
+	}
+	const checks = attempt.preliminaryChecks;
+	return Boolean(checks
+		&& checks.phase === "preliminary"
+		&& !checks.passed
+		&& exactCommandResults(checks.results, request.checks)
+		&& checks.results.some((result) => result.code !== 0 || result.killed)
+		&& sameIdentity(checks.candidate, attempt.candidate)
+		&& sameIdentity(checks.identityAfter, attempt.candidate));
+}
+
 function terminal(state: RunState): boolean {
 	return state.status === "completed" || state.status === "final_failed" || state.status === "superseded" || state.status === "aborted";
 }
@@ -296,6 +312,7 @@ export class OrchestratorRunner {
 					root,
 					requestStartMain: prepared.main,
 					main: prepared.main,
+					deadlineStartedAt: startedAt,
 					deadline,
 					launchRecords,
 					status: "pending",
@@ -337,6 +354,11 @@ export class OrchestratorRunner {
 				}
 			}
 
+			const deadlineStartedAt = this.runtime.now();
+			state.deadlineStartedAt = deadlineStartedAt;
+			state.deadline = deadlineStartedAt + state.request.budgetMs;
+			state.updatedAt = deadlineStartedAt;
+			await handle.save();
 			const scope = new DeadlineScope(state.deadline, () => this.runtime.now(), outerSignal);
 			try {
 				await this.requireRecoveredLaunches(state, scope);
@@ -533,8 +555,8 @@ export class OrchestratorRunner {
 		let kind = initialKind;
 		let failure = task.failure;
 		for (;;) {
-			if (kind === "correction" && attempt.prompts.some((prompt) => prompt.kind === "correction")) {
-				this.attention(task, "The one same-agent correction was already used.");
+			if (kind === "correction" && !correctionEligible(request, attempt)) {
+				this.attention(task, "The same-agent correction is unavailable or already used.");
 				return;
 			}
 			const preCandidate = attempt.candidate ?? attempt.waveBase;
@@ -568,6 +590,8 @@ export class OrchestratorRunner {
 			prompt.status = "settled";
 			if (worker.outcome === "blocked") {
 				failure = bounded(worker.diagnostic);
+				prompt.failure = failure;
+				await handle.save();
 			} else {
 				if (worker.outcome !== "candidate") throw new Error("Unexpected worker result.");
 				if (!isCleanCommitted(worker.candidate) || worker.candidate.head === preCandidate.head) {
@@ -624,9 +648,9 @@ export class OrchestratorRunner {
 				}
 			}
 
-			if (attempt.prompts.some((record) => record.kind === "correction") || !sameIdentity(attempt.preliminaryChecks?.identityAfter ?? preCandidate, attempt.candidate ?? preCandidate)) {
-				await this.terminateSettledWorker(handle, task, workerId, attempt.candidate ?? preCandidate, scope);
+			if (!correctionEligible(request, attempt)) {
 				this.attention(task, failure ?? "Task candidate needs attention after its correction window closed.");
+				await this.terminateSettledWorker(handle, task, workerId, attempt.candidate ?? preCandidate, scope);
 				return;
 			}
 			kind = "correction";
@@ -950,7 +974,7 @@ export class OrchestratorRunner {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
-			if (attempt.prompts.some((prompt) => prompt.kind === "correction") || attempt.termination) {
+			if (!correctionEligible(taskRequest(handle.state, task.taskId), attempt)) {
 				throw new Error("The same-agent correction is unavailable or already used.");
 			}
 			task.status = "working";
@@ -1146,6 +1170,18 @@ export class OrchestratorRunner {
 				if (attempt.integration?.status === "integrating") {
 					attempt.integration.status = "unknown";
 					attempt.integration.failure = "Integration was interrupted after intent persistence and was not adopted.";
+				}
+				if (!attempt.termination && attempt.candidate
+					&& !correctionEligible(taskRequest(state, task.taskId), attempt)) {
+					const workerId = allocationByKind(attempt, "agent")?.resourceId;
+					if (workerId) {
+						attempt.termination = {
+							status: "unknown",
+							workerId,
+							candidate: attempt.candidate,
+							failure: "Worker termination was not durably proved before interruption.",
+						};
+					}
 				}
 				for (const step of attempt.cleanup) if (step.status === "running") step.status = "pending";
 			}
