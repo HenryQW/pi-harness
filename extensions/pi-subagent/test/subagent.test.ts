@@ -431,7 +431,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
 		assert.deepEqual(child.args, [
 			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
-			"--exclude-tools", "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort,auto_dag_execute,auto_dag_status,auto_dag_resume,auto_dag_abort",
+			"--exclude-tools", "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort",
 			"--extension", "/user/extensions/review.ts",
 			"--extension", policyExtension,
 			"--skill", "/effective/skills/security/SKILL.md",
@@ -554,7 +554,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		assert.equal(args.includes("--tools"), false);
 		assert.equal(args.includes("--no-tools"), false);
 		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
-		assert.equal(args[args.indexOf("--exclude-tools") + 1], "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort,auto_dag_execute,auto_dag_status,auto_dag_resume,auto_dag_abort");
+		assert.equal(args[args.indexOf("--exclude-tools") + 1], "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort");
 	});
 });
 

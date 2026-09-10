@@ -1,6 +1,8 @@
 # `@henryqw/pi-subagent`
 
-Delegate bounded work from Main to isolated Pi Roles. One Role system covers focused research, review, implementation, parallel work, and ordered chains without loading every detail into Main.
+Delegate bounded work from Main to isolated Pi Roles. `delegate_task` remains lightweight generic delegation. It does not own durable checked implementation graphs.
+
+The public API also supplies Role launch, executor, worktree, and exact-evidence support for packages such as `@henryqw/pi-orchestrator`.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
 
@@ -18,6 +20,7 @@ Run `/task-models` and configure the `fast` profile before delegating. Open `/ta
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
+| [`@henryqw/pi-orchestrator`](https://pi.henry.wang/extensions/pi-orchestrator) | Optional caller | Owns durable checked local implementation graphs. |
 
 Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. Missing shared model config warns once because delegation needs a route.
 

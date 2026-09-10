@@ -67,10 +67,6 @@ export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"orchestrate_status",
 	"orchestrate_resume",
 	"orchestrate_abort",
-	"auto_dag_execute",
-	"auto_dag_status",
-	"auto_dag_resume",
-	"auto_dag_abort",
 ] as const;
 export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");
 const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";

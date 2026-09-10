@@ -10,7 +10,7 @@ caller-owned Model Task declaration, cwd, signal ────────┤
                                      active-Pi ephemeral executor
 ```
 
-Main plans and orchestrates. `delegate_task` owns its flat single/parallel/chain policy, while the public executor runs one prepared delegation. Downstream packages compose their own workflows with ordinary JavaScript and own semantic protocols, shared workspace/state, retry decisions, and bounds. There is no recursive workflow AST.
+Main plans and orchestrates. `delegate_task` remains lightweight generic delegation with flat single, parallel, and chain modes. The public executor runs one prepared delegation. Downstream packages compose their own workflows with ordinary JavaScript and own semantic protocols, shared workspace and state, checks, integration, retry decisions, and bounds. There is no recursive workflow AST.
 
 ## Frozen `delegate_task` contract
 
@@ -109,7 +109,7 @@ A Role file requires:
 
 Every launch installs the Role tool policy. At launch, a package caller may add `tools`, `extensions`, and `env`; caller tools are unioned into the Role base list and loaded extension tools activate in every case. Caller `env` adds to or overrides the active Pi process environment for the child.
 
-Children start with ambient extension and Skill discovery disabled. Only explicit Role/caller extensions, explicitly resolved Skill paths, resources supplied by those extension packages, and any required internal tool-policy or Codex adapter load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `orchestrate_execute`, `orchestrate_status`, `orchestrate_resume`, `orchestrate_abort`, `auto_dag_execute`, `auto_dag_status`, `auto_dag_resume`, `auto_dag_abort`, and `ask_question`. Explicit Role/caller tool names are verified against the final filtered active child registry after every explicit provider extension completes `session_start`; unavailable names fail before the first model turn and identify the missing names with provider-extension guidance.
+Children start with ambient extension and Skill discovery disabled. Only explicit Role or caller extensions, resolved Skill paths, extension package resources, and required internal tool-policy or Codex adapters load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `orchestrate_execute`, `orchestrate_status`, `orchestrate_resume`, `orchestrate_abort`, and `ask_question`. Explicit Role or caller tool names are verified against the final filtered registry after each provider extension completes `session_start`. Unavailable names fail before the first model turn and identify the missing names with provider guidance.
 
 Role Skill names resolve through Main's effective Pi Skill registry at launch. Missing names are returned in `ResolvedRoleLaunch.missingSkills`; `delegate_task` warns and skips them. Library callers must surface that warning themselves. Missing Skills do not block launch.
 

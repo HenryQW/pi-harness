@@ -1,6 +1,8 @@
 # `@henryqw/pi-orchestrator`
 
-Run durable, checked implementation graphs from Pi Main. Independent tasks run in parallel, while dependencies run in later waves.
+Run durable, checked local implementation graphs from Pi Main. Independent tasks run in parallel. Dependencies run in later waves.
+
+This package is the sole owner of that checked protocol. `delegate_task` remains lightweight generic delegation.
 
 ## Requirements
 
@@ -8,6 +10,12 @@ Run durable, checked implementation graphs from Pi Main. Independent tasks run i
 - Herdr `0.9.0` or newer, with protocol version 22 or newer.
 - Configured Pi task-model profiles for every requested model class.
 - `@henryqw/pi-subagent` 16 or newer for Role launch, execution, worktrees, and exact review evidence.
+
+## Upgrade from Auto DAG
+
+Settle every unfinished Auto DAG run before upgrading. Old Auto DAG state is inert. Pi Orchestrator does not read or migrate it.
+
+The repository installer installs all selected packages first. When Pi Orchestrator was selected, it then removes only the exact `npm:@henryqw/pi-auto-dag` source if present. A missing source needs no action.
 
 Install the Main-side packages:
 
@@ -58,7 +66,7 @@ A request accepts one to eight tasks. Every task needs direct checks and an expl
 
 `dependsOn` creates later waves. Tasks in one ready wave use separate worktrees and visible Herdr workers.
 
-Checks run without a shell. Supply the command and every argument separately.
+A worker stops before its checked candidate can integrate. Checks run directly, without a shell. Supply the command and every argument separately.
 
 Add `judgment` only for a criterion that checks cannot decide. The Reviewer receives exact private patch evidence and must return `PASS` exactly.
 
@@ -73,6 +81,12 @@ Use `orchestrate_status` after interruption or when a request needs attention. T
 - `finalize` reruns the final gate when Main still matches the recorded identity.
 
 `orchestrate_abort` terminates owned workers and records an aborted request. It does not claim uncertain cleanup succeeded.
+
+## Version 1 scope
+
+Version 1 stops after checked integration in the local repository. It does not push, open or manage pull requests, run swarms, or support old protocols and state.
+
+It does not use outboxes, delivery hosts, receipts, or broad transport machinery.
 
 ## Package API
 
