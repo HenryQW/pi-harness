@@ -30,6 +30,10 @@ function target(noTarget = true): PullRequestTarget {
 	};
 }
 
+function none(creationTarget: PullRequestTarget) {
+	return { kind: "none" as const, creationTarget, branch: { ahead: 0 } };
+}
+
 function baseOutput() {
 	return JSON.stringify({ data: { repository: {
 		nameWithOwner: "acme/project",
@@ -117,10 +121,7 @@ function creator(exec: Exec, creationTarget: PullRequestTarget) {
 		target: creationTarget,
 		exec,
 		agentDir,
-		loadCurrentPullRequest: async () => ({
-			kind: "none",
-			creationTarget: { ...creationTarget, provenance: "configured", remoteOid: head },
-		}),
+		loadCurrentPullRequest: async () => none({ ...creationTarget, provenance: "configured", remoteOid: head }),
 	});
 	workflow.state.phase = "verified";
 	workflow.state.base = {
@@ -163,7 +164,7 @@ test("push uses an empty exact lease then fetches tracking and sets verified ups
 	const app = creator(exec, target(true));
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	// Push must compare against the original no-target authority, not the post-push discovery fixture.
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({ kind: "none", creationTarget: target(true) });
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(true));
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "push"), ["git", [
 		"push", "--porcelain", "--force-with-lease=refs/heads/feature:", "--recurse-submodules=no", "--",
@@ -210,9 +211,7 @@ test("a successful push remains publishable when no-target upstream setup fails"
 	};
 	const app = creator(exec, target(true));
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
-		kind: "none", creationTarget: target(true),
-	});
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(true));
 	await assert.rejects(app.workflow.push(), /Fetch branch tracking ref failed/);
 	assert.equal(app.workflow.state.phase, "pushed");
 	assert.equal(app.workflow.state.attempts.push, "applied");
@@ -324,10 +323,8 @@ test("preflights and creates an organization-owned cross-repository PR through e
 		host: "github.com", repository: baseRepository, ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/upstream.git",
 	};
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
-		kind: "none",
-		creationTarget: { ...creationTarget, remoteOid: published ? head : remoteHead },
-	});
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () =>
+		none({ ...creationTarget, remoteOid: published ? head : remoteHead });
 
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
 	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url: prUrl });
@@ -379,7 +376,7 @@ test("rejects an unsupported organization cross-repository API before pushing", 
 		host: "github.com", repository: "acme/upstream", ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/upstream.git",
 	};
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({ kind: "none", creationTarget });
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(creationTarget);
 	await assert.rejects(app.workflow.push(), /cannot create an exact organization-owned cross-repository pull request/);
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false);
 });
@@ -439,10 +436,8 @@ test("keeps user-owned fork creation on gh pr create with a qualified head", asy
 		host: "github.com", repository: baseRepository, ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/upstream.git",
 	};
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
-		kind: "none",
-		creationTarget: { ...creationTarget, remoteOid: published ? head : creationTarget.remoteOid },
-	});
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () =>
+		none({ ...creationTarget, remoteOid: published ? head : creationTarget.remoteOid });
 
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
 	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url: prUrl });
@@ -473,7 +468,7 @@ test("rejects a cross-host explicit base before repository lookup", async (t) =>
 			if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
 			throw new Error("unexpected command");
 		},
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
+		loadCurrentPullRequest: async () => none(creationTarget),
 	});
 	await assert.rejects(workflow.prepare("ghe.example/acme/project:main"), /base and head must use the same GitHub host/);
 	assert.equal(commands, 1);
@@ -508,7 +503,7 @@ test("base inference skips the symbolic origin HEAD", async (t) => {
 		target: creationTarget,
 		agentDir,
 		exec,
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
+		loadCurrentPullRequest: async () => none(creationTarget),
 	});
 	const prepared = await workflow.prepare();
 	assert.equal(prepared.kind, "prepared");
@@ -557,7 +552,7 @@ test("base inference refreshes and prunes origin before scoring live branches", 
 		target: creationTarget,
 		agentDir,
 		exec,
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
+		loadCurrentPullRequest: async () => none(creationTarget),
 	});
 
 	const prepared = await workflow.prepare();
@@ -615,7 +610,7 @@ test("base inference excludes a differently named configured push ref owned by o
 		target: creationTarget,
 		agentDir,
 		exec,
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
+		loadCurrentPullRequest: async () => none(creationTarget),
 	});
 	const prepared = await workflow.prepare();
 	assert.equal(prepared.kind, "prepared");
@@ -690,9 +685,7 @@ test("does not push when HEAD or target authority changes after final ancestry c
 		};
 		const app = creator(exec, target(true));
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-		(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
-			kind: "none", creationTarget: latestTarget,
-		});
+		(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(latestTarget);
 		await assert.rejects(app.workflow.push(), race === "HEAD" ? /local HEAD changed before push/ : /fresh complete discovery is no longer none/);
 		assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false, race);
 	}

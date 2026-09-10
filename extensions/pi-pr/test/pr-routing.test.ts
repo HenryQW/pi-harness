@@ -36,12 +36,7 @@ function deriveNextStep(pullRequest: PullRequest | null): NextStep {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: {
-			branch: "feature",
-			head: "a".repeat(40),
-			base: { remote: "origin", ref: "main", oid: "b".repeat(40), mergeBase: "b".repeat(40) },
-			ahead: 1,
-		},
+		branch: { ahead: 1 },
 	});
 }
 
@@ -95,12 +90,7 @@ test("requires an ahead commit before routing creation", () => {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: {
-			branch: "feature",
-			head: "a".repeat(40),
-			base: { remote: "origin", ref: "main", oid: "b".repeat(40), mergeBase: "b".repeat(40) },
-			ahead: 0,
-		},
+		branch: { ahead: 0 },
 	};
 	assert.equal(deriveDiscoveryNextStep(creation), "none");
 	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, ahead: 1 } }), "create");

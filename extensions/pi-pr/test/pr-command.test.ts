@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+	loadCurrentPullRequest as discoverCurrentPullRequest,
+	type CurrentPullRequestDiscovery,
+} from "../extensions/pr-github.ts";
 import { createPrCommandHandler } from "../extensions/pr-command.ts";
 
 const cwd = "/repo";
@@ -9,6 +13,23 @@ const nextHead = "b".repeat(40);
 const baseHead = "c".repeat(40);
 const DEFAULT_HOST = "github.com";
 const workflowRunId = "11111111-1111-4111-8111-111111111111";
+
+function noPullRequest(): CurrentPullRequestDiscovery {
+	return {
+		kind: "none",
+		creationTarget: {
+			provenance: "configured",
+			branch: "feature/pr",
+			remote: "fork",
+			ref: "feature/pr",
+			repository: "acme/project",
+			host: DEFAULT_HOST,
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+		branch: { ahead: 1 },
+	};
+}
 
 type PullRequestSpec = {
 	id?: string;
@@ -273,6 +294,13 @@ function harness(options: HarnessOptions) {
 	return {
 		pi,
 		handler: createPrCommandHandler(pi, {
+			async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
+				if (options.states[stateIndex] === null) {
+					events.push("load");
+					return noPullRequest();
+				}
+				return await discoverCurrentPullRequest(...args);
+			},
 			async reserveWorkflow(reservation) {
 				events.push("reserve");
 				reservations.push(reservation);

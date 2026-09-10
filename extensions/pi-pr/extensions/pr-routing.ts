@@ -38,22 +38,8 @@ export type PullRequestTarget = {
 	remoteOid: string | null;
 };
 
-export type BranchInspection = {
-	branch: string;
-	head: string;
-	base: {
-		remote: string;
-		ref: string;
-		oid: string;
-		mergeBase: string;
-	};
+export type BranchCreationState = {
 	ahead: number;
-};
-
-export type BranchInspectionBlocker = {
-	code: string;
-	message: string;
-	candidates?: string[];
 };
 
 export type DiscoveryIssue =
@@ -64,12 +50,11 @@ export type DiscoveryIssue =
 	| { kind: "candidate-prs-ambiguous"; urls: URL[] }
 	| { kind: "candidate-oid-mismatch"; remote: string; urls: URL[] }
 	| { kind: "published-without-pr"; remote: string }
-	| { kind: "link-configuration"; remote: string }
-	| { kind: "branch-parent-unresolved"; blocker: BranchInspectionBlocker };
+	| { kind: "link-configuration"; remote: string };
 
 export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
 	| { kind: "current"; pullRequest: T }
-	| { kind: "none"; creationTarget: PullRequestTarget; branch: BranchInspection }
+	| { kind: "none"; creationTarget: PullRequestTarget; branch: BranchCreationState }
 	| { kind: "blocked"; issue: DiscoveryIssue }
 	| { kind: "inactive" };
 

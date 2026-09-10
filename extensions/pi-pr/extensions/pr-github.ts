@@ -4,12 +4,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
 import { withWorktreeLock } from "./pr-execution.ts";
 import type {
-	BranchInspection,
-	BranchInspectionBlocker,
 	CiStatus,
 	LocalMergeSafety,
 	PullRequest,
@@ -22,8 +19,6 @@ import type {
 } from "./pr-routing.ts";
 
 const EXEC_TIMEOUT_MS = 10_000;
-const MAX_INSPECTOR_OUTPUT_BYTES = 16_384;
-const BRANCH_INSPECTOR = fileURLToPath(new URL("../skills/pi-pr-create/scripts/inspect-branch.mjs", import.meta.url));
 const PR_DISCOVERY_PAGE_SIZE = 100;
 const PR_DISCOVERY_CAP = 1_000;
 const PR_DISCOVERY_MAX_PAGES = PR_DISCOVERY_CAP / PR_DISCOVERY_PAGE_SIZE;
@@ -66,20 +61,6 @@ const MERGE_STATE_VALUES = new Set([
 ]);
 const REVIEW_DECISION_VALUES = new Set(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"]);
 const MERGE_METHODS: MergeMethod[] = ["merge", "rebase", "squash"];
-const BRANCH_BLOCKER_CODES = new Set([
-	"ambiguous-parent",
-	"cancelled",
-	"detached-head",
-	"git-command-failed",
-	"inspector-failed",
-	"invalid-git-output",
-	"invalid-input",
-	"invalid-ref",
-	"missing-parent-evidence",
-	"output-limit",
-	"timeout",
-	"too-many-parent-candidates",
-]);
 
 export class PullRequestLoadError extends Error {
 	constructor(message: string) {
@@ -123,6 +104,24 @@ export type PullRequestObservation = {
 };
 
 export type PullRequestLoadContext = Pick<ExtensionContext, "cwd" | "signal">;
+
+export type PullRequestCreationPreflight = {
+	head: string;
+	base: {
+		host: string;
+		repository: string;
+		fetchSource: string;
+		ref: string;
+		oid: string;
+		mergeBase: string;
+	};
+	ahead: number;
+};
+
+type CreationIdentity = {
+	target: PullRequestTarget;
+	head: string;
+};
 
 type CommandOutput = {
 	stdout: string;
@@ -355,89 +354,6 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 	const actual = Object.keys(value).sort();
 	const expected = [...keys].sort();
 	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-}
-
-async function parseBranchInspectionBlocker(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	value: unknown,
-	baseRemote: string,
-): Promise<BranchInspectionBlocker> {
-	if (!isRecord(value)) fail("Inspect branch", "invalid blocker");
-	const allowedKeys = value.candidates === undefined ? ["code", "message"] : ["code", "message", "candidates"];
-	if (!hasExactKeys(value, allowedKeys)) fail("Inspect branch", "invalid blocker");
-	const code = text(value.code, "Inspect branch", "blocker code");
-	if (!BRANCH_BLOCKER_CODES.has(code)) fail("Inspect branch", "invalid blocker code");
-	const message = text(value.message, "Inspect branch", "blocker message");
-	if (message.length > 500) fail("Inspect branch", "invalid blocker message");
-	if (value.candidates === undefined) return { code, message };
-	if (!Array.isArray(value.candidates) || value.candidates.length < 2 || value.candidates.length > 100) {
-		fail("Inspect branch", "invalid blocker candidates");
-	}
-	const candidates = value.candidates.map((candidate) => text(candidate, "Inspect branch", "blocker candidate"));
-	const sorted = [...candidates].sort();
-	if (new Set(candidates).size !== candidates.length || candidates.some((candidate, index) => candidate !== sorted[index])) {
-		fail("Inspect branch", "invalid blocker candidates");
-	}
-	for (const candidate of candidates) {
-		if (!candidate.startsWith(`${baseRemote}/`)) fail("Inspect branch", "invalid blocker candidate remote");
-		const ref = candidate.slice(baseRemote.length + 1);
-		const checked = singleLine(
-			(await execute(pi, context, "Validate inspected candidate", "git", ["check-ref-format", "--branch", ref])).stdout,
-			"Validate inspected candidate",
-			"candidate ref",
-		);
-		if (checked !== ref) fail("Validate inspected candidate", "candidate ref changed");
-	}
-	return { code, message, candidates };
-}
-
-async function parseBranchInspection(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	output: string,
-	target: PullRequestTarget,
-	baseRemote: string,
-): Promise<BranchInspection | BranchInspectionBlocker> {
-	if (!output || Buffer.byteLength(output) > MAX_INSPECTOR_OUTPUT_BYTES) {
-		fail("Inspect branch", "invalid inspector output size");
-	}
-	const value = parseJson(output, "Inspect branch");
-	if (!isRecord(value) || value.schemaVersion !== 1 || (value.status !== "ready" && value.status !== "blocked")) {
-		fail("Inspect branch", "invalid inspector output");
-	}
-	if (value.status === "blocked") {
-		if (!hasExactKeys(value, ["schemaVersion", "status", "blocker"])) fail("Inspect branch", "invalid inspector output");
-		return parseBranchInspectionBlocker(pi, context, value.blocker, baseRemote);
-	}
-	if (!hasExactKeys(value, ["schemaVersion", "status", "branch", "head", "base", "ahead"]) || !isRecord(value.base)) {
-		fail("Inspect branch", "invalid inspector output");
-	}
-	if (!hasExactKeys(value.base, ["remote", "ref", "oid", "mergeBase"])) fail("Inspect branch", "invalid base");
-	const branch = text(value.branch, "Inspect branch", "branch");
-	const remote = text(value.base.remote, "Inspect branch", "base remote");
-	const ref = text(value.base.ref, "Inspect branch", "base ref");
-	if (branch !== target.branch || remote !== baseRemote) fail("Inspect branch", "result does not match creation target");
-	const checkedRef = singleLine(
-		(await execute(pi, context, "Validate inspected base", "git", ["check-ref-format", "--branch", ref])).stdout,
-		"Validate inspected base",
-		"base ref",
-	);
-	if (checkedRef !== ref) fail("Validate inspected base", "base ref changed");
-	if (typeof value.ahead !== "number" || !Number.isSafeInteger(value.ahead) || value.ahead < 0) {
-		fail("Inspect branch", "invalid ahead count");
-	}
-	return {
-		branch,
-		head: oid(value.head, "Inspect branch", "HEAD"),
-		base: {
-			remote,
-			ref,
-			oid: oid(value.base.oid, "Inspect branch", "base OID"),
-			mergeBase: oid(value.base.mergeBase, "Inspect branch", "merge-base"),
-		},
-		ahead: value.ahead,
-	};
 }
 
 async function invoke(
@@ -1158,34 +1074,231 @@ function parseMergeMethodSettings(output: string, rulesetMethods: MergeMethod[] 
 	return { allowedMergeMethods, viewerDefaultMergeMethod };
 }
 
-async function inspectCreationBranch(
+function validatedCreationTarget(target: PullRequestTarget): PullRequestTarget {
+	if (!isRecord(target)) fail("Read creation target", "invalid target");
+	if (target.provenance !== "configured" && target.provenance !== "inferred") {
+		fail("Read creation target", "invalid provenance");
+	}
+	return {
+		provenance: target.provenance,
+		branch: text(target.branch, "Read creation target", "branch"),
+		remote: text(target.remote, "Read creation target", "remote"),
+		ref: text(target.ref, "Read creation target", "ref"),
+		repository: repositoryName(target.repository, "Read creation target", "repository"),
+		host: text(target.host, "Read creation target", "host").toLowerCase(),
+		fetchSource: text(target.fetchSource, "Read creation target", "fetch source"),
+		remoteOid: target.remoteOid === null ? null : oid(target.remoteOid, "Read creation target", "remote OID"),
+	};
+}
+
+function sameCreationTarget(left: PullRequestTarget, right: PullRequestTarget): boolean {
+	return left.provenance === right.provenance && left.branch === right.branch &&
+		left.remote === right.remote && left.ref === right.ref &&
+		normalizeRepository(left.repository) === normalizeRepository(right.repository) &&
+		left.host === right.host && left.fetchSource === right.fetchSource && left.remoteOid === right.remoteOid;
+}
+
+async function validateCreationRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	ref: string,
+): Promise<string> {
+	const requested = text(ref, "Validate creation base", "ref");
+	const checked = singleLine(
+		(await execute(pi, context, "Validate creation base", "git", ["check-ref-format", "--branch", requested])).stdout,
+		"Validate creation base",
+		"ref",
+	);
+	if (checked !== requested) fail("Validate creation base", "ref changed");
+	return requested;
+}
+
+async function captureCreationIdentity(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: PullRequestTarget,
-	baseFetchSource: string,
-): Promise<BranchInspection | BranchInspectionBlocker> {
-	const result = await execute(pi, context, "Inspect branch", process.execPath, [
-		BRANCH_INSPECTOR,
-		"--remote",
-		"origin",
-		"--fetch-source",
-		baseFetchSource,
+): Promise<CreationIdentity> {
+	const validatedTarget = validatedCreationTarget(target);
+	const branch = singleLine(
+		(await execute(pi, context, "Read creation branch", "git", ["branch", "--show-current"])).stdout,
+		"Read creation branch",
+		"branch",
+	);
+	if (branch !== validatedTarget.branch) fail("Read creation branch", "branch changed");
+	await validateCreationRef(pi, context, branch);
+	const head = oid(singleLine(
+		(await execute(pi, context, "Read creation HEAD", "git", ["rev-parse", "--verify", "HEAD^{commit}"])).stdout,
+		"Read creation HEAD",
+		"OID",
+	), "Read creation HEAD", "OID");
+	return { target: validatedTarget, head };
+}
+
+async function readConfiguredCreationBaseRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	branch: string,
+): Promise<string | null> {
+	const result = await invoke(pi, context, "Read creation base configuration", "git", [
+		"config", "--get-all", `branch.${branch}.gh-merge-base`,
 	]);
-	if (result.stderr !== "") fail("Inspect branch", "unexpected inspector stderr");
-	return parseBranchInspection(pi, context, result.stdout, target, "origin");
+	if (result.killed) commandFailure("Read creation base configuration", result);
+	if (result.code === 1 && result.stdout === "" && result.stderr === "") return null;
+	if (result.code !== 0) commandFailure("Read creation base configuration", result);
+	if (result.stderr !== "") fail("Read creation base configuration", "unexpected diagnostic");
+	const values = lines(result.stdout, "Read creation base configuration", "base ref");
+	if (values.length !== 1) fail("Read creation base configuration", "multiple base refs");
+	return await validateCreationRef(pi, context, values[0]!);
+}
+
+function parseDefaultCreationBaseRef(output: string): string {
+	const value = parseJson(output, "Read creation default branch");
+	if (!isRecord(value) || !hasExactKeys(value, ["defaultBranchRef"]) || !isRecord(value.defaultBranchRef) ||
+		!hasExactKeys(value.defaultBranchRef, ["name"])) {
+		fail("Read creation default branch", "invalid GitHub CLI output");
+	}
+	return text(value.defaultBranchRef.name, "Read creation default branch", "default branch ref");
+}
+
+async function readDefaultCreationBaseRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	origin: { repository: PushRepository },
+): Promise<string> {
+	const result = await execute(pi, context, "Read creation default branch", "gh", [
+		"repo", "view", `${origin.repository.host}/${origin.repository.nameWithOwner}`, "--json", "defaultBranchRef",
+	]);
+	if (result.stderr !== "") fail("Read creation default branch", "unexpected diagnostic");
+	return await validateCreationRef(pi, context, parseDefaultCreationBaseRef(result.stdout));
+}
+
+function parseCreationRepositoryLineage(output: string, expected: PushRepository): string {
+	const value = parseJson(output, "Read creation repository");
+	if (!isRecord(value)) fail("Read creation repository", "invalid GitHub CLI output");
+	const fullName = repositoryName(value.full_name, "Read creation repository", "full_name");
+	const url = parseHttpUrl(value.html_url, "Read creation repository", "html_url");
+	if (
+		normalizeRepository(fullName) !== expected.normalizedName || url.protocol !== "https:" || url.port ||
+		url.hostname.toLowerCase() !== expected.host || url.pathname.toLowerCase() !== `/${expected.normalizedName}`
+	) fail("Read creation repository", "response does not match repository");
+	const source = value.source;
+	if (source !== undefined && source !== null && !isRecord(source)) {
+		fail("Read creation repository", "invalid source");
+	}
+	const sourceName = source === undefined || source === null
+		? fullName
+		: repositoryName(source.full_name, "Read creation repository", "source.full_name");
+	return normalizeRepository(sourceName);
+}
+
+async function assertCreationRepositoryRelation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	origin: { repository: PushRepository },
+	baseRef: string,
+): Promise<void> {
+	if (target.host !== origin.repository.host) {
+		fail("Read creation repository", "base and head hosts do not match");
+	}
+	if (normalizeRepository(target.repository) === origin.repository.normalizedName) {
+		if (target.ref === baseRef) fail("Read creation repository", "head and base refs match");
+		return;
+	}
+	const read = async (repository: PushRepository): Promise<string> => {
+		const [owner, name] = repository.nameWithOwner.split("/");
+		const result = await execute(pi, context, "Read creation repository", "gh", [
+			"api", "--hostname", origin.repository.host, `repos/${owner}/${name}`,
+		]);
+		if (result.stderr !== "") fail("Read creation repository", "unexpected diagnostic");
+		return parseCreationRepositoryLineage(result.stdout, repository);
+	};
+	const originSource = await read(origin.repository);
+	const targetSource = await read({
+		nameWithOwner: target.repository,
+		normalizedName: normalizeRepository(target.repository),
+		host: target.host,
+	});
+	if (originSource !== targetSource) fail("Read creation repository", "base and head are unrelated");
+}
+
+function parseCreationAhead(output: string): number {
+	const value = singleLine(output, "Count creation commits", "ahead count");
+	if (!/^(?:0|[1-9][0-9]*)$/.test(value)) fail("Count creation commits", "invalid ahead count");
+	const ahead = Number(value);
+	if (!Number.isSafeInteger(ahead) || ahead < 0) fail("Count creation commits", "invalid ahead count");
+	return ahead;
+}
+
+async function preflightCreation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef: string | undefined,
+	identity: CreationIdentity,
+): Promise<PullRequestCreationPreflight> {
+	const validatedTarget = validatedCreationTarget(target);
+	if (!sameCreationTarget(identity.target, validatedTarget)) {
+		fail("Read creation target", "target changed");
+	}
+	const origin = await readRemoteAuthority(pi, context, "origin", true);
+	if (!origin) fail("Read creation repository", "origin is unavailable");
+	const configuredBaseRef = explicitBaseRef === undefined
+		? await readConfiguredCreationBaseRef(pi, context, identity.target.branch)
+		: await validateCreationRef(pi, context, explicitBaseRef);
+	const baseRef = configuredBaseRef ?? await readDefaultCreationBaseRef(pi, context, origin);
+	await assertCreationRepositoryRelation(pi, context, identity.target, origin, baseRef);
+	const trackingRef = `refs/remotes/origin/${baseRef}`;
+	await execute(pi, context, "Fetch creation base", "git", [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		origin.fetchSource, `+refs/heads/${baseRef}:${trackingRef}`,
+	]);
+	const baseOid = oid(singleLine(
+		(await execute(pi, context, "Read creation base", "git", ["rev-parse", "--verify", `${trackingRef}^{commit}`])).stdout,
+		"Read creation base",
+		"OID",
+	), "Read creation base", "OID");
+	const mergeBase = oid(singleLine(
+		(await execute(pi, context, "Find creation merge base", "git", ["merge-base", identity.head, baseOid])).stdout,
+		"Find creation merge base",
+		"OID",
+	), "Find creation merge base", "OID");
+	const ahead = parseCreationAhead((await execute(pi, context, "Count creation commits", "git", [
+		"rev-list", "--count", `${mergeBase}..${identity.head}`,
+	])).stdout);
+	return {
+		head: identity.head,
+		base: {
+			host: origin.repository.host,
+			repository: origin.repository.nameWithOwner,
+			fetchSource: origin.fetchSource,
+			ref: baseRef,
+			oid: baseOid,
+			mergeBase,
+		},
+		ahead,
+	};
+}
+
+export async function preflightPullRequestCreation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef?: string,
+): Promise<PullRequestCreationPreflight> {
+	const identity = await captureCreationIdentity(pi, context, target);
+	return await preflightCreation(pi, context, target, explicitBaseRef, identity);
 }
 
 async function creationDiscovery(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: PullRequestTarget,
+	identity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
-	const origin = await readRemoteAuthority(pi, context, "origin");
-	if (!origin) return { kind: "blocked", issue: { kind: "origin-invalid" } };
-	const inspection = await inspectCreationBranch(pi, context, target, origin.fetchSource);
-	return "ahead" in inspection
-		? { kind: "none", creationTarget: target, branch: inspection }
-		: { kind: "blocked", issue: { kind: "branch-parent-unresolved", blocker: inspection } };
+	const captured = identity ?? await captureCreationIdentity(pi, context, target);
+	const preflight = await preflightCreation(pi, context, target, undefined, captured);
+	return { kind: "none", creationTarget: target, branch: { ahead: preflight.ahead } };
 }
 
 async function readRemoteAuthority(
@@ -1810,6 +1923,16 @@ export async function loadCurrentPullRequest(
 	inspectedLocal?: LocalMergeSafety,
 	observed?: unknown,
 ): Promise<CurrentPullRequestDiscovery> {
+	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed);
+}
+
+async function loadCurrentPullRequestInternal(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	inspectedLocal: LocalMergeSafety | undefined,
+	observed: unknown,
+	creationIdentity?: CreationIdentity,
+): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
 	if (read.kind === "inactive") return { kind: "inactive" };
 	if (read.kind === "blocked") {
@@ -1829,10 +1952,18 @@ export async function loadCurrentPullRequest(
 			};
 		}
 		if (inferred.kind === "none") {
+			const target = publicTarget(inferred.target);
+			if (creationIdentity === undefined) {
+				const captured = await captureCreationIdentity(pi, context, target);
+				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, captured);
+			}
+			if (!sameCreationTarget(creationIdentity.target, validatedCreationTarget(target))) {
+				fail("Read creation target", "target changed");
+			}
 			if (!canLinkTarget(await readLinkConfiguration(pi, context, inferred.target), inferred.target)) {
 				return { kind: "blocked", issue: { kind: "link-configuration", remote: inferred.target.remote } };
 			}
-			return creationDiscovery(pi, context, publicTarget(inferred.target));
+			return await creationDiscovery(pi, context, target, creationIdentity);
 		}
 		pushTarget = inferred.target;
 	} else {
@@ -1929,7 +2060,10 @@ export async function loadCurrentPullRequest(
 			}
 			throw error;
 		}
-		if (candidate === null) return creationDiscovery(pi, context, publicTarget(pushTarget));
+		if (candidate === null) {
+			if (creationIdentity !== undefined) fail("Read creation target", "target changed");
+			return await creationDiscovery(pi, context, publicTarget(pushTarget));
+		}
 	}
 
 	return {
