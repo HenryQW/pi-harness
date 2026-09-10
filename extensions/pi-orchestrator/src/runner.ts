@@ -1194,6 +1194,9 @@ export class OrchestratorRunner {
 			task.status = "working";
 			await this.driveWorker(handle, task, scope, "correction");
 		} else {
+			if (attempt.termination || allocationByKind(attempt, "agent")) {
+				throw new Error("A promptless attempt with a terminated or potentially active saved agent cannot be retried productively.");
+			}
 			for (const intent of attempt.allocations.filter((item) => item.status !== "owned")) {
 				let result: AllocationReconciliation;
 				try {

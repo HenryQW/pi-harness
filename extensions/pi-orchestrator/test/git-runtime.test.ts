@@ -277,6 +277,113 @@ test("worktree allocation persists helper-derived intent before add and retains 
 	]);
 });
 
+test("pre-prompt inspection proves exact owned worktree identity and fails closed on drift", async (t) => {
+	async function prepared(t: test.TestContext, definition: TaskRequest, runtime = new CheckedGitRuntime()) {
+		const root = await repository(t);
+		const base = await runtime.inspectMain({ root }, context());
+		const allocated = await allocate(runtime, root, definition, base, `token-${definition.id}-000001`);
+		assert.equal(allocated.result.outcome, "owned");
+		return { root, base, runtime, ...allocated };
+	}
+
+	await t.test("initial and correction success", async (t) => {
+		const definition = task("success");
+		const setup = await prepared(t, definition);
+		const initial = await setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context());
+		assert.equal(initial.branch, `refs/heads/${setup.intent.worktree!.branch}`);
+		assert.equal(initial.head, setup.base.head);
+		assert.equal(initial.index, setup.base.index);
+		assert.equal(initial.tree, setup.base.tree);
+
+		await commit(setup.intent.worktree!.cwd, "candidate.txt", "candidate\n");
+		const candidate = await setup.runtime.inspectRetainedTask({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context());
+		setup.attempt.prompts.push({ kind: "initial", status: "settled", preCandidate: initial, candidate, at: Date.now() });
+		setup.attempt.candidate = candidate;
+		assert.deepEqual(await setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), candidate);
+	});
+
+	await t.test("ownership", async (t) => {
+		const definition = task("ownership");
+		const setup = await prepared(t, definition);
+		setup.intent.status = "absent";
+		await assert.rejects(setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), /owned worktree allocation metadata/);
+	});
+
+	await t.test("registration", async (t) => {
+		const definition = task("registration");
+		const setup = await prepared(t, definition);
+		git(setup.root, "worktree", "remove", "--force", setup.intent.worktree!.path);
+		await mkdir(setup.intent.worktree!.path, { recursive: true });
+		await assert.rejects(setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), /not registered/);
+	});
+
+	await t.test("checked-out branch", async (t) => {
+		const definition = task("branch");
+		const setup = await prepared(t, definition);
+		git(setup.intent.worktree!.cwd, "checkout", "-qb", "unexpected-branch");
+		await assert.rejects(setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), /moved off its owned branch/);
+	});
+
+	await t.test("branch tip", async (t) => {
+		let recordedBranch: string | undefined;
+		const runtime = new CheckedGitRuntime({
+			runProcess: async (command, args, options) => {
+				const result = await directProcess(command, args, options);
+				if (recordedBranch && command === "git"
+					&& args.join(" ") === `rev-parse --verify refs/heads/${recordedBranch}^{commit}`) {
+					return { ...result, stdout: `${"f".repeat(40)}\n` };
+				}
+				return result;
+			},
+		});
+		const definition = task("tip");
+		const setup = await prepared(t, definition, runtime);
+		recordedBranch = setup.intent.worktree!.branch;
+		await assert.rejects(runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), /branch no longer names its checked-out HEAD/);
+	});
+
+	await t.test("dirty candidate", async (t) => {
+		const definition = task("dirty-prompt");
+		const setup = await prepared(t, definition);
+		await writeFile(join(setup.intent.worktree!.cwd, "untracked.txt"), "dirty\n");
+		await assert.rejects(setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), /tracked|dirty|inspection/i);
+	});
+
+	await t.test("gitlink", async (t) => {
+		const definition = task("gitlink-prompt");
+		const setup = await prepared(t, definition);
+		git(setup.intent.worktree!.cwd, "update-index", "--add", "--cacheinfo", `160000,${setup.base.head},nested`);
+		await assert.rejects(setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), /160000|gitlink/);
+	});
+
+	await t.test("initial wave base", async (t) => {
+		const definition = task("base");
+		const setup = await prepared(t, definition);
+		await commit(setup.intent.worktree!.cwd, "advanced.txt", "advanced\n");
+		await assert.rejects(setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context()), /initial prompt.*recorded wave base/);
+	});
+});
+
 test("initialized, uninitialized, and worker-added gitlinks are rejected", async (t) => {
 	const source = await repository(t);
 	const root = await repository(t);

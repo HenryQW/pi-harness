@@ -33,6 +33,7 @@ import type {
 	GitCleanupKind,
 	GitRuntime,
 	IntegrationResult,
+	TaskCandidateInspector,
 	OperationContext,
 	RebaseResult,
 	ReviewResult,
@@ -182,7 +183,7 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-export class CheckedGitRuntime implements GitRuntime {
+export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
 	private readonly execute: DirectProcessRunner;
 	private readonly executeReview?: ExactReviewExecutor;
 
@@ -364,6 +365,28 @@ export class CheckedGitRuntime implements GitRuntime {
 		} finally {
 			await evidence.cleanup();
 		}
+	}
+
+	async inspectTaskCandidate(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity> {
+		const priorPrompt = input.attempt.prompts.at(-1);
+		const expected = priorPrompt
+			? input.attempt.candidate ?? priorPrompt.candidate ?? priorPrompt.preCandidate
+			: undefined;
+		const candidate = await this.inspectTask(
+			input.root,
+			input.task,
+			input.attempt,
+			expected,
+			input.attempt.waveBase.head,
+			context,
+			false,
+		);
+		if (!priorPrompt && (candidate.head !== input.attempt.waveBase.head
+			|| candidate.index !== input.attempt.waveBase.index
+			|| candidate.tree !== input.attempt.waveBase.tree)) {
+			throw new Error(`Task ${input.task.id} initial prompt no longer starts from its recorded wave base.`);
+		}
+		return candidate;
 	}
 
 	async inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity> {
@@ -580,6 +603,7 @@ export class CheckedGitRuntime implements GitRuntime {
 		expected: WorkspaceIdentity | undefined,
 		base: string | undefined,
 		context: OperationContext,
+		requireChange = true,
 	): Promise<WorkspaceIdentity> {
 		const worktree = worktreeIntent(attempt).worktree;
 		if (worktree.baseCommit !== attempt.waveBase.head) {
@@ -598,8 +622,10 @@ export class CheckedGitRuntime implements GitRuntime {
 		if (!await this.isAncestor(requiredBase, identity.head, worktree.cwd, context)) {
 			throw new Error(`Task ${task.id} tip does not descend from its recorded base ${requiredBase}.`);
 		}
-		const count = Number.parseInt(oneLine(await this.requireGit(["rev-list", "--count", `${requiredBase}..${identity.head}`], worktree.cwd, context), "task commit count"), 10);
-		if (!Number.isSafeInteger(count) || count < 1) throw new Error(`Task ${task.id} has no committed change from its recorded base.`);
+		if (requireChange) {
+			const count = Number.parseInt(oneLine(await this.requireGit(["rev-list", "--count", `${requiredBase}..${identity.head}`], worktree.cwd, context), "task commit count"), 10);
+			if (!Number.isSafeInteger(count) || count < 1) throw new Error(`Task ${task.id} has no committed change from its recorded base.`);
+		}
 		return identity;
 	}
 

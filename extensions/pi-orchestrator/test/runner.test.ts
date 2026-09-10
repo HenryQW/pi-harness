@@ -898,6 +898,32 @@ test("abort terminates only exact saved active workers under one non-productive 
 	assert.equal(aborted.continuation, undefined);
 });
 
+test("promptless attempts with terminated or uncertain saved agents cannot be retried", async (t) => {
+	for (const [name, plan, status] of [
+		["terminated", { outcome: "terminated" }, "terminated"],
+		["unknown", { outcome: "unknown", failure: "process state unavailable" }, "unknown"],
+	] satisfies [string, TerminationPlan, "terminated" | "unknown"][]) {
+		await t.test(name, async (t) => {
+			const { root, runtime, runner } = await harness(t);
+			runtime.candidateInspectionPlans.push({ error: new Error("candidate inspection failed") });
+			runtime.terminationPlans.push(plan);
+			const stopped = await runner.execute(request(), root);
+			const attempt = stopped.state.tasks[0]!.attempts[0]!;
+			assert.equal(attempt.prompts.length, 0);
+			assert.equal(attempt.allocations.find(({ kind }) => kind === "agent")?.status, "owned");
+			assert.equal(attempt.termination?.status, status);
+
+			await assert.rejects(
+				runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
+				/promptless attempt.*saved agent.*cannot be retried productively/,
+			);
+			assert.equal(runtime.allocationCalls.filter((kind) => kind === "agent").length, 1);
+			assert.equal(runtime.workerCalls.length, 0);
+			assert.deepEqual(runtime.reconciliationCalls, []);
+		});
+	}
+});
+
 test("unknown allocations block adoption, while a proved-absent unprompted start gets one fresh allocation", async (t) => {
 	{
 		const { root, runtime, runner } = await harness(t);
