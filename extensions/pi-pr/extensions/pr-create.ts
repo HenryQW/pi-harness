@@ -28,7 +28,6 @@ import {
 	runChecked,
 	spawnBounded,
 	withWorktreeLock,
-	type AttemptState,
 	type Exec,
 	type ExecOptions,
 } from "./pr-execution.ts";
@@ -60,16 +59,6 @@ type CrossRepositoryCreateAuthority = {
 
 export type CreatePullRequestState = {
 	phase: CreatePhase;
-	attempts: {
-		fetchBase: AttemptState;
-		merge: AttemptState;
-		stage: AttemptState;
-		continueMerge: AttemptState;
-		push: AttemptState;
-		fetchTracking: AttemptState;
-		setUpstream: AttemptState;
-		pullRequest: AttemptState;
-	};
 	base?: CreateBaseAuthority;
 	createAuthority?: CrossRepositoryCreateAuthority;
 	mergeHead?: string;
@@ -209,13 +198,7 @@ function resolvedPaths(paths: readonly string[], expected: readonly string[]): s
 }
 
 export class PullRequestCreator {
-	readonly state: CreatePullRequestState = {
-		phase: "unprepared",
-		attempts: {
-			fetchBase: "none", merge: "none", stage: "none", continueMerge: "none", push: "none",
-			fetchTracking: "none", setUpstream: "none", pullRequest: "none",
-		},
-	};
+	readonly state: CreatePullRequestState = { phase: "unprepared" };
 
 	private readonly cwd: string;
 	private readonly target: PullRequestTarget;
@@ -358,7 +341,7 @@ export class PullRequestCreator {
 	}
 
 	async prepare(explicitBase?: string): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "unprepared" || this.state.attempts.fetchBase !== "none") {
+		if (this.state.phase !== "unprepared") {
 			throw new Error("PR creation prepare action was already consumed");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
@@ -369,17 +352,11 @@ export class PullRequestCreator {
 			}
 			const oid = await readPullRequestBaseRefOid(this.pi(), this.context(), base);
 			this.state.base = { ...base, oid };
-			this.state.attempts.fetchBase = "attempting";
-			try {
-				await runChecked(this.exec, "git", [
-					"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, oid,
-				], this.options());
-				await runChecked(this.exec, "git", ["cat-file", "-e", `${oid}^{commit}`], this.options());
-				this.state.attempts.fetchBase = "applied";
-			} catch (error) {
-				this.state.attempts.fetchBase = "unknown";
-				throw error;
-			}
+			this.state.phase = "blocked";
+			await runChecked(this.exec, "git", [
+				"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, oid,
+			], this.options());
+			await runChecked(this.exec, "git", ["cat-file", "-e", `${oid}^{commit}`], this.options());
 			await this.freshNone();
 			if (await this.liveBase() !== oid) throw new Error("PR creation cancelled: base ref moved during prepare");
 			const mergeBase = requiredOid(line((await runChecked(this.exec, "git", ["merge-base", "HEAD", oid], this.options())).stdout, "merge base"), "merge base");
@@ -419,7 +396,7 @@ export class PullRequestCreator {
 	}
 
 	async merge(): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "prepared" || !this.state.base || this.state.attempts.merge !== "none") {
+		if (this.state.phase !== "prepared" || !this.state.base) {
 			throw new Error("PR creation is not prepared for merge");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
@@ -431,35 +408,17 @@ export class PullRequestCreator {
 				this.state.mergeHead = originalHead;
 				return { kind: "verified", head: originalHead, fastForward: false };
 			}
-			this.state.attempts.merge = "attempting";
-			let result;
-			try {
-				result = await this.exec("git", ["merge", "--no-edit", this.state.base!.oid], this.options());
-			} catch (error) {
-				this.state.attempts.merge = "unknown";
-				throw error;
-			}
-			if (result.killed) {
-				this.state.attempts.merge = "unknown";
-				throw new Error("git merge was killed; its outcome is unknown");
-			}
+			this.state.phase = "blocked";
+			const result = await this.exec("git", ["merge", "--no-edit", this.state.base!.oid], this.options());
+			if (result.killed) throw new Error("git merge was killed; its outcome is unknown");
 			if (result.code === 0) {
-				try {
-					const verified = await this.verifyMerge(originalHead);
-					this.state.attempts.merge = "applied";
-					return { kind: "verified", ...verified };
-				} catch (error) {
-					this.state.attempts.merge = "unknown";
-					throw error;
-				}
+				const verified = await this.verifyMerge(originalHead);
+				return { kind: "verified", ...verified };
 			}
 			try {
 				const paths = await this.captureConflict(originalHead);
-				this.state.attempts.merge = "applied";
 				return { kind: "conflict", paths };
 			} catch (error) {
-				this.state.attempts.merge = "blocked";
-				this.state.phase = "blocked";
 				throw new Error(`git merge failed: ${result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`}; ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}, { agentDir: this.agentDir, signal: this.signal });
@@ -468,9 +427,6 @@ export class PullRequestCreator {
 	async continue(pathsInput: readonly string[]): Promise<CreatePullRequestResult> {
 		if (this.state.phase !== "conflict-awaiting-user" || !this.state.conflict || !this.state.base) {
 			throw new Error("PR creation has no conflict awaiting continuation");
-		}
-		if (this.state.attempts.stage !== "none" || this.state.attempts.continueMerge !== "none") {
-			throw new Error("PR creation conflict continuation was already consumed");
 		}
 		const paths = resolvedPaths(pathsInput, this.state.conflict.paths);
 		return await withWorktreeLock(this.cwd, async () => {
@@ -481,26 +437,13 @@ export class PullRequestCreator {
 			if (mergeHead !== this.state.base!.oid) throw new Error("PR creation merge context changed");
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
-			this.state.attempts.stage = "attempting";
-			try {
-				await runChecked(this.exec, "git", ["add", "--", ...paths], this.options());
-				this.state.attempts.stage = "applied";
-			} catch (error) {
-				this.state.attempts.stage = "unknown";
-				throw error;
-			}
+			this.state.phase = "blocked";
+			await runChecked(this.exec, "git", ["add", "--", ...paths], this.options());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.options())).stdout, "Unmerged paths");
 			if (unmerged.length) throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
-			this.state.attempts.continueMerge = "attempting";
-			try {
-				await runChecked(this.exec, "git", ["-c", "core.editor=true", "merge", "--continue"], this.options());
-				const verified = await this.verifyMerge(this.state.conflict!.originalHead);
-				this.state.attempts.continueMerge = "applied";
-				return { kind: "verified", ...verified };
-			} catch (error) {
-				this.state.attempts.continueMerge = "unknown";
-				throw error;
-			}
+			await runChecked(this.exec, "git", ["-c", "core.editor=true", "merge", "--continue"], this.options());
+			const verified = await this.verifyMerge(this.state.conflict!.originalHead);
+			return { kind: "verified", ...verified };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
@@ -512,30 +455,16 @@ export class PullRequestCreator {
 			fetchSource: this.target.fetchSource,
 			remoteOid: head,
 		};
-		this.state.attempts.fetchTracking = "attempting";
-		try {
-			await fetchBranchTrackingRef(this.pi(), this.context(), target);
-			if (await readTrackingOid(this.pi(), this.context(), branchTrackingRef(target)) !== head) {
-				throw new Error("Fetched tracking ref did not match published HEAD");
-			}
-			this.state.attempts.fetchTracking = "applied";
-		} catch (error) {
-			this.state.attempts.fetchTracking = "unknown";
-			throw error;
+		await fetchBranchTrackingRef(this.pi(), this.context(), target);
+		if (await readTrackingOid(this.pi(), this.context(), branchTrackingRef(target)) !== head) {
+			throw new Error("Fetched tracking ref did not match published HEAD");
 		}
-		this.state.attempts.setUpstream = "attempting";
-		try {
-			await setBranchUpstream(this.pi(), this.context(), target);
-			await verifyBranchUpstream(this.pi(), this.context(), target);
-			this.state.attempts.setUpstream = "applied";
-		} catch (error) {
-			this.state.attempts.setUpstream = "unknown";
-			throw error;
-		}
+		await setBranchUpstream(this.pi(), this.context(), target);
+		await verifyBranchUpstream(this.pi(), this.context(), target);
 	}
 
 	async push(): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "verified" || !this.state.base || this.state.attempts.push !== "none") {
+		if (this.state.phase !== "verified" || !this.state.base) {
 			throw new Error("PR creation is not ready to push");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
@@ -554,19 +483,13 @@ export class PullRequestCreator {
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			if (await this.requireCleanHead() !== head) throw new Error("PR creation cancelled: local HEAD changed before push");
 			this.state.publicationHead = head;
-			this.state.attempts.push = "attempting";
-			try {
-				await runChecked(this.exec, "git", [
-					"push", "--porcelain", `--force-with-lease=refs/heads/${this.target.ref}:${original ?? ""}`,
-					"--recurse-submodules=no", "--", this.target.fetchSource, `${head}:refs/heads/${this.target.ref}`,
-				], this.options());
-				if (await readRemoteOid(this.exec, this.options(), this.target.fetchSource, this.target.ref) !== head) {
-					throw new Error("Published remote ref did not match captured HEAD");
-				}
-				this.state.attempts.push = "applied";
-			} catch (error) {
-				this.state.attempts.push = "unknown";
-				throw error;
+			this.state.phase = "blocked";
+			await runChecked(this.exec, "git", [
+				"push", "--porcelain", `--force-with-lease=refs/heads/${this.target.ref}:${original ?? ""}`,
+				"--recurse-submodules=no", "--", this.target.fetchSource, `${head}:refs/heads/${this.target.ref}`,
+			], this.options());
+			if (await readRemoteOid(this.exec, this.options(), this.target.fetchSource, this.target.ref) !== head) {
+				throw new Error("Published remote ref did not match captured HEAD");
 			}
 			this.state.phase = "pushed";
 			if (this.noTarget) await this.configureNoTargetUpstream(head);
@@ -576,7 +499,7 @@ export class PullRequestCreator {
 
 	private async publishedAuthority(): Promise<void> {
 		const head = this.state.publicationHead!;
-		if (this.noTarget && this.state.attempts.setUpstream !== "applied") {
+		if (this.noTarget) {
 			const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
 			const authority = await readValidatedRemoteAuthority(this.pi(), this.context(), this.target.remote);
 			if (branch !== this.target.branch || authority.host !== this.target.host ||
@@ -614,7 +537,7 @@ export class PullRequestCreator {
 	}
 
 	async publish(titleInput: string, body: string): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "pushed" || !this.state.base || !this.state.publicationHead || this.state.attempts.pullRequest !== "none") {
+		if (this.state.phase !== "pushed" || !this.state.base || !this.state.publicationHead) {
 			throw new Error("PR creation is not ready to publish metadata");
 		}
 		const title = requiredText(titleInput, "pull request title");
@@ -655,30 +578,19 @@ export class PullRequestCreator {
 					sameRepository ? this.target.ref : `${this.target.repository.split("/")[0]}:${this.target.ref}`,
 					"--base", this.state.base!.ref, "--title", title, "--body-file", "-",
 				];
-			this.state.attempts.pullRequest = "attempting";
-			try {
-				const created = await runChecked(this.exec, "gh", args, this.options({ stdin: organizationAuthority ? undefined : body }));
-				if (!before && organizationAuthority) {
-					parseCreatedUrl(created.stdout, this.state.base!.host, this.state.base!.repository);
-				}
-			} catch (error) {
-				this.state.attempts.pullRequest = "unknown";
-				throw error;
+			this.state.phase = "blocked";
+			const created = await runChecked(this.exec, "gh", args, this.options({ stdin: organizationAuthority ? undefined : body }));
+			if (!before && organizationAuthority) {
+				parseCreatedUrl(created.stdout, this.state.base!.host, this.state.base!.repository);
 			}
-			try {
-				const after = await this.exactCandidate();
-				if (!after || after.base.repository.toLowerCase() !== this.state.base!.repository.toLowerCase() ||
-					after.base.ref !== this.state.base!.ref || after.title !== title || after.body !== body) {
-					throw new Error("Published pull request did not retain canonical identity, title, and body");
-				}
-				this.state.attempts.pullRequest = "applied";
-				this.state.phase = "published";
-				this.state.url = after.url.href;
-				return { kind: "published", url: after.url.href };
-			} catch (error) {
-				this.state.attempts.pullRequest = "unknown";
-				throw error;
+			const after = await this.exactCandidate();
+			if (!after || after.base.repository.toLowerCase() !== this.state.base!.repository.toLowerCase() ||
+				after.base.ref !== this.state.base!.ref || after.title !== title || after.body !== body) {
+				throw new Error("Published pull request did not retain canonical identity, title, and body");
 			}
+			this.state.phase = "published";
+			this.state.url = after.url.href;
+			return { kind: "published", url: after.url.href };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 }

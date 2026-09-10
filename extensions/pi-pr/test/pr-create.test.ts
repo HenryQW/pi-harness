@@ -131,7 +131,7 @@ function creator(exec: Exec, creationTarget: PullRequestTarget) {
 	return { workflow, agentDir };
 }
 
-test("push uses an empty exact lease then fetches tracking and sets verified upstream as separate attempts", async (t) => {
+test("push uses an empty exact lease then fetches tracking and verifies upstream", async (t) => {
 	const calls: Array<[string, string[]]> = [];
 	let tracking = false;
 	let upstream = false;
@@ -173,8 +173,7 @@ test("push uses an empty exact lease then fetches tracking and sets verified ups
 		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
 		"git@github.com:acme/project.git", `+${head}:refs/remotes/origin/feature`,
 	]]);
-	assert.equal(app.workflow.state.attempts.fetchTracking, "applied");
-	assert.equal(app.workflow.state.attempts.setUpstream, "applied");
+	assert.equal(app.workflow.state.phase, "pushed");
 });
 
 test("a successful push remains publishable when no-target upstream setup fails", async (t) => {
@@ -215,8 +214,6 @@ test("a successful push remains publishable when no-target upstream setup fails"
 	});
 	await assert.rejects(app.workflow.push(), /Fetch branch tracking ref failed/);
 	assert.equal(app.workflow.state.phase, "pushed");
-	assert.equal(app.workflow.state.attempts.push, "applied");
-	assert.equal(app.workflow.state.attempts.fetchTracking, "unknown");
 	const callsAfterFailure = calls.length;
 	await assert.rejects(app.workflow.push(), /not ready to push/);
 	assert.equal(calls.length, callsAfterFailure);
@@ -623,7 +620,7 @@ test("base inference excludes a differently named configured push ref owned by o
 	assert.deepEqual(distanceRefs, [`HEAD...${localRefOid}`, `HEAD...${base}`]);
 });
 
-test("a consumed conflict stage prevents continuation replay", async (t) => {
+test("a blocked conflict continuation prevents replay", async (t) => {
 	let commands = 0;
 	const app = creator(async () => {
 		commands += 1;
@@ -632,8 +629,8 @@ test("a consumed conflict stage prevents continuation replay", async (t) => {
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	app.workflow.state.phase = "conflict-awaiting-user";
 	app.workflow.state.conflict = { paths: ["conflicted.ts"], statusBaseline: "", originalHead: head };
-	app.workflow.state.attempts.stage = "unknown";
-	await assert.rejects(app.workflow.continue(["conflicted.ts"]), /continuation was already consumed/);
+	app.workflow.state.phase = "blocked";
+	await assert.rejects(app.workflow.continue(["conflicted.ts"]), /no conflict awaiting continuation/);
 	assert.equal(commands, 0);
 });
 
@@ -665,7 +662,7 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /did not retain canonical identity, title, and body/);
 	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /not ready to publish metadata/);
 	assert.equal(mutations, 1);
-	assert.equal(app.workflow.state.attempts.pullRequest, "unknown");
+	assert.equal(app.workflow.state.phase, "blocked");
 });
 
 test("does not push when HEAD or target authority changes after final ancestry checks", async (t) => {
