@@ -59,14 +59,13 @@ export const CONFIG_COMMAND_USAGE =
 	"/btw config [auto-submit on|off | tools inherit|all|read-only|none | split right|down | reset]";
 
 export type ConfigCommandResult = {
-	action: "show" | "save" | "reset";
+	action: "show" | "save";
 	config: BtwConfig;
 };
 
 export function applyConfigCommand(current: BtwConfig, input: string): ConfigCommandResult {
 	const trimmed = input.trim();
 	if (!trimmed || trimmed === "show") return { action: "show", config: current };
-	if (trimmed === "reset") return { action: "reset", config: { ...DEFAULT_CONFIG } };
 
 	const [key, value, ...extra] = trimmed.split(/\s+/);
 	if (!key || !value || extra.length > 0) throw new Error(CONFIG_COMMAND_USAGE);
