@@ -262,9 +262,15 @@ export default function pullRequestExtension(
 	const newRunId = dependencies.newRunId ?? randomUUID;
 	let context: ExtensionContext | undefined;
 	let observation: PullRequestObservation | undefined;
-	const load: typeof loadCurrentPullRequest = async (api, loadContext, inspectedLocal) => {
+	const load: typeof loadCurrentPullRequest = async (
+		api,
+		loadContext,
+		inspectedLocal,
+		_observed,
+		explicitCreationBase,
+	) => {
 		const generation = sessionGeneration;
-		const discovery = await discover(api, loadContext, inspectedLocal, observation);
+		const discovery = await discover(api, loadContext, inspectedLocal, observation, explicitCreationBase);
 		if (generation !== sessionGeneration) return discovery;
 		if (discovery.kind === "current") {
 			const current = pullRequestObservation(discovery.pullRequest);
@@ -787,7 +793,7 @@ export default function pullRequestExtension(
 		releaseWorkflow,
 	});
 	pi.registerCommand("pr", {
-		description: "[--base=<host>/<owner>/<repository>:<ref>] — Run the current branch pull request next step",
+		description: "[--base <branch>] [instructions] — Run the current branch pull request next step",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
 			const generation = sessionGeneration;

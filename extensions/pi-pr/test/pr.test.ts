@@ -22,6 +22,7 @@ type Loader = (
 	context: PullRequestLoadContext,
 	inspectedLocal?: unknown,
 	observation?: unknown,
+	explicitCreationBase?: string,
 ) => Promise<CurrentPullRequest | CurrentPullRequestDiscovery | null>;
 type EventHandler = (event: unknown, context: ExtensionContext) => Promise<void> | void;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -204,8 +205,8 @@ function harness(options: {
 	};
 
 	const extensionDependencies: ExtensionDependencies = {
-		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation) => {
-			const loaded = await options.load(pi, context, inspectedLocal, observation);
+		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation, explicitCreationBase) => {
+			const loaded = await options.load(pi, context, inspectedLocal, observation, explicitCreationBase);
 			if (loaded && "kind" in loaded) return loaded;
 			if (loaded) return { kind: "current", pullRequest: loaded };
 			return noPullRequest();
@@ -779,8 +780,12 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 			fetchTracking: "none", setUpstream: "none", pullRequest: "none",
 		},
 	};
+	const receivedBases: Array<string | undefined> = [];
 	const create = harness({
-		async load() { return noPullRequest(1); },
+		async load(_pi, _context, _inspectedLocal, _observation, explicitCreationBase) {
+			receivedBases.push(explicitCreationBase);
+			return noPullRequest(1);
+		},
 		useDefaultCommandHandler: true,
 		newRunId: () => routeRunId,
 		async canonicalWorktree() { return "/canonical/repo"; },
@@ -798,10 +803,11 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 	const createContext = create.context();
 	try {
 		await create.start(createContext);
-		await create.command().handler("--base=github.com/acme/project:main", createContext as ExtensionCommandContext);
+		await create.command().handler("--base release Keep the title concise.", createContext as ExtensionCommandContext);
 		await create.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, createContext);
-		assert.deepEqual(createCalls, [["prepare", "github.com/acme/project:main"]]);
-		assert.deepEqual(create.messages, [`/skill:pi-pr-create runId=${routeRunId} action=prepare`]);
+		assert.deepEqual(createCalls, [["prepare", "release"]]);
+		assert.deepEqual(receivedBases, [undefined, "release"]);
+		assert.deepEqual(create.messages, [`/skill:pi-pr-create runId=${routeRunId} action=prepare Keep the title concise.`]);
 	} finally {
 		await create.shutdown(createContext);
 	}

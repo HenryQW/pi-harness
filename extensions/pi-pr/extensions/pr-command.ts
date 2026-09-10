@@ -26,8 +26,6 @@ const WORKFLOWS: Record<WorkflowNextStep, { command: string; action: string }> =
 	sweep: { command: "skill:pi-pr-comment-sweep", action: "start" },
 	"fix-ci": { command: "skill:pi-pr-fix-ci", action: "collect" },
 };
-const CREATE_BASE = /^--base=([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+:[^\s\0]+)$/;
-
 export type WorkflowReservation =
 	| { route: "create"; target: PullRequestTarget; base?: string }
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
@@ -62,21 +60,30 @@ export type PrCommandDependencies = {
 	releaseWorkflow?: (runId: string, invocation?: PrCommandInvocation) => void;
 };
 
-function createBase(instructions: string): string | undefined {
-	if (!instructions) return undefined;
-	const match = CREATE_BASE.exec(instructions);
-	if (!match) throw new Error("PR creation accepts only --base=<host>/<owner>/<repository>:<ref>");
-	return match[1]!;
+type ParsedPrArguments = {
+	base?: string;
+	instructions: string;
+};
+
+function parsePrArguments(args: string): ParsedPrArguments {
+	const leading = args.trimStart();
+	if (leading.startsWith("--base=")) throw new Error("/pr base syntax is --base <branch>");
+	if (!leading.startsWith("--base") || !/^--base(?:\s|$)/.test(leading)) {
+		return { instructions: args.trim() };
+	}
+	const value = /^--base\s+(\S+)/.exec(leading);
+	if (!value) throw new Error("/pr --base requires a branch");
+	return { base: value[1]!, instructions: leading.slice(value[0].length).trim() };
 }
 
 function workflowReservation(
 	nextStep: WorkflowNextStep,
 	discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
+	base: string | undefined,
 	instructions: string,
 ): WorkflowReservation {
 	if (nextStep === "create") {
 		if (discovery.kind !== "none") throw new Error("/pr create failed: creation target is unavailable");
-		const base = createBase(instructions);
 		return { route: "create", target: discovery.creationTarget, ...(base === undefined ? {} : { base }) };
 	}
 	if (instructions) throw new Error("The current /pr helper route does not accept instructions");
@@ -104,6 +111,7 @@ async function dispatchWorkflow(
 	reserve: NonNullable<PrCommandDependencies["reserveWorkflow"]>,
 	markPromptQueued: NonNullable<PrCommandDependencies["markWorkflowPromptQueued"]>,
 	release: NonNullable<PrCommandDependencies["releaseWorkflow"]>,
+	instructions: string,
 ): Promise<void> {
 	const workflow = packageWorkflowCommand(pi, route);
 	let runId: string | undefined;
@@ -117,7 +125,7 @@ async function dispatchWorkflow(
 			? { deliverAs: "followUp" as const, expandPromptTemplates: true }
 			: { expandPromptTemplates: true };
 		invocation?.assertCurrent();
-		pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}`, options);
+		pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}${instructions ? ` ${instructions}` : ""}`, options);
 	} catch (error) {
 		if (runId !== undefined) release(runId, invocation);
 		throw error;
@@ -258,11 +266,14 @@ export function createPrCommandHandler(
 		const commandInvocation = onRouteResolved && "assertCurrent" in onRouteResolved
 			? onRouteResolved as PrCommandInvocation
 			: undefined;
-		const instructions = args.trim();
-		const discovery = await load(pi, ctx);
+		const { base, instructions } = parsePrArguments(args);
+		const discovery = await load(pi, ctx, undefined, undefined, base);
 		commandInvocation?.assertCurrent();
 		const nextStep = deriveNextStep(discovery);
 		onRouteResolved?.(nextStep);
+		if (base !== undefined && nextStep !== "create") {
+			throw new Error("/pr --base is accepted only for pull request creation");
+		}
 		if (instructions && !(nextStep in WORKFLOWS)) {
 			throw new Error("The current /pr route does not accept instructions");
 		}
@@ -289,8 +300,18 @@ export function createPrCommandHandler(
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
 		const route = nextStep as WorkflowNextStep;
-		const reservation = workflowReservation(route, discovery, instructions);
-		await dispatchWorkflow(pi, ctx, route, reservation, commandInvocation, reserve, markPromptQueued, release);
+		const reservation = workflowReservation(route, discovery, base, instructions);
+		await dispatchWorkflow(
+			pi,
+			ctx,
+			route,
+			reservation,
+			commandInvocation,
+			reserve,
+			markPromptQueued,
+			release,
+			route === "create" ? instructions : "",
+		);
 		return nextStep;
 	};
 }

@@ -205,6 +205,11 @@ export type BranchUpstreamTarget = {
 	remoteOid: string;
 };
 
+export type BranchUpstreamConfiguration = {
+	remote: string[];
+	merge: string[];
+};
+
 type SearchSelection =
 	| { kind: "candidate"; candidate: SearchPullRequest; pullRequest: ListedPullRequest | null }
 	| { kind: "none" }
@@ -1294,10 +1299,11 @@ async function creationDiscovery(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: PullRequestTarget,
+	explicitBaseRef: string | undefined,
 	identity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const captured = identity ?? await captureCreationIdentity(pi, context, target);
-	const preflight = await preflightCreation(pi, context, target, undefined, captured);
+	const preflight = await preflightCreation(pi, context, target, explicitBaseRef, captured);
 	return { kind: "none", creationTarget: target, branch: { ahead: preflight.ahead } };
 }
 
@@ -1393,6 +1399,22 @@ async function readConfigValues(
 		if (error instanceof PullRequestLoadError) return null;
 		throw error;
 	}
+}
+
+export async function readBranchUpstreamConfiguration(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	branch: string,
+): Promise<BranchUpstreamConfiguration> {
+	const checkedBranch = text(branch, "Read branch upstream", "branch");
+	const [remote, merge] = await Promise.all([
+		readConfigValues(pi, context, `branch.${checkedBranch}.remote`),
+		readConfigValues(pi, context, `branch.${checkedBranch}.merge`),
+	]);
+	if (remote === null || merge === null) {
+		throw new Error("Read branch upstream failed: invalid Git configuration");
+	}
+	return { remote, merge };
 }
 
 async function readBooleanConfigValues(
@@ -1922,8 +1944,9 @@ export async function loadCurrentPullRequest(
 	context: PullRequestLoadContext,
 	inspectedLocal?: LocalMergeSafety,
 	observed?: unknown,
+	explicitCreationBase?: string,
 ): Promise<CurrentPullRequestDiscovery> {
-	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed);
+	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase);
 }
 
 async function loadCurrentPullRequestInternal(
@@ -1931,6 +1954,7 @@ async function loadCurrentPullRequestInternal(
 	context: PullRequestLoadContext,
 	inspectedLocal: LocalMergeSafety | undefined,
 	observed: unknown,
+	explicitCreationBase: string | undefined,
 	creationIdentity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
@@ -1955,7 +1979,7 @@ async function loadCurrentPullRequestInternal(
 			const target = publicTarget(inferred.target);
 			if (creationIdentity === undefined) {
 				const captured = await captureCreationIdentity(pi, context, target);
-				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, captured);
+				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase, captured);
 			}
 			if (!sameCreationTarget(creationIdentity.target, validatedCreationTarget(target))) {
 				fail("Read creation target", "target changed");
@@ -1963,7 +1987,7 @@ async function loadCurrentPullRequestInternal(
 			if (!canLinkTarget(await readLinkConfiguration(pi, context, inferred.target), inferred.target)) {
 				return { kind: "blocked", issue: { kind: "link-configuration", remote: inferred.target.remote } };
 			}
-			return await creationDiscovery(pi, context, target, creationIdentity);
+			return await creationDiscovery(pi, context, target, explicitCreationBase, creationIdentity);
 		}
 		pushTarget = inferred.target;
 	} else {
@@ -2062,7 +2086,7 @@ async function loadCurrentPullRequestInternal(
 		}
 		if (candidate === null) {
 			if (creationIdentity !== undefined) fail("Read creation target", "target changed");
-			return await creationDiscovery(pi, context, publicTarget(pushTarget));
+			return await creationDiscovery(pi, context, publicTarget(pushTarget), explicitCreationBase);
 		}
 	}
 
@@ -2189,6 +2213,42 @@ async function restoreConfigValue(
 
 function sameConfigValues(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export async function restoreBranchUpstreamConfiguration(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: Pick<BranchUpstreamTarget, "branch" | "remote" | "ref">,
+	original: BranchUpstreamConfiguration,
+): Promise<void> {
+	let incomplete = false;
+	for (const [key, expected, values] of [
+		[`branch.${target.branch}.remote`, target.remote, original.remote],
+		[`branch.${target.branch}.merge`, `refs/heads/${target.ref}`, original.merge],
+	] as const) {
+		try {
+			const current = await readConfigValues(pi, context, key);
+			if (current === null) incomplete = true;
+			else if (sameConfigValues(current, values)) continue;
+			else if (current.length === 1 && current[0] === expected) {
+				await restoreConfigValue(pi, context, key, expected, values);
+			} else incomplete = true;
+		} catch {
+			incomplete = true;
+		}
+	}
+	for (const [key, values] of [
+		[`branch.${target.branch}.remote`, original.remote],
+		[`branch.${target.branch}.merge`, original.merge],
+	] as const) {
+		try {
+			const current = await readConfigValues(pi, context, key);
+			if (current === null || !sameConfigValues(current, values)) incomplete = true;
+		} catch {
+			incomplete = true;
+		}
+	}
+	if (incomplete) throw new Error("Restore branch upstream failed and rollback was incomplete");
 }
 
 async function restoreLinkState(

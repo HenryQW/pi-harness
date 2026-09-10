@@ -5,11 +5,15 @@ import {
 	findExactHeadPullRequests,
 	loadCurrentPullRequest,
 	loadPullRequestPublication,
+	preflightPullRequestCreation,
+	readBranchUpstreamConfiguration,
 	readPullRequestBaseRefOid,
 	readTrackingOid,
 	readValidatedRemoteAuthority,
+	restoreBranchUpstreamConfiguration,
 	setBranchUpstream,
 	verifyBranchUpstream,
+	type BranchUpstreamConfiguration,
 	type BranchUpstreamTarget,
 	type PullRequestLoadContext,
 	type PullRequestPublication,
@@ -24,7 +28,6 @@ import {
 	readRemoteOid,
 	requiredOid,
 	requiredText,
-	resolveRepositoryFetchSource,
 	runChecked,
 	spawnBounded,
 	withWorktreeLock,
@@ -33,8 +36,6 @@ import {
 	type ExecOptions,
 } from "./pr-execution.ts";
 
-const BASE_RERUN = "Rerun /pr --base=<host>/<owner>/<repository>:<ref>";
-const MAX_REMOTE_BRANCHES = 128;
 const MAX_TITLE_BYTES = 256;
 const MAX_BODY_BYTES = 64 * 1024;
 const CREATE_AUTHORITY_QUERY = "query($baseOwner:String!,$baseName:String!,$headOwner:String!,$headName:String!){base:repository(owner:$baseOwner,name:$baseName){id nameWithOwner}head:repository(owner:$headOwner,name:$headName){id nameWithOwner owner{__typename}}createInput:__type(name:\"CreatePullRequestInput\"){inputFields{name}}}";
@@ -75,6 +76,7 @@ export type CreatePullRequestState = {
 	mergeHead?: string;
 	publicationHead?: string;
 	conflict?: { paths: string[]; statusBaseline: string; originalHead: string };
+	originalUpstream?: BranchUpstreamConfiguration;
 	url?: string;
 };
 
@@ -100,21 +102,16 @@ function sameTarget(left: PullRequestTarget, right: PullRequestTarget, expectedR
 		left.fetchSource === right.fetchSource && right.remoteOid === expectedRemoteOid;
 }
 
+function sameUpstreamConfiguration(left: BranchUpstreamConfiguration, right: BranchUpstreamConfiguration): boolean {
+	return left.remote.length === right.remote.length && left.remote.every((value, index) => value === right.remote[index]) &&
+		left.merge.length === right.merge.length && left.merge.every((value, index) => value === right.merge[index]);
+}
+
 function line(output: string, label: string): string {
 	const normalized = output.replace(/\r\n/g, "\n");
 	const values = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
 	if (values.length !== 1 || !values[0]) throw new Error(`${label} returned invalid output`);
 	return values[0];
-}
-
-function configuredValues(output: string): string[] {
-	if (output === "") return [];
-	const normalized = output.replace(/\r\n/g, "\n");
-	const values = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
-	if (values.some((value) => !value) || new Set(values).size !== values.length) {
-		throw new Error("Git configuration returned invalid values");
-	}
-	return values;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -191,14 +188,6 @@ function parseCreatedUrl(output: string, host: string, baseRepository: string): 
 	return url;
 }
 
-function parseExplicitBase(value: string): Omit<CreateBaseAuthority, "oid" | "fetchSource"> {
-	const match = /^([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+):(.+)$/.exec(value);
-	if (!match || match[2] === "." || match[2] === ".." || match[3] === "." || match[3] === "..") {
-		throw new Error(`Invalid base authority. ${BASE_RERUN}`);
-	}
-	return { host: match[1]!.toLowerCase(), repository: `${match[2]}/${match[3]}`, ref: requiredText(match[4], "base ref") };
-}
-
 function resolvedPaths(paths: readonly string[], expected: readonly string[]): string[] {
 	if (!Array.isArray(paths)) throw new TypeError("resolvedPaths must be an array");
 	const parsed = parseNulPaths(`${paths.join("\0")}${paths.length ? "\0" : ""}`, "Resolved conflict paths");
@@ -224,6 +213,7 @@ export class PullRequestCreator {
 	private readonly agentDir?: string;
 	private readonly exec: Exec;
 	private readonly load: Load;
+	private explicitBase?: string;
 
 	constructor(options: CreatePullRequestOptions) {
 		if (!options.target || options.target.remoteOid !== null && !requiredOid(options.target.remoteOid, "remote OID")) {
@@ -257,77 +247,12 @@ export class PullRequestCreator {
 	}
 
 	private async freshNone(): Promise<void> {
-		const discovery = await this.load(this.pi(), this.context());
+		const discovery = await this.load(this.pi(), this.context(), undefined, undefined, this.explicitBase);
 		if (discovery.kind !== "none" || !sameTarget(this.target, discovery.creationTarget)) {
 			throw new Error("PR creation cancelled: fresh complete discovery is no longer none");
 		}
 		const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
 		if (branch !== this.target.branch) throw new Error("PR creation cancelled: current branch changed");
-	}
-
-	private async originAuthority() {
-		return await readValidatedRemoteAuthority(this.pi(), this.context(), "origin");
-	}
-
-	private async inferBaseRef(): Promise<{ authority: Awaited<ReturnType<PullRequestCreator["originAuthority"]>>; ref: string }> {
-		const authority = await this.originAuthority();
-		await runChecked(this.exec, "git", [
-			"fetch", "--prune", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
-			authority.fetchSource, "+refs/heads/*:refs/remotes/origin/*",
-		], this.options());
-		const refs = await runChecked(this.exec, "git", [
-			"for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "refs/remotes/origin",
-		], this.options());
-		const rows = configuredValues(refs.stdout);
-		if (rows.length > MAX_REMOTE_BRANCHES) throw new Error(`${BASE_RERUN}; more than ${MAX_REMOTE_BRANCHES} base candidates exist`);
-		const originOwnsTarget = authority.host === this.target.host &&
-			authority.repository.toLowerCase() === this.target.repository.toLowerCase();
-		const candidates: Array<{ ref: string; score: number }> = [];
-		for (const row of rows) {
-			const parts = row.split("\t");
-			if (parts.length !== 3) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const prefix = "refs/remotes/origin/";
-			if (!parts[0]!.startsWith(prefix)) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const ref = parts[0]!.slice(prefix.length);
-			if (ref === "HEAD" || originOwnsTarget && ref === this.target.ref) continue;
-			if (!ref || parts[2] !== "") throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const oid = requiredOid(parts[1], "remote base OID");
-			const distance = line((await runChecked(this.exec, "git", ["rev-list", "--left-right", "--count", `HEAD...${oid}`], this.options())).stdout, "base distance");
-			const counts = /^(\d+)\s+(\d+)$/.exec(distance);
-			if (!counts) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const score = Number(counts[1]) + Number(counts[2]);
-			if (!Number.isSafeInteger(score)) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			candidates.push({ ref, score });
-		}
-		if (!candidates.length) throw new Error(`Base cannot be inferred. ${BASE_RERUN}`);
-		const minimum = Math.min(...candidates.map(({ score }) => score));
-		const nearest = candidates.filter(({ score }) => score === minimum);
-		if (nearest.length !== 1) throw new Error(`Base is ambiguous. ${BASE_RERUN}`);
-		return { authority, ref: nearest[0]!.ref };
-	}
-
-	private async resolveBase(explicit?: string): Promise<Omit<CreateBaseAuthority, "oid">> {
-		if (explicit !== undefined) {
-			const parsed = parseExplicitBase(explicit);
-			if (parsed.host !== this.target.host.toLowerCase()) {
-				throw new Error("PR creation base and head must use the same GitHub host");
-			}
-			await runChecked(this.exec, "git", ["check-ref-format", "--branch", parsed.ref], this.options());
-			return { ...parsed, fetchSource: await resolveRepositoryFetchSource(this.exec, this.options(), parsed) };
-		}
-		const configured = await runChecked(this.exec, "git", [
-			"config", "--get-all", `branch.${this.target.branch}.gh-merge-base`,
-		], this.options(), [0, 1]);
-		const values = configured.code === 1 && configured.stdout === "" ? [] : configuredValues(configured.stdout);
-		if (values.length > 1) throw new Error(`Configured base is ambiguous. ${BASE_RERUN}`);
-		if (values.length === 1) {
-			await runChecked(this.exec, "git", ["check-ref-format", "--branch", values[0]!], this.options());
-			const authority = await this.originAuthority();
-			return { ...authority, ref: values[0]! };
-		}
-		const inferred = await this.inferBaseRef();
-		await runChecked(this.exec, "git", ["check-ref-format", "--branch", inferred.ref], this.options());
-		return { ...inferred.authority, ref: inferred.ref };
 	}
 
 	private async liveBase(): Promise<string> {
@@ -362,36 +287,50 @@ export class PullRequestCreator {
 			throw new Error("PR creation prepare action was already consumed");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
+			this.explicitBase = explicitBase;
 			await this.freshNone();
-			const base = await this.resolveBase(explicitBase);
-			if (base.host !== this.target.host.toLowerCase()) {
-				throw new Error("PR creation base and head must use the same GitHub host");
+			const preflight = await preflightPullRequestCreation(
+				this.pi(),
+				this.context(),
+				this.target,
+				this.explicitBase,
+			);
+			if (preflight.ahead === 0) {
+				throw new Error("PR creation requires at least one commit ahead of the selected base");
 			}
-			const oid = await readPullRequestBaseRefOid(this.pi(), this.context(), base);
-			this.state.base = { ...base, oid };
+			const { base } = preflight;
+			this.state.base = {
+				host: base.host,
+				repository: base.repository,
+				ref: base.ref,
+				oid: base.oid,
+				fetchSource: base.fetchSource,
+			};
 			this.state.attempts.fetchBase = "attempting";
 			try {
 				await runChecked(this.exec, "git", [
-					"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, oid,
+					"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, base.oid,
 				], this.options());
-				await runChecked(this.exec, "git", ["cat-file", "-e", `${oid}^{commit}`], this.options());
+				await runChecked(this.exec, "git", ["cat-file", "-e", `${base.oid}^{commit}`], this.options());
 				this.state.attempts.fetchBase = "applied";
 			} catch (error) {
 				this.state.attempts.fetchBase = "unknown";
 				throw error;
 			}
 			await this.freshNone();
-			if (await this.liveBase() !== oid) throw new Error("PR creation cancelled: base ref moved during prepare");
-			const mergeBase = requiredOid(line((await runChecked(this.exec, "git", ["merge-base", "HEAD", oid], this.options())).stdout, "merge base"), "merge base");
+			if (await readHead(this.exec, this.options()) !== preflight.head) {
+				throw new Error("PR creation cancelled: local HEAD changed during prepare");
+			}
+			if (await this.liveBase() !== base.oid) throw new Error("PR creation cancelled: base ref moved during prepare");
 			this.state.phase = "prepared";
-			return { kind: "prepared", base: { ...this.state.base }, mergeBase };
+			return { kind: "prepared", base: { ...this.state.base }, mergeBase: base.mergeBase };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
 	private async verifyMerge(originalHead: string): Promise<{ head: string; fastForward: boolean }> {
 		const base = this.state.base!;
 		const head = await readHead(this.exec, this.options());
-		const commits = line((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", "HEAD"], this.options())).stdout, "merge parents")
+		const commits = line((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", head], this.options())).stdout, "merge parents")
 			.split(" ").map((value, index) => requiredOid(value, index ? "merge parent" : "merged HEAD"));
 		if (commits[0] !== head) throw new Error("PR creation merge verification returned a different HEAD");
 		let fastForward = false;
@@ -504,14 +443,27 @@ export class PullRequestCreator {
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	private async configureNoTargetUpstream(head: string): Promise<void> {
-		const target: BranchUpstreamTarget = {
+	private upstreamTarget(head: string): BranchUpstreamTarget {
+		return {
 			branch: this.target.branch,
 			remote: this.target.remote,
 			ref: this.target.ref,
 			fetchSource: this.target.fetchSource,
 			remoteOid: head,
 		};
+	}
+
+	private async captureNoTargetUpstream(): Promise<void> {
+		if (!this.noTarget || this.state.originalUpstream !== undefined) return;
+		this.state.originalUpstream = await readBranchUpstreamConfiguration(this.pi(), this.context(), this.target.branch);
+	}
+
+	private async fetchNoTargetTracking(head: string): Promise<void> {
+		if (this.state.attempts.fetchTracking === "applied") return;
+		if (this.state.attempts.fetchTracking !== "none" && this.state.attempts.fetchTracking !== "unknown") {
+			throw new Error("PR creation tracking fetch cannot be retried");
+		}
+		const target = this.upstreamTarget(head);
 		this.state.attempts.fetchTracking = "attempting";
 		try {
 			await fetchBranchTrackingRef(this.pi(), this.context(), target);
@@ -523,6 +475,19 @@ export class PullRequestCreator {
 			this.state.attempts.fetchTracking = "unknown";
 			throw error;
 		}
+	}
+
+	private async configureNoTargetUpstream(head: string): Promise<void> {
+		const original = this.state.originalUpstream;
+		if (!original) throw new Error("PR creation original branch upstream is unavailable");
+		if (!sameUpstreamConfiguration(
+			await readBranchUpstreamConfiguration(this.pi(), this.context(), this.target.branch),
+			original,
+		)) {
+			throw new Error("PR creation cancelled: branch upstream changed before setup");
+		}
+		await this.fetchNoTargetTracking(head);
+		const target = this.upstreamTarget(head);
 		this.state.attempts.setUpstream = "attempting";
 		try {
 			await setBranchUpstream(this.pi(), this.context(), target);
@@ -530,6 +495,12 @@ export class PullRequestCreator {
 			this.state.attempts.setUpstream = "applied";
 		} catch (error) {
 			this.state.attempts.setUpstream = "unknown";
+			try {
+				await restoreBranchUpstreamConfiguration(this.pi(), this.context(), target, original);
+			} catch {
+				this.state.phase = "blocked";
+				throw new Error("PR creation upstream setup failed and rollback was incomplete");
+			}
 			throw error;
 		}
 	}
@@ -553,6 +524,7 @@ export class PullRequestCreator {
 			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			if (await this.requireCleanHead() !== head) throw new Error("PR creation cancelled: local HEAD changed before push");
+			if (this.noTarget) await this.captureNoTargetUpstream();
 			this.state.publicationHead = head;
 			this.state.attempts.push = "attempting";
 			try {
@@ -569,7 +541,7 @@ export class PullRequestCreator {
 				throw error;
 			}
 			this.state.phase = "pushed";
-			if (this.noTarget) await this.configureNoTargetUpstream(head);
+			if (this.noTarget) await this.fetchNoTargetTracking(head);
 			return { kind: "pushed", head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
@@ -587,7 +559,7 @@ export class PullRequestCreator {
 			}
 			return;
 		}
-		const discovery = await this.load(this.pi(), this.context());
+		const discovery = await this.load(this.pi(), this.context(), undefined, undefined, this.explicitBase);
 		if (discovery.kind === "none") {
 			if (!sameTarget(this.target, discovery.creationTarget, head)) throw new Error("Published target authority changed");
 			return;
@@ -614,8 +586,15 @@ export class PullRequestCreator {
 	}
 
 	async publish(titleInput: string, body: string): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "pushed" || !this.state.base || !this.state.publicationHead || this.state.attempts.pullRequest !== "none") {
+		const retryingUpstream = this.noTarget && this.state.attempts.pullRequest === "applied";
+		if (
+			this.state.phase !== "pushed" || !this.state.base || !this.state.publicationHead ||
+			(this.state.attempts.pullRequest !== "none" && !retryingUpstream)
+		) {
 			throw new Error("PR creation is not ready to publish metadata");
+		}
+		if (this.noTarget && !this.state.originalUpstream) {
+			throw new Error("PR creation original branch upstream is unavailable");
 		}
 		const title = requiredText(titleInput, "pull request title");
 		if (Buffer.byteLength(title, "utf8") > MAX_TITLE_BYTES) throw new Error(`Pull request title exceeds ${MAX_TITLE_BYTES} bytes`);
@@ -629,56 +608,66 @@ export class PullRequestCreator {
 			if (before && (before.base.repository.toLowerCase() !== this.state.base!.repository.toLowerCase() || before.base.ref !== this.state.base!.ref)) {
 				throw new Error("Exact-head pull request targets a different base");
 			}
-			const repository = `${this.state.base!.host}/${this.state.base!.repository}`;
-			const sameRepository = this.state.base!.repository.toLowerCase() === this.target.repository.toLowerCase();
-			const organizationAuthority = !sameRepository && this.state.createAuthority?.headOwnerType === "Organization"
-				? this.state.createAuthority
-				: undefined;
-			if (!sameRepository && !this.state.createAuthority) {
-				throw new Error("Cross-repository PR creation was not preflighted before push");
-			}
-			const args = before
-				? ["pr", "edit", String(before.number), "--repo", repository, "--title", title, "--body-file", "-"]
-				: organizationAuthority
-				? [
-					"api", "graphql", "--hostname", this.state.base!.host,
-					"-f", `query=${CREATE_PULL_REQUEST_MUTATION}`,
-					"-f", `repositoryId=${organizationAuthority.baseRepositoryId}`,
-					"-f", `baseRefName=${this.state.base!.ref}`,
-					"-f", `headRepositoryId=${organizationAuthority.headRepositoryId}`,
-					"-f", `headRefName=${this.target.ref}`,
-					"-f", `title=${title}`,
-					"-f", `body=${body}`,
-				]
-				: [
-					"pr", "create", "--repo", repository, "--head",
-					sameRepository ? this.target.ref : `${this.target.repository.split("/")[0]}:${this.target.ref}`,
-					"--base", this.state.base!.ref, "--title", title, "--body-file", "-",
-				];
-			this.state.attempts.pullRequest = "attempting";
-			try {
-				const created = await runChecked(this.exec, "gh", args, this.options({ stdin: organizationAuthority ? undefined : body }));
-				if (!before && organizationAuthority) {
-					parseCreatedUrl(created.stdout, this.state.base!.host, this.state.base!.repository);
+			let after: PullRequestPublication;
+			if (retryingUpstream) {
+				if (!before || before.title !== title || before.body !== body) {
+					throw new Error("Published pull request changed before upstream completion");
 				}
-			} catch (error) {
-				this.state.attempts.pullRequest = "unknown";
-				throw error;
-			}
-			try {
-				const after = await this.exactCandidate();
-				if (!after || after.base.repository.toLowerCase() !== this.state.base!.repository.toLowerCase() ||
-					after.base.ref !== this.state.base!.ref || after.title !== title || after.body !== body) {
-					throw new Error("Published pull request did not retain canonical identity, title, and body");
+				after = before;
+			} else {
+				const repository = `${this.state.base!.host}/${this.state.base!.repository}`;
+				const sameRepository = this.state.base!.repository.toLowerCase() === this.target.repository.toLowerCase();
+				const organizationAuthority = !sameRepository && this.state.createAuthority?.headOwnerType === "Organization"
+					? this.state.createAuthority
+					: undefined;
+				if (!sameRepository && !this.state.createAuthority) {
+					throw new Error("Cross-repository PR creation was not preflighted before push");
 				}
-				this.state.attempts.pullRequest = "applied";
-				this.state.phase = "published";
-				this.state.url = after.url.href;
-				return { kind: "published", url: after.url.href };
-			} catch (error) {
-				this.state.attempts.pullRequest = "unknown";
-				throw error;
+				const args = before
+					? ["pr", "edit", String(before.number), "--repo", repository, "--title", title, "--body-file", "-"]
+					: organizationAuthority
+					? [
+						"api", "graphql", "--hostname", this.state.base!.host,
+						"-f", `query=${CREATE_PULL_REQUEST_MUTATION}`,
+						"-f", `repositoryId=${organizationAuthority.baseRepositoryId}`,
+						"-f", `baseRefName=${this.state.base!.ref}`,
+						"-f", `headRepositoryId=${organizationAuthority.headRepositoryId}`,
+						"-f", `headRefName=${this.target.ref}`,
+						"-f", `title=${title}`,
+						"-f", `body=${body}`,
+					]
+					: [
+						"pr", "create", "--repo", repository, "--head",
+						sameRepository ? this.target.ref : `${this.target.repository.split("/")[0]}:${this.target.ref}`,
+						"--base", this.state.base!.ref, "--title", title, "--body-file", "-",
+					];
+				this.state.attempts.pullRequest = "attempting";
+				try {
+					const created = await runChecked(this.exec, "gh", args, this.options({ stdin: organizationAuthority ? undefined : body }));
+					if (!before && organizationAuthority) {
+						parseCreatedUrl(created.stdout, this.state.base!.host, this.state.base!.repository);
+					}
+				} catch (error) {
+					this.state.attempts.pullRequest = "unknown";
+					throw error;
+				}
+				try {
+					const refreshed = await this.exactCandidate();
+					if (!refreshed || refreshed.base.repository.toLowerCase() !== this.state.base!.repository.toLowerCase() ||
+						refreshed.base.ref !== this.state.base!.ref || refreshed.title !== title || refreshed.body !== body) {
+						throw new Error("Published pull request did not retain canonical identity, title, and body");
+					}
+					after = refreshed;
+					this.state.attempts.pullRequest = "applied";
+				} catch (error) {
+					this.state.attempts.pullRequest = "unknown";
+					throw error;
+				}
 			}
+			if (this.noTarget) await this.configureNoTargetUpstream(this.state.publicationHead!);
+			this.state.phase = "published";
+			this.state.url = after.url.href;
+			return { kind: "published", url: after.url.href };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 }

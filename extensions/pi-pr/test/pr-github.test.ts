@@ -1112,15 +1112,45 @@ test("offers creation only after validating origin and finding no published ref"
 	}
 });
 
-test("prioritizes a current pull request before creation preflight", async () => {
+test("prioritizes a current pull request before an explicit creation preflight", async () => {
 	const app = harness();
-	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
 
 	assert.equal(discovery.kind, "current");
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), false);
 	assert.equal(app.calls.some(({ command, args }) =>
 		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
 	), false);
 	assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+});
+
+test("uses an explicit creation branch for discovery ahead routing", async () => {
+	const app = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		creationAhead: "2",
+	});
+
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
+	assert.deepEqual(discovery.kind === "none" ? discovery.branch : undefined, { ahead: 2 });
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), true);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "defaultBranchRef"
+	), false);
+	assert.deepEqual(app.calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		"git@github.com:acme/project.git", "+refs/heads/release:refs/remotes/origin/release",
+	]);
 });
 
 test("preflights an explicit creation base from captured OIDs", async () => {

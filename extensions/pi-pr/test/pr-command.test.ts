@@ -14,7 +14,7 @@ const baseHead = "c".repeat(40);
 const DEFAULT_HOST = "github.com";
 const workflowRunId = "11111111-1111-4111-8111-111111111111";
 
-function noPullRequest(): CurrentPullRequestDiscovery {
+function noPullRequest(): Extract<CurrentPullRequestDiscovery, { kind: "none" }> {
 	return {
 		kind: "none",
 		creationTarget: {
@@ -470,22 +470,66 @@ test("dispatches a workflow as a follow-up only while the agent is busy", async 
 	}]);
 });
 
-test("accepts only an anchored create base and keeps it out of the prompt", async () => {
+test("parses a leading branch base before discovery and sends only remaining creation guidance", async () => {
 	const app = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
+	const reservations: unknown[] = [];
+	let explicitBase: string | undefined;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest(...args) {
+			explicitBase = args[4];
+			return noPullRequest();
+		},
+		async reserveWorkflow(reservation) {
+			reservations.push(reservation);
+			return workflowRunId;
+		},
+	});
 
-	await app.handler("  --base=github.com/acme/project:feature/base  ", app.context);
+	await handler("  --base release/2026  Keep the title concise.  ", app.context);
+	assert.equal(explicitBase, "release/2026");
+	assert.deepEqual(reservations, [{
+		route: "create",
+		target: noPullRequest().creationTarget,
+		base: "release/2026",
+	}]);
 	assert.deepEqual(app.messages, [{
-		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare Keep the title concise.`,
 		options: { expandPromptTemplates: true },
 	}]);
-	assert.equal((app.reservations[0] as { route: string }).route, "create");
-	assert.equal((app.reservations[0] as { base: string }).base, "github.com/acme/project:feature/base");
+});
 
-	for (const invalid of ["please use main", "--base=github.com/acme/project:main extra", "x --base=github.com/acme/project:main"]) {
-		const rejected = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
-		await assert.rejects(rejected.handler(invalid, rejected.context), /accepts only --base=/, invalid);
-		assert.deepEqual(rejected.reservations, [], invalid);
+test("rejects a missing leading base value before discovery", async () => {
+	const app = harness({ states: [null] });
+	let loads = 0;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest() {
+			loads += 1;
+			return noPullRequest();
+		},
+	});
+
+	for (const input of ["--base", "  --base \t\n"]) {
+		await assert.rejects(handler(input, app.context), /--base requires a branch/, input);
 	}
+	await assert.rejects(handler("--base=release", app.context), /base syntax is --base <branch>/);
+	assert.equal(loads, 0);
+});
+
+test("rejects a branch base outside creation without running creation preflight", async () => {
+	const app = harness({ states: [{ state: "MERGED" }] });
+	let explicitBase: string | undefined;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest(...args) {
+			explicitBase = args[4];
+			return await discoverCurrentPullRequest(...args);
+		},
+	});
+
+	await assert.rejects(handler("--base release", app.context), /accepted only for pull request creation/);
+	assert.equal(explicitBase, "release");
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), false);
 });
 
 test("rejects instructions for non-create helper routes before reservation", async () => {
