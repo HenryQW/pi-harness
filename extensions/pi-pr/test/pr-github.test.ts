@@ -473,7 +473,7 @@ async function linkHarness(failures: {
 		}
 		if (command === "git" && args[0] === "fetch" && args.at(-1)?.endsWith(`:${trackingRef}`)) {
 			record();
-			assert.equal(args.at(-1), `${REMOTE_HEAD}:${trackingRef}`);
+			assert.equal(args.at(-1), `+${REMOTE_HEAD}:${trackingRef}`);
 			movedRemoteHead = failures.moveRemoteBeforeFetchTo ?? null;
 			trackingOid = REMOTE_HEAD;
 			return failures.loseFetchResponse ? result("", 0, "", true) : result();
@@ -1080,9 +1080,21 @@ test("links an inferred target only after fresh verification", async () => {
 		"--no-tags",
 		"--no-recurse-submodules",
 		"git@github.com:acme/fork.git",
-		`${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
+		`+${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
 	]);
-	assert.equal(fetch?.args.includes("--force"), false);
+});
+
+test("forces a pinned non-fast-forward tracking replacement before linking", async () => {
+	const previousTrackingOid = "f".repeat(40);
+	const app = await linkHarness({ initialTrackingOid: previousTrackingOid });
+	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR });
+
+	assert.equal(linked.target.provenance, "configured");
+	assert.equal(app.getTrackingOid(), REMOTE_HEAD);
+	const fetch = app.calls.find(({ command, args }) =>
+		command === "git" && args.at(-1)?.endsWith(":refs/remotes/fork/feature/local")
+	);
+	assert.equal(fetch?.args.at(-1), `+${REMOTE_HEAD}:refs/remotes/fork/feature/local`);
 });
 
 test("serializes simultaneous links for the same worktree", async () => {

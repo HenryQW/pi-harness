@@ -37,6 +37,8 @@ const BASE_RERUN = "Rerun /pr --base=<host>/<owner>/<repository>:<ref>";
 const MAX_REMOTE_BRANCHES = 128;
 const MAX_TITLE_BYTES = 256;
 const MAX_BODY_BYTES = 64 * 1024;
+const CREATE_AUTHORITY_QUERY = "query($baseOwner:String!,$baseName:String!,$headOwner:String!,$headName:String!){base:repository(owner:$baseOwner,name:$baseName){id nameWithOwner}head:repository(owner:$headOwner,name:$headName){id nameWithOwner owner{__typename}}createInput:__type(name:\"CreatePullRequestInput\"){inputFields{name}}}";
+const CREATE_PULL_REQUEST_MUTATION = "mutation($repositoryId:ID!,$baseRefName:String!,$headRepositoryId:ID!,$headRefName:String!,$title:String!,$body:String!){createPullRequest(input:{repositoryId:$repositoryId,baseRefName:$baseRefName,headRepositoryId:$headRepositoryId,headRefName:$headRefName,title:$title,body:$body}){pullRequest{url}}}";
 
 type Load = typeof loadCurrentPullRequest;
 
@@ -49,6 +51,12 @@ export type CreateBaseAuthority = {
 };
 
 export type CreatePhase = "unprepared" | "prepared" | "conflict-awaiting-user" | "verified" | "pushed" | "published" | "blocked";
+
+type CrossRepositoryCreateAuthority = {
+	baseRepositoryId: string;
+	headRepositoryId: string;
+	headOwnerType: "Organization" | "User";
+};
 
 export type CreatePullRequestState = {
 	phase: CreatePhase;
@@ -63,6 +71,7 @@ export type CreatePullRequestState = {
 		pullRequest: AttemptState;
 	};
 	base?: CreateBaseAuthority;
+	createAuthority?: CrossRepositoryCreateAuthority;
 	mergeHead?: string;
 	publicationHead?: string;
 	conflict?: { paths: string[]; statusBaseline: string; originalHead: string };
@@ -106,6 +115,80 @@ function configuredValues(output: string): string[] {
 		throw new Error("Git configuration returned invalid values");
 	}
 	return values;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function graphQlResponse(output: string, action: string): Record<string, unknown> {
+	let value: unknown;
+	try {
+		value = JSON.parse(output);
+	} catch {
+		throw new Error(`${action} returned invalid GraphQL output`);
+	}
+	if (!isRecord(value)) throw new Error(`${action} returned invalid GraphQL output`);
+	const errors = value.errors;
+	if (errors !== undefined) {
+		if (!Array.isArray(errors) || errors.some((error) => !isRecord(error) || typeof error.message !== "string" || !error.message)) {
+			throw new Error(`${action} returned invalid GraphQL errors`);
+		}
+		if (errors.length) throw new Error(`${action} failed: ${errors.map((error) => error.message).join("; ")}`);
+	}
+	return value;
+}
+
+function parseCreateAuthority(
+	output: string,
+	baseRepository: string,
+	headRepository: string,
+): CrossRepositoryCreateAuthority {
+	const response = graphQlResponse(output, "PR creation preflight");
+	const data = response.data;
+	const base = isRecord(data) ? data.base : undefined;
+	const head = isRecord(data) ? data.head : undefined;
+	const owner = isRecord(head) ? head.owner : undefined;
+	const createInput = isRecord(data) ? data.createInput : undefined;
+	if (!isRecord(base) || !isRecord(head) || !isRecord(owner)) {
+		throw new Error("PR creation preflight returned invalid repository authority");
+	}
+	const baseName = requiredText(base.nameWithOwner, "base repository name");
+	const headName = requiredText(head.nameWithOwner, "head repository name");
+	const baseRepositoryId = requiredText(base.id, "base repository id");
+	const headRepositoryId = requiredText(head.id, "head repository id");
+	const headOwnerType = owner.__typename;
+	if (baseName.toLowerCase() !== baseRepository.toLowerCase() || headName.toLowerCase() !== headRepository.toLowerCase() ||
+		(headOwnerType !== "Organization" && headOwnerType !== "User")) {
+		throw new Error("PR creation preflight returned different repository authority");
+	}
+	if (headOwnerType === "Organization") {
+		if (!isRecord(createInput)) throw new Error("PR creation preflight returned invalid API capability");
+		const inputFields = createInput.inputFields;
+		if (!Array.isArray(inputFields)) throw new Error("PR creation preflight returned invalid API capability");
+		const names = new Set(inputFields.map((field) => isRecord(field) ? field.name : undefined));
+		for (const name of ["repositoryId", "baseRefName", "headRepositoryId", "headRefName", "title", "body"]) {
+			if (!names.has(name)) throw new Error("GitHub API cannot create an exact organization-owned cross-repository pull request");
+		}
+	}
+	return { baseRepositoryId, headRepositoryId, headOwnerType };
+}
+
+function parseCreatedUrl(output: string, host: string, baseRepository: string): URL {
+	const response = graphQlResponse(output, "Create pull request");
+	const data = response.data;
+	const mutation = isRecord(data) ? data.createPullRequest : undefined;
+	const pullRequest = isRecord(mutation) ? mutation.pullRequest : undefined;
+	const value = isRecord(pullRequest) ? pullRequest.url : undefined;
+	if (typeof value !== "string") throw new Error("Create pull request returned invalid GraphQL output");
+	const url = new URL(value);
+	const prefix = `/${baseRepository.toLowerCase()}/pull/`;
+	if (url.protocol !== "https:" || url.hostname.toLowerCase() !== host.toLowerCase() ||
+		!url.pathname.toLowerCase().startsWith(prefix) || !/^[1-9]\d*$/.test(url.pathname.slice(prefix.length)) ||
+		url.search || url.hash || url.username || url.password) {
+		throw new Error("Create pull request returned a different repository URL");
+	}
+	return url;
 }
 
 function parseExplicitBase(value: string): Omit<CreateBaseAuthority, "oid" | "fetchSource"> {
@@ -188,6 +271,10 @@ export class PullRequestCreator {
 
 	private async inferBaseRef(): Promise<{ authority: Awaited<ReturnType<PullRequestCreator["originAuthority"]>>; ref: string }> {
 		const authority = await this.originAuthority();
+		await runChecked(this.exec, "git", [
+			"fetch", "--prune", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
+			authority.fetchSource, "+refs/heads/*:refs/remotes/origin/*",
+		], this.options());
 		const refs = await runChecked(this.exec, "git", [
 			"for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "refs/remotes/origin",
 		], this.options());
@@ -246,6 +333,21 @@ export class PullRequestCreator {
 	private async liveBase(): Promise<string> {
 		if (!this.state.base) throw new Error("PR creation base is unavailable");
 		return await readPullRequestBaseRefOid(this.pi(), this.context(), this.state.base);
+	}
+
+	private async preflightCrossRepositoryCreation(): Promise<void> {
+		if (!this.state.base || this.state.base.repository.toLowerCase() === this.target.repository.toLowerCase()) return;
+		const [baseOwner, baseName] = this.state.base.repository.split("/");
+		const [headOwner, headName] = this.target.repository.split("/");
+		const result = await runChecked(this.exec, "gh", [
+			"api", "graphql", "--hostname", this.state.base.host,
+			"-f", `query=${CREATE_AUTHORITY_QUERY}`,
+			"-F", `baseOwner=${baseOwner}`,
+			"-F", `baseName=${baseName}`,
+			"-F", `headOwner=${headOwner}`,
+			"-F", `headName=${headName}`,
+		], this.options());
+		this.state.createAuthority = parseCreateAuthority(result.stdout, this.state.base.repository, this.target.repository);
 	}
 
 	private async requireCleanHead(): Promise<string> {
@@ -447,6 +549,7 @@ export class PullRequestCreator {
 			if (original !== null && !(await isAncestor(this.exec, this.options(), original, head))) {
 				throw new Error("PR creation push would not fast-forward the frozen remote OID");
 			}
+			await this.preflightCrossRepositoryCreation();
 			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			if (await this.requireCleanHead() !== head) throw new Error("PR creation cancelled: local HEAD changed before push");
@@ -527,13 +630,37 @@ export class PullRequestCreator {
 				throw new Error("Exact-head pull request targets a different base");
 			}
 			const repository = `${this.state.base!.host}/${this.state.base!.repository}`;
-			const headOwner = this.target.repository.split("/")[0]!;
+			const sameRepository = this.state.base!.repository.toLowerCase() === this.target.repository.toLowerCase();
+			const organizationAuthority = !sameRepository && this.state.createAuthority?.headOwnerType === "Organization"
+				? this.state.createAuthority
+				: undefined;
+			if (!sameRepository && !this.state.createAuthority) {
+				throw new Error("Cross-repository PR creation was not preflighted before push");
+			}
 			const args = before
 				? ["pr", "edit", String(before.number), "--repo", repository, "--title", title, "--body-file", "-"]
-				: ["pr", "create", "--repo", repository, "--head", `${headOwner}:${this.target.ref}`, "--base", this.state.base!.ref, "--title", title, "--body-file", "-"];
+				: organizationAuthority
+				? [
+					"api", "graphql", "--hostname", this.state.base!.host,
+					"-f", `query=${CREATE_PULL_REQUEST_MUTATION}`,
+					"-f", `repositoryId=${organizationAuthority.baseRepositoryId}`,
+					"-f", `baseRefName=${this.state.base!.ref}`,
+					"-f", `headRepositoryId=${organizationAuthority.headRepositoryId}`,
+					"-f", `headRefName=${this.target.ref}`,
+					"-f", `title=${title}`,
+					"-f", `body=${body}`,
+				]
+				: [
+					"pr", "create", "--repo", repository, "--head",
+					sameRepository ? this.target.ref : `${this.target.repository.split("/")[0]}:${this.target.ref}`,
+					"--base", this.state.base!.ref, "--title", title, "--body-file", "-",
+				];
 			this.state.attempts.pullRequest = "attempting";
 			try {
-				await runChecked(this.exec, "gh", args, this.options({ stdin: body }));
+				const created = await runChecked(this.exec, "gh", args, this.options({ stdin: organizationAuthority ? undefined : body }));
+				if (!before && organizationAuthority) {
+					parseCreatedUrl(created.stdout, this.state.base!.host, this.state.base!.repository);
+				}
 			} catch (error) {
 				this.state.attempts.pullRequest = "unknown";
 				throw error;

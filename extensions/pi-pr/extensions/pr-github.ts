@@ -1832,7 +1832,7 @@ export async function fetchBranchTrackingRef(
 ): Promise<void> {
 	await execute(pi, context, "Fetch branch tracking ref", "git", [
 		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
-		target.fetchSource, `${target.remoteOid}:${branchTrackingRef(target)}`,
+		target.fetchSource, `+${target.remoteOid}:${branchTrackingRef(target)}`,
 	]);
 }
 
