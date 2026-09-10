@@ -373,35 +373,26 @@ test("stops polling when an active worktree becomes inactive", async (t) => {
 	await app.shutdown(ctx);
 });
 
-test("refreshes a configured PR after successful delegation or orchestration settles", async (t) => {
-	for (const toolName of [
-		"delegate_task",
-		"orchestrate_execute",
-		"orchestrate_status",
-		"orchestrate_resume",
-		"orchestrate_abort",
-	]) {
-		await t.test(toolName, async () => {
-			const results = [
-				currentPullRequest(),
-				currentPullRequest({ conditions: { ci: "failure" } }),
-			];
-			const app = harness({
-				async load() {
-					const result = results.shift();
-					if (!result) throw new Error("Unexpected pull request refresh");
-					return result;
-				},
-			});
-			const ctx = app.context();
+test("refreshes a configured PR after successful delegated work settles", async () => {
+	const results = [
+		currentPullRequest(),
+		currentPullRequest({ conditions: { ci: "failure" } }),
+	];
+	const app = harness({
+		async load() {
+			const result = results.shift();
+			if (!result) throw new Error("Unexpected pull request refresh");
+			return result;
+		},
+	});
+	const ctx = app.context();
 
-			await app.start(ctx);
-			await app.tool({ toolName, isError: false, input: {} }, ctx);
-			await app.settle(ctx);
-			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
-			await app.shutdown(ctx);
-		});
-	}
+	await app.start(ctx);
+	await app.tool({ toolName: "delegate_task", isError: false, input: {} }, ctx);
+	await app.settle(ctx);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
+
+	await app.shutdown(ctx);
 });
 
 test("warns once for one blocked issue and warns again after recovery", async (t) => {

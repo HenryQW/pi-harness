@@ -31,13 +31,7 @@ const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
 const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
 const WORKFLOW_ROUTES = new Set(["create", "update-branch", "sweep", "fix-ci"]);
-const DELEGATED_TOOLS = new Set([
-	"delegate_task",
-	"orchestrate_execute",
-	"orchestrate_status",
-	"orchestrate_resume",
-	"orchestrate_abort",
-]);
+const DELEGATED_TOOLS = new Set(["delegate_task", "delegate_flow", "delegate_flow_continue"]);
 
 type PullRequestExtensionDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
