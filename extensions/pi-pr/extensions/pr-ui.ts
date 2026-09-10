@@ -46,6 +46,8 @@ export function discoveryIssueKey(issue: DiscoveryIssue): string {
 		case "published-without-pr":
 		case "link-configuration":
 			return `${issue.kind}:${issue.remote}`;
+		case "branch-parent-unresolved":
+			return `${issue.kind}:${issue.blocker.code}:${(issue.blocker.candidates ?? []).join(",")}`;
 		case "detached-head":
 		case "origin-invalid":
 		case "target-invalid":
@@ -71,6 +73,8 @@ export function discoveryIssueMessage(issue: DiscoveryIssue): string {
 			return "PR creation is blocked because origin is not one validated GitHub destination";
 		case "target-invalid":
 			return "PR discovery is blocked by an invalid push target";
+		case "branch-parent-unresolved":
+			return `PR creation is blocked: ${issue.blocker.message}`;
 	}
 }
 
@@ -114,7 +118,6 @@ function widgetText(input: PrDisplayInput, nextStep: NextStep): string | undefin
 
 export function projectPrDisplay(
 	discovery: PullRequestDiscovery<PrDisplayInput>,
-	hasLocalCommit = false,
 ): PrDisplay {
 	const nextStep = deriveNextStep(discovery);
 	if (discovery.kind === "inactive") return { nextStep };
@@ -132,7 +135,7 @@ export function projectPrDisplay(
 	if (discovery.kind === "none") {
 		return {
 			nextStep,
-			widget: hasLocalCommit ? "Run /pr to create pull request" : undefined,
+			widget: nextStep === "create" ? "Run /pr to create pull request" : undefined,
 		};
 	}
 

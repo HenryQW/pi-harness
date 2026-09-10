@@ -36,6 +36,12 @@ function deriveNextStep(pullRequest: PullRequest | null): NextStep {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
+		branch: {
+			branch: "feature",
+			head: "a".repeat(40),
+			base: { remote: "origin", ref: "main", oid: "b".repeat(40), mergeBase: "b".repeat(40) },
+			ahead: 1,
+		},
 	});
 }
 
@@ -74,6 +80,30 @@ test("routes exactly one highest-priority next step", () => {
 	for (const { name, pullRequest: candidate, expected } of cases) {
 		assert.equal(deriveNextStep(candidate), expected, name);
 	}
+});
+
+test("requires an ahead commit before routing creation", () => {
+	const creation = {
+		kind: "none" as const,
+		creationTarget: {
+			provenance: "inferred" as const,
+			branch: "feature",
+			remote: "origin",
+			ref: "feature",
+			repository: "acme/project",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+		branch: {
+			branch: "feature",
+			head: "a".repeat(40),
+			base: { remote: "origin", ref: "main", oid: "b".repeat(40), mergeBase: "b".repeat(40) },
+			ahead: 0,
+		},
+	};
+	assert.equal(deriveDiscoveryNextStep(creation), "none");
+	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, ahead: 1 } }), "create");
 });
 
 test("routes discovery states without mutating ambiguous targets", () => {

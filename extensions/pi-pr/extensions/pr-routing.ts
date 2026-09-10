@@ -38,6 +38,24 @@ export type PullRequestTarget = {
 	remoteOid: string | null;
 };
 
+export type BranchInspection = {
+	branch: string;
+	head: string;
+	base: {
+		remote: string;
+		ref: string;
+		oid: string;
+		mergeBase: string;
+	};
+	ahead: number;
+};
+
+export type BranchInspectionBlocker = {
+	code: string;
+	message: string;
+	candidates?: string[];
+};
+
 export type DiscoveryIssue =
 	| { kind: "detached-head" }
 	| { kind: "target-invalid" }
@@ -46,11 +64,12 @@ export type DiscoveryIssue =
 	| { kind: "candidate-prs-ambiguous"; urls: URL[] }
 	| { kind: "candidate-oid-mismatch"; remote: string; urls: URL[] }
 	| { kind: "published-without-pr"; remote: string }
-	| { kind: "link-configuration"; remote: string };
+	| { kind: "link-configuration"; remote: string }
+	| { kind: "branch-parent-unresolved"; blocker: BranchInspectionBlocker };
 
 export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
 	| { kind: "current"; pullRequest: T }
-	| { kind: "none"; creationTarget: PullRequestTarget }
+	| { kind: "none"; creationTarget: PullRequestTarget; branch: BranchInspection }
 	| { kind: "blocked"; issue: DiscoveryIssue }
 	| { kind: "inactive" };
 
@@ -87,7 +106,7 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
 	if (discovery.kind === "inactive") return "none";
 	if (discovery.kind === "blocked") return "blocked";
-	if (discovery.kind === "none") return "create";
+	if (discovery.kind === "none") return discovery.branch.ahead > 0 ? "create" : "none";
 	if (discovery.pullRequest.target.provenance === "inferred") {
 		return discovery.pullRequest.lifecycle === "open" ? "link-branch" : "none";
 	}
