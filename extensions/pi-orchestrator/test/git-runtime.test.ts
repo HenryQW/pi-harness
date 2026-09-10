@@ -367,6 +367,50 @@ test("same-wave units use wave-base preliminary packets and integration-base aut
 	assert.ok(seenContexts.every((item) => item.signal instanceof AbortSignal && item.timeoutMs > 0));
 });
 
+test("final review resolves a canonical Main worktree root without changing the launch subdirectory", async (t) => {
+	const root = await repository(t);
+	const subdirectory = join(root, "nested");
+	await mkdir(subdirectory);
+	const calls: { command: string; args: string[]; options: DirectProcessOptions }[] = [];
+	const reviewCwds: string[] = [];
+	const patches: string[] = [];
+	const operationContext = context();
+	const runtime = new CheckedGitRuntime({
+		runProcess: async (command, args, options) => {
+			calls.push({ command, args: [...args], options });
+			return await directProcess(command, args, options);
+		},
+		executeReview: async (input) => {
+			reviewCwds.push(input.cwd);
+			patches.push(await readFile(input.packet.patchPath, "utf8"));
+			return { verdict: "PASS" };
+		},
+	});
+	const base = await runtime.inspectMain({ root: subdirectory }, operationContext);
+	await commit(root, "nested/final.txt", "final\n");
+	const tip = await runtime.inspectMain({ root: subdirectory }, operationContext);
+	const reviewed = await runtime.review({
+		root: subdirectory,
+		scope: "final",
+		phase: "final",
+		criterion: "Review the final change.",
+		base,
+		tip,
+		launch,
+	}, operationContext);
+
+	assert.equal(reviewed.verdict, "PASS");
+	assert.ok(sameIdentity(reviewed.identityAfter, tip));
+	assert.deepEqual(reviewCwds, [subdirectory]);
+	assert.match(patches[0]!, /final\.txt/);
+	assert.ok(calls.some(({ command, args, options }) => command === "git"
+		&& JSON.stringify(args) === JSON.stringify(["rev-parse", "--show-toplevel"])
+		&& options.cwd === subdirectory
+		&& options.signal === operationContext.signal
+		&& options.timeoutMs > 0
+		&& options.timeoutMs <= operationContext.timeoutMs));
+});
+
 test("rebase conflicts retain exact work and report whether abort succeeded", async (t) => {
 	for (const abortFails of [false, true]) {
 		await t.test(abortFails ? "abort failure" : "abort success", async (t) => {
@@ -534,6 +578,52 @@ test("guarded cleanup reconciles partial removal without force or reintegration"
 	assert.equal((await runtime.cleanupGit({ root, kind: "branch", task: definition, attempt: allocated.attempt }, context())).outcome, "absent");
 	assert.ok(commands.every((command) => !command.includes("--force") && !command.includes("reset") && !command.includes("stash")));
 	assert.equal(commands.filter((command) => command[1] === "merge").length, 1);
+});
+
+test("cleanup preserves exact resources when integration evidence is incomplete or Main identity drifted", async (t) => {
+	const root = await repository(t);
+	const commands: string[][] = [];
+	const runtime = new CheckedGitRuntime({
+		runProcess: async (command, args, options) => {
+			commands.push([command, ...args]);
+			return await directProcess(command, args, options);
+		},
+	});
+	const base = await runtime.inspectMain({ root }, context());
+	const definition = task("cleanup-drift");
+	const allocated = await allocate(runtime, root, definition, base, "token-clean-drift1");
+	await commit(allocated.intent.worktree!.cwd, "accepted.txt", "accepted\n");
+	const candidate = await runtime.inspectRetainedTask({ root, task: definition, attempt: allocated.attempt }, context());
+	const prepared = await prepareIntegration(runtime, root, definition, allocated.attempt, candidate, base);
+	await integrate(runtime, root, definition, allocated.attempt, prepared);
+	const worktree = allocated.intent.worktree!;
+	const integration = allocated.attempt.integration!;
+
+	allocated.attempt.integration = {
+		...integration,
+		expectedMain: { ...integration.expectedMain, head: "f".repeat(40) },
+	};
+	const incomplete = await runtime.cleanupGit({ root, kind: "worktree", task: definition, attempt: allocated.attempt }, context());
+	assert.equal(incomplete.outcome, "blocked");
+	assert.match(incomplete.outcome === "blocked" ? incomplete.failure : "", /integration evidence/);
+	assert.ok(await readFile(join(worktree.cwd, "accepted.txt"), "utf8"));
+	assert.match(git(root, "show-ref", "--verify", `refs/heads/${worktree.branch}`), new RegExp(candidate.head));
+
+	allocated.attempt.integration = integration;
+	git(root, "switch", "-q", "-c", "drift");
+	const driftedWorktree = await runtime.cleanupGit({ root, kind: "worktree", task: definition, attempt: allocated.attempt }, context());
+	assert.equal(driftedWorktree.outcome, "blocked");
+	assert.match(driftedWorktree.outcome === "blocked" ? driftedWorktree.failure : "", /post-integration identity/);
+	assert.ok(await readFile(join(worktree.cwd, "accepted.txt"), "utf8"));
+	assert.match(git(root, "show-ref", "--verify", `refs/heads/${worktree.branch}`), new RegExp(candidate.head));
+
+	git(root, "worktree", "remove", worktree.path);
+	const driftedBranch = await runtime.cleanupGit({ root, kind: "branch", task: definition, attempt: allocated.attempt }, context());
+	assert.equal(driftedBranch.outcome, "blocked");
+	assert.match(driftedBranch.outcome === "blocked" ? driftedBranch.failure : "", /post-integration identity/);
+	assert.match(git(root, "show-ref", "--verify", `refs/heads/${worktree.branch}`), new RegExp(candidate.head));
+	assert.ok(commands.every(([, ...args]) => args[0] !== "worktree" || args[1] !== "remove"));
+	assert.ok(commands.every(([, ...args]) => args[0] !== "branch" || args[1] !== "-d"));
 });
 
 test("cleanup refuses branch/tip mismatch and runner host release remains ordered before Git", async (t) => {

@@ -10,6 +10,7 @@ import {
 } from "@henryqw/pi-subagent";
 import {
 	checkBatchPasses,
+	isCleanCommitted,
 	launchKey,
 	reviewEvidencePasses,
 	sameIdentity,
@@ -305,7 +306,9 @@ export class CheckedGitRuntime implements GitRuntime {
 			}
 		}
 		const cwd = await this.requireScopeIdentity({ ...input, candidate: input.tip }, context);
-		const evidenceWorktree = input.scope === "final" ? input.root : worktreeIntent(input.attempt!).worktree.path;
+		const evidenceWorktree = input.scope === "final"
+			? await realpath(oneLine(await this.requireGit(["rev-parse", "--show-toplevel"], input.root, context), "Main worktree root"))
+			: worktreeIntent(input.attempt!).worktree.path;
 		const evidence = await prepareExactReviewEvidence({
 			base: input.base.head,
 			tip: input.tip.head,
@@ -448,11 +451,19 @@ export class CheckedGitRuntime implements GitRuntime {
 		try {
 			const intent = worktreeIntent(input.attempt);
 			const worktree = intent.worktree;
-			const approvedTip = input.attempt.integrationCandidate?.head;
-			if (!approvedTip || input.attempt.integration?.status !== "integrated") {
-				return { outcome: "blocked", failure: "Git cleanup requires an exact integrated task tip." };
+			const integrationBase = input.attempt.integrationBase;
+			const integrationCandidate = input.attempt.integrationCandidate;
+			const integration = input.attempt.integration;
+			if (!integrationBase || !integrationCandidate || integration?.status !== "integrated"
+				|| !sameIdentity(integration.expectedMain, integrationBase)
+				|| !sameIdentity(integration.candidate, integrationCandidate)
+				|| !integration.mainAfter
+				|| integration.mainAfter.branch !== integrationBase.branch
+				|| integration.mainAfter.head !== integrationCandidate.head
+				|| !isCleanCommitted(integration.mainAfter)) {
+				return { outcome: "blocked", failure: "Git cleanup requires complete exact integration evidence." };
 			}
-			const main = await this.inspectMain({ root: input.root }, context);
+			const approvedTip = integrationCandidate.head;
 			const registered = await this.registeredWorktreePaths(input.root, context);
 			const checkout = await pathExists(worktree.path);
 			const branch = await this.branchTip(input.root, worktree.branch, context);
@@ -463,9 +474,10 @@ export class CheckedGitRuntime implements GitRuntime {
 					return { outcome: "blocked", failure: "Worktree path and Git registration disagree; cleanup refused." };
 				}
 				if (branch !== approvedTip) return { outcome: "blocked", failure: "Worktree branch no longer names the approved tip." };
-				await this.inspectTask(input.root, input.task, input.attempt, input.attempt.integrationCandidate, input.attempt.integrationBase!.head, context);
-				if (!await this.isAncestor(approvedTip, main.head, input.root, context)) {
-					return { outcome: "blocked", failure: "Approved task tip is not fully merged into Main." };
+				await this.inspectTask(input.root, input.task, input.attempt, integrationCandidate, integrationBase.head, context);
+				const currentMain = await this.inspectMain({ root: input.root }, context);
+				if (!sameIdentity(currentMain, integration.mainAfter)) {
+					return { outcome: "blocked", failure: "Main no longer matches the exact recorded post-integration identity." };
 				}
 				const removed = await this.git(["worktree", "remove", worktree.path], input.root, context);
 				if (removed.code !== 0 || removed.killed) return { outcome: "blocked", failure: commandFailure(["worktree", "remove", worktree.path], removed) };
@@ -481,8 +493,9 @@ export class CheckedGitRuntime implements GitRuntime {
 			}
 			if (branch === undefined) return { outcome: "absent" };
 			if (branch !== approvedTip) return { outcome: "blocked", failure: "Task branch no longer names the approved tip." };
-			if (!await this.isAncestor(approvedTip, main.head, input.root, context)) {
-				return { outcome: "blocked", failure: "Task branch is not fully merged into Main." };
+			const currentMain = await this.inspectMain({ root: input.root }, context);
+			if (!sameIdentity(currentMain, integration.mainAfter)) {
+				return { outcome: "blocked", failure: "Main no longer matches the exact recorded post-integration identity." };
 			}
 			const deleted = await this.git(["branch", "-d", "--", worktree.branch], input.root, context);
 			if (deleted.code !== 0 || deleted.killed) return { outcome: "blocked", failure: commandFailure(["branch", "-d", "--", worktree.branch], deleted) };
